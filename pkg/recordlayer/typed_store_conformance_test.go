@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -224,6 +225,291 @@ var _ = Describe("TypedStoreConformance", func() {
 
 			GinkgoWriter.Println("Cross-compatibility verified: Both stores can read each other's records")
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("InsertRecord succeeds for new record", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			stored, err := orderStore.InsertRecord(&gen.Order{
+				OrderId: proto.Int64(5001),
+				Price:   proto.Int32(42),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stored.PrimaryKey).To(Equal(tuple.Tuple{int64(5001)}))
+			Expect(*stored.Record.Price).To(Equal(int32(42)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("InsertRecord fails for duplicate", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = orderStore.InsertRecord(&gen.Order{
+				OrderId: proto.Int64(5002),
+				Price:   proto.Int32(10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = orderStore.InsertRecord(&gen.Order{
+				OrderId: proto.Int64(5002),
+				Price:   proto.Int32(20),
+			})
+			Expect(err).To(HaveOccurred())
+			var e *RecordAlreadyExistsError
+			Expect(errors.As(err, &e)).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UpdateRecord succeeds for existing record", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = orderStore.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(5003),
+				Price:   proto.Int32(10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			stored, err := orderStore.UpdateRecord(&gen.Order{
+				OrderId: proto.Int64(5003),
+				Price:   proto.Int32(99),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*stored.Record.Price).To(Equal(int32(99)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UpdateRecord fails for non-existent record", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = orderStore.UpdateRecord(&gen.Order{
+				OrderId: proto.Int64(5004),
+				Price:   proto.Int32(99),
+			})
+			Expect(err).To(HaveOccurred())
+			var e *RecordDoesNotExistError
+			Expect(errors.As(err, &e)).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("DeleteRecord removes record", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = orderStore.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(5005),
+				Price:   proto.Int32(10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			deleted, err := orderStore.DeleteRecord(tuple.Tuple{int64(5005)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			loaded, err := orderStore.LoadRecord(tuple.Tuple{int64(5005)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RecordExists returns correct result", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			exists, err := orderStore.RecordExists(tuple.Tuple{int64(5006)}, SerializableIsolation)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
+
+			_, err = orderStore.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(5006),
+				Price:   proto.Int32(50),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			exists, err = orderStore.RecordExists(tuple.Tuple{int64(5006)}, SerializableIsolation)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("GetRecordCount tracks count", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			mdBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			mdBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			mdBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			mdBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			mdBuilder.SetRecordCountKey(EmptyKey())
+			mdWithCount, buildErr := mdBuilder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(mdWithCount).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			count, err := orderStore.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(int64(0)))
+
+			_, err = orderStore.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(6001),
+				Price:   proto.Int32(10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			count, err = orderStore.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(int64(1)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Context and Subspace return valid handles", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(orderStore.Context()).NotTo(BeNil())
+			Expect(orderStore.Subspace()).NotTo(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("DeleteAllRecords clears all records", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			mdBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			mdBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			mdBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			mdBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			mdBuilder.SetRecordCountKey(EmptyKey())
+			mdWithCount, buildErr := mdBuilder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(mdWithCount).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := int64(1); i <= 3; i++ {
+				_, err = orderStore.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(i),
+					Price:   proto.Int32(int32(i)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			count, err := orderStore.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(int64(3)))
+
+			err = orderStore.DeleteAllRecords()
+			Expect(err).NotTo(HaveOccurred())
+
+			count, err = orderStore.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(int64(0)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
