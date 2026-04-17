@@ -2238,3 +2238,80 @@ func TestOpenWithConnectionString_InvalidString(t *testing.T) {
 	_, err := fdb.OpenWithConnectionString("totally-invalid-not-a-connection-string")
 	g.Expect(err).To(HaveOccurred())
 }
+
+// TestCommitFutureNil verifies that FutureNil from Commit works correctly.
+func TestCommitFutureNil(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+
+	tr, err := db.CreateTransaction()
+	g.Expect(err).NotTo(HaveOccurred())
+
+	tr.Set(fdb.Key(t.Name()+"/commit-nil"), []byte("val"))
+
+	commitFuture := tr.Commit()
+
+	// BlockUntilReady should work.
+	commitFuture.BlockUntilReady()
+
+	// Get should return nil error on success.
+	g.Expect(commitFuture.Get()).To(Succeed())
+
+	// IsReady should be true after completion.
+	g.Expect(commitFuture.IsReady()).To(BeTrue())
+
+	// Cancel should not panic on completed future.
+	g.Expect(func() { commitFuture.Cancel() }).NotTo(Panic())
+}
+
+// TestGetCommittedVersionFuture verifies FutureInt64 from GetCommittedVersion.
+func TestGetCommittedVersionFuture(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+
+	tr, err := db.CreateTransaction()
+	g.Expect(err).NotTo(HaveOccurred())
+
+	tr.Set(fdb.Key(t.Name()+"/ver-future"), []byte("val"))
+	g.Expect(tr.Commit().Get()).To(Succeed())
+
+	ver, verErr := tr.GetCommittedVersion()
+	g.Expect(verErr).NotTo(HaveOccurred())
+	g.Expect(ver).To(BeNumerically(">", 0))
+}
+
+// TestGetRangeSplitPoints verifies that snapshot GetRangeSplitPoints works.
+func TestGetRangeSplitPoints(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+
+	// Write some data to create a non-empty range.
+	prefix := t.Name() + "/"
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := range 20 {
+			tr.Set(fdb.Key(fmt.Sprintf("%sdata-%04d", prefix, i)), make([]byte, 500))
+		}
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	_, err = db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+		sn := tr.Snapshot()
+		points := sn.GetRangeSplitPoints(fdb.KeyRange{
+			Begin: fdb.Key(prefix),
+			End:   fdb.Key(prefix + "\xff"),
+		}, 1000) // 1KB chunks
+		keys, err := points.Get()
+		g.Expect(err).NotTo(HaveOccurred())
+		// Just verify it doesn't error — split points depend on data distribution.
+		_ = keys
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+}
