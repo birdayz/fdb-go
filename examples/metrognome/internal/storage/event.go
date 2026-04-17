@@ -210,8 +210,34 @@ func (s *EventStore) ListEvents(ctx context.Context, customerID string, startMs,
 				lowEP, highEP,
 				continuation, scanProps)
 		} else {
-			// All events: scan by record type (handles endpoints internally).
-			cursor = rs.ScanRecordsByType("UsageEvent", continuation, scanProps)
+			// All events: use event_by_time index for global time ordering.
+			// ScanIndexRecords: scan index → extract PK → fetch record.
+			idx := rs.GetRecordMetaData().GetIndex("event_by_time")
+			indexCursor := rs.ScanIndexRecords("event_by_time",
+				rl.TupleRangeAll, continuation, scanProps)
+			_ = idx
+
+			page := &ListEventsPage{}
+			for {
+				result, err := indexCursor.OnNext(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if !result.HasNext() {
+					cont := result.GetContinuation()
+					if cont != nil && !cont.IsEnd() {
+						page.ContinuationToken, _ = cont.ToBytes()
+					}
+					break
+				}
+				rec := result.GetValue()
+				evt, ok := rec.Record.Record.(*storev1.UsageEvent)
+				if !ok {
+					continue
+				}
+				page.Events = append(page.Events, evt)
+			}
+			return page, nil
 		}
 
 		page := &ListEventsPage{}

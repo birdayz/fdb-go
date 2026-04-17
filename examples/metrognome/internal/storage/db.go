@@ -139,6 +139,10 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.AddIndex("UsageEvent", rl.NewIndex("event_by_customer_meter_time",
 		rl.Concat(rl.Field("customer_id"), rl.Field("meter_slug"), rl.Field("timestamp_ms"))))
 
+	// UsageEvent by timestamp (global time order for event explorer without customer filter)
+	builder.AddIndex("UsageEvent", rl.NewIndex("event_by_time",
+		rl.Concat(rl.Field("timestamp_ms"), rl.Field("customer_id"))))
+
 	// Invoice by customer
 	builder.AddIndex("Invoice", rl.NewIndex("invoice_by_customer", rl.Field("customer_id")))
 
