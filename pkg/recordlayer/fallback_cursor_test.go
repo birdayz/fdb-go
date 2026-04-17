@@ -23,6 +23,8 @@ func (c *errorAfterNCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T],
 }
 func (c *errorAfterNCursor[T]) Close() error { return nil }
 
+func (c *errorAfterNCursor[T]) IsClosed() bool { return false }
+
 func TestFallbackCursorNoError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

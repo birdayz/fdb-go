@@ -75,3 +75,5 @@ func (c *chainedCursor[T]) Close() error {
 	c.closed = true
 	return nil
 }
+
+func (c *chainedCursor[T]) IsClosed() bool { return c.closed }

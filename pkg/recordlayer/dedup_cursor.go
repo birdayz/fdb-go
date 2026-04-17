@@ -153,3 +153,5 @@ func (c *dedupCursor[T]) Close() error {
 	}
 	return nil
 }
+
+func (c *dedupCursor[T]) IsClosed() bool { return c.closed }

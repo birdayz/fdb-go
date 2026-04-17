@@ -254,6 +254,8 @@ func (c *unionCursor[T]) Close() error {
 	return firstErr
 }
 
+func (c *unionCursor[T]) IsClosed() bool { return c.closed }
+
 // --- IntersectionCursor ---
 
 // intersectionCursor merges multiple ordered cursors, returning only elements
@@ -471,3 +473,5 @@ func (c *intersectionCursor[T]) Close() error {
 	}
 	return firstErr
 }
+
+func (c *intersectionCursor[T]) IsClosed() bool { return c.closed }

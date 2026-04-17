@@ -38,6 +38,8 @@ func (c *limitedListCursor[T]) Close() error {
 	return nil
 }
 
+func (c *limitedListCursor[T]) IsClosed() bool { return c.closed }
+
 var _ = Describe("CursorBugVerify", func() {
 	var ctx context.Context
 

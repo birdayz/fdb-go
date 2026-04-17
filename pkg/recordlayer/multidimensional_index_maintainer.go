@@ -581,6 +581,8 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 
 func (c *rtreeScanCursor) Close() error { return nil }
 
+func (c *rtreeScanCursor) IsClosed() bool { return false }
+
 // prefixSkipScanCursor enumerates all distinct prefixes in the index subspace
 // and scans each prefix's R-tree in sequence. Used when PrefixSize > 0 but the
 // scanRange does not specify a prefix.
@@ -759,4 +761,11 @@ func (c *prefixSkipScanCursor) Close() error {
 		return c.currentCursor.Close()
 	}
 	return nil
+}
+
+func (c *prefixSkipScanCursor) IsClosed() bool {
+	if c.currentCursor != nil {
+		return c.currentCursor.IsClosed()
+	}
+	return false
 }
