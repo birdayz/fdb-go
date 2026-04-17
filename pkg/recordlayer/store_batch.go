@@ -22,13 +22,10 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 // for the existence checks, significantly improving throughput for batch inserts.
 //
 // Limitations vs SaveRecord:
-//   - Record versions are NOT saved (StoreRecordVersions is ignored).
-//     Batch-saved records will have nil Version when loaded.
-//   - VERSION index entries are not created for batch-saved records.
 //   - Old record versions are not loaded for updates, so VERSION index
 //     cleanup on update is incomplete (orphaned entries possible).
-//
-// Use SaveRecord for stores that require record versioning.
+//     This only matters when UPDATING existing records that have VERSION indexes.
+//     For pure inserts, versioning works correctly.
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -172,11 +169,27 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			}
 		}
 
+		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
+		// mutation per record — no round trip, just added to the write set.
+		var savedVersion *FDBRecordVersion
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(p.primaryKey, version, &newsizeInfo); err != nil {
+				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			savedVersion = version
+		}
+
 		// Record count
 		stored := &FDBStoredRecord[proto.Message]{
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
+			Version:    savedVersion,
 			Store:      store,
 			KeyCount:   newsizeInfo.KeyCount,
 			KeySize:    newsizeInfo.KeySize,
@@ -233,8 +246,6 @@ func (store *FDBRecordStore) SaveRecordBatch(
 // silently overwritten. Record count will be incorrectly incremented. Index
 // entries from the old record will NOT be cleaned up. Only use this when you
 // can guarantee unique primary keys (e.g. UUID/random IDs, monotonic sequences).
-//
-// Limitations: same as SaveRecordBatch — record versions are NOT saved.
 func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -349,10 +360,25 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			}
 		}
 
+		// Save version if versioning is enabled.
+		var savedVersion *FDBRecordVersion
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(primaryKey, version, nil); err != nil {
+				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			savedVersion = version
+		}
+
 		stored := &FDBStoredRecord[proto.Message]{
 			PrimaryKey: primaryKey,
 			RecordType: recordType,
 			Record:     record,
+			Version:    savedVersion,
 			Store:      store,
 		}
 
@@ -383,8 +409,6 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 //   - If the schema has UNIQUE indexes, all records must have unique values for those
 //     indexes. Uniqueness is not enforced — duplicates silently corrupt the index.
 //   - This is a Go-only API, not present in Java Record Layer.
-//
-// Limitations: same as SaveRecordBatch — record versions are NOT saved.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
 		return nil
@@ -538,6 +562,19 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 				splitEnabled, nil, &newsizeInfo); err != nil {
 				return fmt.Errorf("record %d: save: %w", i, err)
 			}
+		}
+
+		// Save version if versioning is enabled.
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(primaryKey, version, nil); err != nil {
+				return fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			stored.Version = version
 		}
 
 		// Index updates via cached maintainers — no per-record map lookups.
