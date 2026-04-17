@@ -783,19 +783,6 @@ func validateBaseIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) er
 	return nil
 }
 
-// mapsEqual compares two map[string]string for equality.
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, va := range a {
-		if vb, ok := b[k]; !ok || va != vb {
-			return false
-		}
-	}
-	return true
-}
-
 func (v *MetaDataEvolutionValidator) validateFormerIndexes(old, new *RecordMetaData) error {
 	oldFormerMap := buildFormerIndexMap(old.GetFormerIndexes())
 
