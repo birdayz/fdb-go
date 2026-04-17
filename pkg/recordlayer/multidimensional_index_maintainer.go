@@ -490,6 +490,7 @@ type rtreeScanCursor struct {
 	// outerContinuation carries prefix skip-scan state for FlatMapContinuation.
 	// nil for single-prefix (non-skip-scan) scans.
 	outerContinuation []byte
+	closed            bool
 }
 
 func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -579,9 +580,12 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 	return data
 }
 
-func (c *rtreeScanCursor) Close() error { return nil }
+func (c *rtreeScanCursor) Close() error {
+	c.closed = true
+	return nil
+}
 
-func (c *rtreeScanCursor) IsClosed() bool { return false }
+func (c *rtreeScanCursor) IsClosed() bool { return c.closed }
 
 // prefixSkipScanCursor enumerates all distinct prefixes in the index subspace
 // and scans each prefix's R-tree in sequence. Used when PrefixSize > 0 but the
@@ -609,6 +613,7 @@ type prefixSkipScanCursor struct {
 	// Whether we've computed the limit yet.
 	limitComputed bool
 	exhausted     bool
+	closed        bool
 }
 
 func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -757,6 +762,7 @@ func tupleToElements(t tuple.Tuple) []tuple.TupleElement {
 }
 
 func (c *prefixSkipScanCursor) Close() error {
+	c.closed = true
 	if c.currentCursor != nil {
 		return c.currentCursor.Close()
 	}
@@ -764,8 +770,5 @@ func (c *prefixSkipScanCursor) Close() error {
 }
 
 func (c *prefixSkipScanCursor) IsClosed() bool {
-	if c.currentCursor != nil {
-		return c.currentCursor.IsClosed()
-	}
-	return false
+	return c.closed
 }

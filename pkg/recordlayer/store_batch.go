@@ -417,6 +417,9 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
 		return nil
 	}
+	if records[0] == nil {
+		return fmt.Errorf("record %d is nil", 0)
+	}
 
 	tx := store.context.Transaction()
 	tx.Options().SetReadYourWritesDisable()
@@ -450,9 +453,6 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	}
 
 	// Cache record type + indexes for the batch — all records are the same type.
-	if records[0] == nil {
-		return fmt.Errorf("record 0 is nil")
-	}
 	typeName := string(records[0].ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(typeName)
 	if recordType == nil {

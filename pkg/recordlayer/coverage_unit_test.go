@@ -446,8 +446,13 @@ var _ = Describe("Coverage Unit Tests", func() {
 			Expect(c.IsClosed()).To(BeTrue())
 		})
 
-		It("empty cursor is never closed", func() {
+		It("empty cursor reports not-closed even after Close", func() {
 			c := Empty[int]()
+			Expect(c.IsClosed()).To(BeFalse())
+			// emptyCursor is stateless — Close is a no-op and IsClosed
+			// always returns false. This is intentional: emptyCursor has
+			// no resources to release.
+			Expect(c.Close()).To(Succeed())
 			Expect(c.IsClosed()).To(BeFalse())
 		})
 	})
