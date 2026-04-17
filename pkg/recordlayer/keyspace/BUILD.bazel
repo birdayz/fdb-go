@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "keyspace",
-    srcs = ["keyspace.go"],
+    srcs = [
+        "keyspace.go",
+        "resolver.go",
+    ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/keyspace",
     visibility = ["//visibility:public"],
     deps = [
@@ -14,7 +17,10 @@ go_library(
 
 go_test(
     name = "keyspace_test",
-    srcs = ["keyspace_test.go"],
+    srcs = [
+        "keyspace_test.go",
+        "resolver_test.go",
+    ],
     embed = [":keyspace"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

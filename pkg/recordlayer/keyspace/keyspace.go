@@ -115,9 +115,24 @@ type Directory struct {
 	KeyType  KeyType
 	Value    any          // constant value, or nil for any-value
 	Resolver ResolverFunc // optional resolver for value transformation
+
+	// inputValidator overrides KeyType.ValidateValue for input validation.
+	// Used by ResolverDirectory which accepts strings (logical names) but
+	// stores longs (resolved values). Matches Java's isValueValid pattern.
+	inputValidator func(any) error
+
 	parent   *Directory
 	children []*Directory
 	childMap map[string]*Directory
+}
+
+// validateInput checks a value against the directory's input contract.
+// If inputValidator is set, uses that; otherwise uses KeyType.ValidateValue.
+func (d *Directory) validateInput(value any) error {
+	if d.inputValidator != nil {
+		return d.inputValidator(value)
+	}
+	return d.KeyType.ValidateValue(value)
 }
 
 // NewDirectory creates a new directory node that accepts any value of the given type.
@@ -297,7 +312,7 @@ func (ks *KeySpace) Path(name string, value any) (*Path, error) {
 	}
 	if dir.IsConstant() {
 		value = dir.Value
-	} else if err := dir.KeyType.ValidateValue(value); err != nil {
+	} else if err := dir.validateInput(value); err != nil {
 		return nil, fmt.Errorf("keyspace: directory %q: %w", name, err)
 	}
 	if dir.Resolver != nil {
@@ -330,7 +345,7 @@ func (p *Path) Add(name string, value any) (*Path, error) {
 	}
 	if dir.IsConstant() {
 		value = dir.Value
-	} else if err := dir.KeyType.ValidateValue(value); err != nil {
+	} else if err := dir.validateInput(value); err != nil {
 		return nil, fmt.Errorf("keyspace: directory %q.%q: %w", p.directory.Name, name, err)
 	}
 	if dir.Resolver != nil {
