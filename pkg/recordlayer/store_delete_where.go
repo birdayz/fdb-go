@@ -85,7 +85,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// to entries for the matching type(s) using the PK prefix.
 				// Matches Java's hasRecordTypePrefix branch in
 				// canDeleteWhereForIndexOnStoredTypes.
-				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData)
+				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, matchingTypeNames)
 				if !ok {
 					return fmt.Errorf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)
 				}
@@ -97,7 +97,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		} else {
 			// Universal index: the PK prefix must match leading index
 			// expression columns so we can do a range clear.
-			idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData)
+			idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, matchingTypeNames)
 			if !ok {
 				return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
 					"leading index expression does not match PK prefix", idx.Name, prefix)
@@ -289,12 +289,24 @@ func (store *FDBRecordStore) recordTypesForIndex(idx *Index) []string {
 //   - Index delete prefix = (typeKey) (first prefix value maps to first index column)
 //
 // Returns (prefix, true) if the mapping works, or (nil, false) if not.
-func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData) (tuple.Tuple, bool) {
-	// Pick any matching record type's PK for comparison (all must be compatible).
+func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData, matchingTypes []string) (tuple.Tuple, bool) {
+	// Use the first matching record type's PK for comparison.
+	// matchingTypes is the set of types whose data is being deleted —
+	// their PK structure determines how the prefix maps to index columns.
 	var samplePK KeyExpression
-	for _, rt := range md.RecordTypes() {
-		samplePK = rt.PrimaryKey
-		break
+	for _, name := range matchingTypes {
+		rt := md.GetRecordType(name)
+		if rt != nil && rt.PrimaryKey != nil {
+			samplePK = rt.PrimaryKey
+			break
+		}
+	}
+	if samplePK == nil {
+		// Fallback: use any type (backwards compat for edge cases).
+		for _, rt := range md.RecordTypes() {
+			samplePK = rt.PrimaryKey
+			break
+		}
 	}
 	if samplePK == nil {
 		return nil, false
