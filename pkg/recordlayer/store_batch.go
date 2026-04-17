@@ -198,6 +198,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 					PrimaryKey: p.primaryKey,
 					RecordType: p.recordType,
 					Record:     oldMsg,
+					Store:      store,
 				}
 			}
 		}
