@@ -150,7 +150,7 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 #### MEDIUM
 
-- [x] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20, all implemented nightshift-21: (1) Index record type scope validation via `validateIndexRecordTypes()`. (2) Centralized type rename map via `getTypeRenames()`, propagated to all validators. (3) Index options change rejection (simplified vs Java's IndexValidatorRegistry). Plus `RecordTypesForIndex()` helper. Remaining: former index addedVersion edge case, full IndexValidatorRegistry (LOW, simplified version is safe default).
+- [x] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20, all implemented nightshift-21: (1) Index record type scope validation via `validateIndexRecordTypes()`. (2) Centralized type rename map via `getTypeRenames()`, propagated to all validators. (3) Index options change rejection — full IndexValidatorRegistry implemented dayshift-22 matching Java's per-index-type validators (TEXT, RANK, PERMUTED, VECTOR, MULTIDIMENSIONAL + base). 23 tests. Remaining: former index addedVersion edge case (LOW).
 
 #### LOW
 
