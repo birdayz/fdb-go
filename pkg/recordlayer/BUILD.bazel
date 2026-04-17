@@ -251,6 +251,7 @@ go_test(
         "store_timer_test.go",
         "store_version_test.go",
         "sum_index_test.go",
+        "tenant_isolation_test.go",
         "text_index_test.go",
         "text_index_unit_test.go",
         "time_window_leaderboard_test.go",
