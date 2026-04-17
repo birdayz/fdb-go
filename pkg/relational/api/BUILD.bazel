@@ -28,6 +28,7 @@ go_test(
     srcs = [
         "array_struct_test.go",
         "connection_test.go",
+        "datatype_bench_test.go",
         "datatype_test.go",
         "error_test.go",
         "keyset_continuation_test.go",
