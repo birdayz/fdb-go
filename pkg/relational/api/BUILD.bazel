@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "api",
     srcs = [
+        "array.go",
         "connection.go",
         "continuation.go",
         "datatype.go",
@@ -16,6 +17,7 @@ go_library(
         "resultset.go",
         "row.go",
         "sqltypes.go",
+        "struct.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
     visibility = ["//visibility:public"],
@@ -24,6 +26,7 @@ go_library(
 go_test(
     name = "api_test",
     srcs = [
+        "array_struct_test.go",
         "connection_test.go",
         "datatype_test.go",
         "error_test.go",
