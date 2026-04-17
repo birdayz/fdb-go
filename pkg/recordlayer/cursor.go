@@ -200,6 +200,9 @@ type RecordCursor[T any] interface {
 
 	// Close releases any resources held by this cursor
 	Close() error
+
+	// IsClosed returns true if the cursor has been closed
+	IsClosed() bool
 }
 
 // CursorFactory creates a cursor from an optional continuation.
@@ -274,6 +277,8 @@ func (c *emptyCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error
 
 func (c *emptyCursor[T]) Close() error { return nil }
 
+func (c *emptyCursor[T]) IsClosed() bool { return false }
+
 // errorCursor is a cursor that immediately returns an error on every OnNext call.
 // Used when a cursor cannot be created (e.g., scanning a non-readable index).
 type errorCursor[T any] struct {
@@ -285,6 +290,8 @@ func (c *errorCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error
 }
 
 func (c *errorCursor[T]) Close() error { return nil }
+
+func (c *errorCursor[T]) IsClosed() bool { return false }
 
 // listCursor wraps a slice as a cursor. Matches Java's RecordCursor.fromList().
 // Supports continuation via single-byte position encoding (up to 255 elements).
@@ -338,6 +345,8 @@ func (c *listCursor[T]) Close() error {
 	c.closed = true
 	return nil
 }
+
+func (c *listCursor[T]) IsClosed() bool { return c.closed }
 
 // saturatingAdd returns a + b, clamped to math.MaxInt on overflow.
 // Both a and b must be non-negative.

@@ -416,6 +416,23 @@ var _ = Describe("BatchInsert", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("returns error for nil record in InsertBatch", func() {
+			ks := specSubspace()
+			md := metaDataWithIndexes()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				err = store.InsertBatch([]proto.Message{nil})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nil"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("single record batch works", func() {
 			ks := specSubspace()
 			md := metaDataWithIndexes()
@@ -1134,6 +1151,166 @@ var _ = Describe("BatchInsert", func() {
 						To(Equal(recSeq.Record.(*gen.Order).GetPrice()))
 				}
 
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("SaveRecordBatchInsertOnly", func() {
+		It("inserts records and returns correct results", func() {
+			ks := specSubspace()
+			md := metaDataWithIndexes()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				records := make([]proto.Message, 20)
+				for i := range 20 {
+					records[i] = &gen.Order{
+						OrderId: proto.Int64(int64(i)),
+						Price:   proto.Int32(int32(i * 10)),
+					}
+				}
+				results, err := store.SaveRecordBatchInsertOnly(records)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(20))
+
+				// Verify each result has correct PK and record type.
+				for i, r := range results {
+					Expect(r.PrimaryKey).To(Equal(tuple.Tuple{int64(i)}))
+					Expect(r.RecordType.Name).To(Equal("Order"))
+					Expect(r.Record.(*gen.Order).GetPrice()).To(Equal(int32(i * 10)))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify records are loadable in a new transaction.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				for i := range 20 {
+					rec, err := store.LoadRecord(tuple.Tuple{int64(i)})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rec).NotTo(BeNil(), "record %d not found", i)
+					Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(i * 10)))
+				}
+
+				// Verify record count is correct.
+				count, err := store.GetRecordCount()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(20)))
+
+				// Verify VALUE index entries.
+				priceIdx := md.GetIndex("order_price_idx")
+				entries, err := AsList(ctx, store.ScanIndex(priceIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(20))
+
+				// Verify SUM index.
+				sumIdx := md.GetIndex("order_sum_price")
+				sumEntries, err := AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sumEntries).To(HaveLen(1))
+				// Sum of 0+10+20+...+190 = 10*(0+1+2+...+19) = 10*190 = 1900
+				Expect(sumEntries[0].Value).To(Equal(tuple.Tuple{int64(1900)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns nil for empty slice", func() {
+			ks := specSubspace()
+			md := metaDataWithIndexes()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				results, err := store.SaveRecordBatchInsertOnly(nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns error for nil record in batch", func() {
+			ks := specSubspace()
+			md := metaDataWithIndexes()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecordBatchInsertOnly([]proto.Message{nil})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nil"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("saves record versions when versioning enabled", func() {
+			builder := baseMetaData()
+			builder.SetStoreRecordVersions(true)
+			builder.SetRecordCountKey(EmptyKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			ks := specSubspace()
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				records := make([]proto.Message, 5)
+				for i := range records {
+					records[i] = &gen.Order{
+						OrderId: proto.Int64(int64(i + 1)),
+						Price:   proto.Int32(int32((i + 1) * 10)),
+					}
+				}
+				results, err := store.SaveRecordBatchInsertOnly(records)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(5))
+
+				for i, r := range results {
+					Expect(r.Version).NotTo(BeNil(), "record %d should have version", i)
+					Expect(r.Version.IsComplete()).To(BeFalse(), "version should be incomplete pre-commit")
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify versions are complete after commit.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					rec, err := store.LoadRecord(tuple.Tuple{i})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rec).NotTo(BeNil())
+					Expect(rec.Version).NotTo(BeNil())
+					Expect(rec.Version.IsComplete()).To(BeTrue())
+				}
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

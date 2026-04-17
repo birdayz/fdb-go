@@ -75,6 +75,7 @@ go_test(
         "min_max_ever_index_conformance_test.go",
         "min_max_ever_tuple_index_conformance_test.go",
         "multidimensional_index_conformance_test.go",
+        "nesting_index_conformance_test.go",
         "online_indexer_conformance_test.go",
         "permuted_min_max_index_conformance_test.go",
         "rangeset_conformance_test.go",

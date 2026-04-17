@@ -64,3 +64,5 @@ func (c *fallbackCursor[T]) Close() error {
 	}
 	return nil
 }
+
+func (c *fallbackCursor[T]) IsClosed() bool { return c.closed }

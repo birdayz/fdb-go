@@ -586,6 +586,8 @@ func (c *vectorSearchCursor) Close() error {
 	return nil
 }
 
+func (c *vectorSearchCursor) IsClosed() bool { return c.closed }
+
 // encodeVectorScanContinuation creates a VectorIndexScanContinuation protobuf.
 // Matches Java's Continuation.toByteString() which serializes all entries +
 // the inner ListCursor continuation (position as packed int tuple).

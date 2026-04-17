@@ -34,6 +34,8 @@ func (c *oobStopCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], err
 
 func (c *oobStopCursor[T]) Close() error { return nil }
 
+func (c *oobStopCursor[T]) IsClosed() bool { return false }
+
 // endContValueCursor returns values where every value's continuation is StartContinuation.
 // This simulates cursors that don't support continuations (like ChainedCursor with nil encode).
 type endContValueCursor[T any] struct {
@@ -56,6 +58,8 @@ func (c *endContValueCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T]
 
 func (c *endContValueCursor[T]) Close() error { return nil }
 
+func (c *endContValueCursor[T]) IsClosed() bool { return false }
+
 // closeTracker wraps a cursor and tracks whether Close was called.
 type closeTracker[T any] struct {
 	inner  RecordCursor[T]
@@ -74,6 +78,8 @@ func (c *closeTracker[T]) Close() error {
 	c.closed.Store(true)
 	return c.inner.Close()
 }
+
+func (c *closeTracker[T]) IsClosed() bool { return c.closed.Load() }
 
 func (c *closeTracker[T]) wasClosed() bool {
 	return c.closed.Load()

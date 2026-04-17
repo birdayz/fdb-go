@@ -85,7 +85,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// to entries for the matching type(s) using the PK prefix.
 				// Matches Java's hasRecordTypePrefix branch in
 				// canDeleteWhereForIndexOnStoredTypes.
-				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData)
+				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, matchingTypeNames)
 				if !ok {
 					return fmt.Errorf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)
 				}
@@ -97,7 +97,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		} else {
 			// Universal index: the PK prefix must match leading index
 			// expression columns so we can do a range clear.
-			idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData)
+			idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, matchingTypeNames)
 			if !ok {
 				return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
 					"leading index expression does not match PK prefix", idx.Name, prefix)
@@ -183,16 +183,59 @@ func (store *FDBRecordStore) removeVersionDataInPrefixRange(sub subspace.Subspac
 }
 
 // findMatchingRecordTypes returns names of record types whose PK has
-// enough columns for the given prefix.
+// enough columns for the given prefix AND whose record type key matches
+// the prefix value (when PKs have a RecordTypeKey prefix).
+//
+// Matches Java's behavior where recordTypeKeyComparison narrows
+// allRecordTypes to just the target type, preventing index clears
+// from leaking to other types' indexes.
 func (store *FDBRecordStore) findMatchingRecordTypes(prefix tuple.Tuple) []string {
 	var names []string
 	for _, rt := range store.metaData.RecordTypes() {
 		pkColSize := rt.PrimaryKey.ColumnSize()
-		if len(prefix) <= pkColSize {
-			names = append(names, rt.Name)
+		if len(prefix) > pkColSize {
+			continue
 		}
+		// If the PK starts with RecordTypeKey and the prefix has a value
+		// for it, only include types whose type key matches the prefix.
+		if len(prefix) >= 1 && hasRecordTypeKeyPrefix(rt.PrimaryKey) {
+			typeKey := rt.GetRecordTypeKey()
+			if !recordTypeKeyEquals(prefix[0], typeKey) {
+				continue
+			}
+		}
+		names = append(names, rt.Name)
 	}
 	return names
+}
+
+// recordTypeKeyEquals compares a prefix value against a record type key,
+// handling Go's int type normalization. FDB tuple decoding produces int64,
+// but RecordType.GetRecordTypeKey() may return int (from RecordTypeIndex).
+func recordTypeKeyEquals(prefixVal, typeKey any) bool {
+	if prefixVal == typeKey {
+		return true
+	}
+	// Normalize both to int64 for comparison.
+	pInt, pOk := toInt64Value(prefixVal)
+	tInt, tOk := toInt64Value(typeKey)
+	if pOk && tOk {
+		return pInt == tInt
+	}
+	return false
+}
+
+func toInt64Value(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	default:
+		return 0, false
+	}
 }
 
 // hasRecordTypeKeyPrefix returns true if the expression starts with
@@ -246,12 +289,24 @@ func (store *FDBRecordStore) recordTypesForIndex(idx *Index) []string {
 //   - Index delete prefix = (typeKey) (first prefix value maps to first index column)
 //
 // Returns (prefix, true) if the mapping works, or (nil, false) if not.
-func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData) (tuple.Tuple, bool) {
-	// Pick any matching record type's PK for comparison (all must be compatible).
+func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData, matchingTypes []string) (tuple.Tuple, bool) {
+	// Use the first matching record type's PK for comparison.
+	// matchingTypes is the set of types whose data is being deleted —
+	// their PK structure determines how the prefix maps to index columns.
 	var samplePK KeyExpression
-	for _, rt := range md.RecordTypes() {
-		samplePK = rt.PrimaryKey
-		break
+	for _, name := range matchingTypes {
+		rt := md.GetRecordType(name)
+		if rt != nil && rt.PrimaryKey != nil {
+			samplePK = rt.PrimaryKey
+			break
+		}
+	}
+	if samplePK == nil {
+		// Fallback: use any type (backwards compat for edge cases).
+		for _, rt := range md.RecordTypes() {
+			samplePK = rt.PrimaryKey
+			break
+		}
 	}
 	if samplePK == nil {
 		return nil, false

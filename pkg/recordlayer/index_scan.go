@@ -658,6 +658,8 @@ func (c *indexCursor) Close() error {
 	return nil
 }
 
+func (c *indexCursor) IsClosed() bool { return c.closed }
+
 // FDBIndexedRecord wraps a record that was found via an index scan.
 // Contains both the index entry used to locate the record and the record itself.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord.
@@ -733,3 +735,5 @@ func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDB
 func (c *indexRecordCursor) Close() error {
 	return c.inner.Close()
 }
+
+func (c *indexRecordCursor) IsClosed() bool { return c.inner.IsClosed() }

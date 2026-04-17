@@ -34,6 +34,8 @@ func (c *errAfterNCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], e
 
 func (c *errAfterNCursor[T]) Close() error { return nil }
 
+func (c *errAfterNCursor[T]) IsClosed() bool { return false }
+
 // faultAfterNCursor wraps a real cursor and injects an error after N successful results.
 // Used to test AutoContinuingCursor's recovery from mid-scan errors.
 type faultAfterNCursor[T any] struct {
@@ -55,6 +57,8 @@ func (c *faultAfterNCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T
 }
 
 func (c *faultAfterNCursor[T]) Close() error { return c.inner.Close() }
+
+func (c *faultAfterNCursor[T]) IsClosed() bool { return c.inner.IsClosed() }
 
 // oobStopCursorUnit returns N values then stops with a non-exhaustion reason.
 type oobStopCursorUnit[T any] struct {
@@ -79,6 +83,8 @@ func (c *oobStopCursorUnit[T]) OnNext(_ context.Context) (RecordCursorResult[T],
 
 func (c *oobStopCursorUnit[T]) Close() error { return nil }
 
+func (c *oobStopCursorUnit[T]) IsClosed() bool { return false }
+
 // closeTrackerUnit wraps a cursor and tracks whether Close was called.
 type closeTrackerUnit[T any] struct {
 	inner  RecordCursor[T]
@@ -97,6 +103,8 @@ func (c *closeTrackerUnit[T]) Close() error {
 	c.closed.Store(true)
 	return c.inner.Close()
 }
+
+func (c *closeTrackerUnit[T]) IsClosed() bool { return c.closed.Load() }
 
 func (c *closeTrackerUnit[T]) wasClosed() bool {
 	return c.closed.Load()
@@ -1096,3 +1104,5 @@ func (c *callbackCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], 
 }
 
 func (c *callbackCursor[T]) Close() error { return nil }
+
+func (c *callbackCursor[T]) IsClosed() bool { return false }

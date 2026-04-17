@@ -299,7 +299,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	// eliminating the EvaluateFlat []any allocation per record.
 	var compiledPK *compiledKeyEvaluator
 	var pkAppender tupleAppender
-	if len(records) > 0 {
+	if len(records) > 0 && records[0] != nil {
 		typeName := string(records[0].ProtoReflect().Descriptor().Name())
 		rt := store.metaData.GetRecordType(typeName)
 		if rt != nil && rt.PrimaryKey != nil {
@@ -416,6 +416,9 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
 		return nil
+	}
+	if records[0] == nil {
+		return fmt.Errorf("record %d is nil", 0)
 	}
 
 	tx := store.context.Transaction()

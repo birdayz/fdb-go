@@ -76,7 +76,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 
 		// computeIndexDeletePrefix should return (prefix, true) because
 		// the index's first column (RecordType) matches PK's first column.
-		result, ok := computeIndexDeletePrefix(countIdx, prefix, md)
+		result, ok := computeIndexDeletePrefix(countIdx, prefix, md, []string{"Order"})
 
 		// FIX: now correctly returns (prefix, true) since GroupingKeyExpression is flattened
 		Expect(ok).To(BeTrue(), "computeIndexDeletePrefix should succeed for universal COUNT index with GroupingKeyExpression")
