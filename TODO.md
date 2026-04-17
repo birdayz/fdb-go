@@ -295,7 +295,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 1 — Parser (ANTLR4)
 
-- [ ] **Vendor the grammar** — copy `RelationalLexer.g4` + `RelationalParser.g4` into `pkg/relational/core/parser/` unchanged.
+- [x] **Vendor the grammar** (nightshift-24) — `RelationalLexer.g4` + `RelationalParser.g4` copied verbatim to `pkg/relational/core/parser/grammar/`. Package skeleton + regen instructions in `pkg/relational/core/parser/doc.go`.
 - [ ] **Integrate antlr4-go** — add `github.com/antlr4-go/antlr/v4` to `go.mod`, `MODULE.bazel`. Set up codegen in `justfile` (`just generate-parser`).
 - [ ] **Port QueryParser wrapper** — `parser.Parse(sql string) (*ParseTreeInfo, error)` with error collector + case-insensitive lexing.
 - [ ] **Parser conformance tests** — feed the Java test SQL corpus (`fdb-relational-core/src/test/resources/*.yamsql`) through both parsers; require identical tree shapes or document divergences.
