@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	. "github.com/onsi/gomega"
 )
 
 // TestMustGetPanic_RetryInTransact verifies that when MustGet() panics with
@@ -1713,4 +1714,227 @@ func TestSetTransactionRetryLimit_Zero(t *testing.T) {
 		t.Fatal("expected error from Transact, got nil")
 	}
 	t.Logf("Transact correctly failed without retry (retryLimit=0): %v", err)
+}
+
+// TestAPIVersion_AlreadySetSameVersion verifies that calling APIVersion with
+// the same version that is already set returns nil (idempotent).
+func TestAPIVersion_AlreadySetSameVersion(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// TestMain already called MustAPIVersion(730), so 730 is set.
+	err := fdb.APIVersion(730)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestAPIVersion_AlreadySetDifferentVersion verifies that calling APIVersion
+// with a different version than the one already set returns error code 2201.
+func TestAPIVersion_AlreadySetDifferentVersion(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	err := fdb.APIVersion(710)
+	g.Expect(err).To(HaveOccurred())
+	var fdbErr fdb.Error
+	g.Expect(errors.As(err, &fdbErr)).To(BeTrue())
+	g.Expect(fdbErr.Code).To(Equal(2201))
+}
+
+// TestAPIVersion_TooLow verifies that calling APIVersion with a version
+// below the minimum (510) returns error code 2201.
+func TestAPIVersion_TooLow(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	err := fdb.APIVersion(400)
+	g.Expect(err).To(HaveOccurred())
+	var fdbErr fdb.Error
+	g.Expect(errors.As(err, &fdbErr)).To(BeTrue())
+	g.Expect(fdbErr.Code).To(Equal(2201))
+}
+
+// TestGetAPIVersion verifies that GetAPIVersion returns the version
+// that was set by TestMain (730).
+func TestGetAPIVersion(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	v, err := fdb.GetAPIVersion()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(v).To(Equal(730))
+}
+
+// TestMustAPIVersion_Panics verifies that MustAPIVersion panics when
+// called with an unsupported version.
+func TestMustAPIVersion_Panics(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	g.Expect(func() {
+		fdb.MustAPIVersion(400)
+	}).To(Panic())
+}
+
+// TestOpenTenant_EmptyName verifies that OpenTenant with an empty name
+// returns errTenantInvalid (code 2134).
+func TestOpenTenant_EmptyName(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+	_, err := db.OpenTenant(fdb.Key(""))
+	g.Expect(err).To(HaveOccurred())
+	var fdbErr fdb.Error
+	g.Expect(errors.As(err, &fdbErr)).To(BeTrue())
+	g.Expect(fdbErr.Code).To(Equal(2134))
+}
+
+// TestOpenTenant_SystemKeyName verifies that OpenTenant with a name starting
+// with \xff returns errTenantInvalid (code 2134).
+func TestOpenTenant_SystemKeyName(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+	_, err := db.OpenTenant(fdb.Key("\xff"))
+	g.Expect(err).To(HaveOccurred())
+	var fdbErr fdb.Error
+	g.Expect(errors.As(err, &fdbErr)).To(BeTrue())
+	g.Expect(fdbErr.Code).To(Equal(2134))
+}
+
+// TestOpenTenant_NonExistent verifies that OpenTenant with a name that
+// does not exist returns an error.
+func TestOpenTenant_NonExistent(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+	_, err := db.OpenTenant(fdb.Key("nonexistent-tenant-xyz"))
+	g.Expect(err).To(HaveOccurred())
+}
+
+// TestOpenTenantById verifies that OpenTenantById returns a working tenant
+// handle when given a valid tenant ID obtained from OpenTenant.
+func TestOpenTenantById(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db, _ := openTestDBWithTenants(t)
+
+	tenantName := fdb.Key("test-open-by-id")
+	g.Expect(db.CreateTenant(tenantName)).To(Succeed())
+	t.Cleanup(func() {
+		tn, _ := db.OpenTenant(tenantName)
+		tn.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
+			return nil, nil
+		})
+		db.DeleteTenant(tenantName)
+	})
+
+	// Open by name to get the tenant handle, write a key.
+	tenant, err := db.OpenTenant(tenantName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	key := fdb.Key("byid-key")
+	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("byid-value"))
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Get the tenant ID from the tenant handle.
+	tenantId := tenant.ID()
+
+	// Open by ID and verify we can read the key.
+	tenantById := db.OpenTenantById(tenantId)
+	result, err := tenantById.Transact(func(tr fdb.Transaction) (any, error) {
+		return tr.Get(key).MustGet(), nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.([]byte)).To(Equal([]byte("byid-value")))
+}
+
+// TestHedgeToggle verifies that SetHedgeEnabled and HedgeEnabled work.
+func TestHedgeToggle(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+
+	db.SetHedgeEnabled(false)
+	g.Expect(db.HedgeEnabled()).To(BeFalse())
+
+	db.SetHedgeEnabled(true)
+	g.Expect(db.HedgeEnabled()).To(BeTrue())
+}
+
+// TestRebootWorker verifies that RebootWorker returns errNotSupported (code 2051).
+func TestRebootWorker(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+	err := db.RebootWorker("", false, 0)
+	g.Expect(err).To(HaveOccurred())
+	var fdbErr fdb.Error
+	g.Expect(errors.As(err, &fdbErr)).To(BeTrue())
+	g.Expect(fdbErr.Code).To(Equal(2051))
+}
+
+// TestDatabaseMaxRetryDelay verifies that SetTransactionMaxRetryDelay
+// can be called without error.
+func TestDatabaseMaxRetryDelay(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+	err := db.Options().SetTransactionMaxRetryDelay(500)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Verify the option doesn't break normal transactions.
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key(t.Name()+"_key"), []byte("val"))
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestDatabaseOptions_Stubs verifies that all stub DatabaseOptions methods
+// return nil without error.
+func TestDatabaseOptions_Stubs(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	db := openTestDB(t)
+	opts := db.Options()
+
+	g.Expect(opts.SetLocationCacheSize(1000)).NotTo(HaveOccurred())
+	g.Expect(opts.SetMaxWatches(100)).NotTo(HaveOccurred())
+	g.Expect(opts.SetDatacenterId("dc1")).NotTo(HaveOccurred())
+	g.Expect(opts.SetMachineId("m1")).NotTo(HaveOccurred())
+	g.Expect(opts.SetSnapshotRywEnable()).NotTo(HaveOccurred())
+	g.Expect(opts.SetSnapshotRywDisable()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionCausalReadRisky()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionLoggingMaxFieldLength(1000)).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionReportConflictingKeys()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionAutomaticIdempotency()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionBypassUnreadable()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionIncludePortInAddress()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTransactionUsedDuringCommitProtectionDisable()).NotTo(HaveOccurred())
+	g.Expect(opts.SetUseConfigDatabase()).NotTo(HaveOccurred())
+	g.Expect(opts.SetTestCausalReadRisky(1)).NotTo(HaveOccurred())
+}
+
+// TestCloseNilDatabase verifies that Close on a zero-value Database
+// does not panic.
+func TestCloseNilDatabase(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	g.Expect(func() {
+		var db fdb.Database
+		db.Close()
+	}).NotTo(Panic())
 }
