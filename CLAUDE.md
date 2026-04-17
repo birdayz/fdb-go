@@ -127,6 +127,7 @@ just gazelle                  # Regenerate BUILD files after adding/removing Go 
 just generate                 # buf generate (proto codegen — not in Bazel)
 just tidy                     # go mod tidy
 just clean                    # bazel clean
+just verify                   # Pre-merge: build + test + race detector + fuzz smoke
 just binding-stress           # Binding tester: 100 seeds × 1000 ops
 just binding-stress 50 500    # Binding tester: 50 seeds × 500 ops
 just binding-stress-duration 2h  # Binding tester: run for 2 hours
@@ -537,13 +538,13 @@ Use chaos tests to verify our behavior matches Java's. Example: COUNT_UPDATES is
 - **New model tracking**: Extend `StoreModel` in `model.go` (e.g., `CountUpdates` map for event counting)
 - **New operations**: Add methods to `Scenario` in `scenario.go` (follows SaveRecord/DeleteRecord pattern)
 
-## Conformance status (updated 2026-04-15)
+## Conformance status (updated 2026-04-17)
 
 See `TODO.md` for full gap analysis. Summary:
-- **Record Layer**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, **OnlineIndexer** (BY_RECORDS, BY_INDEX, MULTI_TARGET, MUTUAL strategies; adaptive throttle; `WriteOnlyIfTooLargePolicy`; conflict avoidance; see RFC 020), cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore
+- **Record Layer**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, **OnlineIndexer** (BY_RECORDS, BY_INDEX, MULTI_TARGET, MUTUAL strategies; adaptive throttle; `WriteOnlyIfTooLargePolicy`; conflict avoidance; see RFC 020), cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator (full IndexValidatorRegistry), commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore
 - **FDB Client vs C**: 100% data-path API coverage (all `fdb_transaction_*` read/write/atomic/watch/conflict/versionstamp functions). 93 C binding unit tests ported. 10-area C++ conformance audit (dayshift-20): **18/21 divergences fixed** (server selection power-of-two random, ensureReadVersion race fix, plus all prior fixes). 3 remaining: auto-reset after commit (design), wrong-shard retry cap (conservative), GRV background refresh timing (perf). Missing API: 6 observability/admin functions only.
 - **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner/SQL layer (deferred — hardening first)
-- **Test counts**: 2751 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
+- **Test counts**: 2790 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 80.2% overall, 84.2% (client), 81.8% (record layer). `just coverage` generates HTML report.
 - **Race detector**: CI runs race detector on all 5 FDB test targets. Locally: `just race-all`.
 - **Fuzz targets**: 24 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence)

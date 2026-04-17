@@ -228,4 +228,52 @@ var _ = Describe("TypedStoreConformance", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("typed ScanRecords returns typed cursor", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			baseStore, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(specSubspace()).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save multiple orders + a customer (should be filtered out by typed scan)
+			for i := int64(1); i <= 3; i++ {
+				_, err = orderStore.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(i),
+					Price:   proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			_, err = baseStore.SaveRecord(&gen.Customer{
+				CustomerId: proto.Int64(100),
+				Name:       proto.String("Alice"),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Typed scan should return only orders, with correct type
+			cursor := orderStore.ScanRecords(nil, ForwardScan())
+			var orders []*gen.Order
+			for rec, scanErr := range Seq2(cursor, ctx) {
+				Expect(scanErr).NotTo(HaveOccurred())
+				// rec is *FDBStoredRecord[*gen.Order] — compile-time type safety
+				Expect(rec.Record).NotTo(BeNil())
+				Expect(rec.Record.OrderId).NotTo(BeNil())
+				orders = append(orders, rec.Record)
+			}
+			Expect(orders).To(HaveLen(3), "typed scan should return exactly 3 orders, no customers")
+			Expect(*orders[0].OrderId).To(Equal(int64(1)))
+			Expect(*orders[1].OrderId).To(Equal(int64(2)))
+			Expect(*orders[2].OrderId).To(Equal(int64(3)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

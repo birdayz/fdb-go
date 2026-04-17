@@ -166,11 +166,28 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			}
 		}
 
+		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
+		// mutation per record — no round trip, just added to the write set.
+		var savedVersion *FDBRecordVersion
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(p.primaryKey, version, &newsizeInfo); err != nil {
+				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			savedVersion = version
+		}
+
 		// Record count
 		stored := &FDBStoredRecord[proto.Message]{
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
+			Version:    savedVersion,
+			Store:      store,
 			KeyCount:   newsizeInfo.KeyCount,
 			KeySize:    newsizeInfo.KeySize,
 			ValueSize:  newsizeInfo.ValueSize,
@@ -197,6 +214,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 					PrimaryKey: p.primaryKey,
 					RecordType: p.recordType,
 					Record:     oldMsg,
+					Store:      store,
+				}
+				// Load old version for VERSION index cleanup on update.
+				// One FDB read per updated record — only when version indexes exist.
+				if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+					if ver, verErr := store.LoadRecordVersion(p.primaryKey, false); verErr == nil {
+						oldRecord.Version = ver
+					}
 				}
 			}
 		}
@@ -225,9 +250,6 @@ func (store *FDBRecordStore) SaveRecordBatch(
 // silently overwritten. Record count will be incorrectly incremented. Index
 // entries from the old record will NOT be cleaned up. Only use this when you
 // can guarantee unique primary keys (e.g. UUID/random IDs, monotonic sequences).
-//
-// For the metrognome usage event ingest path, every event has a unique event_id
-// PK, so this is safe and provides maximum throughput.
 func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -342,10 +364,26 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			}
 		}
 
+		// Save version if versioning is enabled.
+		var savedVersion *FDBRecordVersion
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(primaryKey, version, nil); err != nil {
+				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			savedVersion = version
+		}
+
 		stored := &FDBStoredRecord[proto.Message]{
 			PrimaryKey: primaryKey,
 			RecordType: recordType,
 			Record:     record,
+			Version:    savedVersion,
+			Store:      store,
 		}
 
 		if err := store.updateSecondaryIndexesLocked(nil, stored); err != nil {
@@ -530,10 +568,24 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 			}
 		}
 
+		// Save version if versioning is enabled.
+		if store.metaData.IsStoreRecordVersions() {
+			localVer := store.context.ClaimLocalVersion()
+			version, verErr := IncompleteVersion(localVer)
+			if verErr != nil {
+				return fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
+			}
+			if err := store.saveRecordVersion(primaryKey, version, nil); err != nil {
+				return fmt.Errorf("record %d: save version: %w", i, err)
+			}
+			stored.Version = version
+		}
+
 		// Index updates via cached maintainers — no per-record map lookups.
 		stored.PrimaryKey = primaryKey
 		stored.RecordType = recordType
 		stored.Record = record
+		stored.Store = store
 		for _, cm := range maintainers {
 			if err := cm.maintainer.Update(nil, &stored); err != nil {
 				return fmt.Errorf("record %d: index %q: %w", i, cm.index.Name, err)

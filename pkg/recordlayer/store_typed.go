@@ -228,7 +228,25 @@ func (ts *TypedFDBRecordStore[T]) GetSnapshotRecordCount(countKey tuple.Tuple) (
 	return ts.baseStore.GetSnapshotRecordCount(countKey)
 }
 
-// ScanRecords returns a typed cursor scanning all records of this store's type
-func (ts *TypedFDBRecordStore[T]) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
-	return ts.baseStore.ScanRecordsByType(ts.recordType.Name, continuation, scanProperties)
+// ScanRecords returns a typed cursor scanning all records of this store's type.
+// Records are auto-filtered to the store's type and type-asserted to T.
+func (ts *TypedFDBRecordStore[T]) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[T]] {
+	inner := ts.baseStore.ScanRecordsByType(ts.recordType.Name, continuation, scanProperties)
+	return MapCursor(inner, func(r *FDBStoredRecord[proto.Message]) *FDBStoredRecord[T] {
+		typed, ok := r.Record.(T)
+		if !ok {
+			panic("unreachable: ScanRecordsByType returned record that doesn't match type parameter T")
+		}
+		return &FDBStoredRecord[T]{
+			PrimaryKey: r.PrimaryKey,
+			RecordType: r.RecordType,
+			Record:     typed,
+			Version:    r.Version,
+			Store:      r.Store,
+			KeyCount:   r.KeyCount,
+			KeySize:    r.KeySize,
+			ValueSize:  r.ValueSize,
+			Split:      r.Split,
+		}
+	})
 }

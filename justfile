@@ -216,6 +216,40 @@ vulncheck:
     go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
     govulncheck ./...
 
+# Full pre-merge verification: build + test + race detector + fuzz smoke test.
+# Run this before requesting PR merge. Takes ~3 minutes on a warm cache.
+verify:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== Build + lint + test ==="
+    just test
+    echo "=== Race detector (5 targets) ==="
+    just race-all
+    echo "=== Fuzz smoke (3 targets, 10s each) ==="
+    bazelisk run //pkg/recordlayer:recordlayer_test -- \
+        -test.run='^$' -test.fuzz='^FuzzFastUnpack$' \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s 2>&1 | tail -1
+    bazelisk run //pkg/recordlayer:recordlayer_test -- \
+        -test.run='^$' -test.fuzz='^FuzzDeserializeBunch$' \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s 2>&1 | tail -1
+    bazelisk run //pkg/fdbgo/client:client_test -- \
+        -test.run='^$' -test.fuzz='^FuzzRYWCache$' \
+        -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s 2>&1 | tail -1
+    echo "=== All verification passed ==="
+
+# Install pre-commit hook (lint + gazelle + build + test)
+install-hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cat > .git/hooks/pre-commit << 'HOOK'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Running pre-commit: just lint && just gazelle && just build && just test"
+    just lint && just gazelle && just build && just test
+    HOOK
+    chmod +x .git/hooks/pre-commit
+    echo "Pre-commit hook installed."
+
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
     bazelisk test {{target}} --cache_test_results=no {{args}}
