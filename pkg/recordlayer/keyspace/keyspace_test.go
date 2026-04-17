@@ -444,6 +444,43 @@ func TestPathFlatten(t *testing.T) {
 	g.Expect(p2.Directory().KeyType).To(Equal(KeyTypeLong))
 }
 
+func TestPathEqual(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("id", KeyTypeLong))
+
+	ks := NewKeySpace(root)
+
+	p1, _ := ks.Path("state", "CA")
+	p1a, _ := p1.Add("id", int64(1))
+
+	p2, _ := ks.Path("state", "CA")
+	p2a, _ := p2.Add("id", int64(1))
+
+	p3, _ := ks.Path("state", "NY")
+	p3a, _ := p3.Add("id", int64(1))
+
+	// Same path — equal
+	g.Expect(p1a.Equal(p2a)).To(BeTrue())
+
+	// Different value — not equal
+	g.Expect(p1a.Equal(p3a)).To(BeFalse())
+
+	// Different depth — not equal
+	g.Expect(p1.Equal(p1a)).To(BeFalse())
+
+	// nil handling
+	g.Expect((*Path)(nil).Equal(nil)).To(BeTrue())
+	g.Expect(p1.Equal(nil)).To(BeFalse())
+
+	// IsSameDirectory ignores values
+	g.Expect(p1a.IsSameDirectory(p3a)).To(BeTrue())
+	g.Expect(p1.IsSameDirectory(p3a)).To(BeFalse())
+}
+
 func TestAddSubdirectories(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

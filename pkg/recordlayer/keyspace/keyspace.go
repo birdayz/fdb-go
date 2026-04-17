@@ -549,6 +549,34 @@ func (p *Path) Flatten() []*Path {
 	return result
 }
 
+// Equal reports whether two paths reference the same directories with the
+// same values at each level. Directories are compared by pointer identity
+// (schema reuse) and values by deep equality.
+func (p *Path) Equal(other *Path) bool {
+	if p == nil || other == nil {
+		return p == other
+	}
+	if p.directory != other.directory {
+		return false
+	}
+	if !recordTypeKeyEquals(p.value, other.value) && p.value != other.value {
+		// Fall back to stringified comparison for non-comparable types
+		if fmt.Sprintf("%v", p.value) != fmt.Sprintf("%v", other.value) {
+			return false
+		}
+	}
+	return p.parent.Equal(other.parent)
+}
+
+// IsSameDirectory returns true if two paths reference the same directory
+// in the schema tree (ignoring values).
+func (p *Path) IsSameDirectory(other *Path) bool {
+	if p == nil || other == nil {
+		return p == other
+	}
+	return p.directory == other.directory
+}
+
 // Directory returns the directory schema at this path position.
 // Matches Java's KeySpacePath.getDirectory().
 func (p *Path) Directory() *Directory {
