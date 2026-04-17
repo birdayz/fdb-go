@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "api",
+    srcs = [
+        "errcode.go",
+        "error.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "api_test",
+    srcs = ["error_test.go"],
+    embed = [":api"],
+)
