@@ -127,6 +127,7 @@ just gazelle                  # Regenerate BUILD files after adding/removing Go 
 just generate                 # buf generate (proto codegen — not in Bazel)
 just tidy                     # go mod tidy
 just clean                    # bazel clean
+just verify                   # Pre-merge: build + test + race detector + fuzz smoke
 just binding-stress           # Binding tester: 100 seeds × 1000 ops
 just binding-stress 50 500    # Binding tester: 50 seeds × 500 ops
 just binding-stress-duration 2h  # Binding tester: run for 2 hours
