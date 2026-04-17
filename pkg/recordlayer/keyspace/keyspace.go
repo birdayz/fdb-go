@@ -98,6 +98,14 @@ func (t KeyType) ValidateValue(v any) error {
 	return nil
 }
 
+// ResolverFunc resolves a directory value before storing it in the path.
+// For example, a DirectoryLayerDirectory would resolve a string name to
+// a compact int64 via FDB's directory layer.
+//
+// The function receives the raw value and returns the resolved value.
+// Phase 2 (LocatableResolver) will plug into this hook.
+type ResolverFunc func(value any) (any, error)
+
 // Directory is a node in the KeySpace tree. Each directory has a name,
 // a key type, optional constant value, and optional children.
 //
@@ -105,7 +113,8 @@ func (t KeyType) ValidateValue(v any) error {
 type Directory struct {
 	Name     string
 	KeyType  KeyType
-	Value    any // constant value, or nil for any-value
+	Value    any          // constant value, or nil for any-value
+	Resolver ResolverFunc // optional resolver for value transformation
 	parent   *Directory
 	children []*Directory
 	childMap map[string]*Directory
@@ -291,6 +300,13 @@ func (ks *KeySpace) Path(name string, value any) (*Path, error) {
 	} else if err := dir.KeyType.ValidateValue(value); err != nil {
 		return nil, fmt.Errorf("keyspace: directory %q: %w", name, err)
 	}
+	if dir.Resolver != nil {
+		resolved, err := dir.Resolver(value)
+		if err != nil {
+			return nil, fmt.Errorf("keyspace: directory %q resolve: %w", name, err)
+		}
+		value = resolved
+	}
 	return &Path{
 		directory: dir,
 		value:     value,
@@ -316,6 +332,13 @@ func (p *Path) Add(name string, value any) (*Path, error) {
 		value = dir.Value
 	} else if err := dir.KeyType.ValidateValue(value); err != nil {
 		return nil, fmt.Errorf("keyspace: directory %q.%q: %w", p.directory.Name, name, err)
+	}
+	if dir.Resolver != nil {
+		resolved, err := dir.Resolver(value)
+		if err != nil {
+			return nil, fmt.Errorf("keyspace: directory %q.%q resolve: %w", p.directory.Name, name, err)
+		}
+		value = resolved
 	}
 	return &Path{
 		directory: dir,

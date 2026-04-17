@@ -1,6 +1,7 @@
 package keyspace
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -279,6 +280,55 @@ func TestPathFromTupleRoundtrip(t *testing.T) {
 	g.Expect(remainder).To(BeNil())
 	g.Expect(resolved.ToTuple()).To(Equal(tup))
 	g.Expect(resolved.String()).To(Equal(path2.String()))
+}
+
+func TestResolverFunc(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Resolver that maps strings to their lengths (simulating string→long compression)
+	stringToLen := func(v any) (any, error) {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string, got %T", v)
+		}
+		return int64(len(s)), nil
+	}
+
+	root := NewDirectory("root", KeyTypeNull)
+	appDir := NewDirectory("app", KeyTypeString)
+	appDir.Resolver = stringToLen
+	root.AddSubdirectory(appDir)
+
+	ks := NewKeySpace(root)
+
+	// Path value should be resolved
+	path, err := ks.Path("app", "myapp")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path.GetValue()).To(Equal(int64(5))) // len("myapp") = 5
+
+	// Tuple should contain the resolved value
+	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{int64(5)}))
+}
+
+func TestResolverFuncError(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	failingResolver := func(v any) (any, error) {
+		return nil, fmt.Errorf("resolver failed")
+	}
+
+	root := NewDirectory("root", KeyTypeNull)
+	appDir := NewDirectory("app", KeyTypeString)
+	appDir.Resolver = failingResolver
+	root.AddSubdirectory(appDir)
+
+	ks := NewKeySpace(root)
+
+	_, err := ks.Path("app", "test")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("resolver failed"))
 }
 
 func TestToSubspace(t *testing.T) {
