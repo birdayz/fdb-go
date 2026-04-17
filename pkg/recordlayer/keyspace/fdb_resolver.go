@@ -71,17 +71,20 @@ func (r *FDBResolver) Resolve(ctx context.Context, name string) (int64, error) {
 			next = int64(binary.BigEndian.Uint64(counterBytes))
 		}
 
-		// Write forward and reverse mappings
-		var valueBuf [8]byte
-		binary.BigEndian.PutUint64(valueBuf[:], uint64(next))
-		tx.Set(fdb.Key(nameKey), valueBuf[:])
+		// Write forward and reverse mappings. Use separate buffers because
+		// tx.Set takes a slice — sharing a single array across writes would
+		// cause the second write to corrupt the first at serialization time.
+		nameVal := make([]byte, 8)
+		binary.BigEndian.PutUint64(nameVal, uint64(next))
+		tx.Set(fdb.Key(nameKey), nameVal)
 
 		revKey := r.subspace.Pack(tuple.Tuple{"r", next})
 		tx.Set(fdb.Key(revKey), []byte(name))
 
-		// Increment counter
-		binary.BigEndian.PutUint64(valueBuf[:], uint64(next+1))
-		tx.Set(fdb.Key(counterKey), valueBuf[:])
+		// Increment counter (separate buffer)
+		counterVal := make([]byte, 8)
+		binary.BigEndian.PutUint64(counterVal, uint64(next+1))
+		tx.Set(fdb.Key(counterKey), counterVal)
 
 		return next, nil
 	})
