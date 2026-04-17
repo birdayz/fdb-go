@@ -248,3 +248,36 @@ func (p *Path) GetValue() any {
 func (p *Path) Parent() *Path {
 	return p.parent
 }
+
+// Depth returns the number of path elements from root to this position.
+func (p *Path) Depth() int {
+	n := 0
+	for cur := p; cur != nil; cur = cur.parent {
+		n++
+	}
+	return n
+}
+
+// ListSubdirectories returns the names of available child directories at this position.
+func (p *Path) ListSubdirectories() []string {
+	children := p.directory.GetSubdirectories()
+	names := make([]string, len(children))
+	for i, c := range children {
+		names[i] = c.Name
+	}
+	return names
+}
+
+// HasSubdirectory returns true if a child directory with the given name exists.
+func (p *Path) HasSubdirectory(name string) bool {
+	return p.directory.GetSubdirectory(name) != nil
+}
+
+// FullPath returns a human-readable representation of the path from root to here.
+// E.g., "/state=CA/office_id=1234".
+func (p *Path) String() string {
+	if p.parent == nil {
+		return fmt.Sprintf("/%s=%v", p.directory.Name, p.value)
+	}
+	return fmt.Sprintf("%s/%s=%v", p.parent.String(), p.directory.Name, p.value)
+}

@@ -140,6 +140,51 @@ func TestConstantDirectory(t *testing.T) {
 	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{"data_prefix"}))
 }
 
+func TestPathDepthAndListing(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	state := NewDirectory("state", KeyTypeString)
+	officeID := NewDirectory("office_id", KeyTypeLong)
+	employees := NewDirectory("employees", KeyTypeString)
+	departments := NewDirectory("departments", KeyTypeString)
+	root.AddSubdirectory(state)
+	state.AddSubdirectory(officeID)
+	officeID.AddSubdirectory(employees)
+	officeID.AddSubdirectory(departments)
+
+	ks := NewKeySpace(root)
+
+	p1, err := ks.Path("state", "CA")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(p1.Depth()).To(Equal(1))
+
+	p2, err := p1.Add("office_id", int64(42))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(p2.Depth()).To(Equal(2))
+	g.Expect(p2.ListSubdirectories()).To(ConsistOf("employees", "departments"))
+	g.Expect(p2.HasSubdirectory("employees")).To(BeTrue())
+	g.Expect(p2.HasSubdirectory("nonexistent")).To(BeFalse())
+}
+
+func TestPathString(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("office_id", KeyTypeLong))
+
+	ks := NewKeySpace(root)
+
+	p1, _ := ks.Path("state", "CA")
+	g.Expect(p1.String()).To(Equal("/state=CA"))
+
+	p2, _ := p1.Add("office_id", int64(1234))
+	g.Expect(p2.String()).To(Equal("/state=CA/office_id=1234"))
+}
+
 func TestToSubspace(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
