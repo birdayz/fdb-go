@@ -426,6 +426,94 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("rejects multi-type index without RecordTypeKey prefix", func() {
+		ks := specSubspace()
+
+		// Create an index shared by both Order and Customer (multi-type) but
+		// without a RecordTypeKey prefix. DeleteRecordsWhere cannot scope the
+		// clear to a single type, so it must reject the operation.
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		// price exists on Order, not Customer — but AddMultiTypeIndex overrides type filtering.
+		multiIdx := NewIndex("multi_no_prefix", Field("price"))
+		builder.AddMultiTypeIndex([]string{"Order", "Customer"}, multiIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		orderTypeKey := md.GetRecordType("Order").GetRecordTypeKey()
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, store.DeleteRecordsWhere(tuple.Tuple{orderTypeKey})
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("applies to more record types"))
+	})
+
+	It("handles multi-type index with RecordTypeKey prefix", func() {
+		ks := specSubspace()
+
+		// Multi-type index WITH RecordTypeKey prefix — deleteRecordsWhere should
+		// scope the clear to only the target type's entries.
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		multiIdx := NewIndex("multi_with_prefix", RecordTypeKey())
+		builder.AddMultiTypeIndex([]string{"Order", "Customer"}, multiIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		orderTypeKey := md.GetRecordType("Order").GetRecordTypeKey()
+		customerTypeKey := md.GetRecordType("Customer").GetRecordTypeKey()
+
+		// Save records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := int64(1); i <= 3; i++ {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			for i := int64(1); i <= 2; i++ {
+				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Delete orders only.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+			return nil, store.DeleteRecordsWhere(tuple.Tuple{orderTypeKey})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify: order entries gone, customer entries remain.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			orderEntries, err := AsList(ctx, store.ScanIndex(multiIdx, TupleRangeAllOf(tuple.Tuple{orderTypeKey}), nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(orderEntries).To(BeEmpty(), "order entries should be deleted")
+
+			customerEntries, err := AsList(ctx, store.ScanIndex(multiIdx, TupleRangeAllOf(tuple.Tuple{customerTypeKey}), nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(customerEntries).To(HaveLen(2), "customer entries should remain")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("clears split record chunks", func() {
 		// Split records store data across multiple KV pairs per record:
 		// pk.add(0) for header, pk.add(1), pk.add(2), ... for 100KB chunks.
