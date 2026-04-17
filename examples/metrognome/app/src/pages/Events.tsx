@@ -176,16 +176,17 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
     try {
       const n = parseInt(count) || 1;
       const v = parseInt(value) || 1;
-      const batchSize = Math.min(n, 500);
-      const batches = Math.ceil(n / batchSize);
+      // Batch size 100, sequential batches to avoid overloading FDB commit proxy.
+      // Each batch = 1 FDB transaction with pipelined dedup + InsertBatch.
+      const batchSize = Math.min(n, 100);
+      const batchCount = Math.ceil(n / batchSize);
 
       let totalAccepted = 0;
       let totalDuplicates = 0;
       const t0 = performance.now();
 
-      // Fire batches concurrently for max throughput
-      const promises = Array.from({ length: batches }, (_, batch) => {
-        const size = batch === batches - 1 ? n - batch * batchSize : batchSize;
+      for (let batch = 0; batch < batchCount; batch++) {
+        const size = batch === batchCount - 1 ? n - batch * batchSize : batchSize;
         const events = Array.from({ length: size }, (_, i) => ({
           customerId,
           eventType,
@@ -194,22 +195,15 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
           idempotencyKey: `bench-${Date.now()}-${batch}-${i}-${Math.random().toString(36).slice(2)}`,
           propertiesJson: "",
         }));
-        return eventClient.ingestEvents({ events });
-      });
-
-      const settled = await Promise.allSettled(promises);
-      const ingestMs = Math.round(performance.now() - t0);
-      let errors = 0;
-      for (const s of settled) {
-        if (s.status === "fulfilled") {
-          totalAccepted += s.value.accepted;
-          totalDuplicates += s.value.duplicates;
-        } else {
-          errors++;
-          console.error("Batch failed:", s.reason);
+        try {
+          const r = await eventClient.ingestEvents({ events });
+          totalAccepted += r.accepted;
+          totalDuplicates += r.duplicates;
+        } catch (e) {
+          console.error(`Batch ${batch + 1}/${batchCount} failed:`, e);
         }
       }
-      if (errors > 0) console.warn(`${errors}/${batches} batches failed`);
+      const ingestMs = Math.round(performance.now() - t0);
 
       // Now query usage — O(1) via atomic SUM index
       let queryMs: number | null = null;
