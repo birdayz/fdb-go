@@ -330,14 +330,19 @@ func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 		return nil, nil, fmt.Errorf("keyspace: empty tuple")
 	}
 
-	// Try each root subdirectory to find a match for t[0].
+	// First pass: prefer constant directories with matching values.
+	for _, dir := range ks.root.children {
+		if dir.IsConstant() && recordTypeKeyEquals(dir.Value, t[0]) {
+			path := &Path{directory: dir, value: t[0]}
+			return resolveRemaining(path, t[1:])
+		}
+	}
+	// Second pass: fall back to open-type directories.
 	for _, dir := range ks.root.children {
 		if dir.IsConstant() {
-			if recordTypeKeyEquals(dir.Value, t[0]) {
-				path := &Path{directory: dir, value: t[0]}
-				return resolveRemaining(path, t[1:])
-			}
-		} else if err := dir.KeyType.ValidateValue(t[0]); err == nil {
+			continue
+		}
+		if err := dir.KeyType.ValidateValue(t[0]); err == nil {
 			path := &Path{directory: dir, value: t[0]}
 			return resolveRemaining(path, t[1:])
 		}
