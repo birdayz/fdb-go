@@ -181,6 +181,37 @@ func (d *Directory) IsConstant() bool {
 	return d.Value != nil
 }
 
+// IsLeaf returns true if this directory has no children.
+// Matches Java's KeySpaceDirectory.isLeaf().
+func (d *Directory) IsLeaf() bool {
+	return len(d.children) == 0
+}
+
+// Parent returns the parent directory, or nil if this is the root.
+// Matches Java's KeySpaceDirectory.getParent().
+func (d *Directory) Parent() *Directory {
+	return d.parent
+}
+
+// Depth returns the distance from this directory to the root (0 for root).
+// Matches Java's KeySpaceDirectory.depth().
+func (d *Directory) Depth() int {
+	n := 0
+	for cur := d.parent; cur != nil; cur = cur.parent {
+		n++
+	}
+	return n
+}
+
+// NameInTree returns the dot-separated path from root to this directory.
+// Matches Java's KeySpaceDirectory.getNameInTree().
+func (d *Directory) NameInTree() string {
+	if d.parent == nil {
+		return d.Name
+	}
+	return d.parent.NameInTree() + "." + d.Name
+}
+
 // KeySpace is the root of a directory tree. It holds one or more root directories.
 //
 // Matches Java's KeySpace.

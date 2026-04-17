@@ -84,6 +84,37 @@ func TestValidate(t *testing.T) {
 	g.Expect(badKs.Validate()).To(HaveOccurred())
 }
 
+func TestDirectoryJavaAligned(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	table := NewDirectory("table", KeyTypeLong)
+	root.AddSubdirectory(app)
+	app.AddSubdirectory(table)
+
+	// IsLeaf
+	g.Expect(table.IsLeaf()).To(BeTrue())
+	g.Expect(app.IsLeaf()).To(BeFalse())
+	g.Expect(root.IsLeaf()).To(BeFalse())
+
+	// Parent
+	g.Expect(table.Parent()).To(Equal(app))
+	g.Expect(app.Parent()).To(Equal(root))
+	g.Expect(root.Parent()).To(BeNil())
+
+	// Depth
+	g.Expect(root.Depth()).To(Equal(0))
+	g.Expect(app.Depth()).To(Equal(1))
+	g.Expect(table.Depth()).To(Equal(2))
+
+	// NameInTree
+	g.Expect(root.NameInTree()).To(Equal("root"))
+	g.Expect(app.NameInTree()).To(Equal("root.app"))
+	g.Expect(table.NameInTree()).To(Equal("root.app.table"))
+}
+
 func TestDuplicateSubdirectoryPanics(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
