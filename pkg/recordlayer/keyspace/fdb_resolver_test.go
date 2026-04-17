@@ -117,6 +117,36 @@ func TestFDBResolver_Persistence(t *testing.T) {
 	g.Expect(v2).To(Equal(v), "second resolver should see persisted mapping")
 }
 
+func TestFDBResolver_EmptyStringName(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	ss := subspace.Sub(tuple.Tuple{t.Name()})
+	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+		begin, end := ss.FDBRangeKeys()
+		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	r := keyspace.NewFDBResolver(sharedDB, ss)
+
+	// Resolve empty string — should work
+	v, err := r.Resolve(ctx, "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Invalidate cache to force FDB read
+	r.InvalidateCache()
+
+	// ReverseLookup should return ("", true, nil) — not ("", false, nil)!
+	// Before the fix, the empty-string sentinel made this a false negative.
+	name, ok, err := r.ReverseLookup(ctx, v)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue(), "empty-string name should be found, not treated as missing")
+	g.Expect(name).To(Equal(""))
+}
+
 func TestFDBResolver_CacheManagement(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

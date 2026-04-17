@@ -45,6 +45,10 @@ func NewFDBResolver(db fdb.Database, ss subspace.Subspace) *FDBResolver {
 
 // Resolve returns the value for name, allocating and persisting a new one if absent.
 // Safe for concurrent use — FDB transactions handle cross-process contention.
+//
+// ctx is accepted for LocatableResolver interface compliance but is NOT forwarded
+// to the FDB transaction — db.Transact uses the database's internal context.
+// Use NewFDBResolver with a database configured for the desired deadline.
 func (r *FDBResolver) Resolve(ctx context.Context, name string) (int64, error) {
 	// Fast path: in-memory cache hit.
 	r.mu.RLock()
@@ -118,7 +122,17 @@ func (r *FDBResolver) CacheSize() int {
 	return len(r.forward)
 }
 
+// revResult carries both the name and a found flag to avoid using empty
+// string as a sentinel — the name "" is a valid value.
+type revResult struct {
+	name  string
+	found bool
+}
+
 // ReverseLookup returns the name for a value, reading from FDB if not cached.
+//
+// ctx is accepted for LocatableResolver interface compliance but is NOT forwarded
+// to the FDB transaction — db.ReadTransact uses the database's internal context.
 func (r *FDBResolver) ReverseLookup(ctx context.Context, value int64) (string, bool, error) {
 	// Fast path: in-memory cache hit.
 	r.mu.RLock()
@@ -133,23 +147,23 @@ func (r *FDBResolver) ReverseLookup(ctx context.Context, value int64) (string, b
 		revKey := r.subspace.Pack(tuple.Tuple{"r", value})
 		data := tx.Get(fdb.Key(revKey)).MustGet()
 		if data == nil {
-			return "", nil
+			return revResult{}, nil
 		}
-		return string(data), nil
+		return revResult{name: string(data), found: true}, nil
 	})
 	if err != nil {
 		return "", false, fmt.Errorf("fdb_resolver: reverse lookup %d: %w", value, err)
 	}
-	name := result.(string)
-	if name == "" {
+	res := result.(revResult)
+	if !res.found {
 		return "", false, nil
 	}
 
 	// Populate cache
 	r.mu.Lock()
-	r.forward[name] = value
-	r.reverse[value] = name
+	r.forward[res.name] = value
+	r.reverse[value] = res.name
 	r.mu.Unlock()
 
-	return name, true, nil
+	return res.name, true, nil
 }
