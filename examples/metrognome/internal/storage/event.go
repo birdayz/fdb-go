@@ -105,6 +105,48 @@ func (s *EventStore) BulkInsert(ctx context.Context, events []*storev1.UsageEven
 	return r.(int), nil
 }
 
+// AmendResult is the result of amending an event.
+type AmendResult struct {
+	Event         *storev1.UsageEvent
+	PreviousValue int64
+}
+
+// AmendEvent updates an existing event's value and/or properties.
+// Record Layer's SaveRecord with the existing PK triggers Update path:
+// old index entries removed, new ones inserted — SUM/COUNT indexes
+// automatically adjusted in the same FDB transaction.
+func (s *EventStore) AmendEvent(ctx context.Context, customerID string, timestampMs int64, idempotencyKey string, newValue int64, newPropertiesJSON string) (*AmendResult, error) {
+	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
+		pk := s.db.pk("UsageEvent", customerID, timestampMs, idempotencyKey)
+		rec, err := rs.LoadRecord(pk)
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			return nil, ErrNotFound
+		}
+		evt := rec.Record.(*storev1.UsageEvent)
+		previousValue := evt.GetValue()
+
+		// Update fields
+		evt.Value = proto.Int64(newValue)
+		if newPropertiesJSON != "" {
+			evt.PropertiesJson = proto.String(newPropertiesJSON)
+		}
+
+		// SaveRecord detects existing record → Update path.
+		// Old SUM/COUNT entries subtracted, new ones added atomically.
+		if _, err := rs.SaveRecord(evt); err != nil {
+			return nil, err
+		}
+		return &AmendResult{Event: evt, PreviousValue: previousValue}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.(*AmendResult), nil
+}
+
 // ListEventsPage is the result of a paginated event scan.
 type ListEventsPage struct {
 	Events            []*storev1.UsageEvent

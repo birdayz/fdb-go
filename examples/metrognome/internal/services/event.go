@@ -295,6 +295,37 @@ func (s *EventService) GetUsageGroups(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
+func (s *EventService) AmendEvent(ctx context.Context, req *connect.Request[metrognomev1.AmendEventRequest]) (*connect.Response[metrognomev1.AmendEventResponse], error) {
+	if req.Msg.GetCustomerId() == "" || req.Msg.GetIdempotencyKey() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("customer_id, timestamp_ms, and idempotency_key are required"))
+	}
+
+	result, err := s.events.AmendEvent(ctx,
+		req.Msg.GetCustomerId(),
+		req.Msg.GetTimestampMs(),
+		req.Msg.GetIdempotencyKey(),
+		req.Msg.GetNewValue(),
+		req.Msg.GetNewPropertiesJson(),
+	)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("event not found"))
+	}
+
+	return connect.NewResponse(&metrognomev1.AmendEventResponse{
+		Event: &metrognomev1.EventRecord{
+			CustomerId:     result.Event.GetCustomerId(),
+			EventType:      result.Event.GetEventType(),
+			MeterSlug:      result.Event.GetMeterSlug(),
+			TimestampMs:    result.Event.GetTimestampMs(),
+			Value:          result.Event.GetValue(),
+			IdempotencyKey: result.Event.GetIdempotencyKey(),
+			PropertiesJson: result.Event.GetPropertiesJson(),
+			IngestedAt:     result.Event.GetIngestedAt(),
+		},
+		PreviousValue: result.PreviousValue,
+	}), nil
+}
+
 func (s *EventService) ListEvents(ctx context.Context, req *connect.Request[metrognomev1.ListEventsRequest]) (*connect.Response[metrognomev1.ListEventsResponse], error) {
 	pageSize := int(req.Msg.GetPageSize())
 	reverse := true // default: newest first

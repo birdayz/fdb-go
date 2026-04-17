@@ -48,6 +48,8 @@ const (
 	EventServiceGetUsageGroupsProcedure = "/metrognome.v1.EventService/GetUsageGroups"
 	// EventServiceListEventsProcedure is the fully-qualified name of the EventService's ListEvents RPC.
 	EventServiceListEventsProcedure = "/metrognome.v1.EventService/ListEvents"
+	// EventServiceAmendEventProcedure is the fully-qualified name of the EventService's AmendEvent RPC.
+	EventServiceAmendEventProcedure = "/metrognome.v1.EventService/AmendEvent"
 )
 
 // EventServiceClient is a client for the metrognome.v1.EventService service.
@@ -68,6 +70,11 @@ type EventServiceClient interface {
 	// PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
 	// in reverse time order is a single FDB range read per page. No index needed.
 	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
+	// AmendEvent updates an existing event's value and/or properties.
+	// Looked up by (customer_id, timestamp_ms, idempotency_key) — the PK.
+	// Record Layer automatically updates SUM/COUNT atomic indexes (old value
+	// subtracted, new value added) in a single FDB transaction.
+	AmendEvent(context.Context, *connect.Request[v1.AmendEventRequest]) (*connect.Response[v1.AmendEventResponse], error)
 }
 
 // NewEventServiceClient constructs a client for the metrognome.v1.EventService service. By default,
@@ -111,6 +118,12 @@ func NewEventServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(eventServiceMethods.ByName("ListEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		amendEvent: connect.NewClient[v1.AmendEventRequest, v1.AmendEventResponse](
+			httpClient,
+			baseURL+EventServiceAmendEventProcedure,
+			connect.WithSchema(eventServiceMethods.ByName("AmendEvent")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -121,6 +134,7 @@ type eventServiceClient struct {
 	getUsage         *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
 	getUsageGroups   *connect.Client[v1.GetUsageGroupsRequest, v1.GetUsageGroupsResponse]
 	listEvents       *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
+	amendEvent       *connect.Client[v1.AmendEventRequest, v1.AmendEventResponse]
 }
 
 // IngestEvents calls metrognome.v1.EventService.IngestEvents.
@@ -148,6 +162,11 @@ func (c *eventServiceClient) ListEvents(ctx context.Context, req *connect.Reques
 	return c.listEvents.CallUnary(ctx, req)
 }
 
+// AmendEvent calls metrognome.v1.EventService.AmendEvent.
+func (c *eventServiceClient) AmendEvent(ctx context.Context, req *connect.Request[v1.AmendEventRequest]) (*connect.Response[v1.AmendEventResponse], error) {
+	return c.amendEvent.CallUnary(ctx, req)
+}
+
 // EventServiceHandler is an implementation of the metrognome.v1.EventService service.
 type EventServiceHandler interface {
 	// IngestEvents accepts a batch of usage events. Each event must have an
@@ -166,6 +185,11 @@ type EventServiceHandler interface {
 	// PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
 	// in reverse time order is a single FDB range read per page. No index needed.
 	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
+	// AmendEvent updates an existing event's value and/or properties.
+	// Looked up by (customer_id, timestamp_ms, idempotency_key) — the PK.
+	// Record Layer automatically updates SUM/COUNT atomic indexes (old value
+	// subtracted, new value added) in a single FDB transaction.
+	AmendEvent(context.Context, *connect.Request[v1.AmendEventRequest]) (*connect.Response[v1.AmendEventResponse], error)
 }
 
 // NewEventServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -205,6 +229,12 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(eventServiceMethods.ByName("ListEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	eventServiceAmendEventHandler := connect.NewUnaryHandler(
+		EventServiceAmendEventProcedure,
+		svc.AmendEvent,
+		connect.WithSchema(eventServiceMethods.ByName("AmendEvent")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/metrognome.v1.EventService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case EventServiceIngestEventsProcedure:
@@ -217,6 +247,8 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 			eventServiceGetUsageGroupsHandler.ServeHTTP(w, r)
 		case EventServiceListEventsProcedure:
 			eventServiceListEventsHandler.ServeHTTP(w, r)
+		case EventServiceAmendEventProcedure:
+			eventServiceAmendEventHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -244,4 +276,8 @@ func (UnimplementedEventServiceHandler) GetUsageGroups(context.Context, *connect
 
 func (UnimplementedEventServiceHandler) ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.ListEvents is not implemented"))
+}
+
+func (UnimplementedEventServiceHandler) AmendEvent(context.Context, *connect.Request[v1.AmendEventRequest]) (*connect.Response[v1.AmendEventResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.AmendEvent is not implemented"))
 }

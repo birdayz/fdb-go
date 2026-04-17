@@ -4,7 +4,7 @@ import { transport } from "@/lib/transport";
 import { ContractService } from "@/gen/metrognome/v1/contract_pb";
 import { CustomerService } from "@/gen/metrognome/v1/customer_pb";
 import { PlanService } from "@/gen/metrognome/v1/plan_pb";
-import { ScrollText, Plus, Calendar, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { ScrollText, Plus, Calendar, CheckCircle2, XCircle, Clock, DollarSign } from "lucide-react";
 
 const contractClient = createClient(ContractService, transport);
 const customerClient = createClient(CustomerService, transport);
@@ -30,6 +30,8 @@ export function ContractsPage() {
   const [billingPeriod, setBillingPeriod] = useState(1);
   const [startDate, setStartDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [endDate, setEndDate] = useState("");
+  const [commitAmount, setCommitAmount] = useState("");
+  const [overageMultiplier, setOverageMultiplier] = useState("");
 
   async function load() {
     try {
@@ -54,12 +56,16 @@ export function ContractsPage() {
     if (!customerId || !planId) return;
     const startMs = new Date(startDate).getTime();
     const endMs = endDate ? new Date(endDate).getTime() : 0;
+    const commitCents = commitAmount ? Math.round(parseFloat(commitAmount) * 100) : 0;
+    const overageBps = overageMultiplier ? Math.round(parseFloat(overageMultiplier) * 10000) : 0;
     await contractClient.createContract({
       customerId,
       planId,
       startAt: BigInt(startMs),
       endAt: BigInt(endMs),
       billingPeriod,
+      committedAmountCents: BigInt(commitCents),
+      overageMultiplierBps: BigInt(overageBps),
     });
     setShowCreate(false);
     setCustomerId(""); setPlanId(""); setEndDate("");
@@ -123,6 +129,18 @@ export function ContractsPage() {
                 <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} placeholder="Indefinite"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
               </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4 mt-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Prepaid Commit ($/period)</label>
+              <input type="number" step="0.01" value={commitAmount} onChange={e => setCommitAmount(e.target.value)} placeholder="0 = no commit"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Overage Multiplier</label>
+              <input type="number" step="0.1" value={overageMultiplier} onChange={e => setOverageMultiplier(e.target.value)} placeholder="1.0 = standard, 1.5 = 150%"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
             </div>
           </div>
           <div className="flex gap-2 mt-4">
@@ -193,6 +211,15 @@ export function ContractsPage() {
                     <Clock className="w-3 h-3" />
                     {billingPeriodLabels[ct.billingPeriod] || "Monthly"}
                   </span>
+                  {Number(ct.committedAmountCents) > 0 && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full font-medium">
+                      <DollarSign className="w-3 h-3" />
+                      ${(Number(ct.committedAmountCents) / 100).toLocaleString()}/period commit
+                      {Number(ct.overageMultiplierBps) > 0 && Number(ct.overageMultiplierBps) !== 10000 && (
+                        <span className="text-indigo-400 ml-1">({(Number(ct.overageMultiplierBps) / 10000).toFixed(1)}x overage)</span>
+                      )}
+                    </span>
+                  )}
                   <span className="ml-auto">Created {new Date(Number(ct.createdAt)).toLocaleDateString()}</span>
                 </div>
               </div>

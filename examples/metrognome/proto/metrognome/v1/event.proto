@@ -25,6 +25,12 @@ service EventService {
   // PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
   // in reverse time order is a single FDB range read per page. No index needed.
   rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+
+  // AmendEvent updates an existing event's value and/or properties.
+  // Looked up by (customer_id, timestamp_ms, idempotency_key) — the PK.
+  // Record Layer automatically updates SUM/COUNT atomic indexes (old value
+  // subtracted, new value added) in a single FDB transaction.
+  rpc AmendEvent(AmendEventRequest) returns (AmendEventResponse);
 }
 
 message IngestEventsRequest {
@@ -112,4 +118,17 @@ message EventRecord {
   string idempotency_key = 6;
   string properties_json = 7;
   int64 ingested_at = 8;
+}
+
+message AmendEventRequest {
+  string customer_id = 1;           // required: identifies the event
+  int64 timestamp_ms = 2;           // required: identifies the event
+  string idempotency_key = 3;       // required: identifies the event
+  int64 new_value = 4;              // new value (replaces old)
+  string new_properties_json = 5;   // new properties (replaces old, empty = clear)
+}
+
+message AmendEventResponse {
+  EventRecord event = 1;            // the updated event
+  int64 previous_value = 2;         // what it was before
 }

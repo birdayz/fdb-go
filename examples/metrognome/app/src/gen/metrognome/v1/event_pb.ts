@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file metrognome/v1/event.proto.
  */
 export const file_metrognome_v1_event: GenFile = /*@__PURE__*/
-  fileDesc("ChltZXRyb2dub21lL3YxL2V2ZW50LnByb3RvEg1tZXRyb2dub21lLnYxIjsKE0luZ2VzdEV2ZW50c1JlcXVlc3QSJAoGZXZlbnRzGAEgAygLMhQubWV0cm9nbm9tZS52MS5FdmVudCKHAQoFRXZlbnQSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIUCgx0aW1lc3RhbXBfbXMYAyABKAMSDQoFdmFsdWUYBCABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAUgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgGIAEoCSI8ChRJbmdlc3RFdmVudHNSZXNwb25zZRIQCghhY2NlcHRlZBgBIAEoBRISCgpkdXBsaWNhdGVzGAIgASgFIowBCg9HZXRVc2FnZVJlcXVlc3QSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKbWV0ZXJfc2x1ZxgCIAEoCRIQCghzdGFydF9tcxgDIAEoAxIOCgZlbmRfbXMYBCABKAMSLgoLd2luZG93X3NpemUYBSABKA4yGS5tZXRyb2dub21lLnYxLldpbmRvd1NpemUiVAoQR2V0VXNhZ2VSZXNwb25zZRITCgt0b3RhbF92YWx1ZRgBIAEoAxIrCgdidWNrZXRzGAIgAygLMhoubWV0cm9nbm9tZS52MS5Vc2FnZUJ1Y2tldCI+CgtVc2FnZUJ1Y2tldBIQCghzdGFydF9tcxgBIAEoAxIOCgZlbmRfbXMYAiABKAMSDQoFdmFsdWUYAyABKAMiYgoVR2V0VXNhZ2VHcm91cHNSZXF1ZXN0EhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCm1ldGVyX3NsdWcYAiABKAkSEAoIc3RhcnRfbXMYAyABKAMSDgoGZW5kX21zGAQgASgDIlgKFkdldFVzYWdlR3JvdXBzUmVzcG9uc2USEwoLdG90YWxfdmFsdWUYASABKAMSKQoGZ3JvdXBzGAIgAygLMhkubWV0cm9nbm9tZS52MS5Vc2FnZUdyb3VwIpEBCgpVc2FnZUdyb3VwEkAKDGdyb3VwX3ZhbHVlcxgBIAMoCzIqLm1ldHJvZ25vbWUudjEuVXNhZ2VHcm91cC5Hcm91cFZhbHVlc0VudHJ5Eg0KBXZhbHVlGAIgASgDGjIKEEdyb3VwVmFsdWVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKNAQoRTGlzdEV2ZW50c1JlcXVlc3QSEQoJcGFnZV9zaXplGAEgASgFEhoKEmNvbnRpbnVhdGlvbl90b2tlbhgCIAEoDBITCgtjdXN0b21lcl9pZBgDIAEoCRISCgpldmVudF90eXBlGAQgASgJEhAKCHN0YXJ0X21zGAUgASgDEg4KBmVuZF9tcxgGIAEoAyJcChJMaXN0RXZlbnRzUmVzcG9uc2USKgoGZXZlbnRzGAEgAygLMhoubWV0cm9nbm9tZS52MS5FdmVudFJlY29yZBIaChJjb250aW51YXRpb25fdG9rZW4YAiABKAwitgEKC0V2ZW50UmVjb3JkEhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCmV2ZW50X3R5cGUYAiABKAkSEgoKbWV0ZXJfc2x1ZxgDIAEoCRIUCgx0aW1lc3RhbXBfbXMYBCABKAMSDQoFdmFsdWUYBSABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAYgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgHIAEoCRITCgtpbmdlc3RlZF9hdBgIIAEoAypUCgpXaW5kb3dTaXplEhsKF1dJTkRPV19TSVpFX1VOU1BFQ0lGSUVEEAASFAoQV0lORE9XX1NJWkVfSE9VUhABEhMKD1dJTkRPV19TSVpFX0RBWRACMsMDCgxFdmVudFNlcnZpY2USVwoMSW5nZXN0RXZlbnRzEiIubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXF1ZXN0GiMubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXNwb25zZRJbChBJbmdlc3RFdmVudHNCdWxrEiIubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXF1ZXN0GiMubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXNwb25zZRJLCghHZXRVc2FnZRIeLm1ldHJvZ25vbWUudjEuR2V0VXNhZ2VSZXF1ZXN0Gh8ubWV0cm9nbm9tZS52MS5HZXRVc2FnZVJlc3BvbnNlEl0KDkdldFVzYWdlR3JvdXBzEiQubWV0cm9nbm9tZS52MS5HZXRVc2FnZUdyb3Vwc1JlcXVlc3QaJS5tZXRyb2dub21lLnYxLkdldFVzYWdlR3JvdXBzUmVzcG9uc2USUQoKTGlzdEV2ZW50cxIgLm1ldHJvZ25vbWUudjEuTGlzdEV2ZW50c1JlcXVlc3QaIS5tZXRyb2dub21lLnYxLkxpc3RFdmVudHNSZXNwb25zZUJbWllnaXRodWIuY29tL2JpcmRheXovZmRiLXJlY29yZC1sYXllci1nby9leGFtcGxlcy9tZXRyb2dub21lL2dlbi9tZXRyb2dub21lL3YxO21ldHJvZ25vbWV2MWIGcHJvdG8z");
+  fileDesc("ChltZXRyb2dub21lL3YxL2V2ZW50LnByb3RvEg1tZXRyb2dub21lLnYxIjsKE0luZ2VzdEV2ZW50c1JlcXVlc3QSJAoGZXZlbnRzGAEgAygLMhQubWV0cm9nbm9tZS52MS5FdmVudCKHAQoFRXZlbnQSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIUCgx0aW1lc3RhbXBfbXMYAyABKAMSDQoFdmFsdWUYBCABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAUgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgGIAEoCSI8ChRJbmdlc3RFdmVudHNSZXNwb25zZRIQCghhY2NlcHRlZBgBIAEoBRISCgpkdXBsaWNhdGVzGAIgASgFIowBCg9HZXRVc2FnZVJlcXVlc3QSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKbWV0ZXJfc2x1ZxgCIAEoCRIQCghzdGFydF9tcxgDIAEoAxIOCgZlbmRfbXMYBCABKAMSLgoLd2luZG93X3NpemUYBSABKA4yGS5tZXRyb2dub21lLnYxLldpbmRvd1NpemUiVAoQR2V0VXNhZ2VSZXNwb25zZRITCgt0b3RhbF92YWx1ZRgBIAEoAxIrCgdidWNrZXRzGAIgAygLMhoubWV0cm9nbm9tZS52MS5Vc2FnZUJ1Y2tldCI+CgtVc2FnZUJ1Y2tldBIQCghzdGFydF9tcxgBIAEoAxIOCgZlbmRfbXMYAiABKAMSDQoFdmFsdWUYAyABKAMiYgoVR2V0VXNhZ2VHcm91cHNSZXF1ZXN0EhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCm1ldGVyX3NsdWcYAiABKAkSEAoIc3RhcnRfbXMYAyABKAMSDgoGZW5kX21zGAQgASgDIlgKFkdldFVzYWdlR3JvdXBzUmVzcG9uc2USEwoLdG90YWxfdmFsdWUYASABKAMSKQoGZ3JvdXBzGAIgAygLMhkubWV0cm9nbm9tZS52MS5Vc2FnZUdyb3VwIpEBCgpVc2FnZUdyb3VwEkAKDGdyb3VwX3ZhbHVlcxgBIAMoCzIqLm1ldHJvZ25vbWUudjEuVXNhZ2VHcm91cC5Hcm91cFZhbHVlc0VudHJ5Eg0KBXZhbHVlGAIgASgDGjIKEEdyb3VwVmFsdWVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKNAQoRTGlzdEV2ZW50c1JlcXVlc3QSEQoJcGFnZV9zaXplGAEgASgFEhoKEmNvbnRpbnVhdGlvbl90b2tlbhgCIAEoDBITCgtjdXN0b21lcl9pZBgDIAEoCRISCgpldmVudF90eXBlGAQgASgJEhAKCHN0YXJ0X21zGAUgASgDEg4KBmVuZF9tcxgGIAEoAyJcChJMaXN0RXZlbnRzUmVzcG9uc2USKgoGZXZlbnRzGAEgAygLMhoubWV0cm9nbm9tZS52MS5FdmVudFJlY29yZBIaChJjb250aW51YXRpb25fdG9rZW4YAiABKAwitgEKC0V2ZW50UmVjb3JkEhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCmV2ZW50X3R5cGUYAiABKAkSEgoKbWV0ZXJfc2x1ZxgDIAEoCRIUCgx0aW1lc3RhbXBfbXMYBCABKAMSDQoFdmFsdWUYBSABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAYgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgHIAEoCRITCgtpbmdlc3RlZF9hdBgIIAEoAyKHAQoRQW1lbmRFdmVudFJlcXVlc3QSEwoLY3VzdG9tZXJfaWQYASABKAkSFAoMdGltZXN0YW1wX21zGAIgASgDEhcKD2lkZW1wb3RlbmN5X2tleRgDIAEoCRIRCgluZXdfdmFsdWUYBCABKAMSGwoTbmV3X3Byb3BlcnRpZXNfanNvbhgFIAEoCSJXChJBbWVuZEV2ZW50UmVzcG9uc2USKQoFZXZlbnQYASABKAsyGi5tZXRyb2dub21lLnYxLkV2ZW50UmVjb3JkEhYKDnByZXZpb3VzX3ZhbHVlGAIgASgDKlQKCldpbmRvd1NpemUSGwoXV0lORE9XX1NJWkVfVU5TUEVDSUZJRUQQABIUChBXSU5ET1dfU0laRV9IT1VSEAESEwoPV0lORE9XX1NJWkVfREFZEAIylgQKDEV2ZW50U2VydmljZRJXCgxJbmdlc3RFdmVudHMSIi5tZXRyb2dub21lLnYxLkluZ2VzdEV2ZW50c1JlcXVlc3QaIy5tZXRyb2dub21lLnYxLkluZ2VzdEV2ZW50c1Jlc3BvbnNlElsKEEluZ2VzdEV2ZW50c0J1bGsSIi5tZXRyb2dub21lLnYxLkluZ2VzdEV2ZW50c1JlcXVlc3QaIy5tZXRyb2dub21lLnYxLkluZ2VzdEV2ZW50c1Jlc3BvbnNlEksKCEdldFVzYWdlEh4ubWV0cm9nbm9tZS52MS5HZXRVc2FnZVJlcXVlc3QaHy5tZXRyb2dub21lLnYxLkdldFVzYWdlUmVzcG9uc2USXQoOR2V0VXNhZ2VHcm91cHMSJC5tZXRyb2dub21lLnYxLkdldFVzYWdlR3JvdXBzUmVxdWVzdBolLm1ldHJvZ25vbWUudjEuR2V0VXNhZ2VHcm91cHNSZXNwb25zZRJRCgpMaXN0RXZlbnRzEiAubWV0cm9nbm9tZS52MS5MaXN0RXZlbnRzUmVxdWVzdBohLm1ldHJvZ25vbWUudjEuTGlzdEV2ZW50c1Jlc3BvbnNlElEKCkFtZW5kRXZlbnQSIC5tZXRyb2dub21lLnYxLkFtZW5kRXZlbnRSZXF1ZXN0GiEubWV0cm9nbm9tZS52MS5BbWVuZEV2ZW50UmVzcG9uc2VCW1pZZ2l0aHViLmNvbS9iaXJkYXl6L2ZkYi1yZWNvcmQtbGF5ZXItZ28vZXhhbXBsZXMvbWV0cm9nbm9tZS9nZW4vbWV0cm9nbm9tZS92MTttZXRyb2dub21ldjFiBnByb3RvMw");
 
 /**
  * @generated from message metrognome.v1.IngestEventsRequest
@@ -416,6 +416,79 @@ export const EventRecordSchema: GenMessage<EventRecord> = /*@__PURE__*/
   messageDesc(file_metrognome_v1_event, 11);
 
 /**
+ * @generated from message metrognome.v1.AmendEventRequest
+ */
+export type AmendEventRequest = Message<"metrognome.v1.AmendEventRequest"> & {
+  /**
+   * required: identifies the event
+   *
+   * @generated from field: string customer_id = 1;
+   */
+  customerId: string;
+
+  /**
+   * required: identifies the event
+   *
+   * @generated from field: int64 timestamp_ms = 2;
+   */
+  timestampMs: bigint;
+
+  /**
+   * required: identifies the event
+   *
+   * @generated from field: string idempotency_key = 3;
+   */
+  idempotencyKey: string;
+
+  /**
+   * new value (replaces old)
+   *
+   * @generated from field: int64 new_value = 4;
+   */
+  newValue: bigint;
+
+  /**
+   * new properties (replaces old, empty = clear)
+   *
+   * @generated from field: string new_properties_json = 5;
+   */
+  newPropertiesJson: string;
+};
+
+/**
+ * Describes the message metrognome.v1.AmendEventRequest.
+ * Use `create(AmendEventRequestSchema)` to create a new message.
+ */
+export const AmendEventRequestSchema: GenMessage<AmendEventRequest> = /*@__PURE__*/
+  messageDesc(file_metrognome_v1_event, 12);
+
+/**
+ * @generated from message metrognome.v1.AmendEventResponse
+ */
+export type AmendEventResponse = Message<"metrognome.v1.AmendEventResponse"> & {
+  /**
+   * the updated event
+   *
+   * @generated from field: metrognome.v1.EventRecord event = 1;
+   */
+  event?: EventRecord;
+
+  /**
+   * what it was before
+   *
+   * @generated from field: int64 previous_value = 2;
+   */
+  previousValue: bigint;
+};
+
+/**
+ * Describes the message metrognome.v1.AmendEventResponse.
+ * Use `create(AmendEventResponseSchema)` to create a new message.
+ */
+export const AmendEventResponseSchema: GenMessage<AmendEventResponse> = /*@__PURE__*/
+  messageDesc(file_metrognome_v1_event, 13);
+
+/**
  * @generated from enum metrognome.v1.WindowSize
  */
 export enum WindowSize {
@@ -502,6 +575,19 @@ export const EventService: GenService<{
     methodKind: "unary";
     input: typeof ListEventsRequestSchema;
     output: typeof ListEventsResponseSchema;
+  },
+  /**
+   * AmendEvent updates an existing event's value and/or properties.
+   * Looked up by (customer_id, timestamp_ms, idempotency_key) — the PK.
+   * Record Layer automatically updates SUM/COUNT atomic indexes (old value
+   * subtracted, new value added) in a single FDB transaction.
+   *
+   * @generated from rpc metrognome.v1.EventService.AmendEvent
+   */
+  amendEvent: {
+    methodKind: "unary";
+    input: typeof AmendEventRequestSchema;
+    output: typeof AmendEventResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_metrognome_v1_event, 0);

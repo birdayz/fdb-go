@@ -849,6 +849,134 @@ func (x *EventRecord) GetIngestedAt() int64 {
 	return 0
 }
 
+type AmendEventRequest struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId        string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`                        // required: identifies the event
+	TimestampMs       int64                  `protobuf:"varint,2,opt,name=timestamp_ms,json=timestampMs,proto3" json:"timestamp_ms,omitempty"`                    // required: identifies the event
+	IdempotencyKey    string                 `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`            // required: identifies the event
+	NewValue          int64                  `protobuf:"varint,4,opt,name=new_value,json=newValue,proto3" json:"new_value,omitempty"`                             // new value (replaces old)
+	NewPropertiesJson string                 `protobuf:"bytes,5,opt,name=new_properties_json,json=newPropertiesJson,proto3" json:"new_properties_json,omitempty"` // new properties (replaces old, empty = clear)
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *AmendEventRequest) Reset() {
+	*x = AmendEventRequest{}
+	mi := &file_metrognome_v1_event_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AmendEventRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AmendEventRequest) ProtoMessage() {}
+
+func (x *AmendEventRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_event_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AmendEventRequest.ProtoReflect.Descriptor instead.
+func (*AmendEventRequest) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_event_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *AmendEventRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *AmendEventRequest) GetTimestampMs() int64 {
+	if x != nil {
+		return x.TimestampMs
+	}
+	return 0
+}
+
+func (x *AmendEventRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *AmendEventRequest) GetNewValue() int64 {
+	if x != nil {
+		return x.NewValue
+	}
+	return 0
+}
+
+func (x *AmendEventRequest) GetNewPropertiesJson() string {
+	if x != nil {
+		return x.NewPropertiesJson
+	}
+	return ""
+}
+
+type AmendEventResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Event         *EventRecord           `protobuf:"bytes,1,opt,name=event,proto3" json:"event,omitempty"`                                       // the updated event
+	PreviousValue int64                  `protobuf:"varint,2,opt,name=previous_value,json=previousValue,proto3" json:"previous_value,omitempty"` // what it was before
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AmendEventResponse) Reset() {
+	*x = AmendEventResponse{}
+	mi := &file_metrognome_v1_event_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AmendEventResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AmendEventResponse) ProtoMessage() {}
+
+func (x *AmendEventResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_event_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AmendEventResponse.ProtoReflect.Descriptor instead.
+func (*AmendEventResponse) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_event_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *AmendEventResponse) GetEvent() *EventRecord {
+	if x != nil {
+		return x.Event
+	}
+	return nil
+}
+
+func (x *AmendEventResponse) GetPreviousValue() int64 {
+	if x != nil {
+		return x.PreviousValue
+	}
+	return 0
+}
+
 var File_metrognome_v1_event_proto protoreflect.FileDescriptor
 
 const file_metrognome_v1_event_proto_rawDesc = "" +
@@ -929,19 +1057,31 @@ const file_metrognome_v1_event_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x06 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fproperties_json\x18\a \x01(\tR\x0epropertiesJson\x12\x1f\n" +
 	"\vingested_at\x18\b \x01(\x03R\n" +
-	"ingestedAt*T\n" +
+	"ingestedAt\"\xcd\x01\n" +
+	"\x11AmendEventRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\x12!\n" +
+	"\ftimestamp_ms\x18\x02 \x01(\x03R\vtimestampMs\x12'\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tR\x0eidempotencyKey\x12\x1b\n" +
+	"\tnew_value\x18\x04 \x01(\x03R\bnewValue\x12.\n" +
+	"\x13new_properties_json\x18\x05 \x01(\tR\x11newPropertiesJson\"m\n" +
+	"\x12AmendEventResponse\x120\n" +
+	"\x05event\x18\x01 \x01(\v2\x1a.metrognome.v1.EventRecordR\x05event\x12%\n" +
+	"\x0eprevious_value\x18\x02 \x01(\x03R\rpreviousValue*T\n" +
 	"\n" +
 	"WindowSize\x12\x1b\n" +
 	"\x17WINDOW_SIZE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10WINDOW_SIZE_HOUR\x10\x01\x12\x13\n" +
-	"\x0fWINDOW_SIZE_DAY\x10\x022\xc3\x03\n" +
+	"\x0fWINDOW_SIZE_DAY\x10\x022\x96\x04\n" +
 	"\fEventService\x12W\n" +
 	"\fIngestEvents\x12\".metrognome.v1.IngestEventsRequest\x1a#.metrognome.v1.IngestEventsResponse\x12[\n" +
 	"\x10IngestEventsBulk\x12\".metrognome.v1.IngestEventsRequest\x1a#.metrognome.v1.IngestEventsResponse\x12K\n" +
 	"\bGetUsage\x12\x1e.metrognome.v1.GetUsageRequest\x1a\x1f.metrognome.v1.GetUsageResponse\x12]\n" +
 	"\x0eGetUsageGroups\x12$.metrognome.v1.GetUsageGroupsRequest\x1a%.metrognome.v1.GetUsageGroupsResponse\x12Q\n" +
 	"\n" +
-	"ListEvents\x12 .metrognome.v1.ListEventsRequest\x1a!.metrognome.v1.ListEventsResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
+	"ListEvents\x12 .metrognome.v1.ListEventsRequest\x1a!.metrognome.v1.ListEventsResponse\x12Q\n" +
+	"\n" +
+	"AmendEvent\x12 .metrognome.v1.AmendEventRequest\x1a!.metrognome.v1.AmendEventResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
 
 var (
 	file_metrognome_v1_event_proto_rawDescOnce sync.Once
@@ -957,7 +1097,7 @@ func file_metrognome_v1_event_proto_rawDescGZIP() []byte {
 
 var (
 	file_metrognome_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-	file_metrognome_v1_event_proto_msgTypes  = make([]protoimpl.MessageInfo, 13)
+	file_metrognome_v1_event_proto_msgTypes  = make([]protoimpl.MessageInfo, 15)
 	file_metrognome_v1_event_proto_goTypes   = []any{
 		(WindowSize)(0),                // 0: metrognome.v1.WindowSize
 		(*IngestEventsRequest)(nil),    // 1: metrognome.v1.IngestEventsRequest
@@ -972,7 +1112,9 @@ var (
 		(*ListEventsRequest)(nil),      // 10: metrognome.v1.ListEventsRequest
 		(*ListEventsResponse)(nil),     // 11: metrognome.v1.ListEventsResponse
 		(*EventRecord)(nil),            // 12: metrognome.v1.EventRecord
-		nil,                            // 13: metrognome.v1.UsageGroup.GroupValuesEntry
+		(*AmendEventRequest)(nil),      // 13: metrognome.v1.AmendEventRequest
+		(*AmendEventResponse)(nil),     // 14: metrognome.v1.AmendEventResponse
+		nil,                            // 15: metrognome.v1.UsageGroup.GroupValuesEntry
 	}
 )
 
@@ -981,23 +1123,26 @@ var file_metrognome_v1_event_proto_depIdxs = []int32{
 	0,  // 1: metrognome.v1.GetUsageRequest.window_size:type_name -> metrognome.v1.WindowSize
 	6,  // 2: metrognome.v1.GetUsageResponse.buckets:type_name -> metrognome.v1.UsageBucket
 	9,  // 3: metrognome.v1.GetUsageGroupsResponse.groups:type_name -> metrognome.v1.UsageGroup
-	13, // 4: metrognome.v1.UsageGroup.group_values:type_name -> metrognome.v1.UsageGroup.GroupValuesEntry
+	15, // 4: metrognome.v1.UsageGroup.group_values:type_name -> metrognome.v1.UsageGroup.GroupValuesEntry
 	12, // 5: metrognome.v1.ListEventsResponse.events:type_name -> metrognome.v1.EventRecord
-	1,  // 6: metrognome.v1.EventService.IngestEvents:input_type -> metrognome.v1.IngestEventsRequest
-	1,  // 7: metrognome.v1.EventService.IngestEventsBulk:input_type -> metrognome.v1.IngestEventsRequest
-	4,  // 8: metrognome.v1.EventService.GetUsage:input_type -> metrognome.v1.GetUsageRequest
-	7,  // 9: metrognome.v1.EventService.GetUsageGroups:input_type -> metrognome.v1.GetUsageGroupsRequest
-	10, // 10: metrognome.v1.EventService.ListEvents:input_type -> metrognome.v1.ListEventsRequest
-	3,  // 11: metrognome.v1.EventService.IngestEvents:output_type -> metrognome.v1.IngestEventsResponse
-	3,  // 12: metrognome.v1.EventService.IngestEventsBulk:output_type -> metrognome.v1.IngestEventsResponse
-	5,  // 13: metrognome.v1.EventService.GetUsage:output_type -> metrognome.v1.GetUsageResponse
-	8,  // 14: metrognome.v1.EventService.GetUsageGroups:output_type -> metrognome.v1.GetUsageGroupsResponse
-	11, // 15: metrognome.v1.EventService.ListEvents:output_type -> metrognome.v1.ListEventsResponse
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	12, // 6: metrognome.v1.AmendEventResponse.event:type_name -> metrognome.v1.EventRecord
+	1,  // 7: metrognome.v1.EventService.IngestEvents:input_type -> metrognome.v1.IngestEventsRequest
+	1,  // 8: metrognome.v1.EventService.IngestEventsBulk:input_type -> metrognome.v1.IngestEventsRequest
+	4,  // 9: metrognome.v1.EventService.GetUsage:input_type -> metrognome.v1.GetUsageRequest
+	7,  // 10: metrognome.v1.EventService.GetUsageGroups:input_type -> metrognome.v1.GetUsageGroupsRequest
+	10, // 11: metrognome.v1.EventService.ListEvents:input_type -> metrognome.v1.ListEventsRequest
+	13, // 12: metrognome.v1.EventService.AmendEvent:input_type -> metrognome.v1.AmendEventRequest
+	3,  // 13: metrognome.v1.EventService.IngestEvents:output_type -> metrognome.v1.IngestEventsResponse
+	3,  // 14: metrognome.v1.EventService.IngestEventsBulk:output_type -> metrognome.v1.IngestEventsResponse
+	5,  // 15: metrognome.v1.EventService.GetUsage:output_type -> metrognome.v1.GetUsageResponse
+	8,  // 16: metrognome.v1.EventService.GetUsageGroups:output_type -> metrognome.v1.GetUsageGroupsResponse
+	11, // 17: metrognome.v1.EventService.ListEvents:output_type -> metrognome.v1.ListEventsResponse
+	14, // 18: metrognome.v1.EventService.AmendEvent:output_type -> metrognome.v1.AmendEventResponse
+	13, // [13:19] is the sub-list for method output_type
+	7,  // [7:13] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_v1_event_proto_init() }
@@ -1011,7 +1156,7 @@ func file_metrognome_v1_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_v1_event_proto_rawDesc), len(file_metrognome_v1_event_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
