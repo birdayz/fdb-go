@@ -181,6 +181,57 @@ func TestFDBResolver_CacheManagement(t *testing.T) {
 	g.Expect(v).To(Equal(int64(0)), "should read persisted value from FDB")
 }
 
+// TestFDBResolver_ResolverDirectory_EndToEnd exercises the full
+// Phase 1+2+3 pipeline: FDBResolver plugs into ResolverDirectory,
+// which lets KeySpace paths use persistent FDB-backed string→int64 mapping.
+func TestFDBResolver_ResolverDirectory_EndToEnd(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	ss := subspace.Sub(tuple.Tuple{t.Name()})
+	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+		begin, end := ss.FDBRangeKeys()
+		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	resolver := keyspace.NewFDBResolver(sharedDB, ss)
+
+	// Schema: root → app (resolved via FDB) → table (open string)
+	root := keyspace.NewDirectory("root", keyspace.KeyTypeNull)
+	root.AddSubdirectory(keyspace.ResolverDirectory("app", resolver))
+	root.GetSubdirectory("app").AddSubdirectory(keyspace.NewDirectory("table", keyspace.KeyTypeString))
+
+	ks := keyspace.NewKeySpace(root)
+
+	// First app resolution allocates value 0
+	path1, err := ks.Path("app", "myapp")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path1.GetValue()).To(Equal(int64(0)))
+
+	path1t, err := path1.Add("table", "orders")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path1t.ToTuple()).To(Equal(tuple.Tuple{int64(0), "orders"}))
+
+	// Different app gets value 1
+	path2, err := ks.Path("app", "otherapp")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path2.GetValue()).To(Equal(int64(1)))
+
+	// Same app reuses value 0 (from cache)
+	path3, err := ks.Path("app", "myapp")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path3.GetValue()).To(Equal(int64(0)))
+
+	// Fresh resolver with invalidated cache still sees persisted mapping
+	resolver.InvalidateCache()
+	sharedDB.InvalidateGRVCache()
+	path4, err := ks.Path("app", "myapp")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path4.GetValue()).To(Equal(int64(0)), "persisted mapping survives cache flush")
+}
+
 func TestFDBResolver_ReverseLookup(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
