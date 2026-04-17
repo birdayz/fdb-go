@@ -43,6 +43,8 @@ func validateKeyExpressionImpl(expr KeyExpression, desc protoreflect.MessageDesc
 		return nil
 	case *FunctionKeyExpression:
 		return validateKeyExpression(e.arguments, desc)
+	case *DimensionsKeyExpression:
+		return validateKeyExpression(e.WholeKey, desc)
 	case *KeyWithValueExpression:
 		return validateKeyWithValueExpression(e, desc)
 	case *SplitKeyExpression:
