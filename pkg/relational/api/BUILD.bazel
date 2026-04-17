@@ -8,6 +8,7 @@ go_library(
         "datatype_primitive.go",
         "errcode.go",
         "error.go",
+        "options.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
     visibility = ["//visibility:public"],
@@ -18,6 +19,7 @@ go_test(
     srcs = [
         "datatype_test.go",
         "error_test.go",
+        "options_test.go",
     ],
     embed = [":api"],
 )
