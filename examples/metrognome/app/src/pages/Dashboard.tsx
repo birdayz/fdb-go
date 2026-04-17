@@ -54,44 +54,55 @@ export function DashboardPage() {
       setInvoices(inv.invoices);
       setContracts(ctr.contracts);
 
-      // Load credits for first customer (if any)
-      if (c.customers.length > 0) {
-        const cr = await creditClient.listCredits({ customerId: c.customers[0].id }).catch(() => ({ credits: [] }));
-        setCredits(cr.credits);
-      }
+      // Load credits for all customers in parallel
+      const creditResults = await Promise.all(
+        c.customers.map((cust: any) =>
+          creditClient.listCredits({ customerId: cust.id }).catch(() => ({ credits: [] }))
+        )
+      );
+      setCredits(creditResults.flatMap(cr => cr.credits));
 
-      // Load usage for each meter across all customers (last 30 days, daily)
+      // Load usage for every (meter × customer) pair in parallel — all futures fire at once
       const now = Date.now();
       const thirtyDaysAgo = now - 30 * 86400_000;
-      const series: UsageSeries[] = [];
-      for (const meter of m.meters) {
-        let totalVal = BigInt(0);
-        const allBuckets: { startMs: bigint; value: bigint }[] = [];
-        for (const cust of c.customers) {
-          try {
-            const resp = await eventClient.getUsage({
-              customerId: cust.id,
-              meterSlug: meter.slug,
-              startMs: BigInt(thirtyDaysAgo),
-              endMs: BigInt(now),
-              windowSize: 2, // DAY
-            });
-            totalVal += resp.totalValue;
-            for (const b of resp.buckets) {
-              const existing = allBuckets.find(x => x.startMs === b.startMs);
-              if (existing) {
-                existing.value += b.value;
-              } else {
-                allBuckets.push({ startMs: b.startMs, value: b.value });
-              }
-            }
-          } catch { /* skip */ }
+      const usageCalls = m.meters.flatMap((meter: any) =>
+        c.customers.map((cust: any) => ({
+          meter,
+          promise: eventClient.getUsage({
+            customerId: cust.id,
+            meterSlug: meter.slug,
+            startMs: BigInt(thirtyDaysAgo),
+            endMs: BigInt(now),
+            windowSize: 2, // DAY
+          }).catch(() => null),
+        }))
+      );
+      const usageResults = await Promise.all(usageCalls.map(u => u.promise));
+
+      // Aggregate results per meter
+      const seriesMap = new Map<string, UsageSeries>();
+      usageCalls.forEach((call, i) => {
+        const resp = usageResults[i];
+        if (!resp) return;
+        const slug = call.meter.slug;
+        let s = seriesMap.get(slug);
+        if (!s) {
+          s = { meterSlug: slug, meterName: call.meter.name, total: BigInt(0), buckets: [] };
+          seriesMap.set(slug, s);
         }
-        if (totalVal > BigInt(0)) {
-          allBuckets.sort((a, b) => Number(a.startMs - b.startMs));
-          series.push({ meterSlug: meter.slug, meterName: meter.name, total: totalVal, buckets: allBuckets });
+        s.total += resp.totalValue;
+        for (const b of resp.buckets) {
+          const existing = s.buckets.find(x => x.startMs === b.startMs);
+          if (existing) {
+            existing.value += b.value;
+          } else {
+            s.buckets.push({ startMs: b.startMs, value: b.value });
+          }
         }
-      }
+      });
+      const series = [...seriesMap.values()]
+        .filter(s => s.total > BigInt(0))
+        .map(s => { s.buckets.sort((a, b) => Number(a.startMs - b.startMs)); return s; });
       setUsageSeries(series);
       setLoading(false);
     }

@@ -12,8 +12,6 @@ import { PlansPage } from "./pages/Plans";
 import { EventsPage } from "./pages/Events";
 import { InvoicesPage } from "./pages/Invoices";
 import { CreditsPage } from "./pages/Credits";
-import { ProductsPage } from "./pages/Products";
-import { RateCardsPage } from "./pages/RateCards";
 import { ContractsPage } from "./pages/Contracts";
 import { AlertsPage } from "./pages/Alerts";
 import { ApiKeysPage } from "./pages/ApiKeys";
@@ -44,9 +42,7 @@ function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/customers" element={<CustomersPage />} />
         <Route path="/customers/:id" element={<CustomerDetailPage />} />
-        <Route path="/products" element={<ProductsPage />} />
         <Route path="/meters" element={<MetersPage />} />
-        <Route path="/rate-cards" element={<RateCardsPage />} />
         <Route path="/plans" element={<PlansPage />} />
         <Route path="/contracts" element={<ContractsPage />} />
         <Route path="/invoices" element={<InvoicesPage />} />

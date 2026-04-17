@@ -9,10 +9,7 @@ import {
   FileText,
   LogOut,
   ChevronDown,
-  Package,
-  Tag,
   Layers,
-  DollarSign,
   Key,
   Bell,
   Settings,
@@ -49,9 +46,7 @@ const navSections: NavSection[] = [
     label: "Offering",
     defaultOpen: true,
     items: [
-      { to: "/products", label: "Products", icon: Package },
       { to: "/meters", label: "Billable Metrics", icon: Gauge },
-      { to: "/rate-cards", label: "Rate Cards", icon: DollarSign },
       { to: "/plans", label: "Plans", icon: Layers },
     ],
   },
@@ -65,11 +60,17 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    label: "Connections",
-    defaultOpen: false,
+    label: "Metrics",
+    defaultOpen: true,
     items: [
       { to: "/events", label: "Events", icon: Zap },
       { to: "/alerts", label: "Alerts", icon: Bell },
+    ],
+  },
+  {
+    label: "Settings",
+    defaultOpen: true,
+    items: [
       { to: "/api-keys", label: "API Keys", icon: Key },
     ],
   },
