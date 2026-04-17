@@ -164,17 +164,20 @@ func invoiceToAPI(s *storev1.Invoice) *metrognomev1.Invoice {
 		}
 	}
 	return &metrognomev1.Invoice{
-		Id:                  s.GetId(),
-		CustomerId:          s.GetCustomerId(),
-		ContractId:          s.GetContractId(),
-		PeriodStart:         s.GetPeriodStart(),
-		PeriodEnd:           s.GetPeriodEnd(),
-		LineItems:           lineItems,
-		SubtotalCents:       s.GetSubtotalCents(),
-		CreditsAppliedCents: s.GetCreditsAppliedCents(),
-		TotalCents:          s.GetTotalCents(),
-		Status:              metrognomev1.InvoiceStatus(s.GetStatus()),
-		CreatedAt:           s.GetCreatedAt(),
-		FinalizedAt:         s.GetFinalizedAt(),
+		Id:                   s.GetId(),
+		CustomerId:           s.GetCustomerId(),
+		ContractId:           s.GetContractId(),
+		PeriodStart:          s.GetPeriodStart(),
+		PeriodEnd:            s.GetPeriodEnd(),
+		LineItems:            lineItems,
+		SubtotalCents:        s.GetSubtotalCents(),
+		CreditsAppliedCents:  s.GetCreditsAppliedCents(),
+		TotalCents:           s.GetTotalCents(),
+		Status:               metrognomev1.InvoiceStatus(s.GetStatus()),
+		CreatedAt:            s.GetCreatedAt(),
+		FinalizedAt:          s.GetFinalizedAt(),
+		CommittedAmountCents: s.GetCommittedAmountCents(),
+		UsageChargesCents:    s.GetUsageChargesCents(),
+		OverageCents:         s.GetOverageCents(),
 	}
 }

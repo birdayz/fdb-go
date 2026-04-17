@@ -583,21 +583,24 @@ func (x *UpdateInvoiceStatusResponse) GetInvoice() *Invoice {
 }
 
 type Invoice struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Id                  string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	CustomerId          string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	ContractId          string                 `protobuf:"bytes,3,opt,name=contract_id,json=contractId,proto3" json:"contract_id,omitempty"`
-	PeriodStart         int64                  `protobuf:"varint,4,opt,name=period_start,json=periodStart,proto3" json:"period_start,omitempty"`
-	PeriodEnd           int64                  `protobuf:"varint,5,opt,name=period_end,json=periodEnd,proto3" json:"period_end,omitempty"`
-	LineItems           []*LineItem            `protobuf:"bytes,6,rep,name=line_items,json=lineItems,proto3" json:"line_items,omitempty"`
-	SubtotalCents       int64                  `protobuf:"varint,7,opt,name=subtotal_cents,json=subtotalCents,proto3" json:"subtotal_cents,omitempty"`
-	CreditsAppliedCents int64                  `protobuf:"varint,8,opt,name=credits_applied_cents,json=creditsAppliedCents,proto3" json:"credits_applied_cents,omitempty"`
-	TotalCents          int64                  `protobuf:"varint,9,opt,name=total_cents,json=totalCents,proto3" json:"total_cents,omitempty"`
-	Status              InvoiceStatus          `protobuf:"varint,10,opt,name=status,proto3,enum=metrognome.v1.InvoiceStatus" json:"status,omitempty"`
-	CreatedAt           int64                  `protobuf:"varint,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	FinalizedAt         int64                  `protobuf:"varint,12,opt,name=finalized_at,json=finalizedAt,proto3" json:"finalized_at,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Id                   string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CustomerId           string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	ContractId           string                 `protobuf:"bytes,3,opt,name=contract_id,json=contractId,proto3" json:"contract_id,omitempty"`
+	PeriodStart          int64                  `protobuf:"varint,4,opt,name=period_start,json=periodStart,proto3" json:"period_start,omitempty"`
+	PeriodEnd            int64                  `protobuf:"varint,5,opt,name=period_end,json=periodEnd,proto3" json:"period_end,omitempty"`
+	LineItems            []*LineItem            `protobuf:"bytes,6,rep,name=line_items,json=lineItems,proto3" json:"line_items,omitempty"`
+	SubtotalCents        int64                  `protobuf:"varint,7,opt,name=subtotal_cents,json=subtotalCents,proto3" json:"subtotal_cents,omitempty"`
+	CreditsAppliedCents  int64                  `protobuf:"varint,8,opt,name=credits_applied_cents,json=creditsAppliedCents,proto3" json:"credits_applied_cents,omitempty"`
+	TotalCents           int64                  `protobuf:"varint,9,opt,name=total_cents,json=totalCents,proto3" json:"total_cents,omitempty"`
+	Status               InvoiceStatus          `protobuf:"varint,10,opt,name=status,proto3,enum=metrognome.v1.InvoiceStatus" json:"status,omitempty"`
+	CreatedAt            int64                  `protobuf:"varint,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	FinalizedAt          int64                  `protobuf:"varint,12,opt,name=finalized_at,json=finalizedAt,proto3" json:"finalized_at,omitempty"`
+	CommittedAmountCents int64                  `protobuf:"varint,13,opt,name=committed_amount_cents,json=committedAmountCents,proto3" json:"committed_amount_cents,omitempty"` // contract minimum spend (0 = no commit)
+	UsageChargesCents    int64                  `protobuf:"varint,14,opt,name=usage_charges_cents,json=usageChargesCents,proto3" json:"usage_charges_cents,omitempty"`          // raw usage charges before commit enforcement
+	OverageCents         int64                  `protobuf:"varint,15,opt,name=overage_cents,json=overageCents,proto3" json:"overage_cents,omitempty"`                           // amount exceeding commit (0 if under commit)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Invoice) Reset() {
@@ -714,6 +717,27 @@ func (x *Invoice) GetFinalizedAt() int64 {
 	return 0
 }
 
+func (x *Invoice) GetCommittedAmountCents() int64 {
+	if x != nil {
+		return x.CommittedAmountCents
+	}
+	return 0
+}
+
+func (x *Invoice) GetUsageChargesCents() int64 {
+	if x != nil {
+		return x.UsageChargesCents
+	}
+	return 0
+}
+
+func (x *Invoice) GetOverageCents() int64 {
+	if x != nil {
+		return x.OverageCents
+	}
+	return 0
+}
+
 type LineItem struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ChargeId      string                 `protobuf:"bytes,1,opt,name=charge_id,json=chargeId,proto3" json:"charge_id,omitempty"`
@@ -825,7 +849,7 @@ const file_metrognome_v1_invoice_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x124\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1c.metrognome.v1.InvoiceStatusR\x06status\"O\n" +
 	"\x1bUpdateInvoiceStatusResponse\x120\n" +
-	"\ainvoice\x18\x01 \x01(\v2\x16.metrognome.v1.InvoiceR\ainvoice\"\xc9\x03\n" +
+	"\ainvoice\x18\x01 \x01(\v2\x16.metrognome.v1.InvoiceR\ainvoice\"\xd4\x04\n" +
 	"\aInvoice\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -845,7 +869,10 @@ const file_metrognome_v1_invoice_proto_rawDesc = "" +
 	" \x01(\x0e2\x1c.metrognome.v1.InvoiceStatusR\x06status\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\v \x01(\x03R\tcreatedAt\x12!\n" +
-	"\ffinalized_at\x18\f \x01(\x03R\vfinalizedAt\"\xa7\x01\n" +
+	"\ffinalized_at\x18\f \x01(\x03R\vfinalizedAt\x124\n" +
+	"\x16committed_amount_cents\x18\r \x01(\x03R\x14committedAmountCents\x12.\n" +
+	"\x13usage_charges_cents\x18\x0e \x01(\x03R\x11usageChargesCents\x12#\n" +
+	"\roverage_cents\x18\x0f \x01(\x03R\foverageCents\"\xa7\x01\n" +
 	"\bLineItem\x12\x1b\n" +
 	"\tcharge_id\x18\x01 \x01(\tR\bchargeId\x12\x1d\n" +
 	"\n" +

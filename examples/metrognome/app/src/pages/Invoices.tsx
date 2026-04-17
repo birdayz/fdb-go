@@ -125,6 +125,38 @@ export function InvoicesPage() {
                       </tbody>
                     </table>
 
+                    {/* Commit breakdown */}
+                    {Number(inv.committedAmountCents) > 0 && (
+                      <div className="mt-4 p-3 bg-indigo-50 rounded-lg border border-indigo-100 text-sm">
+                        <div className="flex items-center gap-2 mb-2 text-indigo-700 font-medium text-xs uppercase tracking-wider">Prepaid Commit</div>
+                        <div className="grid grid-cols-3 gap-4">
+                          <div>
+                            <div className="text-xs text-indigo-400">Committed</div>
+                            <div className="text-sm font-bold text-indigo-700">{formatCents(Number(inv.committedAmountCents))}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-indigo-400">Usage Charges</div>
+                            <div className="text-sm font-bold text-gray-900">{formatCents(Number(inv.usageChargesCents))}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-indigo-400">Overage</div>
+                            <div className={`text-sm font-bold ${Number(inv.overageCents) > 0 ? "text-red-600" : "text-emerald-600"}`}>
+                              {Number(inv.overageCents) > 0 ? formatCents(Number(inv.overageCents)) : "None — under commit"}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Visual: usage vs commit bar */}
+                        <div className="mt-2 h-2 bg-indigo-200 rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full ${Number(inv.usageChargesCents) > Number(inv.committedAmountCents) ? "bg-red-500" : "bg-indigo-500"}`}
+                            style={{ width: `${Math.min(100, (Number(inv.usageChargesCents) / Number(inv.committedAmountCents)) * 100)}%` }} />
+                        </div>
+                        <div className="flex justify-between mt-1 text-[10px] text-indigo-300">
+                          <span>0%</span>
+                          <span>commit threshold</span>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex justify-end gap-6 mt-4 pt-3 border-t border-gray-100 text-sm">
                       <div><span className="text-gray-500">Subtotal</span> <span className="font-medium ml-2">{formatCents(Number(inv.subtotalCents))}</span></div>
                       {Number(inv.creditsAppliedCents) > 0 && (

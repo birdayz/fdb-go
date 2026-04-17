@@ -78,6 +78,9 @@ message Invoice {
   InvoiceStatus status = 10;
   int64 created_at = 11;
   int64 finalized_at = 12;
+  int64 committed_amount_cents = 13; // contract minimum spend (0 = no commit)
+  int64 usage_charges_cents = 14;    // raw usage charges before commit enforcement
+  int64 overage_cents = 15;          // amount exceeding commit (0 if under commit)
 }
 
 message LineItem {
