@@ -444,6 +444,46 @@ func TestPathFlatten(t *testing.T) {
 	g.Expect(p2.Directory().KeyType).To(Equal(KeyTypeLong))
 }
 
+func TestAddSubdirectories(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectories(
+		NewDirectory("a", KeyTypeString),
+		NewDirectory("b", KeyTypeLong),
+		NewDirectory("c", KeyTypeBytes),
+	)
+
+	g.Expect(root.GetSubdirectories()).To(HaveLen(3))
+	g.Expect(root.GetSubdirectory("a")).NotTo(BeNil())
+	g.Expect(root.GetSubdirectory("b")).NotTo(BeNil())
+	g.Expect(root.GetSubdirectory("c")).NotTo(BeNil())
+}
+
+func TestDeepTree(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Build a deep nested tree: level0 -> level1 -> ... -> level9
+	root := NewDirectory("level0", KeyTypeNull)
+	cur := root
+	for i := 1; i < 10; i++ {
+		next := NewDirectory(fmt.Sprintf("level%d", i), KeyTypeLong)
+		cur.AddSubdirectory(next)
+		cur = next
+	}
+
+	// Leaf depth should be 9 (0-indexed from root)
+	g.Expect(cur.Depth()).To(Equal(9))
+	g.Expect(cur.IsLeaf()).To(BeTrue())
+	g.Expect(root.IsLeaf()).To(BeFalse())
+
+	// NameInTree of the leaf should have all 10 levels
+	expected := "level0.level1.level2.level3.level4.level5.level6.level7.level8.level9"
+	g.Expect(cur.NameInTree()).To(Equal(expected))
+}
+
 func TestFindChildForValue(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

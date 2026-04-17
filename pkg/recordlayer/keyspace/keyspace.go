@@ -167,6 +167,15 @@ func (d *Directory) AddSubdirectory(child *Directory) *Directory {
 	return d
 }
 
+// AddSubdirectories adds multiple child directories in one call.
+// Returns the parent for chaining. Panics on duplicate names.
+func (d *Directory) AddSubdirectories(children ...*Directory) *Directory {
+	for _, child := range children {
+		d.AddSubdirectory(child)
+	}
+	return d
+}
+
 // GetSubdirectory returns a child directory by name, or nil if not found.
 func (d *Directory) GetSubdirectory(name string) *Directory {
 	return d.childMap[name]
