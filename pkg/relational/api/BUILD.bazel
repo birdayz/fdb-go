@@ -3,12 +3,15 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "api",
     srcs = [
+        "continuation.go",
         "datatype.go",
         "datatype_composite.go",
         "datatype_primitive.go",
         "errcode.go",
         "error.go",
+        "keyset.go",
         "options.go",
+        "row.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
     visibility = ["//visibility:public"],
@@ -19,6 +22,7 @@ go_test(
     srcs = [
         "datatype_test.go",
         "error_test.go",
+        "keyset_continuation_test.go",
         "options_test.go",
     ],
     embed = [":api"],
