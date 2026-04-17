@@ -131,7 +131,11 @@ func NewConstantDirectory(name string, keyType KeyType, value any) *Directory {
 }
 
 // AddSubdirectory adds a child directory. Returns the parent for chaining.
+// Panics if a child with the same name already exists.
 func (d *Directory) AddSubdirectory(child *Directory) *Directory {
+	if _, exists := d.childMap[child.Name]; exists {
+		panic(fmt.Sprintf("keyspace: duplicate subdirectory name %q in directory %q", child.Name, d.Name))
+	}
 	child.parent = d
 	d.children = append(d.children, child)
 	d.childMap[child.Name] = child

@@ -65,6 +65,18 @@ func TestDirectoryTree(t *testing.T) {
 	g.Expect(root.GetSubdirectories()).To(HaveLen(1))
 }
 
+func TestDuplicateSubdirectoryPanics(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("data", KeyTypeString))
+
+	g.Expect(func() {
+		root.AddSubdirectory(NewDirectory("data", KeyTypeLong))
+	}).To(Panic())
+}
+
 func TestKeySpacePath(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
