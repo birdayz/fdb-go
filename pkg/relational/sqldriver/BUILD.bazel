@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqldriver",
+    srcs = [
+        "driver.go",
+        "dsn.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/relational/api"],
+)
+
+go_test(
+    name = "sqldriver_test",
+    srcs = ["driver_test.go"],
+    embed = [":sqldriver"],
+    deps = ["//pkg/relational/api"],
+)
