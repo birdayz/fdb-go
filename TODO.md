@@ -279,16 +279,17 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 0 — Skeleton & foundations
 
-- [ ] **pkg/relational/api skeleton** — port interfaces 1:1 from Java's `fdb-relational-api/`:
-  - `Connection`, `Statement`, `PreparedStatement`, `ResultSet`, `ResultSetMetaData`, `DatabaseMetaData`, `Driver`
-  - `DataType` hierarchy (primitives, struct, array, enum)
-  - `Options` (per-connection config map)
-  - `exceptions/ErrorCode` enum — every Java `ErrorCode` value, matched to a Go error struct (per `feedback_error_types_not_sentinels.md`)
-  - `Row`, `KeySet`, `Continuation`, `ParseTreeInfo`
-- [ ] **pkg/relational/api/metadata** — `Table`, `Column`, `Index`, `Schema`, `SchemaTemplate`, `View`, `InvokedRoutine`, `Visitor`
+- [x] **pkg/relational/api foundations** (nightshift-24):
+  - [x] `ErrorCode` — all 70 SQLSTATE codes from Java's enum, `Error` struct (code + message + cause + context), `errors.As` matching, `WithContext` immutable
+  - [x] `DataType` hierarchy — full port: `BooleanType`/`IntegerType`/`LongType`/`FloatType`/`DoubleType`/`StringType`/`BytesType`/`VersionType`/`UUIDType`/`NullType`/`UnknownType`/`VectorType`/`ArrayType`/`EnumType`/`StructType`/`UnresolvedType`; JDBC type-code mapping; singleton primitives
+  - [x] `Options` — 30-name map with parent chaining, immutable With/Builder, defaults mirroring Java's static block
+  - [x] `KeySet`, `Continuation` (+ Reason enum), `Row` (+ RowIterable)
+  - [x] `Metadata` base + `Visitor` + `Column`/`Table`/`Index`/`View`/`InvokedRoutine`/`SchemaTemplate`/`Schema` interfaces
+- [ ] **pkg/relational/api remaining interfaces** — `Connection`, `Statement`, `PreparedStatement`, `ResultSet`, `ResultSetMetaData`, `DatabaseMetaData`, `Driver`, `Array`, `Struct`. Lean Go-idiomatic shape; omit the java.sql.* throw-stubs.
 - [ ] **pkg/relational/api/fluentsql** — (deferred; shell only until after Phase 7)
 - [ ] **Decide interop with existing `pkg/recordlayer` types** — `RecordMetaData` vs. new `SchemaTemplate`; `Index` vs. metadata `Index`; document where they live side by side vs. get merged.
 - [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages, etc.). Regenerate via `just generate`.
+- [x] **pkg/relational/sqldriver skeleton** (nightshift-24) — `sql.Register("fdbsql", …)`, DSN parser (embedded + remote shapes), `Driver`/`Connector` satisfying `driver.Driver`/`driver.DriverContext`/`driver.Connector`. Connect returns `ErrCodeUnsupportedOperation` (plumbing ready; embedded impl arrives in Phase 5).
 
 #### Phase 1 — Parser (ANTLR4)
 
