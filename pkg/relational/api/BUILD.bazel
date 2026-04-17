@@ -3,6 +3,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "api",
     srcs = [
+        "datatype.go",
+        "datatype_composite.go",
+        "datatype_primitive.go",
         "errcode.go",
         "error.go",
     ],
@@ -12,6 +15,9 @@ go_library(
 
 go_test(
     name = "api_test",
-    srcs = ["error_test.go"],
+    srcs = [
+        "datatype_test.go",
+        "error_test.go",
+    ],
     embed = [":api"],
 )
