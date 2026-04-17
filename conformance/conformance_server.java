@@ -48,6 +48,7 @@ class ConformanceServer {
         new CountUpdatesIndexSteps(),
         new RankIndexSteps(),
         new CoveringIndexSteps(),
+        new NestingIndexSteps(),
         new DeleteRecordsWhereSteps(),
         new VersionIndexSteps(),
         new OnlineIndexerSteps(),
