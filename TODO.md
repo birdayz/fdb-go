@@ -133,7 +133,7 @@ All data-path functions implemented. Missing are observability/admin only:
 
 - [x] **DeleteRecordsWhere leaked index clears to non-target types** — `findMatchingRecordTypes()` only checked PK column count, not type key value. Customer-only indexes were incorrectly cleared when deleting Orders. Fixed: filter by type key VALUE when PKs have RecordTypeKey prefix. swingshift-23.
 
-- [ ] **computeIndexDeletePrefix uses arbitrary sample PK** — picks the first record type from `md.RecordTypes()` (map iteration, non-deterministic) as the sample PK for index expression matching. Works with homogeneous schemas (all types share RecordTypeKey prefix), but could give wrong results with heterogeneous PK structures. LOW — not practical with current schemas.
+- [x] **computeIndexDeletePrefix uses arbitrary sample PK** — now uses first matching type from `matchingTypeNames` instead of arbitrary map iteration. Fallback to any type preserved for edge cases. swingshift-23.
 
 ### Features
 
