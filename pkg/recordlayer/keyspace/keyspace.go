@@ -8,6 +8,7 @@ package keyspace
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -210,6 +211,59 @@ func (d *Directory) NameInTree() string {
 		return d.Name
 	}
 	return d.parent.NameInTree() + "." + d.Name
+}
+
+// ToPathString returns a slash-separated path from root to this directory.
+// Matches Java's KeySpaceDirectory.toPathString().
+func (d *Directory) ToPathString() string {
+	var sb strings.Builder
+	appendDirPath(&sb, d)
+	return sb.String()
+}
+
+func appendDirPath(sb *strings.Builder, dir *Directory) {
+	if dir.parent != nil {
+		appendDirPath(sb, dir.parent)
+	}
+	sb.WriteString("/")
+	sb.WriteString(dir.Name)
+}
+
+// ToTree returns an ASCII tree representation of this directory and its subtree.
+// Matches Java's KeySpaceDirectory.toTree().
+func (d *Directory) ToTree() string {
+	var sb strings.Builder
+	writeTreeLine(&sb, d, 0, false, nil)
+	return sb.String()
+}
+
+func writeTreeLine(sb *strings.Builder, dir *Directory, indent int, hasSibling bool, downspouts []bool) {
+	for i := 0; i < indent; i++ {
+		if i < len(downspouts) && downspouts[i] {
+			sb.WriteString(" | ")
+		} else {
+			sb.WriteString("   ")
+		}
+	}
+	if dir.parent != nil {
+		sb.WriteString(" +-")
+	}
+	sb.WriteString(dir.Name)
+	sb.WriteString(" (")
+	sb.WriteString(dir.KeyType.String())
+	if dir.IsConstant() {
+		sb.WriteString(fmt.Sprintf("=%v", dir.Value))
+	}
+	sb.WriteString(")\n")
+
+	childDownspouts := make([]bool, indent+1)
+	copy(childDownspouts, downspouts)
+	childDownspouts[indent] = hasSibling
+
+	for i, child := range dir.children {
+		childHasSibling := i < len(dir.children)-1
+		writeTreeLine(sb, child, indent+1, childHasSibling, childDownspouts)
+	}
 }
 
 // KeySpace is the root of a directory tree. It holds one or more root directories.

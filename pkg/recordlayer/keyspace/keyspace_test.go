@@ -115,6 +115,41 @@ func TestDirectoryJavaAligned(t *testing.T) {
 	g.Expect(table.NameInTree()).To(Equal("root.app.table"))
 }
 
+func TestToPathString(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	table := NewDirectory("table", KeyTypeLong)
+	root.AddSubdirectory(app)
+	app.AddSubdirectory(table)
+
+	g.Expect(root.ToPathString()).To(Equal("/root"))
+	g.Expect(app.ToPathString()).To(Equal("/root/app"))
+	g.Expect(table.ToPathString()).To(Equal("/root/app/table"))
+}
+
+func TestToTree(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	user := NewDirectory("user", KeyTypeLong)
+	session := NewDirectory("session", KeyTypeUUID)
+	root.AddSubdirectory(app)
+	app.AddSubdirectory(user)
+	app.AddSubdirectory(session)
+
+	tree := root.ToTree()
+	// Just verify it contains expected elements
+	g.Expect(tree).To(ContainSubstring("root (NULL)"))
+	g.Expect(tree).To(ContainSubstring("app (STRING)"))
+	g.Expect(tree).To(ContainSubstring("user (LONG)"))
+	g.Expect(tree).To(ContainSubstring("session (UUID)"))
+}
+
 func TestDuplicateSubdirectoryPanics(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
