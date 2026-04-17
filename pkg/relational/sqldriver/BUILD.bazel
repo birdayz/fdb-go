@@ -13,7 +13,10 @@ go_library(
 
 go_test(
     name = "sqldriver_test",
-    srcs = ["driver_test.go"],
+    srcs = [
+        "driver_test.go",
+        "sql_integration_test.go",
+    ],
     embed = [":sqldriver"],
     deps = ["//pkg/relational/api"],
 )
