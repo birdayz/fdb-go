@@ -131,6 +131,10 @@ All data-path functions implemented. Missing are observability/admin only:
 
 - [x] **ensureStoreStateLoaded error swallowing (partial)** — Errors now captured in `stateLoadErr` and propagated from 5 error-returning callers (validateRecordUpdateAllowed, updateSecondaryIndexes, 3 batch methods). 7 no-error methods (GetIndexState, GetUserVersion, etc.) still use fallback — changing their signatures is a breaking API change. nightshift-21.
 
+- [x] **DeleteRecordsWhere leaked index clears to non-target types** — `findMatchingRecordTypes()` only checked PK column count, not type key value. Customer-only indexes were incorrectly cleared when deleting Orders. Fixed: filter by type key VALUE when PKs have RecordTypeKey prefix. swingshift-23.
+
+- [ ] **computeIndexDeletePrefix uses arbitrary sample PK** — picks the first record type from `md.RecordTypes()` (map iteration, non-deterministic) as the sample PK for index expression matching. Works with homogeneous schemas (all types share RecordTypeKey prefix), but could give wrong results with heterogeneous PK structures. LOW — not practical with current schemas.
+
 ### Features
 
 #### OUT OF SCOPE (query planner prerequisites)
