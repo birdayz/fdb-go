@@ -259,6 +259,49 @@ func TestDriverRegistration(t *testing.T) {
 	}
 }
 
+func TestDriverOpenLegacy(t *testing.T) {
+	t.Parallel()
+	// driver.Driver.Open is the legacy entry (pre-DriverContext).
+	// It still has to work — some tools call it directly. Our Open
+	// delegates to OpenConnector(name) + Connect(context.Background()).
+	d := &Driver{}
+	// Valid DSN but Connect is not implemented — expect
+	// UnsupportedOperation.
+	_, err := d.Open("fdbsql:///mydb")
+	if err == nil {
+		t.Fatal("expected Open to fail (not implemented)")
+	}
+	e := api.AsError(err)
+	if e == nil || e.Code != api.ErrCodeUnsupportedOperation {
+		t.Errorf("expected UnsupportedOperation, got %v", err)
+	}
+	// Bad DSN surfaces at Open time (via OpenConnector).
+	_, err = d.Open("not a valid dsn")
+	if err == nil {
+		t.Fatal("expected Open to fail on bad DSN")
+	}
+}
+
+func TestConnectorAccessors(t *testing.T) {
+	t.Parallel()
+	d := &Driver{}
+	c, err := d.OpenConnector("fdbsql:///mydb?cluster_file=/tmp/fdb.cluster")
+	if err != nil {
+		t.Fatalf("OpenConnector: %v", err)
+	}
+	conn := c.(*Connector)
+	if conn.Driver() != d {
+		t.Error("Driver() should return the parent driver")
+	}
+	dsn := conn.DSN()
+	if dsn == nil || dsn.Path != "/mydb" {
+		t.Errorf("DSN() returned unexpected value: %+v", dsn)
+	}
+	if dsn.Options["cluster_file"] != "/tmp/fdb.cluster" {
+		t.Errorf("DSN options not preserved: %+v", dsn.Options)
+	}
+}
+
 func TestDriverOpenConnector_BadDSN(t *testing.T) {
 	t.Parallel()
 	d := &Driver{}
