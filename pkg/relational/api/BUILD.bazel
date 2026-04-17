@@ -9,6 +9,7 @@ go_library(
         "datatype.go",
         "datatype_composite.go",
         "datatype_primitive.go",
+        "direct_access.go",
         "errcode.go",
         "error.go",
         "keyset.go",
