@@ -232,6 +232,57 @@ func TestFDBResolver_ResolverDirectory_EndToEnd(t *testing.T) {
 	g.Expect(path4.GetValue()).To(Equal(int64(0)), "persisted mapping survives cache flush")
 }
 
+// TestFDBResolver_ConcurrentCrossInstance simulates two separate resolver
+// instances racing on allocation for the same name. FDB's transactional
+// write conflict on the counter key ensures exactly one allocation wins.
+func TestFDBResolver_ConcurrentCrossInstance(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	ss := subspace.Sub(tuple.Tuple{t.Name()})
+	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+		begin, end := ss.FDBRangeKeys()
+		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Create N independent resolver instances (simulating cross-process).
+	const instances = 8
+	resolvers := make([]*keyspace.FDBResolver, instances)
+	for i := range resolvers {
+		resolvers[i] = keyspace.NewFDBResolver(sharedDB, ss)
+	}
+
+	// Each instance resolves the same name concurrently.
+	results := make(chan int64, instances)
+	errs := make(chan error, instances)
+	for _, r := range resolvers {
+		r := r
+		go func() {
+			v, err := r.Resolve(ctx, "contested")
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- v
+		}()
+	}
+
+	// All should return the same value (FDB conflict resolution).
+	seen := make(map[int64]int)
+	for i := 0; i < instances; i++ {
+		select {
+		case v := <-results:
+			seen[v]++
+		case err := <-errs:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	g.Expect(seen).To(HaveLen(1), "all instances must converge on the same value, got %v", seen)
+}
+
 func TestFDBResolver_ReverseLookup(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
