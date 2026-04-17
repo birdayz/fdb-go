@@ -84,6 +84,42 @@ func TestPrimitiveWithNullableToggles(t *testing.T) {
 	}
 }
 
+func TestEveryPrimitiveWithNullableRoundTrip(t *testing.T) {
+	t.Parallel()
+	// Exercise WithNullable on every primitive type. Each method
+	// duplicates the same pattern across 10 types, so a gap in one
+	// won't show up in TestPrimitiveWithNullableToggles (which only
+	// covers IntegerType). Roundtrip: notNullable -> nullable ->
+	// notNullable must return the original singleton.
+	notNullable := []DataType{
+		NewBooleanType(false),
+		NewIntegerType(false),
+		NewLongType(false),
+		NewFloatType(false),
+		NewDoubleType(false),
+		NewStringType(false),
+		NewBytesType(false),
+		NewVersionType(false),
+		NewUUIDType(false),
+	}
+	for _, orig := range notNullable {
+		flipped := orig.WithNullable(true)
+		if !flipped.IsNullable() {
+			t.Errorf("%s: WithNullable(true) did not flip", orig.Code())
+		}
+		if flipped == orig {
+			t.Errorf("%s: WithNullable(true) returned same singleton", orig.Code())
+		}
+		back := flipped.WithNullable(false)
+		if back.IsNullable() {
+			t.Errorf("%s: WithNullable(false) on nullable did not flip", orig.Code())
+		}
+		if back != orig {
+			t.Errorf("%s: roundtrip did not return original singleton", orig.Code())
+		}
+	}
+}
+
 func TestPrimitiveResolvedSelf(t *testing.T) {
 	t.Parallel()
 	types := []DataType{
@@ -518,6 +554,102 @@ func TestUnresolvedType(t *testing.T) {
 		}
 	}()
 	u.Resolve(map[string]Named{})
+}
+
+// ---- Compile-time + sanity coverage for composite methods ----
+
+func TestCompositeMethodCoverage(t *testing.T) {
+	t.Parallel()
+	// Exercise Resolve / Equal / String / WithNullable on each
+	// composite type. TestCompositeType specialised tests already
+	// cover semantics; this test exists to pin coverage on every
+	// method and catch regressions where a method becomes dead code.
+
+	// VectorType: already thoroughly covered.
+
+	// ArrayType: Resolve on already-resolved returns self.
+	a := NewArrayType(NewIntegerType(false), false)
+	if got := a.Resolve(nil); got != DataType(a) {
+		t.Error("ArrayType.Resolve on resolved should return self")
+	}
+	if !a.Equal(NewArrayType(NewIntegerType(false), false)) {
+		t.Error("ArrayType.Equal broken")
+	}
+	if s := a.String(); s == "" {
+		t.Error("ArrayType.String empty")
+	}
+	if a.WithNullable(false) != DataType(a) {
+		t.Error("ArrayType.WithNullable same-flag should return receiver")
+	}
+
+	// EnumType.
+	e := NewEnumType("X", []EnumValue{NewEnumValue("A", 0)}, false)
+	if got := e.Resolve(nil); got != DataType(e) {
+		t.Error("EnumType.Resolve should return self")
+	}
+	if e.WithNullable(false) != DataType(e) {
+		t.Error("EnumType.WithNullable same-flag should return receiver")
+	}
+	if !e.Equal(NewEnumType("X", []EnumValue{NewEnumValue("A", 0)}, false)) {
+		t.Error("EnumType.Equal broken")
+	}
+
+	// StructType.
+	f := []StructField{NewStructField("x", NewLongType(false), 0)}
+	s := NewStructType("T", f, false)
+	if got := s.Resolve(nil); got != DataType(s) {
+		t.Error("StructType.Resolve on resolved should return self")
+	}
+	if s.WithNullable(false) != DataType(s) {
+		t.Error("StructType.WithNullable same-flag should return receiver")
+	}
+	if s.Fields() == nil {
+		t.Error("StructType.Fields returned nil")
+	}
+	// StructField accessors.
+	fld := s.Field(0)
+	if fld.Index() != 0 || fld.Name() != "x" {
+		t.Errorf("StructField accessors broken: %+v", fld)
+	}
+	if fld.String() != "x" {
+		t.Errorf("StructField.String = %q", fld.String())
+	}
+
+	// UnresolvedType.
+	u := NewUnresolvedType("Y", false)
+	if u.WithNullable(false) != DataType(u) {
+		t.Error("UnresolvedType.WithNullable same-flag should return receiver")
+	}
+	if u.WithNullable(true) == DataType(u) {
+		t.Error("UnresolvedType.WithNullable flip should return new value")
+	}
+	if s := u.String(); s == "" {
+		t.Error("UnresolvedType.String empty")
+	}
+	if !u.Equal(NewUnresolvedType("Y", false)) {
+		t.Error("UnresolvedType.Equal broken")
+	}
+
+	// Code.String() for every value.
+	for _, c := range []Code{
+		CodeBoolean, CodeLong, CodeInteger, CodeFloat, CodeDouble,
+		CodeString, CodeBytes, CodeVersion, CodeEnum, CodeUUID,
+		CodeStruct, CodeArray, CodeUnknown, CodeNull, CodeVector,
+	} {
+		if c.String() == "?" {
+			t.Errorf("Code(%d).String() = ?, should map", c)
+		}
+	}
+	// Unknown Code falls through to "?".
+	if Code(99).String() != "?" {
+		t.Error("Code(99).String() should be ?")
+	}
+
+	// EnumValue.String().
+	v := NewEnumValue("V", 5)
+	if v.String() != "V" || v.Number() != 5 {
+		t.Errorf("EnumValue broken: %s/%d", v.String(), v.Number())
+	}
 }
 
 // ---- JDBC mapping ----
