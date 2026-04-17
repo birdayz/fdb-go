@@ -65,6 +65,24 @@ func TestDirectoryTree(t *testing.T) {
 	g.Expect(root.GetSubdirectories()).To(HaveLen(1))
 }
 
+func TestValidate(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Valid tree
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewConstantDirectory("data", KeyTypeString, "d"))
+	root.GetSubdirectory("data").AddSubdirectory(NewDirectory("id", KeyTypeLong))
+	ks := NewKeySpace(root)
+	g.Expect(ks.Validate()).To(Succeed())
+
+	// Invalid: constant value type mismatch
+	badRoot := NewDirectory("root", KeyTypeNull)
+	badRoot.AddSubdirectory(NewConstantDirectory("bad", KeyTypeLong, "not_a_long"))
+	badKs := NewKeySpace(badRoot)
+	g.Expect(badKs.Validate()).To(HaveOccurred())
+}
+
 func TestDuplicateSubdirectoryPanics(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

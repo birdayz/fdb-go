@@ -174,6 +174,33 @@ func (ks *KeySpace) Root() *Directory {
 	return ks.root
 }
 
+// Validate checks the tree for structural errors:
+// - Constant values must match their declared key type
+// - No nil children
+func (ks *KeySpace) Validate() error {
+	return validateDirectory(ks.root, nil)
+}
+
+func validateDirectory(d *Directory, path []string) error {
+	if d == nil {
+		return fmt.Errorf("keyspace: nil directory at path %v", path)
+	}
+	currentPath := append(path, d.Name)
+
+	if d.IsConstant() {
+		if err := d.KeyType.ValidateValue(d.Value); err != nil {
+			return fmt.Errorf("keyspace: constant value in %v: %w", currentPath, err)
+		}
+	}
+
+	for _, child := range d.children {
+		if err := validateDirectory(child, currentPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PathFromTuple resolves a tuple back to a path by matching values against
 // the directory tree. Returns the deepest matching path and any remaining
 // tuple elements that didn't match a directory.
