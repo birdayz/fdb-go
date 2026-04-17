@@ -195,9 +195,8 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 		ss:       subspace.Sub("metrognome"),
 	}
 
-	// CreateOrOpen ensures the store header exists and triggers index rebuild
-	// if metadata version changed. For large stores, inline rebuild may timeout
-	// (5-second FDB transaction limit). Fallback: Build() skips rebuild entirely.
+	// CreateOrOpen once — ensures store header exists, runs checkPossiblyRebuild
+	// if metadata version changed (rebuilds new indexes inline).
 	_, err = fdb.Run(context.Background(), func(rtx *rl.FDBRecordContext) (any, error) {
 		_, err := rl.NewStoreBuilder().
 			SetContext(rtx).
@@ -207,20 +206,7 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 		return nil, err
 	})
 	if err != nil {
-		// Fallback: skip checkPossiblyRebuild. Store header may need manual
-		// creation via OnlineIndexer or frl CLI for new indexes.
-		_, err2 := fdb.Run(context.Background(), func(rtx *rl.FDBRecordContext) (any, error) {
-			_, err := rl.NewStoreBuilder().
-				SetContext(rtx).
-				SetMetaDataProvider(md).
-				SetSubspace(db.ss).
-				SetAssumeAllIndexesReadable(true).
-				Build()
-			return nil, err
-		})
-		if err2 != nil {
-			return nil, fmt.Errorf("create/open store: %w (fallback: %v)", err, err2)
-		}
+		return nil, fmt.Errorf("create/open store: %w", err)
 	}
 
 	return db, nil
