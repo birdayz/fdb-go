@@ -50,6 +50,40 @@ func TestKeySetSetKeyColumn(t *testing.T) {
 	}
 }
 
+func TestKeySetSetKeyColumnOverwrites(t *testing.T) {
+	t.Parallel()
+	// Setting the same column twice must overwrite, not duplicate.
+	// Pins the mutation contract documented on KeySet.
+	k := NewKeySet()
+	if _, err := k.SetKeyColumn("id", int64(1)); err != nil {
+		t.Fatalf("SetKeyColumn: %v", err)
+	}
+	if _, err := k.SetKeyColumn("id", int64(42)); err != nil {
+		t.Fatalf("SetKeyColumn (overwrite): %v", err)
+	}
+	if k.NumColumns() != 1 {
+		t.Errorf("NumColumns after overwrite = %d, want 1", k.NumColumns())
+	}
+	if v := k.ToMap()["id"]; v != int64(42) {
+		t.Errorf("overwritten value = %v, want 42", v)
+	}
+}
+
+func TestKeySetMutationReturnsSameReceiver(t *testing.T) {
+	t.Parallel()
+	// Documented contract: SetKeyColumn mutates and returns the
+	// receiver (not a copy). Pin that so future refactors don't
+	// silently switch to copy-on-write without updating docs.
+	k := NewKeySet()
+	ret, err := k.SetKeyColumn("id", 1)
+	if err != nil {
+		t.Fatalf("SetKeyColumn: %v", err)
+	}
+	if ret != k {
+		t.Error("SetKeyColumn should return receiver, not a new value")
+	}
+}
+
 func TestKeySetSetKeyColumns(t *testing.T) {
 	t.Parallel()
 	k := NewKeySet()
@@ -85,6 +119,9 @@ func TestContinuationReasonString(t *testing.T) {
 		{ContinuationTransactionLimitReached, "TRANSACTION_LIMIT_REACHED"},
 		{ContinuationQueryExecutionLimitReached, "QUERY_EXECUTION_LIMIT_REACHED"},
 		{ContinuationCursorAfterLast, "CURSOR_AFTER_LAST"},
+		// Unknown/out-of-range values fall through to the default branch.
+		{ContinuationReason(99), "?"},
+		{ContinuationReason(-1), "?"},
 	}
 	for _, c := range cases {
 		if got := c.r.String(); got != c.want {

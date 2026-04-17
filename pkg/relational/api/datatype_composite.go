@@ -202,6 +202,10 @@ func (t *EnumType) Equal(other DataType) bool {
 	return true
 }
 
+// String mirrors Java's EnumType.toString(): "enum(Name){V1,V2}".
+// Notably Java does NOT append the "∪ ∅" nullability suffix on
+// EnumType (unlike primitives), so neither do we — wire-format
+// compatibility takes precedence over surface regularity.
 func (t *EnumType) String() string {
 	var b strings.Builder
 	b.WriteString("enum(")
@@ -349,14 +353,21 @@ func (t *StructType) HasIdenticalStructure(other any) bool {
 	return true
 }
 
+// String mirrors Java's StructType.toString():
+// `{name[:5]} { field1:type1,field2:type2 } `. Java does NOT append
+// the nullability suffix, so neither do we.
+//
+// The name is truncated to the first 5 *runes* — not bytes, to avoid
+// slicing a multibyte character in half. Java's `String.substring(0, 5)`
+// operates on UTF-16 code units; for any name that fits in the BMP the
+// result is byte-identical.
+//
+// NB: Java's 5-rune truncation can produce false collisions in plan
+// cache keys when two struct types share a 5-rune prefix. This matches
+// Java deliberately — changing it would break wire compatibility.
 func (t *StructType) String() string {
-	// Java truncates name to first 5 chars in toString.
-	shortName := t.name
-	if len(shortName) > 5 {
-		shortName = shortName[:5]
-	}
 	var b strings.Builder
-	b.WriteString(shortName)
+	b.WriteString(truncateRunes(t.name, 5))
 	b.WriteString(" { ")
 	for i, f := range t.fields {
 		if i > 0 {
@@ -368,6 +379,23 @@ func (t *StructType) String() string {
 	}
 	b.WriteString(" } ")
 	return b.String()
+}
+
+// truncateRunes returns the first n runes of s. Safe for any UTF-8
+// input (no mid-rune slicing). If s has fewer than n runes, returns
+// s unchanged.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
 }
 
 // ---- UnresolvedType ----

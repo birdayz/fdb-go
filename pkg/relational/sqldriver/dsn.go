@@ -2,6 +2,7 @@ package sqldriver
 
 import (
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -114,7 +115,7 @@ func (d *DSN) String() string {
 		for k := range d.Options {
 			keys = append(keys, k)
 		}
-		sortStrings(keys)
+		sort.Strings(keys)
 		for _, k := range keys {
 			if !first {
 				b.WriteByte('&')
@@ -126,15 +127,4 @@ func (d *DSN) String() string {
 		}
 	}
 	return b.String()
-}
-
-// sortStrings is an inlined sort.Strings to keep dependencies minimal.
-// Not hot-path; called on DSN.String() only.
-func sortStrings(s []string) {
-	// Insertion sort — expected len is 0-10.
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }

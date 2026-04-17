@@ -30,7 +30,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"io"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
@@ -100,10 +99,6 @@ var (
 	_ driver.DriverContext = (*Driver)(nil)
 	_ driver.Connector     = (*Connector)(nil)
 )
-
-// io.EOF is re-exported so callers don't need to import "io" just to
-// compare against Rows.Next's terminal error.
-var ErrNoMoreRows = io.EOF
 
 func init() {
 	sql.Register(DriverName, &Driver{})

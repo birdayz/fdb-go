@@ -123,6 +123,53 @@ func TestDSN_StringRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDSN_StringExact(t *testing.T) {
+	t.Parallel()
+	// Pin the exact output shape so the DSN form is part of the
+	// public API contract — accidental reformats become test failures.
+	cases := []struct {
+		name string
+		dsn  *DSN
+		want string
+	}{
+		{
+			name: "embedded no options",
+			dsn:  &DSN{Mode: ModeEmbedded, Path: "/mydb"},
+			want: "fdbsql:///mydb",
+		},
+		{
+			name: "embedded with options (sorted)",
+			dsn: &DSN{
+				Mode: ModeEmbedded, Path: "/mydb",
+				Options: map[string]string{"z": "1", "a": "2"},
+			},
+			want: "fdbsql:///mydb?a=2&z=1",
+		},
+		{
+			name: "remote host:port",
+			dsn:  &DSN{Mode: ModeRemote, Host: "h:1234", Path: "/mydb"},
+			want: "fdbsql://h:1234/mydb",
+		},
+		{
+			name: "remote with options",
+			dsn: &DSN{
+				Mode: ModeRemote, Host: "h:1234", Path: "/mydb",
+				Options: map[string]string{"tls": "true"},
+			},
+			want: "fdbsql://h:1234/mydb?tls=true",
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := c.dsn.String(); got != c.want {
+				t.Errorf("String() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestDSN_StringDeterministicOrder(t *testing.T) {
 	t.Parallel()
 	// Options map iteration is randomized; String() must sort keys.

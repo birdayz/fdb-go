@@ -302,8 +302,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 2 — Type system + metadata storage
 
-- [ ] **Port `DataType`** — primitive types, composite types (struct/array), nullability, equality/compat rules. Match Java's `DataType` class tree.
-- [ ] **Port `SchemaTemplate` / `Schema` / `Table` / `Column` / `Index`** — in-memory representation. Builders.
+- [x] Port `DataType` — done in Phase 0 (nightshift-24)
+- [x] Port `SchemaTemplate` / `Schema` / `Table` / `Column` / `Index` interfaces — done in Phase 0 (nightshift-24)
+- [ ] **Concrete `SchemaTemplate` / `Table` / `Column` / `Index` structs** — builders, FDB-backed storage impl behind the Phase 0 interfaces.
 - [ ] **Catalog storage layer** — `StoreCatalog` interface + `RecordLayerStoreCatalog` implementation writing to FDB. Mirror Java's subspace layout.
 - [ ] **System tables** — `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, `INDEXES`, `SCHEMATA`, etc. Computed on-the-fly from catalog state (Java pattern).
 - [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
@@ -427,7 +428,11 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 1. **Cascades port scope is enormous.** 104K LOC Java → probably 80K+ Go after de-Java-isms. Many shifts; needs sub-RFCs for each rule family. Alternative considered and **rejected**: hand-rolled heuristic planner would break Java plan-cache-key compatibility and mean divergent optimizer behavior forever.
 2. **ANTLR-go performance.** Java's ANTLR runtime is well-tuned; antlr4-go/antlr4 is less mature. Parse-hot-path benchmarking required before Phase 1 sign-off.
-3. **Go generics vs. Java wildcards.** Cascades is heavily generic. Expect places where `Value<T>` becomes an interface hierarchy instead of a generic struct. Document every divergence.
-4. **`database/sql` impedance mismatch.** `driver.Value` is a closed set (bool/int64/float64/string/[]byte/time.Time/nil). Struct/array/enum/versionstamp need custom `Scanner`/`Valuer` types; users must opt in explicitly. Document in `pkg/relational/sqldriver/README.md`.
+3. **Go generics vs. Java wildcards — decide before Phase 4.0.** Cascades is heavily generic (`Value<T>`, `RelationalExpression<T>`, `BindingMatcher<? extends T>`). The two candidate shapes for the Go port:
+   - (a) Interface hierarchies with `any` / explicit type assertions (matches how our current record layer handles index expressions). Lower compile-time safety, smaller API surface.
+   - (b) Generic structs + constraint interfaces. Higher safety, but Go generics do not have wildcard bounds — `Matcher[? extends Value]` becomes awkward. Requires rewriting the matcher DSL.
+   - **Decision:** go with (a) initially. Revisit in Phase 4.5 (rules) if the lack of compile-time type safety causes correctness bugs. Documenting here so Phase 4.0 foundation types don't drift.
+4. **`database/sql` impedance mismatch.** `driver.Value` is a closed set (bool/int64/float64/string/[]byte/time.Time/nil). Struct/array/enum/versionstamp need custom `Scanner`/`Valuer` types; users must opt in explicitly. Document in a `pkg/relational/sqldriver` package doc comment.
 5. **Catalog migration.** If we get the catalog wire format wrong once, users' production data needs migration. Write conformance tests for catalog read-back **before** writing the catalog writer.
 6. **Testing the planner.** No FDB call-site validates plan quality end-to-end beyond correctness. Need yamsql runner + an `EXPLAIN` diff harness against Java.
+7. **ANTLR grammar license.** Java's `RelationalLexer.g4` / `RelationalParser.g4` are MIT-licensed (original Positive Technologies MySQL grammar) with Apple copyright addition (Apache 2.0). Vendoring them into Go needs a `LICENSE` note in `pkg/relational/core/parser/grammar/`; both licenses are permissive and compatible.

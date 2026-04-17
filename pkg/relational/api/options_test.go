@@ -220,6 +220,33 @@ func TestEqualWithSliceValues(t *testing.T) {
 	}
 }
 
+func TestEqualWithUncomparableValues(t *testing.T) {
+	t.Parallel()
+	// A future option value type that's neither comparable with == nor
+	// []string must not panic. Simulate with a nested map.
+	type customOptName OptionName
+	name := OptionName("custom-map-option")
+	a := NewOptionsBuilder().Set(name, map[string]int{"a": 1}).Build()
+	b := NewOptionsBuilder().Set(name, map[string]int{"a": 1}).Build()
+	c := NewOptionsBuilder().Set(name, map[string]int{"a": 2}).Build()
+	if !a.Equal(b) {
+		t.Error("equal maps should compare equal")
+	}
+	if a.Equal(c) {
+		t.Error("different maps considered equal")
+	}
+	// Byte slices — another common uncomparable.
+	a2 := NewOptionsBuilder().Set(name, []byte{1, 2, 3}).Build()
+	b2 := NewOptionsBuilder().Set(name, []byte{1, 2, 3}).Build()
+	c2 := NewOptionsBuilder().Set(name, []byte{9, 9, 9}).Build()
+	if !a2.Equal(b2) {
+		t.Error("equal byte slices should compare equal")
+	}
+	if a2.Equal(c2) {
+		t.Error("different byte slices considered equal")
+	}
+}
+
 func TestIndexFetchMethodString(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

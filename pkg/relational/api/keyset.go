@@ -4,9 +4,15 @@ package api
 // API to identify a row. Mirrors Java's
 // com.apple.foundationdb.relational.api.KeySet.
 //
-// Unlike Java, we expose a concrete struct (not a class + singleton
-// EMPTY). EmptyKeySet() returns the immutable zero-value and SetKey*
-// on it returns ErrCodeUnsupportedOperation.
+// KeySet is **mutable**. `SetKeyColumn` and `SetKeyColumns` update the
+// receiver in place and return it for chaining, not a new value. The
+// returned pointer is always the same as the receiver on success —
+// this matches Java's `return this` idiom. `EmptyKeySet()` returns an
+// immutable singleton; calling `SetKey*` on it returns an error and
+// does not produce a new mutable copy.
+//
+// If you need copy-on-write semantics, construct a fresh `NewKeySet()`
+// and populate it.
 type KeySet struct {
 	// columns is the mutable backing map. Nil = empty.
 	columns map[string]any

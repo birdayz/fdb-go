@@ -311,6 +311,22 @@ func TestEnumType(t *testing.T) {
 	}
 }
 
+func TestEnumTypeStringNoNullabilitySuffix(t *testing.T) {
+	t.Parallel()
+	// Java's EnumType.toString() does NOT append the "∪ ∅" suffix,
+	// unlike primitives. Our port matches Java — pin the behavior.
+	vals := []EnumValue{NewEnumValue("A", 0), NewEnumValue("B", 1)}
+	nullable := NewEnumType("X", vals, true)
+	notNull := NewEnumType("X", vals, false)
+	if nullable.String() != notNull.String() {
+		t.Errorf("EnumType.String() should not change with nullability:\n  %q\n  %q",
+			nullable.String(), notNull.String())
+	}
+	if s := nullable.String(); s != "enum(X){A,B}" {
+		t.Errorf("format regression: %q", s)
+	}
+}
+
 func TestEnumTypeConstructionPanics(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -352,6 +368,69 @@ func TestStructType(t *testing.T) {
 	if !s.IsResolved() {
 		t.Error("struct of resolved fields should be resolved")
 	}
+}
+
+func TestStructTypeWithNullable(t *testing.T) {
+	t.Parallel()
+	s := NewStructType("X", []StructField{
+		NewStructField("a", NewLongType(false), 0),
+	}, false)
+	// Same nullability returns self (idempotent).
+	if got := s.WithNullable(false); got != DataType(s) {
+		t.Error("idempotent WithNullable should return same pointer")
+	}
+	// Flipping creates a new value with the same fields.
+	n := s.WithNullable(true).(*StructType)
+	if !n.IsNullable() {
+		t.Error("WithNullable(true) did not flip")
+	}
+	if n.Name() != s.Name() || n.NumFields() != s.NumFields() {
+		t.Error("nullability toggle altered shape")
+	}
+	// Original untouched.
+	if s.IsNullable() {
+		t.Error("original was mutated")
+	}
+}
+
+func TestStructTypeStringTruncatesNameSafely(t *testing.T) {
+	t.Parallel()
+	// Short name — no truncation.
+	short := NewStructType("Abc", []StructField{
+		NewStructField("x", NewLongType(false), 0),
+	}, false)
+	if got := short.String(); !stringStartsWith(got, "Abc") {
+		t.Errorf("short name not preserved: %q", got)
+	}
+
+	// Long ASCII name — truncated to first 5 chars.
+	long := NewStructType("ABCDEFGHIJ", []StructField{
+		NewStructField("x", NewLongType(false), 0),
+	}, false)
+	if got := long.String(); !stringStartsWith(got, "ABCDE ") {
+		t.Errorf("long ASCII name not truncated to 5: %q", got)
+	}
+
+	// Multi-byte UTF-8 name — truncation must not slice a rune. Each
+	// of these runes is 3 bytes; a byte-based `name[:5]` would slice
+	// the second rune in half. Rune-based truncation yields exactly
+	// the first 5 runes, which here is "日本語テス".
+	utf8Name := NewStructType("日本語テスト", []StructField{
+		NewStructField("x", NewLongType(false), 0),
+	}, false)
+	got := utf8Name.String()
+	if !stringStartsWith(got, "日本語テス ") {
+		t.Errorf("utf-8 truncation wrong: %q", got)
+	}
+}
+
+// stringStartsWith is strings.HasPrefix inlined to avoid adding the
+// import just for one test call.
+func stringStartsWith(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	return s[:len(prefix)] == prefix
 }
 
 func TestStructTypeUnresolved(t *testing.T) {

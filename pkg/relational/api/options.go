@@ -2,6 +2,7 @@ package api
 
 import (
 	"math"
+	"reflect"
 	"sync"
 )
 
@@ -255,20 +256,23 @@ func (o *Options) Equal(other *Options) bool {
 		if vN != oN {
 			return false
 		}
-		if !vN && !anyEqualShallow(v, ov) {
+		if !vN && !anyEqualValue(v, ov) {
 			return false
 		}
 	}
 	return true
 }
 
-// anyEqualShallow is a helper for Equal. Uses reflect-free fast paths
-// for the option value types actually used (bool, int, int64, string,
-// OptionName, IndexFetchMethod, []string). Anything else falls through
-// to a direct comparison — which panics on uncomparable values, so
-// new option value types must be registered here.
-func anyEqualShallow(a, b any) bool {
-	// []string uniquely needs element-wise comparison (not ==).
+// anyEqualValue reports whether two option values are equal. Uses a
+// fast path for []string (the only slice-typed option today — see
+// OptDisabledPlannerRules and OptEncryptionKeyEntryList) and falls
+// through to reflect.DeepEqual for anything else.
+//
+// The reflect path matters: a future option value type that's
+// uncomparable (another slice, a map, a struct with slice fields)
+// must not cause Equal to panic — it's used by the plan cache.
+func anyEqualValue(a, b any) bool {
+	// []string fast path — common and avoids reflect's overhead.
 	if as, aok := a.([]string); aok {
 		bs, bok := b.([]string)
 		if !bok || len(as) != len(bs) {
@@ -281,11 +285,7 @@ func anyEqualShallow(a, b any) bool {
 		}
 		return true
 	}
-	if _, aok := b.([]string); aok {
-		// a is NOT []string but b is → unequal.
-		return false
-	}
-	return a == b
+	return reflect.DeepEqual(a, b)
 }
 
 // OptionsBuilder builds an Options.
