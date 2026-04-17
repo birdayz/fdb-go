@@ -2,6 +2,7 @@ package keyspace
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -82,6 +83,93 @@ func TestValidate(t *testing.T) {
 	badRoot.AddSubdirectory(NewConstantDirectory("bad", KeyTypeLong, "not_a_long"))
 	badKs := NewKeySpace(badRoot)
 	g.Expect(badKs.Validate()).To(HaveOccurred())
+}
+
+func TestDirectoryJavaAligned(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	table := NewDirectory("table", KeyTypeLong)
+	root.AddSubdirectory(app)
+	app.AddSubdirectory(table)
+
+	// IsLeaf
+	g.Expect(table.IsLeaf()).To(BeTrue())
+	g.Expect(app.IsLeaf()).To(BeFalse())
+	g.Expect(root.IsLeaf()).To(BeFalse())
+
+	// Parent
+	g.Expect(table.Parent()).To(Equal(app))
+	g.Expect(app.Parent()).To(Equal(root))
+	g.Expect(root.Parent()).To(BeNil())
+
+	// Depth
+	g.Expect(root.Depth()).To(Equal(0))
+	g.Expect(app.Depth()).To(Equal(1))
+	g.Expect(table.Depth()).To(Equal(2))
+
+	// NameInTree
+	g.Expect(root.NameInTree()).To(Equal("root"))
+	g.Expect(app.NameInTree()).To(Equal("root.app"))
+	g.Expect(table.NameInTree()).To(Equal("root.app.table"))
+}
+
+func TestToPathString(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	table := NewDirectory("table", KeyTypeLong)
+	root.AddSubdirectory(app)
+	app.AddSubdirectory(table)
+
+	g.Expect(root.ToPathString()).To(Equal("/root"))
+	g.Expect(app.ToPathString()).To(Equal("/root/app"))
+	g.Expect(table.ToPathString()).To(Equal("/root/app/table"))
+}
+
+func TestToTree(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	user := NewDirectory("user", KeyTypeLong)
+	session := NewDirectory("session", KeyTypeUUID)
+	root.AddSubdirectory(app)
+	app.AddSubdirectory(user)
+	app.AddSubdirectory(session)
+
+	tree := root.ToTree()
+	// Just verify it contains expected elements
+	g.Expect(tree).To(ContainSubstring("root (NULL)"))
+	g.Expect(tree).To(ContainSubstring("app (STRING)"))
+	g.Expect(tree).To(ContainSubstring("user (LONG)"))
+	g.Expect(tree).To(ContainSubstring("session (UUID)"))
+
+	// Multi-sibling scenario: the downspout connector | should appear
+	// between siblings.
+	g.Expect(tree).To(ContainSubstring(" +-"))
+	// Child directories are indented; user and session are at the same depth
+	// under app, so both should have " +-" prefix after some indentation.
+	userLine := ""
+	sessionLine := ""
+	for _, line := range strings.Split(tree, "\n") {
+		if strings.Contains(line, "user (LONG)") {
+			userLine = line
+		}
+		if strings.Contains(line, "session (UUID)") {
+			sessionLine = line
+		}
+	}
+	g.Expect(userLine).NotTo(BeEmpty())
+	g.Expect(sessionLine).NotTo(BeEmpty())
+	// Both should be at the same indent level (same number of leading chars
+	// before their "+-" marker).
+	g.Expect(strings.Index(userLine, "+-")).To(Equal(strings.Index(sessionLine, "+-")))
 }
 
 func TestDuplicateSubdirectoryPanics(t *testing.T) {
@@ -351,4 +439,220 @@ func TestToSubspace(t *testing.T) {
 	g.Expect(packed).NotTo(BeEmpty())
 	// Verify the path tuple is embedded in the subspace
 	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{"myapp"}))
+}
+
+func TestPathFlatten(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("office_id", KeyTypeLong))
+
+	ks := NewKeySpace(root)
+
+	p1, _ := ks.Path("state", "CA")
+	p2, _ := p1.Add("office_id", int64(1234))
+
+	flat := p2.Flatten()
+	g.Expect(flat).To(HaveLen(2))
+	g.Expect(flat[0].DirectoryName()).To(Equal("state"))
+	g.Expect(flat[0].GetValue()).To(Equal("CA"))
+	g.Expect(flat[1].DirectoryName()).To(Equal("office_id"))
+	g.Expect(flat[1].GetValue()).To(Equal(int64(1234)))
+
+	// Path.Directory() returns the underlying schema node
+	g.Expect(p2.Directory().Name).To(Equal("office_id"))
+	g.Expect(p2.Directory().KeyType).To(Equal(KeyTypeLong))
+}
+
+func TestPathEqual(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("id", KeyTypeLong))
+
+	ks := NewKeySpace(root)
+
+	p1, _ := ks.Path("state", "CA")
+	p1a, _ := p1.Add("id", int64(1))
+
+	p2, _ := ks.Path("state", "CA")
+	p2a, _ := p2.Add("id", int64(1))
+
+	p3, _ := ks.Path("state", "NY")
+	p3a, _ := p3.Add("id", int64(1))
+
+	// Same path — equal
+	g.Expect(p1a.Equal(p2a)).To(BeTrue())
+
+	// Different value — not equal
+	g.Expect(p1a.Equal(p3a)).To(BeFalse())
+
+	// Different depth — not equal
+	g.Expect(p1.Equal(p1a)).To(BeFalse())
+
+	// nil handling
+	g.Expect((*Path)(nil).Equal(nil)).To(BeTrue())
+	g.Expect(p1.Equal(nil)).To(BeFalse())
+
+	// IsSameDirectory ignores values
+	g.Expect(p1a.IsSameDirectory(p3a)).To(BeTrue())
+	g.Expect(p1.IsSameDirectory(p3a)).To(BeFalse())
+}
+
+func TestKeySpaceString(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("app", KeyTypeString))
+	ks := NewKeySpace(root)
+
+	// KeySpace.String() delegates to Root().ToTree()
+	g.Expect(ks.String()).To(Equal(root.ToTree()))
+	g.Expect(ks.String()).To(ContainSubstring("root (NULL)"))
+	g.Expect(ks.String()).To(ContainSubstring("app (STRING)"))
+}
+
+func TestAddSubdirectories(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectories(
+		NewDirectory("a", KeyTypeString),
+		NewDirectory("b", KeyTypeLong),
+		NewDirectory("c", KeyTypeBytes),
+	)
+
+	g.Expect(root.GetSubdirectories()).To(HaveLen(3))
+	g.Expect(root.GetSubdirectory("a")).NotTo(BeNil())
+	g.Expect(root.GetSubdirectory("b")).NotTo(BeNil())
+	g.Expect(root.GetSubdirectory("c")).NotTo(BeNil())
+}
+
+func TestDeepTree(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Build a deep nested tree: level0 -> level1 -> ... -> level9
+	root := NewDirectory("level0", KeyTypeNull)
+	cur := root
+	for i := 1; i < 10; i++ {
+		next := NewDirectory(fmt.Sprintf("level%d", i), KeyTypeLong)
+		cur.AddSubdirectory(next)
+		cur = next
+	}
+
+	// Leaf depth should be 9 (0-indexed from root)
+	g.Expect(cur.Depth()).To(Equal(9))
+	g.Expect(cur.IsLeaf()).To(BeTrue())
+	g.Expect(root.IsLeaf()).To(BeFalse())
+
+	// NameInTree of the leaf should have all 10 levels
+	expected := "level0.level1.level2.level3.level4.level5.level6.level7.level8.level9"
+	g.Expect(cur.NameInTree()).To(Equal(expected))
+}
+
+func TestFindChildForValue(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.AddSubdirectory(NewDirectory("year", KeyTypeLong))
+	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
+
+	// String matches the "state" directory (no constant matches "CA")
+	child := root.FindChildForValue("CA")
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("state"))
+
+	// Int64 matches the "year" directory
+	child = root.FindChildForValue(int64(2026))
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("year"))
+
+	// Constant "cfg" matches the constant "config" directory FIRST,
+	// not the open "state" directory. Constant priority matches Java.
+	child = root.FindChildForValue("cfg")
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("config"))
+
+	// Value of unsupported type matches nothing
+	child = root.FindChildForValue(3.14)
+	g.Expect(child).To(BeNil())
+}
+
+// TestFindChildForValue_Bytes verifies that []byte values don't panic
+// (they are not comparable with Go's == operator).
+func TestFindChildForValue_Bytes(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("blob", KeyTypeBytes))
+	root.AddSubdirectory(NewConstantDirectory("marker", KeyTypeBytes, []byte{0xFF, 0xFE}))
+
+	// []byte value matches the open blob directory
+	child := root.FindChildForValue([]byte{1, 2, 3})
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("blob"))
+
+	// Constant []byte matches the constant directory exactly
+	child = root.FindChildForValue([]byte{0xFF, 0xFE})
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("marker"))
+}
+
+// TestPathFromTuple_ConstantPriority verifies that when the root has both
+// a constant directory and an open-type directory of the same KeyType,
+// the constant wins when its value matches. Regression test for the
+// two-pass fix in PathFromTuple (commit 6276d9b).
+func TestPathFromTuple_ConstantPriority(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	// Order matters for the regression: open-type is added FIRST. Without
+	// two-pass, iteration would pick "state" for all strings including "cfg".
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
+	ks := NewKeySpace(root)
+
+	// "cfg" should resolve to the constant "config" directory, not "state".
+	path, remainder, err := ks.PathFromTuple(tuple.Tuple{"cfg"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainder).To(BeNil())
+	g.Expect(path.DirectoryName()).To(Equal("config"))
+
+	// Other strings should fall through to "state".
+	path, _, err = ks.PathFromTuple(tuple.Tuple{"CA"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path.DirectoryName()).To(Equal("state"))
+}
+
+// TestPathEqual_Bytes verifies that Path.Equal handles []byte without panicking.
+func TestPathEqual_Bytes(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("blob", KeyTypeBytes))
+	ks := NewKeySpace(root)
+
+	p1, err := ks.Path("blob", []byte{1, 2, 3})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	p2, err := ks.Path("blob", []byte{1, 2, 3})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	p3, err := ks.Path("blob", []byte{9, 9, 9})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(p1.Equal(p2)).To(BeTrue(), "same bytes should be equal")
+	g.Expect(p1.Equal(p3)).To(BeFalse(), "different bytes should not be equal")
 }

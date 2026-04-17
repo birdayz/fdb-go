@@ -8,6 +8,8 @@ package keyspace
 
 import (
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -166,6 +168,15 @@ func (d *Directory) AddSubdirectory(child *Directory) *Directory {
 	return d
 }
 
+// AddSubdirectories adds multiple child directories in one call.
+// Returns the parent for chaining. Panics on duplicate names.
+func (d *Directory) AddSubdirectories(children ...*Directory) *Directory {
+	for _, child := range children {
+		d.AddSubdirectory(child)
+	}
+	return d
+}
+
 // GetSubdirectory returns a child directory by name, or nil if not found.
 func (d *Directory) GetSubdirectory(name string) *Directory {
 	return d.childMap[name]
@@ -179,6 +190,90 @@ func (d *Directory) GetSubdirectories() []*Directory {
 // IsConstant returns true if this directory has a fixed value.
 func (d *Directory) IsConstant() bool {
 	return d.Value != nil
+}
+
+// IsLeaf returns true if this directory has no children.
+// Matches Java's KeySpaceDirectory.isLeaf().
+func (d *Directory) IsLeaf() bool {
+	return len(d.children) == 0
+}
+
+// Parent returns the parent directory, or nil if this is the root.
+// Matches Java's KeySpaceDirectory.getParent().
+func (d *Directory) Parent() *Directory {
+	return d.parent
+}
+
+// Depth returns the distance from this directory to the root (0 for root).
+// Matches Java's KeySpaceDirectory.depth().
+func (d *Directory) Depth() int {
+	n := 0
+	for cur := d.parent; cur != nil; cur = cur.parent {
+		n++
+	}
+	return n
+}
+
+// NameInTree returns the dot-separated path from root to this directory.
+// Matches Java's KeySpaceDirectory.getNameInTree().
+func (d *Directory) NameInTree() string {
+	if d.parent == nil {
+		return d.Name
+	}
+	return d.parent.NameInTree() + "." + d.Name
+}
+
+// ToPathString returns a slash-separated path from root to this directory.
+// Matches Java's KeySpaceDirectory.toPathString().
+func (d *Directory) ToPathString() string {
+	var sb strings.Builder
+	appendDirPath(&sb, d)
+	return sb.String()
+}
+
+func appendDirPath(sb *strings.Builder, dir *Directory) {
+	if dir.parent != nil {
+		appendDirPath(sb, dir.parent)
+	}
+	sb.WriteString("/")
+	sb.WriteString(dir.Name)
+}
+
+// ToTree returns an ASCII tree representation of this directory and its subtree.
+// Matches Java's KeySpaceDirectory.toTree().
+func (d *Directory) ToTree() string {
+	var sb strings.Builder
+	writeTreeLine(&sb, d, 0, false, nil)
+	return sb.String()
+}
+
+func writeTreeLine(sb *strings.Builder, dir *Directory, indent int, hasSibling bool, downspouts []bool) {
+	for i := 0; i < indent; i++ {
+		if i < len(downspouts) && downspouts[i] {
+			sb.WriteString(" | ")
+		} else {
+			sb.WriteString("   ")
+		}
+	}
+	if dir.parent != nil {
+		sb.WriteString(" +-")
+	}
+	sb.WriteString(dir.Name)
+	sb.WriteString(" (")
+	sb.WriteString(dir.KeyType.String())
+	if dir.IsConstant() {
+		sb.WriteString(fmt.Sprintf("=%v", dir.Value))
+	}
+	sb.WriteString(")\n")
+
+	childDownspouts := make([]bool, indent+1)
+	copy(childDownspouts, downspouts)
+	childDownspouts[indent] = hasSibling
+
+	for i, child := range dir.children {
+		childHasSibling := i < len(dir.children)-1
+		writeTreeLine(sb, child, indent+1, childHasSibling, childDownspouts)
+	}
 }
 
 // KeySpace is the root of a directory tree. It holds one or more root directories.
@@ -196,6 +291,11 @@ func NewKeySpace(root *Directory) *KeySpace {
 // Root returns the root directory.
 func (ks *KeySpace) Root() *Directory {
 	return ks.root
+}
+
+// String returns a pretty-printed tree representation of the whole KeySpace schema.
+func (ks *KeySpace) String() string {
+	return ks.root.ToTree()
 }
 
 // Validate checks the tree for structural errors:
@@ -235,14 +335,19 @@ func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 		return nil, nil, fmt.Errorf("keyspace: empty tuple")
 	}
 
-	// Try each root subdirectory to find a match for t[0].
+	// First pass: prefer constant directories with matching values.
+	for _, dir := range ks.root.children {
+		if dir.IsConstant() && recordTypeKeyEquals(dir.Value, t[0]) {
+			path := &Path{directory: dir, value: t[0]}
+			return resolveRemaining(path, t[1:])
+		}
+	}
+	// Second pass: fall back to open-type directories.
 	for _, dir := range ks.root.children {
 		if dir.IsConstant() {
-			if dir.Value == t[0] || recordTypeKeyEquals(dir.Value, t[0]) {
-				path := &Path{directory: dir, value: t[0]}
-				return resolveRemaining(path, t[1:])
-			}
-		} else if err := dir.KeyType.ValidateValue(t[0]); err == nil {
+			continue
+		}
+		if err := dir.KeyType.ValidateValue(t[0]); err == nil {
 			path := &Path{directory: dir, value: t[0]}
 			return resolveRemaining(path, t[1:])
 		}
@@ -255,15 +360,24 @@ func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 func resolveRemaining(path *Path, remaining tuple.Tuple) (*Path, tuple.Tuple, error) {
 	for len(remaining) > 0 {
 		matched := false
+		// Prefer constant directories first (matches Java priority)
+		for _, dir := range path.directory.children {
+			if dir.IsConstant() && recordTypeKeyEquals(dir.Value, remaining[0]) {
+				path = &Path{directory: dir, parent: path, value: remaining[0]}
+				remaining = remaining[1:]
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		// Fall back to open-type matches
 		for _, dir := range path.directory.children {
 			if dir.IsConstant() {
-				if dir.Value == remaining[0] || recordTypeKeyEquals(dir.Value, remaining[0]) {
-					path = &Path{directory: dir, parent: path, value: remaining[0]}
-					remaining = remaining[1:]
-					matched = true
-					break
-				}
-			} else if err := dir.KeyType.ValidateValue(remaining[0]); err == nil {
+				continue
+			}
+			if err := dir.KeyType.ValidateValue(remaining[0]); err == nil {
 				path = &Path{directory: dir, parent: path, value: remaining[0]}
 				remaining = remaining[1:]
 				matched = true
@@ -282,8 +396,9 @@ func resolveRemaining(path *Path, remaining tuple.Tuple) (*Path, tuple.Tuple, er
 
 // recordTypeKeyEquals compares values with int type normalization
 // (FDB tuples decode ints as int64, but constants may be int).
+// Uses reflect.DeepEqual to safely handle non-comparable types like []byte.
 func recordTypeKeyEquals(a, b any) bool {
-	if a == b {
+	if reflect.DeepEqual(a, b) {
 		return true
 	}
 	aInt, aOk := toInt64(a)
@@ -440,4 +555,72 @@ func (p *Path) String() string {
 		return fmt.Sprintf("/%s=%v", p.directory.Name, p.value)
 	}
 	return fmt.Sprintf("%s/%s=%v", p.parent.String(), p.directory.Name, p.value)
+}
+
+// Flatten returns all path elements from root to this position, in order.
+// Matches Java's KeySpacePath.flatten().
+func (p *Path) Flatten() []*Path {
+	depth := p.Depth()
+	result := make([]*Path, depth)
+	cur := p
+	for i := depth - 1; i >= 0; i-- {
+		result[i] = cur
+		cur = cur.parent
+	}
+	return result
+}
+
+// Equal reports whether two paths reference the same directories with the
+// same values at each level. Directories are compared by pointer identity
+// (schema reuse) and values via recordTypeKeyEquals (reflect.DeepEqual +
+// int type normalization, safe for []byte and other non-comparable types).
+func (p *Path) Equal(other *Path) bool {
+	if p == nil || other == nil {
+		return p == other
+	}
+	if p.directory != other.directory {
+		return false
+	}
+	if !recordTypeKeyEquals(p.value, other.value) {
+		return false
+	}
+	return p.parent.Equal(other.parent)
+}
+
+// IsSameDirectory returns true if two paths reference the same directory
+// in the schema tree (ignoring values).
+func (p *Path) IsSameDirectory(other *Path) bool {
+	if p == nil || other == nil {
+		return p == other
+	}
+	return p.directory == other.directory
+}
+
+// Directory returns the directory schema at this path position.
+// Matches Java's KeySpacePath.getDirectory().
+func (p *Path) Directory() *Directory {
+	return p.directory
+}
+
+// FindChildForValue returns the child directory that accepts the given value,
+// or nil if no child matches. Constant directories are checked first (matches
+// Java's findChildForValue which prioritizes exact constant matches over
+// open-type matches). Used for reverse resolution.
+func (d *Directory) FindChildForValue(value any) *Directory {
+	// First pass: prefer constant directories with matching values.
+	for _, child := range d.children {
+		if child.IsConstant() && recordTypeKeyEquals(child.Value, value) {
+			return child
+		}
+	}
+	// Second pass: fall back to open-type directories whose type accepts the value.
+	for _, child := range d.children {
+		if child.IsConstant() {
+			continue
+		}
+		if err := child.validateInput(value); err == nil {
+			return child
+		}
+	}
+	return nil
 }
