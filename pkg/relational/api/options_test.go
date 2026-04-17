@@ -220,6 +220,38 @@ func TestEqualWithSliceValues(t *testing.T) {
 	}
 }
 
+func TestEqualStructuralParent(t *testing.T) {
+	t.Parallel()
+	// Bug previously: Equal compared parents by pointer. Java uses
+	// Objects.equals (recursive). Verify that two Options with
+	// distinct-pointer-but-structurally-equal parents are Equal.
+	parentA := NewOptionsBuilder().Set(OptMaxRows, 10).Build()
+	parentB := NewOptionsBuilder().Set(OptMaxRows, 10).Build()
+	if parentA == parentB {
+		t.Skip("builders returned same pointer — test setup invalid")
+	}
+	if !parentA.Equal(parentB) {
+		t.Fatal("structurally-equal parents should be Equal")
+	}
+	childSelf := NewOptionsBuilder().Set(OptLogQuery, true).Build()
+	childA, _ := parentA.WithChild(childSelf)
+	childB, _ := parentB.WithChild(NewOptionsBuilder().Set(OptLogQuery, true).Build())
+	if !childA.Equal(childB) {
+		t.Error("Options with structurally-equal parents should be Equal")
+	}
+	// And Options with structurally-different parents should not.
+	parentC := NewOptionsBuilder().Set(OptMaxRows, 999).Build()
+	childC, _ := parentC.WithChild(NewOptionsBuilder().Set(OptLogQuery, true).Build())
+	if childA.Equal(childC) {
+		t.Error("Options with different parents should not Equal")
+	}
+	// One has parent, the other doesn't.
+	naked := NewOptionsBuilder().Set(OptLogQuery, true).Build()
+	if childA.Equal(naked) {
+		t.Error("Options with parent shouldn't Equal parentless Options")
+	}
+}
+
 func TestEqualWithUncomparableValues(t *testing.T) {
 	t.Parallel()
 	// A future option value type that's neither comparable with == nor

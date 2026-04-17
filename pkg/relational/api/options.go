@@ -239,8 +239,9 @@ func (o *Options) AllEntries() map[OptionName]any {
 	return out
 }
 
-// Equal reports structural equality: same own values AND same parent
-// (by pointer; parents are typically singletons or shared).
+// Equal reports structural equality: same own values AND a structurally
+// equal parent chain. Matches Java's Options.equals() which does a
+// recursive Objects.equals() on parent — not pointer identity.
 func (o *Options) Equal(other *Options) bool {
 	if o == other {
 		return true
@@ -248,7 +249,16 @@ func (o *Options) Equal(other *Options) bool {
 	if o == nil || other == nil {
 		return false
 	}
-	if o.parent != other.parent {
+	// Recursively compare parent chains. Nil parents are equal; two
+	// different but structurally-equal parents are equal (matches
+	// Java). Two-pointer short-circuit avoids infinite recursion on
+	// shared parents.
+	switch {
+	case o.parent == other.parent:
+		// same pointer (or both nil) — ok
+	case o.parent == nil || other.parent == nil:
+		return false
+	case !o.parent.Equal(other.parent):
 		return false
 	}
 	if len(o.values) != len(other.values) {
