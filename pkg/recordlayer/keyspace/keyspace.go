@@ -169,6 +169,85 @@ func (ks *KeySpace) Root() *Directory {
 	return ks.root
 }
 
+// PathFromTuple resolves a tuple back to a path by matching values against
+// the directory tree. Returns the deepest matching path and any remaining
+// tuple elements that didn't match a directory.
+//
+// Matches Java's KeySpace.resolveFromKey / KeySpaceDirectory.pathFromKey.
+func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
+	if len(t) == 0 {
+		return nil, nil, fmt.Errorf("keyspace: empty tuple")
+	}
+
+	// Try each root subdirectory to find a match for t[0].
+	for _, dir := range ks.root.children {
+		if dir.IsConstant() {
+			if dir.Value == t[0] || recordTypeKeyEquals(dir.Value, t[0]) {
+				path := &Path{directory: dir, value: t[0]}
+				return resolveRemaining(path, t[1:])
+			}
+		} else if err := dir.KeyType.ValidateValue(t[0]); err == nil {
+			path := &Path{directory: dir, value: t[0]}
+			return resolveRemaining(path, t[1:])
+		}
+	}
+
+	return nil, t, fmt.Errorf("keyspace: no root directory matches tuple value %v (%T)", t[0], t[0])
+}
+
+// resolveRemaining walks deeper into the tree matching remaining tuple elements.
+func resolveRemaining(path *Path, remaining tuple.Tuple) (*Path, tuple.Tuple, error) {
+	for len(remaining) > 0 {
+		matched := false
+		for _, dir := range path.directory.children {
+			if dir.IsConstant() {
+				if dir.Value == remaining[0] || recordTypeKeyEquals(dir.Value, remaining[0]) {
+					path = &Path{directory: dir, parent: path, value: remaining[0]}
+					remaining = remaining[1:]
+					matched = true
+					break
+				}
+			} else if err := dir.KeyType.ValidateValue(remaining[0]); err == nil {
+				path = &Path{directory: dir, parent: path, value: remaining[0]}
+				remaining = remaining[1:]
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			break // remaining elements don't match any child directory
+		}
+	}
+	if len(remaining) > 0 {
+		return path, remaining, nil
+	}
+	return path, nil, nil
+}
+
+// recordTypeKeyEquals compares values with int type normalization
+// (FDB tuples decode ints as int64, but constants may be int).
+func recordTypeKeyEquals(a, b any) bool {
+	if a == b {
+		return true
+	}
+	aInt, aOk := toInt64(a)
+	bInt, bOk := toInt64(b)
+	return aOk && bOk && aInt == bInt
+}
+
+func toInt64(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	default:
+		return 0, false
+	}
+}
+
 // Path starts navigating the key space from a named root subdirectory with a value.
 func (ks *KeySpace) Path(name string, value any) (*Path, error) {
 	dir := ks.root.GetSubdirectory(name)

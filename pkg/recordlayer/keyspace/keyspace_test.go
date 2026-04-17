@@ -185,6 +185,72 @@ func TestPathString(t *testing.T) {
 	g.Expect(p2.String()).To(Equal("/state=CA/office_id=1234"))
 }
 
+func TestPathFromTuple(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	state := NewDirectory("state", KeyTypeString)
+	officeID := NewDirectory("office_id", KeyTypeLong)
+	root.AddSubdirectory(state)
+	state.AddSubdirectory(officeID)
+
+	ks := NewKeySpace(root)
+
+	// Full match
+	path, remainder, err := ks.PathFromTuple(tuple.Tuple{"CA", int64(1234)})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainder).To(BeNil())
+	g.Expect(path.DirectoryName()).To(Equal("office_id"))
+	g.Expect(path.GetValue()).To(Equal(int64(1234)))
+	g.Expect(path.Parent().GetValue()).To(Equal("CA"))
+	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{"CA", int64(1234)}))
+
+	// Partial match — extra tuple elements
+	path, remainder, err = ks.PathFromTuple(tuple.Tuple{"NY", int64(5678), "extra", "data"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainder).To(Equal(tuple.Tuple{"extra", "data"}))
+	g.Expect(path.DirectoryName()).To(Equal("office_id"))
+
+	// Single element match
+	path, remainder, err = ks.PathFromTuple(tuple.Tuple{"TX"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainder).To(BeNil())
+	g.Expect(path.DirectoryName()).To(Equal("state"))
+
+	// No match
+	_, _, err = ks.PathFromTuple(tuple.Tuple{int64(42)})
+	g.Expect(err).To(HaveOccurred())
+
+	// Empty tuple
+	_, _, err = ks.PathFromTuple(tuple.Tuple{})
+	g.Expect(err).To(HaveOccurred())
+}
+
+func TestPathFromTupleRoundtrip(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("app", KeyTypeString))
+	root.GetSubdirectory("app").AddSubdirectory(NewDirectory("table", KeyTypeLong))
+
+	ks := NewKeySpace(root)
+
+	// Forward: Path -> Tuple
+	path, _ := ks.Path("app", "myapp")
+	path2, _ := path.Add("table", int64(99))
+	tup := path2.ToTuple()
+	g.Expect(tup).To(Equal(tuple.Tuple{"myapp", int64(99)}))
+
+	// Reverse: Tuple -> Path
+	resolved, remainder, err := ks.PathFromTuple(tup)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainder).To(BeNil())
+	g.Expect(resolved.ToTuple()).To(Equal(tup))
+	g.Expect(resolved.String()).To(Equal(path2.String()))
+}
+
 func TestToSubspace(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
