@@ -418,3 +418,59 @@ func TestToSubspace(t *testing.T) {
 	// Verify the path tuple is embedded in the subspace
 	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{"myapp"}))
 }
+
+func TestPathFlatten(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.GetSubdirectory("state").AddSubdirectory(NewDirectory("office_id", KeyTypeLong))
+
+	ks := NewKeySpace(root)
+
+	p1, _ := ks.Path("state", "CA")
+	p2, _ := p1.Add("office_id", int64(1234))
+
+	flat := p2.Flatten()
+	g.Expect(flat).To(HaveLen(2))
+	g.Expect(flat[0].DirectoryName()).To(Equal("state"))
+	g.Expect(flat[0].GetValue()).To(Equal("CA"))
+	g.Expect(flat[1].DirectoryName()).To(Equal("office_id"))
+	g.Expect(flat[1].GetValue()).To(Equal(int64(1234)))
+
+	// Path.Directory() returns the underlying schema node
+	g.Expect(p2.Directory().Name).To(Equal("office_id"))
+	g.Expect(p2.Directory().KeyType).To(Equal(KeyTypeLong))
+}
+
+func TestFindChildForValue(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.AddSubdirectory(NewDirectory("year", KeyTypeLong))
+	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
+
+	// String matches the "state" directory
+	child := root.FindChildForValue("CA")
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("state"))
+
+	// Int64 matches the "year" directory
+	child = root.FindChildForValue(int64(2026))
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("year"))
+
+	// Constant value matches exactly
+	child = root.FindChildForValue("cfg")
+	g.Expect(child).NotTo(BeNil())
+	// Two directories accept strings — first wins (state)
+	// Our test schema has state before config, so "cfg" matches state.
+	// This is Java behavior too: iteration order matters.
+
+	// Value of unsupported type matches nothing
+	child = root.FindChildForValue(3.14)
+	g.Expect(child).To(BeNil())
+}

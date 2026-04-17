@@ -526,3 +526,38 @@ func (p *Path) String() string {
 	}
 	return fmt.Sprintf("%s/%s=%v", p.parent.String(), p.directory.Name, p.value)
 }
+
+// Flatten returns all path elements from root to this position, in order.
+// Matches Java's KeySpacePath.flatten().
+func (p *Path) Flatten() []*Path {
+	depth := p.Depth()
+	result := make([]*Path, depth)
+	cur := p
+	for i := depth - 1; i >= 0; i-- {
+		result[i] = cur
+		cur = cur.parent
+	}
+	return result
+}
+
+// Directory returns the directory schema at this path position.
+// Matches Java's KeySpacePath.getDirectory().
+func (p *Path) Directory() *Directory {
+	return p.directory
+}
+
+// FindChildForValue returns the child directory that accepts the given value,
+// or nil if no child matches. Used for reverse resolution.
+// Matches Java's KeySpaceDirectory.findChildForValue (simplified — no async).
+func (d *Directory) FindChildForValue(value any) *Directory {
+	for _, child := range d.children {
+		if child.IsConstant() {
+			if child.Value == value || recordTypeKeyEquals(child.Value, value) {
+				return child
+			}
+		} else if err := child.validateInput(value); err == nil {
+			return child
+		}
+	}
+	return nil
+}
