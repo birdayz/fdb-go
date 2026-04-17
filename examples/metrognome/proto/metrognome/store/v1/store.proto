@@ -102,6 +102,8 @@ message Contract {
   optional BillingPeriod billing_period = 6;
   optional int64 created_at = 7;
   optional bool active = 8;
+  optional int64 committed_amount_cents = 9;  // minimum spend per period (0 = no commit)
+  optional int64 overage_multiplier_bps = 10; // overage price multiplier in basis points (10000 = 1x, 15000 = 1.5x)
 }
 
 enum BillingPeriod {
@@ -139,6 +141,9 @@ message Invoice {
   optional InvoiceStatus status = 10;
   optional int64 created_at = 11;
   optional int64 finalized_at = 12;
+  optional int64 committed_amount_cents = 13; // contract minimum spend (0 = no commit)
+  optional int64 usage_charges_cents = 14;    // raw usage charges before commit enforcement
+  optional int64 overage_cents = 15;          // amount exceeding commit (0 if under commit)
 }
 
 enum InvoiceStatus {

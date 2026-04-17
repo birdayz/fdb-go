@@ -79,7 +79,34 @@ func (e *Engine) GenerateInvoice(ctx context.Context, contractID string, periodS
 			subtotal += amount
 		}
 
-		// 4. Apply credits
+		// 4. Apply prepaid commit logic.
+		// If the contract has a committed amount (minimum spend), the customer pays
+		// max(usage_charges, committed_amount). Overage = usage - commit (if any).
+		usageCharges := subtotal
+		committedAmount := contract.GetCommittedAmountCents()
+		var overageCents int64
+
+		if committedAmount > 0 && usageCharges > committedAmount {
+			// Usage exceeds commit — charge overage with multiplier
+			overageCents = usageCharges - committedAmount
+			multiplier := contract.GetOverageMultiplierBps()
+			if multiplier == 0 {
+				multiplier = 10000 // default 1x
+			}
+			// Overage line item at the multiplier rate
+			overageAmount := (overageCents * multiplier) / 10000
+			lineItems = append(lineItems, &storev1.LineItem{
+				Description: proto.String(fmt.Sprintf("overage (%d bps multiplier)", multiplier)),
+				Quantity:    proto.Int64(overageCents),
+				AmountCents: proto.Int64(overageAmount),
+			})
+			subtotal = committedAmount + overageAmount
+		} else if committedAmount > 0 && usageCharges < committedAmount {
+			// Usage under commit — charge the committed minimum
+			subtotal = committedAmount
+		}
+
+		// 5. Apply credits
 		creditsApplied, err := applyCredits(ctx, store, e.metadata, contract.GetCustomerId(), subtotal)
 		if err != nil {
 			return nil, fmt.Errorf("apply credits: %w", err)
@@ -90,21 +117,24 @@ func (e *Engine) GenerateInvoice(ctx context.Context, contractID string, periodS
 			total = 0
 		}
 
-		// 5. Create the invoice
+		// 6. Create the invoice
 		now := time.Now().UnixMilli()
 		invoiceID := fmt.Sprintf("inv_%s_%d", contractID, periodStart)
 		invoice := &storev1.Invoice{
-			Id:                  proto.String(invoiceID),
-			CustomerId:          contract.CustomerId,
-			ContractId:          proto.String(contractID),
-			PeriodStart:         proto.Int64(periodStart),
-			PeriodEnd:           proto.Int64(periodEnd),
-			LineItems:           lineItems,
-			SubtotalCents:       proto.Int64(subtotal),
-			CreditsAppliedCents: proto.Int64(creditsApplied),
-			TotalCents:          proto.Int64(total),
-			Status:              storev1.InvoiceStatus_INVOICE_STATUS_DRAFT.Enum(),
-			CreatedAt:           proto.Int64(now),
+			Id:                   proto.String(invoiceID),
+			CustomerId:           contract.CustomerId,
+			ContractId:           proto.String(contractID),
+			PeriodStart:          proto.Int64(periodStart),
+			PeriodEnd:            proto.Int64(periodEnd),
+			LineItems:            lineItems,
+			SubtotalCents:        proto.Int64(subtotal),
+			CreditsAppliedCents:  proto.Int64(creditsApplied),
+			TotalCents:           proto.Int64(total),
+			Status:               storev1.InvoiceStatus_INVOICE_STATUS_DRAFT.Enum(),
+			CreatedAt:            proto.Int64(now),
+			CommittedAmountCents: proto.Int64(committedAmount),
+			UsageChargesCents:    proto.Int64(usageCharges),
+			OverageCents:         proto.Int64(overageCents),
 		}
 
 		if _, err := store.SaveRecord(invoice); err != nil {

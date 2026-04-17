@@ -17,6 +17,8 @@ message CreateContractRequest {
   int64 start_at = 3;              // unix millis
   int64 end_at = 4;                // 0 = indefinite
   BillingPeriod billing_period = 5;
+  int64 committed_amount_cents = 6;  // minimum spend per period (0 = no commit)
+  int64 overage_multiplier_bps = 7;  // overage multiplier in bps (10000 = 1x, 15000 = 1.5x, 0 = use 10000)
 }
 
 message CreateContractResponse {
@@ -60,6 +62,8 @@ message Contract {
   BillingPeriod billing_period = 6;
   int64 created_at = 7;
   bool active = 8;
+  int64 committed_amount_cents = 9;  // minimum spend per period
+  int64 overage_multiplier_bps = 10; // overage price multiplier (10000 = 1x)
 }
 
 enum BillingPeriod {

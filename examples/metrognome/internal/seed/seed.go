@@ -126,11 +126,14 @@ func Tenant(ctx context.Context, db *storage.DB, displayName string) error {
 			Id: proto.String("ctr-acme"), CustomerId: proto.String("cust-acme"), PlanId: proto.String("plan-pro"),
 			StartAt: proto.Int64(monthStart), BillingPeriod: storev1.BillingPeriod_BILLING_PERIOD_MONTHLY.Enum(),
 			Active: proto.Bool(true), CreatedAt: proto.Int64(now),
+			CommittedAmountCents: proto.Int64(50000), // $500/month minimum commit
+			OverageMultiplierBps: proto.Int64(15000), // 1.5x overage pricing
 		},
 		{
 			Id: proto.String("ctr-globex"), CustomerId: proto.String("cust-globex"), PlanId: proto.String("plan-pro"),
 			StartAt: proto.Int64(monthStart), BillingPeriod: storev1.BillingPeriod_BILLING_PERIOD_MONTHLY.Enum(),
 			Active: proto.Bool(true), CreatedAt: proto.Int64(now),
+			CommittedAmountCents: proto.Int64(20000), // $200/month minimum commit
 		},
 		{
 			Id: proto.String("ctr-initech"), CustomerId: proto.String("cust-initech"), PlanId: proto.String("plan-starter"),

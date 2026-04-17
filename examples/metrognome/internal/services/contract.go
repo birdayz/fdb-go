@@ -30,14 +30,16 @@ func (s *ContractService) CreateContract(ctx context.Context, req *connect.Reque
 	id := newID("ctr")
 	now := time.Now().UnixMilli()
 	record := &storev1.Contract{
-		Id:            proto.String(id),
-		CustomerId:    proto.String(req.Msg.GetCustomerId()),
-		PlanId:        proto.String(req.Msg.GetPlanId()),
-		StartAt:       proto.Int64(req.Msg.GetStartAt()),
-		EndAt:         proto.Int64(req.Msg.GetEndAt()),
-		BillingPeriod: convertBillingPeriod(req.Msg.GetBillingPeriod()).Enum(),
-		CreatedAt:     proto.Int64(now),
-		Active:        proto.Bool(true),
+		Id:                   proto.String(id),
+		CustomerId:           proto.String(req.Msg.GetCustomerId()),
+		PlanId:               proto.String(req.Msg.GetPlanId()),
+		StartAt:              proto.Int64(req.Msg.GetStartAt()),
+		EndAt:                proto.Int64(req.Msg.GetEndAt()),
+		BillingPeriod:        convertBillingPeriod(req.Msg.GetBillingPeriod()).Enum(),
+		CreatedAt:            proto.Int64(now),
+		Active:               proto.Bool(true),
+		CommittedAmountCents: proto.Int64(req.Msg.GetCommittedAmountCents()),
+		OverageMultiplierBps: proto.Int64(req.Msg.GetOverageMultiplierBps()),
 	}
 	if err := s.store.Create(ctx, record); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create contract: %w", err))
@@ -83,14 +85,16 @@ func (s *ContractService) EndContract(ctx context.Context, req *connect.Request[
 
 func contractToAPI(s *storev1.Contract) *metrognomev1.Contract {
 	return &metrognomev1.Contract{
-		Id:            s.GetId(),
-		CustomerId:    s.GetCustomerId(),
-		PlanId:        s.GetPlanId(),
-		StartAt:       s.GetStartAt(),
-		EndAt:         s.GetEndAt(),
-		BillingPeriod: metrognomev1.BillingPeriod(s.GetBillingPeriod()),
-		CreatedAt:     s.GetCreatedAt(),
-		Active:        s.GetActive(),
+		Id:                   s.GetId(),
+		CustomerId:           s.GetCustomerId(),
+		PlanId:               s.GetPlanId(),
+		StartAt:              s.GetStartAt(),
+		EndAt:                s.GetEndAt(),
+		BillingPeriod:        metrognomev1.BillingPeriod(s.GetBillingPeriod()),
+		CreatedAt:            s.GetCreatedAt(),
+		Active:               s.GetActive(),
+		CommittedAmountCents: s.GetCommittedAmountCents(),
+		OverageMultiplierBps: s.GetOverageMultiplierBps(),
 	}
 }
 

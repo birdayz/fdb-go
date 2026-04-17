@@ -1195,17 +1195,19 @@ func (x *BpsPricing) GetBasisPoints() int64 {
 
 // Contract binds a customer to a plan for a period.
 type Contract struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
-	CustomerId    *string                `protobuf:"bytes,2,opt,name=customer_id,json=customerId" json:"customer_id,omitempty"`
-	PlanId        *string                `protobuf:"bytes,3,opt,name=plan_id,json=planId" json:"plan_id,omitempty"`
-	StartAt       *int64                 `protobuf:"varint,4,opt,name=start_at,json=startAt" json:"start_at,omitempty"` // unix millis
-	EndAt         *int64                 `protobuf:"varint,5,opt,name=end_at,json=endAt" json:"end_at,omitempty"`       // unix millis (0 = indefinite)
-	BillingPeriod *BillingPeriod         `protobuf:"varint,6,opt,name=billing_period,json=billingPeriod,enum=metrognome.store.v1.BillingPeriod" json:"billing_period,omitempty"`
-	CreatedAt     *int64                 `protobuf:"varint,7,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
-	Active        *bool                  `protobuf:"varint,8,opt,name=active" json:"active,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Id                   *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	CustomerId           *string                `protobuf:"bytes,2,opt,name=customer_id,json=customerId" json:"customer_id,omitempty"`
+	PlanId               *string                `protobuf:"bytes,3,opt,name=plan_id,json=planId" json:"plan_id,omitempty"`
+	StartAt              *int64                 `protobuf:"varint,4,opt,name=start_at,json=startAt" json:"start_at,omitempty"` // unix millis
+	EndAt                *int64                 `protobuf:"varint,5,opt,name=end_at,json=endAt" json:"end_at,omitempty"`       // unix millis (0 = indefinite)
+	BillingPeriod        *BillingPeriod         `protobuf:"varint,6,opt,name=billing_period,json=billingPeriod,enum=metrognome.store.v1.BillingPeriod" json:"billing_period,omitempty"`
+	CreatedAt            *int64                 `protobuf:"varint,7,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	Active               *bool                  `protobuf:"varint,8,opt,name=active" json:"active,omitempty"`
+	CommittedAmountCents *int64                 `protobuf:"varint,9,opt,name=committed_amount_cents,json=committedAmountCents" json:"committed_amount_cents,omitempty"`  // minimum spend per period (0 = no commit)
+	OverageMultiplierBps *int64                 `protobuf:"varint,10,opt,name=overage_multiplier_bps,json=overageMultiplierBps" json:"overage_multiplier_bps,omitempty"` // overage price multiplier in basis points (10000 = 1x, 15000 = 1.5x)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Contract) Reset() {
@@ -1292,6 +1294,20 @@ func (x *Contract) GetActive() bool {
 		return *x.Active
 	}
 	return false
+}
+
+func (x *Contract) GetCommittedAmountCents() int64 {
+	if x != nil && x.CommittedAmountCents != nil {
+		return *x.CommittedAmountCents
+	}
+	return 0
+}
+
+func (x *Contract) GetOverageMultiplierBps() int64 {
+	if x != nil && x.OverageMultiplierBps != nil {
+		return *x.OverageMultiplierBps
+	}
+	return 0
 }
 
 // UsageEvent is a raw usage event ingested from the API or Kafka.
@@ -1413,21 +1429,24 @@ func (x *UsageEvent) GetTimestampBucket() int64 {
 
 // Invoice is a generated billing document.
 type Invoice struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Id                  *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
-	CustomerId          *string                `protobuf:"bytes,2,opt,name=customer_id,json=customerId" json:"customer_id,omitempty"`
-	ContractId          *string                `protobuf:"bytes,3,opt,name=contract_id,json=contractId" json:"contract_id,omitempty"`
-	PeriodStart         *int64                 `protobuf:"varint,4,opt,name=period_start,json=periodStart" json:"period_start,omitempty"` // unix millis
-	PeriodEnd           *int64                 `protobuf:"varint,5,opt,name=period_end,json=periodEnd" json:"period_end,omitempty"`       // unix millis
-	LineItems           []*LineItem            `protobuf:"bytes,6,rep,name=line_items,json=lineItems" json:"line_items,omitempty"`
-	SubtotalCents       *int64                 `protobuf:"varint,7,opt,name=subtotal_cents,json=subtotalCents" json:"subtotal_cents,omitempty"`
-	CreditsAppliedCents *int64                 `protobuf:"varint,8,opt,name=credits_applied_cents,json=creditsAppliedCents" json:"credits_applied_cents,omitempty"`
-	TotalCents          *int64                 `protobuf:"varint,9,opt,name=total_cents,json=totalCents" json:"total_cents,omitempty"`
-	Status              *InvoiceStatus         `protobuf:"varint,10,opt,name=status,enum=metrognome.store.v1.InvoiceStatus" json:"status,omitempty"`
-	CreatedAt           *int64                 `protobuf:"varint,11,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
-	FinalizedAt         *int64                 `protobuf:"varint,12,opt,name=finalized_at,json=finalizedAt" json:"finalized_at,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Id                   *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	CustomerId           *string                `protobuf:"bytes,2,opt,name=customer_id,json=customerId" json:"customer_id,omitempty"`
+	ContractId           *string                `protobuf:"bytes,3,opt,name=contract_id,json=contractId" json:"contract_id,omitempty"`
+	PeriodStart          *int64                 `protobuf:"varint,4,opt,name=period_start,json=periodStart" json:"period_start,omitempty"` // unix millis
+	PeriodEnd            *int64                 `protobuf:"varint,5,opt,name=period_end,json=periodEnd" json:"period_end,omitempty"`       // unix millis
+	LineItems            []*LineItem            `protobuf:"bytes,6,rep,name=line_items,json=lineItems" json:"line_items,omitempty"`
+	SubtotalCents        *int64                 `protobuf:"varint,7,opt,name=subtotal_cents,json=subtotalCents" json:"subtotal_cents,omitempty"`
+	CreditsAppliedCents  *int64                 `protobuf:"varint,8,opt,name=credits_applied_cents,json=creditsAppliedCents" json:"credits_applied_cents,omitempty"`
+	TotalCents           *int64                 `protobuf:"varint,9,opt,name=total_cents,json=totalCents" json:"total_cents,omitempty"`
+	Status               *InvoiceStatus         `protobuf:"varint,10,opt,name=status,enum=metrognome.store.v1.InvoiceStatus" json:"status,omitempty"`
+	CreatedAt            *int64                 `protobuf:"varint,11,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	FinalizedAt          *int64                 `protobuf:"varint,12,opt,name=finalized_at,json=finalizedAt" json:"finalized_at,omitempty"`
+	CommittedAmountCents *int64                 `protobuf:"varint,13,opt,name=committed_amount_cents,json=committedAmountCents" json:"committed_amount_cents,omitempty"` // contract minimum spend (0 = no commit)
+	UsageChargesCents    *int64                 `protobuf:"varint,14,opt,name=usage_charges_cents,json=usageChargesCents" json:"usage_charges_cents,omitempty"`          // raw usage charges before commit enforcement
+	OverageCents         *int64                 `protobuf:"varint,15,opt,name=overage_cents,json=overageCents" json:"overage_cents,omitempty"`                           // amount exceeding commit (0 if under commit)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Invoice) Reset() {
@@ -1540,6 +1559,27 @@ func (x *Invoice) GetCreatedAt() int64 {
 func (x *Invoice) GetFinalizedAt() int64 {
 	if x != nil && x.FinalizedAt != nil {
 		return *x.FinalizedAt
+	}
+	return 0
+}
+
+func (x *Invoice) GetCommittedAmountCents() int64 {
+	if x != nil && x.CommittedAmountCents != nil {
+		return *x.CommittedAmountCents
+	}
+	return 0
+}
+
+func (x *Invoice) GetUsageChargesCents() int64 {
+	if x != nil && x.UsageChargesCents != nil {
+		return *x.UsageChargesCents
+	}
+	return 0
+}
+
+func (x *Invoice) GetOverageCents() int64 {
+	if x != nil && x.OverageCents != nil {
+		return *x.OverageCents
 	}
 	return 0
 }
@@ -3092,7 +3132,7 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\x13package_price_cents\x18\x02 \x01(\x03R\x11packagePriceCents\"/\n" +
 	"\n" +
 	"BpsPricing\x12!\n" +
-	"\fbasis_points\x18\x01 \x01(\x03R\vbasisPoints\"\x88\x02\n" +
+	"\fbasis_points\x18\x01 \x01(\x03R\vbasisPoints\"\xf4\x02\n" +
 	"\bContract\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -3103,7 +3143,10 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\x0ebilling_period\x18\x06 \x01(\x0e2\".metrognome.store.v1.BillingPeriodR\rbillingPeriod\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\a \x01(\x03R\tcreatedAt\x12\x16\n" +
-	"\x06active\x18\b \x01(\bR\x06active\"\xd2\x02\n" +
+	"\x06active\x18\b \x01(\bR\x06active\x124\n" +
+	"\x16committed_amount_cents\x18\t \x01(\x03R\x14committedAmountCents\x124\n" +
+	"\x16overage_multiplier_bps\x18\n" +
+	" \x01(\x03R\x14overageMultiplierBps\"\xd2\x02\n" +
 	"\n" +
 	"UsageEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
@@ -3120,7 +3163,7 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\vingested_at\x18\t \x01(\x03R\n" +
 	"ingestedAt\x12)\n" +
 	"\x10timestamp_bucket\x18\n" +
-	" \x01(\x03R\x0ftimestampBucket\"\xd5\x03\n" +
+	" \x01(\x03R\x0ftimestampBucket\"\xe0\x04\n" +
 	"\aInvoice\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -3140,7 +3183,10 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	" \x01(\x0e2\".metrognome.store.v1.InvoiceStatusR\x06status\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\v \x01(\x03R\tcreatedAt\x12!\n" +
-	"\ffinalized_at\x18\f \x01(\x03R\vfinalizedAt\"\xa7\x01\n" +
+	"\ffinalized_at\x18\f \x01(\x03R\vfinalizedAt\x124\n" +
+	"\x16committed_amount_cents\x18\r \x01(\x03R\x14committedAmountCents\x12.\n" +
+	"\x13usage_charges_cents\x18\x0e \x01(\x03R\x11usageChargesCents\x12#\n" +
+	"\roverage_cents\x18\x0f \x01(\x03R\foverageCents\"\xa7\x01\n" +
 	"\bLineItem\x12\x1b\n" +
 	"\tcharge_id\x18\x01 \x01(\tR\bchargeId\x12\x1d\n" +
 	"\n" +

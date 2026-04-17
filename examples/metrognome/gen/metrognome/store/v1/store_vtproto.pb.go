@@ -799,6 +799,16 @@ func (m *Contract) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.OverageMultiplierBps != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.OverageMultiplierBps))
+		i--
+		dAtA[i] = 0x50
+	}
+	if m.CommittedAmountCents != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.CommittedAmountCents))
+		i--
+		dAtA[i] = 0x48
+	}
 	if m.Active != nil {
 		i--
 		if *m.Active {
@@ -977,6 +987,21 @@ func (m *Invoice) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.OverageCents != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.OverageCents))
+		i--
+		dAtA[i] = 0x78
+	}
+	if m.UsageChargesCents != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.UsageChargesCents))
+		i--
+		dAtA[i] = 0x70
+	}
+	if m.CommittedAmountCents != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.CommittedAmountCents))
+		i--
+		dAtA[i] = 0x68
 	}
 	if m.FinalizedAt != nil {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.FinalizedAt))
@@ -2740,6 +2765,12 @@ func (m *Contract) SizeVT() (n int) {
 	if m.Active != nil {
 		n += 2
 	}
+	if m.CommittedAmountCents != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.CommittedAmountCents))
+	}
+	if m.OverageMultiplierBps != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.OverageMultiplierBps))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2837,6 +2868,15 @@ func (m *Invoice) SizeVT() (n int) {
 	}
 	if m.FinalizedAt != nil {
 		n += 1 + protohelpers.SizeOfVarint(uint64(*m.FinalizedAt))
+	}
+	if m.CommittedAmountCents != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.CommittedAmountCents))
+	}
+	if m.UsageChargesCents != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.UsageChargesCents))
+	}
+	if m.OverageCents != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.OverageCents))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -5350,6 +5390,46 @@ func (m *Contract) UnmarshalVT(dAtA []byte) error {
 			}
 			b := bool(v != 0)
 			m.Active = &b
+		case 9:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CommittedAmountCents", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.CommittedAmountCents = &v
+		case 10:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field OverageMultiplierBps", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.OverageMultiplierBps = &v
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -6025,6 +6105,66 @@ func (m *Invoice) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.FinalizedAt = &v
+		case 13:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CommittedAmountCents", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.CommittedAmountCents = &v
+		case 14:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field UsageChargesCents", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.UsageChargesCents = &v
+		case 15:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field OverageCents", wireType)
+			}
+			var v int64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.OverageCents = &v
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

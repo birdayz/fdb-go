@@ -75,14 +75,16 @@ func (BillingPeriod) EnumDescriptor() ([]byte, []int) {
 }
 
 type CreateContractRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	PlanId        string                 `protobuf:"bytes,2,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
-	StartAt       int64                  `protobuf:"varint,3,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"` // unix millis
-	EndAt         int64                  `protobuf:"varint,4,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`       // 0 = indefinite
-	BillingPeriod BillingPeriod          `protobuf:"varint,5,opt,name=billing_period,json=billingPeriod,proto3,enum=metrognome.v1.BillingPeriod" json:"billing_period,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId           string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	PlanId               string                 `protobuf:"bytes,2,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	StartAt              int64                  `protobuf:"varint,3,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"` // unix millis
+	EndAt                int64                  `protobuf:"varint,4,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`       // 0 = indefinite
+	BillingPeriod        BillingPeriod          `protobuf:"varint,5,opt,name=billing_period,json=billingPeriod,proto3,enum=metrognome.v1.BillingPeriod" json:"billing_period,omitempty"`
+	CommittedAmountCents int64                  `protobuf:"varint,6,opt,name=committed_amount_cents,json=committedAmountCents,proto3" json:"committed_amount_cents,omitempty"` // minimum spend per period (0 = no commit)
+	OverageMultiplierBps int64                  `protobuf:"varint,7,opt,name=overage_multiplier_bps,json=overageMultiplierBps,proto3" json:"overage_multiplier_bps,omitempty"` // overage multiplier in bps (10000 = 1x, 15000 = 1.5x, 0 = use 10000)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CreateContractRequest) Reset() {
@@ -148,6 +150,20 @@ func (x *CreateContractRequest) GetBillingPeriod() BillingPeriod {
 		return x.BillingPeriod
 	}
 	return BillingPeriod_BILLING_PERIOD_UNSPECIFIED
+}
+
+func (x *CreateContractRequest) GetCommittedAmountCents() int64 {
+	if x != nil {
+		return x.CommittedAmountCents
+	}
+	return 0
+}
+
+func (x *CreateContractRequest) GetOverageMultiplierBps() int64 {
+	if x != nil {
+		return x.OverageMultiplierBps
+	}
+	return 0
 }
 
 type CreateContractResponse struct {
@@ -491,17 +507,19 @@ func (x *EndContractResponse) GetContract() *Contract {
 }
 
 type Contract struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	CustomerId    string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
-	PlanId        string                 `protobuf:"bytes,3,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
-	StartAt       int64                  `protobuf:"varint,4,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
-	EndAt         int64                  `protobuf:"varint,5,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
-	BillingPeriod BillingPeriod          `protobuf:"varint,6,opt,name=billing_period,json=billingPeriod,proto3,enum=metrognome.v1.BillingPeriod" json:"billing_period,omitempty"`
-	CreatedAt     int64                  `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	Active        bool                   `protobuf:"varint,8,opt,name=active,proto3" json:"active,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Id                   string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	CustomerId           string                 `protobuf:"bytes,2,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	PlanId               string                 `protobuf:"bytes,3,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	StartAt              int64                  `protobuf:"varint,4,opt,name=start_at,json=startAt,proto3" json:"start_at,omitempty"`
+	EndAt                int64                  `protobuf:"varint,5,opt,name=end_at,json=endAt,proto3" json:"end_at,omitempty"`
+	BillingPeriod        BillingPeriod          `protobuf:"varint,6,opt,name=billing_period,json=billingPeriod,proto3,enum=metrognome.v1.BillingPeriod" json:"billing_period,omitempty"`
+	CreatedAt            int64                  `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	Active               bool                   `protobuf:"varint,8,opt,name=active,proto3" json:"active,omitempty"`
+	CommittedAmountCents int64                  `protobuf:"varint,9,opt,name=committed_amount_cents,json=committedAmountCents,proto3" json:"committed_amount_cents,omitempty"`  // minimum spend per period
+	OverageMultiplierBps int64                  `protobuf:"varint,10,opt,name=overage_multiplier_bps,json=overageMultiplierBps,proto3" json:"overage_multiplier_bps,omitempty"` // overage price multiplier (10000 = 1x)
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Contract) Reset() {
@@ -590,18 +608,34 @@ func (x *Contract) GetActive() bool {
 	return false
 }
 
+func (x *Contract) GetCommittedAmountCents() int64 {
+	if x != nil {
+		return x.CommittedAmountCents
+	}
+	return 0
+}
+
+func (x *Contract) GetOverageMultiplierBps() int64 {
+	if x != nil {
+		return x.OverageMultiplierBps
+	}
+	return 0
+}
+
 var File_metrognome_v1_contract_proto protoreflect.FileDescriptor
 
 const file_metrognome_v1_contract_proto_rawDesc = "" +
 	"\n" +
-	"\x1cmetrognome/v1/contract.proto\x12\rmetrognome.v1\"\xc8\x01\n" +
+	"\x1cmetrognome/v1/contract.proto\x12\rmetrognome.v1\"\xb4\x02\n" +
 	"\x15CreateContractRequest\x12\x1f\n" +
 	"\vcustomer_id\x18\x01 \x01(\tR\n" +
 	"customerId\x12\x17\n" +
 	"\aplan_id\x18\x02 \x01(\tR\x06planId\x12\x19\n" +
 	"\bstart_at\x18\x03 \x01(\x03R\astartAt\x12\x15\n" +
 	"\x06end_at\x18\x04 \x01(\x03R\x05endAt\x12C\n" +
-	"\x0ebilling_period\x18\x05 \x01(\x0e2\x1c.metrognome.v1.BillingPeriodR\rbillingPeriod\"M\n" +
+	"\x0ebilling_period\x18\x05 \x01(\x0e2\x1c.metrognome.v1.BillingPeriodR\rbillingPeriod\x124\n" +
+	"\x16committed_amount_cents\x18\x06 \x01(\x03R\x14committedAmountCents\x124\n" +
+	"\x16overage_multiplier_bps\x18\a \x01(\x03R\x14overageMultiplierBps\"M\n" +
 	"\x16CreateContractResponse\x123\n" +
 	"\bcontract\x18\x01 \x01(\v2\x17.metrognome.v1.ContractR\bcontract\"$\n" +
 	"\x12GetContractRequest\x12\x0e\n" +
@@ -620,7 +654,7 @@ const file_metrognome_v1_contract_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x15\n" +
 	"\x06end_at\x18\x02 \x01(\x03R\x05endAt\"J\n" +
 	"\x13EndContractResponse\x123\n" +
-	"\bcontract\x18\x01 \x01(\v2\x17.metrognome.v1.ContractR\bcontract\"\x82\x02\n" +
+	"\bcontract\x18\x01 \x01(\v2\x17.metrognome.v1.ContractR\bcontract\"\xee\x02\n" +
 	"\bContract\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -631,7 +665,10 @@ const file_metrognome_v1_contract_proto_rawDesc = "" +
 	"\x0ebilling_period\x18\x06 \x01(\x0e2\x1c.metrognome.v1.BillingPeriodR\rbillingPeriod\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\a \x01(\x03R\tcreatedAt\x12\x16\n" +
-	"\x06active\x18\b \x01(\bR\x06active*\x84\x01\n" +
+	"\x06active\x18\b \x01(\bR\x06active\x124\n" +
+	"\x16committed_amount_cents\x18\t \x01(\x03R\x14committedAmountCents\x124\n" +
+	"\x16overage_multiplier_bps\x18\n" +
+	" \x01(\x03R\x14overageMultiplierBps*\x84\x01\n" +
 	"\rBillingPeriod\x12\x1e\n" +
 	"\x1aBILLING_PERIOD_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16BILLING_PERIOD_MONTHLY\x10\x01\x12\x1c\n" +
