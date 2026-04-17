@@ -18,6 +18,7 @@ go_library(
 go_test(
     name = "keyspace_test",
     srcs = [
+        "bench_test.go",
         "keyspace_test.go",
         "resolver_test.go",
     ],
