@@ -495,6 +495,24 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(evolErr.Message).To(ContainSubstring("added version prior to old"))
 		})
 
+		It("accepts former index without old index when allowOlderFormerIndexAddedVersion", func() {
+			old := buildMetaData(5, nil)
+
+			new := buildMetaData(10, nil)
+			new.formerIndexes = append(new.formerIndexes, &FormerIndex{
+				SubspaceKey:    "ephemeral_idx",
+				FormerName:     "ephemeral_idx",
+				AddedVersion:   3, // <= old.Version()==5 → normally rejected
+				RemovedVersion: 7,
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowOlderFormerIndexAddedVersion(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("accepts former index without old index when addedVersion > old version", func() {
 			old := buildMetaData(5, nil)
 
