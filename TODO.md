@@ -154,7 +154,7 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 #### LOW
 
-- [ ] **`isClosed()` on cursor** — Closure state check.
+- [x] **`isClosed()` on cursor** — `IsClosed() bool` added to `RecordCursor[T]` interface. All 38 cursor types implement it. swingshift-23.
 - [ ] **FDBReverseDirectoryCache** — Reverse prefix→name caching (~496 lines Java).
 - [ ] **KeySpace/KeySpacePath** — Enterprise key management wrapper on top of FDB directory layer.
 - [ ] **Extension options processing** — Advanced FDBMetaDataStore feature for proto extension options.
