@@ -69,7 +69,7 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
 - **Request review early** (mid-shift is fine) so feedback arrives while you still have time to address it. But do NOT merge until the shift ends.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
-- **Wind down 2 hours before shift end.** Stop starting NEW features. Use the last 2 hours for: get the PR reviewed (request review per cohesive chunk, don't wait until everything is done), address feedback, run verification, write handover. Verification runs (fuzz, stress) are fine — they're passive. New code is not.
+- **Wind down 1 hour before shift end.** Stop starting NEW features. Use the last hour for: get the PR reviewed (request review per cohesive chunk, don't wait until everything is done), address feedback, run verification, write handover. Verification runs (fuzz, stress) are fine — they're passive. New code is not.
 - **NEVER push to master directly.** Even after merging a shift PR, create a NEW branch for any remaining work. Single-line doc fixes go through a PR. If you catch yourself typing `git push origin master`, STOP. This rule is non-negotiable — dayshift-14 pushed 40+ unreviewed commits to master.
 
 ## Step 5: Review loop
