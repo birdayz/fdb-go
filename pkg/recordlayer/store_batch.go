@@ -21,8 +21,14 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 // collects them in one batch. This turns N round trips into ~1 round trip
 // for the existence checks, significantly improving throughput for batch inserts.
 //
-// Semantically equivalent to calling SaveRecord N times. All records are
-// saved in the current transaction.
+// Limitations vs SaveRecord:
+//   - Record versions are NOT saved (StoreRecordVersions is ignored).
+//     Batch-saved records will have nil Version when loaded.
+//   - VERSION index entries are not created for batch-saved records.
+//   - Old record versions are not loaded for updates, so VERSION index
+//     cleanup on update is incomplete (orphaned entries possible).
+//
+// Use SaveRecord for stores that require record versioning.
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -228,8 +234,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 // entries from the old record will NOT be cleaned up. Only use this when you
 // can guarantee unique primary keys (e.g. UUID/random IDs, monotonic sequences).
 //
-// For the metrognome usage event ingest path, every event has a unique event_id
-// PK, so this is safe and provides maximum throughput.
+// Limitations: same as SaveRecordBatch — record versions are NOT saved.
 func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -378,6 +383,8 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 //   - If the schema has UNIQUE indexes, all records must have unique values for those
 //     indexes. Uniqueness is not enforced — duplicates silently corrupt the index.
 //   - This is a Go-only API, not present in Java Record Layer.
+//
+// Limitations: same as SaveRecordBatch — record versions are NOT saved.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
 		return nil
