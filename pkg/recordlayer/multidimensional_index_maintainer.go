@@ -42,6 +42,18 @@ const (
 	IndexOptionRTreeMaxM   = "rtreeMaximumM"
 	IndexOptionRTreeMinM   = "rtreeMinimumM"
 	IndexOptionRTreeSplitS = "rtreeSplitS"
+
+	// IndexOptionRTreeStorage controls the node storage strategy.
+	// Matches Java's IndexOptions.RTREE_STORAGE.
+	IndexOptionRTreeStorage = "rtreeStorage"
+
+	// IndexOptionRTreeStoreHilbertValues controls whether Hilbert values are stored.
+	// Matches Java's IndexOptions.RTREE_STORE_HILBERT_VALUES.
+	IndexOptionRTreeStoreHilbertValues = "rtreeStoreHilbertValues"
+
+	// IndexOptionRTreeUseNodeSlotIndex controls whether a node slot index is maintained.
+	// Matches Java's IndexOptions.RTREE_USE_NODE_SLOT_INDEX.
+	IndexOptionRTreeUseNodeSlotIndex = "rtreeUseNodeSlotIndex"
 )
 
 // parseRTreeConfig reads R-tree configuration from index options.
