@@ -1449,4 +1449,118 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(evolErr.Message).To(ContainSubstring("proto syntax changed"))
 		})
 	})
+
+	Describe("index record type scope validation (RFC 019)", func() {
+		It("rejects index that drops a record type", func() {
+			// Build old: index covers Order via type-specific add
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// Build new: same index but now universal (covers all types)
+			// Then change to only cover Customer
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Customer", NewIndex("idx_price", Field("price")))
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("no longer covers record type"))
+		})
+
+		It("rejects index adding old record type without sinceVersion", func() {
+			// Old: index covers Order only
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// New: same index now covers both Order and Customer.
+			// Customer exists since version 0 (no sinceVersion), which is <= old version 1.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("covers new record type"))
+		})
+
+		It("allows index keeping same record types", func() {
+			// Old: index covers Order
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// New: same index still covers only Order — no scope change.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("allows index adding type with SinceVersion=0 when allowNoSinceVersion is true", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// Customer has SinceVersion=0 (default). Without allowNoSinceVersion,
+			// this would fail because 0 <= old.Version()==1.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowNoSinceVersion(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("index options validation (RFC 019)", func() {
+		It("rejects option changes without allowIndexRebuilds", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "false"}
+				b.AddIndex("Order", idx)
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("options changed"))
+		})
+
+		It("allows option changes with allowIndexRebuilds", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "true"}
+				b.AddIndex("Order", idx)
+			})
+
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				idx.Options = map[string]string{"unique": "false"}
+				b.AddIndex("Order", idx)
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowIndexRebuilds(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

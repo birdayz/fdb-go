@@ -129,6 +129,8 @@ All data-path functions implemented. Missing are observability/admin only:
 
 - [x] **AutoContinuingCursor transaction_timed_out not retried** — Error 1031 escaped as non-retryable, killing large scans when FDB's 5-second timeout hit mid-page. Fixed: `isRetryableForContinuation()` treats 1031 as retryable in cursor context (creates new transaction from saved continuation). Java has the same gap. swingshift-18.
 
+- [x] **ensureStoreStateLoaded error swallowing (partial)** — Errors now captured in `stateLoadErr` and propagated from 5 error-returning callers (validateRecordUpdateAllowed, updateSecondaryIndexes, 3 batch methods). 7 no-error methods (GetIndexState, GetUserVersion, etc.) still use fallback — changing their signatures is a breaking API change. nightshift-21.
+
 ### Features
 
 #### OUT OF SCOPE (query planner prerequisites)
@@ -148,7 +150,7 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 #### MEDIUM
 
-- [ ] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20: (1) Index record type scope validation — Java validates indexes still cover same record types after evolution, Go skips this entirely. (2) Type rename propagation — Go detects renames but doesn't apply to index validation. (3) Index options validation — Java delegates to `IndexValidator` registry for option changes, Go has no equivalent. Plus one edge case: former index added version check without prior old index.
+- [x] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20, all implemented nightshift-21: (1) Index record type scope validation via `validateIndexRecordTypes()`. (2) Centralized type rename map via `getTypeRenames()`, propagated to all validators. (3) Index options change rejection (simplified vs Java's IndexValidatorRegistry). Plus `RecordTypesForIndex()` helper. Remaining: former index addedVersion edge case, full IndexValidatorRegistry (LOW, simplified version is safe default).
 
 #### LOW
 
@@ -187,5 +189,5 @@ No open test items.
 - [x] **Binding stress testcontainers migration** — Replaced raw Docker CLI calls with testcontainers module. Eliminates manual polling, 3s sleeps, and fragile container lifecycle. swingshift-18.
 - [x] **Binding stress cluster file path fix** — Testcontainers migration (swingshift-18) used relative cluster file path, but Python binding tester runs with `cmd.Dir=/tmp/bt-run`. Relative path resolved wrong → error 1515 on all seeds. Fixed: `filepath.Abs()`. nightshift-19.
 - [ ] **Throughput benchmarks fail on single-node testcontainer** — `BenchmarkThroughputInsertBatchConcurrent128` overwhelms the FDB testcontainer (128 goroutines × concurrent transactions). Two issues: (1) GRV cache staleness causes "record store does not exist" on first goroutines after setup; fix: `InvalidateGRVCache()` after store creation. (2) FDB 5-second transaction timeout under load causes "context deadline exceeded". Fix: either skip in `just bench` or use a larger cluster. `just bench-ci` excludes throughput benchmarks and works fine.
-- [ ] **CI Node.js 20 deprecation** — `actions/checkout@v4` and `oven-sh/setup-bun` use Node.js 20 which GitHub will force to Node.js 24 on 2026-06-02 and remove on 2026-09-16. `actions/upload-artifact@v4` → v5+ also needs Node 24. Self-hosted runner needs Node 24 installed + runner version ≥ 2.327.1. Alternatively, set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` on runner to test now.
-- [ ] **Evaluate nilaway nogo linter** — Uber's `nilaway` static analyzer catches nil dereferences at compile time. Has Bazel/nogo integration: https://github.com/uber-go/nilaway?tab=readme-ov-file#bazelnogo. Evaluate whether adding it to our nogo config catches real bugs vs false positive noise.
+- [x] **CI Node.js 20 deprecation** — Updated nightshift-21: checkout v4→v5, upload-artifact v4→v7 across all 4 workflows. All actions now Node.js 24 compatible. GitHub deadline: 2026-06-02.
+- [x] **Evaluate nilaway nogo linter** — Evaluated nightshift-21. 4 findings, all false positives (nil slice `[0:]`, map iteration over own keys). Core library clean. Already run `nilness` from x/tools. Not adding — poor signal/noise ratio.

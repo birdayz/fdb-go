@@ -104,7 +104,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	var insertCount int64
 
 	// Lazy-load store state before acquiring lock (Build() path, matches Java).
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return nil, fmt.Errorf("load store state: %w", err)
+	}
 	// Hold stateMu.RLock for the entire batch to avoid per-record lock/unlock.
 	// Also validate update lock once (same for all records).
 	store.stateMu.RLock()
@@ -261,7 +263,9 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
 
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return nil, fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -398,7 +402,9 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 		}
 	}
 
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {

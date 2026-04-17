@@ -160,6 +160,10 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 						index.Name, oldMetaDataVersion, newMetaDataVersion, err)
 				}
 			case IndexStateWriteOnly:
+				// Always clear and re-mark, matching Java's rebuildOrMarkIndex().
+				// The header version update and clearAndMark are in the same FDB
+				// transaction, so crash recovery is atomic — either both happen or
+				// neither. No need to check current state.
 				if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
 					return fmt.Errorf("mark index %q write-only: %w", index.Name, err)
 				}
@@ -450,6 +454,22 @@ func DefaultIndexRebuildPolicy(index *Index, recordCount int64, indexOnNewRecord
 		return IndexStateReadable
 	}
 	return IndexStateDisabled
+}
+
+// WriteOnlyIfTooLargePolicy returns READABLE for small stores (inline rebuild)
+// and WRITE_ONLY for larger stores. WRITE_ONLY is the production-safe choice:
+// new writes maintain the index immediately, and the operator invokes
+// OnlineIndexer to backfill historical data. This avoids both:
+//   - READABLE: times out on large stores (single-transaction rebuild)
+//   - DISABLED: index is completely ignored, new writes don't maintain it
+//
+// Threshold matches Java's MAX_RECORDS_FOR_REBUILD = 200.
+func WriteOnlyIfTooLargePolicy(index *Index, recordCount int64, indexOnNewRecordTypes bool) IndexState {
+	const maxRecordsForRebuild = 200
+	if indexOnNewRecordTypes || recordCount <= maxRecordsForRebuild {
+		return IndexStateReadable
+	}
+	return IndexStateWriteOnly
 }
 
 // AlwaysRebuildPolicy always rebuilds indexes inline.

@@ -39,6 +39,12 @@ type mutualIndexBuilder struct {
 	fragmentFirst int // random starting fragment
 	fragmentCur   int // current fragment index
 	iterType      fragmentIterationType
+
+	// Conflict avoidance (anyJumper equivalent from Java):
+	// When InsertRange(requireEmpty=true) fails, another builder claimed this range.
+	// Instead of failing the transaction, skip to the next fragment.
+	lastConflictFragment int // fragment where last conflict occurred (-1 = none)
+	sameRangeRetries     int // consecutive retries on the same range (infinite loop protection)
 }
 
 // newMutualIndexBuilder initializes the mutual builder.
@@ -51,9 +57,10 @@ func newMutualIndexBuilder(oi *OnlineIndexer) (*mutualIndexBuilder, error) {
 	)
 
 	m := &mutualIndexBuilder{
-		indexer:   oi,
-		heartbeat: hb,
-		iterType:  fragmentFull,
+		indexer:              oi,
+		heartbeat:            hb,
+		iterType:             fragmentFull,
+		lastConflictFragment: -1,
 	}
 
 	// Compute fragment boundaries from FDB shard splits.
@@ -230,6 +237,33 @@ func (m *mutualIndexBuilder) buildMutual(ctx context.Context) (int64, bool, erro
 				if err != nil {
 					return nil, err
 				}
+				// Check if the range was contested (anyJumper: another builder claimed it).
+				if m.lastConflictFragment == m.fragmentCur {
+					m.lastConflictFragment = -1
+					m.sameRangeRetries++
+					// Infinite loop protection: if we've retried the same range 1000 times,
+					// another builder is persistently contesting. Skip this fragment.
+					// Matches Java's infiniteLoopProtection threshold.
+					if m.sameRangeRetries > 1000 {
+						return nil, fmt.Errorf("mutual indexer: infinite loop on fragment %d after 1000 retries", m.fragmentCur)
+					}
+					// Jump to next fragment instead of retrying the same one.
+					cyclesWithoutWork++
+					if m.fragmentAdvance() {
+						m.iterType++
+						if m.iterType >= fragmentRecover {
+							missing, checkErr := primaryRangeSet.FirstMissingRange(rtx.Transaction())
+							if checkErr != nil {
+								return nil, checkErr
+							}
+							hasMore = missing != nil
+							return nil, nil
+						}
+						cyclesWithoutWork = 0
+					}
+					continue
+				}
+				m.sameRangeRetries = 0
 				recordsProcessed = n
 				// Don't advance fragment — stay here for the next call
 				// in case there's more work in this fragment.
@@ -376,9 +410,18 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 
 	for _, idx := range m.indexer.targetIndexes {
 		idxRangeSet := NewIndexingRangeSet(store.subspace, idx)
-		_, err := idxRangeSet.InsertRange(store.context.Transaction(), beginKey, endKey, true)
+		inserted, err := idxRangeSet.InsertRange(store.context.Transaction(), beginKey, endKey, true)
 		if err != nil {
 			return 0, fmt.Errorf("insert range for index %q: %w", idx.Name, err)
+		}
+		if !inserted {
+			// requireEmpty=true found existing entries — another builder already
+			// claimed this range. Record the conflict and let the caller skip to
+			// the next fragment (anyJumper pattern from Java).
+			// Note: transaction-level conflicts (concurrent commits) are handled
+			// by buildRangeWithRetries at the outer level.
+			m.lastConflictFragment = m.fragmentCur
+			return 0, nil
 		}
 	}
 

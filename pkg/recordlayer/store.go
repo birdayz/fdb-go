@@ -97,6 +97,7 @@ type FDBRecordStore struct {
 	storeStateCache      FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu              sync.RWMutex             // protects storeHeader + indexStates
 	stateLoadOnce        sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	stateLoadErr         error                    // error from lazy load (nil if loaded successfully or not yet attempted)
 	versionChanged       bool                     // true if checkPossiblyRebuild detected a version change
 	maintainerCache      sync.Map                 // string → IndexMaintainer, cached per-transaction
 	batchKeyBuf          *[]byte                  // shared buffer for batch key packing (InsertBatch only)
@@ -122,14 +123,24 @@ func (store *FDBRecordStore) ensureStoreStateLoaded() {
 		}
 		state, err := loadRecordStoreState(store, ExistenceCheckNone)
 		if err != nil {
-			// On error, default to all readable — safe when CreateOrOpen ran at
+			// Capture the error for callers that can propagate it.
+			// Default to all readable — safe when CreateOrOpen ran at
 			// startup and all indexes are known to be built.
+			store.stateLoadErr = err
 			store.indexStates = make(map[string]IndexState)
 			return
 		}
 		store.storeHeader = state.StoreHeader
 		store.indexStates = state.IndexStates
 	})
+}
+
+// ensureStoreStateLoadedErr calls ensureStoreStateLoaded and returns any
+// error that occurred during the lazy load. For callers that can propagate
+// errors (batch operations, validate, updateSecondaryIndexes).
+func (store *FDBRecordStore) ensureStoreStateLoadedErr() error {
+	store.ensureStoreStateLoaded()
+	return store.stateLoadErr
 }
 
 // IsVersionChanged returns true if the metadata version changed during
@@ -173,7 +184,9 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
 func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.validateRecordUpdateAllowedLocked()
@@ -873,7 +886,9 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
@@ -1166,15 +1181,24 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 	if recordType != nil && recordType.PrimaryKey != nil && primaryKeyHasRecordTypePrefix(recordType.PrimaryKey) {
 		// Fast path: prefix scan on the record type key range.
 		// RecordTypeKey is the first component, so all records of this type
-		// have PK starting with (recordTypeIndex, ...).
-		rtk := int64(recordType.RecordTypeIndex)
+		// have PK starting with (recordTypeKey, ...).
+		// Use GetRecordTypeKey() to respect explicit keys from SetRecordTypeKey().
+		// Matches Java's RecordType.getRecordTypeKey().
+		rtk := recordType.GetRecordTypeKey()
 		lowEP := EndpointTypeRangeInclusive
+		highEP := EndpointTypeRangeInclusive
 		if len(continuation) > 0 {
-			lowEP = EndpointTypeContinuation
+			// Match ScanRecords: reverse scans narrow the high endpoint,
+			// forward scans narrow the low endpoint.
+			if scanProperties.IsReverse() {
+				highEP = EndpointTypeContinuation
+			} else {
+				lowEP = EndpointTypeContinuation
+			}
 		}
 		return store.ScanRecordsInRange(
 			tuple.Tuple{rtk}, tuple.Tuple{rtk},
-			lowEP, EndpointTypeRangeInclusive,
+			lowEP, highEP,
 			continuation, scanProperties,
 		)
 	}
@@ -1298,6 +1322,7 @@ func (store *FDBRecordStore) getFormatVersionLocked() int32 {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getUserVersion().
 func (store *FDBRecordStore) GetUserVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.UserVersion != nil {
@@ -1324,6 +1349,7 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 // GetMetaDataVersion returns the metadata version stored in the header.
 // Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) GetMetaDataVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.MetaDataversion != nil {
@@ -1337,6 +1363,7 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getIncarnation().
 func (store *FDBRecordStore) GetIncarnation() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil {
@@ -1372,6 +1399,7 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getHeaderUserField().
 func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
@@ -1440,6 +1468,7 @@ type RecordStoreState struct {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().
 func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	states := make(map[string]IndexState, len(store.indexStates))
