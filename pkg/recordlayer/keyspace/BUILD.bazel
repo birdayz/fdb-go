@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/keyspace",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
     ],

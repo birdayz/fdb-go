@@ -9,6 +9,7 @@ package keyspace
 import (
 	"fmt"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
@@ -350,6 +351,17 @@ func (p *Path) ListSubdirectories() []string {
 // HasSubdirectory returns true if a child directory with the given name exists.
 func (p *Path) HasSubdirectory(name string) bool {
 	return p.directory.GetSubdirectory(name) != nil
+}
+
+// ToRange returns an FDB key range that covers all entries under this path.
+// Useful for scanning or clearing all data in a directory subtree.
+func (p *Path) ToRange() (fdb.KeyRange, error) {
+	ss := p.ToSubspace()
+	begin, end := ss.FDBRangeKeys()
+	return fdb.KeyRange{
+		Begin: begin.FDBKey(),
+		End:   end.FDBKey(),
+	}, nil
 }
 
 // FullPath returns a human-readable representation of the path from root to here.
