@@ -183,16 +183,59 @@ func (store *FDBRecordStore) removeVersionDataInPrefixRange(sub subspace.Subspac
 }
 
 // findMatchingRecordTypes returns names of record types whose PK has
-// enough columns for the given prefix.
+// enough columns for the given prefix AND whose record type key matches
+// the prefix value (when PKs have a RecordTypeKey prefix).
+//
+// Matches Java's behavior where recordTypeKeyComparison narrows
+// allRecordTypes to just the target type, preventing index clears
+// from leaking to other types' indexes.
 func (store *FDBRecordStore) findMatchingRecordTypes(prefix tuple.Tuple) []string {
 	var names []string
 	for _, rt := range store.metaData.RecordTypes() {
 		pkColSize := rt.PrimaryKey.ColumnSize()
-		if len(prefix) <= pkColSize {
-			names = append(names, rt.Name)
+		if len(prefix) > pkColSize {
+			continue
 		}
+		// If the PK starts with RecordTypeKey and the prefix has a value
+		// for it, only include types whose type key matches the prefix.
+		if len(prefix) >= 1 && hasRecordTypeKeyPrefix(rt.PrimaryKey) {
+			typeKey := rt.GetRecordTypeKey()
+			if !recordTypeKeyEquals(prefix[0], typeKey) {
+				continue
+			}
+		}
+		names = append(names, rt.Name)
 	}
 	return names
+}
+
+// recordTypeKeyEquals compares a prefix value against a record type key,
+// handling Go's int type normalization. FDB tuple decoding produces int64,
+// but RecordType.GetRecordTypeKey() may return int (from RecordTypeIndex).
+func recordTypeKeyEquals(prefixVal, typeKey any) bool {
+	if prefixVal == typeKey {
+		return true
+	}
+	// Normalize both to int64 for comparison.
+	pInt, pOk := toInt64Value(prefixVal)
+	tInt, tOk := toInt64Value(typeKey)
+	if pOk && tOk {
+		return pInt == tInt
+	}
+	return false
+}
+
+func toInt64Value(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	default:
+		return 0, false
+	}
 }
 
 // hasRecordTypeKeyPrefix returns true if the expression starts with

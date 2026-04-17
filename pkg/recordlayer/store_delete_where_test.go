@@ -514,6 +514,57 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("skips type-specific index that doesn't cover deleted type", func() {
+		ks := specSubspace()
+
+		// An index only on Customer should not be affected when deleting Orders.
+		// Before the fix, findMatchingRecordTypes returned ALL types with PK
+		// length >= prefix length, causing Customer's index to be incorrectly
+		// cleared when deleting Orders.
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		customerIdx := NewIndex("customer_name", Field("name"))
+		builder.AddIndex("Customer", customerIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		orderTypeKey := md.GetRecordType("Order").GetRecordTypeKey()
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")})
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Delete orders — customer index should be untouched.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+			return nil, store.DeleteRecordsWhere(tuple.Tuple{orderTypeKey})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify customer index is intact.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(customerIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1), "customer index entry should survive")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("clears split record chunks", func() {
 		// Split records store data across multiple KV pairs per record:
 		// pk.add(0) for header, pk.add(1), pk.add(2), ... for 100KB chunks.
