@@ -171,6 +171,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
+			Store:      store,
 			KeyCount:   newsizeInfo.KeyCount,
 			KeySize:    newsizeInfo.KeySize,
 			ValueSize:  newsizeInfo.ValueSize,
@@ -346,6 +347,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			PrimaryKey: primaryKey,
 			RecordType: recordType,
 			Record:     record,
+			Store:      store,
 		}
 
 		if err := store.updateSecondaryIndexesLocked(nil, stored); err != nil {
@@ -534,6 +536,7 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 		stored.PrimaryKey = primaryKey
 		stored.RecordType = recordType
 		stored.Record = record
+		stored.Store = store
 		for _, cm := range maintainers {
 			if err := cm.maintainer.Update(nil, &stored); err != nil {
 				return fmt.Errorf("record %d: index %q: %w", i, cm.index.Name, err)
