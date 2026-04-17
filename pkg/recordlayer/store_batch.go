@@ -21,11 +21,8 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 // collects them in one batch. This turns N round trips into ~1 round trip
 // for the existence checks, significantly improving throughput for batch inserts.
 //
-// Limitations vs SaveRecord:
-//   - Old record versions are not loaded for updates, so VERSION index
-//     cleanup on update is incomplete (orphaned entries possible).
-//     This only matters when UPDATING existing records that have VERSION indexes.
-//     For pure inserts, versioning works correctly.
+// Semantically equivalent to calling SaveRecord N times. All records are
+// saved in the current transaction.
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -218,6 +215,13 @@ func (store *FDBRecordStore) SaveRecordBatch(
 					RecordType: p.recordType,
 					Record:     oldMsg,
 					Store:      store,
+				}
+				// Load old version for VERSION index cleanup on update.
+				// One FDB read per updated record — only when version indexes exist.
+				if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+					if ver, verErr := store.LoadRecordVersion(p.primaryKey, false); verErr == nil {
+						oldRecord.Version = ver
+					}
 				}
 			}
 		}
