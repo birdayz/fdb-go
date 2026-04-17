@@ -594,6 +594,33 @@ func TestFindChildForValue_Bytes(t *testing.T) {
 	g.Expect(child.Name).To(Equal("marker"))
 }
 
+// TestPathFromTuple_ConstantPriority verifies that when the root has both
+// a constant directory and an open-type directory of the same KeyType,
+// the constant wins when its value matches. Regression test for the
+// two-pass fix in PathFromTuple (commit 6276d9b).
+func TestPathFromTuple_ConstantPriority(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	// Order matters for the regression: open-type is added FIRST. Without
+	// two-pass, iteration would pick "state" for all strings including "cfg".
+	root.AddSubdirectory(NewDirectory("state", KeyTypeString))
+	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
+	ks := NewKeySpace(root)
+
+	// "cfg" should resolve to the constant "config" directory, not "state".
+	path, remainder, err := ks.PathFromTuple(tuple.Tuple{"cfg"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remainder).To(BeNil())
+	g.Expect(path.DirectoryName()).To(Equal("config"))
+
+	// Other strings should fall through to "state".
+	path, _, err = ks.PathFromTuple(tuple.Tuple{"CA"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(path.DirectoryName()).To(Equal("state"))
+}
+
 // TestPathEqual_Bytes verifies that Path.Equal handles []byte without panicking.
 func TestPathEqual_Bytes(t *testing.T) {
 	t.Parallel()
