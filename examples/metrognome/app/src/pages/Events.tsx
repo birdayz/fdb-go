@@ -158,6 +158,7 @@ interface BenchResult {
   eventsPerSec: number;
   queryMs: number | null;
   usageTotal: string | null;
+  error?: string;
 }
 
 function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
@@ -196,12 +197,19 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
         return eventClient.ingestEvents({ events });
       });
 
-      const results = await Promise.all(promises);
+      const settled = await Promise.allSettled(promises);
       const ingestMs = Math.round(performance.now() - t0);
-      for (const r of results) {
-        totalAccepted += r.accepted;
-        totalDuplicates += r.duplicates;
+      let errors = 0;
+      for (const s of settled) {
+        if (s.status === "fulfilled") {
+          totalAccepted += s.value.accepted;
+          totalDuplicates += s.value.duplicates;
+        } else {
+          errors++;
+          console.error("Batch failed:", s.reason);
+        }
       }
+      if (errors > 0) console.warn(`${errors}/${batches} batches failed`);
 
       // Now query usage — O(1) via atomic SUM index
       let queryMs: number | null = null;
@@ -226,9 +234,9 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
         queryMs,
         usageTotal,
       });
-    } catch (e) {
+    } catch (e: any) {
       console.error("Ingest failed:", e);
-      setResult({ accepted: 0, duplicates: 0, ingestMs: 0, eventsPerSec: 0, queryMs: null, usageTotal: null });
+      setResult({ accepted: 0, duplicates: 0, ingestMs: 0, eventsPerSec: 0, queryMs: null, usageTotal: null, error: e?.message || String(e) });
     }
     setIngesting(false);
   }
@@ -295,6 +303,12 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
               </div>
             )}
           </div>
+
+          {result.error && (
+            <div className="p-3 bg-red-50 rounded-lg border border-red-200 text-sm text-red-700">
+              Error: {result.error}
+            </div>
+          )}
 
           {/* Query result — the O(1) demo */}
           {result.queryMs !== null && (
