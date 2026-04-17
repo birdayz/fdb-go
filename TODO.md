@@ -195,3 +195,236 @@ No open test items.
 - [ ] **Throughput benchmarks fail on single-node testcontainer** — `BenchmarkThroughputInsertBatchConcurrent128` overwhelms the FDB testcontainer (128 goroutines × concurrent transactions). Two issues: (1) GRV cache staleness causes "record store does not exist" on first goroutines after setup; fix: `InvalidateGRVCache()` after store creation. (2) FDB 5-second transaction timeout under load causes "context deadline exceeded". Fix: either skip in `just bench` or use a larger cluster. `just bench-ci` excludes throughput benchmarks and works fine.
 - [x] **CI Node.js 20 deprecation** — Updated nightshift-21: checkout v4→v5, upload-artifact v4→v7 across all 4 workflows. All actions now Node.js 24 compatible. GitHub deadline: 2026-06-02.
 - [x] **Evaluate nilaway nogo linter** — Evaluated nightshift-21. 4 findings, all false positives (nil slice `[0:]`, map iteration over own keys). Core library clean. Already run `nilness` from x/tools. Not adding — poor signal/noise ratio.
+
+---
+
+## Relational / SQL Layer (`pkg/relational/`)
+
+**Started nightshift-24 (2026-04-18).** Port of Java's `fdb-relational-*` modules. Goal: full SQL over FoundationDB, wire-compatible with Java.
+
+### Core requirements
+
+1. **1:1 aligned with Java.** Package names, class/struct names, behavior, wire format — mirror Java unless there is a very good reason. Catalog storage, plan cache keys, protobuf encodings, SQL dialect must be bit-compatible.
+2. **Usable from `database/sql`.** Primary public entry is a `database/sql/driver.Driver` registered under name `fdbsql`. Users write `sql.Open("fdbsql", dsn)`. Non-negotiable.
+3. **Embedded first.** Start with in-process execution (equivalent to Java's `EmbeddedRelationalConnection`). gRPC remote / standalone server comes later.
+4. **Keep the parser dialect identical.** Use the same `RelationalLexer.g4` / `RelationalParser.g4` grammar files; regenerate with `antlr4-go/antlr4`. No dialect drift.
+
+### Scope map (Java → Go)
+
+| Java module | Go package | Role |
+|---|---|---|
+| `fdb-relational-api` | `pkg/relational/api` | Interfaces, options, error codes, type system (`DataType`), metadata types (`Table`, `Column`, `Index`, `Schema`, `SchemaTemplate`), struct/array helpers |
+| `fdb-record-layer-core/query/plan/cascades` | `pkg/recordlayer/plan/cascades` | **Cascades optimizer.** Expressions, Values, Predicates, Rules, Matching, Typing, Memo/References, Cost model. ~104K LOC in Java — by far the largest item. |
+| `fdb-record-layer-core/query/plan/plans` | `pkg/recordlayer/plan/plans` | Physical plan nodes (`RecordQueryPlan` subclasses). Some overlap with what we already have in `pkg/recordlayer/`. |
+| `fdb-relational-core/antlr/*.g4` | `pkg/relational/core/parser` | ANTLR4 lexer/parser (same `.g4` files, regenerated for Go) |
+| `fdb-relational-core/recordlayer/query` | `pkg/relational/core/query` | `SemanticAnalyzer`, `PlanGenerator`, `LogicalOperator`, `QueryExecutor` |
+| `fdb-relational-core/recordlayer/query/cache` | `pkg/relational/core/cache` | `RelationalPlanCache` (3-tier, TTL) |
+| `fdb-relational-core/recordlayer/catalog` | `pkg/relational/core/catalog` | `RecordLayerStoreCatalog`, system tables, schema versioning |
+| `fdb-relational-core/recordlayer/metadata` | `pkg/relational/core/metadata` | `RecordLayerSchemaTemplate`, `RecordLayerTable`, `RecordLayerIndex`, `RecordLayerColumn` |
+| `fdb-relational-core/recordlayer/ddl` | `pkg/relational/core/ddl` | `ConstantAction` pattern for CREATE/DROP/ALTER |
+| `fdb-relational-core/recordlayer/structuredsql` | `pkg/relational/core/structuredsql` | Fluent SQL AST (lower priority) |
+| `fdb-relational-core/recordlayer` (conn/stmt/resultset impls) | `pkg/relational/core/embedded` | `EmbeddedConnection`, `EmbeddedStatement`, `RecordLayerResultSet` |
+| `fdb-relational-jdbc` | `pkg/relational/sqldriver` | `database/sql/driver.Driver` adapter (embedded mode, and later gRPC client) |
+| `fdb-relational-grpc` | `pkg/relational/grpc` *(later)* | gRPC service stubs + protobuf wire |
+| `fdb-relational-server` | `cmd/frl-server` *(later)* | Standalone SQL server binary |
+| `fdb-relational-cli` | `cmd/frl` *(later)* | Interactive SQL shell |
+
+### Architectural decisions
+
+**Why a `database/sql/driver` adapter instead of building natively against `database/sql`:**
+
+Java's API is JDBC-extending (`RelationalConnection extends java.sql.Connection`). Strict 1:1 means we keep an internal Go API that mirrors Java's method surface — then wrap it with a thin `database/sql/driver` adapter. Users get both: `sql.Open("fdbsql", ...)` for portability + direct access to the Go-native API via type assertion or a package-level `Open()` for FDB-specific features (options, struct/array types, continuations, fluent SQL).
+
+**Why the cascades planner lives in `pkg/recordlayer/plan/cascades`, not `pkg/relational/core`:**
+
+Matches Java's layout. Cascades is a planning framework over `RecordQuery`, reusable by anyone writing queries against the record layer — not intrinsic to SQL. The SQL layer *consumes* it.
+
+**DSN format:**
+
+```
+fdbsql:///PATH                             # embedded, default cluster file
+fdbsql:///PATH?cluster_file=/etc/.../fdb.cluster
+fdbsql://HOST:PORT/PATH                    # remote gRPC (later)
+```
+
+Matches JDBC URL shape. Path semantics match Java's `RelationalConnection.getPath()`.
+
+**Transaction model:**
+
+- `sql.DB` auto-commit → each statement is its own FDB transaction (matches Java `autoCommit=true` default).
+- `sql.DB.BeginTx()` → explicit `FDBRecordContext` for the lifetime of the `sql.Tx`.
+- Isolation level `sql.LevelSerializable` only (FDB semantics). Lower levels return `driver.ErrBadConn` or equivalent — do not silently downgrade.
+- `context.Context` propagation is mandatory (5 s FDB transaction limit; users must get `context.DeadlineExceeded` back).
+
+**Type mapping (`driver.Value`):**
+
+| SQL type | Go `driver.Value` | Notes |
+|---|---|---|
+| BOOLEAN | `bool` | |
+| INTEGER / BIGINT | `int64` | Java widens to int64 same way |
+| FLOAT / DOUBLE | `float64` | |
+| STRING / VARCHAR | `string` | UTF-8 |
+| BYTES | `[]byte` | |
+| TIMESTAMP | `time.Time` | Map to Java's tuple encoding |
+| UUID | `[16]byte` / `uuid.UUID` | TBD — match Java SQL UUID |
+| STRUCT | custom type | Implement `driver.Valuer` and `sql.Scanner`; expose `pkg/relational/api.Struct` |
+| ARRAY | custom type | Same |
+| NULL | `nil` | |
+
+Versionstamps and continuations require custom types that users access via type assertion on `*sql.Rows` or a `pkg/relational` helper.
+
+### Phases
+
+Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum viable SQL engine (CRUD against pre-existing stores via hand-written plans). Phase 4 is where the hard work is. Everything downstream of Phase 4 is straightforward.
+
+#### Phase 0 — Skeleton & foundations
+
+- [ ] **pkg/relational/api skeleton** — port interfaces 1:1 from Java's `fdb-relational-api/`:
+  - `Connection`, `Statement`, `PreparedStatement`, `ResultSet`, `ResultSetMetaData`, `DatabaseMetaData`, `Driver`
+  - `DataType` hierarchy (primitives, struct, array, enum)
+  - `Options` (per-connection config map)
+  - `exceptions/ErrorCode` enum — every Java `ErrorCode` value, matched to a Go error struct (per `feedback_error_types_not_sentinels.md`)
+  - `Row`, `KeySet`, `Continuation`, `ParseTreeInfo`
+- [ ] **pkg/relational/api/metadata** — `Table`, `Column`, `Index`, `Schema`, `SchemaTemplate`, `View`, `InvokedRoutine`, `Visitor`
+- [ ] **pkg/relational/api/fluentsql** — (deferred; shell only until after Phase 7)
+- [ ] **Decide interop with existing `pkg/recordlayer` types** — `RecordMetaData` vs. new `SchemaTemplate`; `Index` vs. metadata `Index`; document where they live side by side vs. get merged.
+- [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages, etc.). Regenerate via `just generate`.
+
+#### Phase 1 — Parser (ANTLR4)
+
+- [ ] **Vendor the grammar** — copy `RelationalLexer.g4` + `RelationalParser.g4` into `pkg/relational/core/parser/` unchanged.
+- [ ] **Integrate antlr4-go** — add `github.com/antlr4-go/antlr/v4` to `go.mod`, `MODULE.bazel`. Set up codegen in `justfile` (`just generate-parser`).
+- [ ] **Port QueryParser wrapper** — `parser.Parse(sql string) (*ParseTreeInfo, error)` with error collector + case-insensitive lexing.
+- [ ] **Parser conformance tests** — feed the Java test SQL corpus (`fdb-relational-core/src/test/resources/*.yamsql`) through both parsers; require identical tree shapes or document divergences.
+
+#### Phase 2 — Type system + metadata storage
+
+- [ ] **Port `DataType`** — primitive types, composite types (struct/array), nullability, equality/compat rules. Match Java's `DataType` class tree.
+- [ ] **Port `SchemaTemplate` / `Schema` / `Table` / `Column` / `Index`** — in-memory representation. Builders.
+- [ ] **Catalog storage layer** — `StoreCatalog` interface + `RecordLayerStoreCatalog` implementation writing to FDB. Mirror Java's subspace layout.
+- [ ] **System tables** — `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, `INDEXES`, `SCHEMATA`, etc. Computed on-the-fly from catalog state (Java pattern).
+- [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
+
+#### Phase 3 — Semantic analysis (parse tree → logical plan)
+
+- [ ] **Port `LogicalOperator` hierarchy** — SELECT, INSERT, UPDATE, DELETE, CTE, UNION, etc. Match Java names.
+- [ ] **Port `SemanticAnalyzer`** — ANTLR visitor that walks parse tree, resolves identifiers against catalog, infers types, produces `LogicalOperator` tree. Also extracts prepared-statement parameters.
+- [ ] **Error surfacing** — column-not-found, type-mismatch, ambiguous-ref, etc. Match Java `ErrorCode`s.
+
+#### Phase 4 — Cascades optimizer (the big one)
+
+**This is ~104K LOC in Java, ~500 files. It will not fit in one shift. Break it into sub-phases and plan across many shifts.**
+
+- [ ] **4.0 — Foundation types**
+  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation
+  - [ ] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes
+  - [ ] `QueryPredicate` hierarchy — `ComparisonPredicate`, `AndPredicate`, `OrPredicate`, `NotPredicate`, `ComparisonRange(s)`, `MatchesValue`
+  - [ ] `Simplification` — value simplification, predicate simplification (~30 classes)
+  - [ ] `Comparisons` / `Comparison` — `Comparisons.Type`, `Comparisons.Comparison`, `Comparisons.SimpleComparison`, etc.
+- [ ] **4.1 — Relational expressions**
+  - [ ] `RelationalExpression`, `RelationalExpressionWithChildren`, `RelationalExpressionWithPredicates`
+  - [ ] Logical exprs: `LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, `LogicalTypeFilterExpression`, `LogicalUnionExpression`, `LogicalDistinctExpression`, `LogicalIntersectionExpression`, `SelectExpression`
+  - [ ] DML exprs: `InsertExpression`, `UpdateExpression`, `DeleteExpression`, `TableFunctionExpression`
+- [ ] **4.2 — Matching engine**
+  - [ ] `BindingMatcher` DSL — structural pattern + constraints
+  - [ ] `graph/` matchers, `structure/` matchers
+  - [ ] `PlannerBindings`
+- [ ] **4.3 — Memo & references**
+  - [ ] `Reference` (= Cascades "group") — equivalence class of `RelationalExpression`s
+  - [ ] Implicit DAG via `Reference` pointers (no explicit memo)
+  - [ ] `PlanContext`, `CascadesRuleCall`
+- [ ] **4.4 — Cost model**
+  - [ ] `CascadesCostModel` — heuristic comparator matching Java
+  - [ ] Cardinality estimation hooks, `properties/` package (~25 classes)
+- [ ] **4.5 — Rules**
+  - [ ] Rule base classes (`CascadesRule`, `CascadesRuleCall`)
+  - [ ] Data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`, `PrimaryScanRule`, index scan rules)
+  - [ ] Implementation rules (`ImplementFilterRule`, `ImplementSortRule`, `ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`, etc.)
+  - [ ] Decomposition rules (`InComparisonToExplodeRule`, `DecorrelateValuesRule`)
+  - [ ] Optimization rules (`MergeFetchIntoCoveringIndexRule`, `PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`, etc.)
+  - [ ] Finalization rules (`FinalizeExpressionsRule`)
+  - [ ] **~69 rules total.** Port in batches, pick representative tests from Java's rule test suite.
+- [ ] **4.6 — Planner driver**
+  - [ ] `CascadesPlanner` — task stack, EXPLORE phase → OPTIMIZE phase
+  - [ ] `PlannerEvent` debug hooks
+  - [ ] Integration with `RecordMetaData` + index availability
+- [ ] **4.7 — Correctness tests**
+  - [ ] Port enough of Java's planner test suite to validate rule-by-rule equivalence
+  - [ ] Add a **plan equivalence harness**: run same SQL through Go and Java planners in a container, diff the plans.
+
+#### Phase 5 — Query execution
+
+- [ ] **`PlanGenerator`** — `LogicalOperator → RelationalExpression` adapter
+- [ ] **`QueryExecutor`** — executes a `RecordQueryPlan` against a `FDBRecordStore`, returns `RecordCursor`
+- [ ] **`RecordLayerResultSet`** — wraps cursor, implements `api.ResultSet`
+- [ ] **Continuation support** — cursor continuation → SQL-level cursor state; match Java encoding
+- [ ] **Prepared parameter binding** — `PreparedParams` substitutes `?` at evaluation time
+
+#### Phase 6 — DDL
+
+- [ ] **`ConstantAction`** base + executor
+- [ ] **`MetadataOperationsFactory`** + `RecordLayerMetadataOperationsFactory`
+- [ ] Individual actions: `CreateSchemaTemplateAction`, `CreateSchemaAction`, `CreateTableAction`, `CreateIndexAction`, `DropSchemaAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
+- [ ] Integration with online indexer (CREATE INDEX triggers background build)
+
+#### Phase 7 — Plan cache
+
+- [ ] Port `RelationalPlanCache` — 3-tier (primary/secondary/tertiary) with per-tier TTL + max-entries
+- [ ] `QueryCacheKey` — SQL + param types + catalog version
+- [ ] `PhysicalPlanEquivalence` — deduplicates semantically identical plans
+- [ ] Async eviction
+
+#### Phase 8 — `database/sql/driver` adapter (`pkg/relational/sqldriver`)
+
+- [ ] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection`
+- [ ] **`Connector`** — lazy-init, holds cluster client + options
+- [ ] **`Conn`** implementing `driver.Conn`, `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.Pinger`, `driver.SessionResetter`, `driver.Validator`
+- [ ] **`Stmt`** implementing `driver.Stmt`, `driver.StmtExecContext`, `driver.StmtQueryContext`, `driver.NamedValueChecker`
+- [ ] **`Rows`** implementing `driver.Rows`, `driver.RowsColumnTypeDatabaseTypeName`, `driver.RowsColumnTypeNullable`, `driver.RowsColumnTypeLength`, `driver.RowsColumnTypePrecisionScale`, `driver.RowsColumnTypeScanType`
+- [ ] **`Result`** implementing `driver.Result` (LastInsertId is always an error — FDB has no auto-inc; match Postgres driver convention)
+- [ ] **`Tx`** implementing `driver.Tx`
+- [ ] **Value conversion** — `driver.Value` ⇄ `api.DataType` values, including structs and arrays
+- [ ] **Custom scanner/valuer** — `Struct`, `Array`, `Versionstamp`, `Continuation`
+- [ ] **Integration test matrix**
+  - [ ] `sql.Open("fdbsql", dsn)` + `db.Ping()`
+  - [ ] `db.ExecContext` for DDL (CREATE SCHEMA, CREATE TABLE, CREATE INDEX)
+  - [ ] `db.QueryContext` + `rows.Scan` for SELECT
+  - [ ] `db.PrepareContext` + parameterized exec/query
+  - [ ] `db.BeginTx` + Commit/Rollback
+  - [ ] Context cancellation mid-query
+  - [ ] Concurrent connections from shared `sql.DB`
+
+#### Phase 9 — gRPC server + remote driver *(later)*
+
+- [ ] Port `fdb-relational-grpc/` protobuf definitions
+- [ ] `cmd/frl-server` — standalone server binary, TLS, auth
+- [ ] Remote `sqldriver` path: DSN host:port → gRPC client
+
+#### Phase 10 — CLI *(later)*
+
+- [ ] `cmd/frl` SQL shell — history, EXPLAIN, formatted output. Use `liner` or `go-prompt`.
+
+### Java compatibility conformance (continuous)
+
+- [ ] **Catalog wire format** — extract a schema via Go, load with Java, run a SELECT. Round-trip.
+- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching).
+- [ ] **System table contents** — `SELECT * FROM INFORMATION_SCHEMA.TABLES` returns byte-identical rows from Go and Java against the same store.
+- [ ] **SQL semantic equivalence** — feed the yamsql test corpus through both engines; require identical result sets for read queries.
+
+### Non-goals (explicit)
+
+- UDFs (`PUserDefinedFunction`) — out of scope until planner is done
+- Views (except trivial `SELECT *`-over-base-table) — deferred
+- Synthetic record types (`JoinedRecordType`, `UnnestedRecordType`) — deferred
+- Java SQL function catalog / semantic analyzer rules that depend on it — simplify or defer
+- Callable statements, holdable/scrollable result sets, savepoints — Java throws `SQLFeatureNotSupportedException`; we do the same
+- LOB types (`Blob`, `Clob`, `NClob`, `SQLXML`) — same, unsupported
+
+### Risks & open questions
+
+1. **Cascades port scope is enormous.** 104K LOC Java → probably 80K+ Go after de-Java-isms. Many shifts; needs sub-RFCs for each rule family. Alternative considered and **rejected**: hand-rolled heuristic planner would break Java plan-cache-key compatibility and mean divergent optimizer behavior forever.
+2. **ANTLR-go performance.** Java's ANTLR runtime is well-tuned; antlr4-go/antlr4 is less mature. Parse-hot-path benchmarking required before Phase 1 sign-off.
+3. **Go generics vs. Java wildcards.** Cascades is heavily generic. Expect places where `Value<T>` becomes an interface hierarchy instead of a generic struct. Document every divergence.
+4. **`database/sql` impedance mismatch.** `driver.Value` is a closed set (bool/int64/float64/string/[]byte/time.Time/nil). Struct/array/enum/versionstamp need custom `Scanner`/`Valuer` types; users must opt in explicitly. Document in `pkg/relational/sqldriver/README.md`.
+5. **Catalog migration.** If we get the catalog wire format wrong once, users' production data needs migration. Write conformance tests for catalog read-back **before** writing the catalog writer.
+6. **Testing the planner.** No FDB call-site validates plan quality end-to-end beyond correctness. Need yamsql runner + an `EXPLAIN` diff harness against Java.
