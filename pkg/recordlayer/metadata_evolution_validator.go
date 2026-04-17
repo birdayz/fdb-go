@@ -603,12 +603,10 @@ func validateTextIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) er
 		case IndexOptionTextAddAggressiveConflictRanges, IndexOptionTextOmitPositions:
 			// Always safe to change.
 		case IndexOptionTextTokenizerName:
-			oldVal := optionValueOrDefault(oldIdx.Options, opt, "")
-			newVal := optionValueOrDefault(newIdx.Options, opt, "")
-			if oldVal != newVal {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("text tokenizer changed for index %q", newIdx.Name),
-				}
+			// computeChangedOptions guarantees the raw values differ when the key
+			// is in `changed`, and textTokenizerName has no non-empty default.
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("text tokenizer changed for index %q", newIdx.Name),
 			}
 		case IndexOptionTextTokenizerVersion:
 			oldVer, _ := strconv.Atoi(optionValueOrDefault(oldIdx.Options, opt, "0"))

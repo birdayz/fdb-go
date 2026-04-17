@@ -235,8 +235,7 @@ func (ts *TypedFDBRecordStore[T]) ScanRecords(continuation []byte, scanPropertie
 	return MapCursor(inner, func(r *FDBStoredRecord[proto.Message]) *FDBStoredRecord[T] {
 		typed, ok := r.Record.(T)
 		if !ok {
-			// This should never happen — ScanRecordsByType already filtered by type.
-			return nil
+			panic("unreachable: ScanRecordsByType returned record that doesn't match type parameter T")
 		}
 		return &FDBStoredRecord[T]{
 			PrimaryKey: r.PrimaryKey,
