@@ -1139,4 +1139,59 @@ var _ = Describe("BatchInsert", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("batch save with record versioning", func() {
+		It("SaveRecordBatch assigns versions to new records", func() {
+			builder := baseMetaData()
+			builder.SetStoreRecordVersions(true)
+			builder.SetRecordCountKey(EmptyKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			ks := specSubspace()
+
+			// Save via batch in one transaction, then load in another to get committed versions.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				records := make([]proto.Message, 5)
+				for i := range records {
+					records[i] = &gen.Order{
+						OrderId: proto.Int64(int64(i + 1)),
+						Price:   proto.Int32(int32((i + 1) * 10)),
+					}
+				}
+				results, err := store.SaveRecordBatch(records)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(5))
+
+				// Within the same tx, versions are incomplete (versionstamp placeholder).
+				for i, r := range results {
+					Expect(r.Version).NotTo(BeNil(), "record %d should have a version", i)
+					Expect(r.Version.IsComplete()).To(BeFalse(), "version should be incomplete before commit")
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Load in a new transaction — versions should now be complete.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					rec, err := store.LoadRecord(tuple.Tuple{i})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rec).NotTo(BeNil(), "record %d not found", i)
+					Expect(rec.Version).NotTo(BeNil(), "record %d should have a version after load", i)
+					Expect(rec.Version.IsComplete()).To(BeTrue(), "record %d version should be complete after commit", i)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
