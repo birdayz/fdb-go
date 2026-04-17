@@ -289,7 +289,12 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **pkg/relational/api remaining interfaces** — `DatabaseMetaData`, `Array`, `Struct`, `ArrayMetaData`, `StructMetaData`, `RelationalDirectAccessStatement`. All smaller than the ones already done.
 - [x] **pkg/relational/api SqlTypeNamesSupport** (nightshift-24) — name ↔ JDBC code ↔ DataType mappings used by parser + ResultSetMetaData.
 - [ ] **pkg/relational/api/fluentsql** — (deferred; shell only until after Phase 7)
-- [ ] **Decide interop with existing `pkg/recordlayer` types** — `RecordMetaData` vs. new `SchemaTemplate`; `Index` vs. metadata `Index`; document where they live side by side vs. get merged.
+- [x] **Interop with existing `pkg/recordlayer` types — decided** (nightshift-24): follow Java's layering.
+  - `pkg/recordlayer.RecordMetaData` = storage-engine schema (proto + indexes). Unchanged.
+  - `pkg/recordlayer.Index` = storage-engine index definition (root expression, subspace key, options). Unchanged.
+  - `pkg/relational/api.SchemaTemplate` / `api.Index` = interface-level metadata surface used by SQL machinery.
+  - Bridge impls (coming in Phase 2): `pkg/relational/core/metadata.RecordLayerSchemaTemplate` and `RecordLayerIndex` satisfy the `api.*` interfaces by wrapping `recordlayer.RecordMetaData` / `recordlayer.Index`. No circular dependencies — `recordlayer` is oblivious to the relational types.
+  - Matches Java's `fdb-relational-core.recordlayer.RecordLayerSchemaTemplate` wrapping `fdb-record-layer-core.RecordMetaData` 1:1.
 - [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages, etc.). Regenerate via `just generate`.
 - [x] **pkg/relational/sqldriver skeleton** (nightshift-24) — `sql.Register("fdbsql", …)`, DSN parser (embedded + remote shapes), `Driver`/`Connector` satisfying `driver.Driver`/`driver.DriverContext`/`driver.Connector`. Connect returns `ErrCodeUnsupportedOperation` (plumbing ready; embedded impl arrives in Phase 5).
 
