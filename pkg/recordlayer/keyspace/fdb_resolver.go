@@ -102,6 +102,22 @@ func (r *FDBResolver) Resolve(ctx context.Context, name string) (int64, error) {
 	return v, nil
 }
 
+// InvalidateCache clears the in-memory cache. Useful for testing or when
+// you know the resolver mappings have been externally modified.
+func (r *FDBResolver) InvalidateCache() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.forward = make(map[string]int64)
+	r.reverse = make(map[int64]string)
+}
+
+// CacheSize returns the number of mappings currently cached in memory.
+func (r *FDBResolver) CacheSize() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.forward)
+}
+
 // ReverseLookup returns the name for a value, reading from FDB if not cached.
 func (r *FDBResolver) ReverseLookup(ctx context.Context, value int64) (string, bool, error) {
 	// Fast path: in-memory cache hit.

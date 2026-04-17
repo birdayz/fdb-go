@@ -117,6 +117,40 @@ func TestFDBResolver_Persistence(t *testing.T) {
 	g.Expect(v2).To(Equal(v), "second resolver should see persisted mapping")
 }
 
+func TestFDBResolver_CacheManagement(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	ss := subspace.Sub(tuple.Tuple{t.Name()})
+	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+		begin, end := ss.FDBRangeKeys()
+		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
+		return nil, nil
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	r := keyspace.NewFDBResolver(sharedDB, ss)
+
+	// Initial cache is empty
+	g.Expect(r.CacheSize()).To(Equal(0))
+
+	// Resolve populates cache
+	_, _ = r.Resolve(ctx, "a")
+	_, _ = r.Resolve(ctx, "b")
+	_, _ = r.Resolve(ctx, "c")
+	g.Expect(r.CacheSize()).To(Equal(3))
+
+	// InvalidateCache clears it
+	r.InvalidateCache()
+	g.Expect(r.CacheSize()).To(Equal(0))
+
+	// After invalidation, Resolve still returns correct value from FDB
+	v, err := r.Resolve(ctx, "a")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(v).To(Equal(int64(0)), "should read persisted value from FDB")
+}
+
 func TestFDBResolver_ReverseLookup(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
