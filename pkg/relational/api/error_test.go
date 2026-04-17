@@ -100,10 +100,24 @@ func TestErrorWithContextImmutable(t *testing.T) {
 		t.Fatalf("withColumn wrong: %+v", withColumn.Context)
 	}
 
-	// Context is rendered in Error().
+	// Context is rendered in Error() with keys sorted alphabetically
+	// so output is deterministic across calls / processes.
 	msg := withColumn.Error()
-	if !strings.Contains(msg, "table=orders") || !strings.Contains(msg, "column=foo") {
+	if !strings.Contains(msg, "column=foo") || !strings.Contains(msg, "table=orders") {
 		t.Fatalf("Error() missing context fields: %q", msg)
+	}
+	// Deterministic ordering — column before table alphabetically.
+	columnIdx := strings.Index(msg, "column=foo")
+	tableIdx := strings.Index(msg, "table=orders")
+	if columnIdx > tableIdx {
+		t.Errorf("context keys not sorted: %q", msg)
+	}
+	// Repeated calls produce the same string (Go's map iteration
+	// is randomised — without a sort this would flake).
+	for i := 0; i < 20; i++ {
+		if got := withColumn.Error(); got != msg {
+			t.Fatalf("Error() non-deterministic: %q vs %q", msg, got)
+		}
 	}
 }
 

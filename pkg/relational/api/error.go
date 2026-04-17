@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -55,14 +56,20 @@ func (e *Error) Error() string {
 	b.WriteString(": ")
 	b.WriteString(e.Message)
 	if len(e.Context) > 0 {
+		// Sort keys so Error() output is deterministic — map iteration
+		// is randomised, and log diffing / test assertions break
+		// without a stable order.
+		keys := make([]string, 0, len(e.Context))
+		for k := range e.Context {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
 		b.WriteString(" [")
-		first := true
-		for k, v := range e.Context {
-			if !first {
+		for i, k := range keys {
+			if i > 0 {
 				b.WriteString(", ")
 			}
-			first = false
-			fmt.Fprintf(&b, "%s=%v", k, v)
+			fmt.Fprintf(&b, "%s=%v", k, e.Context[k])
 		}
 		b.WriteString("]")
 	}
