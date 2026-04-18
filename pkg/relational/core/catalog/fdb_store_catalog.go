@@ -365,7 +365,24 @@ func (c *RecordLayerStoreCatalog) listSchemasImpl(txn api.Transaction, databaseI
 	if err != nil {
 		return nil, err
 	}
-	cursor := store.ScanRecordsByType(SchemasRecordName, nil, recordlayer.ForwardScan())
+
+	// Use a prefix scan — same TupleRange shape as Java's listSchemas /
+	// listSchemas(dbUri). For the per-database case the prefix is
+	// [SCHEMA_TYPE_KEY, databaseID]; for all schemas it's [SCHEMA_TYPE_KEY].
+	// RANGE_INCLUSIVE on both ends covers all records with that prefix.
+	var prefixStart, prefixEnd tuple.Tuple
+	if databaseID != "" {
+		prefixStart = tuple.Tuple{SchemaRecordTypeKey, databaseID}
+		prefixEnd = tuple.Tuple{SchemaRecordTypeKey, databaseID}
+	} else {
+		prefixStart = tuple.Tuple{SchemaRecordTypeKey}
+		prefixEnd = tuple.Tuple{SchemaRecordTypeKey}
+	}
+	cursor := store.ScanRecordsInRange(
+		prefixStart, prefixEnd,
+		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
+		nil, recordlayer.ForwardScan(),
+	)
 	ctx := store.Context().Context()
 
 	var rows [][]any
@@ -379,9 +396,6 @@ func (c *RecordLayerStoreCatalog) listSchemasImpl(txn api.Transaction, databaseI
 		}
 		s, isS := r.GetValue().Record.(*gen.Schemas)
 		if !isS {
-			continue
-		}
-		if databaseID != "" && s.GetDATABASE_ID() != databaseID {
 			continue
 		}
 		rows = append(rows, []any{
