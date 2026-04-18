@@ -2,6 +2,8 @@ version: v2
 modules:
   - path: proto/apple
     name: buf.build/birdayz/record-layer-apple
+  - path: proto/relational
+    name: buf.build/birdayz/record-layer-relational
   - path: conformance
     name: buf.build/birdayz/record-layer-conformance
 lint:
@@ -9,6 +11,7 @@ lint:
     - STANDARD
   ignore:
     - proto/apple
+    - proto/relational
     - conformance
 breaking:
   use:
