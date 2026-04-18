@@ -22,6 +22,7 @@ go_library(
 go_test(
     name = "metadata_test",
     srcs = [
+        "benchmark_test.go",
         "proto_types_test.go",
         "schema_template_test.go",
     ],
