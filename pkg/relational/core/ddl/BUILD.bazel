@@ -15,21 +15,32 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
     ],
 )
 
 go_test(
     name = "ddl_test",
-    srcs = ["ddl_test.go"],
+    srcs = [
+        "ddl_test.go",
+        "fdb_ddl_test.go",
+    ],
     deps = [
         ":ddl",
         "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
+        "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
     ],
 )
