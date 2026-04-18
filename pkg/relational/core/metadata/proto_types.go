@@ -57,7 +57,16 @@ func protoScalarToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error
 	case protoreflect.EnumKind:
 		return enumTypeFromDescriptor(fd.Enum(), nullable), nil
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		return messageTypeFromDescriptor(fd.Message(), nullable)
+		md := fd.Message()
+		// Matches Java's fromProtoType() UUID short-circuit: a
+		// com.apple.foundationdb.record.UUID message is surfaced as a
+		// dedicated UUIDType, not a two-field struct. Without this the
+		// SQL layer would see {mostSignificantBits, leastSignificantBits}
+		// instead of a single UUID column.
+		if isUUIDDescriptor(md) {
+			return api.NewUUIDType(nullable), nil
+		}
+		return messageTypeFromDescriptor(md, nullable)
 	}
 	return nil, fmt.Errorf("unsupported proto field kind %v for field %s", fd.Kind(), fd.FullName())
 }
@@ -76,6 +85,17 @@ func messageTypeFromDescriptor(md protoreflect.MessageDescriptor, nullable bool)
 		structFields = append(structFields, api.NewStructField(string(fd.Name()), dt, i))
 	}
 	return api.NewStructType(string(md.Name()), structFields, nullable), nil
+}
+
+// uuidFullName is the fully-qualified proto message name for the record
+// layer's UUID type. Comparing by full name is safe because the Java
+// side hard-codes the descriptor equality check too; the name is part
+// of the Java-compat wire contract.
+const uuidFullName = "com.apple.foundationdb.record.UUID"
+
+// isUUIDDescriptor reports whether md is the record-layer UUID message.
+func isUUIDDescriptor(md protoreflect.MessageDescriptor) bool {
+	return string(md.FullName()) == uuidFullName
 }
 
 // enumTypeFromDescriptor mirrors messageTypeFromDescriptor for enums.

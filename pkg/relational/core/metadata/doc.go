@@ -19,31 +19,25 @@
 //
 //   - scalar kinds → primitive types (IntegerType / LongType / etc)
 //   - enum → EnumType with declared values
-//   - message / group → recursive StructType
+//   - message / group → recursive StructType (UUID short-circuits to
+//     UUIDType; see isUUIDDescriptor)
 //   - repeated → ArrayType(element)
 //   - map → UnresolvedType
 //
 // Deferred behaviours that Java implements but this bridge does NOT
 // (track each as an independent Phase 2 follow-up):
 //
-//  1. UUID special-case: Java detects TupleFieldsProto.UUID and
-//     returns a UUIDType instead of wrapping the message as a
-//     StructType. Needed when the record layer's
-//     com.apple.foundationdb.record.TupleFieldsProto.UUID message
-//     appears in a column. Currently we would surface it as a
-//     two-field struct.
-//
-//  2. NullableArrayTypeUtils.describesWrappedArray: Java unwraps
+//  1. NullableArrayTypeUtils.describesWrappedArray: Java unwraps
 //     the "wrapper message around a repeated field" pattern that the
 //     serializer uses to make arrays nullable. We currently surface
 //     the wrapper as a regular StructType. Round-trip via
 //     Java-written metadata will diverge until this lands.
 //
-//  3. primaryKeyHasRecordTypePrefix → intermingleTables: Java
+//  2. primaryKeyHasRecordTypePrefix → intermingleTables: Java
 //     surfaces this as a template flag. Not exposed on our
 //     api.SchemaTemplate interface yet.
 //
-//  4. Sparse-index IsSparse(): always false here until
+//  3. Sparse-index IsSparse(): always false here until
 //     recordlayer.Index grows Java's NotNullOnly flag.
 //
 // None of these block the Phase 3 semantic analyzer on the primary
