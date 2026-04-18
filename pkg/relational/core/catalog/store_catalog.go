@@ -250,7 +250,6 @@ func (c *InMemoryStoreCatalog) ListSchemasInDatabase(txn api.Transaction, databa
 	for name := range byDB {
 		names = append(names, name)
 	}
-	c.mu.Unlock()
 	sort.Strings(names)
 	rows := make([][]any, len(names))
 	for i, n := range names {
@@ -258,6 +257,7 @@ func (c *InMemoryStoreCatalog) ListSchemasInDatabase(txn api.Transaction, databa
 		tmpl := s.SchemaTemplate()
 		rows[i] = []any{databaseID, n, tmpl.MetadataName(), tmpl.Version()}
 	}
+	c.mu.Unlock()
 	return newStringResultSet([]string{ColDatabaseID, ColSchemaName, ColTemplateName, ColTemplateVersion}, rows), nil
 }
 

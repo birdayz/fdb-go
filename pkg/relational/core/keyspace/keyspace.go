@@ -46,15 +46,15 @@ func (k *RelationalKeyspace) CatalogSubspace() subspace.Subspace {
 
 // SchemaSubspace returns the subspace for a user schema identified by
 // (dbPath, schemaName). dbPath is the full database path (e.g. "/my/db").
-// Panics if dbPath or schemaName is empty.
-func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) subspace.Subspace {
+// Returns an error if dbPath or schemaName is empty.
+func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace.Subspace, error) {
 	if dbPath == "" {
-		panic("dbPath must not be empty")
+		return nil, fmt.Errorf("dbPath must not be empty")
 	}
 	if schemaName == "" {
-		panic("schemaName must not be empty")
+		return nil, fmt.Errorf("schemaName must not be empty")
 	}
-	return k.root.Sub(tuple.Tuple{dbPath, schemaName})
+	return k.root.Sub(tuple.Tuple{dbPath, schemaName}), nil
 }
 
 // ParseDBPath breaks a URI-style database path like "/domain/db" into its
