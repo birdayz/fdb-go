@@ -625,3 +625,63 @@ func TestFDB_DeleteDatabaseSilentOnMissing(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 }
+
+// TestFDB_Initialize verifies that Initialize bootstraps the catalog's
+// self-referential entries (template + sys database + CATALOG schema).
+// Mirrors Java's RecordLayerStoreCatalogTestBase.testListSchemasEmptyResult
+// which asserts /__SYS?schema=CATALOG is present after init.
+func TestFDB_Initialize(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, run := newFDBCatalogInSubspace(t)
+
+	// Initialize.
+	g.Expect(run(func(tx api.Transaction) error {
+		return cat.Initialize(tx)
+	})).To(gomega.Succeed())
+
+	// Template CATALOG_TEMPLATE v1 must exist.
+	g.Expect(run(func(tx api.Transaction) error {
+		ok, err := cat.SchemaTemplateCatalog().DoesSchemaTemplateExistAtVersion(tx, CatalogTemplateName, CatalogTemplateVersion)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(ok).To(gomega.BeTrue())
+		return nil
+	})).To(gomega.Succeed())
+
+	// /__SYS database must exist.
+	g.Expect(run(func(tx api.Transaction) error {
+		ok, err := cat.DoesDatabaseExist(tx, SysDatabaseID)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(ok).To(gomega.BeTrue())
+		return nil
+	})).To(gomega.Succeed())
+
+	// /__SYS/CATALOG schema must exist.
+	g.Expect(run(func(tx api.Transaction) error {
+		ok, err := cat.DoesSchemaExist(tx, SysDatabaseID, CatalogConstant)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(ok).To(gomega.BeTrue())
+		return nil
+	})).To(gomega.Succeed())
+
+	// Initialize is idempotent.
+	g.Expect(run(func(tx api.Transaction) error {
+		return cat.Initialize(tx)
+	})).To(gomega.Succeed())
+
+	// ListSchemas shows only the catalog schema.
+	g.Expect(run(func(tx api.Transaction) error {
+		rs, err := cat.ListSchemas(tx, nil)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		defer rs.Close()
+		var schemas []string
+		for rs.Next() {
+			db, _ := rs.String(1)
+			name, _ := rs.String(2)
+			schemas = append(schemas, db+"?schema="+name)
+		}
+		g.Expect(rs.Err()).ToNot(gomega.HaveOccurred())
+		g.Expect(schemas).To(gomega.ConsistOf(SysDatabaseID + "?schema=" + CatalogConstant))
+		return nil
+	})).To(gomega.Succeed())
+}

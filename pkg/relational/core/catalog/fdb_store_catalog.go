@@ -10,6 +10,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
 
 // RecordLayerStoreCatalog is the FDB-backed api.StoreCatalog. Mirrors
@@ -56,6 +57,81 @@ func DefaultCatalogSubspace() subspace.Subspace {
 // catalog at the canonical __SYS/CATALOG subspace.
 func OpenRecordLayerStoreCatalog() (*RecordLayerStoreCatalog, error) {
 	return NewRecordLayerStoreCatalog(DefaultCatalogSubspace())
+}
+
+// CatalogTemplateName is the name of the catalog's own schema template.
+// Matches Java's RecordLayerStoreCatalog.CATALOG_TEMPLATE constant
+// ("CATALOG_TEMPLATE").
+const CatalogTemplateName = CatalogConstant + "_TEMPLATE"
+
+// CatalogTemplateVersion is the version of the built-in catalog schema
+// template. Java pins this to 1.
+const CatalogTemplateVersion = 1
+
+// SysDatabaseID is the system database path. Java uses "/__SYS".
+const SysDatabaseID = "/" + SysConstant
+
+// Initialize bootstraps the catalog schema's self-referential entries.
+// It must be called once before the catalog is used, typically at
+// service startup. Matches Java's RecordLayerStoreCatalog.initialize(txn):
+//
+//  1. Ensures the catalog schema template ("CATALOG_TEMPLATE") exists.
+//  2. Ensures the /__SYS database row exists.
+//  3. Persists the catalog schema (/__SYS/CATALOG) into the store.
+//
+// Idempotent: safe to call on every startup.
+func (c *RecordLayerStoreCatalog) Initialize(txn api.Transaction) error {
+	tc := c.templateCatalog
+
+	// 1. Create/ensure the catalog's own schema template.
+	exists, err := tc.DoesSchemaTemplateExistAtVersion(txn, CatalogTemplateName, CatalogTemplateVersion)
+	if err != nil {
+		return fmt.Errorf("initialize catalog: check template: %w", err)
+	}
+	if !exists {
+		catalogTmpl, buildErr := buildCatalogTemplate()
+		if buildErr != nil {
+			return fmt.Errorf("initialize catalog: build template: %w", buildErr)
+		}
+		if createErr := tc.CreateTemplate(txn, catalogTmpl); createErr != nil {
+			return fmt.Errorf("initialize catalog: create template: %w", createErr)
+		}
+	}
+
+	// 2. Ensure the /__SYS database row exists.
+	dbExists, err := c.DoesDatabaseExist(txn, SysDatabaseID)
+	if err != nil {
+		return fmt.Errorf("initialize catalog: check sys database: %w", err)
+	}
+	if !dbExists {
+		if err := c.CreateDatabase(txn, SysDatabaseID); err != nil {
+			return fmt.Errorf("initialize catalog: create sys database: %w", err)
+		}
+	}
+
+	// 3. Persist the /__SYS/CATALOG schema (create if missing). Java calls
+	// saveSchema(txn, this.catalogSchema, true) which silently overwrites.
+	catalogTmpl, err := tc.LoadSchemaTemplateAtVersion(txn, CatalogTemplateName, CatalogTemplateVersion)
+	if err != nil {
+		return fmt.Errorf("initialize catalog: load template: %w", err)
+	}
+	catalogSchema := catalogTmpl.GenerateSchema(SysDatabaseID, CatalogConstant)
+	if err := c.SaveSchema(txn, catalogSchema, false); err != nil {
+		return fmt.Errorf("initialize catalog: save catalog schema: %w", err)
+	}
+	return nil
+}
+
+// buildCatalogTemplate constructs the RecordLayerSchemaTemplate that
+// describes the catalog itself (the three system tables). Mirrors Java's
+// in-constructor assembly of SCHEMAS + DATABASES + TEMPLATES table
+// definitions via SystemTableRegistry.
+func buildCatalogTemplate() (api.SchemaTemplate, error) {
+	md, err := BuildCatalogMetaData()
+	if err != nil {
+		return nil, err
+	}
+	return metadata.NewRecordLayerSchemaTemplateWithVersion(CatalogTemplateName, md, CatalogTemplateVersion)
 }
 
 // SchemaTemplateCatalog returns the template catalog sibling.
