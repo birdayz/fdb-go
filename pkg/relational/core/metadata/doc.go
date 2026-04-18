@@ -34,6 +34,17 @@
 //     recordlayer.Index grows Java's NotNullOnly flag. This is a
 //     record-layer-side change, not a bridge change.
 //
-// None of these block the Phase 3 semantic analyzer on the primary
-// path (CRUD over typed proto records + basic aggregations).
+// Doesn't block the Phase 3 semantic analyzer on the primary path
+// (CRUD over typed proto records + basic aggregations).
+//
+// # Version semantics
+//
+// SchemaTemplate.Version() is catalog-level and decoupled from
+// RecordMetaData.Version(). The default constructor
+// NewRecordLayerSchemaTemplate passes md.Version() for convenience,
+// but NewRecordLayerSchemaTemplateWithVersion lets the catalog pin a
+// different value — matches Java's fromRecordMetadata(md, name,
+// version) signature exactly. Catalogs that want to increment the
+// schema version without also rebuilding storage metadata need the
+// explicit-version constructor.
 package metadata
