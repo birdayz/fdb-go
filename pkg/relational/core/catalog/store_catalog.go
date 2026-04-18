@@ -41,25 +41,37 @@ func (c *InMemoryStoreCatalog) SchemaTemplateCatalog() api.SchemaTemplateCatalog
 }
 
 // LoadSchema looks up a Schema by (databaseID, schemaName).
+//
+// Java compliance: RecordLayerStoreCatalog.loadSchema always returns
+// UNDEFINED_SCHEMA regardless of whether the database exists or only
+// the schema is missing. The underlying primary key Tuple is
+// (RECORD_TYPE_KEY, dbPath, schemaName) so "no record found" is the
+// only observable state — we collapse both misses to ErrCodeUndefinedSchema
+// to match.
 func (c *InMemoryStoreCatalog) LoadSchema(txn api.Transaction, databaseID, schemaName string) (api.Schema, error) {
 	if err := checkOpenTxn(txn); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	byDB, ok := c.schemas[databaseID]
+	s, ok := c.schemas[databaseID][schemaName]
 	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", databaseID)
-	}
-	s, ok := byDB[schemaName]
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "schema %q not found in database %q", schemaName, databaseID)
+		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
 	}
 	return s, nil
 }
 
 // SaveSchema persists or updates schema. Creates the owning database
 // first when createDatabaseIfNecessary is true and it doesn't exist.
+//
+// Java compliance (RecordLayerStoreCatalog.saveSchema):
+//  1. If database missing and !createDatabaseIfNecessary → UNDEFINED_DATABASE.
+//  2. The schema template referenced by the Schema (name, version) MUST
+//     exist in the SchemaTemplateCatalog, else UNKNOWN_SCHEMA_TEMPLATE.
+//  3. Otherwise upsert the (db, schema) entry.
+//
+// Note the error codes: UNDEFINED_DATABASE here, not UNKNOWN_DATABASE —
+// those are two distinct SQLSTATEs in Java.
 func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.Schema, createDatabaseIfNecessary bool) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
@@ -70,12 +82,29 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 	dbID := dataToWrite.DatabaseName()
 	name := dataToWrite.MetadataName()
 
+	// Template-existence check first — uses the SchemaTemplateCatalog
+	// without holding our own mutex (the template catalog has its
+	// own). Matches Java's order-of-checks.
+	tmpl := dataToWrite.SchemaTemplate()
+	if tmpl != nil {
+		exists, err := c.templates.DoesSchemaTemplateExistAtVersion(txn, tmpl.MetadataName(), tmpl.Version())
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
+				"Cannot create schema %s because schema template %s version %d does not exist.",
+				name, tmpl.MetadataName(), tmpl.Version())
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if _, ok := c.databases[dbID]; !ok {
 		if !createDatabaseIfNecessary {
-			return api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", dbID)
+			return api.NewErrorf(api.ErrCodeUndefinedDatabase,
+				"Cannot create schema %s because database %s does not exist.", name, dbID)
 		}
 		c.databases[dbID] = struct{}{}
 	}

@@ -9,13 +9,13 @@ import (
 
 func benchmarkCatalogWithSchemas(b *testing.B, numDatabases, schemasPerDB int) (*InMemoryStoreCatalog, api.Transaction, api.SchemaTemplate) {
 	b.Helper()
-	c := NewInMemoryStoreCatalog()
-	tx := NewInMemoryTransaction()
-	tmpl := buildTestTemplate(b, "demo")
+	c, tx, tmpl := newSeededCatalog(b, "demo")
 	for d := 0; d < numDatabases; d++ {
 		db := "/db-" + strconv.Itoa(d)
 		for s := 0; s < schemasPerDB; s++ {
-			_ = c.SaveSchema(tx, tmpl.GenerateSchema(db, "s-"+strconv.Itoa(s)), true)
+			if err := c.SaveSchema(tx, tmpl.GenerateSchema(db, "s-"+strconv.Itoa(s)), true); err != nil {
+				b.Fatalf("seed SaveSchema: %v", err)
+			}
 		}
 	}
 	return c, tx, tmpl
