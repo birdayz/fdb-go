@@ -43,5 +43,15 @@
     "exclude_files": {
       "_generated\\.go$": "generated wire type code"
     }
+  },
+  "unreachable": {
+    "exclude_files": {
+      "pkg/relational/core/parser/gen/": "ANTLR-generated parser: dead `goto errorExit` is ANTLR's workaround for Go's label-must-be-used rule"
+    }
+  },
+  "SA4006": {
+    "exclude_files": {
+      "pkg/relational/core/parser/gen/": "ANTLR-generated parser: spurious _la assignments"
+    }
   }
 }

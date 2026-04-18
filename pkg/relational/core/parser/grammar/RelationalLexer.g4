@@ -1377,6 +1377,14 @@ fragment DECIMAL_TYPE_MODIFIER:      (INT_TYPE_MODIFIER | LONG_TYPE_MODIFIER);
 
 // Last tokens must generate Errors
 
+// NOTE (Go port, 2026-04-18): Java-side grammar has an action block here:
+//   { this.notifyListeners(new LexerNoViableAltException(this, _input, _tokenStartCharIndex, null)); }
+// ANTLR's Go target copies the action verbatim, which produces invalid Go.
+// Default error listeners still fire a "token recognition error" for any
+// input that reaches this rule, so removing the explicit notifyListeners
+// call is behaviour-preserving for both Java users and us.
+// When re-syncing this file from Java source, the action line must be
+// removed again. Single-line diff, tracked in CLAUDE.md.
 ERROR_RECOGNITION
-    : . { this.notifyListeners(new LexerNoViableAltException(this, _input, _tokenStartCharIndex, null)); }
+    : .
     ;

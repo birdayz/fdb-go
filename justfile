@@ -22,6 +22,38 @@ generate: ensure-buf
     .tools/buf generate
     bazelisk run //:gazelle
 
+# Download ANTLR4 tool jar at pinned version (if missing)
+ANTLR_VERSION := "4.13.2"
+[private]
+ensure-antlr:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    JAR=.tools/antlr-{{ANTLR_VERSION}}-complete.jar
+    if [ -f "$JAR" ]; then
+        exit 0
+    fi
+    mkdir -p .tools
+    curl -fsSL -o "$JAR" "https://www.antlr.org/download/antlr-{{ANTLR_VERSION}}-complete.jar"
+
+# Regenerate Relational SQL parser from grammar/*.g4.
+# Runtime dep: github.com/antlr4-go/antlr/v4 in go.mod (match ANTLR_VERSION major/minor).
+generate-parser: ensure-antlr
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REPO="$(pwd)"
+    GEN="$REPO/pkg/relational/core/parser/gen"
+    JAR="$REPO/.tools/antlr-{{ANTLR_VERSION}}-complete.jar"
+    rm -rf "$GEN"
+    mkdir -p "$GEN"
+    # Run ANTLR from the grammar dir so the generated .tokens file lands next to
+    # the parser grammar, where ANTLR can find it when resolving tokenVocab.
+    # Lexer first, then parser (parser's `options { tokenVocab=... }` reads the
+    # lexer .tokens file for string-literal resolution).
+    cd "$REPO/pkg/relational/core/parser/grammar"
+    java -jar "$JAR" -Dlanguage=Go -package parser -o "$GEN" RelationalLexer.g4
+    java -jar "$JAR" -Dlanguage=Go -package parser -visitor -lib "$GEN" -o "$GEN" RelationalParser.g4
+    bazelisk run //:gazelle
+
 # Build all targets (includes nogo lint)
 build:
     bazelisk build //...
@@ -51,7 +83,7 @@ fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
+    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
 
 # Check Go formatting (fails if any file needs formatting)
 # Uses Bazel-managed gofumpt — same version as nogo linter, no drift.
@@ -59,7 +91,7 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*'))
+    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"
