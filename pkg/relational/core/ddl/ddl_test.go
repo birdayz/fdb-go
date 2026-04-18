@@ -194,3 +194,24 @@ func TestSaveAndDropSchemaTemplate(t *testing.T) {
 	_, err = cat.SchemaTemplateCatalog().LoadSchemaTemplate(txn, "T1")
 	g.Expect(err).To(gomega.HaveOccurred())
 }
+
+func TestDropSchemaTemplate_NotExist(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	// throwIfDoesNotExist=true → error.
+	g.Expect(f.DropSchemaTemplate("NoSuchTemplate", true, api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+	// throwIfDoesNotExist=false → no-op, no error.
+	g.Expect(f.DropSchemaTemplate("NoSuchTemplate", false, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestCreateSchema_MissingTemplate(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	g.Expect(f.CreateDatabase("/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	// Template "ghost" was never saved — CreateSchema must fail.
+	g.Expect(f.CreateSchema("/db", "s1", "ghost", api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+}
