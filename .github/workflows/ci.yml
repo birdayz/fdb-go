@@ -47,6 +47,14 @@ jobs:
           # Restore original timestamps so Bazel cache stays valid
           git checkout -- gen/
 
+      - name: Check generated gomock mocks are up to date
+        run: |
+          just generate-mocks
+          if ! git diff --exit-code -- 'pkg/relational/api/mocks_*.go'; then
+            echo "Generated gomock mocks are out of date. Run 'just generate-mocks' and commit."
+            exit 1
+          fi
+
       - name: Check Gazelle BUILD files are up to date
         run: |
           bazelisk run //:gazelle
