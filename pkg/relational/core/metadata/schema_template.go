@@ -97,6 +97,16 @@ func (s *RecordLayerSchemaTemplate) StoreRowVersions() bool {
 	return s.underlying.IsStoreRecordVersions()
 }
 
+// IntermingleTables mirrors Java's
+// RecordLayerSchemaTemplate.isIntermingleTables() which is
+// !RecordMetaData.primaryKeyHasRecordTypePrefix(). When the
+// underlying metadata has no RecordTypeKey prefix on primary keys,
+// rows from different record types share the same keyspace prefix
+// and the SQL layer treats them as intermingled.
+func (s *RecordLayerSchemaTemplate) IntermingleTables() bool {
+	return !s.underlying.PrimaryKeyHasRecordTypePrefix()
+}
+
 // Tables returns the tables in deterministic (sorted-by-name) order.
 // Error slot is reserved for future catalog-backed implementations;
 // this bridge never returns an error.

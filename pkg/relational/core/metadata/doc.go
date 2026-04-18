@@ -30,12 +30,9 @@
 // Deferred behaviours that Java implements but this bridge does NOT
 // (track each as an independent Phase 2 follow-up):
 //
-//  1. primaryKeyHasRecordTypePrefix → intermingleTables: Java
-//     surfaces this as a template flag. Not exposed on our
-//     api.SchemaTemplate interface yet.
-//
-//  2. Sparse-index IsSparse(): always false here until
-//     recordlayer.Index grows Java's NotNullOnly flag.
+//  1. Sparse-index IsSparse(): always false here until
+//     recordlayer.Index grows Java's NotNullOnly flag. This is a
+//     record-layer-side change, not a bridge change.
 //
 // None of these block the Phase 3 semantic analyzer on the primary
 // path (CRUD over typed proto records + basic aggregations).

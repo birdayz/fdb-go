@@ -96,6 +96,12 @@ type SchemaTemplate interface {
 	// StoreRowVersions indicates each row carries a monotonically
 	// increasing version (matches Java's storeRowVersions).
 	StoreRowVersions() bool
+	// IntermingleTables reports whether rows from different record
+	// types share the same keyspace prefix (no RecordTypeKey prefix
+	// on primary keys). Matches Java's
+	// RecordLayerSchemaTemplate.isIntermingleTables() which is
+	// derived from `!primaryKeyHasRecordTypePrefix()`.
+	IntermingleTables() bool
 	// Tables returns the tables defined in this template. Error is
 	// reserved for I/O / catalog-access failures; an empty template
 	// returns a nil slice and nil error.

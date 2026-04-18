@@ -49,6 +49,18 @@ func TestSchemaTemplate_BasicShape(t *testing.T) {
 	}
 }
 
+func TestSchemaTemplate_IntermingleTables(t *testing.T) {
+	t.Parallel()
+	// Mirror Java: intermingleTables is the negation of
+	// primaryKeyHasRecordTypePrefix. In buildTestTemplate every record
+	// type has a PK like Field("order_id") — no RecordTypeKey prefix,
+	// so rows are intermingled.
+	tmpl := buildTestTemplate(t)
+	if !tmpl.IntermingleTables() {
+		t.Error("IntermingleTables = false, want true (PKs have no RecordTypeKey prefix)")
+	}
+}
+
 func TestSchemaTemplate_Tables(t *testing.T) {
 	t.Parallel()
 	tmpl := buildTestTemplate(t)
