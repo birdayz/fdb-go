@@ -1,6 +1,6 @@
 // Code generated from RelationalParser.g4 by ANTLR 4.13.2. DO NOT EDIT.
 
-package parser // RelationalParser
+package antlrgen // RelationalParser
 import (
 	"fmt"
 	"strconv"

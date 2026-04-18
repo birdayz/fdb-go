@@ -50,8 +50,8 @@ generate-parser: ensure-antlr
     # Lexer first, then parser (parser's `options { tokenVocab=... }` reads the
     # lexer .tokens file for string-literal resolution).
     cd "$REPO/pkg/relational/core/parser/grammar"
-    java -jar "$JAR" -Dlanguage=Go -package parser -o "$GEN" RelationalLexer.g4
-    java -jar "$JAR" -Dlanguage=Go -package parser -visitor -lib "$GEN" -o "$GEN" RelationalParser.g4
+    java -jar "$JAR" -Dlanguage=Go -package antlrgen -o "$GEN" RelationalLexer.g4
+    java -jar "$JAR" -Dlanguage=Go -package antlrgen -visitor -lib "$GEN" -o "$GEN" RelationalParser.g4
     bazelisk run //:gazelle
 
 # Build all targets (includes nogo lint)
