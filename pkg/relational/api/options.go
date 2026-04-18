@@ -162,8 +162,11 @@ func DefaultOptionValues() map[OptionName]any {
 
 // Get returns the value for name, walking the parent chain, then
 // falling back to the default. Returns nil if the option has been
-// explicitly set to nil in this or a parent Options, or if there is
-// no default (second return value is true only for explicit nil).
+// explicitly set to nil in this or a parent Options, or if no
+// default exists for name. The nil-unset-default and nil-explicit
+// cases are indistinguishable via Get alone — Entries can be used
+// to check whether an option was explicitly set to nil on this
+// specific Options instance.
 func (o *Options) Get(name OptionName) any {
 	if v, ok := o.values[name]; ok {
 		if _, isNull := v.(*nullSentinel); isNull {
