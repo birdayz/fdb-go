@@ -19,12 +19,9 @@ go_library(
 go_test(
     name = "parser_test",
     srcs = [
+        "benchmark_test.go",
         "parser_test.go",
-        "yamsql_corpus_test.go",
     ],
     embed = [":parser"],
-    deps = [
-        "//pkg/relational/api",
-        "@in_gopkg_yaml_v3//:yaml_v3",
-    ],
+    deps = ["//pkg/relational/api"],
 )
