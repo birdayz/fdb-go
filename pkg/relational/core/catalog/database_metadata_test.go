@@ -263,6 +263,130 @@ func TestDatabaseMetaData_PrimaryKeysMissingTable(t *testing.T) {
 	}
 }
 
+func TestDatabaseMetaData_Columns(t *testing.T) {
+	t.Parallel()
+	md, c, tx, tmpl := newTestDatabaseMetaData(t)
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := md.Columns(context.Background(), "", "", "Order", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rs.Close()
+
+	// Demo proto's Order message has order_id (int64), flower (msg),
+	// price (int32), tags (repeated string), quantity (int32),
+	// coord_x/y (int64), vector_data (bytes). Check shape + types
+	// for a couple of representative columns.
+	type row struct {
+		name     string
+		dataType int64
+		typeName string
+		nullable int64
+		ordinal  int64
+	}
+	var rows []row
+	for rs.Next() {
+		tableName, _ := rs.String(3)
+		if tableName != "Order" {
+			t.Errorf("unexpected table %q in Columns(Order)", tableName)
+		}
+		name, _ := rs.String(4)
+		dt, _ := rs.Long(5)
+		tn, _ := rs.String(6)
+		nullable, _ := rs.Long(11)
+		ord, _ := rs.Long(17)
+		rows = append(rows, row{name, dt, tn, nullable, ord})
+	}
+	if len(rows) == 0 {
+		t.Fatal("Columns(Order) returned no rows")
+	}
+
+	byName := make(map[string]row, len(rows))
+	for _, r := range rows {
+		byName[r.name] = r
+	}
+
+	if r, ok := byName["order_id"]; !ok {
+		t.Error("order_id column missing")
+	} else {
+		if r.dataType != int64(api.JDBCType(api.CodeLong)) {
+			t.Errorf("order_id DATA_TYPE = %d, want %d (BIGINT)", r.dataType, api.JDBCType(api.CodeLong))
+		}
+		if r.nullable != int64(api.ColumnNullable) {
+			t.Errorf("order_id NULLABLE = %d, want ColumnNullable", r.nullable)
+		}
+		if r.ordinal != 1 {
+			t.Errorf("order_id ORDINAL_POSITION = %d, want 1", r.ordinal)
+		}
+	}
+	if r, ok := byName["price"]; !ok {
+		t.Error("price column missing")
+	} else if r.dataType != int64(api.JDBCType(api.CodeInteger)) {
+		t.Errorf("price DATA_TYPE = %d, want INTEGER", r.dataType)
+	}
+	if r, ok := byName["tags"]; !ok {
+		t.Error("tags column missing")
+	} else if r.dataType != int64(api.JDBCType(api.CodeArray)) {
+		t.Errorf("tags DATA_TYPE = %d, want ARRAY", r.dataType)
+	}
+}
+
+func TestDatabaseMetaData_ColumnsFilteredByColumnName(t *testing.T) {
+	t.Parallel()
+	md, c, tx, tmpl := newTestDatabaseMetaData(t)
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := md.Columns(context.Background(), "", "", "Order", "price")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rs.Close()
+	var names []string
+	for rs.Next() {
+		n, _ := rs.String(4)
+		names = append(names, n)
+	}
+	if len(names) != 1 || names[0] != "price" {
+		t.Errorf("filter 'price': got %v, want [price]", names)
+	}
+}
+
+func TestDatabaseMetaData_IndexInfoEmpty(t *testing.T) {
+	t.Parallel()
+	md, c, tx, tmpl := newTestDatabaseMetaData(t)
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+	// No indexes on the demo template → empty result.
+	rs, err := md.IndexInfo(context.Background(), "/db", "s", "Order", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rs.Close()
+	if rs.Next() {
+		t.Error("IndexInfo returned rows for an index-less table")
+	}
+}
+
+func TestDatabaseMetaData_IndexInfoMissingTable(t *testing.T) {
+	t.Parallel()
+	md, c, tx, tmpl := newTestDatabaseMetaData(t)
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+	_, err := md.IndexInfo(context.Background(), "/db", "s", "NotATable", false, false)
+	if err == nil {
+		t.Fatal("IndexInfo(missing) should error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedTable {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeUndefinedTable)
+	}
+}
+
 func TestDatabaseMetaData_NilCatalogPanics(t *testing.T) {
 	t.Parallel()
 	defer func() {

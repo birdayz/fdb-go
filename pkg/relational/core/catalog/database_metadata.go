@@ -285,17 +285,181 @@ func (m *CatalogDatabaseMetaData) PrimaryKeys(_ context.Context, catalog, schema
 	}, rows), nil
 }
 
-// Columns is deferred — see database_metadata.go for the 24-column
-// JDBC schema. Returning an empty ResultSet keeps the interface
-// satisfied; callers that actually need column metadata should
-// iterate api.Schema.Tables() directly for now.
-func (m *CatalogDatabaseMetaData) Columns(_ context.Context, _, _, _, _ string) (api.ResultSet, error) {
-	return newStringResultSet(columnsColumns(), nil), nil
+// Columns returns per-column metadata matching the given catalog /
+// schema / table / column patterns. 24-column JDBC shape — see
+// api/database_metadata.go for the column list and ordering.
+//
+// DATA_TYPE is derived from api.JDBCType on the column's DataType.
+// TYPE_NAME is the DataType.String() rendering. NULLABLE /
+// IS_NULLABLE mirror DataType.IsNullable — proto2 REQUIRED fields
+// report "NO" / ColumnNoNulls, everything else "YES" /
+// ColumnNullable.
+//
+// Columns the relational layer doesn't track (COLUMN_SIZE,
+// DECIMAL_DIGITS, CHAR_OCTET_LENGTH, ...) surface as nil; callers
+// iterating a real JDBC ResultSet would see them as SQL NULL.
+func (m *CatalogDatabaseMetaData) Columns(_ context.Context, catalog, schemaPattern, tableNamePattern, columnNamePattern string) (api.ResultSet, error) {
+	tx := m.newTransactionFunc()
+	defer tx.Close()
+
+	listRS, err := m.storeCatalog.ListSchemas(tx, nil)
+	if err != nil {
+		return nil, err
+	}
+	type dbSchema struct{ db, schema string }
+	var pairs []dbSchema
+	for listRS.Next() {
+		db, err := listRS.String(1)
+		if err != nil {
+			listRS.Close()
+			return nil, err
+		}
+		sch, err := listRS.String(2)
+		if err != nil {
+			listRS.Close()
+			return nil, err
+		}
+		pairs = append(pairs, dbSchema{db, sch})
+	}
+	if err := listRS.Err(); err != nil {
+		listRS.Close()
+		return nil, err
+	}
+	listRS.Close()
+
+	catalogRE := compileLikePattern(catalog)
+	schemaRE := compileLikePattern(schemaPattern)
+	tableRE := compileLikePattern(tableNamePattern)
+	columnRE := compileLikePattern(columnNamePattern)
+
+	var rows [][]any
+	for _, p := range pairs {
+		if catalogRE != nil && !catalogRE.MatchString(p.db) {
+			continue
+		}
+		if schemaRE != nil && !schemaRE.MatchString(p.schema) {
+			continue
+		}
+		schema, err := m.storeCatalog.LoadSchema(tx, p.db, p.schema)
+		if err != nil {
+			return nil, err
+		}
+		tables, err := schema.Tables()
+		if err != nil {
+			return nil, err
+		}
+		for _, tbl := range tables {
+			if tableRE != nil && !tableRE.MatchString(tbl.MetadataName()) {
+				continue
+			}
+			for i, col := range tbl.Columns() {
+				if columnRE != nil && !columnRE.MatchString(col.MetadataName()) {
+					continue
+				}
+				dt := col.DataType()
+				jdbcNullable := api.ColumnNullable
+				isNullable := "YES"
+				if !dt.IsNullable() {
+					jdbcNullable = api.ColumnNoNulls
+					isNullable = "NO"
+				}
+				rows = append(rows, []any{
+					p.db, p.schema, tbl.MetadataName(), col.MetadataName(),
+					int64(api.JDBCType(dt.Code())), // DATA_TYPE
+					dt.String(),                    // TYPE_NAME
+					nil,                            // COLUMN_SIZE
+					nil,                            // BUFFER_LENGTH
+					nil,                            // DECIMAL_DIGITS
+					nil,                            // NUM_PREC_RADIX
+					int64(jdbcNullable),            // NULLABLE
+					"",                             // REMARKS
+					nil,                            // COLUMN_DEF
+					int64(api.JDBCType(dt.Code())), // SQL_DATA_TYPE (JDBC legacy: same as DATA_TYPE)
+					nil,                            // SQL_DATETIME_SUB
+					nil,                            // CHAR_OCTET_LENGTH
+					int64(i + 1),                   // ORDINAL_POSITION (1-based per JDBC)
+					isNullable,                     // IS_NULLABLE
+					"",                             // SCOPE_CATALOG
+					"",                             // SCOPE_SCHEMA
+					"",                             // SCOPE_TABLE
+					nil,                            // SOURCE_DATA_TYPE
+					"NO",                           // IS_AUTOINCREMENT
+					"NO",                           // IS_GENERATEDCOLUMN
+				})
+			}
+		}
+	}
+
+	// JDBC: ORDER BY TABLE_CAT, TABLE_SCHEM, TABLE_NAME, ORDINAL_POSITION.
+	sort.Slice(rows, func(i, j int) bool {
+		ri, rj := rows[i], rows[j]
+		for _, k := range []int{0, 1, 2} {
+			si, sj := ri[k].(string), rj[k].(string)
+			if si != sj {
+				return si < sj
+			}
+		}
+		return ri[16].(int64) < rj[16].(int64)
+	})
+	return newStringResultSet(columnsColumns(), rows), nil
 }
 
-// IndexInfo is deferred — same shape decision as Columns.
-func (m *CatalogDatabaseMetaData) IndexInfo(_ context.Context, _, _, _ string, _, _ bool) (api.ResultSet, error) {
-	return newStringResultSet(indexInfoColumns(), nil), nil
+// IndexInfo returns per-index metadata for a single table. If
+// unique=true, only unique indexes are returned. approximate is
+// ignored — the in-memory catalog has no notion of stale statistics.
+//
+// 13-column JDBC shape. Our api.Index doesn't expose per-column
+// position data today, so we surface a single row per index (with
+// ORDINAL_POSITION=1, COLUMN_NAME empty). JDBC clients that walk the
+// result by column position still see a consistent shape.
+func (m *CatalogDatabaseMetaData) IndexInfo(_ context.Context, catalog, schema, table string, unique, _ bool) (api.ResultSet, error) {
+	tx := m.newTransactionFunc()
+	defer tx.Close()
+
+	sch, err := m.storeCatalog.LoadSchema(tx, catalog, schema)
+	if err != nil {
+		return nil, err
+	}
+	tables, err := sch.Tables()
+	if err != nil {
+		return nil, err
+	}
+	var target api.Table
+	for _, t := range tables {
+		if t.MetadataName() == table {
+			target = t
+			break
+		}
+	}
+	if target == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+			"table %s/%s/%s does not exist", catalog, schema, table)
+	}
+
+	const jdbcIndexOther = 3 // java.sql.DatabaseMetaData.tableIndexOther
+	var rows [][]any
+	for _, idx := range target.Indexes() {
+		if unique && !idx.IsUnique() {
+			continue
+		}
+		rows = append(rows, []any{
+			catalog, schema, table,
+			!idx.IsUnique(),    // NON_UNIQUE (true iff duplicates allowed)
+			"",                 // INDEX_QUALIFIER
+			idx.MetadataName(), // INDEX_NAME
+			int64(jdbcIndexOther),
+			int64(1), // ORDINAL_POSITION
+			"",       // COLUMN_NAME
+			"A",      // ASC_OR_DESC
+			nil,      // CARDINALITY
+			nil,      // PAGES
+			nil,      // FILTER_CONDITION
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i][5].(string) < rows[j][5].(string)
+	})
+	return newStringResultSet(indexInfoColumns(), rows), nil
 }
 
 // ---- Product / driver identification ----
