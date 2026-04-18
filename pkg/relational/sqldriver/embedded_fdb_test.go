@@ -111,6 +111,39 @@ func TestFDB_EmbeddedDropDatabaseIfExists(t *testing.T) {
 // TestFDB_EmbeddedCreateDropSchema is deferred until RecordLayerSchemaTemplate.Builder
 // lands (needed to implement CREATE SCHEMA TEMPLATE SQL). See TODO.md.
 
+func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_ping")
+	ctx := context.Background()
+
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("PingContext: %v", err)
+	}
+}
+
+func TestFDB_EmbeddedDropSchemaTemplateIfExists(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_drop_tmpl")
+	ctx := context.Background()
+
+	// Drop a non-existent template with IF EXISTS must succeed.
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE IF EXISTS nonexistent_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE IF EXISTS: %v", err)
+	}
+}
+
+func TestFDB_EmbeddedDropSchemaTemplateNotExistFails(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_drop_tmpl_fail")
+	ctx := context.Background()
+
+	// Drop a non-existent template without IF EXISTS must fail.
+	_, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE missing_tmpl")
+	if err == nil {
+		t.Fatal("expected error dropping non-existent template, got nil")
+	}
+}
+
 func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t, "/testdb_select")

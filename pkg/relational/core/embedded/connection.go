@@ -166,6 +166,8 @@ func (c *EmbeddedConnection) execDrop(ctx context.Context, ds antlrgen.IDropStat
 		return c.execDropDatabase(ctx, t)
 	case *antlrgen.DropSchemaStatementContext:
 		return c.execDropSchema(ctx, t)
+	case *antlrgen.DropSchemaTemplateStatementContext:
+		return c.execDropSchemaTemplate(ctx, t)
 	default:
 		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported DROP statement: %T", ds)
@@ -214,6 +216,30 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	}
 	action := c.factory.DropSchema(dbPath, schemaName, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
+}
+
+func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antlrgen.DropSchemaTemplateStatementContext) (int64, error) {
+	templateID := s.Uid().GetText()
+	throwIfNotExist := s.IfExists() == nil
+	action := c.factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
+	return 0, c.runDDL(ctx, action)
+}
+
+// Ping implements driver.Pinger. Bootstraps the catalog on first call.
+func (c *EmbeddedConnection) Ping(ctx context.Context) error {
+	if c.closed {
+		return driver.ErrBadConn
+	}
+	c.catalogInit.Do(func() {
+		_, c.catalogInitErr = c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+			txn := catalog.NewFDBTransaction(rctx)
+			if err := c.cat.Initialize(txn); err != nil {
+				return nil, err
+			}
+			return nil, txn.Commit()
+		})
+	})
+	return c.catalogInitErr
 }
 
 // runDDL bootstraps the catalog on first call, then executes action.
@@ -291,4 +317,5 @@ func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
 var (
 	_ driver.Conn          = (*EmbeddedConnection)(nil)
 	_ driver.ExecerContext = (*EmbeddedConnection)(nil)
+	_ driver.Pinger        = (*EmbeddedConnection)(nil)
 )
