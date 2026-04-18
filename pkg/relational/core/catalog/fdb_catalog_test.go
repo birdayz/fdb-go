@@ -512,7 +512,9 @@ func TestFDB_ClosedTransactionRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 
-	_, err := testFDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
+	ctx30s, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := testFDB.Run(ctx30s, func(ctx *recordlayer.FDBRecordContext) (any, error) {
 		tx := NewFDBTransaction(ctx)
 		_ = tx.Close()
 

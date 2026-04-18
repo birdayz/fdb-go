@@ -374,9 +374,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 6 — DDL
 
-- [ ] **`ConstantAction`** base + executor
-- [ ] **`MetadataOperationsFactory`** + `RecordLayerMetadataOperationsFactory`
-- [ ] Individual actions: `CreateSchemaTemplateAction`, `CreateSchemaAction`, `CreateTableAction`, `CreateIndexAction`, `DropSchemaAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
+- [x] **`ConstantAction`** base + executor (nightshift-27)
+- [x] **`MetadataOperationsFactory`** + `RecordLayerMetadataOperationsFactory` (nightshift-27) — full wiring: FDB store create/delete via `RelationalKeyspace`; CreateDatabase/DropDatabase/CreateSchema/DropSchema/SaveSchemaTemplate/DropSchemaTemplate; 12 unit tests + 3 FDB integration tests
+- [ ] Individual actions: `CreateTableAction`, `CreateIndexAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
 - [ ] Integration with online indexer (CREATE INDEX triggers background build)
 
 #### Phase 7 — Plan cache

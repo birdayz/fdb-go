@@ -202,7 +202,7 @@ func (c *InMemoryStoreCatalog) ListDatabases(txn api.Transaction, _ api.Continua
 	for i, n := range names {
 		rows[i] = []any{n}
 	}
-	return newStringResultSet([]string{"DATABASE_NAME"}, rows), nil
+	return newStringResultSet([]string{ColDatabaseID}, rows), nil
 }
 
 // ListSchemas returns a ResultSet of (database_name, schema_name)
@@ -226,11 +226,13 @@ func (c *InMemoryStoreCatalog) ListSchemas(txn api.Transaction, _ api.Continuati
 		}
 		sort.Strings(schemaNames)
 		for _, schemaName := range schemaNames {
-			rows = append(rows, []any{dbName, schemaName})
+			s := byDB[schemaName]
+			tmpl := s.SchemaTemplate()
+			rows = append(rows, []any{dbName, schemaName, tmpl.MetadataName(), tmpl.Version()})
 		}
 	}
 	c.mu.Unlock()
-	return newStringResultSet([]string{"DATABASE_NAME", "SCHEMA_NAME"}, rows), nil
+	return newStringResultSet([]string{ColDatabaseID, ColSchemaName, ColTemplateName, ColTemplateVersion}, rows), nil
 }
 
 // ListSchemasInDatabase narrows ListSchemas to a single database.
@@ -252,9 +254,11 @@ func (c *InMemoryStoreCatalog) ListSchemasInDatabase(txn api.Transaction, databa
 	sort.Strings(names)
 	rows := make([][]any, len(names))
 	for i, n := range names {
-		rows[i] = []any{databaseID, n}
+		s := byDB[n]
+		tmpl := s.SchemaTemplate()
+		rows[i] = []any{databaseID, n, tmpl.MetadataName(), tmpl.Version()}
 	}
-	return newStringResultSet([]string{"DATABASE_NAME", "SCHEMA_NAME"}, rows), nil
+	return newStringResultSet([]string{ColDatabaseID, ColSchemaName, ColTemplateName, ColTemplateVersion}, rows), nil
 }
 
 // DeleteSchema removes (dbURI, schemaName).
