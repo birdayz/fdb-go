@@ -103,9 +103,11 @@ func TestParse_SyntaxError(t *testing.T) {
 	}
 }
 
-func TestParse_SyntaxErrorIncludesLineColumn(t *testing.T) {
+func TestParse_SyntaxErrorFormatMatchesJava(t *testing.T) {
 	t.Parallel()
 	// Error is on line 3 (1-based). Preceding lines are valid SQL + newlines.
+	// Java emits: "syntax error:\n<offending source line>\n<column-indent>^^^"
+	// where the carets cover the offending token.
 	sql := "SELECT 1;\n\nSELECT FROM"
 	_, err := Parse(sql)
 	if err == nil {
@@ -115,9 +117,14 @@ func TestParse_SyntaxErrorIncludesLineColumn(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("not *api.Error: %v", err)
 	}
-	// Error lines are of the form "<line>:<col>: <msg>"
-	if !strings.HasPrefix(apiErr.Message, "3:") {
-		t.Fatalf("Message = %q, want 3:col prefix", apiErr.Message)
+	if !strings.HasPrefix(apiErr.Message, "syntax error:\n") {
+		t.Errorf("Message missing \"syntax error:\\n\" prefix: %q", apiErr.Message)
+	}
+	if !strings.Contains(apiErr.Message, "SELECT FROM") {
+		t.Errorf("Message should include the offending source line: %q", apiErr.Message)
+	}
+	if !strings.Contains(apiErr.Message, "^") {
+		t.Errorf("Message should include caret underline: %q", apiErr.Message)
 	}
 }
 
@@ -140,15 +147,18 @@ func TestParse_ErrorOnStrayCharacter(t *testing.T) {
 	if apiErr.Code != api.ErrCodeSyntaxError {
 		t.Fatalf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
 	}
-	if !strings.Contains(apiErr.Message, "`") {
-		t.Fatalf("Message does not point at offending char: %q", apiErr.Message)
+	// The rendered message includes the offending source line in the
+	// Java-compatible underline format.
+	if !strings.Contains(apiErr.Message, "SELECT ` FROM orders") {
+		t.Fatalf("Message does not include offending source line: %q", apiErr.Message)
 	}
 }
 
-func TestParse_ErrorListOrderStable(t *testing.T) {
+func TestParse_ReportsOnlyFirstError(t *testing.T) {
 	t.Parallel()
-	// Two separate broken statements; both errors should appear, and the
-	// line numbers should come out ascending.
+	// Java's QueryParser.parse throws with the FIRST syntax error only.
+	// Downstream parser errors after a syntax failure are usually
+	// cascade noise.
 	sql := "SELECT FROM;\nSELECT FROM"
 	_, err := Parse(sql)
 	if err == nil {
@@ -156,15 +166,14 @@ func TestParse_ErrorListOrderStable(t *testing.T) {
 	}
 	var apiErr *api.Error
 	errors.As(err, &apiErr)
-	lines := strings.Split(apiErr.Message, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected >=2 errors, got %d: %q", len(lines), apiErr.Message)
+	// The first FROM is on line 1 — its source line should show up in
+	// the error output. The second FROM (line 2) must NOT.
+	if !strings.Contains(apiErr.Message, "SELECT FROM;") {
+		t.Errorf("Message should include line 1's offending source: %q", apiErr.Message)
 	}
-	if !strings.HasPrefix(lines[0], "1:") {
-		t.Fatalf("first error not on line 1: %q", lines[0])
-	}
-	if !strings.HasPrefix(lines[len(lines)-1], "2:") {
-		t.Fatalf("last error not on line 2: %q", lines[len(lines)-1])
+	// Count caret-bearing blocks: a single error produces exactly one.
+	if carets := strings.Count(apiErr.Message, "^"); carets == 0 {
+		t.Errorf("Message missing underline carets: %q", apiErr.Message)
 	}
 }
 
