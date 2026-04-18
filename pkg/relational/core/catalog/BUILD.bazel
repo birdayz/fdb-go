@@ -20,6 +20,7 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "database_metadata_test.go",
+        "integration_test.go",
         "store_catalog_test.go",
         "template_catalog_test.go",
         "transaction_test.go",
@@ -30,6 +31,7 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/metadata",
+        "//pkg/relational/core/parser",
         "@org_uber_go_mock//gomock",
     ],
 )
