@@ -20,6 +20,7 @@ type FDBTransaction struct {
 	ctx           *recordlayer.FDBRecordContext
 	boundTemplate api.SchemaTemplate
 	closed        bool
+	committing    bool // true while ctx.Commit() is in-flight
 }
 
 // NewFDBTransaction wraps an FDBRecordContext. The caller retains
@@ -44,15 +45,22 @@ func (t *FDBTransaction) Context() *recordlayer.FDBRecordContext {
 // callers may decide whether to Abort / Close.
 func (t *FDBTransaction) Commit() error {
 	t.mu.Lock()
-	if t.closed {
+	if t.closed || t.committing {
 		t.mu.Unlock()
 		return api.NewError(api.ErrCodeTransactionInactive, "transaction already closed: Commit")
 	}
+	t.committing = true
 	t.mu.Unlock()
+
 	if err := t.ctx.Commit(); err != nil {
+		t.mu.Lock()
+		t.committing = false
+		t.mu.Unlock()
 		return err
 	}
+
 	t.mu.Lock()
+	t.committing = false
 	t.closed = true
 	t.mu.Unlock()
 	return nil

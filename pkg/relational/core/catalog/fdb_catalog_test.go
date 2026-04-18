@@ -68,8 +68,10 @@ func newFDBCatalogInSubspace(t *testing.T) (*RecordLayerStoreCatalog, func(fn fu
 	}
 
 	runTxn := func(fn func(txn api.Transaction) error) error {
-		_, err := testFDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
-			return nil, fn(NewFDBTransaction(ctx))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := testFDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+			return nil, fn(NewFDBTransaction(rctx))
 		})
 		return err
 	}

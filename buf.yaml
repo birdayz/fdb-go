@@ -11,6 +11,9 @@ lint:
     - STANDARD
   ignore:
     - proto/apple
+    # proto/relational uses UPPERCASE field names (e.g. DATABASE_ID,
+    # SCHEMA_NAME) for Java wire compatibility. buf FIELD_NAMES_LOWER_SNAKE_CASE
+    # would reject these, so the whole module is lint-ignored.
     - proto/relational
     - conformance
 breaking:

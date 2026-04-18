@@ -30,8 +30,7 @@ func templateKeyAtVersion(name string, version int) tuple.Tuple {
 	return tuple.Tuple{SchemaTemplateRecordTypeKey, name, int64(version)}
 }
 
-// DoesSchemaTemplateExist reports whether any version of templateName
-// exists. Matches Java's reverse-scan existence check.
+// DoesSchemaTemplateExist reports whether any version of templateName exists.
 func (c *RecordLayerStoreSchemaTemplateCatalog) DoesSchemaTemplateExist(txn api.Transaction, templateName string) (bool, error) {
 	store, err := c.openStore(txn)
 	if err != nil {
