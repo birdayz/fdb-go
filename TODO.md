@@ -422,6 +422,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching).
 - [ ] **System table contents** — `SELECT * FROM INFORMATION_SCHEMA.TABLES` returns byte-identical rows from Go and Java against the same store.
 - [ ] **SQL semantic equivalence** — feed the yamsql test corpus through both engines; require identical result sets for read queries.
+- [ ] **FRL perf comparison — Go vs Java** — we have a Go-vs-Java benchmark table for the record layer (see CLAUDE.md), but nothing yet for the relational / SQL layer. Once Phase 5 (embedded Connection) + Phase 3 (semantic analyzer) land enough to run a real SELECT, stand up the same comparison harness for common SQL workloads (simple SELECT, secondary-index SELECT, INSERT, aggregate, prepared statement with parameters). Drive both via the same `java-jdbc-connector` vs `database/sql` test rig; measure latency, allocs, throughput. Goal: parity or better, same posture as the record-layer numbers.
 
 ### Non-goals (explicit)
 

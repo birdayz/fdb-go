@@ -44,6 +44,6 @@ const (
 	InterningLayer = "__internedStrings"
 
 	// InterningLayerValue is the fixed scalar stored at the
-	// interning-layer subspace (single-byte sentinel).
+	// interning-layer subspace (two-byte sentinel "IL").
 	InterningLayerValue = "IL"
 )
