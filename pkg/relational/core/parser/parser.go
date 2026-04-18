@@ -28,25 +28,94 @@ import (
 // ParseHelpers.underlineParsingError to produce the underline. Downstream
 // errors after a syntax failure are usually cascade noise.
 func Parse(sql string) (antlrgen.IRootContext, error) {
-	input := newCaseInsensitiveCharStream(sql)
+	p, listener := newParser(sql, nil)
+	root := p.Root()
+	if len(listener.errs) > 0 {
+		return nil, buildSyntaxError(listener.errs[0])
+	}
+	return root, nil
+}
 
+// ParseFunction parses a CREATE FUNCTION ... statement and returns
+// the SqlInvokedFunction parse tree (the body after the CREATE
+// keyword). Mirrors Java's QueryParser.parseFunction. The "CREATE"
+// token is consumed before the sqlInvokedFunction rule runs because
+// the grammar's sqlInvokedFunction starts after CREATE — so the
+// token stream needs to be advanced once.
+func ParseFunction(sql string) (antlrgen.ISqlInvokedFunctionContext, error) {
+	p, listener := newParser(sql, func(ts *antlr.CommonTokenStream) {
+		// Pre-populate the stream so Consume has something to consume.
+		ts.Fill()
+		ts.Consume()
+	})
+	ctx := p.SqlInvokedFunction()
+	if len(listener.errs) > 0 {
+		return nil, buildSyntaxError(listener.errs[0])
+	}
+	return ctx, nil
+}
+
+// ParseView parses a view definition (the body of CREATE VIEW
+// foo AS ...) and returns the query parse tree. Mirrors Java's
+// QueryParser.parseView.
+func ParseView(sql string) (antlrgen.IQueryContext, error) {
+	p, listener := newParser(sql, nil)
+	ctx := p.Query()
+	if len(listener.errs) > 0 {
+		return nil, buildSyntaxError(listener.errs[0])
+	}
+	return ctx, nil
+}
+
+// ValidateNoPreparedParams walks a parse tree and returns an error
+// if any ? / $N prepared-statement placeholder is present. Mirrors
+// Java's QueryParser.validateNoPreparedParams — certain contexts
+// (function bodies, view definitions) reject parameters because
+// binding happens at parse time, not execution time.
+func ValidateNoPreparedParams(tree antlr.ParseTree) error {
+	v := &noPreparedParamsVisitor{}
+	antlr.ParseTreeWalkerDefault.Walk(v, tree)
+	if v.found {
+		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
+	}
+	return nil
+}
+
+// newParser wires up the full lexer + parser stack with our
+// collecting error listener. tokenHook, if non-nil, runs on the
+// token stream before the parser starts — mirrors Java's
+// tokenConsumer hook (used by ParseFunction to skip CREATE).
+func newParser(sql string, tokenHook func(*antlr.CommonTokenStream)) (*antlrgen.RelationalParser, *collectingErrorListener) {
+	input := newCaseInsensitiveCharStream(sql)
 	lexer := antlrgen.NewRelationalLexer(input)
 	listener := &collectingErrorListener{sql: sql}
 	lexer.RemoveErrorListeners()
 	lexer.AddErrorListener(listener)
 
 	tokens := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+	if tokenHook != nil {
+		tokenHook(tokens)
+	}
 
 	p := antlrgen.NewRelationalParser(tokens)
 	p.RemoveErrorListeners()
 	p.AddErrorListener(listener)
+	return p, listener
+}
 
-	root := p.Root()
+// noPreparedParamsVisitor walks a parse tree and flips `found` on the
+// first PreparedStatementParameter node it sees. Listener rather than
+// visitor so we don't need type-specific code — the node name is all
+// we need.
+type noPreparedParamsVisitor struct {
+	*antlr.BaseParseTreeListener
+	found bool
+}
 
-	if len(listener.errs) > 0 {
-		return nil, buildSyntaxError(listener.errs[0])
+func (v *noPreparedParamsVisitor) EnterEveryRule(ctx antlr.ParserRuleContext) {
+	if _, ok := ctx.(antlrgen.IPreparedStatementParameterContext); ok {
+		v.found = true
 	}
-	return root, nil
 }
 
 // syntaxError holds everything we need to reproduce Java's

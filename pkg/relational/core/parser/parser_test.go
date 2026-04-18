@@ -186,6 +186,59 @@ func TestParse_ReportsOnlyFirstError(t *testing.T) {
 	}
 }
 
+func TestParseView(t *testing.T) {
+	t.Parallel()
+	// ParseView takes a view body (a single query) and returns the
+	// query parse tree — no CREATE VIEW wrapper.
+	ctx, err := ParseView("SELECT id, name FROM orders")
+	if err != nil {
+		t.Fatalf("ParseView: %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("ParseView returned nil context")
+	}
+}
+
+func TestParseView_SyntaxError(t *testing.T) {
+	t.Parallel()
+	_, err := ParseView("not a valid query")
+	if err == nil {
+		t.Fatal("ParseView of garbage should error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
+	}
+}
+
+func TestValidateNoPreparedParams_Clean(t *testing.T) {
+	t.Parallel()
+	root, err := Parse("SELECT id FROM orders WHERE id = 42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateNoPreparedParams(root); err != nil {
+		t.Errorf("clean query reported prepared params: %v", err)
+	}
+}
+
+func TestValidateNoPreparedParams_WithParameter(t *testing.T) {
+	t.Parallel()
+	// ?param is a prepared-statement placeholder in the grammar.
+	root, err := Parse("SELECT id FROM orders WHERE id = ?param")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ValidateNoPreparedParams(root)
+	if err == nil {
+		t.Fatal("prepared parameter should fail validation")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
+	}
+}
+
 func TestCaseInsensitiveCharStream_PreservesOriginalText(t *testing.T) {
 	t.Parallel()
 	s := newCaseInsensitiveCharStream("SeLeCt")
