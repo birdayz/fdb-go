@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ddl",
+    srcs = [
+        "constants.go",
+        "create_database.go",
+        "create_schema.go",
+        "drop_database.go",
+        "drop_schema.go",
+        "drop_schema_template.go",
+        "metadata_operations_factory.go",
+        "save_schema_template.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
+    ],
+)
+
+go_test(
+    name = "ddl_test",
+    srcs = ["ddl_test.go"],
+    deps = [
+        ":ddl",
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/metadata",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

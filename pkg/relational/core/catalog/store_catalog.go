@@ -178,6 +178,9 @@ func (c *InMemoryStoreCatalog) CreateDatabase(txn api.Transaction, dbURI string)
 		return api.NewErrorf(api.ErrCodeDatabaseAlreadyExists, "database %q already exists", dbURI)
 	}
 	c.databases[dbURI] = struct{}{}
+	if c.schemas[dbURI] == nil {
+		c.schemas[dbURI] = make(map[string]api.Schema)
+	}
 	return nil
 }
 
