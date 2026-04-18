@@ -171,3 +171,44 @@ func TestFDB_DropDatabase_Cascade(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 }
+
+// TestFDB_CatalogOnly exercises the factory in catalog-only mode (no
+// keyspace) — CreateSchema creates the catalog entry but no FDB store.
+func TestFDB_CatalogOnly(t *testing.T) {
+	t.Parallel()
+	if fdbTestDB == nil {
+		t.Skip("no FDB container")
+	}
+	g := gomega.NewWithT(t)
+
+	testSubspace := subspace.Sub([]byte("ddl-test"), []byte(t.Name()))
+	ks := keyspace.New(testSubspace)
+	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// Catalog-only: no keyspace passed to factory.
+	f := ddl.NewRecordLayerMetadataOperationsFactory(cat)
+
+	tmpl := buildTemplate(t, "CatalogOnlyTmpl", 1)
+
+	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
+		if err := f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn); err != nil {
+			return err
+		}
+		return f.CreateDatabase("/catonly", api.Options{}).Execute(txn)
+	})).To(gomega.Succeed())
+
+	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
+		return f.CreateSchema("/catonly", "s1", "CatalogOnlyTmpl", api.Options{}).Execute(txn)
+	})).To(gomega.Succeed())
+
+	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
+		schema, err := cat.LoadSchema(txn, "/catonly", "s1")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(schema.MetadataName()).To(gomega.Equal("s1"))
+		return nil
+	})).To(gomega.Succeed())
+
+	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
+		return f.DropSchema("/catonly", "s1", api.Options{}).Execute(txn)
+	})).To(gomega.Succeed())
+}
