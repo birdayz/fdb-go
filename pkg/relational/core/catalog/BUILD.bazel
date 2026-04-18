@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "catalog",
     srcs = [
+        "database_metadata.go",
         "doc.go",
         "resultset.go",
         "store_catalog.go",
