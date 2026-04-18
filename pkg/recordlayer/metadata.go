@@ -167,12 +167,27 @@ func NewRecordMetaDataBuilder() *RecordMetaDataBuilder {
 	}
 }
 
-// SetRecords sets the protobuf file descriptor containing record definitions
+// SetRecordsWithUnionName is SetRecords with an explicit union message
+// name. Use this when the proto file's union message is not called
+// "UnionDescriptor" — e.g. schemas that must coexist with another
+// RecordMetaData in the same Go package (gen.*), where duplicate
+// UnionDescriptor symbols would clash. Behaviour is identical to
+// SetRecords in every other respect.
+func (b *RecordMetaDataBuilder) SetRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
+	return b.setRecordsWithUnionName(fd, unionName)
+}
+
+// SetRecords sets the protobuf file descriptor containing record definitions.
+// Uses the default union message name "UnionDescriptor".
 func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *RecordMetaDataBuilder {
+	return b.setRecordsWithUnionName(fd, "UnionDescriptor")
+}
+
+func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
 	b.fileDescriptor = fd
 
-	// Find the UnionDescriptor to map fields to record types
-	unionDesc := fd.Messages().ByName("UnionDescriptor")
+	// Find the named union message to map fields to record types.
+	unionDesc := fd.Messages().ByName(protoreflect.Name(unionName))
 	if unionDesc == nil {
 		// If no UnionDescriptor, treat each message as a separate record type
 		b.setRecordsWithoutUnion(fd)

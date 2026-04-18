@@ -169,7 +169,7 @@ func (m *Templates) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *RecordTypeUnion) MarshalVT() (dAtA []byte, err error) {
+func (m *CatalogUnion) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -182,12 +182,12 @@ func (m *RecordTypeUnion) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *RecordTypeUnion) MarshalToVT(dAtA []byte) (int, error) {
+func (m *CatalogUnion) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *RecordTypeUnion) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *CatalogUnion) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -199,8 +199,8 @@ func (m *RecordTypeUnion) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.XTEMPLATES != nil {
-		size, err := m.XTEMPLATES.MarshalToSizedBufferVT(dAtA[:i])
+	if m.XTemplates != nil {
+		size, err := m.XTemplates.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -209,8 +209,8 @@ func (m *RecordTypeUnion) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x1a
 	}
-	if m.XDATABASES != nil {
-		size, err := m.XDATABASES.MarshalToSizedBufferVT(dAtA[:i])
+	if m.XDatabases != nil {
+		size, err := m.XDatabases.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -219,8 +219,8 @@ func (m *RecordTypeUnion) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x12
 	}
-	if m.XSCHEMAS != nil {
-		size, err := m.XSCHEMAS.MarshalToSizedBufferVT(dAtA[:i])
+	if m.XSchemas != nil {
+		size, err := m.XSchemas.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -297,28 +297,28 @@ func TemplatesFromVTPool() *Templates {
 	return vtprotoPool_Templates.Get().(*Templates)
 }
 
-var vtprotoPool_RecordTypeUnion = sync.Pool{
+var vtprotoPool_CatalogUnion = sync.Pool{
 	New: func() interface{} {
-		return &RecordTypeUnion{}
+		return &CatalogUnion{}
 	},
 }
 
-func (m *RecordTypeUnion) ResetVT() {
+func (m *CatalogUnion) ResetVT() {
 	if m != nil {
-		m.XSCHEMAS.ReturnToVTPool()
-		m.XDATABASES.ReturnToVTPool()
-		m.XTEMPLATES.ReturnToVTPool()
+		m.XSchemas.ReturnToVTPool()
+		m.XDatabases.ReturnToVTPool()
+		m.XTemplates.ReturnToVTPool()
 		m.Reset()
 	}
 }
-func (m *RecordTypeUnion) ReturnToVTPool() {
+func (m *CatalogUnion) ReturnToVTPool() {
 	if m != nil {
 		m.ResetVT()
-		vtprotoPool_RecordTypeUnion.Put(m)
+		vtprotoPool_CatalogUnion.Put(m)
 	}
 }
-func RecordTypeUnionFromVTPool() *RecordTypeUnion {
-	return vtprotoPool_RecordTypeUnion.Get().(*RecordTypeUnion)
+func CatalogUnionFromVTPool() *CatalogUnion {
+	return vtprotoPool_CatalogUnion.Get().(*CatalogUnion)
 }
 func (m *Schemas) SizeVT() (n int) {
 	if m == nil {
@@ -380,22 +380,22 @@ func (m *Templates) SizeVT() (n int) {
 	return n
 }
 
-func (m *RecordTypeUnion) SizeVT() (n int) {
+func (m *CatalogUnion) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.XSCHEMAS != nil {
-		l = m.XSCHEMAS.SizeVT()
+	if m.XSchemas != nil {
+		l = m.XSchemas.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.XDATABASES != nil {
-		l = m.XDATABASES.SizeVT()
+	if m.XDatabases != nil {
+		l = m.XDatabases.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.XTEMPLATES != nil {
-		l = m.XTEMPLATES.SizeVT()
+	if m.XTemplates != nil {
+		l = m.XTemplates.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -794,7 +794,7 @@ func (m *Templates) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *RecordTypeUnion) UnmarshalVT(dAtA []byte) error {
+func (m *CatalogUnion) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -817,15 +817,15 @@ func (m *RecordTypeUnion) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: RecordTypeUnion: wiretype end group for non-group")
+			return fmt.Errorf("proto: CatalogUnion: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: RecordTypeUnion: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: CatalogUnion: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field XSCHEMAS", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field XSchemas", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -852,16 +852,16 @@ func (m *RecordTypeUnion) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.XSCHEMAS == nil {
-				m.XSCHEMAS = SchemasFromVTPool()
+			if m.XSchemas == nil {
+				m.XSchemas = SchemasFromVTPool()
 			}
-			if err := m.XSCHEMAS.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if err := m.XSchemas.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field XDATABASES", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field XDatabases", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -888,16 +888,16 @@ func (m *RecordTypeUnion) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.XDATABASES == nil {
-				m.XDATABASES = DatabasesFromVTPool()
+			if m.XDatabases == nil {
+				m.XDatabases = DatabasesFromVTPool()
 			}
-			if err := m.XDATABASES.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if err := m.XDatabases.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field XTEMPLATES", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field XTemplates", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -924,10 +924,10 @@ func (m *RecordTypeUnion) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.XTEMPLATES == nil {
-				m.XTEMPLATES = TemplatesFromVTPool()
+			if m.XTemplates == nil {
+				m.XTemplates = TemplatesFromVTPool()
 			}
-			if err := m.XTEMPLATES.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if err := m.XTemplates.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex

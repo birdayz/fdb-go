@@ -36,9 +36,18 @@ message Templates {
   optional bytes META_DATA = 3;
 }
 
-message RecordTypeUnion {
+// Named CatalogUnion (not Java's "RecordTypeUnion" nor the project
+// default "UnionDescriptor") to avoid a symbol clash with the
+// conformance demo's UnionDescriptor in the shared `gen` Go package.
+// The union message name is not on the wire — only its field numbers —
+// so cross-language catalog compatibility is unaffected. Callers use
+// BuildCatalogMetaData which wires this explicitly via SetUnionName.
+message CatalogUnion {
   option (com.apple.foundationdb.record.record).usage = UNION;
-  optional Schemas _SCHEMAS = 1;
-  optional Databases _DATABASES = 2;
-  optional Templates _TEMPLATES = 3;
+  // Field names match the Go builder convention "_<MessageName>". Wire
+  // format stores only field numbers (1/2/3) so Java's "_SCHEMAS"
+  // naming convention is irrelevant cross-language.
+  optional Schemas _Schemas = 1;
+  optional Databases _Databases = 2;
+  optional Templates _Templates = 3;
 }

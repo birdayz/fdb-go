@@ -207,29 +207,38 @@ func (x *Templates) GetMETA_DATA() []byte {
 	return nil
 }
 
-type RecordTypeUnion struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	XSCHEMAS      *Schemas               `protobuf:"bytes,1,opt,name=_SCHEMAS,json=SCHEMAS" json:"_SCHEMAS,omitempty"`
-	XDATABASES    *Databases             `protobuf:"bytes,2,opt,name=_DATABASES,json=DATABASES" json:"_DATABASES,omitempty"`
-	XTEMPLATES    *Templates             `protobuf:"bytes,3,opt,name=_TEMPLATES,json=TEMPLATES" json:"_TEMPLATES,omitempty"`
+// Named CatalogUnion (not Java's "RecordTypeUnion" nor the project
+// default "UnionDescriptor") to avoid a symbol clash with the
+// conformance demo's UnionDescriptor in the shared `gen` Go package.
+// The union message name is not on the wire — only its field numbers —
+// so cross-language catalog compatibility is unaffected. Callers use
+// BuildCatalogMetaData which wires this explicitly via SetUnionName.
+type CatalogUnion struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Field names match the Go builder convention "_<MessageName>". Wire
+	// format stores only field numbers (1/2/3) so Java's "_SCHEMAS"
+	// naming convention is irrelevant cross-language.
+	XSchemas      *Schemas   `protobuf:"bytes,1,opt,name=_Schemas,json=Schemas" json:"_Schemas,omitempty"`
+	XDatabases    *Databases `protobuf:"bytes,2,opt,name=_Databases,json=Databases" json:"_Databases,omitempty"`
+	XTemplates    *Templates `protobuf:"bytes,3,opt,name=_Templates,json=Templates" json:"_Templates,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RecordTypeUnion) Reset() {
-	*x = RecordTypeUnion{}
+func (x *CatalogUnion) Reset() {
+	*x = CatalogUnion{}
 	mi := &file_catalog_data_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RecordTypeUnion) String() string {
+func (x *CatalogUnion) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RecordTypeUnion) ProtoMessage() {}
+func (*CatalogUnion) ProtoMessage() {}
 
-func (x *RecordTypeUnion) ProtoReflect() protoreflect.Message {
+func (x *CatalogUnion) ProtoReflect() protoreflect.Message {
 	mi := &file_catalog_data_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -241,28 +250,28 @@ func (x *RecordTypeUnion) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RecordTypeUnion.ProtoReflect.Descriptor instead.
-func (*RecordTypeUnion) Descriptor() ([]byte, []int) {
+// Deprecated: Use CatalogUnion.ProtoReflect.Descriptor instead.
+func (*CatalogUnion) Descriptor() ([]byte, []int) {
 	return file_catalog_data_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *RecordTypeUnion) GetXSCHEMAS() *Schemas {
+func (x *CatalogUnion) GetXSchemas() *Schemas {
 	if x != nil {
-		return x.XSCHEMAS
+		return x.XSchemas
 	}
 	return nil
 }
 
-func (x *RecordTypeUnion) GetXDATABASES() *Databases {
+func (x *CatalogUnion) GetXDatabases() *Databases {
 	if x != nil {
-		return x.XDATABASES
+		return x.XDatabases
 	}
 	return nil
 }
 
-func (x *RecordTypeUnion) GetXTEMPLATES() *Templates {
+func (x *CatalogUnion) GetXTemplates() *Templates {
 	if x != nil {
-		return x.XTEMPLATES
+		return x.XTemplates
 	}
 	return nil
 }
@@ -285,13 +294,13 @@ const file_catalog_data_proto_rawDesc = "" +
 	"\tTemplates\x12#\n" +
 	"\rTEMPLATE_NAME\x18\x01 \x01(\tR\fTEMPLATENAME\x12)\n" +
 	"\x10TEMPLATE_VERSION\x18\x02 \x01(\x05R\x0fTEMPLATEVERSION\x12\x1b\n" +
-	"\tMETA_DATA\x18\x03 \x01(\fR\bMETADATA\"\x91\x02\n" +
-	"\x0fRecordTypeUnion\x12M\n" +
-	"\b_SCHEMAS\x18\x01 \x01(\v22.com.apple.foundationdb.relational.catalog.SchemasR\aSCHEMAS\x12S\n" +
+	"\tMETA_DATA\x18\x03 \x01(\fR\bMETADATA\"\x8e\x02\n" +
+	"\fCatalogUnion\x12M\n" +
+	"\b_Schemas\x18\x01 \x01(\v22.com.apple.foundationdb.relational.catalog.SchemasR\aSchemas\x12S\n" +
 	"\n" +
-	"_DATABASES\x18\x02 \x01(\v24.com.apple.foundationdb.relational.catalog.DatabasesR\tDATABASES\x12S\n" +
+	"_Databases\x18\x02 \x01(\v24.com.apple.foundationdb.relational.catalog.DatabasesR\tDatabases\x12S\n" +
 	"\n" +
-	"_TEMPLATES\x18\x03 \x01(\v24.com.apple.foundationdb.relational.catalog.TemplatesR\tTEMPLATES:\x05\x8aM\x02\b\x02B\xb7\x02\n" +
+	"_Templates\x18\x03 \x01(\v24.com.apple.foundationdb.relational.catalog.TemplatesR\tTemplates:\x05\x8aM\x02\b\x02B\xb7\x02\n" +
 	"-com.com.apple.foundationdb.relational.catalogB\x10CatalogDataProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x05CAFRC\xaa\x02)Com.Apple.Foundationdb.Relational.Catalog\xca\x02)Com\\Apple\\Foundationdb\\Relational\\Catalog\xe2\x025Com\\Apple\\Foundationdb\\Relational\\Catalog\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Relational::Catalog"
 
 var (
@@ -308,15 +317,15 @@ func file_catalog_data_proto_rawDescGZIP() []byte {
 
 var file_catalog_data_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_catalog_data_proto_goTypes = []any{
-	(*Schemas)(nil),         // 0: com.apple.foundationdb.relational.catalog.Schemas
-	(*Databases)(nil),       // 1: com.apple.foundationdb.relational.catalog.Databases
-	(*Templates)(nil),       // 2: com.apple.foundationdb.relational.catalog.Templates
-	(*RecordTypeUnion)(nil), // 3: com.apple.foundationdb.relational.catalog.RecordTypeUnion
+	(*Schemas)(nil),      // 0: com.apple.foundationdb.relational.catalog.Schemas
+	(*Databases)(nil),    // 1: com.apple.foundationdb.relational.catalog.Databases
+	(*Templates)(nil),    // 2: com.apple.foundationdb.relational.catalog.Templates
+	(*CatalogUnion)(nil), // 3: com.apple.foundationdb.relational.catalog.CatalogUnion
 }
 var file_catalog_data_proto_depIdxs = []int32{
-	0, // 0: com.apple.foundationdb.relational.catalog.RecordTypeUnion._SCHEMAS:type_name -> com.apple.foundationdb.relational.catalog.Schemas
-	1, // 1: com.apple.foundationdb.relational.catalog.RecordTypeUnion._DATABASES:type_name -> com.apple.foundationdb.relational.catalog.Databases
-	2, // 2: com.apple.foundationdb.relational.catalog.RecordTypeUnion._TEMPLATES:type_name -> com.apple.foundationdb.relational.catalog.Templates
+	0, // 0: com.apple.foundationdb.relational.catalog.CatalogUnion._Schemas:type_name -> com.apple.foundationdb.relational.catalog.Schemas
+	1, // 1: com.apple.foundationdb.relational.catalog.CatalogUnion._Databases:type_name -> com.apple.foundationdb.relational.catalog.Databases
+	2, // 2: com.apple.foundationdb.relational.catalog.CatalogUnion._Templates:type_name -> com.apple.foundationdb.relational.catalog.Templates
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name

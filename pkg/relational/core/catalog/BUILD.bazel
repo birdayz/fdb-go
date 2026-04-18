@@ -6,6 +6,7 @@ go_library(
         "database_metadata.go",
         "doc.go",
         "keyspace.go",
+        "metadata.go",
         "resultset.go",
         "store_catalog.go",
         "system_tables.go",
@@ -14,7 +15,11 @@ go_library(
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+    ],
 )
 
 go_test(
@@ -24,6 +29,7 @@ go_test(
         "database_metadata_test.go",
         "integration_test.go",
         "keyspace_test.go",
+        "metadata_test.go",
         "store_catalog_test.go",
         "system_tables_test.go",
         "template_catalog_test.go",

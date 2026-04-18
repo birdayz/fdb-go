@@ -22,12 +22,23 @@ const (
 	// SchemaTemplateRecordTypeKey prefixes SchemaTemplate records.
 	SchemaTemplateRecordTypeKey int64 = 2
 
-	// SchemasTableName is the INFORMATION_SCHEMA view name for
-	// Schema records.
+	// SchemasTableName is the user-visible INFORMATION_SCHEMA name for
+	// the Schema record type (Java: "SCHEMAS"). The Go proto descriptor
+	// uses the Go-style message name "Schemas"; wire compatibility is
+	// preserved because Java and Go both agree on record-type key 0
+	// and on field numbers inside the Schemas/SCHEMAS message (both
+	// generated programmatically with the same 1-based column layout).
 	SchemasTableName = "SCHEMAS"
-	// DatabaseTableName is the view name for DatabaseInfo records.
+	// DatabaseTableName — Java-visible name for Databases records.
 	DatabaseTableName = "DATABASES"
-	// SchemaTemplateTableName is the view name for SchemaTemplate
-	// records.
+	// SchemaTemplateTableName — Java-visible name for Templates records.
 	SchemaTemplateTableName = "TEMPLATES"
+
+	// SchemasRecordName / DatabasesRecordName / TemplatesRecordName are
+	// the internal proto descriptor names that recordlayer uses to
+	// resolve record types. They match the message names in
+	// proto/relational/catalog_data.proto.
+	SchemasRecordName   = "Schemas"
+	DatabasesRecordName = "Databases"
+	TemplatesRecordName = "Templates"
 )
