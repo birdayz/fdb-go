@@ -43,9 +43,10 @@ type EmbeddedConnection struct {
 	factory apiddl.MetadataOperationsFactory
 	closed  bool
 
-	// catalogInit ensures catalog.Initialize is called exactly once.
-	catalogInit    sync.Once
-	catalogInitErr error
+	// catalogReady is set to true after the first successful catalog init.
+	// Protected by catalogMu so transient failures can be retried.
+	catalogMu    sync.Mutex
+	catalogReady bool
 }
 
 // New returns a ready-to-use embedded connection.
@@ -316,36 +317,40 @@ func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataTyp
 	}
 }
 
+// ensureCatalogInit bootstraps the catalog. Retries on transient failure
+// (unlike sync.Once, a mutex+bool allows retry when the previous attempt failed).
+func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
+	c.catalogMu.Lock()
+	defer c.catalogMu.Unlock()
+	if c.catalogReady {
+		return nil
+	}
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		if initErr := c.cat.Initialize(txn); initErr != nil {
+			return nil, initErr
+		}
+		return nil, txn.Commit()
+	})
+	if err != nil {
+		return err
+	}
+	c.catalogReady = true
+	return nil
+}
+
 // Ping implements driver.Pinger. Bootstraps the catalog on first call.
 func (c *EmbeddedConnection) Ping(ctx context.Context) error {
 	if c.closed {
 		return driver.ErrBadConn
 	}
-	c.catalogInit.Do(func() {
-		_, c.catalogInitErr = c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-			txn := catalog.NewFDBTransaction(rctx)
-			if err := c.cat.Initialize(txn); err != nil {
-				return nil, err
-			}
-			return nil, txn.Commit()
-		})
-	})
-	return c.catalogInitErr
+	return c.ensureCatalogInit(ctx)
 }
 
 // runDDL bootstraps the catalog on first call, then executes action.
 func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantAction) error {
-	c.catalogInit.Do(func() {
-		_, c.catalogInitErr = c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-			txn := catalog.NewFDBTransaction(rctx)
-			if err := c.cat.Initialize(txn); err != nil {
-				return nil, err
-			}
-			return nil, txn.Commit()
-		})
-	})
-	if c.catalogInitErr != nil {
-		return c.catalogInitErr
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return err
 	}
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
@@ -368,16 +373,20 @@ func parseSchemaIdentifier(id, currentDB string) (dbPath, schemaName string, err
 			return "", "", api.NewErrorf(api.ErrCodeInvalidParameter,
 				"schema identifier %q must not end with /", id)
 		}
+		if idx == 0 {
+			return "", "", api.NewErrorf(api.ErrCodeInvalidParameter,
+				"schema identifier %q must include both database and schema segments", id)
+		}
 		return id[:idx], id[idx+1:], nil
 	}
 	return currentDB, id, nil
 }
 
-// validateDatabasePath checks that the path starts with /.
+// validateDatabasePath checks that the path starts with / and has a non-empty name.
 func validateDatabasePath(p string) error {
-	if !strings.HasPrefix(p, "/") {
+	if !strings.HasPrefix(p, "/") || len(p) < 2 || strings.HasSuffix(p, "/") {
 		return api.NewErrorf(api.ErrCodeInvalidParameter,
-			"database path must start with /: %q", p)
+			"database path must be /name (not empty, bare /, or trailing /): %q", p)
 	}
 	return nil
 }
@@ -401,7 +410,7 @@ func (s *embeddedStmt) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
-	return nil, fmt.Errorf("query not implemented")
+	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "query not implemented")
 }
 
 // Static interface checks.

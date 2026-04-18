@@ -17,6 +17,7 @@ func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 		{"schema", "/mydb", "/mydb", "schema", false}, // relative uses current
 		{"schema", "", "", "schema", false},           // relative, no current (caller validates)
 		{"/trailingslash/", "", "", "", true},         // trailing slash is invalid
+		{"/onlysegment", "", "", "", true},            // no database prefix, only schema segment
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -47,7 +48,7 @@ func TestValidateDatabasePath(t *testing.T) {
 			t.Errorf("validateDatabasePath(%q): unexpected error: %v", p, err)
 		}
 	}
-	invalid := []string{"", "noslash", "db/sub"}
+	invalid := []string{"", "noslash", "db/sub", "/", "/trailing/"}
 	for _, p := range invalid {
 		if err := validateDatabasePath(p); err == nil {
 			t.Errorf("validateDatabasePath(%q): expected error, got nil", p)
