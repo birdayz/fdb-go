@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "grammar",
+    srcs = ["sync.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/grammar",
+    visibility = ["//visibility:public"],
+)
