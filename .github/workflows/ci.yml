@@ -26,7 +26,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
+          # Single source of truth — bazel's go_sdk.from_file(go_mod=...)
+          # reads the same file in MODULE.bazel.
           go-version-file: go.mod
+          # setup-go's module cache fights bazel's dep cache (both
+          # manage the same module dir); keep Go for tool invocation
+          # only and let Bazel own dep caching.
           cache: false
 
       - name: Check generated code is up to date

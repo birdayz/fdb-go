@@ -31,6 +31,9 @@ generate: ensure-buf generate-mocks
 generate-mocks:
     find pkg/relational/api -name 'mocks_*.go' -delete
     go generate ./pkg/relational/api/...
+    # go.uber.org/mock is a direct dep of the generated mocks; keep
+    # go.mod's direct/indirect tags accurate after each regen.
+    go mod tidy
 
 # Download ANTLR4 tool jar at pinned version (if missing)
 ANTLR_VERSION := "4.13.1"
