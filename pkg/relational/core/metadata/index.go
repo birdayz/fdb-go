@@ -8,10 +8,9 @@ import (
 // RecordLayerIndex adapts a *recordlayer.Index (plus its owning record
 // type name) to api.Index.
 //
-// recordlayer.Index has no "sparse" flag today; IsSparse() always
-// reports false. When sparse-index support lands on the record-layer
-// side, extend this. Java's equivalent field is `NotNullOnly`, which
-// we haven't ported yet.
+// Java's RecordLayerIndex.isSparse() returns `predicate != null` — a
+// predicate-filtered index is considered sparse. recordlayer.Index
+// has an equivalent Predicate field, so we apply the same rule.
 type RecordLayerIndex struct {
 	underlying *recordlayer.Index
 	tableName  string
@@ -39,9 +38,10 @@ func (i *RecordLayerIndex) IndexType() string { return i.underlying.Type }
 // IndexOptions.UNIQUE_OPTION — matches Java's Index.isUnique().
 func (i *RecordLayerIndex) IsUnique() bool { return i.underlying.IsUnique() }
 
-// IsSparse is false until recordlayer.Index grows a sparse flag.
-// Documented divergence — see package doc.
-func (i *RecordLayerIndex) IsSparse() bool { return false }
+// IsSparse matches Java's RecordLayerIndex.isSparse() which is
+// "predicate != null" — a predicate-filtered index is sparse because
+// only records matching the predicate have entries.
+func (i *RecordLayerIndex) IsSparse() bool { return i.underlying.Predicate != nil }
 
 // Accept dispatches into the Visitor.
 func (i *RecordLayerIndex) Accept(v api.Visitor) { v.VisitIndex(i) }

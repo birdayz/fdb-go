@@ -27,12 +27,11 @@
 //   - repeated → ArrayType(element)
 //   - map → UnresolvedType
 //
-// Deferred behaviours that Java implements but this bridge does NOT
-// (track each as an independent Phase 2 follow-up):
-//
-//  1. Sparse-index IsSparse(): always false here until
-//     recordlayer.Index grows Java's NotNullOnly flag. This is a
-//     record-layer-side change, not a bridge change.
+// No known behavioural divergences from Java remain in this bridge
+// for the Phase 3 primary path. Edge cases the Java side also has
+// acknowledged TODOs about (table-level nullable=true, maps as
+// UnresolvedType, auxiliary types from Union enums) mirror Java's
+// behaviour rather than Java's intent.
 //
 // Doesn't block the Phase 3 semantic analyzer on the primary path
 // (CRUD over typed proto records + basic aggregations).

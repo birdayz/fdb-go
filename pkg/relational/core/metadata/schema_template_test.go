@@ -3,6 +3,8 @@ package metadata
 import (
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -327,8 +329,43 @@ func TestSchemaTemplate_IndexesWithSecondaryIndex(t *testing.T) {
 	if idx.IsUnique() {
 		t.Error("IsUnique = true, want false (no UNIQUE option)")
 	}
+	// IsSparse follows Java's predicate != null rule. order_by_price
+	// is a plain VALUE index with no predicate, so it's NOT sparse.
 	if idx.IsSparse() {
-		t.Error("IsSparse = true, want false (no sparse support yet)")
+		t.Error("IsSparse = true, want false (no predicate on this index)")
+	}
+}
+
+func TestSchemaTemplate_IndexIsSparseWhenPredicateSet(t *testing.T) {
+	t.Parallel()
+	// Java's RecordLayerIndex.isSparse() returns predicate != null.
+	// Build an index with a predicate and assert IsSparse reports true.
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+
+	idx := recordlayer.NewIndex("order_by_price_sparse", recordlayer.Field("price"))
+	// Any non-nil predicate makes the index sparse. Simplest is a
+	// function that matches everything — we just need Predicate != nil.
+	idx.Predicate = func(proto.Message) bool { return true }
+	b.AddIndex("Order", idx)
+
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tmpl, err := NewRecordLayerSchemaTemplate("demo", md)
+	if err != nil {
+		t.Fatalf("NewRecordLayerSchemaTemplate: %v", err)
+	}
+	order, _ := tmpl.FindTable("Order")
+	sparseIdx := findIndex(order.Indexes(), "order_by_price_sparse")
+	if sparseIdx == nil {
+		t.Fatal("order_by_price_sparse missing from Order")
+	}
+	if !sparseIdx.IsSparse() {
+		t.Error("IsSparse = false, want true (predicate set)")
 	}
 }
 
