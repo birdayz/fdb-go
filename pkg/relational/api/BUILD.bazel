@@ -4,6 +4,7 @@ go_library(
     name = "api",
     srcs = [
         "array.go",
+        "catalog.go",
         "connection.go",
         "continuation.go",
         "database_metadata.go",
@@ -21,6 +22,7 @@ go_library(
         "row.go",
         "sqltypes.go",
         "struct.go",
+        "transaction.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
     visibility = ["//visibility:public"],
