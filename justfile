@@ -37,6 +37,13 @@ ensure-antlr:
 
 # Regenerate Relational SQL parser from grammar/*.g4.
 # Runtime dep: github.com/antlr4-go/antlr/v4 in go.mod (match ANTLR_VERSION major/minor).
+# Smoke-test Relational SQL grammar coverage against the vendored Java
+# yamsql corpus (fdb-record-layer/yaml-tests/...). Runs directly via `go
+# test` — Bazel's test sandbox can't see the submodule tree. Only the
+# files tagged with `//go:build yamsql` are picked up.
+smoke-yamsql:
+    go test -tags=yamsql -count=1 -v -run TestYamsqlCorpus ./pkg/relational/core/parser
+
 generate-parser: ensure-antlr
     #!/usr/bin/env bash
     set -euo pipefail
