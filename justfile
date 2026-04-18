@@ -23,7 +23,7 @@ generate: ensure-buf
     bazelisk run //:gazelle
 
 # Download ANTLR4 tool jar at pinned version (if missing)
-ANTLR_VERSION := "4.13.2"
+ANTLR_VERSION := "4.13.1"
 [private]
 ensure-antlr:
     #!/usr/bin/env bash

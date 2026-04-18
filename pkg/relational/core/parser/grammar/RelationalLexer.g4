@@ -1384,7 +1384,8 @@ fragment DECIMAL_TYPE_MODIFIER:      (INT_TYPE_MODIFIER | LONG_TYPE_MODIFIER);
 // input that reaches this rule, so removing the explicit notifyListeners
 // call is behaviour-preserving for both Java users and us.
 // When re-syncing this file from Java source, the action line must be
-// removed again. Single-line diff, tracked in CLAUDE.md.
+// removed again. See pkg/relational/core/parser/doc.go for the full
+// rationale and regen recipe.
 ERROR_RECOGNITION
     : .
     ;

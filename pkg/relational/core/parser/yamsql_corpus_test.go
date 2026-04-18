@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -131,7 +132,7 @@ func extractStatements(path string) ([]yamsqlStmt, error) {
 	for {
 		var doc map[string]any
 		if err := dec.Decode(&doc); err != nil {
-			if errors.Is(err, fs.ErrClosed) || err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			// Malformed YAML — don't fail the whole run, skip this file.
@@ -167,8 +168,11 @@ func collectQueries(node any, out *[]yamsqlStmt) {
 		// A test entry looks like [{query: ...}, {result|count|error: ...}].
 		// If any sibling declares `error:` the corpus expects the parser to
 		// reject this SQL — skip the query so we don't flag its rejection
-		// as grammar drift. Same for `errorMsg:` and `maxRows: false` style
-		// pre-existing-error sentinels.
+		// as grammar drift. `errorMsg:` (semantic-level errors that still
+		// parse successfully) is NOT filtered here because our parse
+		// target is purely syntactic; if the corpus ever adds
+		// errorMsg-tagged queries that are also syntactically invalid,
+		// extend isExpectedFailEntry.
 		if isExpectedFailEntry(v) {
 			return
 		}
