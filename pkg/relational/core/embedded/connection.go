@@ -16,6 +16,7 @@ import (
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 
@@ -154,6 +155,8 @@ func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreate
 		return c.execCreateDatabase(ctx, t)
 	case *antlrgen.CreateSchemaStatementContext:
 		return c.execCreateSchema(ctx, t)
+	case *antlrgen.CreateSchemaTemplateStatementContext:
+		return c.execCreateSchemaTemplate(ctx, t)
 	default:
 		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported CREATE statement: %T", cs)
@@ -223,6 +226,94 @@ func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antl
 	throwIfNotExist := s.IfExists() == nil
 	action := c.factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
+}
+
+func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *antlrgen.CreateSchemaTemplateStatementContext) (int64, error) {
+	templateID := s.SchemaTemplateId().GetText()
+	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
+
+	for _, clause := range s.AllTemplateClause() {
+		td := clause.TableDefinition()
+		if td == nil {
+			continue
+		}
+		tableName := td.Uid().GetText()
+		cols, pkCols, err := parseTableDefinition(td)
+		if err != nil {
+			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"table %q: %v", tableName, err)
+		}
+		b.AddTable(tableName, cols, pkCols)
+	}
+
+	tmpl, err := b.Build()
+	if err != nil {
+		return 0, err
+	}
+	action := c.factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
+	return 0, c.runDDL(ctx, action)
+}
+
+// parseTableDefinition extracts column specs and primary key column
+// names from a TableDefinitionContext.
+func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.ColumnSpec, []string, error) {
+	var cols []metadata.ColumnSpec
+	var pkCols []string
+
+	for i, colDef := range td.AllColumnDefinition() {
+		colName := colDef.Uid().GetText()
+		ct := colDef.ColumnType()
+		if ct == nil {
+			return nil, nil, fmt.Errorf("column %q has no type", colName)
+		}
+		nullable := true
+		if cc := colDef.ColumnConstraint(); cc != nil {
+			if nc, ok := cc.(*antlrgen.NullColumnConstraintContext); ok {
+				if nn := nc.NullNotnull(); nn != nil && nn.NOT() != nil {
+					nullable = false
+				}
+			}
+		}
+		dt, err := parseColumnType(ct, nullable)
+		if err != nil {
+			return nil, nil, fmt.Errorf("column %q: %w", colName, err)
+		}
+		cols = append(cols, metadata.NewColumnSpec(colName, dt, int32(i+1)))
+	}
+
+	if pkDef := td.PrimaryKeyDefinition(); pkDef != nil {
+		for _, fullID := range pkDef.FullIdList().AllFullId() {
+			pkCols = append(pkCols, fullID.GetText())
+		}
+	}
+
+	return cols, pkCols, nil
+}
+
+// parseColumnType maps a ColumnTypeContext to an api.DataType.
+func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataType, error) {
+	pt := ct.PrimitiveType()
+	if pt == nil {
+		return nil, fmt.Errorf("only primitive column types are supported")
+	}
+	switch {
+	case pt.BOOLEAN() != nil:
+		return api.NewBooleanType(nullable), nil
+	case pt.INTEGER() != nil:
+		return api.NewIntegerType(nullable), nil
+	case pt.BIGINT() != nil:
+		return api.NewLongType(nullable), nil
+	case pt.FLOAT() != nil:
+		return api.NewFloatType(nullable), nil
+	case pt.DOUBLE() != nil:
+		return api.NewDoubleType(nullable), nil
+	case pt.STRING() != nil:
+		return api.NewStringType(nullable), nil
+	case pt.BYTES() != nil:
+		return api.NewBytesType(nullable), nil
+	default:
+		return nil, fmt.Errorf("unsupported column type: %s", ct.GetText())
+	}
 }
 
 // Ping implements driver.Pinger. Bootstraps the catalog on first call.

@@ -108,8 +108,35 @@ func TestFDB_EmbeddedDropDatabaseIfExists(t *testing.T) {
 	}
 }
 
-// TestFDB_EmbeddedCreateDropSchema is deferred until RecordLayerSchemaTemplate.Builder
-// lands (needed to implement CREATE SCHEMA TEMPLATE SQL). See TODO.md.
+func TestFDB_EmbeddedCreateDropSchemaTemplate(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_schema_tmpl")
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE test_tmpl "+
+			"CREATE TABLE RestaurantRecord (rest_no BIGINT NOT NULL, name STRING, PRIMARY KEY (rest_no))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE test_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+}
+
+func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_schema_tmpl_dup")
+	ctx := context.Background()
+
+	ddl := "CREATE SCHEMA TEMPLATE dup_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("first CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, ddl); err == nil {
+		t.Fatal("expected error on duplicate CREATE SCHEMA TEMPLATE, got nil")
+	}
+}
 
 func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
 	t.Parallel()
