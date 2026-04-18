@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "gen",
+    srcs = [
+        "relational_lexer.go",
+        "relational_parser.go",
+        "relationalparser_base_listener.go",
+        "relationalparser_base_visitor.go",
+        "relationalparser_listener.go",
+        "relationalparser_visitor.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_antlr4_go_antlr_v4//:antlr"],
+)

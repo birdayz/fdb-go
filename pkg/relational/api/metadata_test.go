@@ -76,6 +76,7 @@ func (s *stubSchemaTemplate) Accept(v Visitor)     { VisitSchemaTemplateTree(s, 
 func (s *stubSchemaTemplate) Version() int                    { return 0 }
 func (s *stubSchemaTemplate) EnableLongRows() bool            { return false }
 func (s *stubSchemaTemplate) StoreRowVersions() bool          { return false }
+func (s *stubSchemaTemplate) IntermingleTables() bool         { return false }
 func (s *stubSchemaTemplate) Tables() ([]Table, error)        { return nil, nil }
 func (s *stubSchemaTemplate) Views() ([]View, error)          { return nil, nil }
 func (s *stubSchemaTemplate) FindTable(string) (Table, error) { return nil, nil }

@@ -1,29 +1,23 @@
-// Package parser will house the generated ANTLR4 lexer and parser
-// for the Relational SQL dialect, plus the thin Go wrapper that
-// wires them into a ParseTree suitable for consumption by the
-// semantic analyzer.
+// Package parser houses the generated ANTLR4 lexer and parser for the
+// Relational SQL dialect, plus the thin Go wrapper that wires them into a
+// ParseTree suitable for consumption by the semantic analyzer.
 //
-// Status: grammar files vendored in grammar/; Go parser not yet
-// generated. Phase 1 of the relational layer port (see TODO.md)
-// wires up generation.
+// The generated code lives under gen/. Regenerate with:
 //
-// Regenerating the parser:
+//	just generate-parser
 //
-//  1. Install ANTLR 4.13+ (any runtime matching the antlr4-go/antlr/v4
-//     module version once added to go.mod).
+// That recipe downloads ANTLR 4.13.2 (matching the antlr4-go/antlr/v4 runtime
+// pinned in go.mod), runs the lexer first, then the parser with -lib pointing
+// at the lexer's .tokens file, and drops the output into gen/.
 //
-//  2. Run:
+// The grammar files in grammar/ are copied near-verbatim from Java source at
+// fdb-record-layer/fdb-relational-core/src/main/antlr/. There is one
+// documented deviation: the Java-side ERROR_RECOGNITION lexer rule contained
+// an inline Java action block which ANTLR's Go target copies literally and
+// cannot compile. The action is removed in our copy with a NOTE comment
+// explaining the change; default error listeners still surface unknown
+// characters as "token recognition errors", so behaviour is preserved.
 //
-//     antlr4 -Dlanguage=Go \
-//     -package parser \
-//     -o gen \
-//     pkg/relational/core/parser/grammar/RelationalLexer.g4 \
-//     pkg/relational/core/parser/grammar/RelationalParser.g4
-//
-//  3. Commit the contents of gen/ alongside any grammar change.
-//
-// The grammar files in grammar/ are copied verbatim from Java
-// source at fdb-record-layer/fdb-relational-core/src/main/antlr/.
-// DO NOT edit them independently — they MUST stay byte-identical to
-// the Java-side grammar so the SQL dialect does not drift.
+// When re-syncing grammar from Java source: copy the files over, then delete
+// the action block from the ERROR_RECOGNITION rule again.
 package parser
