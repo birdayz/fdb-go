@@ -422,15 +422,23 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 		return names
 	}
 
-	// unique=false returns both.
+	// unique=false returns both. JDBC ordering: NON_UNIQUE then
+	// INDEX_NAME, so the unique one (NON_UNIQUE=false) comes first
+	// regardless of alphabetical name order.
 	rs, err := dbMeta.IndexInfo(context.Background(), "/db", "s", "Order", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	all := collectIndexNames(rs)
 	rs.Close()
-	if len(all) != 2 {
-		t.Errorf("unique=false: got %d rows, want 2: %v", len(all), all)
+	wantOrder := []string{"order_by_qty_unique", "order_by_price"}
+	if len(all) != len(wantOrder) {
+		t.Fatalf("unique=false: got %d rows, want %d: %v", len(all), len(wantOrder), all)
+	}
+	for i, want := range wantOrder {
+		if all[i] != want {
+			t.Errorf("row %d: got %q, want %q (JDBC NON_UNIQUE sort puts unique first)", i, all[i], want)
+		}
 	}
 
 	// unique=true returns only the unique one.

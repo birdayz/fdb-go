@@ -456,8 +456,22 @@ func (m *CatalogDatabaseMetaData) IndexInfo(_ context.Context, catalog, schema, 
 			nil,      // FILTER_CONDITION
 		})
 	}
+	// JDBC spec: ORDER BY NON_UNIQUE, TYPE, INDEX_NAME, ORDINAL_POSITION.
+	// Unique indexes (NON_UNIQUE=false) come before non-unique (true).
 	sort.Slice(rows, func(i, j int) bool {
-		return rows[i][5].(string) < rows[j][5].(string)
+		ni, nj := rows[i][3].(bool), rows[j][3].(bool)
+		if ni != nj {
+			return !ni // false (unique) sorts first
+		}
+		ti, tj := rows[i][6].(int64), rows[j][6].(int64)
+		if ti != tj {
+			return ti < tj
+		}
+		in, jn := rows[i][5].(string), rows[j][5].(string)
+		if in != jn {
+			return in < jn
+		}
+		return rows[i][7].(int64) < rows[j][7].(int64)
 	})
 	return newStringResultSet(indexInfoColumns(), rows), nil
 }
