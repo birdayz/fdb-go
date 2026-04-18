@@ -93,6 +93,75 @@ func TestUnwrapWrappedArray_RejectsNonMatching(t *testing.T) {
 	if _, ok := unwrapWrappedArray(orderMD); ok {
 		t.Error("unwrapWrappedArray accepted Order (multi-field real table)")
 	}
+
+	// Map field shaped like "map<string,int32> values = 1;" — a
+	// repeated synthetic message field named "values" that would
+	// otherwise match the wrapper shape. Must be rejected so maps
+	// still route to the UnresolvedType("map") path.
+	mapMD := buildMapValuesMessage(t)
+	if _, ok := unwrapWrappedArray(mapMD); ok {
+		t.Error("unwrapWrappedArray accepted a map<...> values field")
+	}
+}
+
+// buildMapValuesMessage constructs
+//
+//	message Wrapper { map<string, int32> values = 1; }
+//
+// protoreflect models this as a repeated synthetic nested message
+// named values whose own shape has key / value fields.
+func buildMapValuesMessage(t *testing.T) protoreflect.MessageDescriptor {
+	t.Helper()
+	fileName := "test_wrapper_map.proto"
+	pkg := "test.wrapper"
+	syntax := "proto2"
+	// Synthetic entry message for the map.
+	entryName := "ValuesEntry"
+	entryMapEntry := true
+	keyName, valName := "key", "value"
+	keyNum, valNum := int32(1), int32(2)
+	strType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	i32Type := descriptorpb.FieldDescriptorProto_TYPE_INT32
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+
+	entry := &descriptorpb.DescriptorProto{
+		Name: &entryName,
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: &keyName, Number: &keyNum, Type: &strType, Label: &optional},
+			{Name: &valName, Number: &valNum, Type: &i32Type, Label: &optional},
+		},
+		Options: &descriptorpb.MessageOptions{MapEntry: &entryMapEntry},
+	}
+	wrapperName := "Wrapper"
+	valuesName := "values"
+	valuesNum := int32(1)
+	valuesTypeName := ".test.wrapper.Wrapper.ValuesEntry"
+	wrapper := &descriptorpb.DescriptorProto{
+		Name:       &wrapperName,
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     &valuesName,
+				Number:   &valuesNum,
+				Type:     &msgType,
+				TypeName: &valuesTypeName,
+				Label:    &repeated,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:        &fileName,
+		Package:     &pkg,
+		Syntax:      &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{wrapper},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+	return fd.Messages().Get(0)
 }
 
 // stringField builds a FieldDescriptorProto for use with buildMessageDesc.

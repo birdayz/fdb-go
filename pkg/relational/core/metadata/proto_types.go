@@ -127,7 +127,12 @@ func unwrapWrappedArray(md protoreflect.MessageDescriptor) (api.DataType, bool) 
 		return nil, false
 	}
 	fd := fields.Get(0)
-	if fd.Cardinality() != protoreflect.Repeated || string(fd.Name()) != wrappedArrayFieldName {
+	// IsMap guard: protobuf maps are lowered to a synthetic single
+	// repeated message field with the map's declared name, so a
+	// `map<string,int32> values = 1;` field would otherwise pass all
+	// the shape checks. The serializer never wraps map fields this
+	// way, but defend anyway — a caller-supplied descriptor could.
+	if fd.Cardinality() != protoreflect.Repeated || fd.IsMap() || string(fd.Name()) != wrappedArrayFieldName {
 		return nil, false
 	}
 	// The repeated field drives the element type. Build the scalar
