@@ -119,8 +119,8 @@ type Statement interface {
 type PreparedStatement interface {
 	Statement
 
-	// SetObject binds the parameter at positionally 1-indexed
-	// parameterIndex (to match JDBC convention — not 0-indexed).
+	// SetObject binds value to parameter at parameterIndex
+	// (1-indexed per JDBC convention, not 0-indexed).
 	SetObject(parameterIndex int, value any) error
 	// ClearParameters unbinds every parameter.
 	ClearParameters() error
