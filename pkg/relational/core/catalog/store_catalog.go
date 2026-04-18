@@ -1,0 +1,277 @@
+package catalog
+
+import (
+	"sort"
+	"sync"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+)
+
+// InMemoryStoreCatalog keeps the entire catalog (databases + schemas)
+// in a mutex-protected map. Intended for unit tests and development;
+// the FDB-backed implementation lives in a separate type (later shift).
+//
+// A single InMemoryStoreCatalog instance is safe for concurrent use
+// across transactions — the mutex serialises the full state — but
+// does NOT implement MVCC. Readers see whatever the latest writer
+// committed; aborts are no-ops.
+type InMemoryStoreCatalog struct {
+	mu        sync.Mutex
+	databases map[string]struct{}
+	// schemas maps dbURI → schemaName → Schema. Nested map so listing
+	// a single database is cheap.
+	schemas map[string]map[string]api.Schema
+	// Embedded template catalog so we can implement the
+	// SchemaTemplateCatalog() accessor trivially.
+	templates *InMemorySchemaTemplateCatalog
+}
+
+// NewInMemoryStoreCatalog returns a fresh, empty catalog.
+func NewInMemoryStoreCatalog() *InMemoryStoreCatalog {
+	return &InMemoryStoreCatalog{
+		databases: map[string]struct{}{},
+		schemas:   map[string]map[string]api.Schema{},
+		templates: NewInMemorySchemaTemplateCatalog(),
+	}
+}
+
+// SchemaTemplateCatalog returns the nested template catalog.
+func (c *InMemoryStoreCatalog) SchemaTemplateCatalog() api.SchemaTemplateCatalog {
+	return c.templates
+}
+
+// LoadSchema looks up a Schema by (databaseID, schemaName).
+func (c *InMemoryStoreCatalog) LoadSchema(txn api.Transaction, databaseID, schemaName string) (api.Schema, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	byDB, ok := c.schemas[databaseID]
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", databaseID)
+	}
+	s, ok := byDB[schemaName]
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "schema %q not found in database %q", schemaName, databaseID)
+	}
+	return s, nil
+}
+
+// SaveSchema persists or updates schema. Creates the owning database
+// first when createDatabaseIfNecessary is true and it doesn't exist.
+func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.Schema, createDatabaseIfNecessary bool) error {
+	if err := checkOpenTxn(txn); err != nil {
+		return err
+	}
+	if dataToWrite == nil {
+		return api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema is nil")
+	}
+	dbID := dataToWrite.DatabaseName()
+	name := dataToWrite.MetadataName()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.databases[dbID]; !ok {
+		if !createDatabaseIfNecessary {
+			return api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", dbID)
+		}
+		c.databases[dbID] = struct{}{}
+	}
+	if c.schemas[dbID] == nil {
+		c.schemas[dbID] = map[string]api.Schema{}
+	}
+	c.schemas[dbID][name] = dataToWrite
+	return nil
+}
+
+// RepairSchema rebinds schemaName to the latest version of its
+// owning template. For the in-memory impl that means re-running
+// templates.LoadSchemaTemplate and re-generating the schema — no
+// storage rewrite is required.
+func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, schemaName string) error {
+	if err := checkOpenTxn(txn); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	existing, ok := c.schemas[databaseID][schemaName]
+	c.mu.Unlock()
+	if !ok {
+		return api.NewErrorf(api.ErrCodeUndefinedSchema, "schema %q not found in database %q", schemaName, databaseID)
+	}
+	tmplName := existing.SchemaTemplate().MetadataName()
+	latest, err := c.templates.LoadSchemaTemplate(txn, tmplName)
+	if err != nil {
+		return err
+	}
+	refreshed := latest.GenerateSchema(databaseID, schemaName)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.schemas[databaseID][schemaName] = refreshed
+	return nil
+}
+
+// CreateDatabase records a new database. Returns
+// ErrCodeDatabaseAlreadyExists when dbURI is already present.
+func (c *InMemoryStoreCatalog) CreateDatabase(txn api.Transaction, dbURI string) error {
+	if err := checkOpenTxn(txn); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.databases[dbURI]; ok {
+		return api.NewErrorf(api.ErrCodeDatabaseAlreadyExists, "database %q already exists", dbURI)
+	}
+	c.databases[dbURI] = struct{}{}
+	return nil
+}
+
+// ListDatabases returns a sorted ResultSet of (database_name) rows.
+// Continuations are ignored for the in-memory impl.
+func (c *InMemoryStoreCatalog) ListDatabases(txn api.Transaction, _ api.Continuation) (api.ResultSet, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	names := make([]string, 0, len(c.databases))
+	for name := range c.databases {
+		names = append(names, name)
+	}
+	c.mu.Unlock()
+	sort.Strings(names)
+
+	rows := make([][]any, len(names))
+	for i, n := range names {
+		rows[i] = []any{n}
+	}
+	return newStringResultSet([]string{"DATABASE_NAME"}, rows), nil
+}
+
+// ListSchemas returns a ResultSet of (database_name, schema_name)
+// rows across every database.
+func (c *InMemoryStoreCatalog) ListSchemas(txn api.Transaction, _ api.Continuation) (api.ResultSet, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	dbNames := make([]string, 0, len(c.schemas))
+	for dbName := range c.schemas {
+		dbNames = append(dbNames, dbName)
+	}
+	sort.Strings(dbNames)
+	var rows [][]any
+	for _, dbName := range dbNames {
+		byDB := c.schemas[dbName]
+		schemaNames := make([]string, 0, len(byDB))
+		for schemaName := range byDB {
+			schemaNames = append(schemaNames, schemaName)
+		}
+		sort.Strings(schemaNames)
+		for _, schemaName := range schemaNames {
+			rows = append(rows, []any{dbName, schemaName})
+		}
+	}
+	c.mu.Unlock()
+	return newStringResultSet([]string{"DATABASE_NAME", "SCHEMA_NAME"}, rows), nil
+}
+
+// ListSchemasInDatabase narrows ListSchemas to a single database.
+func (c *InMemoryStoreCatalog) ListSchemasInDatabase(txn api.Transaction, databaseID string, _ api.Continuation) (api.ResultSet, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	byDB, ok := c.schemas[databaseID]
+	names := make([]string, 0, len(byDB))
+	for name := range byDB {
+		names = append(names, name)
+	}
+	c.mu.Unlock()
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", databaseID)
+	}
+	sort.Strings(names)
+	rows := make([][]any, len(names))
+	for i, n := range names {
+		rows[i] = []any{databaseID, n}
+	}
+	return newStringResultSet([]string{"DATABASE_NAME", "SCHEMA_NAME"}, rows), nil
+}
+
+// DeleteSchema removes (dbURI, schemaName).
+func (c *InMemoryStoreCatalog) DeleteSchema(txn api.Transaction, dbURI, schemaName string) error {
+	if err := checkOpenTxn(txn); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	byDB, ok := c.schemas[dbURI]
+	if !ok {
+		return api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", dbURI)
+	}
+	if _, ok := byDB[schemaName]; !ok {
+		return api.NewErrorf(api.ErrCodeUndefinedSchema, "schema %q not found in database %q", schemaName, dbURI)
+	}
+	delete(byDB, schemaName)
+	return nil
+}
+
+// DoesDatabaseExist returns true iff dbURI is present.
+func (c *InMemoryStoreCatalog) DoesDatabaseExist(txn api.Transaction, dbURI string) (bool, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.databases[dbURI]
+	return ok, nil
+}
+
+// DoesSchemaExist returns true iff (dbURI, schemaName) resolves.
+func (c *InMemoryStoreCatalog) DoesSchemaExist(txn api.Transaction, dbURI, schemaName string) (bool, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.schemas[dbURI][schemaName]
+	return ok, nil
+}
+
+// DeleteDatabase removes a database and all its schemas. Always
+// returns true on success — the in-memory path never partially
+// completes (no time limit).
+func (c *InMemoryStoreCatalog) DeleteDatabase(txn api.Transaction, dbURI string, throwIfDoesNotExist bool) (bool, error) {
+	if err := checkOpenTxn(txn); err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.databases[dbURI]; !ok {
+		if throwIfDoesNotExist {
+			return false, api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", dbURI)
+		}
+		return true, nil
+	}
+	delete(c.databases, dbURI)
+	delete(c.schemas, dbURI)
+	return true, nil
+}
+
+// checkOpenTxn confirms txn is an open InMemoryTransaction. Returns
+// ErrCodeTransactionInactive on closed transactions and an internal
+// error on any other Transaction impl (catch misuse early).
+func checkOpenTxn(txn api.Transaction) error {
+	if txn == nil {
+		return api.NewError(api.ErrCodeTransactionInactive, "transaction is nil")
+	}
+	imt, ok := txn.(*InMemoryTransaction)
+	if !ok {
+		return api.NewErrorf(api.ErrCodeInternalError, "expected *InMemoryTransaction, got %T", txn)
+	}
+	return imt.checkOpen()
+}
+
+// Compile-time interface-conformance check.
+var _ api.StoreCatalog = (*InMemoryStoreCatalog)(nil)
