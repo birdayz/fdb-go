@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "catalog",
@@ -12,4 +12,20 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog",
     visibility = ["//visibility:public"],
     deps = ["//pkg/relational/api"],
+)
+
+go_test(
+    name = "catalog_test",
+    srcs = [
+        "store_catalog_test.go",
+        "template_catalog_test.go",
+        "transaction_test.go",
+    ],
+    embed = [":catalog"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
+    ],
 )
