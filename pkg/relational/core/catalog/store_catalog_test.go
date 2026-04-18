@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"go.uber.org/mock/gomock"
+
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -154,6 +156,27 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 	// empty database name, empty template name, or negative template
 	// version all surface as ErrCodeInvalidParameter before the save
 	// hits storage.
+	// Two of the five validation cases can't be reached through a
+	// concrete RecordLayerSchemaTemplate (MetadataName() is required
+	// at construction, Version() is non-negative by construction), so
+	// use gomock stubs for those two.
+	ctrl := gomock.NewController(t)
+	mockTmplEmpty := api.NewMockSchemaTemplate(ctrl)
+	mockTmplEmpty.EXPECT().MetadataName().Return("").AnyTimes()
+	mockTmplEmpty.EXPECT().Version().Return(0).AnyTimes()
+	schemaEmptyTmpl := api.NewMockSchema(ctrl)
+	schemaEmptyTmpl.EXPECT().MetadataName().Return("s1").AnyTimes()
+	schemaEmptyTmpl.EXPECT().DatabaseName().Return("/db").AnyTimes()
+	schemaEmptyTmpl.EXPECT().SchemaTemplate().Return(mockTmplEmpty).AnyTimes()
+
+	mockTmplNeg := api.NewMockSchemaTemplate(ctrl)
+	mockTmplNeg.EXPECT().MetadataName().Return("t").AnyTimes()
+	mockTmplNeg.EXPECT().Version().Return(-1).AnyTimes()
+	schemaNegVer := api.NewMockSchema(ctrl)
+	schemaNegVer.EXPECT().MetadataName().Return("s1").AnyTimes()
+	schemaNegVer.EXPECT().DatabaseName().Return("/db").AnyTimes()
+	schemaNegVer.EXPECT().SchemaTemplate().Return(mockTmplNeg).AnyTimes()
+
 	cases := []struct {
 		name   string
 		schema api.Schema
@@ -161,6 +184,8 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 		{"nil schema", nil},
 		{"empty schema name", tmpl.GenerateSchema("/db", "")},
 		{"empty database name", tmpl.GenerateSchema("", "s1")},
+		{"empty template name", schemaEmptyTmpl},
+		{"negative version", schemaNegVer},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -475,22 +500,14 @@ func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 	// An ad-hoc Transaction impl that isn't *InMemoryTransaction must
 	// be rejected with an internal error. Catches impl mismatches
 	// early instead of misbehaving silently.
-	err := c.CreateDatabase(stubTx{}, "/db")
+	ctrl := gomock.NewController(t)
+	wrongTx := api.NewMockTransaction(ctrl)
+	err := c.CreateDatabase(wrongTx, "/db")
 	if err == nil {
-		t.Fatal("CreateDatabase(stub tx) succeeded")
+		t.Fatal("CreateDatabase(wrong tx) succeeded")
 	}
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInternalError {
 		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeInternalError)
 	}
 }
-
-type stubTx struct{}
-
-func (stubTx) Commit() error                               { return nil }
-func (stubTx) Abort() error                                { return nil }
-func (stubTx) Close() error                                { return nil }
-func (stubTx) IsClosed() bool                              { return false }
-func (stubTx) BoundSchemaTemplate() api.SchemaTemplate     { return nil }
-func (stubTx) SetBoundSchemaTemplate(_ api.SchemaTemplate) {}
-func (stubTx) UnsetBoundSchemaTemplate()                   {}

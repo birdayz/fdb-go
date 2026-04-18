@@ -16,6 +16,9 @@ go_library(
         "error.go",
         "keyset.go",
         "metadata.go",
+        "mocks_metadata.go",
+        "mocks_resultset.go",
+        "mocks_transaction.go",
         "options.go",
         "parsetree.go",
         "resultset.go",
@@ -26,6 +29,7 @@ go_library(
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api",
     visibility = ["//visibility:public"],
+    deps = ["@org_uber_go_mock//gomock"],
 )
 
 go_test(

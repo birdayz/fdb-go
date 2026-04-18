@@ -1,3 +1,5 @@
+//go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=mocks_$GOFILE -package=api
+
 package api
 
 // Transaction is the SQL-layer's handle on a single unit of work

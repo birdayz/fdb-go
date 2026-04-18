@@ -16,10 +16,14 @@ ensure-buf:
     curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
     chmod +x "$BUF"
 
-# Generate protobuf code (clean + regenerate all)
+# Regenerate all sources of code-gen output: protobuf + gomock mocks.
+# Protobuf output lives under gen/; mocks are emitted into the same
+# package as the source interface via //go:generate directives
+# (primary trigger: `go generate ./...`).
 generate: ensure-buf
     rm -rf gen/
     .tools/buf generate
+    go generate ./...
     bazelisk run //:gazelle
 
 # Download ANTLR4 tool jar at pinned version (if missing)
@@ -43,6 +47,15 @@ ensure-antlr:
 # files tagged with `//go:build yamsql` are picked up.
 smoke-yamsql:
     go test -tags=yamsql -count=1 -v -run TestYamsqlCorpus ./pkg/relational/core/parser
+
+# Shortcut: regen ONLY the mocks (skip proto). Use when iterating on
+# an interface without touching .proto. Primary trigger is still
+# `go generate ./...` via the //go:generate directives sitting on
+# top of pkg/relational/api/{metadata,transaction,resultset}.go —
+# this just runs the same thing scoped to api/.
+generate-mocks:
+    go generate ./pkg/relational/api/...
+    bazelisk run //:gazelle
 
 generate-parser: ensure-antlr
     #!/usr/bin/env bash

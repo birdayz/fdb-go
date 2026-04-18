@@ -1,3 +1,5 @@
+//go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=mocks_$GOFILE -package=api
+
 package api
 
 // ResultSet is a cursor over rows produced by a query. Mirrors

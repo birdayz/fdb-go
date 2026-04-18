@@ -28,5 +28,6 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/metadata",
+        "@org_uber_go_mock//gomock",
     ],
 )
