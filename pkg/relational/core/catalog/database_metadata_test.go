@@ -5,7 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
 
 func newTestDatabaseMetaData(t testing.TB) (*CatalogDatabaseMetaData, *InMemoryStoreCatalog, api.Transaction, api.SchemaTemplate) {
@@ -368,6 +371,77 @@ func TestDatabaseMetaData_IndexInfoEmpty(t *testing.T) {
 	defer rs.Close()
 	if rs.Next() {
 		t.Error("IndexInfo returned rows for an index-less table")
+	}
+}
+
+func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
+	t.Parallel()
+	// Build a schema template with two indexes: one unique, one not.
+	// Then verify IndexInfo(unique=true) only returns the unique one.
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+
+	plain := recordlayer.NewIndex("order_by_price", recordlayer.Field("price"))
+	unique := recordlayer.NewIndex("order_by_qty_unique", recordlayer.Field("quantity"))
+	unique.Options = map[string]string{"unique": "true"}
+	b.AddIndex("Order", plain)
+	b.AddIndex("Order", unique)
+
+	md, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl, err := metadata.NewRecordLayerSchemaTemplate("demo-indexed", md)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewInMemoryStoreCatalog()
+	tx := NewInMemoryTransaction()
+	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+
+	dbMeta := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{StoreCatalog: c})
+
+	collectIndexNames := func(rs api.ResultSet) []string {
+		var names []string
+		for rs.Next() {
+			// INDEX_NAME is column 6.
+			n, err := rs.String(6)
+			if err != nil {
+				t.Fatalf("String(6): %v", err)
+			}
+			names = append(names, n)
+		}
+		return names
+	}
+
+	// unique=false returns both.
+	rs, err := dbMeta.IndexInfo(context.Background(), "/db", "s", "Order", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := collectIndexNames(rs)
+	rs.Close()
+	if len(all) != 2 {
+		t.Errorf("unique=false: got %d rows, want 2: %v", len(all), all)
+	}
+
+	// unique=true returns only the unique one.
+	rs, err = dbMeta.IndexInfo(context.Background(), "/db", "s", "Order", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uniqueOnly := collectIndexNames(rs)
+	rs.Close()
+	if len(uniqueOnly) != 1 || uniqueOnly[0] != "order_by_qty_unique" {
+		t.Errorf("unique=true: got %v, want [order_by_qty_unique]", uniqueOnly)
 	}
 }
 
