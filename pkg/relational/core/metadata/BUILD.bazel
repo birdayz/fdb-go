@@ -21,7 +21,10 @@ go_library(
 
 go_test(
     name = "metadata_test",
-    srcs = ["schema_template_test.go"],
+    srcs = [
+        "proto_types_test.go",
+        "schema_template_test.go",
+    ],
     embed = [":metadata"],
     deps = [
         "//gen",

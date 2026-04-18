@@ -340,7 +340,23 @@ func TestSchemaTemplate_GenerateSchema(t *testing.T) {
 
 func TestSchemaTemplate_Visitor(t *testing.T) {
 	t.Parallel()
-	tmpl := buildTestTemplate(t)
+
+	// Build with a secondary index so the cascade visits an Index too —
+	// the default demo template has no indexes, which would make an
+	// index-cascade regression silent.
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	b.AddIndex("Order", recordlayer.NewIndex("order_by_price", recordlayer.Field("price")))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tmpl, err := NewRecordLayerSchemaTemplate("demo", md)
+	if err != nil {
+		t.Fatalf("NewRecordLayerSchemaTemplate: %v", err)
+	}
 
 	v := &countingVisitor{}
 	tmpl.Accept(v)
@@ -356,10 +372,11 @@ func TestSchemaTemplate_Visitor(t *testing.T) {
 	if v.tables != len(tables) {
 		t.Errorf("table visits = %d, want %d (cascade)", v.tables, len(tables))
 	}
-	// At least the columns of every table (demo proto has no zero-column
-	// messages).
 	if v.columns == 0 {
 		t.Error("visitor never saw a column — tables didn't cascade into columns")
+	}
+	if v.indexes == 0 {
+		t.Error("visitor never saw an index — tables didn't cascade into indexes")
 	}
 }
 

@@ -66,14 +66,11 @@ func NewRecordLayerSchemaTemplate(name string, md *recordlayer.RecordMetaData) (
 		tmpl.tablesByN[n] = tbl
 	}
 
-	// Flat list of all index names (per-table + universal). Sorted so
-	// Indexes() output is stable.
-	seen := make(map[string]struct{}, len(md.GetAllIndexes()))
+	// Flat list of all index names (per-table + universal). GetAllIndexes
+	// returns a map keyed by name so uniqueness is already guaranteed;
+	// sort for deterministic output.
+	tmpl.indexNames = make([]string, 0, len(md.GetAllIndexes()))
 	for n := range md.GetAllIndexes() {
-		if _, ok := seen[n]; ok {
-			continue
-		}
-		seen[n] = struct{}{}
 		tmpl.indexNames = append(tmpl.indexNames, n)
 	}
 	sort.Strings(tmpl.indexNames)
