@@ -376,6 +376,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 - [x] **`ConstantAction`** base + executor (nightshift-27)
 - [x] **`MetadataOperationsFactory`** + `RecordLayerMetadataOperationsFactory` (nightshift-27) — full wiring: FDB store create/delete via `RelationalKeyspace`; CreateDatabase/DropDatabase/CreateSchema/DropSchema/SaveSchemaTemplate/DropSchemaTemplate; 12 unit tests + 3 FDB integration tests
+- [x] **`EmbeddedConnection` DDL execution** (nightshift-28) — SQL DDL (CREATE/DROP DATABASE/SCHEMA) parsed via ANTLR, dispatched to factory, executed in FDB auto-commit transactions; wired into `fdbsql` driver; 8 unit tests + 4 FDB integration tests
 - [ ] Individual actions: `CreateTableAction`, `CreateIndexAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
 - [ ] Integration with online indexer (CREATE INDEX triggers background build)
 
@@ -388,8 +389,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 8 — `database/sql/driver` adapter (`pkg/relational/sqldriver`)
 
-- [ ] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection`
-- [ ] **`Connector`** — lazy-init, holds cluster client + options
+- [x] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection` (nightshift-28)
+- [x] **`Connector`** — lazy-init, holds cluster client + options (nightshift-28)
 - [ ] **`Conn`** implementing `driver.Conn`, `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.Pinger`, `driver.SessionResetter`, `driver.Validator`
 - [ ] **`Stmt`** implementing `driver.Stmt`, `driver.StmtExecContext`, `driver.StmtQueryContext`, `driver.NamedValueChecker`
 - [ ] **`Rows`** implementing `driver.Rows`, `driver.RowsColumnTypeDatabaseTypeName`, `driver.RowsColumnTypeNullable`, `driver.RowsColumnTypeLength`, `driver.RowsColumnTypePrecisionScale`, `driver.RowsColumnTypeScanType`
