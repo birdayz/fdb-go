@@ -73,7 +73,7 @@ func ParseView(sql string) (antlrgen.IQueryContext, error) {
 // (function bodies, view definitions) reject parameters because
 // binding happens at parse time, not execution time.
 func ValidateNoPreparedParams(tree antlr.ParseTree) error {
-	v := &noPreparedParamsVisitor{}
+	v := &noPreparedParamsListener{}
 	antlr.ParseTreeWalkerDefault.Walk(v, tree)
 	if v.found {
 		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
@@ -103,16 +103,16 @@ func newParser(sql string, tokenHook func(*antlr.CommonTokenStream)) (*antlrgen.
 	return p, listener
 }
 
-// noPreparedParamsVisitor walks a parse tree and flips `found` on the
+// noPreparedParamsListener walks a parse tree and flips `found` on the
 // first PreparedStatementParameter node it sees. Listener rather than
 // visitor so we don't need type-specific code — the node name is all
 // we need.
-type noPreparedParamsVisitor struct {
+type noPreparedParamsListener struct {
 	*antlr.BaseParseTreeListener
 	found bool
 }
 
-func (v *noPreparedParamsVisitor) EnterEveryRule(ctx antlr.ParserRuleContext) {
+func (v *noPreparedParamsListener) EnterEveryRule(ctx antlr.ParserRuleContext) {
 	if _, ok := ctx.(antlrgen.IPreparedStatementParameterContext); ok {
 		v.found = true
 	}

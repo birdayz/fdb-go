@@ -224,14 +224,52 @@ func TestValidateNoPreparedParams_Clean(t *testing.T) {
 
 func TestValidateNoPreparedParams_WithParameter(t *testing.T) {
 	t.Parallel()
-	// ?param is a prepared-statement placeholder in the grammar.
-	root, err := Parse("SELECT id FROM orders WHERE id = ?param")
-	if err != nil {
-		t.Fatal(err)
+	// Grammar's PreparedStatementParameter rule matches both the
+	// named form (?name → NAMED_PARAMETER) and the unnamed form
+	// (? → QUESTION). Exercise both to cover the rule's branches.
+	for _, sql := range []string{
+		"SELECT id FROM orders WHERE id = ?param", // named
+		"SELECT id FROM orders WHERE id = ?",      // unnamed
+	} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			root, err := Parse(sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ValidateNoPreparedParams(root)
+			if err == nil {
+				t.Fatal("prepared parameter should fail validation")
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+				t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
+			}
+		})
 	}
-	err = ValidateNoPreparedParams(root)
+}
+
+func TestParseFunction(t *testing.T) {
+	t.Parallel()
+	// ParseFunction expects a full CREATE FUNCTION … and internally
+	// skips the CREATE token before running sqlInvokedFunction.
+	// Syntax taken from the Java yamsql corpus
+	// (user-defined-macro-function-tests.yamsql):
+	// CREATE FUNCTION <name>(IN <param> <type>) RETURNS <type> AS <expr>.
+	ctx, err := ParseFunction("CREATE FUNCTION self(IN x bigint) RETURNS bigint AS x")
+	if err != nil {
+		t.Fatalf("ParseFunction: %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("ParseFunction returned nil context")
+	}
+}
+
+func TestParseFunction_SyntaxError(t *testing.T) {
+	t.Parallel()
+	_, err := ParseFunction("CREATE FUNCTION @@@")
 	if err == nil {
-		t.Fatal("prepared parameter should fail validation")
+		t.Fatal("ParseFunction of garbage should error")
 	}
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
