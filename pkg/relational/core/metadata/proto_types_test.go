@@ -11,6 +11,33 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
+func TestIsFieldNullable_ProtoCardinality(t *testing.T) {
+	t.Parallel()
+
+	// Demo proto uses proto2 with optional fields — all should be
+	// nullable.
+	orderMD := gen.File_record_layer_demo_proto.Messages().ByName("Order")
+	for i := 0; i < orderMD.Fields().Len(); i++ {
+		fd := orderMD.Fields().Get(i)
+		got := isFieldNullable(fd)
+		want := fd.Cardinality() != protoreflect.Required
+		if got != want {
+			t.Errorf("Order.%s: isFieldNullable = %v, want %v (cardinality=%v)",
+				fd.Name(), got, want, fd.Cardinality())
+		}
+	}
+
+	// Synthesize a proto2 REQUIRED field and verify we report
+	// nullable=false.
+	required := descriptorpb.FieldDescriptorProto_LABEL_REQUIRED
+	strType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	fd := stringField("req", 1, strType, required)
+	md := buildMessageDesc(t, "Msg", []*descriptorpb.FieldDescriptorProto{fd})
+	if isFieldNullable(md.Fields().Get(0)) {
+		t.Error("proto2 REQUIRED field reported nullable=true, want false")
+	}
+}
+
 func TestIsUUIDDescriptor(t *testing.T) {
 	t.Parallel()
 

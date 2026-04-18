@@ -12,10 +12,14 @@ import (
 // corresponding api.DataType. Repeated fields are wrapped in an
 // ArrayType whose element carries the scalar / message / enum type.
 //
-// Matches Java's RecordLayerSchemaTemplate field-type resolution. The
-// Java side treats every proto field as nullable (so do we) because
-// proto2 explicit-presence is the dominant case in FDB Record Layer
-// schemas and proto3 fields are tracked via optional modifiers too.
+// Mirrors Java's Type.fromProtoType nullability inference:
+//
+//   - LABEL_REQUIRED (proto2 only) → nullable=false
+//   - LABEL_OPTIONAL / LABEL_REPEATED → nullable=true
+//
+// For repeated fields the nullability applies to the ArrayType wrapper
+// (Java: arrays are always nullable); the inner element type is
+// derived non-repeated.
 func protoFieldToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error) {
 	// Maps are represented as repeated synthesised message types in
 	// protoreflect; flag them explicitly since the SQL layer has no
@@ -23,7 +27,7 @@ func protoFieldToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error)
 	if fd.IsMap() {
 		return api.NewUnresolvedType("map", true), nil
 	}
-	inner, err := protoScalarToDataType(fd)
+	inner, err := protoScalarToDataTypeWithNullability(fd, isFieldNullable(fd))
 	if err != nil {
 		return nil, err
 	}
@@ -33,10 +37,25 @@ func protoFieldToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error)
 	return inner, nil
 }
 
-// protoScalarToDataType handles the element type only — cardinality is
-// applied by the caller (so repeated-of-message etc. works uniformly).
+// isFieldNullable reports whether a proto field's label / cardinality
+// says its value is nullable. Only proto2 REQUIRED makes it false;
+// OPTIONAL and REPEATED (treated as "nullable element") are true.
+// Matches Java's isProtoFieldNullable behaviour.
+func isFieldNullable(fd protoreflect.FieldDescriptor) bool {
+	return fd.Cardinality() != protoreflect.Required
+}
+
+// protoScalarToDataType defaults to nullable=true for callers that
+// don't pass an explicit label; used by unwrapWrappedArray which
+// extracts an element type from a repeated field (elements are
+// conceptually optional).
 func protoScalarToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error) {
-	const nullable = true
+	return protoScalarToDataTypeWithNullability(fd, true)
+}
+
+// protoScalarToDataTypeWithNullability handles the element type only;
+// cardinality (repeated → array) is applied by the caller.
+func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nullable bool) (api.DataType, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		return api.NewBooleanType(nullable), nil
