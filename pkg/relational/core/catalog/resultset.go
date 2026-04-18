@@ -1,10 +1,6 @@
 package catalog
 
-import (
-	"fmt"
-
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-)
+import "github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 
 // stringResultSet is a trivial slice-backed api.ResultSet used by
 // InMemoryStoreCatalog's listXxx methods. Column names are mandatory;
@@ -17,7 +13,7 @@ import (
 type stringResultSet struct {
 	columns []string
 	rows    [][]any
-	cursor  int // next row index to deliver; -1 = before-first
+	cursor  int // index of the next row to return (0 = not yet advanced)
 	current []any
 	closed  bool
 	wasNull bool
@@ -298,6 +294,3 @@ func (m *stringResultSetMetaData) ColumnDataType(_ int) (api.DataType, error) {
 
 // Compile-time contract check.
 var _ api.ResultSet = (*stringResultSet)(nil)
-
-// unused but keeps fmt imported for future extensions.
-var _ = fmt.Sprintf

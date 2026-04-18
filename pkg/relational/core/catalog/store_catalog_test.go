@@ -218,6 +218,98 @@ func TestStoreCatalog_DeleteSchema(t *testing.T) {
 	}
 }
 
+func TestStoreCatalog_RepairSchema(t *testing.T) {
+	t.Parallel()
+	c, tx, tmpl := newSeededCatalog(t, "demo")
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+	// Happy path: refresh an existing schema. For the in-memory impl
+	// this re-generates from the same template, so the stored Schema
+	// points to the same template object.
+	if err := c.RepairSchema(tx, "/db", "s"); err != nil {
+		t.Fatalf("RepairSchema: %v", err)
+	}
+	refreshed, err := c.LoadSchema(tx, "/db", "s")
+	if err != nil {
+		t.Fatalf("LoadSchema after repair: %v", err)
+	}
+	if refreshed.SchemaTemplate().MetadataName() != tmpl.MetadataName() {
+		t.Errorf("refreshed template name %q, want %q", refreshed.SchemaTemplate().MetadataName(), tmpl.MetadataName())
+	}
+}
+
+func TestStoreCatalog_RepairSchemaMissingSchema(t *testing.T) {
+	t.Parallel()
+	c, tx, _ := newSeededCatalog(t, "demo")
+	err := c.RepairSchema(tx, "/db", "missing")
+	if err == nil {
+		t.Fatal("RepairSchema of missing schema should error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedSchema {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeUndefinedSchema)
+	}
+}
+
+func TestStoreCatalog_RepairSchemaMissingTemplate(t *testing.T) {
+	t.Parallel()
+	// Seed a schema then delete its template. Repair must fail with
+	// ErrCodeUnknownSchemaTemplate since there's nothing to re-bind to.
+	c, tx, tmpl := newSeededCatalog(t, "demo")
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SchemaTemplateCatalog().DeleteTemplate(tx, tmpl.MetadataName(), true); err != nil {
+		t.Fatal(err)
+	}
+	err := c.RepairSchema(tx, "/db", "s")
+	if err == nil {
+		t.Fatal("RepairSchema after template delete should error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnknownSchemaTemplate {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeUnknownSchemaTemplate)
+	}
+}
+
+func TestStoreCatalog_ListSchemasAcrossDatabases(t *testing.T) {
+	t.Parallel()
+	c, tx, tmpl := newSeededCatalog(t, "demo")
+	// Out-of-order inserts across three databases; listing must sort
+	// by (database_name, schema_name).
+	for _, pair := range [][2]string{
+		{"/c", "z"}, {"/a", "m"}, {"/b", "p"}, {"/a", "a"}, {"/b", "q"},
+	} {
+		if err := c.SaveSchema(tx, tmpl.GenerateSchema(pair[0], pair[1]), true); err != nil {
+			t.Fatalf("SaveSchema(%s, %s): %v", pair[0], pair[1], err)
+		}
+	}
+	rs, err := c.ListSchemas(tx, nil)
+	if err != nil {
+		t.Fatalf("ListSchemas: %v", err)
+	}
+	defer rs.Close()
+
+	var got [][2]string
+	for rs.Next() {
+		db, _ := rs.String(1)
+		s, _ := rs.String(2)
+		got = append(got, [2]string{db, s})
+	}
+	want := [][2]string{
+		{"/a", "a"}, {"/a", "m"}, {"/b", "p"}, {"/b", "q"}, {"/c", "z"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %v", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("row %d: got %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestStoreCatalog_DeleteDatabase(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")

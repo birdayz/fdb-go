@@ -119,6 +119,13 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 // owning template. For the in-memory impl that means re-running
 // templates.LoadSchemaTemplate and re-generating the schema — no
 // storage rewrite is required.
+//
+// Looking up the template is a separate-mutex call, so we copy the
+// template name out under our lock, release, call
+// templates.LoadSchemaTemplate, and then re-acquire our lock AND
+// re-check the database/schema still exist before writing. A
+// concurrent DeleteDatabase/DeleteSchema between the two lock
+// sections would otherwise panic on a nil-map write.
 func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, schemaName string) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
@@ -127,7 +134,7 @@ func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, sch
 	existing, ok := c.schemas[databaseID][schemaName]
 	c.mu.Unlock()
 	if !ok {
-		return api.NewErrorf(api.ErrCodeUndefinedSchema, "schema %q not found in database %q", schemaName, databaseID)
+		return api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
 	}
 	tmplName := existing.SchemaTemplate().MetadataName()
 	latest, err := c.templates.LoadSchemaTemplate(txn, tmplName)
@@ -135,9 +142,20 @@ func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, sch
 		return err
 	}
 	refreshed := latest.GenerateSchema(databaseID, schemaName)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.schemas[databaseID][schemaName] = refreshed
+	byDB, ok := c.schemas[databaseID]
+	if !ok {
+		// Database was deleted between our read and our write.
+		return api.NewErrorf(api.ErrCodeUndefinedSchema,
+			"Schema <%s/%s> was deleted during repair", databaseID, schemaName)
+	}
+	if _, ok := byDB[schemaName]; !ok {
+		return api.NewErrorf(api.ErrCodeUndefinedSchema,
+			"Schema <%s/%s> was deleted during repair", databaseID, schemaName)
+	}
+	byDB[schemaName] = refreshed
 	return nil
 }
 
@@ -212,14 +230,15 @@ func (c *InMemoryStoreCatalog) ListSchemasInDatabase(txn api.Transaction, databa
 	}
 	c.mu.Lock()
 	byDB, ok := c.schemas[databaseID]
+	if !ok {
+		c.mu.Unlock()
+		return nil, api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", databaseID)
+	}
 	names := make([]string, 0, len(byDB))
 	for name := range byDB {
 		names = append(names, name)
 	}
 	c.mu.Unlock()
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnknownDatabase, "database %q does not exist", databaseID)
-	}
 	sort.Strings(names)
 	rows := make([][]any, len(names))
 	for i, n := range names {
