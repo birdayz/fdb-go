@@ -87,9 +87,9 @@ func benchmarkDatabaseMetaData(b *testing.B, numDatabases, schemasPerDB int) (*C
 	c, tx, _ := benchmarkCatalogWithSchemas(b, numDatabases, schemasPerDB)
 	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{
 		StoreCatalog: c,
-		// Reuse the seeded tx's catalog so bench workload is
-		// representative; pass a factory that still yields new
-		// transactions per query (matches normal usage).
+		// NewTransaction left default → the constructor falls back
+		// to NewInMemoryTransaction per query, which matches how
+		// production callers would drive this in an InMemory setup.
 	})
 	return md, tx
 }
