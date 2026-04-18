@@ -261,21 +261,14 @@ func TestDriverRegistration(t *testing.T) {
 
 func TestDriverOpenLegacy(t *testing.T) {
 	t.Parallel()
-	// driver.Driver.Open is the legacy entry (pre-DriverContext).
-	// It still has to work — some tools call it directly. Our Open
-	// delegates to OpenConnector(name) + Connect(context.Background()).
+	// driver.Driver.Open delegates to OpenConnector(name) + Connect.
+	// Without FDB, Connect fails with an FDB initialization error.
 	d := &Driver{}
-	// Valid DSN but Connect is not implemented — expect
-	// UnsupportedOperation.
 	_, err := d.Open("fdbsql:///mydb")
 	if err == nil {
-		t.Fatal("expected Open to fail (not implemented)")
+		t.Fatal("expected Open to fail (no FDB available)")
 	}
-	e := api.AsError(err)
-	if e == nil || e.Code != api.ErrCodeUnsupportedOperation {
-		t.Errorf("expected UnsupportedOperation, got %v", err)
-	}
-	// Bad DSN surfaces at Open time (via OpenConnector).
+	// Bad DSN must surface at Open time (via OpenConnector).
 	_, err = d.Open("not a valid dsn")
 	if err == nil {
 		t.Fatal("expected Open to fail on bad DSN")
@@ -321,14 +314,10 @@ func TestDriverOpenConnector_GoodDSN(t *testing.T) {
 	if _, ok := c.(driver.Connector); !ok {
 		t.Fatal("returned value is not driver.Connector")
 	}
-	// Connect is not yet implemented — must fail with UnsupportedOperation.
+	// Without FDB cluster, Connect fails at initialization.
 	_, err = c.Connect(context.Background())
 	if err == nil {
-		t.Fatal("Connect should fail (not yet implemented)")
-	}
-	e := api.AsError(err)
-	if e == nil || e.Code != api.ErrCodeUnsupportedOperation {
-		t.Errorf("expected UnsupportedOperation error, got %v", err)
+		t.Fatal("Connect should fail (no FDB available)")
 	}
 }
 

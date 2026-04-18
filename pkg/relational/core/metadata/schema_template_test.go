@@ -610,3 +610,138 @@ func assertColType(t *testing.T, byName map[string]api.Column, colName string, w
 		t.Errorf("%s: DataType = %v, want %v", colName, c.DataType(), want)
 	}
 }
+
+func TestBuilder_BasicTemplate(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("test_template").
+		SetVersion(1).
+		AddTable("Order", []ColumnSpec{
+			NewColumnSpec("order_id", api.NewLongType(false), 1),
+			NewColumnSpec("customer_id", api.NewLongType(false), 2),
+			NewColumnSpec("amount", api.NewDoubleType(true), 3),
+		}, []string{"order_id"}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if tmpl.MetadataName() != "test_template" {
+		t.Errorf("MetadataName = %q, want %q", tmpl.MetadataName(), "test_template")
+	}
+	tables, err := tmpl.Tables()
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	if len(tables) != 1 {
+		t.Fatalf("len(Tables) = %d, want 1", len(tables))
+	}
+	if tables[0].MetadataName() != "Order" {
+		t.Errorf("table name = %q, want %q", tables[0].MetadataName(), "Order")
+	}
+	cols := tables[0].Columns()
+	if len(cols) != 3 {
+		t.Errorf("len(Columns) = %d, want 3", len(cols))
+	}
+}
+
+func TestBuilder_MultiTable(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("multi_tmpl").
+		SetIntermingleTables(true).
+		AddTable("Foo", []ColumnSpec{
+			NewColumnSpec("id", api.NewLongType(false), 1),
+			NewColumnSpec("name", api.NewStringType(true), 2),
+		}, []string{"id"}).
+		AddTable("Bar", []ColumnSpec{
+			NewColumnSpec("bar_id", api.NewIntegerType(false), 1),
+		}, []string{"bar_id"}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tables, err := tmpl.Tables()
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	if len(tables) != 2 {
+		t.Errorf("len(Tables) = %d, want 2", len(tables))
+	}
+}
+
+func TestBuilder_EmptyTablesError(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().SetName("empty").Build()
+	if err == nil {
+		t.Fatal("expected error for empty template, got nil")
+	}
+}
+
+func TestBuilder_EmptyNameError(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().
+		AddTable("T", []ColumnSpec{NewColumnSpec("id", api.NewLongType(false), 1)}, []string{"id"}).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for missing name, got nil")
+	}
+}
+
+func TestBuilder_EmptyPrimaryKeyError(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().
+		SetName("no_pk").
+		AddTable("T", []ColumnSpec{NewColumnSpec("id", api.NewLongType(false), 1)}, nil).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for empty primary key, got nil")
+	}
+}
+
+func TestBuilder_AllColumnTypes(t *testing.T) {
+	t.Parallel()
+	cols := []ColumnSpec{
+		NewColumnSpec("b", api.NewBooleanType(true), 1),
+		NewColumnSpec("i", api.NewIntegerType(false), 2),
+		NewColumnSpec("l", api.NewLongType(false), 3),
+		NewColumnSpec("f", api.NewFloatType(true), 4),
+		NewColumnSpec("d", api.NewDoubleType(true), 5),
+		NewColumnSpec("s", api.NewStringType(true), 6),
+		NewColumnSpec("by", api.NewBytesType(true), 7),
+	}
+	_, err := NewSchemaTemplateBuilder().
+		SetName("all_types").
+		AddTable("T", cols, []string{"l"}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build with all column types: %v", err)
+	}
+}
+
+func TestBuilder_NullableVsNotNullable(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("nullable_test").
+		AddTable("T", []ColumnSpec{
+			NewColumnSpec("id", api.NewLongType(false), 1),   // NOT NULL → REQUIRED in proto2
+			NewColumnSpec("opt", api.NewStringType(true), 2), // NULL → OPTIONAL in proto2
+		}, []string{"id"}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tables, err := tmpl.Tables()
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	cols := tables[0].Columns()
+	if len(cols) != 2 {
+		t.Fatalf("len(Columns) = %d, want 2", len(cols))
+	}
+	if cols[0].DataType().IsNullable() {
+		t.Errorf("id should be non-nullable")
+	}
+	if !cols[1].DataType().IsNullable() {
+		t.Errorf("opt should be nullable")
+	}
+}

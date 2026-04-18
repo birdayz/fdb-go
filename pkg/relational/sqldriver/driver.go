@@ -30,12 +30,24 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"os"
+	"sync"
 
+	purefdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
 )
 
 // DriverName is the database/sql driver name.
 const DriverName = "fdbsql"
+
+// defaultClusterFileEnv is the environment variable FDB checks for cluster file path.
+const defaultClusterFileEnv = "FDB_CLUSTER_FILE"
 
 // Driver is the database/sql/driver.Driver for fdbsql.
 //
@@ -64,17 +76,23 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 }
 
 // Connector holds a parsed DSN and produces connections on demand.
+// The FDB database, keyspace, and factory are initialised lazily on
+// the first Connect call. The catalog Bootstrap (Initialize) is deferred
+// further — it runs inside the first DDL transaction, not at Connect time.
 type Connector struct {
 	driver *Driver
 	dsn    *DSN
+
+	once    sync.Once
+	fdbDB   *recordlayer.FDBDatabase
+	cat     *catalog.RecordLayerStoreCatalog
+	ks      *keyspace.RelationalKeyspace
+	factory *ddl.RecordLayerMetadataOperationsFactory
+	initErr error
 }
 
-// Connect opens a connection. Honors ctx.Done() for cancellation /
-// deadline propagation (required by database/sql).
-//
-// Not yet implemented: returns api.ErrCodeUnsupportedOperation. The
-// driver registration, DSN parsing, and type plumbing are in place; the
-// underlying embedded connection arrives in a later phase.
+// Connect opens a connection. Honors ctx.Done() for cancellation.
+// On first call, initialises the FDB database and catalog (idempotent).
 func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -83,8 +101,45 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"remote (gRPC) mode is not yet implemented")
 	}
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-		"embedded connection is not yet implemented")
+	c.once.Do(func() { c.initErr = c.initialize(ctx) })
+	if c.initErr != nil {
+		return nil, c.initErr
+	}
+	return embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks), nil
+}
+
+// initialize opens FDB and wires catalog + factory. The catalog Bootstrap
+// (Initialize) is deferred — it runs on the first DDL transaction, not here.
+func (c *Connector) initialize(_ context.Context) error {
+	clusterFile := c.dsn.Options["cluster_file"]
+	if clusterFile == "" {
+		clusterFile = os.Getenv(defaultClusterFileEnv)
+	}
+
+	purefdb.MustAPIVersion(720)
+	var rawDB purefdb.Database
+	var err error
+	if clusterFile == "" {
+		rawDB, err = purefdb.OpenDefault()
+	} else {
+		rawDB, err = purefdb.OpenDatabase(clusterFile)
+	}
+	if err != nil {
+		return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
+	}
+
+	c.fdbDB = recordlayer.NewFDBDatabase(rawDB)
+
+	// root subspace is the empty subspace — all catalog and schema data lives
+	// under well-known tuple prefixes via RelationalKeyspace.
+	c.ks = keyspace.New(subspace.Sub())
+	cat, catErr := catalog.NewRecordLayerStoreCatalog(c.ks.CatalogSubspace())
+	if catErr != nil {
+		return catErr
+	}
+	c.cat = cat
+	c.factory = ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, c.ks)
+	return nil
 }
 
 // Driver returns the driver that created this Connector.

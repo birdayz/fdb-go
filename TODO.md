@@ -311,7 +311,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] Port `DataType` — done in Phase 0 (nightshift-24)
 - [x] Port `SchemaTemplate` / `Schema` / `Table` / `Column` / `Index` interfaces — done in Phase 0 (nightshift-24)
 - [x] **Concrete `SchemaTemplate` / `Table` / `Column` / `Index` structs** (dayshift-25) — `pkg/relational/core/metadata/` wraps `*recordlayer.RecordMetaData`. `NewRecordLayerSchemaTemplate` / `NewRecordLayerSchemaTemplateWithVersion` materialise tables + flat index-name list eagerly. Proto-to-DataType mapping mirrors Java's `fromProtoType` (including UUID short-circuit and `NullableArrayTypeUtils.describesWrappedArray` unwrap, proto2-label-based nullability). `Accept()` cascades through tables → indexes → columns → routines → views, matching Java's `RecordLayerSchemaTemplate.accept()`. `api.Schema` grew delegated `Tables`/`Views`/`Indexes`/`InvokedRoutines` methods (Go has no default methods). `IntermingleTables()` and `IsSparse()` (via predicate != nil) both match Java. No known Java divergences on the primary path.
-- [ ] **Builder for SchemaTemplate** — today consumers pass a pre-built `RecordMetaData`. Java has `RecordLayerSchemaTemplate.Builder` with `addTable` / `addInvokedRoutine` / `setIntermingleTables` / etc. Needed when DDL constructs a template from scratch (Phase 3 onwards).
+- [x] **Builder for SchemaTemplate** (nightshift-28) — `pkg/relational/core/metadata.Builder` builds `RecordLayerSchemaTemplate` from SQL-level table/column/PK definitions without a pre-compiled .proto file. Builds `FileDescriptorProto` dynamically (no union descriptor — sidesteps global proto registry for dynamically-created types). Wired into `CREATE SCHEMA TEMPLATE` SQL via `EmbeddedConnection.execCreateSchemaTemplate`.
 - [x] **Catalog storage layer (interface + in-memory impl)** (swingshift-26) — `api.StoreCatalog` + `api.SchemaTemplateCatalog` + `api.Transaction` interfaces ported from Java; `InMemoryStoreCatalog` + `InMemorySchemaTemplateCatalog` + `InMemoryTransaction` in `pkg/relational/core/catalog/`. 5 Java-compliance fixes applied during self-audit + review (SaveSchema template-existence check, error-code disambiguation, LoadSchema UNDEFINED_SCHEMA collapse, CatalogValidator port, RepairSchema TOCTOU doc). 17 tests + 4 benchmarks. `CatalogDatabaseMetaData` JDBC-style introspection backed by StoreCatalog (Schemas / Tables / Columns / IndexInfo / PrimaryKeys, SQL LIKE patterns, JDBC column + sort orders). Gomock convention adopted in api/; `just generate` runs all codegen (proto + mocks + gazelle), CI diff-checks.
 - [x] **Catalog storage layer (FDB-backed)** (nightshift-27) — `RecordLayerStoreCatalog` + `RecordLayerStoreSchemaTemplateCatalog` + `FDBTransaction` in `pkg/relational/core/catalog/`. Mirrors Java's SystemTableRegistry subspace layout. Full CRUD + listing + RepairSchema + DeleteDatabase. 17 FDB integration tests + 3 DeleteDatabase tests.
 - [ ] **System tables** — `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, `INDEXES`, `SCHEMATA`, etc. Computed on-the-fly from catalog state (Java pattern).
@@ -376,6 +376,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 - [x] **`ConstantAction`** base + executor (nightshift-27)
 - [x] **`MetadataOperationsFactory`** + `RecordLayerMetadataOperationsFactory` (nightshift-27) — full wiring: FDB store create/delete via `RelationalKeyspace`; CreateDatabase/DropDatabase/CreateSchema/DropSchema/SaveSchemaTemplate/DropSchemaTemplate; 12 unit tests + 3 FDB integration tests
+- [x] **`EmbeddedConnection` DDL execution** (nightshift-28) — SQL DDL (CREATE/DROP DATABASE/SCHEMA) parsed via ANTLR, dispatched to factory, executed in FDB auto-commit transactions; wired into `fdbsql` driver; 8 unit tests + 4 FDB integration tests
 - [ ] Individual actions: `CreateTableAction`, `CreateIndexAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
 - [ ] Integration with online indexer (CREATE INDEX triggers background build)
 
@@ -388,9 +389,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 8 — `database/sql/driver` adapter (`pkg/relational/sqldriver`)
 
-- [ ] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection`
-- [ ] **`Connector`** — lazy-init, holds cluster client + options
-- [ ] **`Conn`** implementing `driver.Conn`, `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.Pinger`, `driver.SessionResetter`, `driver.Validator`
+- [x] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection` (nightshift-28)
+- [x] **`Connector`** — lazy-init, holds cluster client + options (nightshift-28)
+- [x] **`Conn`** `driver.Conn` (Prepare/Close/Begin), `driver.ExecerContext`, `driver.Pinger` — nightshift-28. `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.SessionResetter`, `driver.Validator` deferred (phase 8 complete path)
 - [ ] **`Stmt`** implementing `driver.Stmt`, `driver.StmtExecContext`, `driver.StmtQueryContext`, `driver.NamedValueChecker`
 - [ ] **`Rows`** implementing `driver.Rows`, `driver.RowsColumnTypeDatabaseTypeName`, `driver.RowsColumnTypeNullable`, `driver.RowsColumnTypeLength`, `driver.RowsColumnTypePrecisionScale`, `driver.RowsColumnTypeScanType`
 - [ ] **`Result`** implementing `driver.Result` (LastInsertId is always an error — FDB has no auto-inc; match Postgres driver convention)
@@ -398,8 +399,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **Value conversion** — `driver.Value` ⇄ `api.DataType` values, including structs and arrays
 - [ ] **Custom scanner/valuer** — `Struct`, `Array`, `Versionstamp`, `Continuation`
 - [ ] **Integration test matrix**
-  - [ ] `sql.Open("fdbsql", dsn)` + `db.Ping()`
-  - [ ] `db.ExecContext` for DDL (CREATE SCHEMA, CREATE TABLE, CREATE INDEX)
+  - [x] `sql.Open("fdbsql", dsn)` + `db.Ping()` (nightshift-28)
+  - [x] `db.ExecContext` for DDL (CREATE DATABASE/SCHEMA/SCHEMA TEMPLATE + DROP) (nightshift-28)
   - [ ] `db.QueryContext` + `rows.Scan` for SELECT
   - [ ] `db.PrepareContext` + parameterized exec/query
   - [ ] `db.BeginTx` + Commit/Rollback

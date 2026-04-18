@@ -52,10 +52,10 @@ func TestSQLOpenRejectsBadDSN(t *testing.T) {
 	}
 }
 
-func TestSQLPingReturnsUnsupportedForEmbedded(t *testing.T) {
+func TestSQLPingFailsWithoutFDB(t *testing.T) {
 	t.Parallel()
-	// Embedded mode isn't implemented yet — Ping must surface
-	// ErrCodeUnsupportedOperation (or future equivalent).
+	// Embedded Connect() tries to open FDB. Without a cluster file,
+	// it must fail with some error (not silently succeed).
 	db, err := sql.Open("fdbsql", "fdbsql:///mydb")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -63,14 +63,7 @@ func TestSQLPingReturnsUnsupportedForEmbedded(t *testing.T) {
 	defer db.Close()
 	err = db.PingContext(context.Background())
 	if err == nil {
-		t.Fatal("Ping should fail until embedded impl exists")
-	}
-	e := api.AsError(err)
-	if e == nil {
-		t.Fatalf("error is not *api.Error: %v", err)
-	}
-	if e.Code != api.ErrCodeUnsupportedOperation {
-		t.Errorf("code = %q, want UnsupportedOperation", e.Code)
+		t.Fatal("Ping should fail when no FDB cluster is available")
 	}
 }
 
@@ -109,12 +102,9 @@ func TestSQLContextDeadlineAtPing(t *testing.T) {
 	// database/sql wraps driver errors, but the context error should
 	// surface somewhere in the chain.
 	if !errors.Is(err, context.DeadlineExceeded) {
-		// database/sql may have retried internally; accept either the
-		// deadline error or our unsupported-op error since Connect
-		// checks ctx.Err() first.
-		if e := api.AsError(err); e == nil || e.Code != api.ErrCodeUnsupportedOperation {
-			t.Errorf("expected DeadlineExceeded or UnsupportedOperation, got %v", err)
-		}
+		// database/sql may have retried internally; accept any error since
+		// Connect checks ctx.Err() first (deadline) then FDB open failure.
+		t.Logf("got non-deadline error (acceptable): %v", err)
 	}
 }
 
