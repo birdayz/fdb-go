@@ -30,5 +30,8 @@ go_test(
         "//gen",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )
