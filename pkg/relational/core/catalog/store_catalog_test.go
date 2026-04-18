@@ -511,3 +511,64 @@ func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeInternalError)
 	}
 }
+
+func TestStoreCatalog_ListResultSetColumnNames(t *testing.T) {
+	t.Parallel()
+	c, tx, tmpl := newSeededCatalog(t, "demo")
+	_ = c.CreateDatabase(tx, "/db")
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s1"), true)
+
+	t.Run("ListDatabases", func(t *testing.T) {
+		t.Parallel()
+		rs, err := c.ListDatabases(tx, nil)
+		if err != nil {
+			t.Fatalf("ListDatabases: %v", err)
+		}
+		defer rs.Close()
+		if !rs.Next() {
+			t.Fatal("expected at least one row")
+		}
+		v, err := rs.StringByName(ColDatabaseID)
+		if err != nil {
+			t.Fatalf("StringByName(%q): %v", ColDatabaseID, err)
+		}
+		if v != "/db" {
+			t.Errorf("got %q, want /db", v)
+		}
+	})
+
+	t.Run("ListSchemas", func(t *testing.T) {
+		t.Parallel()
+		rs, err := c.ListSchemas(tx, nil)
+		if err != nil {
+			t.Fatalf("ListSchemas: %v", err)
+		}
+		defer rs.Close()
+		if !rs.Next() {
+			t.Fatal("expected at least one row")
+		}
+		dbID, _ := rs.StringByName(ColDatabaseID)
+		sname, _ := rs.StringByName(ColSchemaName)
+		tname, _ := rs.StringByName(ColTemplateName)
+		if dbID != "/db" || sname != "s1" || tname != "demo" {
+			t.Errorf("got (%q, %q, %q), want (/db, s1, demo)", dbID, sname, tname)
+		}
+	})
+
+	t.Run("ListSchemasInDatabase", func(t *testing.T) {
+		t.Parallel()
+		rs, err := c.ListSchemasInDatabase(tx, "/db", nil)
+		if err != nil {
+			t.Fatalf("ListSchemasInDatabase: %v", err)
+		}
+		defer rs.Close()
+		if !rs.Next() {
+			t.Fatal("expected at least one row")
+		}
+		dbID, _ := rs.StringByName(ColDatabaseID)
+		sname, _ := rs.StringByName(ColSchemaName)
+		if dbID != "/db" || sname != "s1" {
+			t.Errorf("got (%q, %q), want (/db, s1)", dbID, sname)
+		}
+	})
+}
