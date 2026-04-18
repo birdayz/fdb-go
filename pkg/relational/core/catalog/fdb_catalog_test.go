@@ -553,3 +553,75 @@ func TestFDB_TemplateRoundTripPreservesSchema(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 }
+
+// TestFDB_DeleteDatabase deletes a database and all its schemas, then
+// confirms nothing remains.
+func TestFDB_DeleteDatabase(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, run := newFDBCatalogInSubspace(t)
+	tc := cat.SchemaTemplateCatalog()
+	tmpl := buildVersionedTemplate(t, "deldb-tmpl", 1)
+
+	g.Expect(run(func(tx api.Transaction) error {
+		g.Expect(tc.CreateTemplate(tx, tmpl)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s1"), true)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s2"), true)).To(gomega.Succeed())
+		return nil
+	})).To(gomega.Succeed())
+
+	g.Expect(run(func(tx api.Transaction) error {
+		ok, err := cat.DeleteDatabase(tx, "/deldb", true)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(ok).To(gomega.BeTrue())
+		return nil
+	})).To(gomega.Succeed())
+
+	// Database and schemas are gone.
+	g.Expect(run(func(tx api.Transaction) error {
+		dbOK, err := cat.DoesDatabaseExist(tx, "/deldb")
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(dbOK).To(gomega.BeFalse())
+
+		s1OK, err := cat.DoesSchemaExist(tx, "/deldb", "s1")
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(s1OK).To(gomega.BeFalse())
+
+		s2OK, err := cat.DoesSchemaExist(tx, "/deldb", "s2")
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(s2OK).To(gomega.BeFalse())
+		return nil
+	})).To(gomega.Succeed())
+}
+
+// TestFDB_DeleteDatabaseNotFound: throwIfDoesNotExist=true on an
+// absent database → ErrCodeUnknownDatabase.
+func TestFDB_DeleteDatabaseNotFound(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, run := newFDBCatalogInSubspace(t)
+
+	err := run(func(tx api.Transaction) error {
+		_, err := cat.DeleteDatabase(tx, "/no-such", true)
+		return err
+	})
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnknownDatabase))
+}
+
+// TestFDB_DeleteDatabaseSilentOnMissing: throwIfDoesNotExist=false on
+// absent database returns (true, nil) — same as Java which relies on
+// deleteRecord returning false silently.
+func TestFDB_DeleteDatabaseSilentOnMissing(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, run := newFDBCatalogInSubspace(t)
+
+	g.Expect(run(func(tx api.Transaction) error {
+		ok, err := cat.DeleteDatabase(tx, "/no-such", false)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(ok).To(gomega.BeTrue())
+		return nil
+	})).To(gomega.Succeed())
+}

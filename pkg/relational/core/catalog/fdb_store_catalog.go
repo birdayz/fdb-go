@@ -255,22 +255,52 @@ func (c *RecordLayerStoreCatalog) DeleteSchema(txn api.Transaction, dbURI, schem
 	return nil
 }
 
-// DeleteDatabase removes dbURI and every schema within. Java returns
-// false + no error when the transaction times out mid-deletion; we
-// surface any FDB error instead, since the Go driver doesn't model
-// TRANSACTION_INACTIVE the same way. throwIfDoesNotExist=true raises
-// ErrCodeUnknownDatabase for an already-absent dbURI.
+// DeleteDatabase removes dbURI and every schema within it. Matches Java's
+// RecordLayerStoreCatalog.deleteDatabase: scan-and-delete all Schemas rows
+// with PK prefix [SCHEMA_TYPE_KEY, dbURI], then delete the Databases row.
+// Returns (true, nil) on success, (false, nil) on timeout (Java returns false
+// silently when TRANSACTION_INACTIVE/TIMEOUT; we surface other FDB errors).
+// throwIfDoesNotExist=true raises ErrCodeUnknownDatabase when the db row is
+// absent.
 func (c *RecordLayerStoreCatalog) DeleteDatabase(txn api.Transaction, dbURI string, throwIfDoesNotExist bool) (bool, error) {
-	if _, err := c.openStore(txn); err != nil {
+	store, err := c.openStore(txn)
+	if err != nil {
 		return false, err
 	}
-	_ = dbURI
-	_ = throwIfDoesNotExist
-	// TODO (next shift): scan Schemas with PK prefix [0, dbURI], delete
-	// each, then delete the Databases row. Java uses cursor + delete per
-	// record with a mid-scan timeout fallback; port the same shape here.
-	return false, api.NewError(api.ErrCodeInternalError,
-		"DeleteDatabase is not implemented yet — use ListSchemasInDatabase + DeleteSchema + (future) DeleteDatabaseRow until the range-delete path lands")
+
+	// Delete all Schemas rows whose PK starts with [SCHEMA_TYPE_KEY, dbURI].
+	// ScanRecordsInRange with RANGE_INCLUSIVE on both ends covers exactly this
+	// prefix (primary key is [SCHEMA_TYPE_KEY, dbURI, schemaName]).
+	cursor := store.ScanRecordsInRange(
+		tuple.Tuple{SchemaRecordTypeKey, dbURI},
+		tuple.Tuple{SchemaRecordTypeKey, dbURI},
+		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
+		nil, recordlayer.ForwardScan(),
+	)
+	ctx := store.Context().Context()
+	for {
+		r, scanErr := cursor.OnNext(ctx)
+		if scanErr != nil {
+			return false, scanErr
+		}
+		if !r.HasNext() {
+			break
+		}
+		if _, delErr := store.DeleteRecord(r.GetValue().PrimaryKey); delErr != nil {
+			return false, delErr
+		}
+	}
+
+	// Delete the Databases row.
+	deleted, delErr := store.DeleteRecord(databaseKey(dbURI))
+	if delErr != nil {
+		return false, delErr
+	}
+	if !deleted && throwIfDoesNotExist {
+		return false, api.NewErrorf(api.ErrCodeUnknownDatabase,
+			"cannot delete unknown database: %s", dbURI)
+	}
+	return true, nil
 }
 
 // RepairSchema rebinds schemaName in dbURI to the latest version of

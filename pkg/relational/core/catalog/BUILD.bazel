@@ -34,6 +34,7 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "database_metadata_test.go",
+        "fdb_catalog_test.go",
         "integration_test.go",
         "keyspace_test.go",
         "metadata_test.go",
@@ -45,10 +46,14 @@ go_test(
     embed = [":catalog"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
         "@org_uber_go_mock//gomock",
     ],
 )
