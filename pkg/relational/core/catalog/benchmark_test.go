@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"strconv"
 	"testing"
 
@@ -76,5 +77,71 @@ func BenchmarkSaveSchemaUpsert(b *testing.B) {
 		if err := c.SaveSchema(tx, existing, false); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// ---- DatabaseMetaData benchmarks ----
+
+func benchmarkDatabaseMetaData(b *testing.B, numDatabases, schemasPerDB int) (*CatalogDatabaseMetaData, api.Transaction) {
+	b.Helper()
+	c, tx, _ := benchmarkCatalogWithSchemas(b, numDatabases, schemasPerDB)
+	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{
+		StoreCatalog: c,
+		// Reuse the seeded tx's catalog so bench workload is
+		// representative; pass a factory that still yields new
+		// transactions per query (matches normal usage).
+	})
+	return md, tx
+}
+
+// BenchmarkDatabaseMetaData_Schemas measures the all-databases listing
+// latency — the SHOW SCHEMAS hot path.
+func BenchmarkDatabaseMetaData_Schemas(b *testing.B) {
+	md, _ := benchmarkDatabaseMetaData(b, 10, 10)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rs, err := md.Schemas(context.Background())
+		if err != nil {
+			b.Fatal(err)
+		}
+		for rs.Next() {
+		}
+		rs.Close()
+	}
+}
+
+// BenchmarkDatabaseMetaData_Tables walks every table in every schema.
+// Catches regressions in the double-iteration (schemas × tables)
+// inside Tables().
+func BenchmarkDatabaseMetaData_Tables(b *testing.B) {
+	md, _ := benchmarkDatabaseMetaData(b, 3, 3)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rs, err := md.Tables(context.Background(), "", "", "", nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for rs.Next() {
+		}
+		rs.Close()
+	}
+}
+
+// BenchmarkDatabaseMetaData_Columns is the heaviest path — schemas ×
+// tables × columns. Representative SHOW COLUMNS load.
+func BenchmarkDatabaseMetaData_Columns(b *testing.B) {
+	md, _ := benchmarkDatabaseMetaData(b, 2, 2)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rs, err := md.Columns(context.Background(), "", "", "", "")
+		if err != nil {
+			b.Fatal(err)
+		}
+		for rs.Next() {
+		}
+		rs.Close()
 	}
 }
