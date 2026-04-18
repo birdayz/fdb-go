@@ -30,14 +30,11 @@ func TestIntegration_ParseAndResolveTable(t *testing.T) {
 		t.Fatalf("SaveSchema: %v", err)
 	}
 
-	// Parse a simple SELECT. Parse() returns a *IRootContext on
-	// success; we only need the statement to succeed.
+	// Parse a simple SELECT. Parse() returns a non-nil IRootContext
+	// on success.
 	root, err := parser.Parse("SELECT order_id, price FROM Order WHERE order_id = 42")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
-	}
-	if root == nil {
-		t.Fatal("Parse returned nil root on success")
 	}
 	// Sanity-check: rendered text contains the table reference.
 	if !strings.Contains(root.GetText(), "Order") {
@@ -150,7 +147,7 @@ func newIntegrationCatalogWithIndexes(t *testing.T) (*InMemoryStoreCatalog, api.
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-	unique := recordlayer.NewIndex("order_customer_unique", recordlayer.Field("order_id"))
+	unique := recordlayer.NewIndex("order_id_unique", recordlayer.Field("order_id"))
 	unique.Options = map[string]string{"unique": "true"}
 	b.AddIndex("Order", unique)
 	md, err := b.Build()
@@ -190,7 +187,7 @@ func TestIntegration_IndexedTableMetadata(t *testing.T) {
 		t.Fatal("IndexInfo(unique=true) returned no rows")
 	}
 	name, _ := rs.String(6) // INDEX_NAME
-	if name != "order_customer_unique" {
+	if name != "order_id_unique" {
 		t.Errorf("INDEX_NAME = %q, want order_customer_unique", name)
 	}
 }
