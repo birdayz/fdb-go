@@ -21,18 +21,32 @@ import (
 // the transaction-bound diagnostic string.
 type RecordLayerSchemaTemplate struct {
 	name       string
+	version    int
 	underlying *recordlayer.RecordMetaData
 	tables     []api.Table
 	tablesByN  map[string]api.Table // table name → Table
 	indexNames []string             // all index names, deterministic order
 }
 
-// NewRecordLayerSchemaTemplate builds the bridge. Name is the template
-// name (mirrors Java's RecordLayerSchemaTemplate.name — used for
-// reporting; no semantic effect on the underlying metadata).
+// NewRecordLayerSchemaTemplate builds the bridge with the underlying
+// RecordMetaData's version. Equivalent to Java's
+// RecordLayerSchemaTemplate.fromRecordMetadata(md, name, md.getVersion()).
+// Use NewRecordLayerSchemaTemplateWithVersion when the catalog-level
+// version should differ from the storage-level version.
 func NewRecordLayerSchemaTemplate(name string, md *recordlayer.RecordMetaData) (*RecordLayerSchemaTemplate, error) {
+	return NewRecordLayerSchemaTemplateWithVersion(name, md, md.Version())
+}
+
+// NewRecordLayerSchemaTemplateWithVersion mirrors Java's
+// RecordMetadataDeserializer.getSchemaTemplate(name, version): the
+// schema-template version is independent of RecordMetaData.Version(),
+// which the record-layer storage engine uses for its own bookkeeping.
+// The catalog bumps the template version on every DDL change, and
+// that number is what api.SchemaTemplate.Version() reports.
+func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.RecordMetaData, version int) (*RecordLayerSchemaTemplate, error) {
 	tmpl := &RecordLayerSchemaTemplate{
 		name:       name,
+		version:    version,
 		underlying: md,
 		tablesByN:  make(map[string]api.Table),
 	}
@@ -81,9 +95,13 @@ func NewRecordLayerSchemaTemplate(name string, md *recordlayer.RecordMetaData) (
 // MetadataName returns the template name provided at construction.
 func (s *RecordLayerSchemaTemplate) MetadataName() string { return s.name }
 
-// Version matches the underlying RecordMetaData version — incremented
-// on every index add / remove / schema change.
-func (s *RecordLayerSchemaTemplate) Version() int { return s.underlying.Version() }
+// Version returns the schema-template version. Matches Java's
+// SchemaTemplate.getVersion() — independent from
+// RecordMetaData.getVersion(); the caller passes the catalog-level
+// version to NewRecordLayerSchemaTemplateWithVersion, or
+// NewRecordLayerSchemaTemplate uses RecordMetaData.Version() as a
+// sensible default.
+func (s *RecordLayerSchemaTemplate) Version() int { return s.version }
 
 // EnableLongRows delegates to the underlying metadata's
 // splitLongRecords flag.

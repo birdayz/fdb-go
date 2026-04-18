@@ -49,6 +49,45 @@ func TestSchemaTemplate_BasicShape(t *testing.T) {
 	}
 }
 
+func TestSchemaTemplate_VersionIndependentFromMetadata(t *testing.T) {
+	t.Parallel()
+	// Java's RecordLayerSchemaTemplate.Version() is catalog-level and
+	// decoupled from RecordMetaData.Version(). The default
+	// constructor mirrors fromRecordMetadata(md, name, md.getVersion())
+	// but the explicit-version constructor lets the catalog pin a
+	// different number.
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Default constructor: version == md.Version().
+	def, err := NewRecordLayerSchemaTemplate("demo", md)
+	if err != nil {
+		t.Fatalf("NewRecordLayerSchemaTemplate: %v", err)
+	}
+	if def.Version() != md.Version() {
+		t.Errorf("default Version = %d, want md.Version = %d", def.Version(), md.Version())
+	}
+
+	// Explicit-version constructor: catalog-level version can diverge.
+	catalogVersion := md.Version() + 42
+	pinned, err := NewRecordLayerSchemaTemplateWithVersion("demo", md, catalogVersion)
+	if err != nil {
+		t.Fatalf("NewRecordLayerSchemaTemplateWithVersion: %v", err)
+	}
+	if pinned.Version() != catalogVersion {
+		t.Errorf("pinned Version = %d, want %d", pinned.Version(), catalogVersion)
+	}
+	if pinned.Underlying().Version() == catalogVersion {
+		t.Error("pinned template must not mutate the underlying RecordMetaData version")
+	}
+}
+
 func TestSchemaTemplate_IntermingleTables(t *testing.T) {
 	t.Parallel()
 	// Mirror Java: intermingleTables is the negation of
