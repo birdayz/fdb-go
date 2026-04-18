@@ -167,9 +167,18 @@ func TestParse_ReportsOnlyFirstError(t *testing.T) {
 	var apiErr *api.Error
 	errors.As(err, &apiErr)
 	// The first FROM is on line 1 — its source line should show up in
-	// the error output. The second FROM (line 2) must NOT.
+	// the error output.
 	if !strings.Contains(apiErr.Message, "SELECT FROM;") {
 		t.Errorf("Message should include line 1's offending source: %q", apiErr.Message)
+	}
+	// Line 2's content ("SELECT FROM" without the semicolon) must NOT
+	// appear. Strip the line-1 occurrence first to make the check
+	// tight (line 1's "SELECT FROM;" would otherwise contain "SELECT
+	// FROM" as a substring). After removal, "SELECT FROM" on its own
+	// on a fresh line would be line 2 — must be absent.
+	stripped := strings.Replace(apiErr.Message, "SELECT FROM;", "", 1)
+	if strings.Contains(stripped, "SELECT FROM") {
+		t.Errorf("line 2's source leaked into Message (only first error should appear): %q", apiErr.Message)
 	}
 	// Count caret-bearing blocks: a single error produces exactly one.
 	if carets := strings.Count(apiErr.Message, "^"); carets == 0 {
