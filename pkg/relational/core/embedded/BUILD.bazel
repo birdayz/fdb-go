@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "embedded",
+    srcs = ["connection.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+    ],
+)
+
+go_test(
+    name = "embedded_test",
+    srcs = ["embedded_test.go"],
+    embed = [":embedded"],
+)
