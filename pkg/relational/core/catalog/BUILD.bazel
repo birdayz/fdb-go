@@ -5,7 +5,11 @@ go_library(
     srcs = [
         "database_metadata.go",
         "doc.go",
+        "fdb_store_catalog.go",
+        "fdb_template_catalog.go",
+        "fdb_transaction.go",
         "keyspace.go",
+        "metadata.go",
         "resultset.go",
         "store_catalog.go",
         "system_tables.go",
@@ -14,7 +18,15 @@ go_library(
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
+        "@org_golang_google_protobuf//proto",
+    ],
 )
 
 go_test(
@@ -22,8 +34,10 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "database_metadata_test.go",
+        "fdb_catalog_test.go",
         "integration_test.go",
         "keyspace_test.go",
+        "metadata_test.go",
         "store_catalog_test.go",
         "system_tables_test.go",
         "template_catalog_test.go",
@@ -32,10 +46,14 @@ go_test(
     embed = [":catalog"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
         "@org_uber_go_mock//gomock",
     ],
 )

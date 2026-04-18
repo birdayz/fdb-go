@@ -112,8 +112,14 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		return nil, fmt.Errorf("rebuild file descriptor: %w", err)
 	}
 
-	// 2. Create builder and set records
-	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	// 2. Create builder and set records. Detect the union descriptor by name
+	// ("UnionDescriptor") OR by the usage=UNION proto annotation so that
+	// files like catalog_data.proto (which uses "CatalogUnion") round-trip
+	// correctly. Mirrors Java's RecordMetaData.build() which calls
+	// RecordMetaDataBuilder.setRecordsWithUnionDescriptor using whichever
+	// message is annotated with usage=UNION.
+	unionName := findUnionDescriptorName(fd)
+	builder := NewRecordMetaDataBuilder().setRecordsWithUnionName(fd, unionName)
 
 	// 3. Load indexes first (need them before record type association)
 	indexMap := make(map[string]*Index)
@@ -414,6 +420,33 @@ var defaultExcludedDependencies = map[string]bool{
 	"record_metadata.proto":         true,
 	"record_metadata_options.proto": true,
 	"tuple_fields.proto":            true,
+}
+
+// findUnionDescriptorName returns the message name of the union descriptor in
+// the given file. It checks for the conventional "UnionDescriptor" name first
+// (the Java default), then falls back to scanning all messages for the
+// usage=UNION proto annotation. This handles non-standard union names like
+// "CatalogUnion" used in catalog_data.proto.
+func findUnionDescriptorName(fd protoreflect.FileDescriptor) string {
+	const defaultName = "UnionDescriptor"
+	if fd.Messages().ByName(protoreflect.Name(defaultName)) != nil {
+		return defaultName
+	}
+	msgs := fd.Messages()
+	for i := 0; i < msgs.Len(); i++ {
+		msg := msgs.Get(i)
+		opts, ok := msg.Options().(*descriptorpb.MessageOptions)
+		if !ok || opts == nil {
+			continue
+		}
+		ext := proto.GetExtension(opts, gen.E_Record)
+		if rto, ok := ext.(*gen.RecordTypeOptions); ok && rto != nil {
+			if rto.GetUsage() == gen.RecordTypeOptions_UNION {
+				return string(msg.Name())
+			}
+		}
+	}
+	return defaultName // Fall back; setRecordsWithUnionName handles missing gracefully.
 }
 
 // collectDependencies returns all transitive file descriptor dependencies,

@@ -1,0 +1,53 @@
+// Record types for the relational catalog (__SYS/CATALOG) — SCHEMAS,
+// DATABASES, TEMPLATES. Mirrors the descriptors Java's
+// RecordLayerStoreCatalog builds programmatically at boot from
+// SchemaSystemTable / DatabaseInfoSystemTable / SchemaTemplateSystemTable.
+//
+// Wire contract (Java compat):
+//   - Union field numbers 1,2,3 (tableCounter++ in Java, starts at 1).
+//   - Record type keys 0,1,2 (recordTypeCounter++ starts at 0,
+//     pinned via SetRecordTypeKey on the Go builder).
+//   - Column storage names match Java's uppercase identifiers.
+//   - Column field numbers follow fieldIndex() = column position (1-based).
+//   - Primary keys built on top of tuple layer are constructed at the
+//     catalog layer; this proto only holds the record payload.
+syntax = "proto2";
+
+package com.apple.foundationdb.relational.catalog;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/gen";
+
+import "record_metadata_options.proto";
+
+message Schemas {
+  optional string DATABASE_ID = 1;
+  optional string SCHEMA_NAME = 2;
+  optional string TEMPLATE_NAME = 3;
+  optional int32 TEMPLATE_VERSION = 4;
+}
+
+message Databases {
+  optional string DATABASE_ID = 1;
+}
+
+message Templates {
+  optional string TEMPLATE_NAME = 1;
+  optional int32 TEMPLATE_VERSION = 2;
+  optional bytes META_DATA = 3;
+}
+
+// Named CatalogUnion (not Java's "RecordTypeUnion" nor the project
+// default "UnionDescriptor") to avoid a symbol clash with the
+// conformance demo's UnionDescriptor in the shared `gen` Go package.
+// The union message name is not on the wire — only its field numbers —
+// so cross-language catalog compatibility is unaffected. Callers use
+// BuildCatalogMetaData which wires this explicitly via SetUnionName.
+message CatalogUnion {
+  option (com.apple.foundationdb.record.record).usage = UNION;
+  // Field names match the Go builder convention "_<MessageName>". Wire
+  // format stores only field numbers (1/2/3) so Java's "_SCHEMAS"
+  // naming convention is irrelevant cross-language.
+  optional Schemas _Schemas = 1;
+  optional Databases _Databases = 2;
+  optional Templates _Templates = 3;
+}
