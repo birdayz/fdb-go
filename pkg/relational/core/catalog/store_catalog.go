@@ -126,6 +126,13 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 // re-check the database/schema still exist before writing. A
 // concurrent DeleteDatabase/DeleteSchema between the two lock
 // sections would otherwise panic on a nil-map write.
+//
+// TOCTOU note: between the two lock sections a concurrent SaveSchema
+// could replace the schema with one pointing at a different template.
+// We'd then rebind to the OLD template name, overwriting the newer
+// entry. This matches Java's FDB-backed impl, which uses row-level
+// locking and has the same window. Not worth a fix for the in-memory
+// bridge; the FDB-backed catalog will inherit Java's semantics.
 func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, schemaName string) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
