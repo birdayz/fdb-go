@@ -221,3 +221,21 @@ func (s *recordLayerSchema) MetadataName() string               { return s.name 
 func (s *recordLayerSchema) SchemaTemplate() api.SchemaTemplate { return s.template }
 func (s *recordLayerSchema) DatabaseName() string               { return s.databaseID }
 func (s *recordLayerSchema) Accept(v api.Visitor)               { v.VisitSchema(s) }
+
+// Tables / Views / Indexes / InvokedRoutines mirror the default method
+// bodies on Java's Schema interface — each one just delegates to the
+// owning SchemaTemplate. Kept explicit here because Go interfaces have
+// no default methods.
+func (s *recordLayerSchema) Tables() ([]api.Table, error) { return s.template.Tables() }
+func (s *recordLayerSchema) Views() ([]api.View, error)   { return s.template.Views() }
+
+// Indexes matches Java's Schema.getIndexes() which returns the
+// (table → index names) multimap, NOT the SchemaTemplate's flat
+// []string Indexes() list.
+func (s *recordLayerSchema) Indexes() (map[string][]string, error) {
+	return s.template.TableIndexMapping()
+}
+
+func (s *recordLayerSchema) InvokedRoutines() ([]api.InvokedRoutine, error) {
+	return s.template.InvokedRoutines()
+}

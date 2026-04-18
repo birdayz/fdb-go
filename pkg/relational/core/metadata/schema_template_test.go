@@ -338,6 +338,45 @@ func TestSchemaTemplate_GenerateSchema(t *testing.T) {
 	}
 }
 
+func TestSchema_DelegatesToTemplate(t *testing.T) {
+	t.Parallel()
+	// Matches Java Schema.java default methods: getTables / getViews /
+	// getIndexes / getInvokedRoutines all delegate to the template.
+	tmpl := buildTestTemplate(t)
+	schema := tmpl.GenerateSchema("db1", "public")
+
+	wantTables, _ := tmpl.Tables()
+	gotTables, err := schema.Tables()
+	if err != nil {
+		t.Fatalf("schema.Tables: %v", err)
+	}
+	if len(gotTables) != len(wantTables) {
+		t.Errorf("schema.Tables len = %d, template has %d", len(gotTables), len(wantTables))
+	}
+
+	// Views / InvokedRoutines are empty in this bridge — verify
+	// delegation still returns (nil, nil).
+	views, err := schema.Views()
+	if err != nil || views != nil {
+		t.Errorf("schema.Views = (%v, %v), want (nil, nil)", views, err)
+	}
+	routines, err := schema.InvokedRoutines()
+	if err != nil || routines != nil {
+		t.Errorf("schema.InvokedRoutines = (%v, %v), want (nil, nil)", routines, err)
+	}
+
+	// Schema.Indexes returns (table → index names), NOT a flat list —
+	// the Java shape.
+	wantMap, _ := tmpl.TableIndexMapping()
+	gotMap, err := schema.Indexes()
+	if err != nil {
+		t.Fatalf("schema.Indexes: %v", err)
+	}
+	if len(gotMap) != len(wantMap) {
+		t.Errorf("schema.Indexes len = %d, template mapping len = %d", len(gotMap), len(wantMap))
+	}
+}
+
 func TestSchemaTemplate_Visitor(t *testing.T) {
 	t.Parallel()
 

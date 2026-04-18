@@ -131,7 +131,12 @@ type SchemaTemplate interface {
 }
 
 // Schema is an instantiated schema (one per database/namespace).
-// Mirrors Java's Schema.
+// Mirrors Java's Schema. The Tables / Views / Indexes / InvokedRoutines
+// methods are intentionally delegated to the underlying SchemaTemplate
+// in every current implementation — matches Java's Schema default
+// method bodies. They're part of the interface (not package-level
+// helpers) because Java's static type system puts them on Schema, and
+// consumers call schema.getTables() rather than schema.getSchemaTemplate().getTables().
 type Schema interface {
 	Metadata
 	// SchemaTemplate returns the template this schema was generated
@@ -139,6 +144,18 @@ type Schema interface {
 	SchemaTemplate() SchemaTemplate
 	// DatabaseName returns the owning database's name.
 	DatabaseName() string
+	// Tables delegates to SchemaTemplate.Tables — convenience matching
+	// Java's default Schema.getTables().
+	Tables() ([]Table, error)
+	// Views delegates to SchemaTemplate.Views.
+	Views() ([]View, error)
+	// Indexes returns the (tableName -> indexNames) mapping — matches
+	// Java's Schema.getIndexes() default which delegates to the
+	// template's TableIndexMapping. NOT the same shape as
+	// SchemaTemplate.Indexes (which returns a flat []string).
+	Indexes() (map[string][]string, error)
+	// InvokedRoutines delegates to SchemaTemplate.InvokedRoutines.
+	InvokedRoutines() ([]InvokedRoutine, error)
 }
 
 // ---- Visitor convenience dispatchers ----
