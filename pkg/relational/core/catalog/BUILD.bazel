@@ -5,6 +5,9 @@ go_library(
     srcs = [
         "database_metadata.go",
         "doc.go",
+        "fdb_store_catalog.go",
+        "fdb_template_catalog.go",
+        "fdb_transaction.go",
         "keyspace.go",
         "metadata.go",
         "resultset.go",
@@ -17,8 +20,12 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
