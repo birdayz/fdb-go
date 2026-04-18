@@ -33,7 +33,13 @@ type RecordLayerSchemaTemplate struct {
 // RecordLayerSchemaTemplate.fromRecordMetadata(md, name, md.getVersion()).
 // Use NewRecordLayerSchemaTemplateWithVersion when the catalog-level
 // version should differ from the storage-level version.
+//
+// Returns an error when md is nil so callers at boundary layers
+// (DSN parsing, RPC handlers) get a clean failure rather than a panic.
 func NewRecordLayerSchemaTemplate(name string, md *recordlayer.RecordMetaData) (*RecordLayerSchemaTemplate, error) {
+	if md == nil {
+		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "record metadata is nil")
+	}
 	return NewRecordLayerSchemaTemplateWithVersion(name, md, md.Version())
 }
 
@@ -44,6 +50,9 @@ func NewRecordLayerSchemaTemplate(name string, md *recordlayer.RecordMetaData) (
 // The catalog bumps the template version on every DDL change, and
 // that number is what api.SchemaTemplate.Version() reports.
 func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.RecordMetaData, version int) (*RecordLayerSchemaTemplate, error) {
+	if md == nil {
+		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "record metadata is nil")
+	}
 	tmpl := &RecordLayerSchemaTemplate{
 		name:       name,
 		version:    version,

@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -87,6 +88,40 @@ func TestSchemaTemplate_VersionIndependentFromMetadata(t *testing.T) {
 	}
 	if pinned.Underlying().Version() == catalogVersion {
 		t.Error("pinned template must not mutate the underlying RecordMetaData version")
+	}
+}
+
+func TestSchemaTemplate_NilMetaDataReturnsError(t *testing.T) {
+	t.Parallel()
+	// Passing a nil *RecordMetaData must fail cleanly, not panic.
+	// Callers are boundary code (DSN parsing, RPC handlers) and a
+	// panic here would crash the whole driver.
+	for _, name := range []string{"default ctor", "explicit-version ctor"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var (
+				tmpl *RecordLayerSchemaTemplate
+				err  error
+			)
+			if name == "default ctor" {
+				tmpl, err = NewRecordLayerSchemaTemplate("nil-md", nil)
+			} else {
+				tmpl, err = NewRecordLayerSchemaTemplateWithVersion("nil-md", nil, 0)
+			}
+			if err == nil {
+				t.Fatal("expected error when md == nil, got nil")
+			}
+			if tmpl != nil {
+				t.Errorf("got non-nil template alongside error: %v", tmpl)
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("err is not *api.Error: %v", err)
+			}
+			if apiErr.Code != api.ErrCodeInvalidSchemaTemplate {
+				t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeInvalidSchemaTemplate)
+			}
+		})
 	}
 }
 
