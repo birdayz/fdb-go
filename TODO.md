@@ -310,7 +310,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 - [x] Port `DataType` — done in Phase 0 (nightshift-24)
 - [x] Port `SchemaTemplate` / `Schema` / `Table` / `Column` / `Index` interfaces — done in Phase 0 (nightshift-24)
-- [ ] **Concrete `SchemaTemplate` / `Table` / `Column` / `Index` structs** — builders, FDB-backed storage impl behind the Phase 0 interfaces.
+- [x] **Concrete `SchemaTemplate` / `Table` / `Column` / `Index` structs** (dayshift-25) — `pkg/relational/core/metadata/` wraps `*recordlayer.RecordMetaData`. `NewRecordLayerSchemaTemplate` / `NewRecordLayerSchemaTemplateWithVersion` materialise tables + flat index-name list eagerly. Proto-to-DataType mapping mirrors Java's `fromProtoType` (including UUID short-circuit and `NullableArrayTypeUtils.describesWrappedArray` unwrap). `Accept()` cascades through tables → indexes → columns → routines → views, matching Java's `RecordLayerSchemaTemplate.accept()`. `api.Schema` grew delegated `Tables`/`Views`/`Indexes`/`InvokedRoutines` methods (Go has no default methods). Only sparse-index `IsSparse()` remains deferred (blocked on a recordlayer-side `NotNullOnly` flag).
+- [ ] **Builder for SchemaTemplate** — today consumers pass a pre-built `RecordMetaData`. Java has `RecordLayerSchemaTemplate.Builder` with `addTable` / `addInvokedRoutine` / `setIntermingleTables` / etc. Needed when DDL constructs a template from scratch (Phase 3 onwards).
 - [ ] **Catalog storage layer** — `StoreCatalog` interface + `RecordLayerStoreCatalog` implementation writing to FDB. Mirror Java's subspace layout.
 - [ ] **System tables** — `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, `INDEXES`, `SCHEMATA`, etc. Computed on-the-fly from catalog state (Java pattern).
 - [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
