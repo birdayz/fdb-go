@@ -146,6 +146,37 @@ func TestStoreCatalog_SaveAndLoadSchema(t *testing.T) {
 	}
 }
 
+func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
+	t.Parallel()
+	c, tx, tmpl := newSeededCatalog(t, "demo")
+
+	// Java's CatalogValidator.validateSchema: empty schema name,
+	// empty database name, empty template name, or negative template
+	// version all surface as ErrCodeInvalidParameter before the save
+	// hits storage.
+	cases := []struct {
+		name   string
+		schema api.Schema
+	}{
+		{"nil schema", nil},
+		{"empty schema name", tmpl.GenerateSchema("/db", "")},
+		{"empty database name", tmpl.GenerateSchema("", "s1")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := c.SaveSchema(tx, tc.schema, true)
+			if err == nil {
+				t.Fatalf("SaveSchema(%s) succeeded", tc.name)
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter {
+				t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeInvalidParameter)
+			}
+		})
+	}
+}
+
 func TestStoreCatalog_SaveSchemaRequiresKnownTemplate(t *testing.T) {
 	t.Parallel()
 	// Java compliance: SaveSchema asserts that the schema template

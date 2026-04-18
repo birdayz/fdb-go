@@ -76,8 +76,8 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 	if err := checkOpenTxn(txn); err != nil {
 		return err
 	}
-	if dataToWrite == nil {
-		return api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema is nil")
+	if err := validateSchema(dataToWrite); err != nil {
+		return err
 	}
 	dbID := dataToWrite.DatabaseName()
 	name := dataToWrite.MetadataName()
@@ -305,6 +305,31 @@ func (c *InMemoryStoreCatalog) DeleteDatabase(txn api.Transaction, dbURI string,
 	delete(c.databases, dbURI)
 	delete(c.schemas, dbURI)
 	return true, nil
+}
+
+// validateSchema mirrors Java's
+// com.apple.foundationdb.relational.recordlayer.catalog.CatalogValidator.validateSchema:
+// the four fields SaveSchema writes as primary key / FK components
+// (schema_name, database_id, schema_template_name, schema_version)
+// must all be set and the version must be non-negative.
+func validateSchema(s api.Schema) error {
+	if s == nil {
+		return api.NewError(api.ErrCodeInvalidParameter, "schema is nil")
+	}
+	if s.MetadataName() == "" {
+		return api.NewError(api.ErrCodeInvalidParameter, "Field schema_name in Schema must be set!")
+	}
+	if s.DatabaseName() == "" {
+		return api.NewError(api.ErrCodeInvalidParameter, "Field database_id in Schema must be set!")
+	}
+	tmpl := s.SchemaTemplate()
+	if tmpl == nil || tmpl.MetadataName() == "" {
+		return api.NewError(api.ErrCodeInvalidParameter, "Field schema_template_name in Schema must be set!")
+	}
+	if tmpl.Version() < 0 {
+		return api.NewError(api.ErrCodeInvalidParameter, "Field schema_version cannot be < 0!")
+	}
+	return nil
 }
 
 // checkOpenTxn confirms txn is an open InMemoryTransaction. Returns
