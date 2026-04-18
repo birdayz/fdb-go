@@ -138,6 +138,34 @@ func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
 	}
 }
 
+func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_full_flow")
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_full_flow"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE restaurant_tmpl "+
+			"CREATE TABLE RestaurantRecord (rest_no BIGINT NOT NULL, name STRING, PRIMARY KEY (rest_no))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_full_flow/restaurant WITH TEMPLATE restaurant_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA /testdb_full_flow/restaurant"); err != nil {
+		t.Fatalf("DROP SCHEMA: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE restaurant_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP DATABASE /testdb_full_flow"); err != nil {
+		t.Fatalf("DROP DATABASE: %v", err)
+	}
+}
+
 func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t, "/testdb_ping")
