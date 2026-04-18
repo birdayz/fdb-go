@@ -9,4 +9,43 @@
 // Direction of dependency: the relational layer depends on the record
 // layer, never the other way. Don't reach back from pkg/recordlayer
 // into pkg/relational.
+//
+// # Java-compliance notes
+//
+// The proto-to-DataType mapping in proto_types.go mirrors Java's
+// com.apple.foundationdb.record.query.plan.cascades.typing.Type
+// (fromProtobufFieldDescriptor + Record.fromDescriptorPreservingName)
+// exactly for the cases that matter today:
+//
+//   - scalar kinds → primitive types (IntegerType / LongType / etc)
+//   - enum → EnumType with declared values
+//   - message / group → recursive StructType
+//   - repeated → ArrayType(element)
+//   - map → UnresolvedType
+//
+// Deferred behaviours that Java implements but this bridge does NOT
+// (track each as an independent Phase 2 follow-up):
+//
+//  1. UUID special-case: Java detects TupleFieldsProto.UUID and
+//     returns a UUIDType instead of wrapping the message as a
+//     StructType. Needed when the record layer's
+//     com.apple.foundationdb.record.TupleFieldsProto.UUID message
+//     appears in a column. Currently we would surface it as a
+//     two-field struct.
+//
+//  2. NullableArrayTypeUtils.describesWrappedArray: Java unwraps
+//     the "wrapper message around a repeated field" pattern that the
+//     serializer uses to make arrays nullable. We currently surface
+//     the wrapper as a regular StructType. Round-trip via
+//     Java-written metadata will diverge until this lands.
+//
+//  3. primaryKeyHasRecordTypePrefix → intermingleTables: Java
+//     surfaces this as a template flag. Not exposed on our
+//     api.SchemaTemplate interface yet.
+//
+//  4. Sparse-index IsSparse(): always false here until
+//     recordlayer.Index grows Java's NotNullOnly flag.
+//
+// None of these block the Phase 3 semantic analyzer on the primary
+// path (CRUD over typed proto records + basic aggregations).
 package metadata
