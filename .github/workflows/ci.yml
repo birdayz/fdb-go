@@ -23,39 +23,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Check generated protobuf code is up to date
-        run: |
-          # Skip if no proto/buf config files changed (saves ~15s).
-          # Always runs on master pushes to catch transitive changes.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..HEAD -- 'proto/' 'buf.yaml' 'buf.gen.yaml' 'gen/' | head -1)
-            if [ -z "$CHANGED" ]; then
-              echo "No proto/buf/gen changes — skipping regeneration check"
-              exit 0
-            fi
-          fi
-          # Checksum gen/ before and after — don't regenerate in-place
-          # (regenerating touches timestamps and invalidates Bazel cache)
-          BEFORE=$(find gen/ -name '*.go' -exec sha256sum {} + | sort | sha256sum)
-          just generate
-          AFTER=$(find gen/ -name '*.go' -exec sha256sum {} + | sort | sha256sum)
-          if [ "$BEFORE" != "$AFTER" ]; then
-            echo "Generated protobuf code is out of date. Run 'just generate' and commit."
-            git diff --stat -- 'gen/'
-            exit 1
-          fi
-          # Restore original timestamps so Bazel cache stays valid
-          git checkout -- gen/
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Single source of truth — bazel's go_sdk.from_file(go_mod=...)
+          # reads the same file in MODULE.bazel.
+          go-version-file: go.mod
+          # setup-go's module cache fights bazel's dep cache (both
+          # manage the same module dir); keep Go for tool invocation
+          # only and let Bazel own dep caching.
+          cache: false
 
-      - name: Check Gazelle BUILD files are up to date
+      - name: Check generated code is up to date
         run: |
-          bazelisk run //:gazelle
-          if ! git diff --exit-code -- '*.bazel' '*.bzl'; then
-            echo "BUILD files are out of date. Run 'just gazelle' and commit."
+          # `just generate` runs every codegen step (buf proto, gomock
+          # mocks, gazelle, ...). Anything under version control must
+          # match what generate produces — one check covers them all.
+          just generate
+          if ! git diff --exit-code; then
+            echo "Generated code is out of date. Run 'just generate' and commit."
             exit 1
           fi
-          # Restore original timestamps
-          git checkout -- '*.bazel' '*.bzl' 2>/dev/null || true
 
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed

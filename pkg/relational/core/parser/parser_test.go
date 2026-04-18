@@ -186,6 +186,97 @@ func TestParse_ReportsOnlyFirstError(t *testing.T) {
 	}
 }
 
+func TestParseView(t *testing.T) {
+	t.Parallel()
+	// ParseView takes a view body (a single query) and returns the
+	// query parse tree — no CREATE VIEW wrapper.
+	ctx, err := ParseView("SELECT id, name FROM orders")
+	if err != nil {
+		t.Fatalf("ParseView: %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("ParseView returned nil context")
+	}
+}
+
+func TestParseView_SyntaxError(t *testing.T) {
+	t.Parallel()
+	_, err := ParseView("not a valid query")
+	if err == nil {
+		t.Fatal("ParseView of garbage should error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
+	}
+}
+
+func TestValidateNoPreparedParams_Clean(t *testing.T) {
+	t.Parallel()
+	root, err := Parse("SELECT id FROM orders WHERE id = 42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateNoPreparedParams(root); err != nil {
+		t.Errorf("clean query reported prepared params: %v", err)
+	}
+}
+
+func TestValidateNoPreparedParams_WithParameter(t *testing.T) {
+	t.Parallel()
+	// Grammar's PreparedStatementParameter rule matches both the
+	// named form (?name → NAMED_PARAMETER) and the unnamed form
+	// (? → QUESTION). Exercise both to cover the rule's branches.
+	for _, sql := range []string{
+		"SELECT id FROM orders WHERE id = ?param", // named
+		"SELECT id FROM orders WHERE id = ?",      // unnamed
+	} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			root, err := Parse(sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ValidateNoPreparedParams(root)
+			if err == nil {
+				t.Fatal("prepared parameter should fail validation")
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+				t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
+			}
+		})
+	}
+}
+
+func TestParseFunction(t *testing.T) {
+	t.Parallel()
+	// ParseFunction expects a full CREATE FUNCTION … and internally
+	// skips the CREATE token before running sqlInvokedFunction.
+	// Syntax taken from the Java yamsql corpus
+	// (user-defined-macro-function-tests.yamsql):
+	// CREATE FUNCTION <name>(IN <param> <type>) RETURNS <type> AS <expr>.
+	ctx, err := ParseFunction("CREATE FUNCTION self(IN x bigint) RETURNS bigint AS x")
+	if err != nil {
+		t.Fatalf("ParseFunction: %v", err)
+	}
+	if ctx == nil {
+		t.Fatal("ParseFunction returned nil context")
+	}
+}
+
+func TestParseFunction_SyntaxError(t *testing.T) {
+	t.Parallel()
+	_, err := ParseFunction("CREATE FUNCTION @@@")
+	if err == nil {
+		t.Fatal("ParseFunction of garbage should error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeSyntaxError)
+	}
+}
+
 func TestCaseInsensitiveCharStream_PreservesOriginalText(t *testing.T) {
 	t.Parallel()
 	s := newCaseInsensitiveCharStream("SeLeCt")

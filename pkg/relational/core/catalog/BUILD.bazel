@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "catalog",
+    srcs = [
+        "database_metadata.go",
+        "doc.go",
+        "keyspace.go",
+        "resultset.go",
+        "store_catalog.go",
+        "system_tables.go",
+        "template_catalog.go",
+        "transaction.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/relational/api"],
+)
+
+go_test(
+    name = "catalog_test",
+    srcs = [
+        "benchmark_test.go",
+        "database_metadata_test.go",
+        "integration_test.go",
+        "keyspace_test.go",
+        "store_catalog_test.go",
+        "system_tables_test.go",
+        "template_catalog_test.go",
+        "transaction_test.go",
+    ],
+    embed = [":catalog"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/core/parser",
+        "@org_uber_go_mock//gomock",
+    ],
+)

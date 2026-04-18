@@ -16,11 +16,24 @@ ensure-buf:
     curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
     chmod +x "$BUF"
 
-# Generate protobuf code (clean + regenerate all)
-generate: ensure-buf
+# Regenerate protobuf code + gomock mocks. Both are committed to
+# git (clean + regenerate, same pattern). CI re-runs `just generate`
+# and fails on any diff, so CI is the source of truth for both.
+generate: ensure-buf generate-mocks
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
+
+# Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
+# first so removed interfaces / renamed files don't leave stale
+# mocks behind. Same-package output so tests elsewhere write
+# `api.NewMockSchema(ctrl)` with no extra import.
+generate-mocks:
+    find pkg/relational/api -name 'mocks_*.go' -delete
+    go generate ./pkg/relational/api/...
+    # go.uber.org/mock is a direct dep of the generated mocks; keep
+    # go.mod's direct/indirect tags accurate after each regen.
+    go mod tidy
 
 # Download ANTLR4 tool jar at pinned version (if missing)
 ANTLR_VERSION := "4.13.1"
