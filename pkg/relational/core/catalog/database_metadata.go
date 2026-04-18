@@ -184,6 +184,10 @@ func (m *CatalogDatabaseMetaData) Tables(_ context.Context, catalog, schemaPatte
 		}
 		pairs = append(pairs, dbSchema{db, sch})
 	}
+	if err := listRS.Err(); err != nil {
+		listRS.Close()
+		return nil, err
+	}
 	listRS.Close()
 
 	catalogRE := compileLikePattern(catalog)
@@ -342,6 +346,12 @@ func indexInfoColumns() []string {
 // Empty input → nil (no filter). `%` maps to `.*`, `_` to `.`, all
 // other regex metacharacters are escaped. Matching is case-sensitive
 // to match JDBC's default behaviour.
+//
+// Escape sequences (e.g. the SQL ESCAPE clause) are not supported:
+// `%` and `_` are always wildcards, with no way for the caller to
+// express a literal percent sign or underscore. JDBC's
+// DatabaseMetaData.getSearchStringEscape() would advertise a `\`
+// escape when this is ported.
 func compileLikePattern(pattern string) *regexp.Regexp {
 	if pattern == "" {
 		return nil
