@@ -17,6 +17,7 @@ go_library(
 go_test(
     name = "catalog_test",
     srcs = [
+        "benchmark_test.go",
         "store_catalog_test.go",
         "template_catalog_test.go",
         "transaction_test.go",

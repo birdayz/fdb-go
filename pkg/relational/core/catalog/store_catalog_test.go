@@ -13,7 +13,7 @@ import (
 // buildTestTemplate mirrors the helper in the metadata package but is
 // inlined here to avoid import cycles. Three record types with trivial
 // primary keys.
-func buildTestTemplate(t *testing.T, name string) api.SchemaTemplate {
+func buildTestTemplate(t testing.TB, name string) api.SchemaTemplate {
 	t.Helper()
 	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
