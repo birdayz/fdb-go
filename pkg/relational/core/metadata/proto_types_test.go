@@ -36,6 +36,16 @@ func TestIsFieldNullable_ProtoCardinality(t *testing.T) {
 	if isFieldNullable(md.Fields().Get(0)) {
 		t.Error("proto2 REQUIRED field reported nullable=true, want false")
 	}
+	// End-to-end: the nullability flag must also propagate through
+	// protoFieldToDataType. Guards against a future refactor quietly
+	// dropping the nullable argument somewhere in the call chain.
+	dt, err := protoFieldToDataType(md.Fields().Get(0))
+	if err != nil {
+		t.Fatalf("protoFieldToDataType(REQUIRED): %v", err)
+	}
+	if dt.IsNullable() {
+		t.Error("protoFieldToDataType(REQUIRED) produced nullable=true, want false")
+	}
 }
 
 func TestIsUUIDDescriptor(t *testing.T) {
