@@ -686,3 +686,62 @@ func TestBuilder_EmptyNameError(t *testing.T) {
 		t.Fatal("expected error for missing name, got nil")
 	}
 }
+
+func TestBuilder_EmptyPrimaryKeyError(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().
+		SetName("no_pk").
+		AddTable("T", []ColumnSpec{NewColumnSpec("id", api.NewLongType(false), 1)}, nil).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for empty primary key, got nil")
+	}
+}
+
+func TestBuilder_AllColumnTypes(t *testing.T) {
+	t.Parallel()
+	cols := []ColumnSpec{
+		NewColumnSpec("b", api.NewBooleanType(true), 1),
+		NewColumnSpec("i", api.NewIntegerType(false), 2),
+		NewColumnSpec("l", api.NewLongType(false), 3),
+		NewColumnSpec("f", api.NewFloatType(true), 4),
+		NewColumnSpec("d", api.NewDoubleType(true), 5),
+		NewColumnSpec("s", api.NewStringType(true), 6),
+		NewColumnSpec("by", api.NewBytesType(true), 7),
+	}
+	_, err := NewSchemaTemplateBuilder().
+		SetName("all_types").
+		AddTable("T", cols, []string{"l"}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build with all column types: %v", err)
+	}
+}
+
+func TestBuilder_NullableVsNotNullable(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("nullable_test").
+		AddTable("T", []ColumnSpec{
+			NewColumnSpec("id", api.NewLongType(false), 1),   // NOT NULL → REQUIRED in proto2
+			NewColumnSpec("opt", api.NewStringType(true), 2), // NULL → OPTIONAL in proto2
+		}, []string{"id"}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tables, err := tmpl.Tables()
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	cols := tables[0].Columns()
+	if len(cols) != 2 {
+		t.Fatalf("len(Columns) = %d, want 2", len(cols))
+	}
+	if cols[0].DataType().IsNullable() {
+		t.Errorf("id should be non-nullable")
+	}
+	if !cols[1].DataType().IsNullable() {
+		t.Errorf("opt should be nullable")
+	}
+}

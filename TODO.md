@@ -391,7 +391,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 - [x] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection` (nightshift-28)
 - [x] **`Connector`** — lazy-init, holds cluster client + options (nightshift-28)
-- [ ] **`Conn`** implementing `driver.Conn`, `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.Pinger`, `driver.SessionResetter`, `driver.Validator`
+- [x] **`Conn`** `driver.Conn` (Prepare/Close/Begin), `driver.ExecerContext`, `driver.Pinger` — nightshift-28. `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.SessionResetter`, `driver.Validator` deferred (phase 8 complete path)
 - [ ] **`Stmt`** implementing `driver.Stmt`, `driver.StmtExecContext`, `driver.StmtQueryContext`, `driver.NamedValueChecker`
 - [ ] **`Rows`** implementing `driver.Rows`, `driver.RowsColumnTypeDatabaseTypeName`, `driver.RowsColumnTypeNullable`, `driver.RowsColumnTypeLength`, `driver.RowsColumnTypePrecisionScale`, `driver.RowsColumnTypeScanType`
 - [ ] **`Result`** implementing `driver.Result` (LastInsertId is always an error — FDB has no auto-inc; match Postgres driver convention)
@@ -399,8 +399,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **Value conversion** — `driver.Value` ⇄ `api.DataType` values, including structs and arrays
 - [ ] **Custom scanner/valuer** — `Struct`, `Array`, `Versionstamp`, `Continuation`
 - [ ] **Integration test matrix**
-  - [ ] `sql.Open("fdbsql", dsn)` + `db.Ping()`
-  - [ ] `db.ExecContext` for DDL (CREATE SCHEMA, CREATE TABLE, CREATE INDEX)
+  - [x] `sql.Open("fdbsql", dsn)` + `db.Ping()` (nightshift-28)
+  - [x] `db.ExecContext` for DDL (CREATE DATABASE/SCHEMA/SCHEMA TEMPLATE + DROP) (nightshift-28)
   - [ ] `db.QueryContext` + `rows.Scan` for SELECT
   - [ ] `db.PrepareContext` + parameterized exec/query
   - [ ] `db.BeginTx` + Commit/Rollback
