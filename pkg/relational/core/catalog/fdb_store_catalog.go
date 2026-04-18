@@ -317,16 +317,20 @@ func (c *RecordLayerStoreCatalog) RepairSchema(txn api.Transaction, dbURI, schem
 	return c.SaveSchema(txn, tmpl.GenerateSchema(dbURI, schemaName), false)
 }
 
-// ListDatabases returns an api.ResultSet over every database. Today
-// it materialises the full list in memory — fine for the catalog's
-// expected scale (hundreds, not millions). Continuation support is
-// deferred.
+// ListDatabases returns an api.ResultSet over every database. Materialises
+// in-memory; continuation support is deferred. Uses a prefix scan keyed on
+// [DATABASE_INFO_TYPE_KEY] matching Java's listDatabases TupleRange shape.
 func (c *RecordLayerStoreCatalog) ListDatabases(txn api.Transaction, _ api.Continuation) (api.ResultSet, error) {
 	store, err := c.openStore(txn)
 	if err != nil {
 		return nil, err
 	}
-	cursor := store.ScanRecordsByType(DatabasesRecordName, nil, recordlayer.ForwardScan())
+	prefix := tuple.Tuple{DatabaseInfoRecordTypeKey}
+	cursor := store.ScanRecordsInRange(
+		prefix, prefix,
+		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
+		nil, recordlayer.ForwardScan(),
+	)
 	ctx := store.Context().Context()
 
 	var rows [][]any
