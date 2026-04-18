@@ -244,6 +244,10 @@ func TestSchemaTemplate_TableStructDataType(t *testing.T) {
 	if st.NumFields() != len(order.Columns()) {
 		t.Errorf("struct fields = %d, table columns = %d", st.NumFields(), len(order.Columns()))
 	}
+	// Java compliance: RecordLayerTable.getDatatype() emits nullable=true.
+	if !st.IsNullable() {
+		t.Error("table StructDataType should be nullable (matches Java)")
+	}
 }
 
 func TestSchemaTemplate_ViewsAndRoutinesEmpty(t *testing.T) {

@@ -35,7 +35,12 @@ func newTable(rt *recordlayer.RecordType, indexes []api.Index) (*RecordLayerTabl
 		cols = append(cols, c)
 		structFields = append(structFields, api.NewStructField(string(fd.Name()), c.DataType(), i))
 	}
-	st := api.NewStructType(rt.Name, structFields, false)
+	// Table's struct type is nullable=true, matching Java's
+	// RecordLayerTable.getDatatype() which calls
+	// DataType.StructType.from(name, fields, /*nullable=*/ true).
+	// Java has a TODO noting the nullability isn't fully correct;
+	// track the value Java actually emits, not the intention.
+	st := api.NewStructType(rt.Name, structFields, true)
 	return &RecordLayerTable{
 		underlying: rt,
 		columns:    cols,
