@@ -4018,7 +4018,25 @@ func castValue(v any, typeName string) (any, error) {
 		case int64:
 			return n, nil
 		case float64:
-			return int64(n), nil
+			// Java CastValue.DOUBLE_TO_LONG: reject NaN/Inf, round to nearest
+			// using ties-to-positive-infinity (`Math.round` = floor(x + 0.5)),
+			// error on range overflow. Previously Go truncated silently and
+			// relied on int64() wrap on overflow — both diverged from Java.
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"cannot CAST NaN or Infinity to integer")
+			}
+			// Java's Math.round(double) returns floor(x + 0.5).
+			rounded := math.Floor(n + 0.5)
+			// Guard overflow before the int64() conversion. float64 can't
+			// represent every int64 exactly near the limits, so use a strict
+			// comparison against the max/min-as-float (values that *do* fit
+			// exactly into float64).
+			if rounded > 9.2233720368547748e18 || rounded < -9.2233720368547758e18 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value out of range for integer: %v", n)
+			}
+			return int64(rounded), nil
 		case string:
 			i, err := strconv.ParseInt(n, 10, 64)
 			if err != nil {

@@ -2909,6 +2909,20 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		cats = append(cats, c)
 	}
 	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
+
+	// Java conformance (swingshift-35): CAST(float AS INT) rounds (not
+	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
+	// Go used `int64(n)` which truncates toward zero and silently wraps
+	// on overflow. Matches Java CastValue.DOUBLE_TO_LONG.
+	var rounded int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(1.6 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
+	g.Expect(rounded).To(gomega.Equal(int64(2)), "CAST(1.6 AS BIGINT) must round to 2, not truncate to 1")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(-1.5 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
+	g.Expect(rounded).To(gomega.Equal(int64(-1)), "CAST(-1.5 AS BIGINT) must match Java Math.round (ties → +Inf)")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(-2.6 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
+	g.Expect(rounded).To(gomega.Equal(int64(-3)), "CAST(-2.6 AS BIGINT) must round to -3")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {
