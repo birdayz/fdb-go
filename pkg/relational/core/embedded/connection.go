@@ -558,7 +558,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			}
 			if ac.aggDistinct && ac.aggArg != "" {
 				if colVal != nil {
-					dk := fmt.Sprintf("%v", colVal)
+					// Type-tagged key so int 5 and string "5" don't collide
+					// (matches the mixed-type-equality fix in valuesEqual).
+					dk := fmt.Sprintf("%T\x00%v", colVal, colVal)
 					if _, seen := gs.distinctSets[i][dk]; !seen {
 						gs.distinctSets[i][dk] = struct{}{}
 						gs.counts[i]++
@@ -1316,7 +1318,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						// COUNT(DISTINCT col): only count each distinct value once.
 						if msg.ProtoReflect().Has(aggArgFDs[i]) {
 							v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
-							dk := fmt.Sprintf("%v", v)
+							// Type-tagged to keep distinct values of different
+							// concrete types apart (matches valuesEqual's
+							// mixed-type-equality semantic).
+							dk := fmt.Sprintf("%T\x00%v", v, v)
 							if _, seen := gs.distinctSets[i][dk]; !seen {
 								gs.distinctSets[i][dk] = struct{}{}
 								gs.counts[i]++
