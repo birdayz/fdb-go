@@ -5442,6 +5442,24 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if pred.Predicate() != nil {
 		return evalPredicateOnMapTri(ctx, conn, row, pred)
 	}
+	// Parenthesised HAVING: `HAVING (SUM(v) > 20)` parses the atom as a
+	// RecordConstructorExpressionAtom with one unnamed expression. Unwrap
+	// it and recurse on the inner expression so the rest of the HAVING
+	// evaluator (comparison + logical ops) applies uniformly.
+	if rc, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
+		rec := rc.RecordConstructor()
+		if rec == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor in HAVING")
+		}
+		if rec.STAR() != nil || rec.OfTypeClause() != nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING does not support record constructor with STAR / OF TYPE")
+		}
+		fields := rec.AllExpressionWithOptionalName()
+		if len(fields) == 1 && fields[0].AS() == nil && fields[0].Uid() == nil {
+			return evalHavingTri(ctx, conn, row, fields[0].Expression())
+		}
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING does not support multi-field / named record constructor")
+	}
 	// HAVING-style: the full comparison is the expression atom (BinaryComparisonPredicateContext).
 	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {

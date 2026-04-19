@@ -30,3 +30,11 @@ tests:
     rows:
       - ['a', 30]
       - ['b', 35]
+  # HAVING with parenthesised boolean — pins the nightshift-36
+  # RecordConstructorExpressionAtom unwrap also fires through HAVING's
+  # evaluator (which routes via evalPredicateOnMapExpr → evalExprAtomOnMap).
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING (SUM(v) > 20)
+    unordered: true
+    rows:
+      - ['a', 30]
+      - ['b', 35]
