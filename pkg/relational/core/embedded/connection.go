@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -33,6 +34,12 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
+
+// cteData holds the materialized result of a WITH clause named query.
+type cteData struct {
+	cols []string
+	rows [][]driver.Value
+}
 
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
 //
@@ -61,6 +68,10 @@ type EmbeddedConnection struct {
 	// schemaCache is a connection-level cache: (dbPath+"\x00"+schemaName) → api.Schema.
 	// Safe because driver connections are single-goroutine. Invalidated by DDL.
 	schemaCache map[string]api.Schema
+
+	// ctes holds materialized CTE results for the current SELECT statement.
+	// Non-nil only during execSelect; nil outside of that scope.
+	ctes map[string]*cteData
 
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
@@ -297,6 +308,47 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 // execSelectQuery executes a parsed selectQuery and returns a driver.Rows.
 // Extracted so execQueryBodyRows can call it without an ISelectStatementContext.
 func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
+	// SELECT without FROM: evaluate projExprs as constants and return one row.
+	if sq.tableName == "" {
+		cols := make([]string, len(sq.projCols))
+		row := make([]driver.Value, len(sq.projCols))
+		for i, col := range sq.projCols {
+			name := sq.projAliases[i]
+			if name == "" {
+				name = col
+			}
+			cols[i] = name
+			if sq.projExprs[i] != nil {
+				v, err := evalExpr(ctx, c, nil, sq.projExprs[i])
+				if err != nil {
+					return nil, err
+				}
+				row[i] = v
+			}
+		}
+		return &staticRows{cols: cols, rows: [][]driver.Value{row}}, nil
+	}
+
+	// Execute derived table query and register it as a temporary CTE.
+	if sq.derivedQuery != nil {
+		cols, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
+		if err != nil {
+			return nil, fmt.Errorf("derived table %q: %w", sq.tableName, err)
+		}
+		if c.ctes == nil {
+			c.ctes = make(map[string]*cteData)
+			defer func() { c.ctes = nil }()
+		}
+		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
+	}
+
+	// Check if the table name resolves to a CTE.
+	if c.ctes != nil {
+		if cte, ok := c.ctes[strings.ToUpper(sq.tableName)]; ok {
+			return c.execSelectFromCTE(ctx, sq, cte)
+		}
+	}
+
 	// Route INFORMATION_SCHEMA.* queries to system table handlers.
 	upper := strings.ToUpper(sq.tableName)
 	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
@@ -322,6 +374,21 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	if query == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
+
+	// Materialize CTEs before routing the main query.
+	if ctesCtx := query.Ctes(); ctesCtx != nil {
+		c.ctes = make(map[string]*cteData)
+		defer func() { c.ctes = nil }()
+		for _, nq := range ctesCtx.AllNamedQuery() {
+			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
+			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
+			if cteErr != nil {
+				return nil, fmt.Errorf("CTE %q: %w", cteName, cteErr)
+			}
+			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
+		}
+	}
+
 	if setQ, ok := query.QueryExpressionBody().(*antlrgen.SetQueryContext); ok {
 		return c.execUnion(ctx, setQ)
 	}
@@ -330,6 +397,20 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		return nil, err
 	}
 	return c.execSelectQuery(ctx, sq)
+}
+
+// cteRowsToMaps converts materialized CTE data into the map format used by JOIN evaluation.
+func cteRowsToMaps(cte *cteData, alias string) []map[string]driver.Value {
+	result := make([]map[string]driver.Value, len(cte.rows))
+	for i, row := range cte.rows {
+		m := make(map[string]driver.Value, len(cte.cols)*2)
+		for j, col := range cte.cols {
+			m[col] = row[j]
+			m[alias+"."+col] = row[j]
+		}
+		result[i] = m
+	}
+	return result
 }
 
 // scanTableToMaps scans all records of tableName into a slice of maps.
@@ -341,6 +422,13 @@ func (c *EmbeddedConnection) scanTableToMaps(
 	store *recordlayer.FDBRecordStore,
 	tableName, alias string,
 ) ([]map[string]driver.Value, error) {
+	// If the table name resolves to a CTE, return materialized rows directly.
+	if c.ctes != nil {
+		if cte, ok := c.ctes[strings.ToUpper(tableName)]; ok {
+			return cteRowsToMaps(cte, alias), nil
+		}
+	}
+
 	cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 	defer cursor.Close() //nolint:errcheck
 
@@ -374,6 +462,161 @@ func (c *EmbeddedConnection) scanTableToMaps(
 
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
 // Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
+// aggregateMapRows applies GROUP BY + aggregate computation to a slice of map rows
+// (as produced by JOIN evaluation or CTE materialization). Returns the resulting
+// output column names and tuple rows.
+//
+// Behavior:
+//   - COUNT(*) (sq.countStar, no aggCols): returns [["COUNT(*)"]] with a single row
+//     holding int64(len(filtered)). NOTE: parser sets countStar only when the
+//     entire SELECT list is a bare COUNT(*); with GROUP BY, COUNT(*) flows through
+//     sq.aggCols instead.
+//   - Otherwise: computes per-group aggregates (COUNT, COUNT(DISTINCT col), SUM,
+//     MIN, MAX, AVG), emits one row per group (or a single synthetic group when
+//     sq.groupBy is empty), optionally filtered by sq.havingExpr.
+func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
+	if sq.countStar {
+		return []string{"COUNT(*)"}, [][]driver.Value{{int64(len(filtered))}}, nil
+	}
+
+	type mapGroupState struct {
+		groupVals    []driver.Value
+		counts       []int64
+		sums         []float64
+		mins         []driver.Value
+		maxes        []driver.Value
+		avgs         []float64
+		avgsN        []int64
+		distinctSets []map[string]struct{}
+	}
+	groupOrder := []string{}
+	groups := map[string]*mapGroupState{}
+	hasGroups := len(sq.groupBy) > 0
+	for _, row := range filtered {
+		gVals := make([]driver.Value, len(sq.groupBy))
+		for gi, gcol := range sq.groupBy {
+			if v, ok := row[gcol]; ok {
+				gVals[gi] = v
+			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
+				gVals[gi] = row[gcol[dot+1:]]
+			}
+		}
+		key := groupByKey(gVals)
+		if !hasGroups {
+			key = ""
+		}
+		gs, exists := groups[key]
+		if !exists {
+			dsets := make([]map[string]struct{}, len(sq.aggCols))
+			for di, ac := range sq.aggCols {
+				if ac.aggDistinct {
+					dsets[di] = make(map[string]struct{})
+				}
+			}
+			gs = &mapGroupState{
+				groupVals:    gVals,
+				counts:       make([]int64, len(sq.aggCols)),
+				sums:         make([]float64, len(sq.aggCols)),
+				mins:         make([]driver.Value, len(sq.aggCols)),
+				maxes:        make([]driver.Value, len(sq.aggCols)),
+				avgs:         make([]float64, len(sq.aggCols)),
+				avgsN:        make([]int64, len(sq.aggCols)),
+				distinctSets: dsets,
+			}
+			groups[key] = gs
+			groupOrder = append(groupOrder, key)
+		}
+		for i, ac := range sq.aggCols {
+			if ac.groupCol != "" {
+				continue
+			}
+			colVal := row[ac.aggArg]
+			if colVal == nil && ac.aggArg != "" {
+				if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+					colVal = row[ac.aggArg[dot+1:]]
+				}
+			}
+			if ac.aggDistinct && ac.aggArg != "" {
+				if colVal != nil {
+					dk := fmt.Sprintf("%v", colVal)
+					if _, seen := gs.distinctSets[i][dk]; !seen {
+						gs.distinctSets[i][dk] = struct{}{}
+						gs.counts[i]++
+					}
+				}
+				continue
+			}
+			gs.counts[i]++
+			if colVal != nil {
+				fv, _ := toFloat64(colVal)
+				switch ac.aggFunc {
+				case "SUM":
+					gs.sums[i] += fv
+				case "MIN":
+					if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+						gs.mins[i] = colVal
+					}
+				case "MAX":
+					if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+						gs.maxes[i] = colVal
+					}
+				case "AVG":
+					gs.avgs[i] += fv
+					gs.avgsN[i]++
+				}
+			}
+		}
+	}
+	groupColIdx := map[string]int{}
+	for i, col := range sq.groupBy {
+		groupColIdx[col] = i
+	}
+	cols = make([]string, len(sq.aggCols))
+	for i, ac := range sq.aggCols {
+		cols[i] = ac.outName
+	}
+	for _, key := range groupOrder {
+		gs := groups[key]
+		rowVals := make([]driver.Value, len(sq.aggCols))
+		rowMap := make(map[string]driver.Value, len(sq.aggCols))
+		for i, ac := range sq.aggCols {
+			if ac.groupCol != "" {
+				idx, ok := groupColIdx[ac.groupCol]
+				if ok {
+					rowVals[i] = gs.groupVals[idx]
+				}
+			} else {
+				switch ac.aggFunc {
+				case "COUNT":
+					rowVals[i] = gs.counts[i]
+				case "SUM":
+					rowVals[i] = gs.sums[i]
+				case "MIN":
+					rowVals[i] = gs.mins[i]
+				case "MAX":
+					rowVals[i] = gs.maxes[i]
+				case "AVG":
+					if gs.avgsN[i] > 0 {
+						rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+					}
+				}
+			}
+			rowMap[ac.outName] = rowVals[i]
+		}
+		if sq.havingExpr != nil {
+			ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
+			if hErr != nil {
+				return nil, nil, hErr
+			}
+			if !ok {
+				continue
+			}
+		}
+		data = append(data, rowVals)
+	}
+	return cols, data, nil
+}
+
 func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	var cols []string
 	var data [][]driver.Value
@@ -431,7 +674,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					}
 					// Evaluate ON condition.
 					if jc.onExpr != nil {
-						ok, onErr := evalPredicateOnMapExpr(combined, jc.onExpr)
+						ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
 						if onErr != nil {
 							return nil, onErr
 						}
@@ -465,7 +708,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 							combined[k] = v
 						}
 						if jc.onExpr != nil {
-							ok, onErr := evalPredicateOnMapExpr(combined, jc.onExpr)
+							ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
 							if onErr != nil {
 								return nil, onErr
 							}
@@ -497,7 +740,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				filtered = append(filtered, row)
 				continue
 			}
-			ok, wErr := evalPredicateOnMapExpr(row, sq.whereExpr.Expression())
+			ok, wErr := evalPredicateOnMapExpr(ctx, c, row, sq.whereExpr.Expression())
 			if wErr != nil {
 				return nil, wErr
 			}
@@ -507,231 +750,141 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		}
 
 		// GROUP BY + aggregate on map rows (for JOIN queries).
-		if sq.countStar || len(sq.aggCols) > 0 {
-			type mapGroupState struct {
-				groupVals    []driver.Value
-				counts       []int64
-				sums         []float64
-				mins         []driver.Value
-				maxes        []driver.Value
-				avgs         []float64
-				avgsN        []int64
-				distinctSets []map[string]struct{}
+		// Aggregated results fall through to ORDER BY/LIMIT/OFFSET below;
+		// the normal column-selection and row-building blocks are skipped.
+		isAggregate := sq.countStar || len(sq.aggCols) > 0
+		if isAggregate {
+			aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, filtered)
+			if aggErr != nil {
+				return nil, aggErr
 			}
-			groupOrder := []string{}
-			groups := map[string]*mapGroupState{}
-			hasGroups := len(sq.groupBy) > 0
-			for _, row := range filtered {
-				gVals := make([]driver.Value, len(sq.groupBy))
-				for gi, gcol := range sq.groupBy {
-					if v, ok := row[gcol]; ok {
-						gVals[gi] = v
-					} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
-						gVals[gi] = row[gcol[dot+1:]]
-					}
-				}
-				key := groupByKey(gVals)
-				if !hasGroups {
-					key = ""
-				}
-				gs, exists := groups[key]
-				if !exists {
-					dsets := make([]map[string]struct{}, len(sq.aggCols))
-					for di, ac := range sq.aggCols {
-						if ac.aggDistinct {
-							dsets[di] = make(map[string]struct{})
-						}
-					}
-					gs = &mapGroupState{
-						groupVals:    gVals,
-						counts:       make([]int64, len(sq.aggCols)),
-						sums:         make([]float64, len(sq.aggCols)),
-						mins:         make([]driver.Value, len(sq.aggCols)),
-						maxes:        make([]driver.Value, len(sq.aggCols)),
-						avgs:         make([]float64, len(sq.aggCols)),
-						avgsN:        make([]int64, len(sq.aggCols)),
-						distinctSets: dsets,
-					}
-					groups[key] = gs
-					groupOrder = append(groupOrder, key)
-				}
-				for i, ac := range sq.aggCols {
-					if ac.groupCol != "" {
-						continue
-					}
-					colVal := row[ac.aggArg]
-					if colVal == nil && ac.aggArg != "" {
-						if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-							colVal = row[ac.aggArg[dot+1:]]
-						}
-					}
-					if ac.aggDistinct && ac.aggArg != "" {
-						if colVal != nil {
-							dk := fmt.Sprintf("%v", colVal)
-							if _, seen := gs.distinctSets[i][dk]; !seen {
-								gs.distinctSets[i][dk] = struct{}{}
-								gs.counts[i]++
-							}
-						}
-						continue
-					}
-					gs.counts[i]++
-					if colVal != nil {
-						fv, _ := toFloat64(colVal)
-						switch ac.aggFunc {
-						case "SUM":
-							gs.sums[i] += fv
-						case "MIN":
-							if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
-								gs.mins[i] = colVal
-							}
-						case "MAX":
-							if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
-								gs.maxes[i] = colVal
-							}
-						case "AVG":
-							gs.avgs[i] += fv
-							gs.avgsN[i]++
-						}
-					}
-				}
-			}
-			groupColIdx := map[string]int{}
-			for i, col := range sq.groupBy {
-				groupColIdx[col] = i
-			}
-			if sq.countStar {
-				cols = []string{"COUNT(*)"}
-				data = [][]driver.Value{{int64(len(filtered))}}
-			} else {
-				cols = make([]string, len(sq.aggCols))
-				for i, ac := range sq.aggCols {
-					cols[i] = ac.outName
-				}
-				for _, key := range groupOrder {
-					gs := groups[key]
-					rowVals := make([]driver.Value, len(sq.aggCols))
-					rowMap := make(map[string]driver.Value, len(sq.aggCols))
-					for i, ac := range sq.aggCols {
-						if ac.groupCol != "" {
-							idx, ok := groupColIdx[ac.groupCol]
-							if ok {
-								rowVals[i] = gs.groupVals[idx]
-							}
-						} else {
-							switch ac.aggFunc {
-							case "COUNT":
-								rowVals[i] = gs.counts[i]
-							case "SUM":
-								rowVals[i] = gs.sums[i]
-							case "MIN":
-								rowVals[i] = gs.mins[i]
-							case "MAX":
-								rowVals[i] = gs.maxes[i]
-							case "AVG":
-								if gs.avgsN[i] > 0 {
-									rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
-								}
-							}
-						}
-						rowMap[ac.outName] = rowVals[i]
-					}
-					if sq.havingExpr != nil {
-						ok, hErr := evalHaving(rowMap, sq.havingExpr)
-						if hErr != nil {
-							return nil, hErr
-						}
-						if !ok {
-							continue
-						}
-					}
-					data = append(data, rowVals)
-				}
-			}
-			return nil, nil
-		}
-
-		// Determine output columns.
-		// For SELECT *, collect all unique unqualified column names in order.
-		if sq.projCols == nil && !sq.countStar {
-			seen := make(map[string]bool)
-			// Order: left table columns first, then join table columns.
-			leftRt := md.GetRecordType(sq.tableName)
-			if leftRt != nil {
-				for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
-					name := string(leftRt.Descriptor.Fields().Get(i).Name())
-					if !seen[name] {
-						cols = append(cols, name)
-						seen[name] = true
-					}
-				}
-			}
-			for _, jc := range sq.joins {
-				jRt := md.GetRecordType(jc.tableName)
-				if jRt != nil {
-					for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
-						name := string(jRt.Descriptor.Fields().Get(i).Name())
+			cols = aggCols
+			data = aggData
+		} else {
+			// Determine output columns.
+			// For SELECT *, collect all unique unqualified column names in order.
+			if sq.projCols == nil {
+				seen := make(map[string]bool)
+				// Order: left table columns first, then join table columns.
+				leftRt := md.GetRecordType(sq.tableName)
+				if leftRt != nil {
+					for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
+						name := string(leftRt.Descriptor.Fields().Get(i).Name())
 						if !seen[name] {
 							cols = append(cols, name)
 							seen[name] = true
 						}
 					}
 				}
-			}
-		} else if !sq.countStar {
-			cols = make([]string, len(sq.projCols))
-			for i, c := range sq.projCols {
-				out := c
-				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
-					out = sq.projAliases[i]
-				}
-				cols[i] = out
-			}
-		}
-
-		// Build output rows.
-		for _, row := range filtered {
-			var vals []driver.Value
-			if sq.countStar {
-				// handled below (not really expected with JOIN, but be safe)
-				continue
-			}
-			if sq.projCols == nil {
-				// SELECT * — use cols order.
-				vals = make([]driver.Value, len(cols))
-				for i, col := range cols {
-					vals[i] = row[col]
-				}
-			} else {
-				vals = make([]driver.Value, len(sq.projCols))
-				for i, col := range sq.projCols {
-					// Try qualified first, then unqualified.
-					if v, ok := row[col]; ok {
-						vals[i] = v
-					} else {
-						// Strip table prefix: "a.id" → try "id" in map.
-						if dot := strings.LastIndex(col, "."); dot >= 0 {
-							vals[i] = row[col[dot+1:]]
+				for _, jc := range sq.joins {
+					jRt := md.GetRecordType(jc.tableName)
+					if jRt != nil {
+						for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
+							name := string(jRt.Descriptor.Fields().Get(i).Name())
+							if !seen[name] {
+								cols = append(cols, name)
+								seen[name] = true
+							}
 						}
 					}
 				}
+			} else {
+				cols = make([]string, len(sq.projCols))
+				for i, c := range sq.projCols {
+					out := c
+					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+						out = sq.projAliases[i]
+					}
+					cols[i] = out
+				}
 			}
-			data = append(data, vals)
+
+			// Build output rows.
+			for _, row := range filtered {
+				var vals []driver.Value
+				if sq.projCols == nil {
+					// SELECT * — use cols order.
+					vals = make([]driver.Value, len(cols))
+					for i, col := range cols {
+						vals[i] = row[col]
+					}
+				} else {
+					vals = make([]driver.Value, len(sq.projCols))
+					for i, col := range sq.projCols {
+						// Try qualified first, then unqualified.
+						if v, ok := row[col]; ok {
+							vals[i] = v
+						} else {
+							// Strip table prefix: "a.id" → try "id" in map.
+							if dot := strings.LastIndex(col, "."); dot >= 0 {
+								vals[i] = row[col[dot+1:]]
+							}
+						}
+					}
+				}
+				data = append(data, vals)
+			}
 		}
 
-		// ORDER BY.
+		// ORDER BY. For aggregate results, `filtered` and `data` diverge — the
+		// colName path handles that. For non-aggregate rows, data[i] matches
+		// filtered[i] in lockstep, so `ob.expr` can be evaluated against
+		// filtered[i] for arbitrary-expression sort keys.
 		if len(sq.orderBy) > 0 {
 			colIdx := make(map[string]int, len(cols))
 			for i, c := range cols {
 				colIdx[c] = i
 			}
-			sort.SliceStable(data, func(i, j int) bool {
-				for _, ob := range sq.orderBy {
-					idx, ok := colIdx[ob.colName]
-					if !ok {
-						continue
+			// Pre-compute sort keys for expression order-by to avoid redundant
+			// evaluation inside the comparator.
+			hasExpr := false
+			for _, ob := range sq.orderBy {
+				if ob.expr != nil {
+					hasExpr = true
+					break
+				}
+			}
+			var keys [][]driver.Value
+			if hasExpr {
+				// Aggregation shrinks rows, breaking the filtered[i]↔data[i]
+				// lockstep needed to evaluate ORDER BY expressions. Plain
+				// ORDER BY col / ORDER BY SUM(col) still works via the
+				// colName path (columnNameFromExpr recognises aggregates).
+				if len(filtered) != len(data) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"ORDER BY on an arithmetic / function expression is not supported when the query also aggregates; use a column or a plain aggregate (e.g. ORDER BY SUM(col))")
+				}
+				keys = make([][]driver.Value, len(data))
+				for i := range data {
+					keys[i] = make([]driver.Value, len(sq.orderBy))
+					for oi, ob := range sq.orderBy {
+						if ob.expr != nil {
+							v, evalErr := evalExprOnMap(ctx, c, filtered[i], ob.expr)
+							if evalErr != nil {
+								return nil, evalErr
+							}
+							keys[i][oi] = v
+						}
 					}
-					cmp := compareValues(data[i][idx], data[j][idx])
+				}
+			}
+			indexes := make([]int, len(data))
+			for i := range indexes {
+				indexes[i] = i
+			}
+			sort.SliceStable(indexes, func(ii, jj int) bool {
+				i, j := indexes[ii], indexes[jj]
+				for oi, ob := range sq.orderBy {
+					var cmp int
+					if ob.expr != nil && keys != nil {
+						cmp = compareValues(keys[i][oi], keys[j][oi])
+					} else {
+						idx, ok := colIdx[ob.colName]
+						if !ok {
+							continue
+						}
+						cmp = compareValues(data[i][idx], data[j][idx])
+					}
 					if cmp != 0 {
 						if ob.ascending {
 							return cmp < 0
@@ -741,6 +894,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 				return false
 			})
+			sorted := make([][]driver.Value, len(data))
+			for nn, oldIdx := range indexes {
+				sorted[nn] = data[oldIdx]
+			}
+			data = sorted
 		}
 
 		// LIMIT / OFFSET.
@@ -759,6 +917,163 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		return nil, runErr
 	}
 	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSelectFromCTE executes a SELECT against a materialized CTE result set.
+// Supports WHERE, projected columns, ORDER BY, LIMIT, and OFFSET.
+// Aggregate queries and JOINs against CTEs are not yet supported.
+func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQuery, cte *cteData) (driver.Rows, error) {
+	alias := sq.tableAlias
+	if alias == "" {
+		alias = sq.tableName
+	}
+
+	// Build map rows.
+	mapRows := cteRowsToMaps(cte, alias)
+
+	// Apply WHERE filter.
+	if sq.whereExpr != nil {
+		filtered := mapRows[:0]
+		for _, row := range mapRows {
+			ok, err := evalPredicateOnMapExpr(ctx, c, row, sq.whereExpr.Expression())
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				filtered = append(filtered, row)
+			}
+		}
+		mapRows = filtered
+	}
+
+	// Determine output columns and build output rows.
+	var colNames []string
+	var outRows [][]driver.Value
+
+	if len(sq.aggCols) > 0 || sq.countStar {
+		aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, mapRows)
+		if aggErr != nil {
+			return nil, aggErr
+		}
+		colNames = aggCols
+		outRows = aggData
+	} else if sq.projCols == nil {
+		// SELECT * — emit all CTE columns in definition order.
+		colNames = cte.cols
+		for _, row := range mapRows {
+			outRow := make([]driver.Value, len(cte.cols))
+			for j, col := range cte.cols {
+				outRow[j] = row[col]
+			}
+			outRows = append(outRows, outRow)
+		}
+	} else if sq.projCols != nil {
+		colNames = make([]string, len(sq.projCols))
+		for j, col := range sq.projCols {
+			if j < len(sq.projAliases) && sq.projAliases[j] != "" {
+				colNames[j] = sq.projAliases[j]
+			} else {
+				colNames[j] = col
+			}
+		}
+		for _, row := range mapRows {
+			outRow := make([]driver.Value, len(sq.projCols))
+			for j, col := range sq.projCols {
+				if j < len(sq.projExprs) && sq.projExprs[j] != nil {
+					v, evalErr := evalExprOnMap(ctx, c, row, sq.projExprs[j])
+					if evalErr != nil {
+						return nil, evalErr
+					}
+					outRow[j] = v
+				} else {
+					outRow[j] = row[col]
+				}
+			}
+			outRows = append(outRows, outRow)
+		}
+	}
+
+	// ORDER BY. For aggregate CTE results, outRows was built via
+	// aggregateMapRows and mapRows is no longer in lockstep — use colName
+	// path only. For non-aggregate CTE, mapRows[i] matches outRows[i].
+	if len(sq.orderBy) > 0 {
+		colIdx := make(map[string]int, len(colNames))
+		for i, cn := range colNames {
+			colIdx[cn] = i
+		}
+		hasExpr := false
+		for _, ob := range sq.orderBy {
+			if ob.expr != nil {
+				hasExpr = true
+				break
+			}
+		}
+		var keys [][]driver.Value
+		if hasExpr {
+			if len(mapRows) != len(outRows) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"ORDER BY on an arithmetic / function expression is not supported when the query also aggregates; use a column or a plain aggregate (e.g. ORDER BY SUM(col))")
+			}
+			keys = make([][]driver.Value, len(outRows))
+			for i := range outRows {
+				keys[i] = make([]driver.Value, len(sq.orderBy))
+				for oi, ob := range sq.orderBy {
+					if ob.expr != nil {
+						v, evalErr := evalExprOnMap(ctx, c, mapRows[i], ob.expr)
+						if evalErr != nil {
+							return nil, evalErr
+						}
+						keys[i][oi] = v
+					}
+				}
+			}
+		}
+		indexes := make([]int, len(outRows))
+		for i := range indexes {
+			indexes[i] = i
+		}
+		sort.SliceStable(indexes, func(ii, jj int) bool {
+			i, j := indexes[ii], indexes[jj]
+			for oi, ob := range sq.orderBy {
+				var cmp int
+				if ob.expr != nil && keys != nil {
+					cmp = compareValues(keys[i][oi], keys[j][oi])
+				} else {
+					idx, ok := colIdx[ob.colName]
+					if !ok {
+						continue
+					}
+					cmp = compareValues(outRows[i][idx], outRows[j][idx])
+				}
+				if cmp != 0 {
+					if ob.ascending {
+						return cmp < 0
+					}
+					return cmp > 0
+				}
+			}
+			return false
+		})
+		sorted := make([][]driver.Value, len(outRows))
+		for nn, oldIdx := range indexes {
+			sorted[nn] = outRows[oldIdx]
+		}
+		outRows = sorted
+	}
+
+	// OFFSET then LIMIT.
+	if sq.offset > 0 {
+		if sq.offset >= int64(len(outRows)) {
+			outRows = nil
+		} else {
+			outRows = outRows[sq.offset:]
+		}
+	}
+	if sq.limit >= 0 && int64(len(outRows)) > sq.limit {
+		outRows = outRows[:sq.limit]
+	}
+
+	return &staticRows{cols: colNames, rows: outRows}, nil
 }
 
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
@@ -823,7 +1138,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if !result.HasNext() {
 					break
 				}
-				match, matchErr := evalPredicate(result.GetValue().Record, sq.whereExpr)
+				match, matchErr := evalPredicate(ctx, c, result.GetValue().Record, sq.whereExpr)
 				if matchErr != nil {
 					return nil, matchErr
 				}
@@ -890,7 +1205,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					break
 				}
 				msg := result.GetValue().Record
-				match, matchErr := evalPredicate(msg, sq.whereExpr)
+				match, matchErr := evalPredicate(ctx, c, msg, sq.whereExpr)
 				if matchErr != nil {
 					return nil, matchErr
 				}
@@ -1007,7 +1322,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					rowMap[ac.outName] = rowVals[i]
 				}
 				if sq.havingExpr != nil {
-					keep, havErr := evalHaving(rowMap, sq.havingExpr)
+					keep, havErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
 					if havErr != nil {
 						return nil, havErr
 					}
@@ -1089,7 +1404,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			rec := result.GetValue()
 			msg := rec.Record
-			match, matchErr := evalPredicate(msg, sq.whereExpr)
+			match, matchErr := evalPredicate(ctx, c, msg, sq.whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -1100,7 +1415,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			for i, f := range fullFields {
 				// Check for a computed expression at this position.
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-					v, evalErr := evalExpr(msg, sq.projExprs[i])
+					v, evalErr := evalExpr(ctx, c, msg, sq.projExprs[i])
 					if evalErr != nil {
 						return nil, evalErr
 					}
@@ -1138,6 +1453,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 	// Apply ORDER BY (post-scan in-memory sort).
 	if len(sq.orderBy) > 0 {
+		for _, ob := range sq.orderBy {
+			if ob.expr != nil {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"ORDER BY on an expression is only supported in CTE / JOIN queries; use a column name or alias")
+			}
+		}
 		// Build a map from column name to row index (covers projected + extra sort cols).
 		colIdx := make(map[string]int, len(cols)+len(extraSortFields))
 		for i, c := range cols {
@@ -1207,7 +1528,7 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 
 // filterSysRows applies WHERE filtering to system-table rows (map-based, no proto).
 // Column names are matched case-insensitively against the cols slice.
-func filterSysRows(rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
+func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
 	if where == nil {
 		return rows, nil
 	}
@@ -1218,7 +1539,7 @@ func filterSysRows(rows [][]driver.Value, cols []string, where antlrgen.IWhereEx
 		for i, c := range cols {
 			m[strings.ToUpper(c)] = row[i]
 		}
-		ok, err := evalPredicateOnMapExpr(m, expr)
+		ok, err := evalPredicateOnMapExpr(ctx, conn, m, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -1258,7 +1579,7 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 		return nil, err
 	}
 	cols := []string{"CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"}
-	filtered, ferr := filterSysRows(data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -1319,7 +1640,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
 		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
 	}
-	filtered, ferr := filterSysRows(data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -1398,7 +1719,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
 		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
 	}
-	filtered, ferr := filterSysRows(data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -1476,7 +1797,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
 		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
 	}
-	data, err = filterSysRows(data, cols, where)
+	data, err = filterSysRows(ctx, c, data, cols, where)
 	if err != nil {
 		return nil, err
 	}
@@ -1510,6 +1831,9 @@ type selectQuery struct {
 	havingExpr antlrgen.IExpressionContext
 	// joins describes JOIN clauses (nil = no joins).
 	joins []joinClause
+	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
+	// When set, tableName holds the alias; the query is materialized at execution time.
+	derivedQuery antlrgen.IQueryContext
 }
 
 // joinClause describes a single JOIN part in a SELECT query.
@@ -1523,6 +1847,12 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// expr is non-nil for ORDER BY on a non-trivial expression (e.g.
+	// `ORDER BY UPPER(name)`, `ORDER BY price * qty`). When set, colName is
+	// empty and the expression is evaluated per row at sort time. Only the
+	// CTE and JOIN paths (which retain map rows) honor this; the proto /
+	// single-table scan path still requires a column/aggregate name.
+	expr antlrgen.IExpressionContext
 }
 
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
@@ -1797,19 +2127,85 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+		// SELECT without FROM: evaluate expressions as constants (single-row result).
+		return &selectQuery{
+			projCols:    projCols,
+			projAliases: projAliases,
+			projExprs:   projExprs,
+		}, nil
 	}
 
 	sources := fromClause.TableSources()
-	if sources == nil || len(sources.AllTableSource()) != 1 {
+	if sources == nil || len(sources.AllTableSource()) == 0 {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only single-table SELECT is supported")
+			"FROM clause missing table source")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
 	}
+	// Additional comma-separated sources become implicit cross joins; the
+	// WHERE clause supplies any join predicate.
+	var extraCrossJoins []joinClause
+	for _, extra := range sources.AllTableSource()[1:] {
+		eb, isBase := extra.(*antlrgen.TableSourceBaseContext)
+		if !isBase {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported extra table source %T", extra)
+		}
+		atomItem, atomOk := eb.TableSourceItem().(*antlrgen.AtomTableItemContext)
+		if !atomOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"FROM: comma-separated sources must be plain table names, got %T",
+				eb.TableSourceItem())
+		}
+		uids := atomItem.TableName().FullId().AllUid()
+		parts := make([]string, len(uids))
+		for i, u := range uids {
+			parts[i] = stripIdentifierQuotes(u.GetText())
+		}
+		tblName := strings.Join(parts, ".")
+		alias := tblName
+		if atomItem.AS() != nil && atomItem.Uid() != nil {
+			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+		}
+		extraCrossJoins = append(extraCrossJoins, joinClause{
+			tableName: tblName,
+			joinType:  "INNER",
+			alias:     alias,
+			onExpr:    nil,
+		})
+		// Bare-source joins are not supported on extras (grammar quirk).
+		if len(eb.AllJoinPart()) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"JOIN clauses on comma-separated FROM sources are not supported")
+		}
+	}
+	// Check for derived table: FROM (SELECT ...) AS alias
+	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
+		alias := ""
+		if subItem.GetAlias() != nil {
+			alias = stripIdentifierQuotes(subItem.GetAlias().GetText())
+		}
+		if alias == "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
+		}
+		return &selectQuery{
+			tableName:    alias,
+			tableAlias:   alias,
+			projCols:     projCols,
+			projAliases:  projAliases,
+			projExprs:    projExprs,
+			countStar:    countStar,
+			aggCols:      aggCols,
+			distinct:     simpleTable.DISTINCT() != nil,
+			whereExpr:    fromClause.WhereExpr(),
+			limit:        -1,
+			derivedQuery: subItem.Query(),
+		}, nil
+	}
+
 	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -1855,6 +2251,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
 		joins[0].joinType = promotedJoinType
 	}
+	// Implicit cross joins from comma-separated FROM sources run last; the
+	// WHERE predicate decides which combinations survive.
+	joins = append(joins, extraCrossJoins...)
 
 	sq := &selectQuery{
 		tableName:   strings.Join(parts, "."),
@@ -1874,15 +2273,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	orderByClauseCtx := simpleTable.OrderByClause()
 	if orderByClauseCtx != nil {
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
-			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
-			if nameErr != nil {
-				return nil, nameErr
-			}
 			ascending := true
 			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
 				ascending = false
 			}
-			sq.orderBy = append(sq.orderBy, orderByClause{colName, ascending})
+			// Prefer plain column / aggregate lookup (works in all sort paths,
+			// including the proto single-table path). Fall back to storing the
+			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
+			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
+			if nameErr == nil {
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending})
+			} else {
+				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, expr: obExpr.Expression()})
+			}
 		}
 	}
 
@@ -2389,7 +2792,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
 				}
-				val, evalErr := evalLiteralExpr(exprs[i])
+				val, evalErr := evalExpr(ctx, c, nil, exprs[i].Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
@@ -2578,11 +2981,11 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 // evalExpr evaluates an expression against msg, returning a scalar driver.Value.
 // Used in SELECT projections, UPDATE SET, and WHERE/HAVING predicates.
 // Supports: literals, column references, and binary arithmetic (+, -, *, /).
-func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
+func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		// Boolean expressions (AND/OR/NOT, comparisons) return bool as a value.
-		b, err := evalExprPredicate(msg, expr)
+		b, err := evalExprPredicate(ctx, conn, msg, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -2591,16 +2994,16 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate via
 	// evalExprPredicate which handles the full predicate tree.
 	if pred.Predicate() != nil {
-		b, err := evalExprPredicate(msg, expr)
+		b, err := evalExprPredicate(ctx, conn, msg, expr)
 		if err != nil {
 			return nil, err
 		}
 		return b, nil
 	}
-	return evalExprAtom(msg, pred.ExpressionAtom())
+	return evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 }
 
-func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
+func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:
 		return evalConstant(a.Constant())
@@ -2613,28 +3016,38 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 		if fd == nil {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
 		}
+		// Absent proto2 optional fields are SQL NULL — distinct from the zero
+		// value. Predicates already use Has(); function arguments must too,
+		// otherwise UPPER(NULL) would produce "" instead of NULL.
+		if !msg.ProtoReflect().Has(fd) {
+			return nil, nil
+		}
 		return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
 	case *antlrgen.MathExpressionAtomContext:
-		left, err := evalExprAtom(msg, a.GetLeft())
+		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtom(msg, a.GetRight())
+		right, err := evalExprAtom(ctx, conn, msg, a.GetRight())
 		if err != nil {
 			return nil, err
 		}
 		return applyMathOp(left, right, a.MathOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
-		return evalScalarFunctionCall(msg, a.FunctionCall())
+		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
 	case *antlrgen.BinaryComparisonPredicateContext:
 		// Comparison used as a value (e.g. IF(a > b, ...) or CASE WHEN ... END).
-		left, err := evalExprAtom(msg, a.GetLeft())
+		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtom(msg, a.GetRight())
+		right, err := evalExprAtom(ctx, conn, msg, a.GetRight())
 		if err != nil {
 			return nil, err
+		}
+		// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+		if left == nil || right == nil {
+			return false, nil
 		}
 		cmp := compareValues(left, right)
 		switch a.ComparisonOperator().GetText() {
@@ -2657,11 +3070,33 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 	}
 }
 
-// evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, CASE, etc.).
-func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+// exprEvaluator is the function-pointer adapter that abstracts over the two
+// expression-evaluation contexts (proto record vs. map row). Both the scalar
+// and specific function cores drive all argument evaluation through this.
+type exprEvaluator func(expr antlrgen.IExpressionContext) (driver.Value, error)
+
+// predicateEvaluator is the boolean-predicate counterpart of exprEvaluator,
+// used by the searched CASE WHEN branch of evalSpecificFunctionCore.
+type predicateEvaluator func(expr antlrgen.IExpressionContext) (bool, error)
+
+// evalScalarFunctionCallCore is the unified implementation shared by
+// evalScalarFunctionCall (proto path) and evalScalarFunctionCallOnMap (map
+// path). The two callers differ only in how they evaluate sub-expressions;
+// that variation is captured in the eval / predicateEval adapters.
+//
+// unsupportedFmt is the format string ("... %q ...") used for the default
+// case — proto and map paths use subtly different wording which we preserve
+// verbatim. It must accept exactly one %q for the function name.
+func evalScalarFunctionCallCore(
+	eval exprEvaluator,
+	predicateEval predicateEvaluator,
+	unsupportedFmt string,
+	unsupportedSpecificFmt string,
+	fc antlrgen.IFunctionCallContext,
+) (driver.Value, error) {
 	// Handle CASE expressions routed through SpecificFunctionCall.
 	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return evalSpecificFunction(msg, sf.SpecificFunction())
+		return evalSpecificFunctionCore(eval, predicateEval, unsupportedSpecificFmt, sf.SpecificFunction())
 	}
 
 	var name string
@@ -2683,7 +3118,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 	switch name {
 	case "COALESCE":
 		for _, fa := range fArgs {
-			v, err := evalExpr(msg, fa.Expression())
+			v, err := eval(fa.Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -2696,19 +3131,19 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IFNULL requires 2 arguments")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		if v != nil {
 			return v, nil
 		}
-		return evalExpr(msg, fArgs[1].Expression())
+		return eval(fArgs[1].Expression())
 	case "UPPER":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2721,7 +3156,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2734,7 +3169,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2742,25 +3177,31 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
 		}
-		return int64(len(s)), nil
-	case "TRIM":
+		return int64(utf8.RuneCountInString(s)), nil
+	case "TRIM", "LTRIM", "RTRIM":
 		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM: argument must be string, got %T", v)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
+		}
+		switch name {
+		case "LTRIM":
+			return strings.TrimLeft(s, " \t\n\r"), nil
+		case "RTRIM":
+			return strings.TrimRight(s, " \t\n\r"), nil
 		}
 		return strings.TrimSpace(s), nil
 	case "ABS":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2782,7 +3223,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2804,7 +3245,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		case "ROUND":
 			decimals := int64(0)
 			if len(fArgs) >= 2 {
-				dv, derr := evalExpr(msg, fArgs[1].Expression())
+				dv, derr := eval(fArgs[1].Expression())
 				if derr == nil {
 					if d, ok := dv.(int64); ok {
 						decimals = d
@@ -2827,11 +3268,11 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
 		}
-		av, aerr := evalExpr(msg, fArgs[0].Expression())
+		av, aerr := eval(fArgs[0].Expression())
 		if aerr != nil || av == nil {
 			return nil, aerr
 		}
-		bv, berr := evalExpr(msg, fArgs[1].Expression())
+		bv, berr := eval(fArgs[1].Expression())
 		if berr != nil || bv == nil {
 			return nil, berr
 		}
@@ -2862,26 +3303,21 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
 		}
-		baseV, berr := evalExpr(msg, fArgs[0].Expression())
+		baseV, berr := eval(fArgs[0].Expression())
 		if berr != nil || baseV == nil {
 			return nil, berr
 		}
-		expV, eerr := evalExpr(msg, fArgs[1].Expression())
+		expV, eerr := eval(fArgs[1].Expression())
 		if eerr != nil || expV == nil {
 			return nil, eerr
 		}
-		var base, exp float64
-		switch n := baseV.(type) {
-		case int64:
-			base = float64(n)
-		case float64:
-			base = n
+		base, ok := toFloat64(baseV)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: base must be numeric, got %T", baseV)
 		}
-		switch n := expV.(type) {
-		case int64:
-			exp = float64(n)
-		case float64:
-			exp = n
+		exp, ok := toFloat64(expV)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
 		}
 		result := math.Pow(base, exp)
 		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
@@ -2892,7 +3328,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2922,7 +3358,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			if len(fArgs) < 1 {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "CONCAT_WS requires at least 1 argument")
 			}
-			sv, err := evalExpr(msg, fArgs[0].Expression())
+			sv, err := eval(fArgs[0].Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -2933,7 +3369,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		}
 		var parts []string
 		for _, fa := range fArgs[startIdx:] {
-			v, err := evalExpr(msg, fa.Expression())
+			v, err := eval(fa.Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -2947,11 +3383,11 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "NULLIF requires 2 arguments")
 		}
-		a, err := evalExpr(msg, fArgs[0].Expression())
+		a, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
-		b, err2 := evalExpr(msg, fArgs[1].Expression())
+		b, err2 := eval(fArgs[1].Expression())
 		if err2 != nil {
 			return nil, err2
 		}
@@ -2963,13 +3399,13 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) == 0 {
 			return nil, nil
 		}
-		best, err := evalExpr(msg, fArgs[0].Expression())
+		best, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		isGreatest := name == "GREATEST"
 		for _, fa := range fArgs[1:] {
-			v, verr := evalExpr(msg, fa.Expression())
+			v, verr := eval(fa.Expression())
 			if verr != nil {
 				return nil, verr
 			}
@@ -2982,17 +3418,180 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			}
 		}
 		return best, nil
+	case "PI":
+		return math.Pi, nil
+	case "SQRT":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT: argument must be numeric, got %T", v)
+		}
+		if f < 0 {
+			return nil, nil // SQRT of negative returns NULL per SQL standard.
+		}
+		return math.Sqrt(f), nil
+	case "EXP":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP: argument must be numeric, got %T", v)
+		}
+		result := math.Exp(f)
+		if math.IsInf(result, 0) || math.IsNaN(result) {
+			return nil, nil // Overflow / NaN → NULL, matching MySQL.
+		}
+		return result, nil
+	case "LN":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN: argument must be numeric, got %T", v)
+		}
+		if f <= 0 {
+			return nil, nil
+		}
+		return math.Log(f), nil
+	case "LOG":
+		// LOG(x) = natural log; LOG(base, x) = log_base(x).
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG requires 1 or 2 arguments")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v)
+		}
+		if len(fArgs) == 1 {
+			if f <= 0 {
+				return nil, nil
+			}
+			return math.Log(f), nil
+		}
+		v2, err := eval(fArgs[1].Expression())
+		if err != nil || v2 == nil {
+			return nil, err
+		}
+		f2, ok := toFloat64(v2)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v2)
+		}
+		if f <= 0 || f == 1 || f2 <= 0 {
+			return nil, nil
+		}
+		return math.Log(f2) / math.Log(f), nil
+	case "REVERSE":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REVERSE requires 1 argument")
+		}
+		sv, err := eval(fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		runes := []rune(s)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return string(runes), nil
+	case "POSITION":
+		// POSITION(substr, str) — 1-based rune index of first occurrence, 0 if not found.
+		// (POSITION(substr IN str) has a special grammar form — not supported here.)
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POSITION requires 2 arguments")
+		}
+		substrV, err := eval(fArgs[0].Expression())
+		if err != nil || substrV == nil {
+			return nil, err
+		}
+		strV, err := eval(fArgs[1].Expression())
+		if err != nil || strV == nil {
+			return nil, err
+		}
+		needle := fmt.Sprintf("%v", substrV)
+		haystack := fmt.Sprintf("%v", strV)
+		byteIdx := strings.Index(haystack, needle)
+		if byteIdx < 0 {
+			return int64(0), nil
+		}
+		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1), nil
+	case "LEFT":
+		// LEFT(str, n) — first n runes, or whole string if n >= length.
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LEFT requires 2 arguments")
+		}
+		sv, err := eval(fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		nVal, nErr := eval(fArgs[1].Expression())
+		if nErr != nil {
+			return nil, nErr
+		}
+		n, _ := nVal.(int64)
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s, nil
+		}
+		return string(runes[:n]), nil
+	case "RIGHT":
+		// RIGHT(str, n) — last n runes, or whole string if n >= length.
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "RIGHT requires 2 arguments")
+		}
+		sv, err := eval(fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		nVal, nErr := eval(fArgs[1].Expression())
+		if nErr != nil {
+			return nil, nErr
+		}
+		n, _ := nVal.(int64)
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s, nil
+		}
+		return string(runes[len(runes)-int(n):]), nil
 	case "SUBSTRING", "SUBSTR":
 		// SUBSTRING(str, pos [, len]) — 1-based position per SQL standard.
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SUBSTRING requires at least 2 arguments")
 		}
-		sv, err := evalExpr(msg, fArgs[0].Expression())
+		sv, err := eval(fArgs[0].Expression())
 		if err != nil || sv == nil {
 			return nil, err
 		}
 		s := fmt.Sprintf("%v", sv)
-		posVal, posErr := evalExpr(msg, fArgs[1].Expression())
+		posVal, posErr := eval(fArgs[1].Expression())
 		if posErr != nil {
 			return nil, posErr
 		}
@@ -3006,7 +3605,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			return "", nil
 		}
 		if len(fArgs) >= 3 {
-			lenVal, lenErr := evalExpr(msg, fArgs[2].Expression())
+			lenVal, lenErr := eval(fArgs[2].Expression())
 			if lenErr != nil {
 				return nil, lenErr
 			}
@@ -3026,15 +3625,15 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 3 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REPLACE requires 3 arguments")
 		}
-		sv, err := evalExpr(msg, fArgs[0].Expression())
+		sv, err := eval(fArgs[0].Expression())
 		if err != nil || sv == nil {
 			return nil, err
 		}
-		fromV, err := evalExpr(msg, fArgs[1].Expression())
+		fromV, err := eval(fArgs[1].Expression())
 		if err != nil || fromV == nil {
 			return nil, err
 		}
-		toV, err := evalExpr(msg, fArgs[2].Expression())
+		toV, err := eval(fArgs[2].Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -3048,60 +3647,115 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 3 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IF requires 3 arguments")
 		}
-		cond, err := evalExpr(msg, fArgs[0].Expression())
+		cond, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		if isTruthy(cond) {
-			return evalExpr(msg, fArgs[1].Expression())
+			return eval(fArgs[1].Expression())
 		}
-		return evalExpr(msg, fArgs[2].Expression())
+		return eval(fArgs[2].Expression())
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, name)
 	}
 }
 
-// evalSpecificFunction handles grammar-level SpecificFunction nodes: CASE WHEN ... END.
-func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
+// makeProtoExprEvaluator builds the exprEvaluator adapter for the proto path.
+// evalExpr returns (any, error); driver.Value is an alias for any so the
+// conversion is a no-op except we explicitly preserve nil → nil.
+func makeProtoExprEvaluator(ctx context.Context, conn *EmbeddedConnection, msg proto.Message) exprEvaluator {
+	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
+		v, err := evalExpr(ctx, conn, msg, e)
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			return nil, nil
+		}
+		return driver.Value(v), nil
+	}
+}
+
+// makeMapExprEvaluator builds the exprEvaluator adapter for the map path.
+func makeMapExprEvaluator(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value) exprEvaluator {
+	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
+		return evalExprOnMap(ctx, conn, row, e)
+	}
+}
+
+func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+	eval := makeProtoExprEvaluator(ctx, conn, msg)
+	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
+		return evalExprPredicate(ctx, conn, msg, e)
+	}
+	return evalScalarFunctionCallCore(eval, predEval, "unsupported scalar function %q", "unsupported specific function %T", fc)
+}
+
+func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
+	eval := makeMapExprEvaluator(ctx, conn, row)
+	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
+		return evalPredicateOnMapExpr(ctx, conn, row, e)
+	}
+	return evalScalarFunctionCallCore(eval, predEval, "unsupported function %q in map eval context", "unsupported specific function %T in map eval", fc)
+}
+
+// evalSpecificFunctionCore is the unified implementation shared by
+// evalSpecificFunction (proto path) and evalSpecificFunctionOnMap (map path).
+// Handles grammar-level SpecificFunction nodes: CASE WHEN ... END, simple CASE,
+// and CAST(expr AS type). The searched CASE branch needs a boolean predicate
+// evaluator, hence predicateEval in addition to eval.
+//
+// unsupportedFmt must accept exactly one %T for the specific-function type.
+func evalSpecificFunctionCore(
+	eval exprEvaluator,
+	predicateEval predicateEvaluator,
+	unsupportedFmt string,
+	sf antlrgen.ISpecificFunctionContext,
+) (driver.Value, error) {
 	switch c := sf.(type) {
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
 		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).
 		for _, alt := range c.AllCaseFuncAlternative() {
-			ok, err := evalExprPredicate(msg, alt.GetCondition().Expression())
+			ok, err := predicateEval(alt.GetCondition().Expression())
 			if err != nil {
 				return nil, err
 			}
 			if ok {
-				return evalExpr(msg, alt.GetConsequent().Expression())
+				return eval(alt.GetConsequent().Expression())
 			}
 		}
 		if c.GetElseArg() != nil {
-			return evalExpr(msg, c.GetElseArg().Expression())
+			return eval(c.GetElseArg().Expression())
 		}
 		return nil, nil
 	case *antlrgen.CaseExpressionFunctionCallContext:
 		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
-		subject, err := evalExpr(msg, c.Expression())
+		subject, err := eval(c.Expression())
 		if err != nil {
 			return nil, err
 		}
 		for _, alt := range c.AllCaseFuncAlternative() {
-			whenVal, wErr := evalExpr(msg, alt.GetCondition().Expression())
+			whenVal, wErr := eval(alt.GetCondition().Expression())
 			if wErr != nil {
 				return nil, wErr
 			}
+			// Simple CASE uses = semantics; NULL = anything is UNKNOWN, so a
+			// NULL subject or whenVal never matches a branch (falls to ELSE).
+			if subject == nil || whenVal == nil {
+				continue
+			}
 			if compareValues(subject, whenVal) == 0 {
-				return evalExpr(msg, alt.GetConsequent().Expression())
+				return eval(alt.GetConsequent().Expression())
 			}
 		}
 		if c.GetElseArg() != nil {
-			return evalExpr(msg, c.GetElseArg().Expression())
+			return eval(c.GetElseArg().Expression())
 		}
 		return nil, nil
 	case *antlrgen.DataTypeFunctionCallContext:
 		// CAST(expr AS type)
-		val, err := evalExpr(msg, c.Expression())
+		val, err := eval(c.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -3111,7 +3765,7 @@ func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContex
 		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
 		return castValue(val, typeName)
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, sf)
 	}
 }
 
@@ -3199,6 +3853,10 @@ func isTruthy(v any) bool {
 }
 
 func applyMathOp(left, right any, op string) (any, error) {
+	// NULL propagates through arithmetic per SQL 3-valued logic.
+	if left == nil || right == nil {
+		return nil, nil
+	}
 	lf, lok := toFloat64(left)
 	rf, rok := toFloat64(right)
 	if !lok || !rok {
@@ -3299,7 +3957,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				break
 			}
 			rec := result.GetValue()
-			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			match, matchErr := evalPredicate(ctx, c, rec.Record, whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -3315,7 +3973,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
 				}
-				val, evalErr := evalExpr(cloned, elem.Expression())
+				val, evalErr := evalExpr(ctx, c, cloned, elem.Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
@@ -3398,7 +4056,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 				break
 			}
 			rec := result.GetValue()
-			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			match, matchErr := evalPredicate(ctx, c, rec.Record, whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -3420,20 +4078,32 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 
 // evalPredicate returns true if msg satisfies whereExpr.
 // Only col = constant comparisons are supported. If whereExpr is nil, returns true.
-func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
+func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
 	if whereExpr == nil {
 		return true, nil
 	}
-	return evalExprPredicate(msg, whereExpr.Expression())
+	return evalExprPredicate(ctx, conn, msg, whereExpr.Expression())
 }
 
 // evalExprPredicate evaluates an IExpressionContext as a boolean predicate.
 // Supports: col = constant, col != constant, col < constant, col > constant,
 // col <= constant, col >= constant, AND, OR, NOT.
-func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
+func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
 	switch e := expr.(type) {
+	case *antlrgen.ExistsExpressionAtomContext:
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+		}
+		// NOTE: Correlated subqueries are not supported — the subquery cannot
+		// reference column values from the outer query row.
+		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		if subErr != nil {
+			return false, subErr
+		}
+		return len(subRows) > 0, nil
+
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalExprPredicate(msg, e.Expression(0))
+		left, err := evalExprPredicate(ctx, conn, msg, e.Expression(0))
 		if err != nil {
 			return false, err
 		}
@@ -3442,18 +4112,18 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 			if !left {
 				return false, nil // short-circuit
 			}
-			return evalExprPredicate(msg, e.Expression(1))
+			return evalExprPredicate(ctx, conn, msg, e.Expression(1))
 		}
 		if op.OR() != nil {
 			if left {
 				return true, nil // short-circuit
 			}
-			return evalExprPredicate(msg, e.Expression(1))
+			return evalExprPredicate(ctx, conn, msg, e.Expression(1))
 		}
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
 
 	case *antlrgen.NotExpressionContext:
-		v, err := evalExprPredicate(msg, e.Expression())
+		v, err := evalExprPredicate(ctx, conn, msg, e.Expression())
 		if err != nil {
 			return false, err
 		}
@@ -3463,16 +4133,16 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 		if e.Predicate() != nil {
 			switch p := e.Predicate().(type) {
 			case *antlrgen.InPredicateContext:
-				return evalInPredicate(msg, e, p)
+				return evalInPredicate(ctx, conn, msg, e, p)
 			case *antlrgen.IsExpressionContext:
-				return evalIsNullPredicate(msg, e, p)
+				return evalIsNullPredicate(ctx, conn, msg, e, p)
 			case *antlrgen.LikePredicateContext:
-				return evalLikePredicate(msg, e, p)
+				return evalLikePredicate(ctx, conn, msg, e, p)
 			case *antlrgen.BetweenComparisonPredicateContext:
-				return evalBetweenPredicate(msg, e, p)
+				return evalBetweenPredicate(ctx, conn, msg, e, p)
 			}
 		}
-		return evalComparisonPredicate(msg, e)
+		return evalComparisonPredicate(ctx, conn, msg, e)
 
 	default:
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
@@ -3480,20 +4150,31 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 }
 
 // evalComparisonPredicate handles a leaf comparison between two arbitrary expressions.
-func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+func evalComparisonPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
+		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`)
+		// — evaluate as a value and treat truthy results as TRUE.
+		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
+		if err != nil {
+			return false, err
+		}
+		return isTruthy(v), nil
 	}
 	opText := bcp.ComparisonOperator().GetText()
 
-	left, err := evalExprAtom(msg, bcp.GetLeft())
+	left, err := evalExprAtom(ctx, conn, msg, bcp.GetLeft())
 	if err != nil {
 		return false, err
 	}
-	right, err := evalExprAtom(msg, bcp.GetRight())
+	right, err := evalExprAtom(ctx, conn, msg, bcp.GetRight())
 	if err != nil {
 		return false, err
+	}
+	// SQL 3-valued logic: any comparison involving NULL is UNKNOWN → false in
+	// WHERE. Use IS NULL / IS NOT NULL for explicit NULL tests.
+	if left == nil || right == nil {
+		return false, nil
 	}
 
 	cmp := compareValues(left, right)
@@ -3515,8 +4196,22 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	}
 }
 
-// evalInPredicate handles: expr [NOT] IN (val1, val2, ...)
-func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
+// matchSubqueryIN checks whether fieldVal appears in the first column of subRows.
+// Returns (matched, notNegated) following SQL IN/NOT IN semantics.
+func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) bool {
+	for _, row := range subRows {
+		if len(row) == 0 {
+			continue
+		}
+		if valuesEqual(fieldVal, row[0]) {
+			return !negated
+		}
+	}
+	return negated
+}
+
+// evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
+func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() so unset optionals (SQL NULL) return false.
@@ -3530,7 +4225,7 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 		}
 		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 	} else {
-		v, err := evalExprAtom(msg, pred.ExpressionAtom())
+		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
 			return false, err
 		}
@@ -3538,6 +4233,17 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 			return false, nil // NULL IN (...) = UNKNOWN
 		}
 		fieldVal = v
+	}
+
+	if qb := in.InList().QueryExpressionBody(); qb != nil {
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
+		}
+		_, subRows, err := conn.execQueryBodyRows(ctx, qb)
+		if err != nil {
+			return false, err
+		}
+		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil), nil
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
@@ -3569,7 +4275,7 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 }
 
 // evalIsNullPredicate handles: expr IS [NOT] NULL / IS TRUE / IS FALSE
-func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
+func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
 	// Evaluate the expression on the left side (may be a column, function call, etc.).
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
@@ -3583,7 +4289,7 @@ func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionC
 			fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 		}
 	} else {
-		v, err := evalExprAtom(msg, pred.ExpressionAtom())
+		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
 			return false, err
 		}
@@ -3619,8 +4325,8 @@ func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionC
 
 // evalLikePredicate handles: expr [NOT] LIKE 'pattern'
 // Supports SQL wildcards: % (any sequence) and _ (any single character).
-func evalLikePredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
-	rawVal, err := evalExprAtom(msg, pred.ExpressionAtom())
+func evalLikePredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
+	rawVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
@@ -3693,8 +4399,8 @@ func stripStringLiteralQuotes(s string) string {
 }
 
 // evalBetweenPredicate handles: expr [NOT] BETWEEN lo AND hi (inclusive).
-func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
-	fieldVal, err := evalExprAtom(msg, pred.ExpressionAtom())
+func evalBetweenPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
+	fieldVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
@@ -3702,13 +4408,17 @@ func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpression
 		return false, nil // NULL BETWEEN ... = UNKNOWN
 	}
 
-	lo, err := evalExprAtom(msg, bet.GetLeft())
+	lo, err := evalExprAtom(ctx, conn, msg, bet.GetLeft())
 	if err != nil {
 		return false, err
 	}
-	hi, err := evalExprAtom(msg, bet.GetRight())
+	hi, err := evalExprAtom(ctx, conn, msg, bet.GetRight())
 	if err != nil {
 		return false, err
+	}
+	// SQL 3-valued logic: NULL bound → UNKNOWN → false.
+	if lo == nil || hi == nil {
+		return false, nil
 	}
 
 	result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
@@ -3730,10 +4440,21 @@ func groupByKey(groupVals []driver.Value) string {
 // evalHaving evaluates a HAVING clause expression against a map of
 // output-column-name → aggregate value.
 // Supports comparisons, AND/OR/NOT, and aggregate function references.
-func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+func evalHaving(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+	// EXISTS subquery
+	if exists, ok := expr.(*antlrgen.ExistsExpressionAtomContext); ok {
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+		}
+		_, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
+		if subErr != nil {
+			return false, subErr
+		}
+		return len(subRows) > 0, nil
+	}
 	// Handle logical expressions: AND / OR
 	if le, ok := expr.(*antlrgen.LogicalExpressionContext); ok {
-		left, err := evalHaving(row, le.Expression(0))
+		left, err := evalHaving(ctx, conn, row, le.Expression(0))
 		if err != nil {
 			return false, err
 		}
@@ -3742,17 +4463,17 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 			if !left {
 				return false, nil
 			}
-			return evalHaving(row, le.Expression(1))
+			return evalHaving(ctx, conn, row, le.Expression(1))
 		}
 		// OR
 		if left {
 			return true, nil
 		}
-		return evalHaving(row, le.Expression(1))
+		return evalHaving(ctx, conn, row, le.Expression(1))
 	}
 	// Handle NOT
 	if ne, ok := expr.(*antlrgen.NotExpressionContext); ok {
-		v, err := evalHaving(row, ne.Expression())
+		v, err := evalHaving(ctx, conn, row, ne.Expression())
 		return !v, err
 	}
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
@@ -3761,7 +4482,7 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 	}
 	// WHERE-style predicate: expressionAtom + separate predicate (IS NULL, LIKE, BETWEEN, IN, =).
 	if pred.Predicate() != nil {
-		return evalPredicateOnMap(row, pred)
+		return evalPredicateOnMap(ctx, conn, row, pred)
 	}
 	// HAVING-style: the full comparison is the expression atom (BinaryComparisonPredicateContext).
 	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
@@ -3823,6 +4544,10 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 	if err != nil {
 		return false, err
 	}
+	// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+	if leftVal == nil || rightVal == nil {
+		return false, nil
+	}
 	opText := compPred.ComparisonOperator().GetText()
 	cmp := compareValues(leftVal, rightVal)
 	switch opText {
@@ -3844,7 +4569,7 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 
 // evalExprAtomOnMap resolves an expression atom using a map[string]driver.Value
 // row (used for JOIN WHERE and ON condition evaluation).
-func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
+func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:
 		v, err := evalConstant(a.Constant())
@@ -3866,13 +4591,17 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:
-		left, err := evalExprAtomOnMap(row, a.GetLeft())
+		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtomOnMap(row, a.GetRight())
+		right, err := evalExprAtomOnMap(ctx, conn, row, a.GetRight())
 		if err != nil {
 			return nil, err
+		}
+		// SQL 3-valued logic: NULL comparison → UNKNOWN → false (even NULL = NULL).
+		if left == nil || right == nil {
+			return false, nil
 		}
 		cmp := compareValues(left, right)
 		switch a.ComparisonOperator().GetText() {
@@ -3891,15 +4620,17 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator")
 	case *antlrgen.MathExpressionAtomContext:
-		left, err := evalExprAtomOnMap(row, a.GetLeft())
+		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtomOnMap(row, a.GetRight())
+		right, err := evalExprAtomOnMap(ctx, conn, row, a.GetRight())
 		if err != nil {
 			return nil, err
 		}
 		return applyArithmeticOp(left, right, a.MathOperator().GetText())
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom type %T in map eval", atom)
 	}
@@ -3907,19 +4638,31 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 
 // evalExprOnMap evaluates a scalar IExpressionContext against a map row, returning
 // a driver.Value. Handles arithmetic, column refs, constants, and nested expressions.
-func evalExprOnMap(row map[string]driver.Value, expr antlrgen.IExpressionContext) (driver.Value, error) {
+func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (driver.Value, error) {
 	switch e := expr.(type) {
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			ok, err := evalPredicateOnMap(row, e)
+			ok, err := evalPredicateOnMap(ctx, conn, row, e)
 			if err != nil {
 				return nil, err
 			}
 			return ok, nil
 		}
-		return evalExprAtomOnMap(row, e.ExpressionAtom())
+		return evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:
-		ok, err := evalPredicateOnMapExpr(row, expr)
+		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
+		if err != nil {
+			return nil, err
+		}
+		return ok, nil
+	case *antlrgen.NotExpressionContext:
+		v, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression())
+		if err != nil {
+			return nil, err
+		}
+		return !v, nil
+	case *antlrgen.ExistsExpressionAtomContext:
+		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -3931,8 +4674,8 @@ func evalExprOnMap(row map[string]driver.Value, expr antlrgen.IExpressionContext
 
 // evalPredicateOnMap evaluates a WHERE-style PredicatedExpressionContext against
 // a map[string]driver.Value row. Handles IS NULL, LIKE, BETWEEN, IN, comparisons.
-func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
-	fieldVal, err := evalExprAtomOnMap(row, pred.ExpressionAtom())
+func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+	fieldVal, err := evalExprAtomOnMap(ctx, conn, row, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
@@ -3989,13 +4732,17 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 		if fieldVal == nil {
 			return false, nil
 		}
-		lo, loErr := evalExprAtomOnMap(row, p.GetLeft())
+		lo, loErr := evalExprAtomOnMap(ctx, conn, row, p.GetLeft())
 		if loErr != nil {
 			return false, loErr
 		}
-		hi, hiErr := evalExprAtomOnMap(row, p.GetRight())
+		hi, hiErr := evalExprAtomOnMap(ctx, conn, row, p.GetRight())
 		if hiErr != nil {
 			return false, hiErr
+		}
+		// SQL 3-valued logic: NULL bound → UNKNOWN → false.
+		if lo == nil || hi == nil {
+			return false, nil
 		}
 		result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
 		if p.NOT() != nil {
@@ -4005,10 +4752,17 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 
 	case *antlrgen.InPredicateContext:
 		if fieldVal == nil {
-			if p.NOT() != nil {
-				return true, nil // NULL NOT IN (...) = UNKNOWN → false per SQL; but treat conservatively
+			return false, nil // NULL IN/NOT IN (...) = UNKNOWN → false
+		}
+		if qb := p.InList().QueryExpressionBody(); qb != nil {
+			if conn == nil {
+				return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 			}
-			return false, nil
+			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
+			if subErr != nil {
+				return false, subErr
+			}
+			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil), nil
 		}
 		if p.InList().Expressions() == nil {
 			return p.NOT() != nil, nil
@@ -4018,7 +4772,7 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 			if !ok {
 				continue
 			}
-			litVal, litErr := evalExprAtomOnMap(row, ep.ExpressionAtom())
+			litVal, litErr := evalExprAtomOnMap(ctx, conn, row, ep.ExpressionAtom())
 			if litErr != nil {
 				return false, litErr
 			}
@@ -4039,9 +4793,13 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 	// This happens when the predicate is NOT a special predicate type above.
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if ok {
-		rightVal, err := evalExprAtomOnMap(row, bcp.GetRight())
+		rightVal, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 		if err != nil {
 			return false, err
+		}
+		// SQL 3-valued logic: NULL comparisons are UNKNOWN → false.
+		if fieldVal == nil || rightVal == nil {
+			return false, nil
 		}
 		cmp := compareValues(fieldVal, rightVal)
 		switch bcp.ComparisonOperator().GetText() {
@@ -4064,10 +4822,19 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 
 // evalPredicateOnMapExpr evaluates a general IExpressionContext against a map row.
 // Mirrors evalExprPredicate but uses map-based column resolution.
-func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
 	switch e := expr.(type) {
+	case *antlrgen.ExistsExpressionAtomContext:
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+		}
+		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		if subErr != nil {
+			return false, subErr
+		}
+		return len(subRows) > 0, nil
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalPredicateOnMapExpr(row, e.Expression(0))
+		left, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression(0))
 		if err != nil {
 			return false, err
 		}
@@ -4076,32 +4843,36 @@ func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressi
 			if !left {
 				return false, nil
 			}
-			return evalPredicateOnMapExpr(row, e.Expression(1))
+			return evalPredicateOnMapExpr(ctx, conn, row, e.Expression(1))
 		}
 		if left {
 			return true, nil
 		}
-		return evalPredicateOnMapExpr(row, e.Expression(1))
+		return evalPredicateOnMapExpr(ctx, conn, row, e.Expression(1))
 	case *antlrgen.NotExpressionContext:
-		v, err := evalPredicateOnMapExpr(row, e.Expression())
+		v, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression())
 		if err != nil {
 			return false, err
 		}
 		return !v, nil
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			return evalPredicateOnMap(row, e)
+			return evalPredicateOnMap(ctx, conn, row, e)
 		}
 		// No separate predicate — expression atom (e.g. BinaryComparisonPredicateContext).
 		bcp, ok := e.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 		if ok {
-			left, err := evalExprAtomOnMap(row, bcp.GetLeft())
+			left, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetLeft())
 			if err != nil {
 				return false, err
 			}
-			right, err := evalExprAtomOnMap(row, bcp.GetRight())
+			right, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 			if err != nil {
 				return false, err
+			}
+			// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+			if left == nil || right == nil {
+				return false, nil
 			}
 			cmp := compareValues(left, right)
 			switch bcp.ComparisonOperator().GetText() {
@@ -4119,7 +4890,7 @@ func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressi
 				return cmp >= 0, nil
 			}
 		}
-		v, err := evalExprAtomOnMap(row, e.ExpressionAtom())
+		v, err := evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 		if err != nil {
 			return false, err
 		}
@@ -4131,6 +4902,9 @@ func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressi
 
 // applyArithmeticOp applies +/-/*// to two driver.Values (used in map-based eval).
 func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
+	if left == nil || right == nil {
+		return nil, nil // SQL NULL propagation.
+	}
 	lf, lok := toFloat64(left)
 	rf, rok := toFloat64(right)
 	if !lok || !rok {

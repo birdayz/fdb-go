@@ -6,9 +6,16 @@
 //
 //	just generate-parser
 //
-// That recipe downloads ANTLR 4.13.2 (matching the antlr4-go/antlr/v4 runtime
-// pinned in go.mod), runs the lexer first, then the parser with -lib pointing
-// at the lexer's .tokens file, and drops the output into gen/.
+// That recipe is a thin wrapper around the Bazel target
+// //pkg/relational/core/parser/grammar:generate_parser. Bazel fetches + caches
+// the ANTLR 4.13.1 complete jar as an external repo (@antlr4_tool_jar, pinned
+// by sha256 in MODULE.bazel; version must match the antlr4-go/antlr/v4 runtime
+// in go.mod). The sh_binary runs the lexer first, then the parser with -lib
+// pointing at the lexer's .tokens file, and drops the output into gen/.
+//
+// CI gates generator drift via `just generate && git diff --exit-code`, so any
+// change to the .g4 grammars must be accompanied by a fresh regeneration.
+// `just generate-parser` is itself part of `just generate`.
 //
 // The grammar files in grammar/ are copied near-verbatim from Java source at
 // fdb-record-layer/fdb-relational-core/src/main/antlr/. There is one

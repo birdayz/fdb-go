@@ -202,6 +202,83 @@ No open test items.
 
 **Started nightshift-24 (2026-04-18).** Port of Java's `fdb-relational-*` modules. Goal: full SQL over FoundationDB, wire-compatible with Java.
 
+### Status quo — Phase 0-2 quality assessment (dayshift-34, 2026-04-19)
+
+**What we have that's solid**
+
+- 13,238 lines of relational test code, 34 test files, ~200 integration tests hitting real FDB
+- 1587/1587 real SQL statements from Java's yamsql corpus parse cleanly — strong signal the grammar is the same
+- Parser is literally the Java grammar vendored verbatim (`RelationalLexer.g4` + `RelationalParser.g4`) — no translation risk
+- 22 files in `pkg/relational/` actually import `pkg/recordlayer` — real wiring, not a parallel universe
+- `metadata` wraps `recordlayer.RecordMetaData`, `catalog` is FDB-backed via `recordlayer.FDBRecordStore`, `embedded.execInsert/Update/Delete` call `SaveRecord`/`DeleteRecord` directly. INSERT round-trips a dynamic protobuf through the actual record-layer store.
+- 52 `// matching Java` / `// ported from Java` markers in the code trace the lineage
+- Catalog subspace layout matches Java's `SystemTableRegistry`
+
+**What's weak / fragile**
+
+1. **Zero cross-language conformance tests for SQL.** `conformance/` has Java↔Go round-trips for record-layer operations (18 conformance files), but nothing for the SQL layer. We have no proof that `SELECT ... FROM t` returns byte-identical rows from Go and Java. We only test Go → Go.
+2. **The yamsql corpus test only verifies that statements *parse*** — nothing verifies that they execute identically. Parsing is the easy half.
+3. **NULL semantics were silently broken in 7 places until dayshift-34.** `UPPER(NULL)` returned `''`, `NULL > 5` returned true, `NULL + 5` errored. Caught only because a dedicated NULL test was written. Raises the question: what else is silently wrong that we haven't stumbled into?
+4. **No SQL-level fuzz testing.** Record-layer parsers have 24 fuzz targets; SQL has zero.
+5. **`connection.go` is 5498 lines.** Half the execution engine in one file. Not a correctness issue but a review/maintenance red flag.
+6. **Hand-rolled plans, not Cascades.** Execution paths (proto scan, CTE, JOIN) have three diverging evaluators that were near-duplicates until the scalar function cores were unified dayshift-34. Anything else that diverges is latent inconsistency.
+7. **No cascading index scan planning.** We always do table scan + filter. Java uses indexes. Performance gap is unknown but probably large.
+
+**Concrete Java-alignment gaps worth testing before trusting**
+
+- [ ] Feed the yamsql **execution** corpus (not just parse) through both engines and diff result sets — "SQL semantic equivalence" below is the unchecked item.
+- [ ] Run Go's `INSERT INTO t ...` then read it back via Java's JDBC connector. Run the reverse. Both unchecked.
+- [ ] Plan cache key stability (Go hash == Java hash) is unchecked. Doesn't block correctness but blocks shared RPC caching.
+
+**Wiring with core FDB layer — this part is solid**
+
+- `recordlayer.RecordMetaData` / `recordlayer.FDBRecordStore` are the only paths to FDB. No shadow storage, no mocks.
+- Dynamic proto messages built at `CREATE TABLE` via `dynamicpb` go through the same `SaveRecord` path as static proto records — same wire format, same split handling, same index maintainers.
+- Catalog uses `recordlayer.NewStoreBuilder()` like any other consumer.
+- Same FDB transaction model (`db.Run`, `ctx.Transact`), same conflict resolution.
+
+**Bottom line:** the integration with core FDB is real and correct. The Java behavioral equivalence is asserted by construction (same grammar, same wire format, ported code patterns) but not *verified* end-to-end. For something we want bidirectional Java interop on, that's the biggest gap to close — and it's straightforward to do with a Java JDBC round-trip harness in `conformance/`.
+
+### Next-shift priority list — 5-agent QA audit (dayshift-34)
+
+Parallel audits across conformance / Go style / testing / correctness / architecture surfaced these. Ordered roughly by impact.
+
+**HIGH — correctness / Java conformance bugs**
+
+- [ ] **`NOT` of UNKNOWN returns TRUE.** `evalExprPredicate` NotExpression does `!v` on a bool that already collapsed NULL→false, so `NOT (x = NULL)` → TRUE. Same pattern in `NOT LIKE NULL`, `NOT BETWEEN NULL`. Fix: propagate UNKNOWN explicitly (tri-state) or invert before collapse.
+- [ ] **Div/0 divergence between evaluator paths.** `applyMathOp` (proto) errors on `/0`; `applyArithmeticOp` (map/JOIN/CTE) returns NULL. Same SQL produces different results. Pick one (SQL standard is error) and use in both.
+- [ ] **`%` operator missing in proto path.** `applyArithmeticOp` supports it; `applyMathOp` errors. Add `%` to proto.
+- [ ] **`COUNT(col)` counts NULLs.** `aggregateMapRows:~549` increments counter before the null check; SQL spec skips NULLs for `COUNT(<expr>)`.
+- [ ] **`SUM`/`AVG` of empty-or-all-NULL group returns 0, not NULL.** Track a non-null flag like AVG's `avgsN`, emit NULL when zero.
+- [ ] **`SUM` silently treats string columns as 0.** `fv, _ := toFloat64(colVal)` swallows the type error — should return ErrCodeInvalidParameter.
+- [ ] **Mixed-type equality via stringification.** `valuesEqual` falls through to `fmt.Sprintf`, so `'5' = 5` → TRUE. Leaks into IN, NULLIF, subquery IN. Return false (or error) on genuinely incompatible types.
+- [ ] **Catalog subspace incompatible with Java.** Go uses `tuple.Tuple{"__SYS","__SYS","CATALOG"}`; Java uses `DirectoryLayerDirectory → [NULL, NULL, long(0)]`. **A Go-written catalog is not readable by Java** — blocking for the stated wire-compat goal.
+
+**MEDIUM**
+
+- [ ] `CAST(NULL AS <type>)` returns "unsupported CAST" error instead of NULL. Early-return `nil, nil` when `v == nil` in `castValue`.
+- [ ] `ABS(math.MinInt64)` overflow (two's-complement negation).
+- [ ] `LEFT` / `RIGHT` / `SUBSTRING` silent truncation on float length argument (blind `int64` type assertion on `nVal`).
+- [ ] `ResetSession` leaks `activeTx`, `ctes`, `schemaCache` → pooled-connection corruption risk.
+- [ ] Nested SELECT / derived-table write to the same `ctes` map without a scope stack — outer sees leaked inner CTE names.
+- [ ] **~172 `fmt.Errorf` sites across embedded / catalog / ddl drop the `ErrorCode`.** `errors.As(&apiErr)` misses them → users can't map to SQLSTATE. Violates the project error-handling rule. Wrap with `api.WrapError` or `NewErrorf`.
+- [ ] **8 panics in `api/datatype_*.go`.** CLAUDE.md forbids panics in library code — convert to returned errors.
+- [ ] `MetaDataEvolutionValidator` exists in `recordlayer` but is **not wired** into `SaveSchemaTemplate` — concurrent Java+Go writes can silently create incompatible schema template evolutions.
+
+**Architecture / design**
+
+- [ ] **Split `connection.go`** (5498 lines, 120 functions) into ~12 files (`exec_select.go`, `exec_join.go`, `exec_dml.go`, `exec_ddl.go`, `exec_sys.go`, `select_parts.go`, `aggregate.go`, `eval_expr.go`, `eval_predicate.go`, `functions.go`, …). Mechanical, no behavioral risk.
+- [ ] **Break up `evalScalarFunctionCallCore`** (576-line switch). Split by family (`evalStringFns`, `evalMathFns`, `evalDateFns`, `evalCastFn`) via `map[string]funcImpl` dispatch.
+- [ ] **Add a `Planner` / `Plan` seam** before Phase 4. `execSelect*` walks the ANTLR parse tree directly; when Cascades lands, there's nowhere to plug in. Define `type Planner interface { Plan(parseTree) (Plan, error) }` + `type Plan interface { Execute(ctx, Transaction) (ResultSet, error) }` and ship a one-impl `NaivePlanner` wrapping today's code.
+- [ ] **Fix `api.Transaction` substitutability.** `store_catalog.checkOpenTxn` and `fdb_transaction.unwrapFDB` do concrete-type assertions, defeating the interface. Add `Unwrap() any` (matches Java's `unwrap<T>`) or a capability interface — otherwise a future remote/gRPC backend is rejected at runtime.
+- [ ] Typed enums for `joinType` / `aggFunc` (currently magic strings).
+
+**Testing gaps (highest ROI item first)**
+
+- [ ] **Java↔Go SQL conformance harness.** `conformance/sql/` directory with `.sql` + `.json` expected-output files; drive both Go (`sql.Open("fdbsql", ...)`) and Java (`EmbeddedRelationalConnection` via the Bazel-built conformance server) against the same inputs; diff result sets. Seed with the existing yamsql corpus (1587 statements already parse — just execute them and diff). Also run write-in-Go / read-in-Java round-trips (and reverse) to catch wire-format drift — would have caught the catalog subspace bug above. Opt-in target (`just conformance-sql`), gated behind `@manual` to stay out of default `bazelisk test //...`.
+- [ ] **Zero fuzz targets in `pkg/relational/`** (record-layer has 24). Add `FuzzParse(sql)`, `FuzzEvalExpr(tree)`, `FuzzContinuationToken`, `FuzzSchemaTemplateProto`.
+- [ ] **Error-path coverage is ~0.2%** (2 error assertions vs 862 success in `embedded_fdb_test.go`). Add tests for type mismatch on INSERT, NOT NULL violation, missing schema, invalid SQL at execute time, duplicate CREATE DATABASE, PK conflict.
+
 ### Core requirements
 
 1. **1:1 aligned with Java.** Package names, class/struct names, behavior, wire format — mirror Java unless there is a very good reason. Catalog storage, plan cache keys, protobuf encodings, SQL dialect must be bit-compatible.
@@ -354,6 +431,20 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **COUNT(DISTINCT col)** — distinct-set tracking per group (map[string]struct{}); works with and without GROUP BY. 1 integration test. swingshift-33.
 - [x] **GREATEST/LEAST** — multi-argument GREATEST(a,b,c)/LEAST(a,b,c) scalar functions; NULL-argument skipping. 1 integration test. swingshift-33.
 - [x] **filterSysRows compound WHERE** — now routes through evalPredicateOnMapExpr so AND/OR/NOT/IS NULL/LIKE/IN/BETWEEN all work in INFORMATION_SCHEMA WHERE clauses. swingshift-33.
+- [x] **Subquery IN / NOT IN** — `WHERE col IN (SELECT ...)` / `WHERE col NOT IN (SELECT ...)`; proto path + map/JOIN path both supported; ctx+conn threaded through evalPredicate/evalExprPredicate/evalInPredicate. dayshift-34.
+- [x] **EXISTS / NOT EXISTS subquery** — `WHERE EXISTS (SELECT ...)` / `WHERE NOT EXISTS (SELECT ...)`; ExistsExpressionAtomContext handled at expression level. dayshift-34.
+- [x] **CTE (WITH clause)** — `WITH name AS (SELECT ...) SELECT ...`; CTEs materialized in order at execSelect start; chaining (CTE B references CTE A) works. dayshift-34.
+- [x] **SELECT without FROM** — `SELECT 1+2, 'hello'`; constant expression row, no catalog access. dayshift-34.
+- [x] **INSERT VALUES with expressions** — `INSERT INTO t VALUES (1+2, UPPER('foo'))`; evalExpr replaces evalLiteralExpr for INSERT value columns. dayshift-34.
+- [x] **Derived tables (subquery in FROM)** — `SELECT name FROM (SELECT id, name FROM t WHERE ...) AS alias`; materialised into temporary CTE slot. dayshift-34.
+- [x] **Scalar functions in map eval** — evalExprAtomOnMap now handles FunctionCallExpressionAtomContext via evalScalarFunctionCallOnMap; all scalar functions work in JOIN ON/WHERE, CTE WHERE/SELECT, derived table filters. CTE projection evaluates projExprs via evalExprOnMap. NULL NOT IN map path fixed (was returning true). EXISTS added to evalHaving. dayshift-34.
+- [x] **CASE WHEN + CAST in map eval** — evalSpecificFunctionOnMap mirrors evalSpecificFunction for CTE/JOIN/derived-table contexts. dayshift-34.
+- [x] **ctx+conn threading through evalExpr stack** — evalExpr/evalExprAtom/evalScalarFunctionCall/evalSpecificFunction/predicate helpers all take ctx+conn as first params. Enables subqueries inside CASE conditions and scalar function args. Removes three context.TODO() placeholders. dayshift-34.
+- [x] **Aggregates on CTEs + derived tables** — aggregateMapRows method extracted from execSelectJoin and reused in execSelectFromCTE. Also fixes latent bug: JOIN+GROUP BY+ORDER BY+LIMIT previously returned early, silently ignoring ORDER BY/LIMIT. dayshift-34.
+- [x] **Unify proto + map evaluators** — evalScalarFunctionCallCore + evalSpecificFunctionCore hold the full ~350-line dispatch, parameterised on an exprEvaluator adapter (and a predicateEvaluator for CASE WHEN). The four public functions are now thin wrappers. New scalar / CASE functions only need to be added once. dayshift-34.
+- [x] **Multi-table FROM (implicit cross join)** — `SELECT a.x, b.y FROM a, b WHERE a.id = b.id`. Extra comma-separated sources become INNER joinClause entries with no ON condition; WHERE provides the predicate. 1 integration test. dayshift-34.
+- [x] **JOIN on CTE** — confirmed working: `SELECT ... FROM T INNER JOIN cte ON T.id = cte.id` uses scanTableToMaps CTE shortcut. 1 integration test. dayshift-34.
+- [x] **ORDER BY expression (CTE / JOIN paths)** — `ORDER BY UPPER(name)`, `ORDER BY a + b`, etc. Parser stores the expression when it's not a plain column/aggregate; sort sites pre-compute expression keys from map rows and sort via indexes. The proto / single-table-scan path returns a clear error since msgs aren't retained past projection. 1 integration test. dayshift-34.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
