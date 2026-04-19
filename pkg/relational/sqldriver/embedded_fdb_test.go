@@ -5321,3 +5321,51 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 		`SELECT COUNT(*) FROM T WHERE val BETWEEN NULL AND 1000`).Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(0)))
 }
+
+func TestFDB_SimpleCaseWithNull(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_simple_case_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_null/main WITH TEMPLATE sc_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_simple_case_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`) // val = NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (2, 5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Simple CASE subject=NULL must NEVER match a WHEN branch (x = NULL is UNKNOWN
+	// per SQL standard) — must fall to ELSE.
+	var got1 string
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT CASE val WHEN 5 THEN 'five' WHEN 10 THEN 'ten' ELSE 'unknown' END FROM T WHERE id = 1`).
+		Scan(&got1)).To(gomega.Succeed())
+	g.Expect(got1).To(gomega.Equal("unknown"))
+
+	// WHEN NULL must also never match (compareValues(nil, nil) == 0 would incorrectly
+	// match without the guard).
+	var got2 string
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT CASE val WHEN NULL THEN 'nope' ELSE 'fallthrough' END FROM T WHERE id = 1`).
+		Scan(&got2)).To(gomega.Succeed())
+	g.Expect(got2).To(gomega.Equal("fallthrough"))
+
+	// Non-NULL subject still matches correctly (sanity check no regression).
+	var got3 string
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT CASE val WHEN 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 2`).
+		Scan(&got3)).To(gomega.Succeed())
+	g.Expect(got3).To(gomega.Equal("five"))
+}
