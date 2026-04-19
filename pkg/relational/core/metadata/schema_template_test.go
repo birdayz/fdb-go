@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -743,5 +744,89 @@ func TestBuilder_NullableVsNotNullable(t *testing.T) {
 	}
 	if !cols[1].DataType().IsNullable() {
 		t.Errorf("opt should be nullable")
+	}
+}
+
+func TestBuilder_WithValueIndex(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("indexed").
+		AddTable("Order", []ColumnSpec{
+			NewColumnSpec("order_id", api.NewLongType(false), 1),
+			NewColumnSpec("customer_id", api.NewLongType(true), 2),
+			NewColumnSpec("total", api.NewLongType(true), 3),
+		}, []string{"order_id"}).
+		AddIndex("Order", "by_customer", []string{"customer_id"}, false).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tables, err := tmpl.Tables()
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	if len(tables) != 1 {
+		t.Fatalf("len(tables) = %d, want 1", len(tables))
+	}
+	idxs := tables[0].Indexes()
+	if len(idxs) != 1 {
+		t.Fatalf("len(indexes) = %d, want 1", len(idxs))
+	}
+	if idxs[0].MetadataName() != "by_customer" {
+		t.Errorf("index name = %q, want %q", idxs[0].MetadataName(), "by_customer")
+	}
+}
+
+func TestBuilder_MultiColumnIndex(t *testing.T) {
+	t.Parallel()
+	tmpl, err := NewSchemaTemplateBuilder().
+		SetName("multi_idx").
+		AddTable("T", []ColumnSpec{
+			NewColumnSpec("a", api.NewStringType(true), 1),
+			NewColumnSpec("b", api.NewStringType(true), 2),
+			NewColumnSpec("id", api.NewLongType(false), 3),
+		}, []string{"id"}).
+		AddIndex("T", "by_ab", []string{"a", "b"}, false).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	tables, err := tmpl.Tables()
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	idxs := tables[0].Indexes()
+	if len(idxs) != 1 {
+		t.Fatalf("len(indexes) = %d, want 1", len(idxs))
+	}
+}
+
+func TestBuilder_IndexOnUnknownTableFails(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().
+		SetName("bad_idx").
+		AddTable("T", []ColumnSpec{NewColumnSpec("id", api.NewLongType(false), 1)}, []string{"id"}).
+		AddIndex("NoSuchTable", "idx", []string{"id"}, false).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for index on unknown table, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown table") {
+		t.Fatalf("want 'unknown table' in error, got %v", err)
+	}
+}
+
+func TestBuilder_IndexOnUnknownColumnFails(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().
+		SetName("bad_col_idx").
+		AddTable("T", []ColumnSpec{NewColumnSpec("id", api.NewLongType(false), 1)}, []string{"id"}).
+		AddIndex("T", "idx", []string{"nonexistent"}, false).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for index on unknown column, got nil")
+	}
+	if !strings.Contains(err.Error(), "column") {
+		t.Fatalf("want 'column' in error, got %v", err)
 	}
 }

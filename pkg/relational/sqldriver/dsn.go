@@ -40,6 +40,9 @@ type DSN struct {
 	// Path is the database path (corresponds to Java's
 	// RelationalConnection.getPath()). Always starts with "/".
 	Path string
+	// Schema is the initial schema name set on the connection.
+	// Corresponds to the ?schema= query option.
+	Schema string
 	// Host is the gRPC host:port for remote mode. Empty for embedded.
 	Host string
 	// Options are raw query-string options. Empty values are kept as "".
@@ -73,6 +76,11 @@ func ParseDSN(s string) (*DSN, error) {
 	}
 
 	dsn := &DSN{Path: u.Path, Options: make(map[string]string)}
+
+	// Extract reserved options that have typed fields.
+	if schema := u.Query().Get("schema"); schema != "" {
+		dsn.Schema = schema
+	}
 
 	// url.Parse gives us Host = "" for fdbsql:///path and Host = "h:p"
 	// for fdbsql://h:p/path. That matches Java's JDBC URI behavior.

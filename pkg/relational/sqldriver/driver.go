@@ -105,7 +105,11 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
-	return embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks), nil
+	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
+	if c.dsn.Schema != "" {
+		conn.SetDefaultSchema(c.dsn.Schema)
+	}
+	return conn, nil
 }
 
 // initialize opens FDB and wires catalog + factory. The catalog Bootstrap

@@ -1,6 +1,9 @@
 package embedded
 
 import (
+	"context"
+	"database/sql/driver"
+	"errors"
 	"testing"
 )
 
@@ -53,5 +56,63 @@ func TestValidateDatabasePath(t *testing.T) {
 		if err := validateDatabasePath(p); err == nil {
 			t.Errorf("validateDatabasePath(%q): expected error, got nil", p)
 		}
+	}
+}
+
+func TestEmbeddedConnection_BeginTxReturnsUnsupported(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
+	if err == nil {
+		t.Fatal("BeginTx: want error, got nil")
+	}
+}
+
+func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+	conn.closed.Store(true)
+	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
+	if !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("BeginTx on closed conn: want driver.ErrBadConn, got %v", err)
+	}
+}
+
+func TestEmbeddedConnection_ResetSession(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{schema: "myschema"}
+	if err := conn.ResetSession(context.TODO()); err != nil {
+		t.Fatalf("ResetSession: unexpected error: %v", err)
+	}
+	if conn.schema != "" {
+		t.Errorf("ResetSession: schema not cleared, got %q", conn.schema)
+	}
+}
+
+func TestEmbeddedConnection_ResetSessionClosedReturnsError(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+	conn.closed.Store(true)
+	err := conn.ResetSession(context.TODO())
+	if !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("ResetSession on closed conn: want driver.ErrBadConn, got %v", err)
+	}
+}
+
+func TestEmbeddedConnection_IsValid(t *testing.T) {
+	t.Parallel()
+	// Open connections are valid regardless of catalog init state.
+	conn := &EmbeddedConnection{catalogReady: true}
+	if !conn.IsValid() {
+		t.Error("IsValid: want true, got false")
+	}
+	conn2 := &EmbeddedConnection{catalogReady: false}
+	if !conn2.IsValid() {
+		t.Error("IsValid: uninitialized but open should be valid")
+	}
+	conn3 := &EmbeddedConnection{catalogReady: true}
+	conn3.closed.Store(true)
+	if conn3.IsValid() {
+		t.Error("IsValid: want false for closed, got true")
 	}
 }

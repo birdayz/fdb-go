@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onsi/gomega"
+
 	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
@@ -208,4 +210,443 @@ func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("SELECT should return error (query planner not implemented)")
 	}
+}
+
+func TestFDB_EmbeddedShowDatabases(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_show_db")
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_show_db"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SHOW DATABASES")
+	if err != nil {
+		t.Fatalf("SHOW DATABASES: %v", err)
+	}
+	defer rows.Close()
+
+	var found bool
+	for rows.Next() {
+		var dbID string
+		if err := rows.Scan(&dbID); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if dbID == "/testdb_show_db" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if !found {
+		t.Error("SHOW DATABASES: did not find /testdb_show_db")
+	}
+}
+
+func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_show_tmpl")
+	ctx := context.Background()
+
+	const ddl = "CREATE SCHEMA TEMPLATE show_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SHOW SCHEMA TEMPLATES")
+	if err != nil {
+		t.Fatalf("SHOW SCHEMA TEMPLATES: %v", err)
+	}
+	defer rows.Close()
+
+	var found bool
+	for rows.Next() {
+		var name string
+		var version int64
+		if err := rows.Scan(&name, &version); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if name == "show_tmpl" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if !found {
+		t.Error("SHOW SCHEMA TEMPLATES: did not find show_tmpl")
+	}
+}
+
+func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_tmpl_idx")
+	ctx := context.Background()
+
+	ddl := "CREATE SCHEMA TEMPLATE indexed_tmpl " +
+		"CREATE TABLE Order (order_id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (order_id)) " +
+		"CREATE INDEX by_customer ON Order (customer_id)"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE with index: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE indexed_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+}
+
+func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_tmpl_uniq")
+	ctx := context.Background()
+
+	ddl := "CREATE SCHEMA TEMPLATE unique_tmpl " +
+		"CREATE TABLE Employee (emp_id BIGINT NOT NULL, email STRING NOT NULL, PRIMARY KEY (emp_id)) " +
+		"CREATE UNIQUE INDEX by_email ON Employee (email)"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE with unique index: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE unique_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+}
+
+func TestFDB_EmbeddedInsert(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	// Use a dedicated DB connection for setup DDL (no schema yet).
+	setup := openTestDB(t, "/testdb_insert")
+
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE insert_tmpl "+
+			"CREATE TABLE Employee (emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (emp_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_insert/emp WITH TEMPLATE insert_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	// Open a new connection with the schema set via DSN.
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert?cluster_file=%s&schema=emp", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// INSERT a row.
+	res, err := db.ExecContext(ctx, "INSERT INTO Employee (emp_id, name) VALUES (1, 'Alice')")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("RowsAffected = %d, want 1", rows)
+	}
+}
+
+func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_insert_multi")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_multi"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE multi_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, label STRING, PRIMARY KEY (item_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_insert_multi/items WITH TEMPLATE multi_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert_multi?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	res, err := db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, label) VALUES (1, 'first'), (2, 'second'), (3, 'third')")
+	if err != nil {
+		t.Fatalf("INSERT multi-row: %v", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if rows != 3 {
+		t.Errorf("RowsAffected = %d, want 3", rows)
+	}
+}
+
+func TestFDB_EmbeddedInsertNoSchemaFails(t *testing.T) {
+	t.Parallel()
+	// No schema= in DSN — INSERT should fail with "no schema selected".
+	db := openTestDB(t, "/testdb_insert_noschema")
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, "INSERT INTO Employee (emp_id) VALUES (1)")
+	if err == nil {
+		t.Fatal("INSERT without schema should fail")
+	}
+}
+
+func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_select_insert")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_select_insert"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sel_tmpl "+
+			"CREATE TABLE Person (person_id BIGINT NOT NULL, name STRING, PRIMARY KEY (person_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_select_insert/people WITH TEMPLATE sel_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_select_insert?cluster_file=%s&schema=people", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert two rows.
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO Person (person_id, name) VALUES (1, 'Alice'), (2, 'Bob')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// SELECT * should return both rows.
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Person")
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("Columns: %v", err)
+	}
+	if len(cols) == 0 {
+		t.Fatal("expected columns, got none")
+	}
+
+	var count int
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("row count = %d, want 2", count)
+	}
+}
+
+func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_delete_pk")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_delete_pk")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE del_tmpl "+
+			"CREATE TABLE Widget (widget_id BIGINT NOT NULL, label STRING, PRIMARY KEY (widget_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_delete_pk/widgets WITH TEMPLATE del_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_delete_pk?cluster_file=%s&schema=widgets", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Widget (widget_id, label) VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	res, err := db.ExecContext(ctx, "DELETE FROM Widget WHERE widget_id = 2")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	affected, err := res.RowsAffected()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(affected).To(gomega.Equal(int64(1)))
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Widget")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var count int
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		count++
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(count).To(gomega.Equal(2))
+}
+
+func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_update_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_update_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE upd_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, PRIMARY KEY (item_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_update_where/items WITH TEMPLATE upd_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_update_where?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, name) VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	res, err := db.ExecContext(ctx, "UPDATE Item SET name = 'updated' WHERE item_id = 2")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	affected, err := res.RowsAffected()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(affected).To(gomega.Equal(int64(1)))
+
+	// Verify via SELECT * that only row 2 changed.
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Collect item_id → name mapping.
+	nameByID := map[int64]string{}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// cols[0] = item_id, cols[1] = name (proto field declaration order)
+		id, ok := vals[0].(int64)
+		g.Expect(ok).To(gomega.BeTrue(), "item_id should be int64")
+		name, _ := vals[1].(string)
+		nameByID[id] = name
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(nameByID).To(gomega.HaveLen(3))
+	g.Expect(nameByID[1]).To(gomega.Equal("alpha"))
+	g.Expect(nameByID[2]).To(gomega.Equal("updated"))
+	g.Expect(nameByID[3]).To(gomega.Equal("gamma"))
+}
+
+func TestFDB_EmbeddedSelectWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_select_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_select_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sw_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, PRIMARY KEY (item_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_select_where/items WITH TEMPLATE sw_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_select_where?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, name) VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Item WHERE item_id = 2")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var count int
+	var foundID any
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// item_id is the first field (field order from proto descriptor)
+		foundID = vals[0]
+		count++
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(count).To(gomega.Equal(1))
+	g.Expect(foundID).To(gomega.Equal(int64(2)))
 }

@@ -10,8 +10,11 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -22,6 +25,9 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
@@ -35,13 +41,14 @@ import (
 //	DML and queries return ErrCodeUnsupportedOperation until the query
 //	planner lands in a later phase.
 type EmbeddedConnection struct {
-	dbPath  string // current database URI (e.g. "/mydb")
-	schema  string // current schema name (set via USE SCHEMA / SetSchema)
-	fdbDB   *recordlayer.FDBDatabase
-	cat     *catalog.RecordLayerStoreCatalog
-	ks      *keyspace.RelationalKeyspace
-	factory apiddl.MetadataOperationsFactory
-	closed  bool
+	dbPath        string // current database URI (e.g. "/mydb")
+	schema        string // current schema name (set via USE SCHEMA / SetSchema)
+	defaultSchema string // schema set at connection creation time; restored on ResetSession
+	fdbDB         *recordlayer.FDBDatabase
+	cat           *catalog.RecordLayerStoreCatalog
+	ks            *keyspace.RelationalKeyspace
+	factory       apiddl.MetadataOperationsFactory
+	closed        atomic.Bool
 
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
@@ -69,7 +76,7 @@ func New(
 // ExecContext executes SQL (DDL only in phase 1) and returns the result.
 // Implements driver.ExecerContext so database/sql skips the Prepare round-trip.
 func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	if len(args) != 0 {
@@ -95,15 +102,320 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 	return driver.RowsAffected(totalRows), nil
 }
 
-// QueryContext is not yet implemented (query planner pending).
-func (c *EmbeddedConnection) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-		"query execution is not yet implemented; only DDL is supported")
+// QueryContext handles read-only queries. Supports SHOW statements and
+// SELECT * FROM <table>; all other queries return ErrCodeUnsupportedOperation.
+func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.closed.Load() {
+		return nil, driver.ErrBadConn
+	}
+	if len(args) != 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "parameterised queries are not supported")
+	}
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return nil, err
+	}
+	root, err := parser.Parse(query)
+	if err != nil {
+		return nil, err
+	}
+	stmts := root.Statements()
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return emptyRows{}, nil
+	}
+	if len(stmts.AllStatement()) > 1 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "multi-statement queries are not supported")
+	}
+	stmt := stmts.AllStatement()[0]
+
+	// Route SELECT statements.
+	if sel := stmt.SelectStatement(); sel != nil {
+		return c.execSelect(ctx, sel)
+	}
+
+	admin := stmt.AdministrationStatement()
+	if admin == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW and SELECT statements are supported")
+	}
+	show := admin.ShowStatement()
+	if show == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported")
+	}
+	return c.execShowStatement(ctx, show)
 }
+
+// execSelect executes a SELECT * FROM <tableName> statement.
+// Only full-table scans with no WHERE clause, no projections beyond *, and
+// a single unaliased table source are supported.
+func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
+	if c.schema == "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	tableName, whereExpr, err := extractSelectParts(sel)
+	if err != nil {
+		return nil, err
+	}
+
+	type row = []driver.Value
+	var cols []string
+	var data []row
+
+	_, runErr := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil // reset on retry so duplicate rows aren't appended
+		cols = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		// Build column list from message descriptor (deterministic field order).
+		fields := msgDesc.Fields()
+		cols = make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols[i] = string(fields.Get(i).Name())
+		}
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		for {
+			result, nextErr := cursor.OnNext(ctx)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if !result.HasNext() {
+				break
+			}
+			rec := result.GetValue()
+			msg := rec.Record
+			match, matchErr := evalPredicate(msg, whereExpr)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if !match {
+				continue
+			}
+			vals := make([]driver.Value, fields.Len())
+			for i := 0; i < fields.Len(); i++ {
+				fd := fields.Get(i)
+				if msg.ProtoReflect().Has(fd) {
+					vals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+				}
+				// else nil (proto2 optional field absent → NULL)
+			}
+			data = append(data, vals)
+		}
+		return nil, nil
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// extractSelectParts navigates the parse tree of a SELECT statement to
+// extract the table name and optional WHERE expression.
+// Only supports SELECT * FROM <tableName> [WHERE col = val] (single table, star select).
+func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, antlrgen.IWhereExprContext, error) {
+	query := sel.Query()
+	if query == nil {
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+	}
+	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported SELECT form %T; only simple SELECT * FROM <table> is supported",
+			query.QueryExpressionBody())
+	}
+	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported query term %T; only simple SELECT * FROM <table> is supported",
+			body.QueryTerm())
+	}
+
+	selElems := simpleTable.SelectElements()
+	if selElems == nil || len(selElems.AllSelectElement()) != 1 {
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"only SELECT * is supported; multi-column projections are not yet implemented")
+	}
+	if _, isStar := selElems.AllSelectElement()[0].(*antlrgen.SelectStarElementContext); !isStar {
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"only SELECT * is supported; column projections are not yet implemented")
+	}
+
+	fromClause := simpleTable.FromClause()
+	if fromClause == nil {
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+	}
+
+	sources := fromClause.TableSources()
+	if sources == nil || len(sources.AllTableSource()) != 1 {
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"only single-table SELECT is supported; joins are not yet implemented")
+	}
+	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
+	if !ok {
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source %T", sources.AllTableSource()[0])
+	}
+	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+	if !ok {
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source item %T; only plain table names are supported",
+			srcBase.TableSourceItem())
+	}
+	return atomItem.TableName().FullId().GetText(), fromClause.WhereExpr(), nil
+}
+
+// protoValueToDriver converts a protoreflect.Value to a driver.Value.
+func protoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) driver.Value {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return v.Bool()
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return v.Int()
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return int64(v.Uint()) //nolint:gosec
+	case protoreflect.FloatKind:
+		return float64(v.Float())
+	case protoreflect.DoubleKind:
+		return v.Float()
+	case protoreflect.StringKind:
+		return v.String()
+	case protoreflect.BytesKind:
+		return []byte(v.Bytes())
+	default:
+		return v.Interface()
+	}
+}
+
+// execShowStatement routes SHOW … to the appropriate catalog reader.
+func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrgen.IShowStatementContext) (driver.Rows, error) {
+	switch show.(type) {
+	case *antlrgen.ShowDatabasesStatementContext:
+		return c.execShowDatabases(ctx)
+	case *antlrgen.ShowSchemaTemplatesStatementContext:
+		return c.execShowSchemaTemplates(ctx)
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported SHOW statement: %s", show.GetText())
+	}
+}
+
+func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil // reset on retry
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListDatabases(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+		for rs.Next() {
+			id, strErr := rs.StringByName("DATABASE_ID")
+			if strErr != nil {
+				return nil, strErr
+			}
+			data = append(data, row{id})
+		}
+		return nil, rs.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &staticRows{cols: []string{"DATABASE_ID"}, rows: data}, nil
+}
+
+func (c *EmbeddedConnection) execShowSchemaTemplates(ctx context.Context) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil // reset on retry
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.SchemaTemplateCatalog().ListTemplates(txn)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+		for rs.Next() {
+			name, strErr := rs.StringByName("TEMPLATE_NAME")
+			if strErr != nil {
+				return nil, strErr
+			}
+			ver, intErr := rs.LongByName("TEMPLATE_VERSION")
+			if intErr != nil {
+				return nil, intErr
+			}
+			data = append(data, row{name, ver})
+		}
+		return nil, rs.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &staticRows{cols: []string{"TEMPLATE_NAME", "TEMPLATE_VERSION"}, rows: data}, nil
+}
+
+// staticRows is a driver.Rows backed by a pre-materialised slice.
+type staticRows struct {
+	cols    []string
+	rows    [][]driver.Value
+	current int
+}
+
+func (r *staticRows) Columns() []string { return r.cols }
+func (r *staticRows) Close() error      { r.current = len(r.rows); return nil }
+func (r *staticRows) Next(dest []driver.Value) error {
+	if r.current >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.current])
+	r.current++
+	return nil
+}
+
+// emptyRows is a driver.Rows with no columns and no data.
+type emptyRows struct{}
+
+func (emptyRows) Columns() []string           { return []string{} }
+func (emptyRows) Close() error                { return nil }
+func (emptyRows) Next(_ []driver.Value) error { return io.EOF }
 
 // Prepare returns a prepared statement. DDL statements have no bind parameters.
 func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	return &embeddedStmt{conn: c, query: query}, nil
@@ -111,7 +423,7 @@ func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
 
 // Close marks the connection as closed.
 func (c *EmbeddedConnection) Close() error {
-	c.closed = true
+	c.closed.Store(true)
 	return nil
 }
 
@@ -119,6 +431,44 @@ func (c *EmbeddedConnection) Close() error {
 func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 		"explicit transactions are not yet implemented")
+}
+
+// BeginTx implements driver.ConnBeginTx. Phase 1 is auto-commit only.
+func (c *EmbeddedConnection) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error) {
+	if c.closed.Load() {
+		return nil, driver.ErrBadConn
+	}
+	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		"explicit transactions are not yet implemented")
+}
+
+// SetDefaultSchema sets the initial schema that is restored by ResetSession.
+// Called by the driver when the DSN contains ?schema=.
+func (c *EmbeddedConnection) SetDefaultSchema(s string) {
+	c.defaultSchema = s
+	c.schema = s
+}
+
+// ResetSession implements driver.SessionResetter. Resets per-request
+// state (schema) so pooled connections start clean.
+func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
+	if c.closed.Load() {
+		return driver.ErrBadConn
+	}
+	c.schema = c.defaultSchema
+	return nil
+}
+
+// IsValid implements driver.Validator. Returns true if the connection
+// is open; the FDB client is stateless so a non-closed connection is
+// always usable (catalog init is lazy, not a validity condition).
+func (c *EmbeddedConnection) IsValid() bool {
+	return !c.closed.Load()
+}
+
+// PrepareContext implements driver.ConnPrepareContext.
+func (c *EmbeddedConnection) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
+	return c.Prepare(query)
 }
 
 // SetSchema sets the current schema label used when no schema is specified in SQL.
@@ -132,22 +482,494 @@ func (c *EmbeddedConnection) GetDBPath() string { return c.dbPath }
 
 // execStatement routes a single parsed statement to the right handler.
 func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IStatementContext) (int64, error) {
-	ddl := stmt.DdlStatement()
-	if ddl == nil {
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only DDL statements are supported in this release")
+	if ddl := stmt.DdlStatement(); ddl != nil {
+		create := ddl.CreateStatement()
+		drop := ddl.DropStatement()
+		switch {
+		case create != nil:
+			return c.execCreate(ctx, create)
+		case drop != nil:
+			return c.execDrop(ctx, drop)
+		default:
+			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DDL statement")
+		}
 	}
-	create := ddl.CreateStatement()
-	drop := ddl.DropStatement()
-	switch {
-	case create != nil:
-		return c.execCreate(ctx, create)
-	case drop != nil:
-		return c.execDrop(ctx, drop)
+	if dml := stmt.DmlStatement(); dml != nil {
+		if ins := dml.InsertStatement(); ins != nil {
+			return c.execInsert(ctx, ins)
+		}
+		if del := dml.DeleteStatement(); del != nil {
+			return c.execDelete(ctx, del)
+		}
+		if upd := dml.UpdateStatement(); upd != nil {
+			return c.execUpdate(ctx, upd)
+		}
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
+	}
+	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only DDL and INSERT statements are supported in this release")
+}
+
+// execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
+func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInsertStatementContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	// Extract column names from the column list.
+	colCtx := ins.UidListWithNestingsInParens()
+	if colCtx == nil {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "INSERT without column list is not supported")
+	}
+	var cols []string
+	for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
+		cols = append(cols, uw.Uid().GetText())
+	}
+
+	// Only handle VALUES path.
+	valCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
+	if !ok {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only INSERT ... VALUES (...) is supported")
+	}
+
+	tableName := ins.TableName().FullId().GetText()
+
+	var totalRows int64
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
+			exprs := rowCtx.AllExpressionWithOptionalName()
+			if len(exprs) != len(cols) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"column count %d does not match value count %d", len(cols), len(exprs))
+			}
+			msg := dynamicpb.NewMessage(msgDesc)
+			for i, col := range cols {
+				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
+				}
+				val, evalErr := evalLiteralExpr(exprs[i])
+				if evalErr != nil {
+					return nil, evalErr
+				}
+				if val == nil {
+					// NULL — leave field absent (proto2 optional semantics).
+					continue
+				}
+				protoVal, convErr := convertToProtoValue(fd, val)
+				if convErr != nil {
+					return nil, convErr
+				}
+				msg.Set(fd, protoVal)
+			}
+			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
+				return nil, saveErr
+			}
+			totalRows++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return totalRows, nil
+}
+
+// evalLiteralExpr evaluates a literal expression from an INSERT VALUES list.
+// Returns nil for NULL literals.
+func evalLiteralExpr(expr antlrgen.IExpressionWithOptionalNameContext) (any, error) {
+	pred, ok := expr.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in INSERT", expr.Expression())
+	}
+	atomCtx, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in INSERT", pred.ExpressionAtom())
+	}
+	return evalConstant(atomCtx.Constant())
+}
+
+// convertToProtoValue converts a Go value (int64, float64, string, bool) to
+// a protoreflect.Value matching the field descriptor's kind.
+func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		switch v := val.(type) {
+		case bool:
+			return protoreflect.ValueOfBool(v), nil
+		case int64:
+			return protoreflect.ValueOfBool(v != 0), nil
+		}
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfInt32(int32(v)), nil //nolint:gosec
+		}
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfInt64(v), nil
+		}
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfUint32(uint32(v)), nil //nolint:gosec
+		}
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfUint64(uint64(v)), nil //nolint:gosec
+		}
+	case protoreflect.FloatKind:
+		switch v := val.(type) {
+		case float64:
+			return protoreflect.ValueOfFloat32(float32(v)), nil //nolint:gosec
+		case int64:
+			return protoreflect.ValueOfFloat32(float32(v)), nil //nolint:gosec
+		}
+	case protoreflect.DoubleKind:
+		switch v := val.(type) {
+		case float64:
+			return protoreflect.ValueOfFloat64(v), nil
+		case int64:
+			return protoreflect.ValueOfFloat64(float64(v)), nil
+		}
+	case protoreflect.StringKind:
+		if v, ok := val.(string); ok {
+			return protoreflect.ValueOfString(v), nil
+		}
+	case protoreflect.BytesKind:
+		if v, ok := val.(string); ok {
+			return protoreflect.ValueOfBytes([]byte(v)), nil
+		}
+	}
+	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+		"cannot convert %T to proto field kind %s", val, fd.Kind())
+}
+
+// evalExpr evaluates a SET expression (literal only) from an UPDATE statement.
+func evalExpr(expr antlrgen.IExpressionContext) (any, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in SET", expr)
+	}
+	atomCtx, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in SET", pred.ExpressionAtom())
+	}
+	return evalConstant(atomCtx.Constant())
+}
+
+// execUpdate executes UPDATE <table> SET col = val [, ...] [WHERE col = val].
+func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdateStatementContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	tableName := upd.TableName().FullId().GetText()
+	whereExpr := upd.WhereExpr()
+	updatedElems := upd.AllUpdatedElement()
+
+	var updated int64
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		updated = 0
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		for {
+			result, nextErr := cursor.OnNext(ctx)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if !result.HasNext() {
+				break
+			}
+			rec := result.GetValue()
+			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if !match {
+				continue
+			}
+
+			cloned := proto.Clone(rec.Record)
+			clonedRefl := cloned.ProtoReflect()
+			for _, elem := range updatedElems {
+				colName := elem.FullColumnName().FullId().GetText()
+				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
+				}
+				val, evalErr := evalExpr(elem.Expression())
+				if evalErr != nil {
+					return nil, evalErr
+				}
+				if val == nil {
+					clonedRefl.Clear(fd)
+					continue
+				}
+				protoVal, convErr := convertToProtoValue(fd, val)
+				if convErr != nil {
+					return nil, convErr
+				}
+				clonedRefl.Set(fd, protoVal)
+			}
+			if _, saveErr := store.SaveRecord(cloned); saveErr != nil {
+				return nil, saveErr
+			}
+			updated++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
+// execDelete executes DELETE FROM <table> [WHERE col = value].
+func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDeleteStatementContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	tableName := del.TableName().FullId().GetText()
+	whereExpr := del.WhereExpr()
+
+	var deleted int64
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		deleted = 0
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		for {
+			result, nextErr := cursor.OnNext(ctx)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if !result.HasNext() {
+				break
+			}
+			rec := result.GetValue()
+			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if !match {
+				continue
+			}
+			if _, delErr := store.DeleteRecord(rec.PrimaryKey); delErr != nil {
+				return nil, delErr
+			}
+			deleted++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// evalPredicate returns true if msg satisfies whereExpr.
+// Only col = constant comparisons are supported. If whereExpr is nil, returns true.
+func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
+	if whereExpr == nil {
+		return true, nil
+	}
+	pred, ok := whereExpr.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", whereExpr.Expression())
+	}
+	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
+	}
+	if bcp.ComparisonOperator().GetText() != "=" {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "only = comparison supported in WHERE, got %q", bcp.ComparisonOperator().GetText())
+	}
+	colAtom, ok := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE left side must be a column name, got %T", bcp.GetLeft())
+	}
+	colName := colAtom.FullColumnName().FullId().GetText()
+
+	valAtom, ok := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE right side must be a constant, got %T", bcp.GetRight())
+	}
+
+	litVal, err := evalConstant(valAtom.Constant())
+	if err != nil {
+		return false, err
+	}
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	fieldVal := msg.ProtoReflect().Get(fd)
+	driverVal := protoValueToDriver(fd, fieldVal)
+	return valuesEqual(driverVal, litVal), nil
+}
+
+// evalConstant evaluates a constant parse-tree node to a Go value.
+// Returns nil for NULL.
+func evalConstant(c antlrgen.IConstantContext) (any, error) {
+	switch cv := c.(type) {
+	case *antlrgen.DecimalConstantContext:
+		text := cv.DecimalLiteral().GetText()
+		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return iv, nil
+		}
+		fv, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		return fv, nil
+	case *antlrgen.NegativeDecimalConstantContext:
+		text := "-" + cv.DecimalLiteral().GetText()
+		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return iv, nil
+		}
+		fv, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		return fv, nil
+	case *antlrgen.StringConstantContext:
+		raw := cv.StringLiteral().GetText()
+		if len(raw) >= 2 {
+			raw = raw[1 : len(raw)-1]
+		}
+		return raw, nil
+	case *antlrgen.NullConstantContext:
+		return nil, nil
+	case *antlrgen.BooleanConstantContext:
+		return cv.BooleanLiteral().TRUE() != nil, nil
 	default:
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation,
-			"unsupported DDL statement")
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in WHERE", c)
 	}
+}
+
+// valuesEqual compares two driver values that may have different numeric types.
+func valuesEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	// Normalise numeric types to int64/float64 for comparison.
+	toFloat := func(v any) (float64, bool) {
+		switch n := v.(type) {
+		case int64:
+			return float64(n), true
+		case float64:
+			return n, true
+		}
+		return 0, false
+	}
+	fa, aIsNum := toFloat(a)
+	fb, bIsNum := toFloat(b)
+	if aIsNum && bIsNum {
+		return fa == fb
+	}
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {
@@ -233,6 +1055,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	templateID := s.SchemaTemplateId().GetText()
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
+	// First pass: register tables (indexes reference them by name).
 	for _, clause := range s.AllTemplateClause() {
 		td := clause.TableDefinition()
 		if td == nil {
@@ -247,12 +1070,47 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		b.AddTable(tableName, cols, pkCols)
 	}
 
+	// Second pass: register indexes.
+	for _, clause := range s.AllTemplateClause() {
+		idxDef := clause.IndexDefinition()
+		if idxDef == nil {
+			continue
+		}
+		if err := parseIndexDefinition(idxDef, b); err != nil {
+			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
+		}
+	}
+
 	tmpl, err := b.Build()
 	if err != nil {
 		return 0, err
 	}
 	action := c.factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
+}
+
+// parseIndexDefinition handles a single CREATE INDEX clause within a schema template.
+// Only INDEX ON SOURCE form (INDEX name ON table (cols)) is supported.
+func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.Builder) error {
+	switch def := idxDef.(type) {
+	case *antlrgen.IndexOnSourceDefinitionContext:
+		indexName := def.GetIndexName().GetText()
+		tableName := def.GetSource().GetText()
+		unique := def.UNIQUE() != nil
+		var cols []string
+		if cl := def.IndexColumnList(); cl != nil {
+			for _, spec := range cl.AllIndexColumnSpec() {
+				cols = append(cols, spec.GetColumnName().GetText())
+			}
+		}
+		if len(cols) == 0 {
+			return fmt.Errorf("index %q has no columns", indexName)
+		}
+		b.AddIndex(tableName, indexName, cols, unique)
+		return nil
+	default:
+		return fmt.Errorf("unsupported index definition type %T; only INDEX … ON … is supported", idxDef)
+	}
 }
 
 // parseTableDefinition extracts column specs and primary key column
@@ -341,7 +1199,7 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 
 // Ping implements driver.Pinger. Bootstraps the catalog on first call.
 func (c *EmbeddedConnection) Ping(ctx context.Context) error {
-	if c.closed {
+	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
 	return c.ensureCatalogInit(ctx)
@@ -410,12 +1268,23 @@ func (s *embeddedStmt) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "query not implemented")
+	named := make([]driver.NamedValue, len(args))
+	for i, v := range args {
+		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
+	}
+	// TODO: driver.Stmt.Query has no context parameter; use context.Background() until
+	// database/sql upgrades all call sites to QueryContext.
+	return s.conn.QueryContext(context.Background(), s.query, named)
 }
 
 // Static interface checks.
 var (
-	_ driver.Conn          = (*EmbeddedConnection)(nil)
-	_ driver.ExecerContext = (*EmbeddedConnection)(nil)
-	_ driver.Pinger        = (*EmbeddedConnection)(nil)
+	_ driver.Conn               = (*EmbeddedConnection)(nil)
+	_ driver.ExecerContext      = (*EmbeddedConnection)(nil)
+	_ driver.QueryerContext     = (*EmbeddedConnection)(nil)
+	_ driver.Pinger             = (*EmbeddedConnection)(nil)
+	_ driver.ConnBeginTx        = (*EmbeddedConnection)(nil)
+	_ driver.SessionResetter    = (*EmbeddedConnection)(nil)
+	_ driver.Validator          = (*EmbeddedConnection)(nil)
+	_ driver.ConnPrepareContext = (*EmbeddedConnection)(nil)
 )

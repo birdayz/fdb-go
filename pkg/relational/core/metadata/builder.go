@@ -24,6 +24,7 @@ type Builder struct {
 	name             string
 	version          int
 	tables           []tableSpec
+	errs             []error // deferred errors from AddIndex
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
@@ -33,6 +34,14 @@ type tableSpec struct {
 	name       string
 	columns    []ColumnSpec
 	primaryKey []string
+	indexes    []indexSpec
+}
+
+// indexSpec describes a single index within a table.
+type indexSpec struct {
+	name    string
+	columns []string // field names in index key order
+	unique  bool
 }
 
 // ColumnSpec describes a single column within a table.
@@ -88,9 +97,47 @@ func (b *Builder) AddTable(name string, columns []ColumnSpec, primaryKey []strin
 	return b
 }
 
+// AddIndex registers a VALUE index on the named table. columns is the ordered
+// list of field names that form the index key. unique causes uniqueness
+// enforcement to be wired into the recordlayer index.
+// Must be called after the table is registered via AddTable.
+// Returns the builder unchanged (and records a deferred error) if the table
+// name is unknown or any column name is not present in the table definition.
+func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique bool) *Builder {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		// Validate every index column exists in the table.
+		colSet := make(map[string]bool, len(b.tables[i].columns))
+		for _, c := range b.tables[i].columns {
+			colSet[c.name] = true
+		}
+		for _, col := range columns {
+			if !colSet[col] {
+				b.errs = append(b.errs, fmt.Errorf(
+					"index %q on table %q: column %q not defined in table",
+					indexName, tableName, col))
+				return b
+			}
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:    indexName,
+			columns: columns,
+			unique:  unique,
+		})
+		return b
+	}
+	b.errs = append(b.errs, fmt.Errorf("index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
 // Build materialises the schema template. Returns an error when no
 // tables are registered or types cannot be mapped to proto field types.
 func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
+	if len(b.errs) > 0 {
+		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "%v", b.errs[0])
+	}
 	if len(b.tables) == 0 {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema template contains no tables")
 	}
@@ -118,6 +165,18 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 			return nil, fmt.Errorf("table %q primary key: %w", tbl.name, err)
 		}
 		rt.SetPrimaryKey(pkExpr)
+
+		for _, idx := range tbl.indexes {
+			keyExpr, idxErr := buildIndexKeyExpression(idx.columns)
+			if idxErr != nil {
+				return nil, fmt.Errorf("table %q index %q: %w", tbl.name, idx.name, idxErr)
+			}
+			rl := recordlayer.NewIndex(idx.name, keyExpr)
+			if idx.unique {
+				rl.SetUnique()
+			}
+			mdBuilder.AddIndex(tbl.name, rl)
+		}
 	}
 
 	md, err := mdBuilder.Build()
@@ -150,6 +209,20 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 		}
 		fdp.MessageType = append(fdp.MessageType, msgDesc)
 	}
+
+	// Generate the UnionDescriptor message required for record serialization.
+	// Each table gets one optional field numbered starting at 1.
+	unionMsg := &descriptorpb.DescriptorProto{Name: proto.String("UnionDescriptor")}
+	for i, tbl := range b.tables {
+		unionMsg.Field = append(unionMsg.Field, &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("_" + tbl.name),
+			Number:   proto.Int32(int32(i + 1)),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+			TypeName: proto.String(tbl.name),
+		})
+	}
+	fdp.MessageType = append(fdp.MessageType, unionMsg)
 
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
@@ -219,6 +292,20 @@ func datatypeToLabel(dt api.DataType) descriptorpb.FieldDescriptorProto_Label {
 // buildPrimaryKeyExpression builds the record layer primary key expression.
 // In intermingled mode it's just the column fields; in non-intermingled mode
 // a RecordType prefix is prepended (matching Java).
+func buildIndexKeyExpression(columns []string) (recordlayer.KeyExpression, error) {
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("index must have at least one column")
+	}
+	if len(columns) == 1 {
+		return recordlayer.Field(columns[0]), nil
+	}
+	exprs := make([]recordlayer.KeyExpression, len(columns))
+	for i, col := range columns {
+		exprs[i] = recordlayer.Field(col)
+	}
+	return recordlayer.Concat(exprs...), nil
+}
+
 func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.KeyExpression, error) {
 	if len(tbl.primaryKey) == 0 {
 		return nil, fmt.Errorf("no primary key columns specified")
