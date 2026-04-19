@@ -293,3 +293,19 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
 		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
 	}
 }
+
+func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_tmpl_uniq")
+	ctx := context.Background()
+
+	ddl := "CREATE SCHEMA TEMPLATE unique_tmpl " +
+		"CREATE TABLE Employee (emp_id BIGINT NOT NULL, email STRING NOT NULL, PRIMARY KEY (emp_id)) " +
+		"CREATE UNIQUE INDEX by_email ON Employee (email)"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE with unique index: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE unique_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+}

@@ -156,6 +156,9 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				return nil, fmt.Errorf("table %q index %q: %w", tbl.name, idx.name, idxErr)
 			}
 			rl := recordlayer.NewIndex(idx.name, keyExpr)
+			if idx.unique {
+				rl.SetUnique()
+			}
 			mdBuilder.AddIndex(tbl.name, rl)
 		}
 	}
