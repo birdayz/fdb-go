@@ -104,12 +104,30 @@ func (c *EmbeddedConnection) schemaCacheKey(dbPath, schemaName string) string {
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
 // connection-level cache to avoid repeated FDB reads within the same session.
 // The cache is invalidated by any DDL that modifies schema definitions.
+//
+// When an explicit user transaction is active we read the catalog via a
+// separate auto-commit transaction so that catalog reads do not add read
+// conflict ranges to the user's write transaction, which would cause spurious
+// not_committed (1020) conflicts when other tests run DDL concurrently.
 func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
 	key := c.schemaCacheKey(dbPath, schemaName)
 	if s, ok := c.schemaCache[key]; ok {
 		return s, nil
 	}
-	s, err := c.cat.LoadSchema(txn, dbPath, schemaName)
+	var s api.Schema
+	var err error
+	if c.activeTx != nil {
+		// Read catalog outside the user transaction to avoid adding catalog
+		// read-conflict ranges that conflict with concurrent DDL.
+		ctx := context.Background()
+		_, err = c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+			readTxn := catalog.NewFDBTransaction(rctx)
+			s, err = c.cat.LoadSchema(readTxn, dbPath, schemaName)
+			return nil, err
+		})
+	} else {
+		s, err = c.cat.LoadSchema(txn, dbPath, schemaName)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1495,7 +1513,6 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 		if err != nil {
 			return 0, err
 		}
-		fdbTx.Options().SetReadSystemKeys()
 		rctx := recordlayer.NewFDBRecordContext(fdbTx)
 		c.activeTx = &embeddedTx{conn: c, rctx: rctx}
 		return 0, nil
