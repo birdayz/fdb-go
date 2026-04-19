@@ -4909,3 +4909,49 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 		{3, "ab", 42},
 	}))
 }
+
+func TestFDB_EmptyResultEdgeCases(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_empty_edge")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_empty_edge")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE empty_edge_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_empty_edge/main WITH TEMPLATE empty_edge_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_empty_edge?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// No rows inserted — all queries should return empty result sets gracefully.
+
+	// ORDER BY on empty result.
+	rows, err := db.QueryContext(ctx, `SELECT id FROM T ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	rows.Close()
+
+	// CTE over empty table + aggregate: COUNT(*) returns 0, SUM returns NULL.
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx, `WITH c AS (SELECT id FROM T) SELECT COUNT(*) FROM c`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)))
+
+	// JOIN on empty + WHERE → empty.
+	rows2, err := db.QueryContext(ctx, `
+		WITH c AS (SELECT id FROM T)
+		SELECT T.id FROM T INNER JOIN c ON T.id = c.id WHERE T.name = 'never'`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	g.Expect(rows2.Next()).To(gomega.BeFalse())
+
+	// EXISTS on empty — false.
+	var result int
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT CASE WHEN EXISTS (SELECT id FROM T) THEN 1 ELSE 0 END`).Scan(&result)).To(gomega.Succeed())
+	g.Expect(result).To(gomega.Equal(0))
+}
