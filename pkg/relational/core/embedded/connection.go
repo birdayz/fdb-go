@@ -1172,7 +1172,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", sq.tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", sq.tableName)
 		}
 		msgDesc := rt.Descriptor
 
@@ -2873,7 +2873,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
 		}
 		msgDesc := rt.Descriptor
 
@@ -2973,7 +2973,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
 		}
 		msgDesc := rt.Descriptor
 
@@ -4160,7 +4160,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
 		}
 		msgDesc := rt.Descriptor
 
@@ -4260,7 +4260,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
 		}
 
 		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)

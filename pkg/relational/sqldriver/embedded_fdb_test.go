@@ -8,6 +8,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
@@ -5368,6 +5370,121 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 		`SELECT CASE val WHEN 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 2`).
 		Scan(&got3)).To(gomega.Succeed())
 	g.Expect(got3).To(gomega.Equal("five"))
+}
+
+// TestFDB_ErrorPathSQLSTATE covers the error paths that the audit
+// called out as severely under-tested (2/862 error asserts in the
+// integration suite). For each case we verify not just that an error
+// occurred but that errors.As extracts an *api.Error with the right
+// SQLSTATE — because the fmt.Errorf sweep only pays off if callers can
+// actually switch on the code.
+func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_error_paths")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_error_paths")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE err_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_error_paths/main WITH TEMPLATE err_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_error_paths?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Helper: exec the query and surface the first error from prepare,
+	// iteration, or scan. Returns nil on success.
+	queryErr := func(sql string) error {
+		rows, e := db.QueryContext(ctx, sql)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			if se := rows.Scan(&v); se != nil {
+				return se
+			}
+		}
+		return rows.Err()
+	}
+
+	cases := []struct {
+		name     string
+		sql      string
+		exec     bool // true = ExecContext, false = Query
+		wantCode api.ErrorCode
+	}{
+		{
+			name:     "syntax error — malformed statement",
+			sql:      "SELEKT 1",
+			wantCode: api.ErrCodeSyntaxError,
+		},
+		{
+			name:     "unknown table",
+			sql:      "SELECT * FROM NoSuchTable",
+			wantCode: api.ErrCodeUndefinedTable,
+		},
+		{
+			name:     "unknown column",
+			sql:      "SELECT nosuchcol FROM T",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "div by zero (SQL standard error)",
+			sql:      "SELECT 1 / 0",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "mod by zero",
+			sql:      "SELECT 5 % 0",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "ABS(MinInt64) overflow",
+			sql:      "SELECT ABS(-9223372036854775808)",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "SUBSTRING fractional length",
+			sql:      "SELECT SUBSTRING('hello', 1, 2.5)",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "duplicate database",
+			sql:      "CREATE DATABASE /testdb_error_paths",
+			exec:     true,
+			wantCode: api.ErrCodeDatabaseAlreadyExists,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			var err error
+			if tc.exec {
+				// Duplicate database is issued on setup connection, not `db`,
+				// because `db` is pinned to /testdb_error_paths and CREATE
+				// DATABASE targets the root.
+				_, err = setup.ExecContext(ctx, tc.sql)
+			} else {
+				err = queryErr(tc.sql)
+			}
+			g.Expect(err).To(gomega.HaveOccurred(), "case: %s", tc.name)
+			var apiErr *api.Error
+			g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+				"error is not *api.Error: %T %v", err, err)
+			g.Expect(apiErr.Code).To(gomega.Equal(tc.wantCode),
+				"case %s: got SQLSTATE %s (%v), want %s",
+				tc.name, apiErr.Code, apiErr.Message, tc.wantCode)
+		})
+	}
 }
 
 // TestFDB_CTEScopeIsolation pins down nested-query CTE scoping: a derived
