@@ -5616,6 +5616,12 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	// the previous materialisation.
 	_, err = db.QueryContext(ctx, `SELECT * FROM D`)
 	g.Expect(err).To(gomega.HaveOccurred(), "derived-table alias D must not leak across queries")
+
+	// Inner-sees-outer (pushCTEScope inherits the outer map) is exercised
+	// by the CTE-referencing-prior-CTE pattern already in TestFDB_CTE* — a
+	// dedicated "SELECT (SELECT FROM outer_cte) FROM t" test would require
+	// scalar subqueries in SELECT projection which the grammar doesn't
+	// parse today (see TODO.md "scalar subqueries").
 }
 
 // TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
