@@ -11,7 +11,9 @@ go_library(
     visibility = ["//cmd/frl:__subpackages__"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
+        "//cmd/frl/internal/config",
         "//pkg/fdbgo/fdb/tuple",
+        "@build_buf_go_protoyaml//:go_default_library",
         "@com_github_spf13_cobra//:go_default_library",
         "@org_golang_google_protobuf//encoding/protojson",
     ],

@@ -47,7 +47,9 @@ go_deps_frl = use_extension("@gazelle//:extensions.bzl", "go_deps", isolate = Tr
 go_deps_frl.from_file(go_mod = "//cmd/frl:go.mod")
 use_repo(
     go_deps_frl,
+    "build_buf_go_protoyaml",
     "com_github_birdayz_fdb_record_layer_go",
+    "com_github_birdayz_protobuf_ecosystem",
     "com_github_spf13_cobra",
     "land_charm_fang_v2",
 )
