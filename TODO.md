@@ -239,6 +239,46 @@ No open test items.
 
 **Bottom line:** the integration with core FDB is real and correct. The Java behavioral equivalence is asserted by construction (same grammar, same wire format, ported code patterns) but not *verified* end-to-end. For something we want bidirectional Java interop on, that's the biggest gap to close — and it's straightforward to do with a Java JDBC round-trip harness in `conformance/`.
 
+### Next-shift priority list — 5-agent QA audit (dayshift-34)
+
+Parallel audits across conformance / Go style / testing / correctness / architecture surfaced these. Ordered roughly by impact.
+
+**HIGH — correctness / Java conformance bugs**
+
+- [ ] **`NOT` of UNKNOWN returns TRUE.** `evalExprPredicate` NotExpression does `!v` on a bool that already collapsed NULL→false, so `NOT (x = NULL)` → TRUE. Same pattern in `NOT LIKE NULL`, `NOT BETWEEN NULL`. Fix: propagate UNKNOWN explicitly (tri-state) or invert before collapse.
+- [ ] **Div/0 divergence between evaluator paths.** `applyMathOp` (proto) errors on `/0`; `applyArithmeticOp` (map/JOIN/CTE) returns NULL. Same SQL produces different results. Pick one (SQL standard is error) and use in both.
+- [ ] **`%` operator missing in proto path.** `applyArithmeticOp` supports it; `applyMathOp` errors. Add `%` to proto.
+- [ ] **`COUNT(col)` counts NULLs.** `aggregateMapRows:~549` increments counter before the null check; SQL spec skips NULLs for `COUNT(<expr>)`.
+- [ ] **`SUM`/`AVG` of empty-or-all-NULL group returns 0, not NULL.** Track a non-null flag like AVG's `avgsN`, emit NULL when zero.
+- [ ] **`SUM` silently treats string columns as 0.** `fv, _ := toFloat64(colVal)` swallows the type error — should return ErrCodeInvalidParameter.
+- [ ] **Mixed-type equality via stringification.** `valuesEqual` falls through to `fmt.Sprintf`, so `'5' = 5` → TRUE. Leaks into IN, NULLIF, subquery IN. Return false (or error) on genuinely incompatible types.
+- [ ] **Catalog subspace incompatible with Java.** Go uses `tuple.Tuple{"__SYS","__SYS","CATALOG"}`; Java uses `DirectoryLayerDirectory → [NULL, NULL, long(0)]`. **A Go-written catalog is not readable by Java** — blocking for the stated wire-compat goal.
+
+**MEDIUM**
+
+- [ ] `CAST(NULL AS <type>)` returns "unsupported CAST" error instead of NULL. Early-return `nil, nil` when `v == nil` in `castValue`.
+- [ ] `ABS(math.MinInt64)` overflow (two's-complement negation).
+- [ ] `LEFT` / `RIGHT` / `SUBSTRING` silent truncation on float length argument (blind `int64` type assertion on `nVal`).
+- [ ] `ResetSession` leaks `activeTx`, `ctes`, `schemaCache` → pooled-connection corruption risk.
+- [ ] Nested SELECT / derived-table write to the same `ctes` map without a scope stack — outer sees leaked inner CTE names.
+- [ ] **~172 `fmt.Errorf` sites across embedded / catalog / ddl drop the `ErrorCode`.** `errors.As(&apiErr)` misses them → users can't map to SQLSTATE. Violates the project error-handling rule. Wrap with `api.WrapError` or `NewErrorf`.
+- [ ] **8 panics in `api/datatype_*.go`.** CLAUDE.md forbids panics in library code — convert to returned errors.
+- [ ] `MetaDataEvolutionValidator` exists in `recordlayer` but is **not wired** into `SaveSchemaTemplate` — concurrent Java+Go writes can silently create incompatible schema template evolutions.
+
+**Architecture / design**
+
+- [ ] **Split `connection.go`** (5498 lines, 120 functions) into ~12 files (`exec_select.go`, `exec_join.go`, `exec_dml.go`, `exec_ddl.go`, `exec_sys.go`, `select_parts.go`, `aggregate.go`, `eval_expr.go`, `eval_predicate.go`, `functions.go`, …). Mechanical, no behavioral risk.
+- [ ] **Break up `evalScalarFunctionCallCore`** (576-line switch). Split by family (`evalStringFns`, `evalMathFns`, `evalDateFns`, `evalCastFn`) via `map[string]funcImpl` dispatch.
+- [ ] **Add a `Planner` / `Plan` seam** before Phase 4. `execSelect*` walks the ANTLR parse tree directly; when Cascades lands, there's nowhere to plug in. Define `type Planner interface { Plan(parseTree) (Plan, error) }` + `type Plan interface { Execute(ctx, Transaction) (ResultSet, error) }` and ship a one-impl `NaivePlanner` wrapping today's code.
+- [ ] **Fix `api.Transaction` substitutability.** `store_catalog.checkOpenTxn` and `fdb_transaction.unwrapFDB` do concrete-type assertions, defeating the interface. Add `Unwrap() any` (matches Java's `unwrap<T>`) or a capability interface — otherwise a future remote/gRPC backend is rejected at runtime.
+- [ ] Typed enums for `joinType` / `aggFunc` (currently magic strings).
+
+**Testing gaps (highest ROI item first)**
+
+- [ ] **Java↔Go SQL conformance harness.** `conformance/sql/` directory with `.sql` + `.json` expected-output files; drive both Go (`sql.Open("fdbsql", ...)`) and Java (`EmbeddedRelationalConnection` via the Bazel-built conformance server) against the same inputs; diff result sets. Seed with the existing yamsql corpus (1587 statements already parse — just execute them and diff). Also run write-in-Go / read-in-Java round-trips (and reverse) to catch wire-format drift — would have caught the catalog subspace bug above. Opt-in target (`just conformance-sql`), gated behind `@manual` to stay out of default `bazelisk test //...`.
+- [ ] **Zero fuzz targets in `pkg/relational/`** (record-layer has 24). Add `FuzzParse(sql)`, `FuzzEvalExpr(tree)`, `FuzzContinuationToken`, `FuzzSchemaTemplateProto`.
+- [ ] **Error-path coverage is ~0.2%** (2 error assertions vs 862 success in `embedded_fdb_test.go`). Add tests for type mismatch on INSERT, NOT NULL violation, missing schema, invalid SQL at execute time, duplicate CREATE DATABASE, PK conflict.
+
 ### Core requirements
 
 1. **1:1 aligned with Java.** Package names, class/struct names, behavior, wire format — mirror Java unless there is a very good reason. Catalog storage, plan cache keys, protobuf encodings, SQL dialect must be bit-compatible.
