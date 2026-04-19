@@ -2360,7 +2360,7 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 	}
 }
 
-// evalComparisonPredicate handles a leaf comparison: col <op> constant.
+// evalComparisonPredicate handles a leaf comparison between two arbitrary expressions.
 func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
@@ -2368,51 +2368,16 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	}
 	opText := bcp.ComparisonOperator().GetText()
 
-	var colName string
-	var valAtom *antlrgen.ConstantExpressionAtomContext
-
-	leftCol, leftIsCol := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
-	rightConst, rightIsConst := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
-	rightCol, rightIsCol := bcp.GetRight().(*antlrgen.FullColumnNameExpressionAtomContext)
-	leftConst, leftIsConst := bcp.GetLeft().(*antlrgen.ConstantExpressionAtomContext)
-
-	switch {
-	case leftIsCol && rightIsConst:
-		colName = fullIdToName(leftCol.FullColumnName().FullId())
-		valAtom = rightConst
-	case leftIsConst && rightIsCol:
-		// Flip: constant <op> column → column <flipped-op> constant
-		colName = fullIdToName(rightCol.FullColumnName().FullId())
-		valAtom = leftConst
-		switch opText {
-		case "<":
-			opText = ">"
-		case ">":
-			opText = "<"
-		case "<=":
-			opText = ">="
-		case ">=":
-			opText = "<="
-		}
-	default:
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"WHERE comparison must be col <op> constant or constant <op> col, got %T %s %T",
-			bcp.GetLeft(), opText, bcp.GetRight())
+	left, err := evalExprAtom(msg, bcp.GetLeft())
+	if err != nil {
+		return false, err
 	}
-
-	litVal, err := evalConstant(valAtom.Constant())
+	right, err := evalExprAtom(msg, bcp.GetRight())
 	if err != nil {
 		return false, err
 	}
 
-	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-	if fd == nil {
-		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
-	}
-	fieldVal := msg.ProtoReflect().Get(fd)
-	driverVal := protoValueToDriver(fd, fieldVal)
-
-	cmp := compareValues(driverVal, litVal)
+	cmp := compareValues(left, right)
 	switch opText {
 	case "=":
 		return cmp == 0, nil

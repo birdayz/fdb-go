@@ -2686,3 +2686,43 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
+
+func TestFDB_WhereExprComparison(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_expr")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE we_tmpl CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_where_expr/products WITH TEMPLATE we_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_expr?cluster_file=%s&schema=products", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Widget', 10)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (2, 'Gadget', 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Gizmo', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// WHERE with expression on left side: price * 2 > 50
+	rows, err := db.QueryContext(ctx, `SELECT id FROM Product WHERE price * 2 > 50 ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	// price * 2: Widget=20, Gadget=100, Gizmo=200; > 50 → Gadget (2), Gizmo (3)
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+}
