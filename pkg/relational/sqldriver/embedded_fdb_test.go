@@ -650,3 +650,190 @@ func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 	g.Expect(count).To(gomega.Equal(1))
 	g.Expect(foundID).To(gomega.Equal(int64(2)))
 }
+
+func TestFDB_InfoSchema_Schemata(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_is_schemata")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE is_schemata_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_is_schemata/schema1 WITH TEMPLATE is_schemata_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_is_schemata/schema2 WITH TEMPLATE is_schemata_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// System table queries do not require a schema in the DSN.
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_schemata?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA"`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.ConsistOf("CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"))
+
+	found := map[string]bool{}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// CATALOG_NAME is at index 0, SCHEMA_NAME at index 1.
+		schemaName, _ := vals[1].(string)
+		found[schemaName] = true
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(found).To(gomega.HaveKey("schema1"))
+	g.Expect(found).To(gomega.HaveKey("schema2"))
+}
+
+func TestFDB_InfoSchema_Tables(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_is_tables")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_tables")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE is_tables_tmpl "+
+			"CREATE TABLE T1 (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE T2 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_is_tables/myschema WITH TEMPLATE is_tables_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_tables?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."TABLES"`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.Equal([]string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE",
+		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
+		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
+	}))
+
+	found := map[string]bool{}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		tableName, _ := vals[2].(string)
+		found[tableName] = true
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(found).To(gomega.HaveKey("T1"))
+	g.Expect(found).To(gomega.HaveKey("T2"))
+}
+
+func TestFDB_InfoSchema_Columns(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_is_columns")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_columns")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE is_columns_tmpl "+
+			"CREATE TABLE Employee (emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (emp_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_is_columns/hr WITH TEMPLATE is_columns_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_columns?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."COLUMNS"`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.Equal([]string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME",
+		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
+		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
+	}))
+
+	// Collect column info for the Employee table.
+	type colRow struct {
+		tableName string
+		colName   string
+		ordinal   int64
+		nullable  string
+		dataType  string
+	}
+	var colRows []colRow
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		tbl, _ := vals[2].(string)
+		if tbl != "Employee" {
+			continue
+		}
+		ordinal, _ := vals[4].(int64)
+		colRows = append(colRows, colRow{
+			tableName: tbl,
+			colName:   vals[3].(string),
+			ordinal:   ordinal,
+			nullable:  vals[6].(string),
+			dataType:  vals[7].(string),
+		})
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(colRows).To(gomega.HaveLen(2))
+
+	// Verify emp_id: NOT NULL, BIGINT (CodeLong).
+	g.Expect(colRows[0].colName).To(gomega.Equal("emp_id"))
+	g.Expect(colRows[0].ordinal).To(gomega.Equal(int64(1)))
+	g.Expect(colRows[0].nullable).To(gomega.Equal("NO"))
+	g.Expect(colRows[0].dataType).To(gomega.Equal("LONG"))
+
+	// Verify name: nullable STRING (CodeString).
+	g.Expect(colRows[1].colName).To(gomega.Equal("name"))
+	g.Expect(colRows[1].ordinal).To(gomega.Equal(int64(2)))
+	g.Expect(colRows[1].nullable).To(gomega.Equal("YES"))
+	g.Expect(colRows[1].dataType).To(gomega.Equal("STRING"))
+}

@@ -147,16 +147,24 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 // Only full-table scans with no WHERE clause, no projections beyond *, and
 // a single unaliased table source are supported.
 func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
+	tableName, whereExpr, err := extractSelectParts(sel)
+	if err != nil {
+		return nil, err
+	}
+
+	// Route INFORMATION_SCHEMA.* queries to system table handlers.
+	// System table queries do not require a schema to be set.
+	upper := strings.ToUpper(tableName)
+	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
+		sysTable := upper[len("INFORMATION_SCHEMA."):]
+		return c.execSystemTable(ctx, sysTable, whereExpr)
+	}
+
 	if c.schema == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
 	if c.dbPath == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
-	}
-
-	tableName, whereExpr, err := extractSelectParts(sel)
-	if err != nil {
-		return nil, err
 	}
 
 	type row = []driver.Value
@@ -241,6 +249,187 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	return &staticRows{cols: cols, rows: data}, nil
 }
 
+// execSystemTable dispatches INFORMATION_SCHEMA.* queries.
+func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, whereExpr antlrgen.IWhereExprContext) (driver.Rows, error) {
+	switch name {
+	case "SCHEMATA":
+		return c.execSysSchemata(ctx, whereExpr)
+	case "TABLES":
+		return c.execSysTables(ctx, whereExpr)
+	case "COLUMNS":
+		return c.execSysColumns(ctx, whereExpr)
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unknown INFORMATION_SCHEMA table: %q", name)
+	}
+}
+
+// execSysSchemata implements SELECT * FROM INFORMATION_SCHEMA.SCHEMATA.
+// WHERE filtering is not yet supported for system tables.
+func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			data = append(data, row{dbID, schemaName, "", "", ""})
+		}
+		return nil, rs.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{"CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSysTables implements SELECT * FROM INFORMATION_SCHEMA.TABLES.
+// WHERE filtering is not yet supported for system tables.
+func (c *EmbeddedConnection) execSysTables(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+
+		// Snapshot (db, schema) pairs first; LoadSchema below opens another txn context.
+		type schemaRef struct{ db, schema string }
+		var refs []schemaRef
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			refs = append(refs, schemaRef{dbID, schemaName})
+		}
+		if e := rs.Err(); e != nil {
+			return nil, e
+		}
+
+		for _, ref := range refs {
+			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			tables, tablesErr := schema.Tables()
+			if tablesErr != nil {
+				return nil, tablesErr
+			}
+			for _, tbl := range tables {
+				data = append(data, row{ref.db, ref.schema, tbl.MetadataName(), "TABLE", "", "", "", "", "", ""})
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE",
+		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
+		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSysColumns implements SELECT * FROM INFORMATION_SCHEMA.COLUMNS.
+// WHERE filtering is not yet supported for system tables.
+func (c *EmbeddedConnection) execSysColumns(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+
+		type schemaRef struct{ db, schema string }
+		var refs []schemaRef
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			refs = append(refs, schemaRef{dbID, schemaName})
+		}
+		if e := rs.Err(); e != nil {
+			return nil, e
+		}
+
+		for _, ref := range refs {
+			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			tables, tablesErr := schema.Tables()
+			if tablesErr != nil {
+				return nil, tablesErr
+			}
+			for _, tbl := range tables {
+				cols := tbl.Columns()
+				for i, col := range cols {
+					nullable := "NO"
+					if col.DataType().IsNullable() {
+						nullable = "YES"
+					}
+					data = append(data, row{
+						ref.db,
+						ref.schema,
+						tbl.MetadataName(),
+						col.MetadataName(),
+						int64(i + 1),
+						"",
+						nullable,
+						col.DataType().Code().String(),
+						"",
+						"",
+						"",
+					})
+				}
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME",
+		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
+		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
 // extractSelectParts navigates the parse tree of a SELECT statement to
 // extract the table name and optional WHERE expression.
 // Only supports SELECT * FROM <tableName> [WHERE col = val] (single table, star select).
@@ -293,7 +482,23 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, antlrgen.
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
 	}
-	return atomItem.TableName().FullId().GetText(), fromClause.WhereExpr(), nil
+	// Build table name from uid segments, stripping identifier quotes.
+	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
+	uids := atomItem.TableName().FullId().AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = stripIdentifierQuotes(u.GetText())
+	}
+	return strings.Join(parts, "."), fromClause.WhereExpr(), nil
+}
+
+// stripIdentifierQuotes removes surrounding double-quotes or backticks from a
+// SQL identifier produced by the ANTLR parser (e.g. `"FOO"` → `FOO`).
+func stripIdentifierQuotes(s string) string {
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 // protoValueToDriver converts a protoreflect.Value to a driver.Value.
