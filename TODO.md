@@ -326,6 +326,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **Compound WHERE (AND/OR/NOT + range comparisons)** (nightshift-30) — `evalExprPredicate` recursive dispatcher handles `LogicalExpressionContext` (AND/OR with short-circuit), `NotExpressionContext`, and `PredicatedExpressionContext`. `evalComparisonPredicate` handles `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`. 3 FDB integration tests (AND, OR, range).
 - [x] **ORDER BY + LIMIT in SELECT** (nightshift-30) — post-scan in-memory sort via `sort.SliceStable`; `compareValues` handles int64/float64/string/bool with NULL-sorts-last. `LIMIT n` truncates after sort. `extractSelectParts` refactored to return `*selectQuery` struct. 3 FDB integration tests (ASC, DESC, LIMIT).
 - [x] **SELECT DISTINCT** (nightshift-31) — `simpleTable.DISTINCT()` detection in `extractSelectParts`; `rowKey()` string-serializes rows for dedup; deduplicated before ORDER BY + LIMIT. 1 FDB integration test (4 rows → 2 distinct values).
+- [x] **WHERE col IN (val1, val2, ...) / NOT IN** (nightshift-31) — `evalInPredicate` handles InPredicateContext from Predicate() slot on PredicatedExpressionContext; evaluates each constant, short-circuits on first match; NOT IN negates. 2 FDB integration tests.
 - [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
