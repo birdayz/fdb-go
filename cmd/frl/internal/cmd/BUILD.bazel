@@ -4,6 +4,7 @@ go_library(
     name = "cmd",
     srcs = [
         "config.go",
+        "meta.go",
         "root.go",
         "store.go",
         "version.go",
@@ -13,6 +14,7 @@ go_library(
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
         "//cmd/frl/internal/config",
+        "//cmd/frl/internal/meta",
         "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
