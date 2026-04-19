@@ -11,6 +11,7 @@ go_library(
         "drop_schema_template.go",
         "metadata_operations_factory.go",
         "save_schema_template.go",
+        "schema_evolution_validator.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl",
     visibility = ["//visibility:public"],
