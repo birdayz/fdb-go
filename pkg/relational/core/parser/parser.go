@@ -79,10 +79,20 @@ func ParseFunction(sql string) (ctx antlrgen.ISqlInvokedFunctionContext, err err
 
 // ParseView parses a view definition (the body of CREATE VIEW
 // foo AS ...) and returns the query parse tree. Mirrors Java's
-// QueryParser.parseView.
-func ParseView(sql string) (antlrgen.IQueryContext, error) {
+// QueryParser.parseView. Any ANTLR-internal panic on adversarial
+// token streams is converted to a clean ErrCodeSyntaxError.
+func ParseView(sql string) (ctx antlrgen.IQueryContext, err error) {
 	p, listener := newParser(sql, nil)
-	ctx := p.Query()
+	defer func() {
+		if r := recover(); r != nil {
+			ctx = nil
+			err = &api.Error{
+				Code:    api.ErrCodeSyntaxError,
+				Message: fmt.Sprintf("parse view panic: %v", r),
+			}
+		}
+	}()
+	ctx = p.Query()
 	if len(listener.errs) > 0 {
 		return nil, buildSyntaxError(listener.errs[0])
 	}
