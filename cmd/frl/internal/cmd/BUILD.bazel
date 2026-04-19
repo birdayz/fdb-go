@@ -8,6 +8,7 @@ go_library(
         "index_describe.go",
         "keyspace.go",
         "meta.go",
+        "meta_diff.go",
         "openstore.go",
         "record.go",
         "root.go",
@@ -38,6 +39,7 @@ go_test(
     srcs = [
         "index_test.go",
         "keyspace_test.go",
+        "meta_diff_test.go",
         "meta_test.go",
         "record_test.go",
         "store_test.go",

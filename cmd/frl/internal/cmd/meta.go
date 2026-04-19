@@ -28,6 +28,7 @@ func newMetaCmd() *cobra.Command {
 		newMetaTypesCmd(),
 		newMetaValidateCmd(),
 		newMetaEvolveCheckCmd(),
+		newMetaDiffCmd(),
 	)
 	return c
 }
