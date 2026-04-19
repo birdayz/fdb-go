@@ -154,6 +154,10 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 	prior, err := c.LoadSchemaTemplate(txn, rl.MetadataName())
 	if err == nil {
 		priorRL, priorOK := prior.(*metadata.RecordLayerSchemaTemplate)
+		// priorRL.Version() >= rl.Version() is out-of-order insertion
+		// (e.g. inserting v3 when v5 already exists). The exact-version
+		// duplicate check above handles the == case; < skips validation
+		// because we can't meaningfully "evolve backward" from the latest.
 		if priorOK && priorRL.Version() < rl.Version() {
 			validator := recordlayer.NewMetaDataEvolutionValidator().
 				SetAllowNoVersionChange(true).
