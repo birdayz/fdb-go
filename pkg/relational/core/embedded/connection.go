@@ -328,6 +328,19 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		return &staticRows{cols: cols, rows: [][]driver.Value{row}}, nil
 	}
 
+	// Execute derived table query and register it as a temporary CTE.
+	if sq.derivedQuery != nil {
+		cols, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
+		if err != nil {
+			return nil, fmt.Errorf("derived table %q: %w", sq.tableName, err)
+		}
+		if c.ctes == nil {
+			c.ctes = make(map[string]*cteData)
+			defer func() { c.ctes = nil }()
+		}
+		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
+	}
+
 	// Check if the table name resolves to a CTE.
 	if c.ctes != nil {
 		if cte, ok := c.ctes[strings.ToUpper(sq.tableName)]; ok {
@@ -1688,6 +1701,9 @@ type selectQuery struct {
 	havingExpr antlrgen.IExpressionContext
 	// joins describes JOIN clauses (nil = no joins).
 	joins []joinClause
+	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
+	// When set, tableName holds the alias; the query is materialized at execution time.
+	derivedQuery antlrgen.IQueryContext
 }
 
 // joinClause describes a single JOIN part in a SELECT query.
@@ -1993,6 +2009,30 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
 	}
+	// Check for derived table: FROM (SELECT ...) AS alias
+	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
+		alias := ""
+		if subItem.GetAlias() != nil {
+			alias = stripIdentifierQuotes(subItem.GetAlias().GetText())
+		}
+		if alias == "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
+		}
+		return &selectQuery{
+			tableName:    alias,
+			tableAlias:   alias,
+			projCols:     projCols,
+			projAliases:  projAliases,
+			projExprs:    projExprs,
+			countStar:    countStar,
+			aggCols:      aggCols,
+			distinct:     simpleTable.DISTINCT() != nil,
+			whereExpr:    fromClause.WhereExpr(),
+			limit:        -1,
+			derivedQuery: subItem.Query(),
+		}, nil
+	}
+
 	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
