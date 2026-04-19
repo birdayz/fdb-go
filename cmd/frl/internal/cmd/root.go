@@ -27,6 +27,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newStoreCmd())
 	root.AddCommand(newMetaCmd())
 	root.AddCommand(newRecordCmd())
+	root.AddCommand(newIndexCmd())
 
 	return root
 }

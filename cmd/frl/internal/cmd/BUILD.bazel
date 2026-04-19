@@ -4,6 +4,7 @@ go_library(
     name = "cmd",
     srcs = [
         "config.go",
+        "index.go",
         "meta.go",
         "openstore.go",
         "record.go",
@@ -32,6 +33,7 @@ go_library(
 go_test(
     name = "cmd_test",
     srcs = [
+        "index_test.go",
         "record_test.go",
         "store_test.go",
     ],
@@ -39,5 +41,6 @@ go_test(
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
         "//gen",
+        "//pkg/recordlayer",
     ],
 )
