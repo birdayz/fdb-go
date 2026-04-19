@@ -3740,6 +3740,11 @@ func evalSpecificFunctionCore(
 			if wErr != nil {
 				return nil, wErr
 			}
+			// Simple CASE uses = semantics; NULL = anything is UNKNOWN, so a
+			// NULL subject or whenVal never matches a branch (falls to ELSE).
+			if subject == nil || whenVal == nil {
+				continue
+			}
 			if compareValues(subject, whenVal) == 0 {
 				return eval(alt.GetConsequent().Expression())
 			}
