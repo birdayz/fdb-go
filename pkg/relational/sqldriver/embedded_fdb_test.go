@@ -5608,6 +5608,12 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(len(groupCounts)).To(gomega.Equal(2), "2 groups: (5,'x') and (NULL,'y')")
+
+	// HAVING COUNT(*) > 1 on the same grouping — only the (5,'x') group
+	// has 2 rows; exercises the demoted COUNT(*) flowing through aggCols.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T GROUP BY a, s HAVING COUNT(*) > 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "HAVING COUNT(*) > 1 keeps only the 2-row group")
 }
 
 // TestFDB_DistinctAggregates pins SUM/AVG/MIN/MAX with DISTINCT: the
