@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -159,12 +160,24 @@ func TestValidateDatabasePath(t *testing.T) {
 	}
 }
 
-func TestEmbeddedConnection_BeginTxReturnsUnsupported(t *testing.T) {
+func TestEmbeddedConnection_BeginTxUnsupportedIsolation(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{}
+	// Requesting a non-serializable isolation level must be rejected.
+	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{Isolation: driver.IsolationLevel(sql.LevelRepeatableRead)})
+	if err == nil {
+		t.Fatal("BeginTx with unsupported isolation: want error, got nil")
+	}
+}
+
+func TestEmbeddedConnection_BeginTxNestedReturnsError(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+	// Simulate an already-open transaction.
+	conn.activeTx = &embeddedTx{}
 	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
 	if err == nil {
-		t.Fatal("BeginTx: want error, got nil")
+		t.Fatal("nested BeginTx: want error, got nil")
 	}
 }
 

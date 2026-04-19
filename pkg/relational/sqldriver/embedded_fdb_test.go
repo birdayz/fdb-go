@@ -1540,6 +1540,7 @@ func TestFDB_SelectWhereNot(t *testing.T) {
 }
 
 func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
+	// ORDER BY on a column not in the SELECT list is now supported.
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -1557,12 +1558,21 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 30), (2, 10), (3, 20)")).Error().NotTo(gomega.HaveOccurred())
 
-	// ORDER BY on a column not in SELECT list must return an error.
-	_, err = db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY val ASC")
-	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("ORDER BY column"))
+	// ORDER BY val (not in SELECT list) — ids should come back sorted by val.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY val ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3, 1}))
 }
 
 func TestFDB_SelectDistinct(t *testing.T) {
@@ -1854,4 +1864,865 @@ func TestFDB_SelectWhereLikeUnderscore(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3})) // cat, car, bat — not card (4 chars)
+}
+
+func TestFDB_BeginCommit(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_begin_commit")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_begin_commit")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE bc_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_begin_commit/items WITH TEMPLATE bc_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_begin_commit?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert in a transaction and commit — row must be visible after.
+	tx, err := db.BeginTx(ctx, nil)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 100)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(tx.Commit()).To(gomega.Succeed())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{1, 100}}))
+}
+
+func TestFDB_BeginRollback(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_begin_rollback")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_begin_rollback")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE br_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_begin_rollback/items WITH TEMPLATE br_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_begin_rollback?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert in a transaction then rollback — row must NOT be visible after.
+	tx, err := db.BeginTx(ctx, nil)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 100)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(tx.Rollback()).To(gomega.Succeed())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeFalse()) // no rows
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+}
+
+func TestFDB_TxMultiStatement(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_tx_multi")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE txm_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_tx_multi?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Multiple inserts + update in one transaction, all committed atomically.
+	tx, err := db.BeginTx(ctx, nil)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = tx.ExecContext(ctx, "UPDATE Item SET val = 99 WHERE item_id = 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(tx.Commit()).To(gomega.Succeed())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{1, 99}, {2, 20}}))
+}
+
+func TestFDB_SelectWhereNullNotIn(t *testing.T) {
+	// NULL NOT IN (...) must be UNKNOWN (filtered out), not true.
+	// Previously a bug returned true for rows with NULL column values.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_null_not_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_not_in")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE null_nin_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_null_not_in/items WITH TEMPLATE null_nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_null_not_in?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// item 1: val=10 (in list), item 2: val=NULL, item 3: val=30 (not in list)
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id) VALUES (2)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (3, 30)")).Error().NotTo(gomega.HaveOccurred())
+
+	// NOT IN (10): should return only item 3 (val=30). Item 2 has NULL val — must be filtered out.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE val NOT IN (10) ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{3}))
+}
+
+func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
+	// Verify that constant <op> column comparisons work (e.g. 10 = item_id).
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_const_lhs")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_const_lhs")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE const_lhs_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_const_lhs/items WITH TEMPLATE const_lhs_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_const_lhs?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE 20 = val ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2}))
+}
+
+func TestFDB_SelectColumnAlias(t *testing.T) {
+	// SELECT col AS alias — result column name should use the alias.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_col_alias")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_col_alias")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE alias_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_col_alias/items WITH TEMPLATE alias_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_col_alias?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 42)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id AS id, val AS amount FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	// Verify column names use aliases.
+	cols, colsErr := rows.Columns()
+	g.Expect(colsErr).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.Equal([]string{"id", "amount"}))
+
+	var id, amount int64
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	g.Expect(rows.Scan(&id, &amount)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(amount).To(gomega.Equal(int64(42)))
+}
+
+func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
+	// ORDER BY on a column not in the SELECT list should work.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_orderby_nonproj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_nonproj_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_orderby_nonproj?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val, name) VALUES (1, 30, 'c'), (2, 10, 'a'), (3, 20, 'b')")).Error().NotTo(gomega.HaveOccurred())
+
+	// SELECT only name, ORDER BY val (not projected) — should return names sorted by val.
+	rows, err := db.QueryContext(ctx, "SELECT name FROM Item ORDER BY val ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"a", "b", "c"}))
+}
+
+func TestFDB_SQLCommitRollback(t *testing.T) {
+	// Verifies that COMMIT/ROLLBACK can be sent as SQL text statements,
+	// matching the behavior of tools/ORMs that manage transactions via raw SQL.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sql_txn")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sql_txn")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sql_txn_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sql_txn/items WITH TEMPLATE sql_txn_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sql_txn?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Use a single connection to control transaction boundaries via raw SQL.
+	conn, err := db.Conn(ctx)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer conn.Close()
+
+	// Insert + COMMIT → row visible.
+	g.Expect(conn.ExecContext(ctx, "START TRANSACTION")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "COMMIT")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := conn.QueryContext(ctx, "SELECT item_id FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	rows.Close()
+	g.Expect(ids).To(gomega.Equal([]int64{1}))
+
+	// Insert + ROLLBACK → row NOT visible.
+	g.Expect(conn.ExecContext(ctx, "START TRANSACTION")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "ROLLBACK")).Error().NotTo(gomega.HaveOccurred())
+
+	rows2, err := conn.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	ids = nil
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	rows2.Close()
+	g.Expect(ids).To(gomega.Equal([]int64{1})) // only item 1 survived
+}
+
+func TestFDB_InsertWithoutColumnList(t *testing.T) {
+	// INSERT INTO t VALUES (...) without explicit column list uses field
+	// declaration order from the schema template.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ins_nocollist")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_nocollist")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE nocollist_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_ins_nocollist/items WITH TEMPLATE nocollist_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ins_nocollist?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert without column list: values in (item_id, val) order.
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item VALUES (1, 42)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id, val int64
+	g.Expect(rows.Scan(&id, &val)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(val).To(gomega.Equal(int64(42)))
+}
+
+func TestFDB_UpdateSetArithmetic(t *testing.T) {
+	// UPDATE SET col = col + N — arithmetic with a column reference.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_upd_arith")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_arith")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE upd_arith_tmpl "+
+			"CREATE TABLE Counter (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_upd_arith/counters WITH TEMPLATE upd_arith_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_upd_arith?cluster_file=%s&schema=counters", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Counter (id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+
+	// Increment val by 5.
+	g.Expect(db.ExecContext(ctx, "UPDATE Counter SET val = val + 5 WHERE id = 1")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, val FROM Counter WHERE id = 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id, val int64
+	g.Expect(rows.Scan(&id, &val)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(val).To(gomega.Equal(int64(15)))
+}
+
+func TestFDB_GroupByCount(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_grpby")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpby")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE grpby_tmpl "+
+			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_grpby/sales WITH TEMPLATE grpby_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_grpby?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert: 2 east, 3 west.
+	for _, row := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "east", 100},
+		{2, "east", 200},
+		{3, "west", 50},
+		{4, "west", 75},
+		{5, "west", 25},
+	} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Sale (id, region, amount) VALUES (%d, '%s', %d)", row.id, row.region, row.amount))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT region, COUNT(*) FROM Sale GROUP BY region")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	counts := map[string]int64{}
+	for rows.Next() {
+		var region string
+		var cnt int64
+		g.Expect(rows.Scan(&region, &cnt)).To(gomega.Succeed())
+		counts[region] = cnt
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(counts["east"]).To(gomega.Equal(int64(2)))
+	g.Expect(counts["west"]).To(gomega.Equal(int64(3)))
+}
+
+func TestFDB_GroupByHaving(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_having")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_having")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE having_tmpl "+
+			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_having/sales WITH TEMPLATE having_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_having?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for _, row := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "east", 100},
+		{2, "east", 200},
+		{3, "west", 50},
+	} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Sale (id, region, amount) VALUES (%d, '%s', %d)", row.id, row.region, row.amount))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// Only groups with COUNT(*) > 1 — should return only "east" (2 rows).
+	rows, err := db.QueryContext(ctx, "SELECT region, COUNT(*) FROM Sale GROUP BY region HAVING COUNT(*) > 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var regions []string
+	for rows.Next() {
+		var region string
+		var cnt int64
+		g.Expect(rows.Scan(&region, &cnt)).To(gomega.Succeed())
+		regions = append(regions, region)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(regions).To(gomega.ConsistOf("east"))
+}
+
+func TestFDB_GroupByOrderBy(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_grpord")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpord")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE grpord_tmpl "+
+			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_grpord/sales WITH TEMPLATE grpord_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_grpord?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// 3 north, 2 south, 1 east — verify ORDER BY COUNT(*) DESC gives north, south, east.
+	for _, row := range []struct {
+		id     int
+		region string
+	}{
+		{1, "north"},
+		{2, "north"},
+		{3, "north"},
+		{4, "south"},
+		{5, "south"},
+		{6, "east"},
+	} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Sale (id, region) VALUES (%d, '%s')", row.id, row.region))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	rows, err := db.QueryContext(ctx,
+		"SELECT region, COUNT(*) FROM Sale GROUP BY region ORDER BY COUNT(*) DESC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type regionCount struct {
+		region string
+		count  int64
+	}
+	var results []regionCount
+	for rows.Next() {
+		var rc regionCount
+		g.Expect(rows.Scan(&rc.region, &rc.count)).To(gomega.Succeed())
+		results = append(results, rc)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(results).To(gomega.HaveLen(3))
+	g.Expect(results[0]).To(gomega.Equal(regionCount{"north", 3}))
+	g.Expect(results[1]).To(gomega.Equal(regionCount{"south", 2}))
+	g.Expect(results[2]).To(gomega.Equal(regionCount{"east", 1}))
+}
+
+func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
+	// SELECT COUNT(*), SUM(amount) FROM t without GROUP BY — single result row.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_aggno")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_aggno")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE aggno_tmpl "+
+			"CREATE TABLE Item (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_aggno/items WITH TEMPLATE aggno_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_aggno?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i, amt := range []int{10, 20, 30} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Item (id, amount) VALUES (%d, %d)", i+1, amt))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT COUNT(*), SUM(amount) FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var cnt int64
+	var sum float64
+	g.Expect(rows.Scan(&cnt, &sum)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(3)))
+	g.Expect(sum).To(gomega.Equal(float64(60)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
+
+func TestFDB_SelectScalarExpression(t *testing.T) {
+	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_scalar_sel")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_scalar_sel")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE scalar_sel_tmpl "+
+			"CREATE TABLE Item (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_scalar_sel/items WITH TEMPLATE scalar_sel_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_scalar_sel?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (id, amount) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, amount * 2 AS doubled FROM Item WHERE id = 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id int64
+	var doubled float64
+	g.Expect(rows.Scan(&id, &doubled)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(doubled).To(gomega.Equal(float64(20)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
+
+func TestFDB_SelectCoalesce(t *testing.T) {
+	// COALESCE(nullable_col, 0) returns the non-NULL value or default.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_coalesce")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_coalesce")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE coalesce_tmpl "+
+			"CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_coalesce/items WITH TEMPLATE coalesce_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_coalesce?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert one row with val=10 and one with no val (NULL).
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (id) VALUES (2)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, COALESCE(val, 0) AS effective_val FROM Item ORDER BY id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id, v int64
+	g.Expect(rows.Scan(&id, &v)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(v).To(gomega.Equal(int64(10)))
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	g.Expect(rows.Scan(&id, &v)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(2)))
+	g.Expect(v).To(gomega.Equal(int64(0)))
+
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
+
+func TestFDB_LimitOffset(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_limit_offset")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_limit_offset")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE loff_tmpl CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_limit_offset/items WITH TEMPLATE loff_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_limit_offset?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i := int64(1); i <= 5; i++ {
+		_, err = db.ExecContext(ctx, `INSERT INTO Item (id, val) VALUES (?, ?)`, i, i*10)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// LIMIT 2 OFFSET 1 → rows 2, 3 (sorted by id)
+	rows, err := db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+}
+
+func TestFDB_CaseWhen(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_case_when")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_when")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cw_tmpl CREATE TABLE Sale (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_when/sales WITH TEMPLATE cw_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_case_when?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, amount) VALUES (1, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, amount) VALUES (2, 150)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, amount) VALUES (3, 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, CASE WHEN amount < 100 THEN 'small' WHEN amount < 200 THEN 'medium' ELSE 'large' END AS size FROM Sale ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type saleRow struct {
+		id   int64
+		size string
+	}
+	var got []saleRow
+	for rows.Next() {
+		var r saleRow
+		g.Expect(rows.Scan(&r.id, &r.size)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(got).To(gomega.Equal([]saleRow{{1, "small"}, {2, "medium"}, {3, "large"}}))
+}
+
+func TestFDB_StringFunctions(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_strfuncs")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_strfuncs")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE sf_tmpl CREATE TABLE Word (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_strfuncs/words WITH TEMPLATE sf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_strfuncs?cluster_file=%s&schema=words", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Word (id, label) VALUES (1, '  Hello  ')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT UPPER(TRIM(label)), LOWER(TRIM(label)), LENGTH(TRIM(label)) FROM Word WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var upper, lower string
+	var length int64
+	g.Expect(rows.Scan(&upper, &lower, &length)).To(gomega.Succeed())
+	g.Expect(upper).To(gomega.Equal("HELLO"))
+	g.Expect(lower).To(gomega.Equal("hello"))
+	g.Expect(length).To(gomega.Equal(int64(5)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
+
+func TestFDB_ConcatNullIf(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_concat")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_concat")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cn_tmpl CREATE TABLE Person (id BIGINT NOT NULL, first STRING NOT NULL, last STRING NOT NULL, score BIGINT, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_concat/people WITH TEMPLATE cn_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_concat?cluster_file=%s&schema=people", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (1, 'Alice', 'Smith', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (2, 'Bob', 'Jones', 0)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT CONCAT(first, ' ', last), NULLIF(score, 0) FROM Person ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	// Row 1: CONCAT = "Alice Smith", NULLIF(100, 0) = 100
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var fullName string
+	var score any
+	g.Expect(rows.Scan(&fullName, &score)).To(gomega.Succeed())
+	g.Expect(fullName).To(gomega.Equal("Alice Smith"))
+	g.Expect(score).To(gomega.Equal(int64(100)))
+
+	// Row 2: CONCAT = "Bob Jones", NULLIF(0, 0) = NULL
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var fullName2 string
+	var score2 any
+	g.Expect(rows.Scan(&fullName2, &score2)).To(gomega.Succeed())
+	g.Expect(fullName2).To(gomega.Equal("Bob Jones"))
+	g.Expect(score2).To(gomega.BeNil())
+
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
+
+func TestFDB_WhereExprComparison(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_expr")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE we_tmpl CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_where_expr/products WITH TEMPLATE we_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_expr?cluster_file=%s&schema=products", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Widget', 10)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (2, 'Gadget', 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Gizmo', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// WHERE with expression on left side: price * 2 > 50
+	rows, err := db.QueryContext(ctx, `SELECT id FROM Product WHERE price * 2 > 50 ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	// price * 2: Widget=20, Gadget=100, Gizmo=200; > 50 → Gadget (2), Gizmo (3)
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }

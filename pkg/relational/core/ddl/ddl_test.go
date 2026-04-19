@@ -1,6 +1,7 @@
 package ddl_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -214,4 +215,196 @@ func TestCreateSchema_MissingTemplate(t *testing.T) {
 	g.Expect(f.CreateDatabase("/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
 	// Template "ghost" was never saved — CreateSchema must fail.
 	g.Expect(f.CreateSchema("/db", "s1", "ghost", api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+}
+
+// --- Schema evolution validator tests ---
+
+type tableSpec struct {
+	name   string
+	cols   []metadata.ColumnSpec
+	pkCols []string
+}
+
+func evolutionTemplate(t *testing.T, name string, version int, tables []tableSpec) api.SchemaTemplate {
+	t.Helper()
+	b := metadata.NewSchemaTemplateBuilder().SetName(name).SetVersion(version).SetIntermingleTables(true)
+	for _, ts := range tables {
+		b = b.AddTable(ts.name, ts.cols, ts.pkCols)
+	}
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	return tmpl
+}
+
+func ordersTable(extra ...metadata.ColumnSpec) []metadata.ColumnSpec {
+	base := []metadata.ColumnSpec{
+		metadata.NewColumnSpec("order_id", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("amount", api.NewDoubleType(true), 2),
+	}
+	return append(base, extra...)
+}
+
+func TestSchemaEvolution_AddColumn_Allowed(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name:   "Order",
+		cols:   ordersTable(metadata.NewColumnSpec("note", api.NewStringType(true), 3)),
+		pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestSchemaEvolution_RemoveColumn_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name:   "Order",
+		cols:   ordersTable(metadata.NewColumnSpec("note", api.NewStringType(true), 3)),
+		pkCols: []string{"order_id"},
+	}})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_RemoveTable_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{
+		{name: "Order", cols: ordersTable(), pkCols: []string{"order_id"}},
+		{name: "Customer", cols: []metadata.ColumnSpec{metadata.NewColumnSpec("id", api.NewLongType(false), 1)}, pkCols: []string{"id"}},
+	})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_ChangeColumnType_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	// Change "amount" from DOUBLE to STRING — must be rejected.
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order",
+		cols: []metadata.ColumnSpec{
+			metadata.NewColumnSpec("order_id", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("amount", api.NewStringType(true), 2),
+		},
+		pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_ReorderColumns_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	// Swap order_id and amount positions.
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order",
+		cols: []metadata.ColumnSpec{
+			metadata.NewColumnSpec("amount", api.NewDoubleType(true), 1),
+			metadata.NewColumnSpec("order_id", api.NewLongType(false), 2),
+		},
+		pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
+}
+
+func TestSchemaEvolution_AddTable_Allowed(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{
+		{name: "Order", cols: ordersTable(), pkCols: []string{"order_id"}},
+		{name: "Customer", cols: []metadata.ColumnSpec{metadata.NewColumnSpec("id", api.NewLongType(false), 1)}, pkCols: []string{"id"}},
+	})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestSchemaEvolution_VersionRollback_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidSchemaTemplate))
+}
+
+func TestSchemaEvolution_SameVersion_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidSchemaTemplate))
 }
