@@ -50,15 +50,15 @@ func Load() (*configv1.Config, error) {
 }
 
 // LoadFrom reads the YAML file at path and returns the parsed Config.
-// A missing file is not an error — returns an empty Config so first-run
-// commands (like `config use-context`) can operate on a zero value and
-// then write back.
+// A missing file is not an error — protoconfig.Optional() makes the
+// YAML source soft, so first-run commands (like `config use-context`)
+// can operate on a zero value and then write back.
 func LoadFrom(path string) (*configv1.Config, error) {
-	cfg, err := protoconfig.Load(path, &configv1.Config{})
+	cfg, err := protoconfig.Load(
+		&configv1.Config{},
+		protoconfig.FromYAMLFile(path, protoconfig.Optional()),
+	)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &configv1.Config{}, nil
-		}
 		return nil, fmt.Errorf("load %s: %w", path, err)
 	}
 	return cfg, nil

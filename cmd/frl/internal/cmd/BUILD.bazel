@@ -1,10 +1,11 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "cmd",
     srcs = [
         "config.go",
         "root.go",
+        "store.go",
         "version.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/cmd",
@@ -12,9 +13,24 @@ go_library(
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
         "//cmd/frl/internal/config",
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "@build_buf_go_protoyaml//:go_default_library",
-        "@com_github_spf13_cobra//:go_default_library",
+        "//pkg/recordlayer",
+        "@build_buf_go_protoyaml//:protoyaml",
+        "@com_github_spf13_cobra//:cobra",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "cmd_test",
+    srcs = ["store_test.go"],
+    embed = [":cmd"],
+    deps = [
+        "//cmd/frl/gen/frl/config/v1:config",
+        "//gen",
     ],
 )

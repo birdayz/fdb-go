@@ -7,7 +7,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//cmd/frl/internal/cmd",
-        "@land_charm_fang_v2//:go_default_library",
+        "@land_charm_fang_v2//:fang",
     ],
 )
 
