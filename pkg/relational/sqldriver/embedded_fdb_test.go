@@ -4770,3 +4770,52 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 		SELECT region, SUM(amount) FROM s GROUP BY region ORDER BY SUM(amount) * 2 DESC`)
 	g.Expect(err).To(gomega.HaveOccurred())
 }
+
+func TestFDB_SelfJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_self_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_self_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE self_join_tmpl
+		CREATE TABLE Employee (id BIGINT NOT NULL, name STRING NOT NULL, manager_id BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_self_join/main WITH TEMPLATE self_join_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_self_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Employee (id, name, manager_id) VALUES (1, 'CEO', NULL)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Employee (id, name, manager_id) VALUES (2, 'VP', 1)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Employee (id, name, manager_id) VALUES (3, 'Eng', 2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Self-join via implicit cross: "SELECT e.name, m.name FROM Employee e, Employee m WHERE e.manager_id = m.id"
+	// Note: alias via AS is required for the same table twice.
+	rows, err := db.QueryContext(ctx, `
+		SELECT e.name, m.name
+		FROM Employee AS e, Employee AS m
+		WHERE e.manager_id = m.id
+		ORDER BY e.id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type r struct{ emp, mgr string }
+	var got []r
+	for rows.Next() {
+		var rr r
+		g.Expect(rows.Scan(&rr.emp, &rr.mgr)).To(gomega.Succeed())
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{
+		{"VP", "CEO"},
+		{"Eng", "VP"},
+	}))
+}
