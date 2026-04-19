@@ -3029,6 +3029,11 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 				}
 				val := row[i]
 				if val == nil {
+					// NOT NULL enforcement — matches Java's SQLSTATE 23502.
+					if fd.Cardinality() == protoreflect.Required {
+						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+							"NULL value in column %q violates NOT NULL constraint", col)
+					}
 					continue
 				}
 				protoVal, convErr := convertToProtoValue(fd, val)
@@ -3036,6 +3041,15 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 					return nil, convErr
 				}
 				msg.Set(fd, protoVal)
+			}
+			// Missing-from-column-list check, same as execInsert.
+			fds := msgDesc.Fields()
+			for i := 0; i < fds.Len(); i++ {
+				fd := fds.Get(i)
+				if fd.Cardinality() == protoreflect.Required && !msg.Has(fd) {
+					return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+						"column %q has NOT NULL constraint but no value was provided", fd.Name())
+				}
 			}
 			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
 				return nil, saveErr
