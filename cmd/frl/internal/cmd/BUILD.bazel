@@ -37,6 +37,7 @@ go_library(
 go_test(
     name = "cmd_test",
     srcs = [
+        "index_describe_test.go",
         "index_test.go",
         "keyspace_test.go",
         "meta_diff_test.go",
