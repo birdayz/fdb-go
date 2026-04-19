@@ -44,9 +44,6 @@ func newMetaValidateCmd() *cobra.Command {
 		Short: "Validate a standalone MetaData.pb file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if path == "" {
-				return fmt.Errorf("--file is required")
-			}
 			src := &meta.FileSource{Path: path}
 			if _, err := src.Load(cmd.Context()); err != nil {
 				return err
@@ -56,6 +53,7 @@ func newMetaValidateCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&path, "file", "", "path to MetaData.pb (required)")
+	_ = c.MarkFlagRequired("file")
 	return c
 }
 
@@ -70,9 +68,6 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 		Short: "Verify an evolution from --old to --new metadata is safe",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if oldPath == "" || newPath == "" {
-				return fmt.Errorf("both --old and --new are required")
-			}
 			oldMeta, err := (&meta.FileSource{Path: oldPath}).Load(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("load --old: %w", err)
@@ -91,6 +86,8 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&oldPath, "old", "", "path to the existing MetaData.pb (required)")
 	c.Flags().StringVar(&newPath, "new", "", "path to the proposed MetaData.pb (required)")
+	_ = c.MarkFlagRequired("old")
+	_ = c.MarkFlagRequired("new")
 	return c
 }
 

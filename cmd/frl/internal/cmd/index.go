@@ -48,7 +48,11 @@ func newIndexLsCmd() *cobra.Command {
 				if override == nil {
 					src, err := meta.FromContext(cfgCtx, nil, nil)
 					if err != nil {
-						return err
+						// --no-fdb can't fall back to an FDB-store metadata
+						// source; rewrite the internal error into an
+						// actionable operator message.
+						return fmt.Errorf("--no-fdb requires a file metadata source: %w "+
+							"(add `meta_file` to the context or pass --meta-file)", err)
 					}
 					override = src
 				}

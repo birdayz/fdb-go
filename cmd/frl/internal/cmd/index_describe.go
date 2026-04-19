@@ -22,7 +22,10 @@ func newIndexDescribeCmd() *cobra.Command {
 			"type, key expression (field names), subspace key, unique / " +
 			"clear-when-zero options, other options, added and last-modified " +
 			"versions, the record types it applies to. Loaded from the " +
-			"current context's metadata source — no FDB round-trip needed.",
+			"current context's metadata source — no FDB round-trip needed " +
+			"when the source is a file.\n\n" +
+			"Note: FDB-store metadata sources are not yet supported by this " +
+			"command; configure `meta_file` in your context or use --meta-file.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)

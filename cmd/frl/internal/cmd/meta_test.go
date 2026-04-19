@@ -122,3 +122,23 @@ func TestMetaEvolveCheck_SameVersionRejected(t *testing.T) {
 		t.Errorf("error text %q doesn't mention the version-advance requirement", err.Error())
 	}
 }
+
+func TestMetaEvolveCheck_ValidEvolution(t *testing.T) {
+	t.Parallel()
+	// Version bumps cleanly from 0 → 1 with identical schema shape,
+	// which MetaDataEvolutionValidator accepts.
+	oldPath := writeDemoMetaFile(t, 0)
+	newPath := writeDemoMetaFile(t, 1)
+
+	c := newMetaEvolveCheckCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--old", oldPath, "--new", newPath})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("expected valid evolution to pass, got: %v\nout:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "ok:") {
+		t.Errorf("output missing 'ok:' line:\n%s", out.String())
+	}
+}
