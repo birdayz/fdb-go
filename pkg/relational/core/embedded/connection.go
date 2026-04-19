@@ -4231,7 +4231,7 @@ func castValue(v any, typeName string) (any, error) {
 			// error on range overflow. Previously Go truncated silently and
 			// relied on int64() wrap on overflow — both diverged from Java.
 			if math.IsNaN(n) || math.IsInf(n, 0) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 					"cannot CAST NaN or Infinity to integer")
 			}
 			// Java's Math.round(double) returns floor(x + 0.5).
@@ -4241,7 +4241,12 @@ func castValue(v any, typeName string) (any, error) {
 			// comparison against the max/min-as-float (values that *do* fit
 			// exactly into float64).
 			if rounded > 9.2233720368547748e18 || rounded < -9.2233720368547758e18 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
+				// Java CastValue uses INVALID_CAST (22F3H) for all CAST
+				// failures including range overflow — matches our
+				// ErrCodeInvalidCast. Distinct from arithmetic-overflow
+				// sites (which use 22003) because Java specifically
+				// categorises CAST failures separately.
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 					"value out of range for integer: %v", n)
 			}
 			return int64(rounded), nil
@@ -4250,7 +4255,7 @@ func castValue(v any, typeName string) (any, error) {
 			// trims whitespace before parsing.
 			i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
 			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to integer: %v", n, err)
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to integer: %v", n, err)
 			}
 			return i, nil
 		case bool:
@@ -4270,7 +4275,7 @@ func castValue(v any, typeName string) (any, error) {
 			// trims whitespace before parsing.
 			f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
 			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to float: %v", n, err)
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to float: %v", n, err)
 			}
 			return f, nil
 		}
