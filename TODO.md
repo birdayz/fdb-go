@@ -336,6 +336,24 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **Catalog read conflict fix** — cachedLoadSchema reads catalog via separate auto-commit tx when inside explicit user transaction; prevents spurious FDB 1020 not_committed errors under parallel DDL. dayshift-32.
 - [x] **Arithmetic in UPDATE SET** — `evalExpr` extended with `MathExpressionAtomContext` + `FullColumnNameExpressionAtomContext`; `SET col = col + N` now works. 1 FDB integration test. dayshift-32.
 - [x] **GROUP BY + aggregate functions** — `SELECT col, COUNT(*)/SUM/MIN/MAX/AVG FROM t GROUP BY col`; in-memory grouping; mixed group-col + aggregate SELECT lists. 1 FDB integration test. dayshift-32.
+- [x] **LIMIT OFFSET** — `LIMIT n OFFSET m` via grammar GetLimit()/GetOffset(); applied post-sort/group. 1 FDB integration test. dayshift-32.
+- [x] **CASE WHEN THEN END** — searched CASE (conditions via evalExprPredicate) and simple CASE (compareValues). ELSE optional. 1 FDB integration test. dayshift-32.
+- [x] **String functions** — UPPER, LOWER, LENGTH/LEN, TRIM, ABS; nested calls chain. dayshift-32.
+- [x] **CONCAT, CONCAT_WS, NULLIF** — CONCAT(s1,s2,...), CONCAT_WS(sep,...), NULLIF(a,b). 1 FDB integration test. dayshift-32.
+- [x] **Generalized WHERE comparisons** — evalComparisonPredicate uses evalExprAtom on both sides; functions/arithmetic now allowed in WHERE (e.g., WHERE price * 2 > 50). 1 FDB integration test. dayshift-32.
+- [x] **INFORMATION_SCHEMA WHERE filtering** — filterSysRows helper reuses evalHaving on col→value map; applies to SCHEMATA, TABLES, COLUMNS, INDEXES. 1 FDB integration test. swingshift-33.
+- [x] **UNION ALL / UNION DISTINCT** — execQueryBodyRows + execUnion handle recursive UNION trees. execSelectQuery/execSelectQueryFull refactor splits routing from FDB scan. 2 FDB integration tests. swingshift-33.
+- [x] **INSERT INTO ... SELECT** — execInsertSelect evaluates QueryExpressionBody (incl. UNION), maps source→target columns via convertToProtoValue. 1 FDB integration test. swingshift-33.
+- [x] **CAST(expr AS type)** — DataTypeFunctionCallContext in evalSpecificFunction; castValue helper for BIGINT/INTEGER/FLOAT/DOUBLE/STRING/BOOLEAN. swingshift-33.
+- [x] **SUBSTRING/SUBSTR, REPLACE, IF/IIF** — string/conditional functions; BinaryComparisonPredicateContext now handled in evalExprAtom (comparisons as values). 1 integration test. swingshift-33.
+- [x] **FLOOR/CEIL/CEILING/ROUND/MOD/POWER/POW/SIGN** — math functions. 1 integration test. swingshift-33.
+- [x] **compound HAVING (AND/OR/NOT)** — logical operators in HAVING clause via evalHaving recursion. swingshift-33.
+- [x] **INNER JOIN and LEFT OUTER JOIN** — execSelectJoin: nested-loop join, ON condition via evalHaving on merged map, SELECT * across both tables, ORDER BY/LIMIT. Detects LEFT/RIGHT grammar ambiguity (keywords are in keywordsCanBeId). 2 integration tests. swingshift-33.
+- [x] **RIGHT OUTER JOIN** — correct unmatched-right-row detection via per-row matchedRight[] boolean slice. 1 integration test. swingshift-33.
+- [x] **JOIN + GROUP BY / aggregates** — GROUP BY with COUNT/SUM/MIN/MAX/AVG, COUNT(DISTINCT), HAVING all work in JOIN queries (map-based in-memory grouping). 1 integration test. swingshift-33.
+- [x] **COUNT(DISTINCT col)** — distinct-set tracking per group (map[string]struct{}); works with and without GROUP BY. 1 integration test. swingshift-33.
+- [x] **GREATEST/LEAST** — multi-argument GREATEST(a,b,c)/LEAST(a,b,c) scalar functions; NULL-argument skipping. 1 integration test. swingshift-33.
+- [x] **filterSysRows compound WHERE** — now routes through evalPredicateOnMapExpr so AND/OR/NOT/IS NULL/LIKE/IN/BETWEEN all work in INFORMATION_SCHEMA WHERE clauses. swingshift-33.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 

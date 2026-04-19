@@ -2687,6 +2687,309 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
+func TestFDB_UnionAll(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_union_all")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_all")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ua_tmpl CREATE TABLE Item (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_all/store WITH TEMPLATE ua_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_union_all?cluster_file=%s&schema=store", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Item (id, label) VALUES (1, 'alpha'), (2, 'beta')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// UNION ALL: duplicates preserved.
+	rows, err := db.QueryContext(ctx, `SELECT label FROM Item WHERE id = 1 UNION ALL SELECT label FROM Item WHERE id = 2`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var labels []string
+	for rows.Next() {
+		var lbl string
+		g.Expect(rows.Scan(&lbl)).To(gomega.Succeed())
+		labels = append(labels, lbl)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(labels).To(gomega.ConsistOf("alpha", "beta"))
+}
+
+func TestFDB_UnionDistinct(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_union_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ud_tmpl CREATE TABLE Tag (id BIGINT NOT NULL, tag STRING NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_distinct/tags WITH TEMPLATE ud_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_union_distinct?cluster_file=%s&schema=tags", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Tag (id, tag) VALUES (1, 'go'), (2, 'go'), (3, 'fdb')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// UNION (implicit DISTINCT): duplicates removed.
+	rows, err := db.QueryContext(ctx, `SELECT tag FROM Tag WHERE id = 1 UNION SELECT tag FROM Tag WHERE id = 2`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		g.Expect(rows.Scan(&tag)).To(gomega.Succeed())
+		tags = append(tags, tag)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// Two rows with tag='go' UNION'd → one row.
+	g.Expect(tags).To(gomega.ConsistOf("go"))
+}
+
+func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_is_schemata_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE iswt_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/alpha WITH TEMPLATE iswt_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/beta WITH TEMPLATE iswt_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_schemata_where?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// WHERE filter: only 'alpha' schema.
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE SCHEMA_NAME = 'alpha'`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var schemas []string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// SCHEMA_NAME is at index 1.
+		if s, ok := vals[1].(string); ok {
+			schemas = append(schemas, s)
+		}
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
+}
+
+func TestFDB_InsertSelect(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_insert_select")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_select")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE is_tmpl CREATE TABLE Src (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id)) CREATE TABLE Dst (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_select/data WITH TEMPLATE is_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert_select?cluster_file=%s&schema=data", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Src (id, val) VALUES (1, 10), (2, 20), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// INSERT INTO Dst SELECT * FROM Src WHERE val > 10
+	_, err = db.ExecContext(ctx, `INSERT INTO Dst SELECT * FROM Src WHERE val > 10`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, val FROM Dst ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{2, 20}, {3, 30}}))
+}
+
+func TestFDB_CastAndSubstring(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cast_substr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cast_substr")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cast_substr_tmpl CREATE TABLE Item (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cast_substr/shop WITH TEMPLATE cast_substr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cast_substr?cluster_file=%s&schema=shop", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Item (id, name, price) VALUES (1, 'Widget', 42), (2, 'Gadget', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CAST price to STRING
+	rows, err := db.QueryContext(ctx, `SELECT CAST(price AS STRING) FROM Item WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	rows.Next()
+	var priceStr string
+	g.Expect(rows.Scan(&priceStr)).To(gomega.Succeed())
+	g.Expect(priceStr).To(gomega.Equal("42"))
+
+	// SUBSTRING
+	rows2, err := db.QueryContext(ctx, `SELECT SUBSTRING(name, 1, 3) FROM Item WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	rows2.Next()
+	var sub string
+	g.Expect(rows2.Scan(&sub)).To(gomega.Succeed())
+	g.Expect(sub).To(gomega.Equal("Wid"))
+
+	// REPLACE
+	rows3, err := db.QueryContext(ctx, `SELECT REPLACE(name, 'Widget', 'Thing') FROM Item WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows3.Close()
+	rows3.Next()
+	var replaced string
+	g.Expect(rows3.Scan(&replaced)).To(gomega.Succeed())
+	g.Expect(replaced).To(gomega.Equal("Thing"))
+
+	// IF function
+	rows4, err := db.QueryContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows4.Close()
+	var cats []string
+	for rows4.Next() {
+		var c string
+		g.Expect(rows4.Scan(&c)).To(gomega.Succeed())
+		cats = append(cats, c)
+	}
+	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
+}
+
+func TestFDB_MathFunctions(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_math_funcs")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_funcs")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mf_tmpl CREATE TABLE Num (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_funcs/data WITH TEMPLATE mf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_math_funcs?cluster_file=%s&schema=data", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Num (id, val) VALUES (1, 7), (2, 3)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// MOD(7, 3) = 1
+	rows, err := db.QueryContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	rows.Next()
+	var mod int64
+	g.Expect(rows.Scan(&mod)).To(gomega.Succeed())
+	g.Expect(mod).To(gomega.Equal(int64(1)))
+
+	// POWER(2, 3) = 8
+	rows2, err := db.QueryContext(ctx, `SELECT POWER(2, 3) FROM Num WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	rows2.Next()
+	var pow int64
+	g.Expect(rows2.Scan(&pow)).To(gomega.Succeed())
+	g.Expect(pow).To(gomega.Equal(int64(8)))
+}
+
+func TestFDB_HavingCompound(t *testing.T) {
+	// HAVING with AND/OR compound conditions.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_having_compound")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_having_compound")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE hc_tmpl CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_having_compound/sales WITH TEMPLATE hc_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_having_compound?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (1, 'north', 100), (2, 'south', 50), (3, 'north', 200), (4, 'south', 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// GROUP BY region HAVING SUM > 100 AND COUNT > 1
+	rows, err := db.QueryContext(ctx, `SELECT region, SUM(amount), COUNT(*) FROM Sale GROUP BY region HAVING SUM(amount) > 100 AND COUNT(*) > 1 ORDER BY region`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var regions []string
+	for rows.Next() {
+		var region string
+		var sum, cnt int64
+		g.Expect(rows.Scan(&region, &sum, &cnt)).To(gomega.Succeed())
+		regions = append(regions, region)
+		g.Expect(sum).To(gomega.BeNumerically(">", int64(100)))
+		g.Expect(cnt).To(gomega.BeNumerically(">", int64(1)))
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// north: SUM=300, COUNT=2 → passes; south: SUM=80, COUNT=2 → fails SUM>100
+	g.Expect(regions).To(gomega.ConsistOf("north"))
+}
+
 func TestFDB_WhereExprComparison(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -2725,4 +3028,381 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 	}
 	// price * 2: Widget=20, Gadget=100, Gizmo=200; > 50 → Gadget (2), Gizmo (3)
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+}
+
+func TestFDB_InnerJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_inner_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_inner_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ij_tmpl
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_inner_join/main WITH TEMPLATE ij_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_inner_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (12, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// INNER JOIN: Customer JOIN Order ON Customer.id = Order.customer_id
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Order.amount
+		FROM Customer
+		INNER JOIN Order ON Customer.id = Order.customer_id
+		ORDER BY Order.amount ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name   string
+		amount int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.amount)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"Bob", 50},
+		{"Alice", 100},
+		{"Alice", 200},
+	}))
+}
+
+func TestFDB_LeftJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_left_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lj_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_join/main WITH TEMPLATE lj_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_left_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// Only Alice has orders.
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// LEFT JOIN: all customers, NULL amount for Bob.
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Order.amount
+		FROM Customer
+		LEFT JOIN Order ON Customer.id = Order.customer_id
+		ORDER BY Customer.id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	var amounts []any
+	for rows.Next() {
+		var name string
+		var amount any
+		g.Expect(rows.Scan(&name, &amount)).To(gomega.Succeed())
+		names = append(names, name)
+		amounts = append(amounts, amount)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
+	g.Expect(amounts[0]).To(gomega.Equal(int64(100)))
+	g.Expect(amounts[1]).To(gomega.BeNil()) // Bob has no orders → NULL
+}
+
+func TestFDB_JoinWhere(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jw_tmpl
+		CREATE TABLE Category (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Product (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_where/main WITH TEMPLATE jw_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_where?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, name) VALUES (1, 'Electronics')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, name) VALUES (2, 'Books')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, cat_id, price) VALUES (1, 1, 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, cat_id, price) VALUES (2, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, cat_id, price) VALUES (3, 2, 15)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// JOIN + WHERE: electronics products with price > 300
+	rows, err := db.QueryContext(ctx, `
+		SELECT Product.id, Product.price
+		FROM Product
+		INNER JOIN Category ON Product.cat_id = Category.id
+		WHERE Category.name = 'Electronics' AND Product.price > 300
+		ORDER BY Product.price DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	var prices []int64
+	for rows.Next() {
+		var id, price int64
+		g.Expect(rows.Scan(&id, &price)).To(gomega.Succeed())
+		ids = append(ids, id)
+		prices = append(prices, price)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1}))
+	g.Expect(prices).To(gomega.Equal([]int64{500}))
+}
+
+func TestFDB_RightJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_right_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_right_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE rj_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_right_join/main WITH TEMPLATE rj_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_right_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// One order for Alice; one orphan order with no matching customer.
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 99, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// RIGHT JOIN: all orders appear; orphan order has NULL customer name.
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Order.amount
+		FROM Customer
+		RIGHT JOIN Order ON Customer.id = Order.customer_id
+		ORDER BY Order.amount ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []any
+	var amounts []int64
+	for rows.Next() {
+		var name any
+		var amount int64
+		g.Expect(rows.Scan(&name, &amount)).To(gomega.Succeed())
+		names = append(names, name)
+		amounts = append(amounts, amount)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(amounts).To(gomega.Equal([]int64{100, 200}))
+	g.Expect(names[0]).To(gomega.Equal("Alice"))
+	g.Expect(names[1]).To(gomega.BeNil()) // orphan order → NULL customer name
+}
+
+func TestFDB_CountDistinct(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_count_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_tmpl
+		CREATE TABLE Sale (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, region STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_count_distinct/main WITH TEMPLATE cd_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_count_distinct?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (1, 1, 'US')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (2, 2, 'EU')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (3, 1, 'US')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (4, 3, 'US')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// COUNT(DISTINCT customer_id): 3 distinct customers (1, 2, 3).
+	rows, err := db.QueryContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var n int64
+	g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(int64(3)))
+
+	// COUNT(DISTINCT region) GROUP BY: grouped by region, count distinct customers per region.
+	rows2, err := db.QueryContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	type regionCount struct {
+		region string
+		count  int64
+	}
+	var rc []regionCount
+	for rows2.Next() {
+		var r regionCount
+		g.Expect(rows2.Scan(&r.region, &r.count)).To(gomega.Succeed())
+		rc = append(rc, r)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(rc).To(gomega.Equal([]regionCount{
+		{"EU", 1},
+		{"US", 2}, // customers 1 and 3 in US
+	}))
+}
+
+func TestFDB_GreatestLeast(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_greatest_least")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_greatest_least")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gl_tmpl
+		CREATE TABLE Product (id BIGINT NOT NULL, a BIGINT NOT NULL, b BIGINT NOT NULL, c BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_greatest_least/main WITH TEMPLATE gl_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_greatest_least?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, a, b, c) VALUES (1, 3, 1, 2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, a, b, c) VALUES (2, 7, 9, 5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT GREATEST(a, b, c), LEAST(a, b, c) FROM Product ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ greatest, least int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.greatest, &r.least)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{3, 1},
+		{9, 5},
+	}))
+}
+
+func TestFDB_JoinGroupBy(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_groupby")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_groupby")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jgb_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_groupby/main WITH TEMPLATE jgb_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_groupby?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (12, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// JOIN + GROUP BY: count orders per customer.
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, COUNT(*), SUM(Order.amount)
+		FROM Customer
+		INNER JOIN Order ON Customer.id = Order.customer_id
+		GROUP BY Customer.name
+		ORDER BY Customer.name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name  string
+		count int64
+		total float64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.count, &r.total)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"Alice", 2, 300},
+		{"Bob", 1, 50},
+	}))
 }
