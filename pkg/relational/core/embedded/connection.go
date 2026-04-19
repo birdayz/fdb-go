@@ -4162,6 +4162,11 @@ func evalComparisonPredicate(ctx context.Context, conn *EmbeddedConnection, msg 
 	if err != nil {
 		return false, err
 	}
+	// SQL 3-valued logic: any comparison involving NULL is UNKNOWN → false in
+	// WHERE. Use IS NULL / IS NOT NULL for explicit NULL tests.
+	if left == nil || right == nil {
+		return false, nil
+	}
 
 	cmp := compareValues(left, right)
 	switch opText {
@@ -4766,6 +4771,10 @@ func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[s
 		rightVal, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 		if err != nil {
 			return false, err
+		}
+		// SQL 3-valued logic: NULL comparisons are UNKNOWN → false.
+		if fieldVal == nil || rightVal == nil {
+			return false, nil
 		}
 		cmp := compareValues(fieldVal, rightVal)
 		switch bcp.ComparisonOperator().GetText() {

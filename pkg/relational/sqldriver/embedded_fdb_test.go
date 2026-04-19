@@ -5275,4 +5275,13 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	var sum sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx, `SELECT val + 5 FROM T WHERE id = 1`).Scan(&sum)).To(gomega.Succeed())
 	g.Expect(sum.Valid).To(gomega.BeFalse())
+
+	// Comparison with NULL is UNKNOWN → row excluded (both < and >).
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (2, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE val > 50`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1))) // Only id=2 (val=100); id=1 (val=NULL) excluded.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE val < 50`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0))) // Neither row: id=1 is NULL, id=2 is 100.
 }
