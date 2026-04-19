@@ -30,7 +30,9 @@ tests:
   # MinInt64 / -1 → overflow (abs(MinInt64) doesn't fit in int64).
   - query: SELECT a / b FROM t WHERE id = 4
     error_code: "22023"
-  # Baseline: in-range ops succeed.
-  - query: SELECT a + 0 FROM t WHERE id = 1
+  # Baseline: in-range ops succeed. MaxInt64 + (-1) is a non-trivial
+  # add the planner can't constant-fold away, exercising the checked
+  # add helper's happy path against an extremal operand.
+  - query: SELECT a + -1 FROM t WHERE id = 1
     rows:
-      - [9223372036854775807]
+      - [9223372036854775806]

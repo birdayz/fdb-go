@@ -4282,13 +4282,17 @@ func subInt64Checked(a, b int64) (int64, bool) {
 }
 
 // mulInt64Checked returns a*b and a success flag. Mirrors Java's
-// Math.multiplyExact. Uses the textbook "divide back" check with
-// special cases for 0 and MinInt64.
+// Math.multiplyExact. Uses the textbook "divide back" check: overflow
+// iff (a*b)/b != a. The first special case (a == MinInt64 && b == -1)
+// is REQUIRED: p/b would compute MinInt64 / -1, which traps with
+// SIGFPE on amd64 — we must detect and bail before the divide. The
+// second symmetric case is redundant (divide-back would flag it
+// without a hardware trap, because the divisor is MinInt64 not -1)
+// but kept for parallelism with the first so the intent is obvious.
 func mulInt64Checked(a, b int64) (int64, bool) {
 	if a == 0 || b == 0 {
 		return 0, true
 	}
-	// MinInt64 * -1 overflows (MaxInt64 + 1 doesn't fit).
 	if a == math.MinInt64 && b == -1 {
 		return 0, false
 	}

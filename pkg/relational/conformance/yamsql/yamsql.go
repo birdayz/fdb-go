@@ -15,6 +15,8 @@ package yamsql
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,16 +64,7 @@ func Load(path string) (*Scenario, error) {
 		return nil, fmt.Errorf("%s: schema_template is required", path)
 	}
 	if s.Name == "" {
-		s.Name = basename(path)
+		s.Name = strings.TrimSuffix(filepath.Base(path), ".yaml")
 	}
 	return &s, nil
-}
-
-func basename(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' || path[i] == '\\' {
-			return path[i+1:]
-		}
-	}
-	return path
 }

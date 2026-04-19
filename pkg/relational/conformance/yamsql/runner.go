@@ -184,11 +184,12 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 }
 
 // isQuery reports whether stmt should be routed through database/sql's
-// Query path. SELECT (and its lead keywords WITH / VALUES) return result
-// sets; everything else goes through Exec.
+// Query path. SELECT (and its lead keywords WITH / VALUES) return
+// result sets; everything else goes through Exec. Strips a leading
+// paren so `(SELECT ...)` counts as a query.
 func isQuery(stmt string) bool {
 	s := strings.TrimLeft(stmt, " \t\r\n(")
-	// Uppercase the leading word without allocating a full upper-cased copy.
+	// Extract just the first word so we don't upper-case the whole statement.
 	for i, r := range s {
 		if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '(' {
 			s = s[:i]
