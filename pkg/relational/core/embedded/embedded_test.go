@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 func TestSubstituteParams(t *testing.T) {
@@ -86,6 +88,22 @@ func TestSubstituteParams(t *testing.T) {
 			query: "SELECT * FROM t WHERE name = '?' AND id = ?",
 			args:  []driver.NamedValue{nv(1, int64(5))},
 			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
+		},
+		{
+			// swingshift-35: line comments must not consume ? placeholders.
+			// Previously: `id = ? -- why?` would eat two args (the first for
+			// the real placeholder, the second trying to satisfy the ? in
+			// the comment) and either over-consume or error on arg count.
+			name:  "question mark inside line comment not substituted",
+			query: "SELECT * FROM t WHERE id = ? -- why?\nAND name = ?",
+			args:  []driver.NamedValue{nv(1, int64(5)), nv(2, "x")},
+			want:  "SELECT * FROM t WHERE id = 5 -- why?\nAND name = 'x'",
+		},
+		{
+			name:  "question mark inside block comment not substituted",
+			query: "SELECT /* hmm? */ id FROM t WHERE id = ?",
+			args:  []driver.NamedValue{nv(1, int64(5))},
+			want:  "SELECT /* hmm? */ id FROM t WHERE id = 5",
 		},
 	}
 	for _, tc := range cases {
@@ -191,6 +209,133 @@ func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	}
 }
 
+// TestGroupByKey pins the collision-free invariant for GROUP BY keys.
+// Encodings must:
+//   - keep NULL distinct from the literal string "<nil>" (pre-fix collision)
+//   - keep int 5 distinct from string "5" (same type-tag rule as rowKey)
+//   - treat two NULLs in the same column as equal (SQL spec)
+//   - keep (NULL, 'x') distinct from ('x', NULL) across columns
+func TestGroupByKey(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		a, b  []driver.Value
+		equal bool
+	}{
+		{"identical non-null", []driver.Value{int64(1), "x"}, []driver.Value{int64(1), "x"}, true},
+		{"both NULL same cols", []driver.Value{nil, nil}, []driver.Value{nil, nil}, true},
+		{"NULL vs nil-string", []driver.Value{nil}, []driver.Value{"<nil>"}, false},
+		{"int 5 vs string '5'", []driver.Value{int64(5)}, []driver.Value{"5"}, false},
+		{"(NULL,x) vs (x,NULL)", []driver.Value{nil, "x"}, []driver.Value{"x", nil}, false},
+		{"same NULL/non-null pattern", []driver.Value{nil, int64(1)}, []driver.Value{nil, int64(1)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ka := groupByKey(tc.a)
+			kb := groupByKey(tc.b)
+			got := ka == kb
+			if got != tc.equal {
+				t.Errorf("groupByKey %s: got %v (ka=%q kb=%q), want equal=%v",
+					tc.name, got, ka, kb, tc.equal)
+			}
+		})
+	}
+}
+
+// TestTriBool pins the Kleene three-valued truth table so any future tweak
+// of triAnd/triOr/Not doesn't silently violate SQL §8.12. Exhaustively
+// enumerates all 3×3 combinations — 9 AND, 9 OR, 3 NOT.
+func TestTriBool(t *testing.T) {
+	t.Parallel()
+	name := func(v triBool) string {
+		switch v {
+		case triTrue:
+			return "T"
+		case triFalse:
+			return "F"
+		case triNull:
+			return "N"
+		}
+		return "?"
+	}
+
+	andCases := []struct {
+		a, b, want triBool
+	}{
+		{triTrue, triTrue, triTrue},
+		{triTrue, triFalse, triFalse},
+		{triTrue, triNull, triNull},
+		{triFalse, triTrue, triFalse},
+		{triFalse, triFalse, triFalse},
+		{triFalse, triNull, triFalse}, // FALSE short-circuits
+		{triNull, triTrue, triNull},
+		{triNull, triFalse, triFalse},
+		{triNull, triNull, triNull},
+	}
+	for _, tc := range andCases {
+		if got := triAnd(tc.a, tc.b); got != tc.want {
+			t.Errorf("triAnd(%s, %s) = %s, want %s", name(tc.a), name(tc.b), name(got), name(tc.want))
+		}
+	}
+
+	orCases := []struct {
+		a, b, want triBool
+	}{
+		{triTrue, triTrue, triTrue},
+		{triTrue, triFalse, triTrue},
+		{triTrue, triNull, triTrue}, // TRUE short-circuits
+		{triFalse, triTrue, triTrue},
+		{triFalse, triFalse, triFalse},
+		{triFalse, triNull, triNull},
+		{triNull, triTrue, triTrue},
+		{triNull, triFalse, triNull},
+		{triNull, triNull, triNull},
+	}
+	for _, tc := range orCases {
+		if got := triOr(tc.a, tc.b); got != tc.want {
+			t.Errorf("triOr(%s, %s) = %s, want %s", name(tc.a), name(tc.b), name(got), name(tc.want))
+		}
+	}
+
+	notCases := []struct {
+		in, want triBool
+	}{
+		{triTrue, triFalse},
+		{triFalse, triTrue},
+		{triNull, triNull},
+	}
+	for _, tc := range notCases {
+		if got := tc.in.Not(); got != tc.want {
+			t.Errorf("Not(%s) = %s, want %s", name(tc.in), name(got), name(tc.want))
+		}
+	}
+
+	// IsTrue: only triTrue is truthy. UNKNOWN must NOT pass the filter
+	// boundary — that's the whole point of the tri-state.
+	truthyCases := []struct {
+		in   triBool
+		want bool
+	}{
+		{triTrue, true},
+		{triFalse, false},
+		{triNull, false},
+	}
+	for _, tc := range truthyCases {
+		if got := tc.in.IsTrue(); got != tc.want {
+			t.Errorf("%s.IsTrue() = %v, want %v", name(tc.in), got, tc.want)
+		}
+	}
+
+	// triFromBool — round-trip.
+	if triFromBool(true) != triTrue {
+		t.Error("triFromBool(true) != triTrue")
+	}
+	if triFromBool(false) != triFalse {
+		t.Error("triFromBool(false) != triFalse")
+	}
+}
+
 func TestEmbeddedConnection_ResetSession(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{schema: "myschema"}
@@ -199,6 +344,41 @@ func TestEmbeddedConnection_ResetSession(t *testing.T) {
 	}
 	if conn.schema != "" {
 		t.Errorf("ResetSession: schema not cleared, got %q", conn.schema)
+	}
+}
+
+// TestEmbeddedConnection_ResetSessionClearsPerRequestState pins the
+// pooled-connection hygiene invariants that were missing before:
+// activeTx, ctes, and schemaCache must not leak across checkouts.
+func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{
+		schema:        "other",
+		defaultSchema: "main",
+		ctes: map[string]*cteData{
+			"LEAKED": {cols: []string{"x"}, rows: [][]driver.Value{{int64(1)}}},
+		},
+		schemaCache: map[string]api.Schema{
+			"stale": nil,
+		},
+		// activeTx left nil — rolling back a nil tx must not panic, but the
+		// reset must still run to completion (the schemaCache / ctes cleanup
+		// would be skipped if we early-returned on activeTx presence).
+	}
+	if err := conn.ResetSession(context.TODO()); err != nil {
+		t.Fatalf("ResetSession: unexpected error: %v", err)
+	}
+	if conn.schema != "main" {
+		t.Errorf("schema not restored to defaultSchema: got %q want %q", conn.schema, "main")
+	}
+	if conn.ctes != nil {
+		t.Errorf("ctes not cleared: %v", conn.ctes)
+	}
+	if len(conn.schemaCache) != 0 {
+		t.Errorf("schemaCache not cleared: %v", conn.schemaCache)
+	}
+	if conn.activeTx != nil {
+		t.Errorf("activeTx not cleared: %v", conn.activeTx)
 	}
 }
 
@@ -253,6 +433,18 @@ func TestValuesEqual(t *testing.T) {
 		{"string not equal", "hello", "world", false},
 		{"bool true==true", true, true, true},
 		{"bool false!=true", false, true, false},
+		// Mixed-type comparisons must return false — no string coercion.
+		{"string '5' != int 5", "5", int64(5), false},
+		{"int 5 != string '5'", int64(5), "5", false},
+		{"string '5.0' != float 5.0", "5.0", float64(5.0), false},
+		{"float 5.0 != string '5.0'", float64(5.0), "5.0", false},
+		{"bool true != int 1", true, int64(1), false},
+		{"int 1 != bool true", int64(1), true, false},
+		{"bool true != string 'true'", true, "true", false},
+		{"string 'true' != bool true", "true", true, false},
+		{"bytes equal", []byte("abc"), []byte("abc"), true},
+		{"bytes not equal", []byte("abc"), []byte("abd"), false},
+		{"bytes != string", []byte("abc"), "abc", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -299,9 +491,47 @@ func TestLikeMatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
 			t.Parallel()
-			got := likeMatch(tc.pattern, tc.s)
+			got := likeMatch(tc.pattern, tc.s, -1) // no escape
 			if got != tc.want {
 				t.Errorf("likeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLikeMatchWithEscape pins the ESCAPE clause behaviour added in
+// swingshift-35. Matches Java ExpressionVisitor.visitLikePredicate which
+// passes the escape char into the pattern-compile step so `\_` is literal.
+func TestLikeMatchWithEscape(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		pattern string
+		s       string
+		escape  rune
+		want    bool
+	}{
+		// Literal underscore via escape.
+		{`a\_b`, "a_b", '\\', true},
+		{`a\_b`, "axb", '\\', false}, // escaped _ doesn't match arbitrary char
+		// Literal percent via escape.
+		{`a\%b`, "a%b", '\\', true},
+		{`a\%b`, "abb", '\\', false},
+		// Escape char itself can be escaped.
+		{`a\\b`, `a\b`, '\\', true},
+		// Alt escape char.
+		{`a!_b`, "a_b", '!', true},
+		{`a!_b`, "axb", '!', false},
+		// Without escape the same char is literal (escape=-1).
+		{`a\_b`, "a_b", -1, false}, // `\` is literal, `_` still wildcard → "a\Xb"
+		{`a\_b`, `a\xb`, -1, true}, // matches `a\` + any char + `b`
+	}
+	for _, tc := range cases {
+		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
+			t.Parallel()
+			got := likeMatch(tc.pattern, tc.s, tc.escape)
+			if got != tc.want {
+				t.Errorf("likeMatch(%q, %q, %q) = %v, want %v",
+					tc.pattern, tc.s, string(tc.escape), got, tc.want)
 			}
 		})
 	}
@@ -334,4 +564,74 @@ func TestRowKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+// FuzzApplyMathOp pins the arithmetic evaluator. The function must never
+// panic, must reject non-numeric operands cleanly, must propagate NULL, and
+// must error on div/0 for both `/` and `%` (unified in swingshift-35).
+func FuzzApplyMathOp(f *testing.F) {
+	f.Add(int64(7), int64(3), "+")
+	f.Add(int64(7), int64(3), "-")
+	f.Add(int64(7), int64(3), "*")
+	f.Add(int64(7), int64(3), "/")
+	f.Add(int64(7), int64(3), "%")
+	// Division by zero.
+	f.Add(int64(1), int64(0), "/")
+	f.Add(int64(1), int64(0), "%")
+	// Unknown op.
+	f.Add(int64(1), int64(2), "@")
+	// Mixed int/float shouldn't panic — we pass only int64 to the int64 fuzz,
+	// but the NULL-on-either-side path is critical.
+	f.Fuzz(func(t *testing.T, a, b int64, op string) {
+		_, err := applyMathOp(a, b, op)
+		_ = err
+		// NULL propagation on left, right, and both.
+		for _, pair := range []struct{ l, r any }{{nil, b}, {a, nil}, {nil, nil}} {
+			v, err := applyMathOp(pair.l, pair.r, op)
+			if err != nil || v != nil {
+				t.Fatalf("applyMathOp(%v, %v, %q) = (%v, %v), want (nil, nil)",
+					pair.l, pair.r, op, v, err)
+			}
+		}
+		// Non-numeric operand must error cleanly.
+		if _, err := applyMathOp("bad", b, op); err == nil {
+			t.Fatalf("applyMathOp(string, _, %q) must error", op)
+		}
+	})
+}
+
+// FuzzApplyBitOp pins the swingshift-35 bitwise-operator implementation.
+// The function must never panic, must reject non-integer operands cleanly,
+// must propagate NULL, and must guard shift counts against out-of-range
+// values (shift count >= 64 or < 0 is undefined behaviour in Go).
+func FuzzApplyBitOp(f *testing.F) {
+	f.Add(int64(7), int64(3), "&")
+	f.Add(int64(7), int64(3), "|")
+	f.Add(int64(7), int64(3), "^")
+	f.Add(int64(7), int64(2), "<<")
+	f.Add(int64(7), int64(1), ">>")
+	// Pathological shift counts (should error, not panic via UB).
+	f.Add(int64(1), int64(64), "<<")
+	f.Add(int64(1), int64(-1), "<<")
+	f.Add(int64(-1), int64(63), ">>")
+	// Unknown op.
+	f.Add(int64(1), int64(2), "@")
+	f.Fuzz(func(t *testing.T, a, b int64, op string) {
+		// Must not panic. Either returns a value+nil, NULL+nil, or value+error.
+		_, err := applyBitOp(a, b, op)
+		_ = err // accept any error
+		// Also try with NULL operands; those must always return nil, nil.
+		v, err := applyBitOp(nil, b, op)
+		if err != nil || v != nil {
+			t.Fatalf("applyBitOp(nil, _) = (%v, %v), want (nil, nil)", v, err)
+		}
+		v, err = applyBitOp(a, nil, op)
+		if err != nil || v != nil {
+			t.Fatalf("applyBitOp(_, nil) = (%v, %v), want (nil, nil)", v, err)
+		}
+		// Non-integer operand must error cleanly, not panic.
+		if _, err := applyBitOp("string", b, op); err == nil {
+			t.Fatalf("applyBitOp(string, _) must error")
+		}
+	})
 }

@@ -1,8 +1,6 @@
 package catalog
 
 import (
-	"fmt"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -116,6 +114,16 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn 
 
 // CreateTemplate persists a new (name, version). Returns
 // ErrCodeDuplicateSchemaTemplate when (name, version) already exists.
+//
+// Matches Java's RecordLayerStoreSchemaTemplateCatalog.createTemplate()
+// exactly: no evolution validation here. Java only validates metadata
+// evolution inside FDBMetaDataStore.saveAndSetCurrent() (record-layer
+// level, not relational); the relational createTemplate / saveSchema
+// paths do not invoke MetaDataEvolutionValidator. Adding validation in
+// Go would diverge — a Go writer would reject templates Java accepts.
+// See TODO.md entry on the template-evolution validation gap (open
+// both in Java and Go; worth an upstream discussion before unilateral
+// Go-side enforcement).
 func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newTemplate api.SchemaTemplate) error {
 	if newTemplate == nil {
 		return api.NewError(api.ErrCodeInvalidParameter, "template is nil")
@@ -150,7 +158,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 		META_DATA:        payload,
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return fmt.Errorf("save schema template: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema template")
 	}
 	return nil
 }
@@ -243,7 +251,7 @@ func serializeTemplate(rl *metadata.RecordLayerSchemaTemplate) ([]byte, error) {
 	md := rl.Underlying()
 	p, err := md.ToProto()
 	if err != nil {
-		return nil, fmt.Errorf("template to-proto: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template to-proto")
 	}
 	return proto.Marshal(p)
 }
@@ -255,11 +263,11 @@ func serializeTemplate(rl *metadata.RecordLayerSchemaTemplate) ([]byte, error) {
 func deserializeTemplate(msg *gen.Templates) (api.SchemaTemplate, error) {
 	p := &gen.MetaData{}
 	if err := proto.Unmarshal(msg.GetMETA_DATA(), p); err != nil {
-		return nil, fmt.Errorf("template unmarshal: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template unmarshal")
 	}
 	md, err := recordlayer.RecordMetaDataFromProto(p)
 	if err != nil {
-		return nil, fmt.Errorf("template from-proto: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template from-proto")
 	}
 	return metadata.NewRecordLayerSchemaTemplateWithVersion(
 		msg.GetTEMPLATE_NAME(), md, int(msg.GetTEMPLATE_VERSION()))

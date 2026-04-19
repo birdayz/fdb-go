@@ -348,14 +348,18 @@ func validateSchema(s api.Schema) error {
 
 // checkOpenTxn confirms txn is an open InMemoryTransaction. Returns
 // ErrCodeTransactionInactive on closed transactions and an internal
-// error on any other Transaction impl (catch misuse early).
+// error on any other Transaction impl (catch misuse early). Uses
+// Unwrap() so a decorator that forwards Unwrap still passes.
 func checkOpenTxn(txn api.Transaction) error {
 	if txn == nil {
 		return api.NewError(api.ErrCodeTransactionInactive, "transaction is nil")
 	}
-	imt, ok := txn.(*InMemoryTransaction)
+	raw := txn.Unwrap()
+	imt, ok := raw.(*InMemoryTransaction)
 	if !ok {
-		return api.NewErrorf(api.ErrCodeInternalError, "expected *InMemoryTransaction, got %T", txn)
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"in-memory catalog requires a transaction whose Unwrap() returns *InMemoryTransaction, got %T from %T",
+			raw, txn)
 	}
 	return imt.checkOpen()
 }

@@ -19,7 +19,6 @@ go_library(
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
-        "//pkg/relational/core/catalog",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
     ],

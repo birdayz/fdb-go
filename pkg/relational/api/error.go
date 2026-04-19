@@ -47,6 +47,13 @@ func WrapError(code ErrorCode, message string, cause error) *Error {
 	return &Error{Code: code, Message: message, Cause: cause}
 }
 
+// WrapErrorf is WrapError with fmt.Sprintf formatting for the message.
+// Use instead of fmt.Errorf("context: %w", err) at API boundaries so the
+// error carries a SQLSTATE that errors.As can match.
+func WrapErrorf(cause error, code ErrorCode, format string, args ...any) *Error {
+	return &Error{Code: code, Message: fmt.Sprintf(format, args...), Cause: cause}
+}
+
 // Error renders the error in the form "SQLSTATE: message: cause"
 // with the context fields appended. The wording is informational —
 // callers must not parse it.

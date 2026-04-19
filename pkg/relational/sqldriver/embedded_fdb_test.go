@@ -8,6 +8,7 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
@@ -2907,6 +2909,85 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		cats = append(cats, c)
 	}
 	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
+
+	// Java conformance (swingshift-35): CAST(float AS INT) rounds (not
+	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
+	// Go used `int64(n)` which truncates toward zero and silently wraps
+	// on overflow. Matches Java CastValue.DOUBLE_TO_LONG.
+	var rounded int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(1.6 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
+	g.Expect(rounded).To(gomega.Equal(int64(2)), "CAST(1.6 AS BIGINT) must round to 2, not truncate to 1")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(-1.5 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
+	g.Expect(rounded).To(gomega.Equal(int64(-1)), "CAST(-1.5 AS BIGINT) must match Java Math.round (ties → +Inf)")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(-2.6 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
+	g.Expect(rounded).To(gomega.Equal(int64(-3)), "CAST(-2.6 AS BIGINT) must round to -3")
+
+	// Java's STRING_TO_LONG / STRING_TO_DOUBLE trim whitespace before parse.
+	// Previously Go's ParseInt/ParseFloat rejected leading/trailing spaces.
+	var trimmed int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST('  42  ' AS BIGINT) FROM Item WHERE id = 1`).Scan(&trimmed)).To(gomega.Succeed())
+	g.Expect(trimmed).To(gomega.Equal(int64(42)), "CAST of whitespace-padded string must trim (Java conformance)")
+
+	// Java's STRING_TO_BOOLEAN only accepts trim()ed "true"/"false"/"1"/"0"
+	// (case-insensitive). Go's strconv.ParseBool is wider — accepts "t",
+	// "T", "F", etc. — so Go used to take strings Java would reject.
+	var bv bool
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST('true' AS BOOLEAN) FROM Item WHERE id = 1`).Scan(&bv)).To(gomega.Succeed())
+	g.Expect(bv).To(gomega.BeTrue())
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST('  FALSE  ' AS BOOLEAN) FROM Item WHERE id = 1`).Scan(&bv)).To(gomega.Succeed())
+	g.Expect(bv).To(gomega.BeFalse(), "CAST of padded mixed-case boolean string must trim+lowercase per Java")
+	// Single-letter 't' — Go used to accept via ParseBool, Java rejects.
+	_, errCast := db.QueryContext(ctx, `SELECT CAST('t' AS BOOLEAN) FROM Item WHERE id = 1`)
+	if errCast == nil {
+		// If the driver permits the query (may error at Next/Scan), try to read.
+		rowsT, _ := db.QueryContext(ctx, `SELECT CAST('t' AS BOOLEAN) FROM Item WHERE id = 1`)
+		if rowsT != nil {
+			defer rowsT.Close()
+			if rowsT.Next() {
+				var b bool
+				errCast = rowsT.Scan(&b)
+			} else {
+				errCast = rowsT.Err()
+			}
+		}
+	}
+	g.Expect(errCast).To(gomega.HaveOccurred(), "CAST('t' AS BOOLEAN) must error (Java rejects 't', only 'true'/'false'/'0'/'1')")
+
+	// Java CastValue range-checks the rounded value against target type
+	// limits. Go used to silently wrap via int64() on overflow. Any float
+	// that can't fit an int64 (> MaxInt64 or <  MinInt64) must now error.
+	rowsOverflow, errOF := db.QueryContext(ctx, `SELECT CAST(1e20 AS BIGINT) FROM Item WHERE id = 1`)
+	if errOF == nil && rowsOverflow != nil {
+		defer rowsOverflow.Close()
+		if rowsOverflow.Next() {
+			var x int64
+			errOF = rowsOverflow.Scan(&x)
+		} else {
+			errOF = rowsOverflow.Err()
+		}
+	}
+	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
+
+	// ROUND's `decimals` argument must validate: fractional float, string,
+	// and other non-integer types should error (was silently ignored before
+	// swingshift-35). NULL decimals → NULL result.
+	var rnd any
+	g.Expect(db.QueryRowContext(ctx, `SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`).Scan(&rnd)).To(gomega.Succeed())
+	g.Expect(rnd).To(gomega.BeNil(), "ROUND(x, NULL) must return NULL")
+
+	rowsRnd, errRnd := db.QueryContext(ctx, `SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`)
+	if errRnd == nil && rowsRnd != nil {
+		defer rowsRnd.Close()
+		if rowsRnd.Next() {
+			var r any
+			errRnd = rowsRnd.Scan(&r)
+		} else {
+			errRnd = rowsRnd.Err()
+		}
+	}
+	g.Expect(errRnd).To(gomega.HaveOccurred(), "ROUND(x, 'abc') must error, not silently default to 0 decimals")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {
@@ -2947,6 +3028,79 @@ func TestFDB_MathFunctions(t *testing.T) {
 	var pow int64
 	g.Expect(rows2.Scan(&pow)).To(gomega.Succeed())
 	g.Expect(pow).To(gomega.Equal(int64(8)))
+
+	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
+	// in SqlFunctionCatalogImpl; Go was missing the BitExpressionAtomContext
+	// branch entirely, so `SELECT 5 & 3` used to error with "unsupported
+	// expression atom type").
+	var bitAnd, bitOr, bitXor, shl, shr int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT val & 3 FROM Num WHERE id = 1`).Scan(&bitAnd)).To(gomega.Succeed())
+	g.Expect(bitAnd).To(gomega.Equal(int64(3)), "7 & 3 = 3")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val | 8 FROM Num WHERE id = 1`).Scan(&bitOr)).To(gomega.Succeed())
+	g.Expect(bitOr).To(gomega.Equal(int64(15)), "7 | 8 = 15")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val ^ 5 FROM Num WHERE id = 1`).Scan(&bitXor)).To(gomega.Succeed())
+	g.Expect(bitXor).To(gomega.Equal(int64(2)), "7 ^ 5 = 2")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)).To(gomega.Succeed())
+	g.Expect(shl).To(gomega.Equal(int64(28)), "7 << 2 = 28")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)).To(gomega.Succeed())
+	g.Expect(shr).To(gomega.Equal(int64(3)), "7 >> 1 = 3")
+}
+
+// TestFDB_IsDistinctFrom pins SQL's null-safe equality operator. Grammar
+// exposes `IS [NOT] DISTINCT FROM` as a comparisonOperator alternative;
+// Java registers isDistinctFrom / notDistinctFrom in SqlFunctionCatalogImpl.
+// Go used to hit the any-NULL→UNKNOWN fallback BEFORE checking the op text,
+// so the special null-safe semantics never applied.
+func TestFDB_IsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_is_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE idf_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_distinct/main WITH TEMPLATE idf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_distinct?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: n=5, id=2: n=NULL
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// `n IS NOT DISTINCT FROM 5` — null-safe =. id=1 matches (5=5 TRUE),
+	// id=2 doesn't (NULL is distinct from 5). Plain `n = 5` would leave
+	// id=2 as UNKNOWN → filtered, same result here, but the operator
+	// must not error / misbehave.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS NOT DISTINCT FROM 5`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)))
+
+	// `n IS NOT DISTINCT FROM NULL` — null-safe =. Matches only the row
+	// with n=NULL. Plain `n = NULL` would be UNKNOWN for every row.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS NOT DISTINCT FROM NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "IS NOT DISTINCT FROM NULL must match the NULL row")
+
+	// `n IS DISTINCT FROM NULL` — negation. Matches the non-NULL row.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS DISTINCT FROM NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "IS DISTINCT FROM NULL must match the non-NULL row")
+
+	// `n IS DISTINCT FROM 5` — matches n=NULL (NULL is distinct from 5).
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS DISTINCT FROM 5`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "IS DISTINCT FROM 5 must include NULL as distinct")
 }
 
 func TestFDB_HavingCompound(t *testing.T) {
@@ -3346,6 +3500,19 @@ func TestFDB_GreatestLeast(t *testing.T) {
 		{3, 1},
 		{9, 5},
 	}))
+
+	// Java conformance: GREATEST/LEAST return NULL if any argument is NULL
+	// (VariadicFunctionValue.PhysicalOperator.GREATEST_LONG returns null on
+	// the first null arg). We previously skipped NULLs like Postgres — fixed
+	// swingshift-35.
+	rows2, err := db.QueryContext(ctx, `SELECT GREATEST(a, NULL, c), LEAST(a, b, NULL) FROM Product WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	g.Expect(rows2.Next()).To(gomega.BeTrue())
+	var gVal, lVal any
+	g.Expect(rows2.Scan(&gVal, &lVal)).To(gomega.Succeed())
+	g.Expect(gVal).To(gomega.BeNil(), "GREATEST with NULL arg must return NULL (Java conformance)")
+	g.Expect(lVal).To(gomega.BeNil(), "LEAST with NULL arg must return NULL (Java conformance)")
 }
 
 func TestFDB_SubqueryIN(t *testing.T) {
@@ -3603,6 +3770,17 @@ func TestFDB_SelectWithoutFrom(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
+
+	// Guard: SELECT without FROM still opens an FDB connection (sql.Open
+	// triggers the connector's initialize, which calls purefdb.OpenDatabase).
+	// If TestMain's testcontainer setup failed, clusterFilePath is empty →
+	// purefdb falls back to /etc/foundationdb/fdb.cluster (127.0.0.1:4500)
+	// which isn't listening, producing a 60s timeout flake. Other tests skip
+	// via openTestDB's guard; this one constructed its own DSN so we have
+	// to check here. Flake root-caused swingshift-35.
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
 
 	// SELECT without FROM doesn't need a real schema — just a valid DSN with a path.
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///select_no_from?cluster_file=%s", clusterFilePath))
@@ -5120,6 +5298,22 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	var e2 sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx, `SELECT EXP(1000) FROM T WHERE id = 1`).Scan(&e2)).To(gomega.Succeed())
 	g.Expect(e2.Valid).To(gomega.BeFalse())
+
+	// swingshift-35: POWER returns NULL on math domain errors.
+	// POWER(0, -1) → +Inf (division by zero); POWER(-1, 0.5) → NaN (complex).
+	// Both must be NULL, not silently returned as NaN/Inf that would poison
+	// downstream comparisons (NaN != NaN).
+	var p sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(0, -1) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
+	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(0, -1) must be NULL, not +Inf")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(-1, 0.5) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
+	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(-1, 0.5) must be NULL, not NaN")
+
+	// Normal POWER still works.
+	var p2 float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(2, 10) FROM T WHERE id = 1`).Scan(&p2)).To(gomega.Succeed())
+	g.Expect(p2).To(gomega.Equal(1024.0))
 }
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {
@@ -5368,4 +5562,1097 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 		`SELECT CASE val WHEN 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 2`).
 		Scan(&got3)).To(gomega.Succeed())
 	g.Expect(got3).To(gomega.Equal("five"))
+}
+
+// TestFDB_ErrorPathSQLSTATE covers the error paths that the audit
+// called out as severely under-tested (2/862 error asserts in the
+// integration suite). For each case we verify not just that an error
+// occurred but that errors.As extracts an *api.Error with the right
+// SQLSTATE — because the fmt.Errorf sweep only pays off if callers can
+// actually switch on the code.
+func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_error_paths")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_error_paths")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE err_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_error_paths/main WITH TEMPLATE err_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_error_paths?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Seed one row so UPDATE/DELETE test cases have a target. The NOT NULL
+	// UPDATE case would otherwise be a no-op (zero rows matched).
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Helper: exec the query and surface the first error from prepare,
+	// iteration, or scan. Returns nil on success.
+	queryErr := func(sql string) error {
+		rows, e := db.QueryContext(ctx, sql)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			if se := rows.Scan(&v); se != nil {
+				return se
+			}
+		}
+		return rows.Err()
+	}
+
+	cases := []struct {
+		name     string
+		sql      string
+		exec     bool // true = ExecContext, false = Query
+		onDB     bool // true = run on schema-attached db, false = root setup conn
+		wantCode api.ErrorCode
+	}{
+		{
+			name:     "syntax error — malformed statement",
+			sql:      "SELEKT 1",
+			wantCode: api.ErrCodeSyntaxError,
+		},
+		{
+			name:     "unknown table",
+			sql:      "SELECT * FROM NoSuchTable",
+			wantCode: api.ErrCodeUndefinedTable,
+		},
+		{
+			name:     "unknown column",
+			sql:      "SELECT nosuchcol FROM T",
+			wantCode: api.ErrCodeUndefinedColumn,
+		},
+		{
+			name:     "div by zero (SQL standard error)",
+			sql:      "SELECT 1 / 0",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "mod by zero",
+			sql:      "SELECT 5 % 0",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "ABS(MinInt64) overflow",
+			sql:      "SELECT ABS(-9223372036854775808)",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "SUBSTRING fractional length",
+			sql:      "SELECT SUBSTRING('hello', 1, 2.5)",
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "duplicate database",
+			sql:      "CREATE DATABASE /testdb_error_paths",
+			exec:     true,
+			wantCode: api.ErrCodeDatabaseAlreadyExists,
+		},
+		{
+			// Java uses UNKNOWN_DATABASE (42F63) for DROP-not-found;
+			// UNDEFINED_DATABASE (42F00) is used only when a *reference*
+			// to a missing database is encountered (e.g., CREATE SCHEMA
+			// in a nonexistent database).
+			name:     "drop non-existent database",
+			sql:      "DROP DATABASE /testdb_nope_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			exec:     true,
+			wantCode: api.ErrCodeUnknownDatabase,
+		},
+		{
+			name:     "drop non-existent schema",
+			sql:      "DROP SCHEMA /testdb_error_paths/notaschema",
+			exec:     true,
+			wantCode: api.ErrCodeUndefinedSchema,
+		},
+		{
+			name:     "create schema with unknown template",
+			sql:      "CREATE SCHEMA /testdb_error_paths/x WITH TEMPLATE nosuchtemplate",
+			exec:     true,
+			wantCode: api.ErrCodeUnknownSchemaTemplate,
+		},
+		{
+			// id is BIGINT NOT NULL. Proto2's LABEL_REQUIRED should reject
+			// an INSERT that leaves it unset. Ideal SQLSTATE is
+			// ErrCodeNotNullViolation (23502) per Java. Currently serialised
+			// through proto's missing-required-field surface as InvalidParameter.
+			// TODO: short-circuit with 23502 at execInsert — see TODO.md.
+			name:     "INSERT omitting NOT NULL primary key",
+			sql:      "INSERT INTO T (n) VALUES (42)",
+			exec:     true,
+			onDB:     true, // needs the schema-attached db connection
+			wantCode: api.ErrCodeNotNullViolation,
+		},
+		{
+			name:     "INSERT explicit NULL into NOT NULL column",
+			sql:      "INSERT INTO T (id, n) VALUES (NULL, 99)",
+			exec:     true,
+			onDB:     true,
+			wantCode: api.ErrCodeNotNullViolation,
+		},
+		{
+			// Precede with an INSERT so UPDATE has a row to target.
+			name:     "UPDATE SET col = NULL on NOT NULL column",
+			sql:      "UPDATE T SET id = NULL",
+			exec:     true,
+			onDB:     true,
+			wantCode: api.ErrCodeNotNullViolation,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			var err error
+			conn := setup
+			if tc.onDB {
+				conn = db
+			}
+			if tc.exec {
+				_, err = conn.ExecContext(ctx, tc.sql)
+			} else {
+				// Queries always go through the schema-attached `db`
+				// (queryErr closure captures it).
+				err = queryErr(tc.sql)
+			}
+			g.Expect(err).To(gomega.HaveOccurred(), "case: %s", tc.name)
+			var apiErr *api.Error
+			g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+				"error is not *api.Error: %T %v", err, err)
+			g.Expect(apiErr.Code).To(gomega.Equal(tc.wantCode),
+				"case %s: got SQLSTATE %s (%v), want %s",
+				tc.name, apiErr.Code, apiErr.Message, tc.wantCode)
+		})
+	}
+}
+
+// TestFDB_GroupByCountStarOrdering pins SELECT grouping + ORDER BY COUNT(*)
+// interplay. Exercises the countStar demote fix together with ORDER BY on
+// the resulting aggregate — regression guard for the "groups in arbitrary
+// order" subset of the GROUP BY countStar bug.
+func TestFDB_GroupByCountStarOrdering(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_gb_cs_order")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_cs_order")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_cs_order_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, k STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_cs_order/main WITH TEMPLATE gb_cs_order_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_gb_cs_order?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Groups by k: a=3, b=1, c=2. Sorted by count ASC: b(1), c(2), a(3).
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO T (id, k) VALUES (1, 'a'), (2, 'a'), (3, 'a'),
+			(4, 'b'), (5, 'c'), (6, 'c')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT k, COUNT(*) FROM T GROUP BY k ORDER BY COUNT(*) ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		k string
+		c int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.k, &r.c)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"b", 1}, {"c", 2}, {"a", 3},
+	}), "groups ordered by COUNT(*) ascending")
+}
+
+// TestFDB_JoinWithNullKey pins that JOIN ON with NULL keys behaves per
+// SQL spec: NULL = NULL in an ON clause is UNKNOWN, so rows with NULL
+// keys do NOT match. INNER JOIN skips them; LEFT JOIN preserves the
+// left row with NULL for right columns.
+func TestFDB_JoinWithNullKey(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_null_tmpl
+		CREATE TABLE A (id BIGINT NOT NULL, k BIGINT, v BIGINT, PRIMARY KEY (id))
+		CREATE TABLE B (id BIGINT NOT NULL, k BIGINT, w BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_null/main WITH TEMPLATE join_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// A: (1, k=10, v=100), (2, k=NULL, v=200), (3, k=20, v=300)
+	// B: (1, k=10, w=1000), (2, k=NULL, w=2000)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO A (id, k, v) VALUES (1, 10, 100), (3, 20, 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO A (id, v) VALUES (2, 200)`) // k NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO B (id, k, w) VALUES (1, 10, 1000)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO B (id, w) VALUES (2, 2000)`) // k NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// INNER JOIN on k: only id=1 ↔ id=1 matches (k=10). The two NULL-k rows
+	// don't match each other — NULL=NULL in ON is UNKNOWN.
+	var c int64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM A AS a INNER JOIN B AS b ON a.k = b.k`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "INNER JOIN with NULL key must not match NULL to NULL")
+}
+
+// TestFDB_NullHandlingSanityPack bundles a handful of quick SQL-standard
+// NULL-semantic checks whose failure would indicate a regression in the
+// NULL-aware evaluator stack (tri-state, mixed-type equality, valuesEqual,
+// groupByKey) across the proto and map paths. Each is intentionally small
+// — the point is early detection of a broad regression, not exhaustive
+// coverage (other dedicated tests go deeper on each dimension).
+func TestFDB_NullHandlingSanityPack(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_null_sanity")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_sanity")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_sanity_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_sanity/main WITH TEMPLATE null_sanity_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_null_sanity?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: (5, 5, 'x'); id=2: (5, NULL, 'x'); id=3: (NULL, 3, 'y')
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, a, b, s) VALUES (1, 5, 5, 'x')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, a, s) VALUES (2, 5, 'x')`) // b NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, b, s) VALUES (3, 3, 'y')`) // a NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// a = b: NULL in either side ⇒ UNKNOWN. Only id=1 matches (5=5).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE a = b`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "a=b with NULL on either side is UNKNOWN")
+
+	// a <> b: NULL ⇒ UNKNOWN (id=2 a=5 b=NULL UNKNOWN, id=3 a=NULL b=3 UNKNOWN). Zero matches.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE a <> b`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "a<>b with NULL is UNKNOWN, not TRUE")
+
+	// COUNT(*) always counts every row. COUNT(a) skips NULL.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(3)))
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(a) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)))
+
+	// GROUP BY two columns where one is NULL in some rows — rows with NULL
+	// in the same column must group together (NULL=NULL for GROUP BY).
+	// (a=5, s='x') → 2 rows (id=1,2); (a=NULL, s='y') → 1 row (id=3).
+	rows, err := db.QueryContext(ctx, `SELECT COUNT(*) FROM T GROUP BY a, s`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	groupCounts := []int64{}
+	for rows.Next() {
+		var cnt int64
+		g.Expect(rows.Scan(&cnt)).To(gomega.Succeed())
+		groupCounts = append(groupCounts, cnt)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(len(groupCounts)).To(gomega.Equal(2), "2 groups: (5,'x') and (NULL,'y')")
+
+	// HAVING COUNT(*) > 1 on the same grouping — only the (5,'x') group
+	// has 2 rows; exercises the demoted COUNT(*) flowing through aggCols.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T GROUP BY a, s HAVING COUNT(*) > 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "HAVING COUNT(*) > 1 keeps only the 2-row group")
+}
+
+// TestFDB_DistinctAggregates pins SUM/AVG/MIN/MAX with DISTINCT: the
+// distinct set must collect each non-null value once, and the per-function
+// accumulator must see that same deduplicated stream. Pre-fix only
+// COUNT(DISTINCT) incremented counts[i] while sums[i]/avgs[i]/mins[i]/maxes[i]
+// stayed zero/unset — SUM(DISTINCT) returned 0 on non-empty groups.
+func TestFDB_DistinctAggregates(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_distinct_agg")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_distinct_agg")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE distinct_agg_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_distinct_agg/main WITH TEMPLATE distinct_agg_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_distinct_agg?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Values: {10, 10, 20, 30, NULL, 30}. Distinct non-null set: {10, 20, 30}.
+	// Expected: SUM(DISTINCT) = 60, AVG(DISTINCT) = 20, MIN(DISTINCT)=10,
+	// MAX(DISTINCT) = 30, COUNT(DISTINCT) = 3.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES
+		(1, 10), (2, 10), (3, 20), (4, 30), (6, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (5)`) // n NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var sum, mn, mx, cnt int64
+	var avg float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum).To(gomega.Equal(int64(60)), "SUM(DISTINCT {10,20,30}) = 60")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT AVG(DISTINCT n) FROM T`).Scan(&avg)).To(gomega.Succeed())
+	g.Expect(avg).To(gomega.Equal(float64(20)), "AVG(DISTINCT {10,20,30}) = 20")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT MIN(DISTINCT n) FROM T`).Scan(&mn)).To(gomega.Succeed())
+	g.Expect(mn).To(gomega.Equal(int64(10)))
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT MAX(DISTINCT n) FROM T`).Scan(&mx)).To(gomega.Succeed())
+	g.Expect(mx).To(gomega.Equal(int64(30)))
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(3)))
+
+	// All-NULL group: every aggregate returns NULL (SQL standard).
+	var s sql.NullInt64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T WHERE id = 5`).Scan(&s)).To(gomega.Succeed())
+	g.Expect(s.Valid).To(gomega.BeFalse(), "SUM(DISTINCT) over all-NULL must be NULL")
+}
+
+// TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
+// when the subquery result contains a NULL row and no concrete match is found,
+// the entire IN expression is UNKNOWN (filters the outer row out in WHERE;
+// NOT IN must not flip it to TRUE). Pre-fix, matchSubqueryIN silently skipped
+// NULL rows — `WHERE NOT IN (subquery with NULL)` returned TRUE instead of
+// UNKNOWN, keeping rows that Java rejects.
+func TestFDB_SubqueryInNullRow(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_subq_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subq_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+		CREATE TABLE U (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subq_null/main WITH TEMPLATE subq_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_subq_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// T: 3 rows; U: two rows, one with v NULL.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (2, 20), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO U (id, v) VALUES (1, 10)`) // v=10
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO U (id) VALUES (2)`) // v=NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// n IN (SELECT v FROM U): id=1 matches v=10; id=2,3 don't match + U has a
+	// NULL → UNKNOWN → filtered out. Only id=1 passes.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "id=1 matches v=10; others UNKNOWN due to NULL in subquery")
+
+	// n NOT IN (SELECT v FROM U): id=1 matches so excluded; id=2,3 don't
+	// match but NULL in subquery → UNKNOWN → all excluded. Result: 0 rows.
+	// Pre-fix returned 2 rows (id=2 and id=3).
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)),
+		"n NOT IN (subquery with NULL) is UNKNOWN for every row; no rows pass")
+}
+
+// TestFDB_CountDistinctTypeCollision proves COUNT(DISTINCT col) doesn't
+// collapse values that differ only by concrete type. The pre-fix
+// fmt.Sprintf("%v", v) key made integer 5 and string '5' share a key;
+// type-tagged "%T\x00%v" keeps them apart. Exercised here only for the
+// grammar-supported case of two rows with the same numeric column and
+// the same string column — DISTINCT-ness is then pinned against a mixed
+// insert from expression evaluation.
+func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cd_typetag")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cd_typetag")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_typetag_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cd_typetag/main WITH TEMPLATE cd_typetag_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cd_typetag?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Four rows, two distinct numeric values — also sanity: duplicates
+	// collapse, same-type equals share a bucket.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO T (id, n, s) VALUES (1, 5, 'x'), (2, 5, 'y'), (3, 7, 'x'), (4, 7, 'y')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT n) over {5,5,7,7} must be 2")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT s) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT s) over {'x','y','x','y'} must be 2")
+}
+
+// TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between
+// an actual NULL and the literal string "<nil>". Previously `groupByKey`
+// used `fmt.Sprintf("%v", ...)` which renders nil as "<nil>" and the
+// string "<nil>" identically, collapsing the two groups. Using a
+// length-prefixed type-tagged encoding fixes the collision while keeping
+// SQL's NULL=NULL-for-GROUP-BY semantics intact (every NULL normalises to
+// the same "N|" sentinel).
+func TestFDB_GroupByNullVsNilString(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_gb_nil")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_nil")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_nil_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_nil/main WITH TEMPLATE gb_nil_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_gb_nil?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: s NULL; id=2: s=literal "<nil>"; id=3: s=literal "<nil>" again.
+	// Three rows with two distinct groups expected: (NULL, count=1) and
+	// ("<nil>", count=2). The pre-fix `fmt.Sprintf("%v", nil)` collision
+	// would have produced a single group with count=3.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`) // s NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (2, '<nil>'), (3, '<nil>')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT s, COUNT(*) FROM T GROUP BY s`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	seen := map[string]int64{}
+	for rows.Next() {
+		var s sql.NullString
+		var c int64
+		g.Expect(rows.Scan(&s, &c)).To(gomega.Succeed())
+		key := "NULL"
+		if s.Valid {
+			key = s.String
+		}
+		seen[key] = c
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(seen).To(gomega.Equal(map[string]int64{"NULL": 1, "<nil>": 2}),
+		"GROUP BY must split NULL from literal '<nil>' into two groups")
+}
+
+// TestFDB_OrderByNullOrdering pins Java-conformant NULL ordering:
+//
+//	ORDER BY col ASC  → NULLs FIRST
+//	ORDER BY col DESC → NULLs LAST
+//
+// Matches Java's ParseHelpers.isNullsLast default (returns isDescending).
+// Before the compareValues NULL-direction fix, Go returned NULL > non-NULL
+// so ASC put NULLs last — the opposite of Java.
+func TestFDB_OrderByNullOrdering(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_order_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_order_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE order_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_order_null/main WITH TEMPLATE order_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_order_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: n=10; id=2: n=NULL; id=3: n=30.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	collect := func(sql string) []int64 {
+		rows, err := db.QueryContext(ctx, sql)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+			ids = append(ids, id)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		return ids
+	}
+
+	// ASC NULLS FIRST (Java default): NULL row (id=2) first, then 10 then 30.
+	g.Expect(collect(`SELECT id FROM T ORDER BY n ASC`)).
+		To(gomega.Equal([]int64{2, 1, 3}), "ASC default must be NULLS FIRST per Java")
+
+	// DESC NULLS LAST (Java default): 30, 10, then NULL.
+	g.Expect(collect(`SELECT id FROM T ORDER BY n DESC`)).
+		To(gomega.Equal([]int64{3, 1, 2}), "DESC default must be NULLS LAST per Java")
+}
+
+// TestFDB_CTEScopeIsolation pins down nested-query CTE scoping: a derived
+// table or inner WITH clause must not leak names to the enclosing query.
+// Before the scope-stack fix, `c.ctes` was a single shared map — an inner
+// `SELECT (SELECT ... FROM (SELECT ...) AS Inner)` would leave "INNER" in
+// the outer scope until the full query finished, and a nested WITH would
+// clobber the outer map entirely.
+func TestFDB_CTEScopeIsolation(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cte_scope")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_scope")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_scope_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_scope/main WITH TEMPLATE cte_scope_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte_scope?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (2, 20), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Two sibling queries each defining a CTE with the same name "C" with
+	// different contents. Without scope isolation the second query would see
+	// the first query's "C" still in the map.
+	var firstSum, secondSum int64
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT n FROM T WHERE id <= 2) SELECT SUM(n) FROM C`).Scan(&firstSum)).To(gomega.Succeed())
+	g.Expect(firstSum).To(gomega.Equal(int64(30)))
+
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT n FROM T WHERE id >= 2) SELECT SUM(n) FROM C`).Scan(&secondSum)).To(gomega.Succeed())
+	g.Expect(secondSum).To(gomega.Equal(int64(50)), "second C must not see first C's rows")
+
+	// Nested derived-table — alias D visible inside only.
+	var joinSum int64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT SUM(D.n) FROM (SELECT n FROM T WHERE id = 1) AS D`).Scan(&joinSum)).To(gomega.Succeed())
+	g.Expect(joinSum).To(gomega.Equal(int64(10)))
+
+	// After the derived-table query finished, "D" must be gone — a following
+	// query that mentions D must error (unknown table), not accidentally see
+	// the previous materialisation.
+	_, err = db.QueryContext(ctx, `SELECT * FROM D`)
+	g.Expect(err).To(gomega.HaveOccurred(), "derived-table alias D must not leak across queries")
+
+	// Inner-sees-outer (pushCTEScope inherits the outer map) is exercised
+	// by the CTE-referencing-prior-CTE pattern already in TestFDB_CTE* — a
+	// dedicated "SELECT (SELECT FROM outer_cte) FROM t" test would require
+	// scalar subqueries in SELECT projection which the grammar doesn't
+	// parse today (see TODO.md "scalar subqueries").
+}
+
+// TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
+// 5-agent QA audit in one place:
+//   - CAST(NULL AS <type>) must return NULL of the target type, not error
+//   - ABS(MinInt64) must error (two's-complement overflow is undefined)
+//   - LEFT/RIGHT/SUBSTRING float-length arg must error, not silently truncate
+func TestFDB_MediumAuditFixes(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_medium_audit")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_medium_audit")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE medium_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_medium_audit/main WITH TEMPLATE medium_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_medium_audit?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, -9223372036854775808, 'hello world'), (2, 5, 'xy')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CAST(NULL AS <type>) — must be NULL of that type in every family.
+	// The grammar accepts a narrow set of type names in CAST; use the ones
+	// already covered by existing tests (STRING, BIGINT, DOUBLE, BOOLEAN).
+	for _, cast := range []string{"STRING", "BIGINT", "DOUBLE", "BOOLEAN"} {
+		var out sql.NullString
+		sqlStr := fmt.Sprintf(`SELECT CAST(NULL AS %s) FROM T WHERE id = 2`, cast)
+		g.Expect(db.QueryRowContext(ctx, sqlStr).Scan(&out)).To(gomega.Succeed())
+		g.Expect(out.Valid).To(gomega.BeFalse(), "CAST(NULL AS %s) must be NULL", cast)
+	}
+
+	// ABS(MinInt64) must error (previously flipped sign back to MinInt64 silently).
+	queryErr := func(sql string) error {
+		rows, e := db.QueryContext(ctx, sql)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			if se := rows.Scan(&v); se != nil {
+				return se
+			}
+		}
+		return rows.Err()
+	}
+	g.Expect(queryErr(`SELECT ABS(n) FROM T WHERE id = 1`)).
+		To(gomega.HaveOccurred(), "ABS(MinInt64) must error rather than wrap")
+
+	// Sanity: ABS on positive/negative non-MinInt64 still works.
+	var absOut int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT ABS(n) FROM T WHERE id = 2`).Scan(&absOut)).To(gomega.Succeed())
+	g.Expect(absOut).To(gomega.Equal(int64(5)))
+
+	// LEFT / RIGHT / SUBSTRING with a fractional float length must error.
+	for _, q := range []string{
+		`SELECT LEFT(s, 2.5) FROM T WHERE id = 1`,
+		`SELECT RIGHT(s, 2.5) FROM T WHERE id = 1`,
+		`SELECT SUBSTRING(s, 1, 2.5) FROM T WHERE id = 1`,
+	} {
+		g.Expect(queryErr(q)).To(gomega.HaveOccurred(), "fractional float length must error: %s", q)
+	}
+
+	// Whole-valued floats should still work (caller convenience).
+	var lft string
+	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(s, 2.0) FROM T WHERE id = 1`).Scan(&lft)).To(gomega.Succeed())
+	g.Expect(lft).To(gomega.Equal("he"))
+}
+
+// TestFDB_NotOfUnknownIsUnknown pins down SQL three-valued logic for NOT:
+//
+//	NOT TRUE    = FALSE
+//	NOT FALSE   = TRUE
+//	NOT UNKNOWN = UNKNOWN   (NOT a row out of the result set)
+//
+// Previously the predicate evaluator collapsed UNKNOWN → FALSE at the leaves
+// so `NOT (x = NULL)`, `NOT (x IN (NULL, ...))`, `NOT LIKE NULL`, and
+// `NOT BETWEEN NULL AND ...` all flipped to TRUE and incorrectly kept the row.
+// Now UNKNOWN propagates through NOT/AND/OR via an internal tri-state and only
+// collapses at the filter boundary (UNKNOWN filters out, same as FALSE).
+func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_not_unknown")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_not_unknown")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE not_unknown_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_not_unknown/main WITH TEMPLATE not_unknown_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_not_unknown?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1 has both columns; id=2 has n=NULL, s=NULL.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 5, 'hello')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// NOT n = NULL — NOT UNKNOWN = UNKNOWN → row filters out.
+	// Previously: NULL collapsed to FALSE, NOT FALSE = TRUE, both rows matched.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT (x = NULL) must be UNKNOWN for every row, not TRUE")
+
+	// NOT IN over a row whose probe value is NULL — n IS NULL for id=2 so this
+	// becomes NULL NOT IN (5, 999) → UNKNOWN. Both rows filter out: id=1
+	// because n=5 IS in the list, id=2 because probe is NULL (UNKNOWN).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n NOT IN (5, 999)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)),
+		"NULL NOT IN (...) must be UNKNOWN (filters out); non-NULL matching element filters out too")
+
+	// NOT (NULL AND TRUE) — NULL AND TRUE = NULL; NOT NULL = NULL → filter out.
+	// Previously: NULL AND TRUE collapsed to FALSE, NOT FALSE = TRUE → every row matched.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT n = NULL AND 1 = 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT (UNKNOWN AND TRUE) must stay UNKNOWN")
+
+	// NOT (NULL OR FALSE) — NULL OR FALSE = NULL; NOT NULL = NULL → filter out.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT n = NULL OR 1 = 0`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT (UNKNOWN OR FALSE) must stay UNKNOWN")
+
+	// Double-NOT must still collapse: NOT NOT TRUE = TRUE, NOT NOT UNKNOWN = UNKNOWN.
+	// Grammar quirk: parenthesised comparison parses as record constructor, so
+	// we rely on the parser's precedence of NOT binding to the full comparison.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT NOT id = 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "NOT NOT (id = 1) must equal (id = 1)")
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT NOT UNKNOWN = UNKNOWN, must filter out")
+
+	// Sanity: NOT with concrete truthy predicates still works.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT id = 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)))
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT id = 99`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)))
+
+	// Same invariants through the map path (CTE).
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT n FROM T) SELECT COUNT(*) FROM C WHERE NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "CTE path: NOT (x = NULL) stays UNKNOWN")
+
+	// NULL literal inside IN-list: SQL §8.4 — both IN and NOT IN yield UNKNOWN
+	// when no element matches and any NULL is present in the list. Both filter
+	// out in WHERE. Note the grammar wraps (n IN ...) as a record constructor,
+	// so we use the bare form `n IN (1, NULL)`.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT IN (x, NULL) with x=1 matching drops id=1; id=2 is UNKNOWN")
+
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE id IN (99, NULL)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "IN (no-match, NULL) is UNKNOWN for every row, not FALSE")
+
+	// BETWEEN NULL bound and LIKE NULL pattern — UNKNOWN propagation sanity.
+	// Grammar quirk: BETWEEN … AND … inside parens parses oddly; rely on
+	// the bare form (precedence is fine).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n BETWEEN NULL AND 999`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "BETWEEN NULL AND x must be UNKNOWN")
+	// Grammar does not allow NULL as a LIKE pattern — the semantic path is
+	// covered in evalLikePredicateTri by NULL input returning triNull.
+
+	// Java conformance (swingshift-35): Java's ExpressionVisitor rewrites
+	// NOT BETWEEN as `x < lo OR x > hi`, so NULL in one bound short-circuits
+	// when the other side is definitively TRUE. n=5 (id=1), n=NULL (id=2).
+	//   id=1: 5 NOT BETWEEN 10 AND NULL = 5 < 10 OR 5 > NULL = TRUE OR UNKNOWN = TRUE
+	//   id=2: NULL NOT BETWEEN 10 AND NULL = UNKNOWN OR UNKNOWN = UNKNOWN
+	// Previously both evaluated to UNKNOWN (any-NULL→UNKNOWN), wrongly filtering id=1.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n NOT BETWEEN 10 AND NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "NOT BETWEEN with short-circuitable bound: n=5 NOT BETWEEN 10 AND NULL is TRUE (5<10)")
+
+	// Mirror case: BETWEEN decomposes to `lo <= x AND x <= hi`; one side
+	// FALSE → whole AND FALSE, regardless of other side's NULL.
+	//   id=1: 5 BETWEEN NULL AND 1 = UNKNOWN AND FALSE = FALSE  (5 > 1)
+	//   id=2: NULL BETWEEN NULL AND 1 = UNKNOWN AND UNKNOWN = UNKNOWN
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n BETWEEN NULL AND 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "BETWEEN with one bound FALSE short-circuits to FALSE, not UNKNOWN")
+}
+
+// TestFDB_AggregateNullSemantics pins down SQL-standard aggregate behaviour:
+//   - COUNT(col) skips NULLs; COUNT(*) does not
+//   - SUM of empty-or-all-NULL returns NULL, not 0
+//   - AVG of empty-or-all-NULL returns NULL
+//   - MIN/MAX of all-NULL returns NULL
+//   - SUM of a non-numeric column errors instead of silently producing 0
+//
+// Covers both the proto path (plain SELECT FROM table) and the map path
+// (CTE / aggregate) so the two evaluators stay consistent.
+func TestFDB_AggregateNullSemantics(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_agg_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_null/main WITH TEMPLATE agg_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_agg_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Rows: (1, 10, 'a'), (2, NULL, 'b'), (3, 20, NULL), (4, NULL, NULL)
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 10, 'a'), (3, 20, 'x')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (2, 'b')`) // n=NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (4)`) // n=NULL, s=NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// One extra row with non-null s for UPDATE below.
+	_, err = db.ExecContext(ctx, `UPDATE T SET s = NULL WHERE id = 3`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// COUNT(*) sees all rows.
+	var c int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(4)))
+
+	// COUNT(n) must skip NULLs → 2 (ids 1 & 3).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(n) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(col) must skip NULLs")
+
+	// SUM over some non-null values → 30 (10+20).
+	var sum sql.NullInt64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(n) FROM T`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeTrue())
+	g.Expect(sum.Int64).To(gomega.Equal(int64(30)))
+
+	// SUM over all-NULL group → NULL. `id = 4` gives n=NULL only.
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(n) FROM T WHERE id = 4`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse(), "SUM of all-NULL group must be NULL, not 0")
+
+	// SUM over empty set (no rows) → NULL.
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(n) FROM T WHERE id = 999`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse(), "SUM of empty set must be NULL, not 0")
+
+	// AVG over all-NULL → NULL.
+	var avg sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT AVG(n) FROM T WHERE id = 4`).Scan(&avg)).To(gomega.Succeed())
+	g.Expect(avg.Valid).To(gomega.BeFalse())
+
+	// MIN/MAX over all-NULL → NULL.
+	g.Expect(db.QueryRowContext(ctx, `SELECT MIN(n) FROM T WHERE id = 4`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse())
+	g.Expect(db.QueryRowContext(ctx, `SELECT MAX(n) FROM T WHERE id = 4`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse())
+
+	// SUM over a STRING column must error (cannot silently treat as 0).
+	rows, err := db.QueryContext(ctx, `SELECT SUM(s) FROM T WHERE id = 1`)
+	// error may surface at query time or during iteration/scan
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			err = rows.Scan(&v)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+	}
+	g.Expect(err).To(gomega.HaveOccurred(), "SUM of STRING column must error, not silently sum to 0")
+
+	// Same invariants via the map path (CTE).
+	g.Expect(db.QueryRowContext(ctx, `WITH C AS (SELECT n FROM T) SELECT COUNT(n) FROM C`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "map-path COUNT(col) must skip NULLs")
+
+	g.Expect(db.QueryRowContext(ctx, `WITH C AS (SELECT n FROM T WHERE id = 4) SELECT SUM(n) FROM C`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse(), "map-path SUM of all-NULL group must be NULL")
+}
+
+// TestFDB_ArithmeticUnifiedSemantics proves that proto and map evaluator
+// paths produce identical arithmetic results:
+//   - division by zero errors (SQL standard) in both paths
+//   - modulo (`%`) works in both paths
+//   - modulo by zero errors in both paths
+func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_arith_unified")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_arith_unified")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE arith_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_arith_unified/main WITH TEMPLATE arith_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_arith_unified?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, a, b) VALUES (1, 10, 3), (2, 5, 0)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// queryErr exhausts a SQL query, surfacing the first error from prepare,
+	// iteration, or scan. Used for tests that expect a single error to reach
+	// the caller regardless of which stage materialises it.
+	queryErr := func(sql string) error {
+		rows, e := db.QueryContext(ctx, sql)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			if se := rows.Scan(&v); se != nil {
+				return se
+			}
+		}
+		return rows.Err()
+	}
+
+	// Proto path — `%` previously errored, now works.
+	var mod int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT a % b FROM T WHERE id = 1`).Scan(&mod)).To(gomega.Succeed())
+	g.Expect(mod).To(gomega.Equal(int64(1)))
+
+	// Proto path — division by zero errors (SQL standard).
+	g.Expect(queryErr(`SELECT a / b FROM T WHERE id = 2`)).To(gomega.HaveOccurred(),
+		"proto path div/0 must error")
+
+	// Proto path — modulo by zero errors (consistent with /0).
+	g.Expect(queryErr(`SELECT a % b FROM T WHERE id = 2`)).To(gomega.HaveOccurred(),
+		"proto path mod/0 must error")
+
+	// Map path (via CTE) — same SQL-standard error, was previously NULL.
+	g.Expect(queryErr(`WITH C AS (SELECT a, b FROM T WHERE id = 2) SELECT a / b FROM C`)).
+		To(gomega.HaveOccurred(), "map path (CTE) div/0 must error")
+
+	// Map path — `%` continues to work.
+	var mod2 int64
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT a, b FROM T WHERE id = 1) SELECT a % b FROM C`).Scan(&mod2)).To(gomega.Succeed())
+	g.Expect(mod2).To(gomega.Equal(int64(1)))
+}
+
+// TestFDB_MixedTypeEqualityNoStringCoerce proves that mixed-type equality
+// does NOT fall through to string coercion: an int column `= '5'` must not
+// match the integer 5, and similarly for IN-lists.
+func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_mixedtype_eq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_mixedtype_eq")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE mixedtype_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_mixedtype_eq/main WITH TEMPLATE mixedtype_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_mixedtype_eq?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 5, '5'), (2, 6, '6')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Proto path (single-table WHERE): int column = string literal must NOT match.
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n = '5'`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)), "int n=5 must not equal string '5'")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = 5`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)), "string s='5' must not equal int 5")
+
+	// IN-list with mixed types: only matches on the same-type element.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n IN ('5', 6)`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)), "only int 6 should match; string '5' must not match int 5")
+
+	// Sanity: same-type equality still works.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n = 5`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)))
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = '5'`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)))
+}
+
+// TestFDB_IntegerRangeEnforcement pins that INSERT of an out-of-range
+// int64 into an INT32 column errors cleanly instead of silently wrapping.
+// Schema templates lower `INTEGER` to proto Int32Kind (see metadata
+// builder's datatypeToProtoFieldType), so writing 2_147_483_648 (one past
+// int32 max) would previously silently become -2_147_483_648 — a value
+// corruption with no user-visible signal. Matches Java's
+// CastValue.LONG_TO_INT range check.
+func TestFDB_IntegerRangeEnforcement(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_int_range")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_int_range")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE int_range_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n INTEGER, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_int_range/main WITH TEMPLATE int_range_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_int_range?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// In range: must succeed.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 2147483647)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred(), "INT32 max value must be accepted")
+
+	// Over max: must error, not silently wrap to -2147483648.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (2, 2147483648)`)
+	g.Expect(err).To(gomega.HaveOccurred(), "INT32 overflow must error; previously silently wrapped")
+
+	// Under min: same.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (3, -2147483649)`)
+	g.Expect(err).To(gomega.HaveOccurred(), "INT32 underflow must error")
 }

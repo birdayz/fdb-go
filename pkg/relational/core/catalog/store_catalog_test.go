@@ -497,11 +497,14 @@ func TestStoreCatalog_ClosedTransactionFails(t *testing.T) {
 func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 	t.Parallel()
 	c := NewInMemoryStoreCatalog()
-	// An ad-hoc Transaction impl that isn't *InMemoryTransaction must
-	// be rejected with an internal error. Catches impl mismatches
-	// early instead of misbehaving silently.
+	// An ad-hoc Transaction impl whose Unwrap() does not yield an
+	// *InMemoryTransaction must be rejected with an internal error.
+	// Catches impl mismatches early instead of misbehaving silently.
 	ctrl := gomock.NewController(t)
 	wrongTx := api.NewMockTransaction(ctrl)
+	// The in-memory catalog calls Unwrap() first; return the mock itself
+	// so it can't possibly satisfy the *InMemoryTransaction assertion.
+	wrongTx.EXPECT().Unwrap().Return(wrongTx).AnyTimes()
 	err := c.CreateDatabase(wrongTx, "/db")
 	if err == nil {
 		t.Fatal("CreateDatabase(wrong tx) succeeded")

@@ -20,8 +20,10 @@ go_test(
     name = "parser_test",
     srcs = [
         "benchmark_test.go",
+        "fuzz_test.go",
         "parser_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":parser"],
     deps = ["//pkg/relational/api"],
 )

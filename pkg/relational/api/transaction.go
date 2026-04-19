@@ -7,9 +7,15 @@ package api
 //
 // Mirrors Java's com.apple.foundationdb.relational.api.Transaction.
 // Java extends AutoCloseable; in Go, Close is the idiomatic
-// equivalent — call it via defer. Java's generic unwrap<T> has no
-// Go interface-level counterpart: callers use a type assertion at
-// the call site instead of pushing the cast into the interface.
+// equivalent — call it via defer.
+//
+// Unwrap is the Go analogue of Java's `<T> T unwrap(Class<T> type)`:
+// it returns the concrete backend handle (e.g. *recordlayer.FDBRecordContext
+// for FDB-backed transactions, the transaction itself for the in-memory
+// impl) so catalog code can reach the storage engine without a concrete
+// type assertion on the Transaction interface. Wrapping decorators must
+// forward Unwrap() to their inner transaction so the chain can still be
+// pierced.
 type Transaction interface {
 	// Commit finalises the transaction. Returns an error if the
 	// commit fails (storage-engine conflict, deadline exceeded, etc.)
@@ -35,4 +41,9 @@ type Transaction interface {
 	// IsClosed reports whether Close has been called (directly or
 	// via a successful Commit / Abort).
 	IsClosed() bool
+	// Unwrap returns the underlying backend-specific handle. Callers
+	// perform a type assertion on the result. A future remote/gRPC
+	// transaction impl that wraps a local one must forward Unwrap()
+	// to preserve the chain.
+	Unwrap() any
 }
