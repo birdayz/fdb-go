@@ -74,3 +74,67 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseFunction and FuzzParseView mirror the FuzzParse invariant
+// against the two other grammar entry points (CREATE FUNCTION body,
+// CREATE VIEW body). Both use the same generated parser state machine
+// so the same exponential-input classes apply — but the entry rule
+// and token stream priming differ, so a separate fuzz run could surface
+// entry-specific quirks.
+func FuzzParseFunction(f *testing.F) {
+	seeds := []string{
+		"",
+		"FUNCTION f() RETURNS INT AS BEGIN RETURN 1 END",
+		"FUNCTION f(x INT) RETURNS INT AS BEGIN RETURN x END",
+		"\x00",
+		"(",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, sql string) {
+		ctx, err := ParseFunction(sql)
+		if err == nil {
+			if ctx == nil {
+				t.Fatalf("ParseFunction(%q) returned (nil, nil)", sql)
+			}
+			return
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("ParseFunction(%q) returned non-api error %T: %v", sql, err, err)
+		}
+		if apiErr.Code != api.ErrCodeSyntaxError {
+			t.Fatalf("ParseFunction(%q) unexpected code %s: %v", sql, apiErr.Code, err)
+		}
+	})
+}
+
+func FuzzParseView(f *testing.F) {
+	seeds := []string{
+		"",
+		"SELECT 1",
+		"SELECT * FROM t",
+		"(",
+		"SELECT ,",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, sql string) {
+		ctx, err := ParseView(sql)
+		if err == nil {
+			if ctx == nil {
+				t.Fatalf("ParseView(%q) returned (nil, nil)", sql)
+			}
+			return
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("ParseView(%q) returned non-api error %T: %v", sql, err, err)
+		}
+		if apiErr.Code != api.ErrCodeSyntaxError {
+			t.Fatalf("ParseView(%q) unexpected code %s: %v", sql, apiErr.Code, err)
+		}
+	})
+}

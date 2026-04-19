@@ -4,6 +4,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -42,13 +43,34 @@ func Parse(sql string) (antlrgen.IRootContext, error) {
 // token is consumed before the sqlInvokedFunction rule runs because
 // the grammar's sqlInvokedFunction starts after CREATE — so the
 // token stream needs to be advanced once.
-func ParseFunction(sql string) (antlrgen.ISqlInvokedFunctionContext, error) {
+//
+// On empty or malformed input the pre-consumption of CREATE would
+// otherwise panic ("cannot consume EOF" from ANTLR); guard by peeking
+// the stream and reporting a clean syntax error instead.
+func ParseFunction(sql string) (ctx antlrgen.ISqlInvokedFunctionContext, err error) {
 	p, listener := newParser(sql, func(ts *antlr.CommonTokenStream) {
 		// Pre-populate the stream so Consume has something to consume.
 		ts.Fill()
-		ts.Consume()
+		// If the stream is empty (e.g., sql=""), Consume() panics in
+		// ANTLR. Skip the pre-consume — the parser will still emit a
+		// syntax error for the missing CREATE keyword.
+		if ts.LA(1) != antlr.TokenEOF {
+			ts.Consume()
+		}
 	})
-	ctx := p.SqlInvokedFunction()
+	// Belt-and-braces: ANTLR's generated rules can also panic on
+	// genuinely adversarial token streams. Surface any such panic
+	// as a syntax error rather than propagating it to the caller.
+	defer func() {
+		if r := recover(); r != nil {
+			ctx = nil
+			err = &api.Error{
+				Code:    api.ErrCodeSyntaxError,
+				Message: fmt.Sprintf("parse function panic: %v", r),
+			}
+		}
+	}()
+	ctx = p.SqlInvokedFunction()
 	if len(listener.errs) > 0 {
 		return nil, buildSyntaxError(listener.errs[0])
 	}
