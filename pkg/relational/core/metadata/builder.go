@@ -24,6 +24,7 @@ type Builder struct {
 	name             string
 	version          int
 	tables           []tableSpec
+	errs             []error // deferred errors from AddIndex
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
@@ -97,31 +98,46 @@ func (b *Builder) AddTable(name string, columns []ColumnSpec, primaryKey []strin
 }
 
 // AddIndex registers a VALUE index on the named table. columns is the ordered
-// list of field names that form the index key. unique is not yet enforced by
-// the recordlayer but is stored for future use.
+// list of field names that form the index key. unique causes uniqueness
+// enforcement to be wired into the recordlayer index.
 // Must be called after the table is registered via AddTable.
+// Returns the builder unchanged (and records a deferred error) if the table
+// name is unknown or any column name is not present in the table definition.
 func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique bool) *Builder {
 	for i := range b.tables {
-		if b.tables[i].name == tableName {
-			b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
-				name:    indexName,
-				columns: columns,
-				unique:  unique,
-			})
-			return b
+		if b.tables[i].name != tableName {
+			continue
 		}
+		// Validate every index column exists in the table.
+		colSet := make(map[string]bool, len(b.tables[i].columns))
+		for _, c := range b.tables[i].columns {
+			colSet[c.name] = true
+		}
+		for _, col := range columns {
+			if !colSet[col] {
+				b.errs = append(b.errs, fmt.Errorf(
+					"index %q on table %q: column %q not defined in table",
+					indexName, tableName, col))
+				return b
+			}
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:    indexName,
+			columns: columns,
+			unique:  unique,
+		})
+		return b
 	}
-	// Unknown table — store anyway; Build() will report the error.
-	b.tables = append(b.tables, tableSpec{
-		name:    tableName,
-		indexes: []indexSpec{{name: indexName, columns: columns, unique: unique}},
-	})
+	b.errs = append(b.errs, fmt.Errorf("index %q references unknown table %q", indexName, tableName))
 	return b
 }
 
 // Build materialises the schema template. Returns an error when no
 // tables are registered or types cannot be mapped to proto field types.
 func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
+	if len(b.errs) > 0 {
+		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "%v", b.errs[0])
+	}
 	if len(b.tables) == 0 {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "schema template contains no tables")
 	}
