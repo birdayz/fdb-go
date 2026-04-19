@@ -276,12 +276,20 @@ func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
 }
 
 // keyWithValueFromProto reconstructs a KeyWithValueExpression from a proto KeyWithValue.
+// Validates split_point against inner.ColumnSize — a negative or out-of-range
+// value from crafted proto would otherwise propagate into index-maintainer
+// slicing and cause an OOB panic.
 func keyWithValueFromProto(kwv *gen.KeyWithValue) (*KeyWithValueExpression, error) {
 	inner, err := KeyExpressionFromProto(kwv.InnerKey)
 	if err != nil {
 		return nil, fmt.Errorf("key_with_value inner key: %w", err)
 	}
-	return KeyWithValue(inner, int(kwv.GetSplitPoint())), nil
+	splitPoint := int(kwv.GetSplitPoint())
+	columnSize := inner.ColumnSize()
+	if splitPoint < 0 || splitPoint > columnSize {
+		return nil, fmt.Errorf("key_with_value split_point %d out of range [0, %d]", splitPoint, columnSize)
+	}
+	return KeyWithValue(inner, splitPoint), nil
 }
 
 // ToKeyExpression serializes GroupingKeyExpression to proto.
