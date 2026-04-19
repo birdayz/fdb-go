@@ -1016,7 +1016,8 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	return funcName, argCol, alias, true
 }
 
-// columnNameFromExpr extracts a plain column name from an IExpressionContext.
+// columnNameFromExpr extracts a plain column name (or aggregate output name like
+// "COUNT(*)") from an IExpressionContext.
 // context is used in error messages (e.g. "SELECT expression", "ORDER BY expression").
 func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
@@ -1024,12 +1025,41 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"%s must be a column name, got %T", context, expr)
 	}
-	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
+	switch a := pred.ExpressionAtom().(type) {
+	case *antlrgen.FullColumnNameExpressionAtomContext:
+		return fullIdToName(a.FullColumnName().FullId()), nil
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		// Aggregate function in ORDER BY — return the canonical output name
+		// (e.g. COUNT(*), SUM(col)) so it can be matched against the SELECT list.
+		agg, aggok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+		if !aggok {
+			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"%s: unsupported function call %T", context, a.FunctionCall())
+		}
+		awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+		if !awfok {
+			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"%s: unsupported aggregate %T", context, agg.AggregateWindowedFunction())
+		}
+		switch {
+		case awf.COUNT() != nil && awf.STAR() != nil:
+			return "COUNT(*)", nil
+		case awf.COUNT() != nil && awf.FunctionArg() != nil:
+			return "COUNT(" + awf.FunctionArg().GetText() + ")", nil
+		case awf.SUM() != nil && awf.FunctionArg() != nil:
+			return "SUM(" + awf.FunctionArg().GetText() + ")", nil
+		case awf.MIN() != nil && awf.FunctionArg() != nil:
+			return "MIN(" + awf.FunctionArg().GetText() + ")", nil
+		case awf.MAX() != nil && awf.FunctionArg() != nil:
+			return "MAX(" + awf.FunctionArg().GetText() + ")", nil
+		case awf.AVG() != nil && awf.FunctionArg() != nil:
+			return "AVG(" + awf.FunctionArg().GetText() + ")", nil
+		}
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
+	default:
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"%s must be a column name, got expression atom %T", context, pred.ExpressionAtom())
 	}
-	return fullIdToName(colAtom.FullColumnName().FullId()), nil
 }
 
 // selectExprToColumnName extracts a plain column name and optional alias from a

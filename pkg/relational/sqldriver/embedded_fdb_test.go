@@ -2356,3 +2356,60 @@ func TestFDB_GroupByHaving(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(regions).To(gomega.ConsistOf("east"))
 }
+
+func TestFDB_GroupByOrderBy(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_grpord")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpord")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE grpord_tmpl "+
+			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_grpord/sales WITH TEMPLATE grpord_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_grpord?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// 3 north, 2 south, 1 east — verify ORDER BY COUNT(*) DESC gives north, south, east.
+	for _, row := range []struct {
+		id     int
+		region string
+	}{
+		{1, "north"},
+		{2, "north"},
+		{3, "north"},
+		{4, "south"},
+		{5, "south"},
+		{6, "east"},
+	} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Sale (id, region) VALUES (%d, '%s')", row.id, row.region))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	rows, err := db.QueryContext(ctx,
+		"SELECT region, COUNT(*) FROM Sale GROUP BY region ORDER BY COUNT(*) DESC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type regionCount struct {
+		region string
+		count  int64
+	}
+	var results []regionCount
+	for rows.Next() {
+		var rc regionCount
+		g.Expect(rows.Scan(&rc.region, &rc.count)).To(gomega.Succeed())
+		results = append(results, rc)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(results).To(gomega.HaveLen(3))
+	g.Expect(results[0]).To(gomega.Equal(regionCount{"north", 3}))
+	g.Expect(results[1]).To(gomega.Equal(regionCount{"south", 2}))
+	g.Expect(results[2]).To(gomega.Equal(regionCount{"east", 1}))
+}
