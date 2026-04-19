@@ -1338,17 +1338,56 @@ func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (boo
 	if whereExpr == nil {
 		return true, nil
 	}
-	pred, ok := whereExpr.Expression().(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", whereExpr.Expression())
+	return evalExprPredicate(msg, whereExpr.Expression())
+}
+
+// evalExprPredicate evaluates an IExpressionContext as a boolean predicate.
+// Supports: col = constant, col != constant, col < constant, col > constant,
+// col <= constant, col >= constant, AND, OR, NOT.
+func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
+	switch e := expr.(type) {
+	case *antlrgen.LogicalExpressionContext:
+		left, err := evalExprPredicate(msg, e.Expression(0))
+		if err != nil {
+			return false, err
+		}
+		op := e.LogicalOperator()
+		if op.AND() != nil {
+			if !left {
+				return false, nil // short-circuit
+			}
+			return evalExprPredicate(msg, e.Expression(1))
+		}
+		if op.OR() != nil {
+			if left {
+				return true, nil // short-circuit
+			}
+			return evalExprPredicate(msg, e.Expression(1))
+		}
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
+
+	case *antlrgen.NotExpressionContext:
+		v, err := evalExprPredicate(msg, e.Expression())
+		if err != nil {
+			return false, err
+		}
+		return !v, nil
+
+	case *antlrgen.PredicatedExpressionContext:
+		return evalComparisonPredicate(msg, e)
+
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
 	}
+}
+
+// evalComparisonPredicate handles a leaf comparison: col <op> constant.
+func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
 	}
-	if bcp.ComparisonOperator().GetText() != "=" {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "only = comparison supported in WHERE, got %q", bcp.ComparisonOperator().GetText())
-	}
+	opText := bcp.ComparisonOperator().GetText()
 	colAtom, ok := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE left side must be a column name, got %T", bcp.GetLeft())
@@ -1371,7 +1410,24 @@ func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (boo
 	}
 	fieldVal := msg.ProtoReflect().Get(fd)
 	driverVal := protoValueToDriver(fd, fieldVal)
-	return valuesEqual(driverVal, litVal), nil
+
+	cmp := compareValues(driverVal, litVal)
+	switch opText {
+	case "=":
+		return cmp == 0, nil
+	case "!=", "<>":
+		return cmp != 0, nil
+	case "<":
+		return cmp < 0, nil
+	case ">":
+		return cmp > 0, nil
+	case "<=":
+		return cmp <= 0, nil
+	case ">=":
+		return cmp >= 0, nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
+	}
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
