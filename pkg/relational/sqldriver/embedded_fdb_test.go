@@ -5285,3 +5285,39 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE val < 50`).Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(0))) // Neither row: id=1 is NULL, id=2 is 100.
 }
+
+func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_null_cte_bet")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_cte_bet")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_cte_bet_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_cte_bet/main WITH TEMPLATE null_cte_bet_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_null_cte_bet?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`) // val is NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (2, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// NULL > x in a CTE WHERE (evalPredicateOnMapExpr path) should exclude the row.
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH c AS (SELECT id, val FROM T) SELECT COUNT(*) FROM c WHERE val > 50`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1))) // only id=2
+
+	// BETWEEN with NULL bound → UNKNOWN → false (excludes all).
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE val BETWEEN NULL AND 1000`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)))
+}

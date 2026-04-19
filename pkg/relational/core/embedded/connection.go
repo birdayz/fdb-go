@@ -4411,6 +4411,10 @@ func evalBetweenPredicate(ctx context.Context, conn *EmbeddedConnection, msg pro
 	if err != nil {
 		return false, err
 	}
+	// SQL 3-valued logic: NULL bound → UNKNOWN → false.
+	if lo == nil || hi == nil {
+		return false, nil
+	}
 
 	result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
 	if bet.NOT() != nil {
@@ -4731,6 +4735,10 @@ func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[s
 		if hiErr != nil {
 			return false, hiErr
 		}
+		// SQL 3-valued logic: NULL bound → UNKNOWN → false.
+		if lo == nil || hi == nil {
+			return false, nil
+		}
 		result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
 		if p.NOT() != nil {
 			return !result, nil
@@ -4856,6 +4864,10 @@ func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row m
 			right, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 			if err != nil {
 				return false, err
+			}
+			// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+			if left == nil || right == nil {
+				return false, nil
 			}
 			cmp := compareValues(left, right)
 			switch bcp.ComparisonOperator().GetText() {
