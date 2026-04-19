@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,32 @@ func TestKeyspaceResolve_PrintsHex(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("output %q missing hex segment %q", got, want)
 		}
+	}
+}
+
+func TestKeyspaceResolve_JSON(t *testing.T) {
+	t.Parallel()
+	c := newKeyspaceResolveCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"/myapp/prod", "-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if obj["path"] != "/myapp/prod" {
+		t.Errorf("path = %v; want /myapp/prod", obj["path"])
+	}
+	hex, _ := obj["prefix_hex"].(string)
+	if len(hex) == 0 || !strings.Contains(hex, "6d79617070") {
+		t.Errorf("prefix_hex missing 'myapp' bytes: %q", hex)
+	}
+	if _, ok := obj["prefix_len"].(float64); !ok {
+		t.Errorf("prefix_len missing or not a number: %v", obj["prefix_len"])
 	}
 }
 

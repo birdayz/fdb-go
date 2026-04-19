@@ -112,6 +112,42 @@ func TestDiff_VersionChange(t *testing.T) {
 	}
 }
 
+func TestDiffJSON_IdenticalProducesEmptySections(t *testing.T) {
+	t.Parallel()
+	m1 := buildMetaWith(t)
+	m2 := buildMetaWith(t)
+	var buf bytes.Buffer
+	if err := writeMetaDiffJSON(&buf, m1, m2); err != nil {
+		t.Fatalf("writeMetaDiffJSON: %v", err)
+	}
+	var d map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, buf.String())
+	}
+	// version key omitted when unchanged (omitempty).
+	if _, hasVersion := d["version"]; hasVersion {
+		t.Errorf("version key should be omitted when unchanged; got %v", d["version"])
+	}
+	// Both sections present with empty arrays — scripts can do `.added | length`
+	// without null-guards. Crucially NOT nil — the encoder should emit `[]`.
+	for _, section := range []string{"record_types", "indexes"} {
+		bucket, ok := d[section].(map[string]any)
+		if !ok {
+			t.Fatalf("missing %s section:\n%s", section, buf.String())
+		}
+		for _, k := range []string{"added", "removed", "changed"} {
+			arr, ok := bucket[k].([]any)
+			if !ok {
+				t.Errorf("%s.%s not an array (nil would be a scripting footgun):\n%s",
+					section, k, buf.String())
+			}
+			if len(arr) != 0 {
+				t.Errorf("%s.%s = %v; want empty", section, k, arr)
+			}
+		}
+	}
+}
+
 func TestDiffJSON_IndexAddedAndRemoved(t *testing.T) {
 	t.Parallel()
 	m1 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
