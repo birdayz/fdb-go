@@ -138,7 +138,7 @@ Doc is part of the v1 deliverable — shipping `frl` without this guide makes bo
 - [x] `store info` — Format version, metadata version, user version, cacheable, record count state, lock state, user fields. Also supports `-o json` for scriptable output.
 - [x] `record get <pk>` — Single record by primary key (int64 or string)
 - [x] `record scan [--type T] [--limit N]` — Cursor-backed newline-delimited JSON scan
-- [x] `index ls [--no-fdb]` — Lists indexes + state; `--no-fdb` renders from metadata only
+- [x] `index ls [--no-fdb] [-o json]` — Lists indexes + state; `--no-fdb` renders from metadata only
 
 #### B.2 — implemented read-only follow-ups (shipped on PR #86)
 
@@ -152,14 +152,15 @@ Doc is part of the v1 deliverable — shipping `frl` without this guide makes bo
 
 **Meta — wave 5**
 - [x] `meta get` — Dump RecordMetaData as JSON (file sources only)
-- [x] `meta types ls` — Record types + PK fields
+- [x] `meta types ls [-o json]` — Record types + PK fields
+- [x] `meta types describe <name>` — Per-type PK, record-type key, proto msg, indexes
 - [x] `meta validate --file <f>` — Standalone file validation
 - [x] `meta evolve-check --old <f> --new <f>` — MetaDataEvolutionValidator gate
 - [x] `meta diff <old> <new>` — Human-readable diff (added/removed/changed types + indexes + version)
 
 **Navigation / escape — wave 6 (subset)**
 - [x] `config current-context` — Active context name
-- [x] `config get-contexts` — List all, mark active with `*`
+- [x] `config get-contexts [-o json]` — List all, mark active with `*` (or `active: true` in JSON)
 - [x] `keyspace resolve <path>` — Logical path → FDB byte prefix
 - [x] `tx read-version` — Current GRV (+ cluster connectivity smoke test)
 
@@ -169,7 +170,6 @@ Writes deferred pending UX design (confirmation, dry-run defaults):
 - [ ] `record put --file <file>`
 - [ ] `record delete <pk>`
 - [ ] `meta set / apply` — deferred, dangerous without dry-run
-- [ ] `meta types describe <name>`
 - [ ] `store create --meta <file>`
 - [ ] `store truncate`
 - [ ] `store destroy`
@@ -185,7 +185,8 @@ Writes deferred pending UX design (confirmation, dry-run defaults):
 ```
 --context <name>                 # all store-touching commands
 --meta-file <path>               # overrides Context.metadata for this call
--o|--output text|json            # on store info so far; more commands as needed
+-o|--output text|json            # store info, index ls, meta types ls, config get-contexts
+--no-fdb                         # index ls only — metadata-only render
 ```
 
 Root-level `--cluster-file` / `--keyspace-path` not wired yet (contexts cover the case for now).
