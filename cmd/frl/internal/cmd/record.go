@@ -43,6 +43,9 @@ func newRecordGetCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "get <primary-key>",
 		Short: "Load a single record by primary key",
+		Example: `  frl record get 42
+  frl record get customer-0001
+  frl record get 42 --meta-file ./meta.pb`,
 		Long: "Primary keys are parsed as int64 if the argument is a valid " +
 			"signed 64-bit integer, otherwise as a string. Values above " +
 			"math.MaxInt64 (9223372036854775807) are treated as strings, " +
@@ -84,6 +87,9 @@ func newRecordScanCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "scan",
 		Short: "Scan records from the current context's store",
+		Example: `  frl record scan --limit 10
+  frl record scan --type Order --limit 100 | jq -s .
+  frl record scan --type Order | wc -l`,
 		Long: "Forward scan over the whole store (or a single --type). " +
 			"Output is one JSON-encoded record per line (newline-delimited " +
 			"JSON) so it can be piped into `jq -s .` or tools like `mlr`.",

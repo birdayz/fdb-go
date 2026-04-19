@@ -33,6 +33,9 @@ func newIndexLsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "ls",
 		Short: "List indexes with state",
+		Example: `  frl index ls
+  frl index ls -o json
+  frl index ls --meta-file ./meta.pb --no-fdb    # offline render`,
 		Long: "Opens the current context's store and prints one row per " +
 			"index: name, type, current state (readable / write-only / " +
 			"disabled / readable-unique-pending), the record types it " +

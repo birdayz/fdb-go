@@ -68,7 +68,10 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "evolve-check",
 		Short: "Verify an evolution from --old to --new metadata is safe",
-		Args:  cobra.NoArgs,
+		Example: `  frl meta evolve-check --old previous.pb --new current.pb
+  # In CI:
+  #   frl meta evolve-check --old baseline.pb --new $(build-meta.sh) || exit 1`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			oldMeta, err := (&meta.FileSource{Path: oldPath}).Load(cmd.Context())
 			if err != nil {

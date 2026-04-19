@@ -14,10 +14,19 @@ func NewRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "frl",
 		Short: "Operator CLI for the Go FoundationDB Record Layer",
-		Long: "frl is a kubectl-style CLI for inspecting and operating " +
-			"record stores backed by the Go port of the FoundationDB Record " +
-			"Layer. Command tree is under active design; Phase A only ships " +
-			"the skeleton + `version` subcommand.",
+		Long: "frl is a kaf-style CLI for inspecting record stores backed " +
+			"by the Go port of the FoundationDB Record Layer. Read-only in " +
+			"v1 — record/index/meta/store introspection plus config and " +
+			"escape hatches (tx, keyspace). Writes are deferred to a later " +
+			"wave with confirmation + dry-run defaults.\n\n" +
+			"Config lives at ~/.frl/config.yaml (override via $FRL_CONFIG).\n" +
+			"See `cmd/frl/docs/operator-guide.md` in the repo for the full " +
+			"wiring walkthrough (Go + Java apps, both metadata paths).",
+		Example: `  frl config use-context prod
+  frl store info
+  frl record scan --type Order --limit 10
+  frl index ls -o json | jq -r '.[].name'
+  frl meta evolve-check --old previous.pb --new current.pb`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
