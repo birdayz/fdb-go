@@ -2413,3 +2413,41 @@ func TestFDB_GroupByOrderBy(t *testing.T) {
 	g.Expect(results[1]).To(gomega.Equal(regionCount{"south", 2}))
 	g.Expect(results[2]).To(gomega.Equal(regionCount{"east", 1}))
 }
+
+func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
+	// SELECT COUNT(*), SUM(amount) FROM t without GROUP BY — single result row.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_aggno")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_aggno")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE aggno_tmpl "+
+			"CREATE TABLE Item (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_aggno/items WITH TEMPLATE aggno_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_aggno?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i, amt := range []int{10, 20, 30} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Item (id, amount) VALUES (%d, %d)", i+1, amt))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT COUNT(*), SUM(amount) FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var cnt int64
+	var sum float64
+	g.Expect(rows.Scan(&cnt, &sum)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(3)))
+	g.Expect(sum).To(gomega.Equal(float64(60)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
