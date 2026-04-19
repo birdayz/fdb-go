@@ -341,6 +341,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **String functions** — UPPER, LOWER, LENGTH/LEN, TRIM, ABS; nested calls chain. dayshift-32.
 - [x] **CONCAT, CONCAT_WS, NULLIF** — CONCAT(s1,s2,...), CONCAT_WS(sep,...), NULLIF(a,b). 1 FDB integration test. dayshift-32.
 - [x] **Generalized WHERE comparisons** — evalComparisonPredicate uses evalExprAtom on both sides; functions/arithmetic now allowed in WHERE (e.g., WHERE price * 2 > 50). 1 FDB integration test. dayshift-32.
+- [x] **INFORMATION_SCHEMA WHERE filtering** — filterSysRows helper reuses evalHaving on col→value map; applies to SCHEMATA, TABLES, COLUMNS, INDEXES. 1 FDB integration test. swingshift-33.
+- [x] **UNION ALL / UNION DISTINCT** — execQueryBodyRows + execUnion handle recursive UNION trees. execSelectQuery/execSelectQueryFull refactor splits routing from FDB scan. 2 FDB integration tests. swingshift-33.
+- [x] **INSERT INTO ... SELECT** — execInsertSelect evaluates QueryExpressionBody (incl. UNION), maps source→target columns via convertToProtoValue. 1 FDB integration test. swingshift-33.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
