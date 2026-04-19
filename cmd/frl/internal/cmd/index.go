@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -18,42 +18,65 @@ func newIndexCmd() *cobra.Command {
 		Use:   "index",
 		Short: "Inspect indexes on the current context's store",
 	}
-	c.AddCommand(newIndexLsCmd())
+	c.AddCommand(
+		newIndexLsCmd(),
+		newIndexDescribeCmd(),
+	)
 	return c
 }
 
 func newIndexLsCmd() *cobra.Command {
 	var contextName, metaFile string
+	var noFDB bool
 	c := &cobra.Command{
 		Use:   "ls",
 		Short: "List indexes with state",
 		Long: "Opens the current context's store and prints one row per " +
 			"index: name, type, current state (readable / write-only / " +
 			"disabled / readable-unique-pending), the record types it " +
-			"applies to, and the metadata version that last touched it.",
+			"applies to, and the metadata version that last touched it. " +
+			"--no-fdb skips opening the store and shows STATE as '—' " +
+			"so that `--meta-file` can be used as a pure offline lister.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
 				return err
 			}
+			if noFDB {
+				if override == nil {
+					src, err := meta.FromContext(cfgCtx, nil, nil)
+					if err != nil {
+						return err
+					}
+					override = src
+				}
+				md, err := override.Load(cmd.Context())
+				if err != nil {
+					return err
+				}
+				return writeIndexList(cmd.OutOrStdout(), md, nil)
+			}
 			_, err = withStore(cmd.Context(), cfgCtx, override,
 				func(store *recordlayer.FDBRecordStore) (struct{}, error) {
-					return struct{}{}, writeIndexList(cmd.Context(), cmd.OutOrStdout(), store)
+					return struct{}{}, writeIndexList(cmd.OutOrStdout(),
+						store.GetRecordMetaData(),
+						func(name string) string { return store.GetIndexState(name).String() })
 				})
 			return err
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
 	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	c.Flags().BoolVar(&noFDB, "no-fdb", false, "render from metadata only; skip opening the store")
 	return c
 }
 
-// writeIndexList renders a tabwriter-aligned table of every index in the
-// metadata, tagged with the state the record store currently holds for
-// it. Sorted by name so diffs across invocations are stable.
-func writeIndexList(_ context.Context, out io.Writer, store *recordlayer.FDBRecordStore) error {
-	md := store.GetRecordMetaData()
+// writeIndexList renders a tabwriter-aligned table of every index in md,
+// tagged with state returned by stateFn. If stateFn is nil (metadata-only
+// mode) every row shows "—" for state. Rows are sorted by name so diffs
+// across invocations are stable.
+func writeIndexList(out io.Writer, md *recordlayer.RecordMetaData, stateFn func(string) string) error {
 	all := md.GetAllIndexes()
 	if len(all) == 0 {
 		_, err := fmt.Fprintln(out, "(no indexes in metadata)")
@@ -69,10 +92,13 @@ func writeIndexList(_ context.Context, out io.Writer, store *recordlayer.FDBReco
 	fmt.Fprintln(tw, "NAME\tTYPE\tSTATE\tRECORD TYPES\tLAST MODIFIED")
 	for _, name := range names {
 		idx := all[name]
-		state := store.GetIndexState(name)
+		state := "—"
+		if stateFn != nil {
+			state = stateFn(name)
+		}
 		types := recordTypeNames(md, idx)
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n",
-			name, idx.Type, state.String(), strings.Join(types, ","), idx.LastModifiedVersion)
+			name, idx.Type, state, strings.Join(types, ","), idx.LastModifiedVersion)
 	}
 	return tw.Flush()
 }

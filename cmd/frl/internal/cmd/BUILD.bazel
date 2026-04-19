@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "config.go",
         "index.go",
+        "index_describe.go",
         "keyspace.go",
         "meta.go",
         "openstore.go",
