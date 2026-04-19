@@ -28,6 +28,8 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newMetaCmd())
 	root.AddCommand(newRecordCmd())
 	root.AddCommand(newIndexCmd())
+	root.AddCommand(newKeyspaceCmd())
+	root.AddCommand(newTxCmd())
 
 	return root
 }

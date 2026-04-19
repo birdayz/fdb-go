@@ -5,11 +5,13 @@ go_library(
     srcs = [
         "config.go",
         "index.go",
+        "keyspace.go",
         "meta.go",
         "openstore.go",
         "record.go",
         "root.go",
         "store.go",
+        "tx.go",
         "version.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/cmd",
@@ -34,6 +36,7 @@ go_test(
     name = "cmd_test",
     srcs = [
         "index_test.go",
+        "keyspace_test.go",
         "meta_test.go",
         "record_test.go",
         "store_test.go",
