@@ -5370,6 +5370,85 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 	g.Expect(got3).To(gomega.Equal("five"))
 }
 
+// TestFDB_NotOfUnknownIsUnknown pins down SQL three-valued logic for NOT:
+//
+//	NOT TRUE    = FALSE
+//	NOT FALSE   = TRUE
+//	NOT UNKNOWN = UNKNOWN   (NOT a row out of the result set)
+//
+// Previously the predicate evaluator collapsed UNKNOWN → FALSE at the leaves
+// so `NOT (x = NULL)`, `NOT (x IN (NULL, ...))`, `NOT LIKE NULL`, and
+// `NOT BETWEEN NULL AND ...` all flipped to TRUE and incorrectly kept the row.
+// Now UNKNOWN propagates through NOT/AND/OR via an internal tri-state and only
+// collapses at the filter boundary (UNKNOWN filters out, same as FALSE).
+func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_not_unknown")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_not_unknown")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE not_unknown_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_not_unknown/main WITH TEMPLATE not_unknown_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_not_unknown?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1 has both columns; id=2 has n=NULL, s=NULL.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 5, 'hello')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// NOT n = NULL — NOT UNKNOWN = UNKNOWN → row filters out.
+	// Previously: NULL collapsed to FALSE, NOT FALSE = TRUE, both rows matched.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT (x = NULL) must be UNKNOWN for every row, not TRUE")
+
+	// NOT IN over a row whose probe value is NULL — n IS NULL for id=2 so this
+	// becomes NULL NOT IN (5, 999) → UNKNOWN. Both rows filter out: id=1
+	// because n=5 IS in the list, id=2 because probe is NULL (UNKNOWN).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n NOT IN (5, 999)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)),
+		"NULL NOT IN (...) must be UNKNOWN (filters out); non-NULL matching element filters out too")
+
+	// NOT (NULL AND TRUE) — NULL AND TRUE = NULL; NOT NULL = NULL → filter out.
+	// Previously: NULL AND TRUE collapsed to FALSE, NOT FALSE = TRUE → every row matched.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT n = NULL AND 1 = 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT (UNKNOWN AND TRUE) must stay UNKNOWN")
+
+	// NOT (NULL OR FALSE) — NULL OR FALSE = NULL; NOT NULL = NULL → filter out.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT n = NULL OR 1 = 0`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT (UNKNOWN OR FALSE) must stay UNKNOWN")
+
+	// Double-NOT must still collapse: NOT NOT TRUE = TRUE, NOT NOT UNKNOWN = UNKNOWN.
+	// Grammar quirk: parenthesised comparison parses as record constructor, so
+	// we rely on the parser's precedence of NOT binding to the full comparison.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT NOT id = 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "NOT NOT (id = 1) must equal (id = 1)")
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT NOT UNKNOWN = UNKNOWN, must filter out")
+
+	// Sanity: NOT with concrete truthy predicates still works.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT id = 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)))
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE NOT id = 99`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)))
+
+	// Same invariants through the map path (CTE).
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT n FROM T) SELECT COUNT(*) FROM C WHERE NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "CTE path: NOT (x = NULL) stays UNKNOWN")
+}
+
 // TestFDB_AggregateNullSemantics pins down SQL-standard aggregate behaviour:
 //   - COUNT(col) skips NULLs; COUNT(*) does not
 //   - SUM of empty-or-all-NULL returns NULL, not 0

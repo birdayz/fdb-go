@@ -3932,6 +3932,65 @@ func isTruthy(v any) bool {
 	return true
 }
 
+// triBool is a Kleene three-valued truth type used by predicate evaluators so
+// that NOT/AND/OR preserve SQL UNKNOWN (NULL) instead of collapsing it to
+// FALSE. In a WHERE/HAVING/ON boundary, only triTrue keeps the row — both
+// triFalse and triNull filter it out, matching SQL semantics.
+type triBool int8
+
+const (
+	triFalse triBool = iota
+	triTrue
+	triNull
+)
+
+func triFromBool(b bool) triBool {
+	if b {
+		return triTrue
+	}
+	return triFalse
+}
+
+// IsTrue reports whether the value is strictly TRUE. UNKNOWN is NOT true —
+// this is the predicate-filter boundary: `if !t.IsTrue() { skip row }`.
+func (t triBool) IsTrue() bool { return t == triTrue }
+
+// Not implements SQL's NOT with UNKNOWN preservation: NOT TRUE = FALSE,
+// NOT FALSE = TRUE, NOT UNKNOWN = UNKNOWN.
+func (t triBool) Not() triBool {
+	switch t {
+	case triTrue:
+		return triFalse
+	case triFalse:
+		return triTrue
+	}
+	return triNull
+}
+
+// triAnd implements SQL's AND: FALSE AND x = FALSE, otherwise UNKNOWN if either
+// is UNKNOWN, else TRUE. Short-circuit on FALSE is done by the caller.
+func triAnd(a, b triBool) triBool {
+	if a == triFalse || b == triFalse {
+		return triFalse
+	}
+	if a == triNull || b == triNull {
+		return triNull
+	}
+	return triTrue
+}
+
+// triOr implements SQL's OR: TRUE OR x = TRUE, otherwise UNKNOWN if either is
+// UNKNOWN, else FALSE. Short-circuit on TRUE is done by the caller.
+func triOr(a, b triBool) triBool {
+	if a == triTrue || b == triTrue {
+		return triTrue
+	}
+	if a == triNull || b == triNull {
+		return triNull
+	}
+	return triFalse
+}
+
 func applyMathOp(left, right any, op string) (any, error) {
 	// NULL propagates through arithmetic per SQL 3-valued logic.
 	if left == nil || right == nil {
@@ -4174,110 +4233,135 @@ func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Mess
 // Supports: col = constant, col != constant, col < constant, col > constant,
 // col <= constant, col >= constant, AND, OR, NOT.
 func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
+	t, err := evalExprPredicateTri(ctx, conn, msg, expr)
+	return t.IsTrue(), err
+}
+
+// evalExprPredicateTri is the Kleene three-valued implementation: UNKNOWN
+// propagates through AND/OR/NOT so `NOT (x = NULL)` correctly stays UNKNOWN
+// (filtered out) instead of flipping to TRUE. The bool wrapper above
+// collapses UNKNOWN→false at the WHERE/HAVING filter boundary.
+func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
 		if conn == nil {
-			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
 		// NOTE: Correlated subqueries are not supported — the subquery cannot
 		// reference column values from the outer query row.
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
-			return false, subErr
+			return triFalse, subErr
 		}
-		return len(subRows) > 0, nil
+		return triFromBool(len(subRows) > 0), nil
 
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalExprPredicate(ctx, conn, msg, e.Expression(0))
+		left, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(0))
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
 		op := e.LogicalOperator()
 		if op.AND() != nil {
-			if !left {
-				return false, nil // short-circuit
+			if left == triFalse {
+				return triFalse, nil // short-circuit
 			}
-			return evalExprPredicate(ctx, conn, msg, e.Expression(1))
+			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			return triAnd(left, right), nil
 		}
 		if op.OR() != nil {
-			if left {
-				return true, nil // short-circuit
+			if left == triTrue {
+				return triTrue, nil // short-circuit
 			}
-			return evalExprPredicate(ctx, conn, msg, e.Expression(1))
+			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			return triOr(left, right), nil
 		}
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
 
 	case *antlrgen.NotExpressionContext:
-		v, err := evalExprPredicate(ctx, conn, msg, e.Expression())
+		v, err := evalExprPredicateTri(ctx, conn, msg, e.Expression())
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
-		return !v, nil
+		return v.Not(), nil
 
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
 			switch p := e.Predicate().(type) {
 			case *antlrgen.InPredicateContext:
-				return evalInPredicate(ctx, conn, msg, e, p)
+				return evalInPredicateTri(ctx, conn, msg, e, p)
 			case *antlrgen.IsExpressionContext:
-				return evalIsNullPredicate(ctx, conn, msg, e, p)
+				// IS NULL / IS TRUE / IS FALSE are always 2-state (never UNKNOWN).
+				b, err := evalIsNullPredicate(ctx, conn, msg, e, p)
+				return triFromBool(b), err
 			case *antlrgen.LikePredicateContext:
-				return evalLikePredicate(ctx, conn, msg, e, p)
+				return evalLikePredicateTri(ctx, conn, msg, e, p)
 			case *antlrgen.BetweenComparisonPredicateContext:
-				return evalBetweenPredicate(ctx, conn, msg, e, p)
+				return evalBetweenPredicateTri(ctx, conn, msg, e, p)
 			}
 		}
-		return evalComparisonPredicate(ctx, conn, msg, e)
+		return evalComparisonPredicateTri(ctx, conn, msg, e)
 
 	default:
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
 	}
 }
 
-// evalComparisonPredicate handles a leaf comparison between two arbitrary expressions.
-func evalComparisonPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+// evalComparisonPredicateTri handles a leaf comparison between two arbitrary
+// expressions. Returns triNull when either operand is NULL so that enclosing
+// NOT/AND/OR can apply proper Kleene logic (previously NULL collapsed to FALSE
+// and `NOT (x = NULL)` returned TRUE).
+func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (triBool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
 		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`)
-		// — evaluate as a value and treat truthy results as TRUE.
+		// — evaluate as a value. NULL result is UNKNOWN; else use truthiness.
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
-		return isTruthy(v), nil
+		if v == nil {
+			return triNull, nil
+		}
+		return triFromBool(isTruthy(v)), nil
 	}
 	opText := bcp.ComparisonOperator().GetText()
 
 	left, err := evalExprAtom(ctx, conn, msg, bcp.GetLeft())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
 	right, err := evalExprAtom(ctx, conn, msg, bcp.GetRight())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
-	// SQL 3-valued logic: any comparison involving NULL is UNKNOWN → false in
-	// WHERE. Use IS NULL / IS NOT NULL for explicit NULL tests.
+	// SQL 3-valued logic: any comparison involving NULL is UNKNOWN.
+	// Use IS NULL / IS NOT NULL for explicit NULL tests.
 	if left == nil || right == nil {
-		return false, nil
+		return triNull, nil
 	}
 
 	cmp := compareValues(left, right)
 	switch opText {
 	case "=":
-		return cmp == 0, nil
+		return triFromBool(cmp == 0), nil
 	case "!=", "<>":
-		return cmp != 0, nil
+		return triFromBool(cmp != 0), nil
 	case "<":
-		return cmp < 0, nil
+		return triFromBool(cmp < 0), nil
 	case ">":
-		return cmp > 0, nil
+		return triFromBool(cmp > 0), nil
 	case "<=":
-		return cmp <= 0, nil
+		return triFromBool(cmp <= 0), nil
 	case ">=":
-		return cmp >= 0, nil
+		return triFromBool(cmp >= 0), nil
 	default:
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 	}
 }
 
@@ -4296,67 +4380,67 @@ func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bo
 }
 
 // evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
-func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
+func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (triBool, error) {
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-		// Column: use proto Has() so unset optionals (SQL NULL) return false.
+		// Column: use proto Has() so unset optionals (SQL NULL) yield UNKNOWN.
 		colName := fullIdToName(colAtom.FullColumnName().FullId())
 		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
 		if fd == nil {
-			return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
 		}
 		if !msg.ProtoReflect().Has(fd) {
-			return false, nil // NULL IN (...) = UNKNOWN → treat as false
+			return triNull, nil // NULL [NOT] IN (...) = UNKNOWN
 		}
 		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 	} else {
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
 		if v == nil {
-			return false, nil // NULL IN (...) = UNKNOWN
+			return triNull, nil // NULL [NOT] IN (...) = UNKNOWN
 		}
 		fieldVal = v
 	}
 
 	if qb := in.InList().QueryExpressionBody(); qb != nil {
 		if conn == nil {
-			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
 		_, subRows, err := conn.execQueryBodyRows(ctx, qb)
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
-		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil), nil
+		return triFromBool(matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)), nil
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
 	for _, expr := range exprs {
 		ep, ok := expr.(*antlrgen.PredicatedExpressionContext)
 		if !ok {
-			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got %T", expr)
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got %T", expr)
 		}
 		cAtom, ok := ep.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
 		if !ok {
-			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got atom %T", ep.ExpressionAtom())
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got atom %T", ep.ExpressionAtom())
 		}
 		litVal, err := evalConstant(cAtom.Constant())
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
 		if valuesEqual(fieldVal, litVal) {
 			if in.NOT() != nil {
-				return false, nil
+				return triFalse, nil
 			}
-			return true, nil
+			return triTrue, nil
 		}
 	}
 	// none matched
 	if in.NOT() != nil {
-		return true, nil
+		return triTrue, nil
 	}
-	return false, nil
+	return triFalse, nil
 }
 
 // evalIsNullPredicate handles: expr IS [NOT] NULL / IS TRUE / IS FALSE
@@ -4408,19 +4492,20 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 	}
 }
 
-// evalLikePredicate handles: expr [NOT] LIKE 'pattern'
+// evalLikePredicateTri handles: expr [NOT] LIKE 'pattern'.
 // Supports SQL wildcards: % (any sequence) and _ (any single character).
-func evalLikePredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
+// Returns triNull when the expression is NULL so NOT LIKE NULL stays UNKNOWN.
+func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (triBool, error) {
 	rawVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
 	if rawVal == nil {
-		return false, nil // NULL LIKE anything = false
+		return triNull, nil // NULL [NOT] LIKE pattern = UNKNOWN
 	}
 	s, ok2 := rawVal.(string)
 	if !ok2 {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string expression, got %T", rawVal)
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string expression, got %T", rawVal)
 	}
 
 	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.
@@ -4429,9 +4514,9 @@ func evalLikePredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 
 	matched := likeMatch(pattern, s)
 	if like.NOT() != nil {
-		return !matched, nil
+		return triFromBool(!matched), nil
 	}
-	return matched, nil
+	return triFromBool(matched), nil
 }
 
 // likeMatch implements SQL LIKE pattern matching: % = any sequence, _ = any single char.
@@ -4483,34 +4568,35 @@ func stripStringLiteralQuotes(s string) string {
 	return strings.ReplaceAll(s, "''", "'")
 }
 
-// evalBetweenPredicate handles: expr [NOT] BETWEEN lo AND hi (inclusive).
-func evalBetweenPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
+// evalBetweenPredicateTri handles: expr [NOT] BETWEEN lo AND hi (inclusive).
+// NULL in any position yields triNull so NOT BETWEEN NULL AND x stays UNKNOWN.
+func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (triBool, error) {
 	fieldVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
 	if fieldVal == nil {
-		return false, nil // NULL BETWEEN ... = UNKNOWN
+		return triNull, nil // NULL BETWEEN ... = UNKNOWN
 	}
 
 	lo, err := evalExprAtom(ctx, conn, msg, bet.GetLeft())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
 	hi, err := evalExprAtom(ctx, conn, msg, bet.GetRight())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
-	// SQL 3-valued logic: NULL bound → UNKNOWN → false.
+	// SQL 3-valued logic: NULL bound → UNKNOWN.
 	if lo == nil || hi == nil {
-		return false, nil
+		return triNull, nil
 	}
 
 	result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
 	if bet.NOT() != nil {
-		return !result, nil
+		return triFromBool(!result), nil
 	}
-	return result, nil
+	return triFromBool(result), nil
 }
 
 // groupByKey builds a comparable string key from the group-by column values.
@@ -4523,56 +4609,71 @@ func groupByKey(groupVals []driver.Value) string {
 }
 
 // evalHaving evaluates a HAVING clause expression against a map of
-// output-column-name → aggregate value.
-// Supports comparisons, AND/OR/NOT, and aggregate function references.
+// output-column-name → aggregate value. Bool wrapper over evalHavingTri —
+// UNKNOWN collapses to false at the filter boundary.
 func evalHaving(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+	t, err := evalHavingTri(ctx, conn, row, expr)
+	return t.IsTrue(), err
+}
+
+// evalHavingTri is the Kleene three-valued implementation for HAVING.
+// Supports comparisons, AND/OR/NOT, and aggregate function references.
+func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (triBool, error) {
 	// EXISTS subquery
 	if exists, ok := expr.(*antlrgen.ExistsExpressionAtomContext); ok {
 		if conn == nil {
-			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
 		if subErr != nil {
-			return false, subErr
+			return triFalse, subErr
 		}
-		return len(subRows) > 0, nil
+		return triFromBool(len(subRows) > 0), nil
 	}
 	// Handle logical expressions: AND / OR
 	if le, ok := expr.(*antlrgen.LogicalExpressionContext); ok {
-		left, err := evalHaving(ctx, conn, row, le.Expression(0))
+		left, err := evalHavingTri(ctx, conn, row, le.Expression(0))
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
 		op := strings.ToUpper(le.LogicalOperator().GetText())
 		if op == "AND" || op == "&&" {
-			if !left {
-				return false, nil
+			if left == triFalse {
+				return triFalse, nil
 			}
-			return evalHaving(ctx, conn, row, le.Expression(1))
+			right, err := evalHavingTri(ctx, conn, row, le.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			return triAnd(left, right), nil
 		}
 		// OR
-		if left {
-			return true, nil
+		if left == triTrue {
+			return triTrue, nil
 		}
-		return evalHaving(ctx, conn, row, le.Expression(1))
+		right, err := evalHavingTri(ctx, conn, row, le.Expression(1))
+		if err != nil {
+			return triFalse, err
+		}
+		return triOr(left, right), nil
 	}
 	// Handle NOT
 	if ne, ok := expr.(*antlrgen.NotExpressionContext); ok {
-		v, err := evalHaving(ctx, conn, row, ne.Expression())
-		return !v, err
+		v, err := evalHavingTri(ctx, conn, row, ne.Expression())
+		return v.Not(), err
 	}
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING expression %T", expr)
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING expression %T", expr)
 	}
 	// WHERE-style predicate: expressionAtom + separate predicate (IS NULL, LIKE, BETWEEN, IN, =).
 	if pred.Predicate() != nil {
-		return evalPredicateOnMap(ctx, conn, row, pred)
+		return evalPredicateOnMapTri(ctx, conn, row, pred)
 	}
 	// HAVING-style: the full comparison is the expression atom (BinaryComparisonPredicateContext).
 	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING supports only comparison predicates, got %T", pred.ExpressionAtom())
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING supports only comparison predicates, got %T", pred.ExpressionAtom())
 	}
 
 	resolveAtom := func(atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
@@ -4623,33 +4724,33 @@ func evalHaving(ctx context.Context, conn *EmbeddedConnection, row map[string]dr
 
 	leftVal, err := resolveAtom(compPred.GetLeft())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
 	rightVal, err := resolveAtom(compPred.GetRight())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
-	// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+	// SQL 3-valued logic: NULL comparison → UNKNOWN.
 	if leftVal == nil || rightVal == nil {
-		return false, nil
+		return triNull, nil
 	}
 	opText := compPred.ComparisonOperator().GetText()
 	cmp := compareValues(leftVal, rightVal)
 	switch opText {
 	case "=":
-		return cmp == 0, nil
+		return triFromBool(cmp == 0), nil
 	case "!=", "<>":
-		return cmp != 0, nil
+		return triFromBool(cmp != 0), nil
 	case "<":
-		return cmp < 0, nil
+		return triFromBool(cmp < 0), nil
 	case ">":
-		return cmp > 0, nil
+		return triFromBool(cmp > 0), nil
 	case "<=":
-		return cmp <= 0, nil
+		return triFromBool(cmp <= 0), nil
 	case ">=":
-		return cmp >= 0, nil
+		return triFromBool(cmp >= 0), nil
 	}
-	return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING: unsupported operator %q", opText)
+	return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING: unsupported operator %q", opText)
 }
 
 // evalExprAtomOnMap resolves an expression atom using a map[string]driver.Value
@@ -4727,11 +4828,14 @@ func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string
 	switch e := expr.(type) {
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			ok, err := evalPredicateOnMap(ctx, conn, row, e)
+			t, err := evalPredicateOnMapTri(ctx, conn, row, e)
 			if err != nil {
 				return nil, err
 			}
-			return ok, nil
+			if t == triNull {
+				return nil, nil
+			}
+			return t == triTrue, nil
 		}
 		return evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:
@@ -4759,48 +4863,53 @@ func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string
 
 // evalPredicateOnMap evaluates a WHERE-style PredicatedExpressionContext against
 // a map[string]driver.Value row. Handles IS NULL, LIKE, BETWEEN, IN, comparisons.
-func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (triBool, error) {
 	fieldVal, err := evalExprAtomOnMap(ctx, conn, row, pred.ExpressionAtom())
 	if err != nil {
-		return false, err
+		return triFalse, err
 	}
 
 	if pred.Predicate() == nil {
-		// Leaf expression (e.g. a boolean constant) — treat truthiness.
-		return isTruthy(fieldVal), nil
+		// Leaf expression (e.g. a boolean constant) — treat NULL as UNKNOWN,
+		// otherwise use truthiness.
+		if fieldVal == nil {
+			return triNull, nil
+		}
+		return triFromBool(isTruthy(fieldVal)), nil
 	}
 
 	switch p := pred.Predicate().(type) {
 	case *antlrgen.IsExpressionContext:
+		// IS NULL / IS TRUE / IS FALSE are always 2-state.
 		negated := p.NOT() != nil
 		isNull := fieldVal == nil
 		switch {
 		case p.NULL_LITERAL() != nil:
 			res := isNull
 			if negated {
-				return !res, nil
+				res = !res
 			}
-			return res, nil
+			return triFromBool(res), nil
 		case p.TRUE() != nil:
 			b, _ := fieldVal.(bool)
 			res := b
 			if negated {
-				return !res, nil
+				res = !res
 			}
-			return res, nil
+			return triFromBool(res), nil
 		case p.FALSE() != nil:
 			b, _ := fieldVal.(bool)
 			res := !b && fieldVal != nil
 			if negated {
-				return !res, nil
+				res = !res
 			}
-			return res, nil
+			return triFromBool(res), nil
 		}
-		return false, nil
+		return triFalse, nil
 
 	case *antlrgen.LikePredicateContext:
 		if fieldVal == nil {
-			return false, nil
+			return triNull, nil
 		}
 		s, ok := fieldVal.(string)
 		if !ok {
@@ -4809,48 +4918,47 @@ func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[s
 		patternLit := p.GetPattern().GetText()
 		matched := likeMatch(stripStringLiteralQuotes(patternLit), s)
 		if p.NOT() != nil {
-			return !matched, nil
+			matched = !matched
 		}
-		return matched, nil
+		return triFromBool(matched), nil
 
 	case *antlrgen.BetweenComparisonPredicateContext:
 		if fieldVal == nil {
-			return false, nil
+			return triNull, nil
 		}
 		lo, loErr := evalExprAtomOnMap(ctx, conn, row, p.GetLeft())
 		if loErr != nil {
-			return false, loErr
+			return triFalse, loErr
 		}
 		hi, hiErr := evalExprAtomOnMap(ctx, conn, row, p.GetRight())
 		if hiErr != nil {
-			return false, hiErr
+			return triFalse, hiErr
 		}
-		// SQL 3-valued logic: NULL bound → UNKNOWN → false.
 		if lo == nil || hi == nil {
-			return false, nil
+			return triNull, nil
 		}
 		result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
 		if p.NOT() != nil {
-			return !result, nil
+			result = !result
 		}
-		return result, nil
+		return triFromBool(result), nil
 
 	case *antlrgen.InPredicateContext:
 		if fieldVal == nil {
-			return false, nil // NULL IN/NOT IN (...) = UNKNOWN → false
+			return triNull, nil // NULL [NOT] IN (...) = UNKNOWN
 		}
 		if qb := p.InList().QueryExpressionBody(); qb != nil {
 			if conn == nil {
-				return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
+				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 			}
 			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
 			if subErr != nil {
-				return false, subErr
+				return triFalse, subErr
 			}
-			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil), nil
+			return triFromBool(matchSubqueryIN(fieldVal, subRows, p.NOT() != nil)), nil
 		}
 		if p.InList().Expressions() == nil {
-			return p.NOT() != nil, nil
+			return triFromBool(p.NOT() != nil), nil
 		}
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
 			ep, ok := inExpr.(*antlrgen.PredicatedExpressionContext)
@@ -4859,129 +4967,146 @@ func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[s
 			}
 			litVal, litErr := evalExprAtomOnMap(ctx, conn, row, ep.ExpressionAtom())
 			if litErr != nil {
-				return false, litErr
+				return triFalse, litErr
 			}
 			if valuesEqual(fieldVal, litVal) {
 				if p.NOT() != nil {
-					return false, nil
+					return triFalse, nil
 				}
-				return true, nil
+				return triTrue, nil
 			}
 		}
 		if p.NOT() != nil {
-			return true, nil
+			return triTrue, nil
 		}
-		return false, nil
+		return triFalse, nil
 	}
 
 	// Fallback: interpret as binary comparison (the predicate part has = / <> / < / > / <= / >=).
-	// This happens when the predicate is NOT a special predicate type above.
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if ok {
 		rightVal, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
-		// SQL 3-valued logic: NULL comparisons are UNKNOWN → false.
 		if fieldVal == nil || rightVal == nil {
-			return false, nil
+			return triNull, nil
 		}
 		cmp := compareValues(fieldVal, rightVal)
 		switch bcp.ComparisonOperator().GetText() {
 		case "=":
-			return cmp == 0, nil
+			return triFromBool(cmp == 0), nil
 		case "!=", "<>":
-			return cmp != 0, nil
+			return triFromBool(cmp != 0), nil
 		case "<":
-			return cmp < 0, nil
+			return triFromBool(cmp < 0), nil
 		case ">":
-			return cmp > 0, nil
+			return triFromBool(cmp > 0), nil
 		case "<=":
-			return cmp <= 0, nil
+			return triFromBool(cmp <= 0), nil
 		case ">=":
-			return cmp >= 0, nil
+			return triFromBool(cmp >= 0), nil
 		}
 	}
-	return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported predicate type %T in map eval", pred.Predicate())
+	return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported predicate type %T in map eval", pred.Predicate())
 }
 
-// evalPredicateOnMapExpr evaluates a general IExpressionContext against a map row.
-// Mirrors evalExprPredicate but uses map-based column resolution.
+// evalPredicateOnMapExpr is the bool wrapper used by WHERE/ON/HAVING filter
+// sites. The Tri variant carries the UNKNOWN flag through AND/OR/NOT; here we
+// collapse it to false at the filter boundary.
 func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+	t, err := evalPredicateOnMapExprTri(ctx, conn, row, expr)
+	return t.IsTrue(), err
+}
+
+// evalPredicateOnMapExprTri mirrors evalExprPredicateTri but resolves column
+// references from a map[string]driver.Value (used for JOIN/CTE/derived-table
+// paths).
+func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
 		if conn == nil {
-			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
-			return false, subErr
+			return triFalse, subErr
 		}
-		return len(subRows) > 0, nil
+		return triFromBool(len(subRows) > 0), nil
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression(0))
+		left, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(0))
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
 		op := e.LogicalOperator()
 		if op.AND() != nil {
-			if !left {
-				return false, nil
+			if left == triFalse {
+				return triFalse, nil
 			}
-			return evalPredicateOnMapExpr(ctx, conn, row, e.Expression(1))
+			right, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			return triAnd(left, right), nil
 		}
-		if left {
-			return true, nil
+		if left == triTrue {
+			return triTrue, nil
 		}
-		return evalPredicateOnMapExpr(ctx, conn, row, e.Expression(1))
-	case *antlrgen.NotExpressionContext:
-		v, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression())
+		right, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(1))
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
-		return !v, nil
+		return triOr(left, right), nil
+	case *antlrgen.NotExpressionContext:
+		v, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression())
+		if err != nil {
+			return triFalse, err
+		}
+		return v.Not(), nil
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			return evalPredicateOnMap(ctx, conn, row, e)
+			return evalPredicateOnMapTri(ctx, conn, row, e)
 		}
 		// No separate predicate — expression atom (e.g. BinaryComparisonPredicateContext).
 		bcp, ok := e.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 		if ok {
 			left, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetLeft())
 			if err != nil {
-				return false, err
+				return triFalse, err
 			}
 			right, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 			if err != nil {
-				return false, err
+				return triFalse, err
 			}
-			// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
 			if left == nil || right == nil {
-				return false, nil
+				return triNull, nil
 			}
 			cmp := compareValues(left, right)
 			switch bcp.ComparisonOperator().GetText() {
 			case "=":
-				return cmp == 0, nil
+				return triFromBool(cmp == 0), nil
 			case "!=", "<>":
-				return cmp != 0, nil
+				return triFromBool(cmp != 0), nil
 			case "<":
-				return cmp < 0, nil
+				return triFromBool(cmp < 0), nil
 			case ">":
-				return cmp > 0, nil
+				return triFromBool(cmp > 0), nil
 			case "<=":
-				return cmp <= 0, nil
+				return triFromBool(cmp <= 0), nil
 			case ">=":
-				return cmp >= 0, nil
+				return triFromBool(cmp >= 0), nil
 			}
 		}
 		v, err := evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 		if err != nil {
-			return false, err
+			return triFalse, err
 		}
-		return isTruthy(v), nil
+		if v == nil {
+			return triNull, nil
+		}
+		return triFromBool(isTruthy(v)), nil
 	default:
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T in map eval", expr)
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T in map eval", expr)
 	}
 }
 
