@@ -25,3 +25,21 @@ tests:
       - [5]
       - [~]
       - [~]
+  # Explicit NULLS LAST on ASC (overrides ASC default of NULLS FIRST).
+  # Pre-nightshift-36 the grammar parsed the clause but the flag was
+  # dropped on the floor.
+  - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
+    rows:
+      - [5]
+      - [10]
+      - [20]
+      - [~]
+      - [~]
+  # Explicit NULLS FIRST on DESC (overrides DESC default of NULLS LAST).
+  - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
+    rows:
+      - [~]
+      - [~]
+      - [20]
+      - [10]
+      - [5]

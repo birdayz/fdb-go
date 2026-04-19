@@ -966,21 +966,19 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			sort.SliceStable(indexes, func(ii, jj int) bool {
 				i, j := indexes[ii], indexes[jj]
 				for oi, ob := range sq.orderBy {
-					var cmp int
+					var a, b driver.Value
 					if ob.expr != nil && keys != nil {
-						cmp = compareValues(keys[i][oi], keys[j][oi])
+						a, b = keys[i][oi], keys[j][oi]
 					} else {
 						idx, ok := colIdx[ob.colName]
 						if !ok {
 							continue
 						}
-						cmp = compareValues(data[i][idx], data[j][idx])
+						a, b = data[i][idx], data[j][idx]
 					}
-					if cmp != 0 {
-						if ob.ascending {
-							return cmp < 0
-						}
-						return cmp > 0
+					less, equal := orderByLess(a, b, ob)
+					if !equal {
+						return less
 					}
 				}
 				return false
@@ -1126,21 +1124,19 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		sort.SliceStable(indexes, func(ii, jj int) bool {
 			i, j := indexes[ii], indexes[jj]
 			for oi, ob := range sq.orderBy {
-				var cmp int
+				var a, b driver.Value
 				if ob.expr != nil && keys != nil {
-					cmp = compareValues(keys[i][oi], keys[j][oi])
+					a, b = keys[i][oi], keys[j][oi]
 				} else {
 					idx, ok := colIdx[ob.colName]
 					if !ok {
 						continue
 					}
-					cmp = compareValues(outRows[i][idx], outRows[j][idx])
+					a, b = outRows[i][idx], outRows[j][idx]
 				}
-				if cmp != 0 {
-					if ob.ascending {
-						return cmp < 0
-					}
-					return cmp > 0
+				less, equal := orderByLess(a, b, ob)
+				if !equal {
+					return less
 				}
 			}
 			return false
@@ -1633,13 +1629,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// Column validated during scan setup; safe to skip.
 					continue
 				}
-				a, b := data[i][idx], data[j][idx]
-				cmp := compareValues(a, b)
-				if cmp != 0 {
-					if ob.ascending {
-						return cmp < 0
-					}
-					return cmp > 0
+				less, equal := orderByLess(data[i][idx], data[j][idx], ob)
+				if !equal {
+					return less
 				}
 			}
 			return false
@@ -2006,12 +1998,47 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// nullsFirst overrides the Java-default NULL ordering when the user
+	// specifies NULLS FIRST / NULLS LAST explicitly. nil = use the
+	// direction-implied default (ASC → NULLS FIRST, DESC → NULLS LAST,
+	// per ParseHelpers.isNullsLast). true = NULLS FIRST, false =
+	// NULLS LAST.
+	nullsFirst *bool
 	// expr is non-nil for ORDER BY on a non-trivial expression (e.g.
 	// `ORDER BY UPPER(name)`, `ORDER BY price * qty`). When set, colName is
 	// empty and the expression is evaluated per row at sort time. Only the
 	// CTE and JOIN paths (which retain map rows) honor this; the proto /
 	// single-table scan path still requires a column/aggregate name.
 	expr antlrgen.IExpressionContext
+}
+
+// orderByLess returns true iff value `a` sorts before value `b` under the
+// given ORDER BY clause, honouring explicit NULLS FIRST / NULLS LAST and
+// falling back to the direction-implied default when unspecified. Returns
+// false for equal values — the caller's outer loop advances to the next
+// sort key.
+func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
+	if a == nil && b == nil {
+		return false, true
+	}
+	if a == nil || b == nil {
+		nullsFirst := ob.ascending // Default: ASC → NULLS FIRST, DESC → NULLS LAST.
+		if ob.nullsFirst != nil {
+			nullsFirst = *ob.nullsFirst
+		}
+		if a == nil {
+			return nullsFirst, false
+		}
+		return !nullsFirst, false
+	}
+	cmp := compareValues(a, b)
+	if cmp == 0 {
+		return false, true
+	}
+	if ob.ascending {
+		return cmp < 0, false
+	}
+	return cmp > 0, false
 }
 
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
@@ -2450,17 +2477,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if orderByClauseCtx != nil {
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
 			ascending := true
-			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
-				ascending = false
+			var nullsFirst *bool
+			if oc := obExpr.OrderClause(); oc != nil {
+				if oc.DESC() != nil {
+					ascending = false
+				}
+				// NULLS FIRST / NULLS LAST overrides the direction-implied
+				// default. Grammar: orderClause: (ASC|DESC)? (NULLS (FIRST|LAST))?
+				if oc.NULLS() != nil {
+					f := oc.FIRST() != nil
+					nullsFirst = &f
+				}
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
 			// including the proto single-table path). Fall back to storing the
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending})
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst})
 			} else {
-				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, expr: obExpr.Expression()})
+				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression()})
 			}
 		}
 	}
