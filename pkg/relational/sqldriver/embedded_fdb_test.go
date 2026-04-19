@@ -5545,6 +5545,50 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_JoinWithNullKey pins that JOIN ON with NULL keys behaves per
+// SQL spec: NULL = NULL in an ON clause is UNKNOWN, so rows with NULL
+// keys do NOT match. INNER JOIN skips them; LEFT JOIN preserves the
+// left row with NULL for right columns.
+func TestFDB_JoinWithNullKey(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_null_tmpl
+		CREATE TABLE A (id BIGINT NOT NULL, k BIGINT, v BIGINT, PRIMARY KEY (id))
+		CREATE TABLE B (id BIGINT NOT NULL, k BIGINT, w BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_null/main WITH TEMPLATE join_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// A: (1, k=10, v=100), (2, k=NULL, v=200), (3, k=20, v=300)
+	// B: (1, k=10, w=1000), (2, k=NULL, w=2000)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO A (id, k, v) VALUES (1, 10, 100), (3, 20, 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO A (id, v) VALUES (2, 200)`) // k NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO B (id, k, w) VALUES (1, 10, 1000)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO B (id, w) VALUES (2, 2000)`) // k NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// INNER JOIN on k: only id=1 ↔ id=1 matches (k=10). The two NULL-k rows
+	// don't match each other — NULL=NULL in ON is UNKNOWN.
+	var c int64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM A AS a INNER JOIN B AS b ON a.k = b.k`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "INNER JOIN with NULL key must not match NULL to NULL")
+}
+
 // TestFDB_NullHandlingSanityPack bundles a handful of quick SQL-standard
 // NULL-semantic checks whose failure would indicate a regression in the
 // NULL-aware evaluator stack (tri-state, mixed-type equality, valuesEqual,
