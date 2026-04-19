@@ -2485,3 +2485,44 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 	g.Expect(doubled).To(gomega.Equal(float64(20)))
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
+
+func TestFDB_SelectCoalesce(t *testing.T) {
+	// COALESCE(nullable_col, 0) returns the non-NULL value or default.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_coalesce")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_coalesce")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE coalesce_tmpl "+
+			"CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_coalesce/items WITH TEMPLATE coalesce_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_coalesce?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert one row with val=10 and one with no val (NULL).
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (id) VALUES (2)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, COALESCE(val, 0) AS effective_val FROM Item ORDER BY id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id, v int64
+	g.Expect(rows.Scan(&id, &v)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(v).To(gomega.Equal(int64(10)))
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	g.Expect(rows.Scan(&id, &v)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(2)))
+	g.Expect(v).To(gomega.Equal(int64(0)))
+
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}

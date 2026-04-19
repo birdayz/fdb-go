@@ -1800,8 +1800,57 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 			return nil, err
 		}
 		return applyMathOp(left, right, a.MathOperator().GetText())
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		return evalScalarFunctionCall(msg, a.FunctionCall())
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in SET", atom)
+	}
+}
+
+// evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, etc.).
+func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+	var name string
+	var args antlrgen.IFunctionArgsContext
+	switch f := fc.(type) {
+	case *antlrgen.ScalarFunctionCallContext:
+		name = strings.ToUpper(f.ScalarFunctionName().GetText())
+		args = f.FunctionArgs()
+	case *antlrgen.UserDefinedScalarFunctionCallContext:
+		name = strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
+		args = f.FunctionArgs()
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported function call type %T", fc)
+	}
+	var fArgs []antlrgen.IFunctionArgContext
+	if args != nil {
+		fArgs = args.AllFunctionArg()
+	}
+	switch name {
+	case "COALESCE":
+		for _, fa := range fArgs {
+			v, err := evalExpr(msg, fa.Expression())
+			if err != nil {
+				return nil, err
+			}
+			if v != nil {
+				return v, nil
+			}
+		}
+		return nil, nil
+	case "IFNULL":
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IFNULL requires 2 arguments")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil {
+			return nil, err
+		}
+		if v != nil {
+			return v, nil
+		}
+		return evalExpr(msg, fArgs[1].Expression())
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
 	}
 }
 
