@@ -631,7 +631,12 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				case "SUM":
 					// SUM of empty-or-all-NULL input is NULL per SQL standard,
 					// not 0. counts[i]>0 means at least one non-null observed.
-					if gs.counts[i] > 0 || ac.aggDistinct {
+					// TODO: SUM(DISTINCT col) doesn't accumulate sums today
+					// (distinct path only increments counts[i]); this emits
+					// NULL correctly for all-NULL DISTINCT groups but would
+					// return NULL for non-empty DISTINCT groups too until
+					// the DISTINCT SUM path is implemented.
+					if gs.counts[i] > 0 {
 						rowVals[i] = gs.sums[i]
 					}
 				case "MIN":
@@ -1388,7 +1393,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							rowVals[i] = gs.counts[i]
 						case "SUM":
 							// SUM of empty-or-all-NULL group is NULL, not 0.
-							if gs.counts[i] > 0 || ac.aggDistinct {
+							// See aggregateMapRows SUM for the DISTINCT TODO.
+							if gs.counts[i] > 0 {
 								rowVals[i] = gs.sums[i]
 							}
 						case "MIN":
@@ -4466,6 +4472,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
+	var hadNullElement bool
 	for _, expr := range exprs {
 		ep, ok := expr.(*antlrgen.PredicatedExpressionContext)
 		if !ok {
@@ -4479,6 +4486,13 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if err != nil {
 			return triFalse, err
 		}
+		if litVal == nil {
+			// NULL in the list can never match (x = NULL is UNKNOWN), but
+			// contributes UNKNOWN to the expansion if nothing else matches.
+			// SQL §8.4: `x IN (..., NULL)` = UNKNOWN, `x NOT IN (..., NULL)` = UNKNOWN.
+			hadNullElement = true
+			continue
+		}
 		if valuesEqual(fieldVal, litVal) {
 			if in.NOT() != nil {
 				return triFalse, nil
@@ -4486,7 +4500,11 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			return triTrue, nil
 		}
 	}
-	// none matched
+	// No element matched. If any NULL literal was seen, the overall result
+	// is UNKNOWN — the row filters out in WHERE but NOT of it stays UNKNOWN.
+	if hadNullElement {
+		return triNull, nil
+	}
 	if in.NOT() != nil {
 		return triTrue, nil
 	}
@@ -4710,7 +4728,12 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	// Handle NOT
 	if ne, ok := expr.(*antlrgen.NotExpressionContext); ok {
 		v, err := evalHavingTri(ctx, conn, row, ne.Expression())
-		return v.Not(), err
+		if err != nil {
+			// On error the zero-value `v` is triFalse; v.Not() would return
+			// triTrue and bury the error. Match evalExprPredicateTri NOT path.
+			return triFalse, err
+		}
+		return v.Not(), nil
 	}
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
@@ -5010,6 +5033,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if p.InList().Expressions() == nil {
 			return triFromBool(p.NOT() != nil), nil
 		}
+		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
 			ep, ok := inExpr.(*antlrgen.PredicatedExpressionContext)
 			if !ok {
@@ -5019,12 +5043,20 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			if litErr != nil {
 				return triFalse, litErr
 			}
+			if litVal == nil {
+				// See evalInPredicateTri: NULL list element contributes UNKNOWN.
+				hadNullElement = true
+				continue
+			}
 			if valuesEqual(fieldVal, litVal) {
 				if p.NOT() != nil {
 					return triFalse, nil
 				}
 				return triTrue, nil
 			}
+		}
+		if hadNullElement {
+			return triNull, nil
 		}
 		if p.NOT() != nil {
 			return triTrue, nil

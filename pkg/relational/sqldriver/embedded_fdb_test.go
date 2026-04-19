@@ -5522,6 +5522,26 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx,
 		`WITH C AS (SELECT n FROM T) SELECT COUNT(*) FROM C WHERE NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
 	g.Expect(c).To(gomega.Equal(int64(0)), "CTE path: NOT (x = NULL) stays UNKNOWN")
+
+	// NULL literal inside IN-list: SQL §8.4 — both IN and NOT IN yield UNKNOWN
+	// when no element matches and any NULL is present in the list. Both filter
+	// out in WHERE. Note the grammar wraps (n IN ...) as a record constructor,
+	// so we use the bare form `n IN (1, NULL)`.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "NOT IN (x, NULL) with x=1 matching drops id=1; id=2 is UNKNOWN")
+
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE id IN (99, NULL)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "IN (no-match, NULL) is UNKNOWN for every row, not FALSE")
+
+	// BETWEEN NULL bound and LIKE NULL pattern — UNKNOWN propagation sanity.
+	// Grammar quirk: BETWEEN … AND … inside parens parses oddly; rely on
+	// the bare form (precedence is fine).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n BETWEEN NULL AND 999`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "BETWEEN NULL AND x must be UNKNOWN")
+	// Grammar does not allow NULL as a LIKE pattern — the semantic path is
+	// covered in evalLikePredicateTri by NULL input returning triNull.
 }
 
 // TestFDB_AggregateNullSemantics pins down SQL-standard aggregate behaviour:
