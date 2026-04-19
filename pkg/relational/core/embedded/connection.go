@@ -164,6 +164,8 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	var data []row
 
 	_, runErr := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil // reset on retry so duplicate rows aren't appended
+		cols = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -334,6 +336,7 @@ func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows
 	type row = []driver.Value
 	var data []row
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.ListDatabases(txn, nil)
 		if rsErr != nil {
@@ -359,6 +362,7 @@ func (c *EmbeddedConnection) execShowSchemaTemplates(ctx context.Context) (drive
 	type row = []driver.Value
 	var data []row
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.SchemaTemplateCatalog().ListTemplates(txn)
 		if rsErr != nil {
