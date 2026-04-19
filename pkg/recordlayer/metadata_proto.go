@@ -496,12 +496,20 @@ func rebuildFileDescriptor(
 		depMap[dp.GetName()] = dp
 	}
 
-	// Topologically resolve dependencies: each dep may itself have deps
+	// Topologically resolve dependencies: each dep may itself have deps.
+	// `resolved` flags completed entries; `inProgress` detects cycles
+	// (e.g. a crafted proto with A→B→A would otherwise recurse until
+	// the stack overflows — Go fuzz hit this on a 4-byte adversarial
+	// input to RecordMetaDataFromProto).
 	resolved := make(map[string]bool)
+	inProgress := make(map[string]bool)
 	var resolve func(name string) error
 	resolve = func(name string) error {
 		if resolved[name] {
 			return nil
+		}
+		if inProgress[name] {
+			return fmt.Errorf("cyclic proto dependency involving %q", name)
 		}
 		if _, ok := resolver.files[name]; ok {
 			resolved[name] = true
@@ -517,6 +525,8 @@ func rebuildFileDescriptor(
 		if !ok {
 			return fmt.Errorf("dependency not found: %s", name)
 		}
+		inProgress[name] = true
+		defer delete(inProgress, name)
 		// Resolve transitive deps first
 		for _, depName := range dp.Dependency {
 			if err := resolve(depName); err != nil {

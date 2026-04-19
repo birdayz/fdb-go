@@ -44,6 +44,7 @@ go_test(
         "template_catalog_test.go",
         "transaction_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":catalog"],
     deps = [
         "//gen",
