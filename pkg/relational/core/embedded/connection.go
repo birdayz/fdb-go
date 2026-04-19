@@ -3179,13 +3179,31 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	case protoreflect.FloatKind:
 		switch v := val.(type) {
 		case float64:
-			return protoreflect.ValueOfFloat32(float32(v)), nil //nolint:gosec
+			// Java CastValue.DOUBLE_TO_FLOAT range-checks against ±MaxFloat
+			// and rejects NaN/Inf. Reject here too — silent +Inf from
+			// overflow is a value corruption.
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"cannot store NaN or Infinity in FLOAT column %q", fd.Name())
+			}
+			if v > math.MaxFloat32 || v < -math.MaxFloat32 {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %v out of range for FLOAT column %q", v, fd.Name())
+			}
+			return protoreflect.ValueOfFloat32(float32(v)), nil
 		case int64:
-			return protoreflect.ValueOfFloat32(float32(v)), nil //nolint:gosec
+			return protoreflect.ValueOfFloat32(float32(v)), nil
 		}
 	case protoreflect.DoubleKind:
 		switch v := val.(type) {
 		case float64:
+			// NaN/Inf are silent data corruption vectors — a later read
+			// via protoValueToDriver would pass them through and confuse
+			// comparisons / aggregates.
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"cannot store NaN or Infinity in DOUBLE column %q", fd.Name())
+			}
 			return protoreflect.ValueOfFloat64(v), nil
 		case int64:
 			return protoreflect.ValueOfFloat64(float64(v)), nil
