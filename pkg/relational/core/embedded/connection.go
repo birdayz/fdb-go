@@ -299,16 +299,20 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	// Apply ORDER BY (post-scan in-memory sort).
 	if len(sq.orderBy) > 0 {
 		// Build a map from column name to output index for O(1) lookup.
+		// ORDER BY columns must be in the projected output.
 		colIdx := make(map[string]int, len(cols))
 		for i, c := range cols {
 			colIdx[c] = i
 		}
+		for _, ob := range sq.orderBy {
+			if _, ok := colIdx[ob.colName]; !ok {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"ORDER BY column %q must be in the SELECT list", ob.colName)
+			}
+		}
 		sort.SliceStable(data, func(i, j int) bool {
 			for _, ob := range sq.orderBy {
-				idx, ok := colIdx[ob.colName]
-				if !ok {
-					continue
-				}
+				idx := colIdx[ob.colName]
 				a, b := data[i][idx], data[j][idx]
 				cmp := compareValues(a, b)
 				if cmp != 0 {
@@ -636,37 +640,26 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 	return awf.COUNT() != nil && awf.STAR() != nil
 }
 
-// selectExprToColumnName extracts a plain column name from a
-// SelectExpressionElementContext. Only bare column references (no aliases,
-// no expressions) are supported.
-func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, error) {
-	pred, ok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+// columnNameFromExpr extracts a plain column name from an IExpressionContext.
+// context is used in error messages (e.g. "SELECT expression", "ORDER BY expression").
+func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"SELECT expression must be a column name, got %T", e.Expression())
+			"%s must be a column name, got %T", context, expr)
 	}
 	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
 	if !ok {
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"SELECT expression must be a column name, got expression atom %T", pred.ExpressionAtom())
+			"%s must be a column name, got expression atom %T", context, pred.ExpressionAtom())
 	}
 	return fullIdToName(colAtom.FullColumnName().FullId()), nil
 }
 
-// selectExprToColumnName2 extracts a plain column name from an IExpressionContext
-// (used for ORDER BY expressions).
-func selectExprToColumnName2(expr antlrgen.IExpressionContext) (string, error) {
-	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"ORDER BY expression must be a column name, got %T", expr)
-	}
-	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"ORDER BY expression must be a column name, got expression atom %T", pred.ExpressionAtom())
-	}
-	return fullIdToName(colAtom.FullColumnName().FullId()), nil
+// selectExprToColumnName extracts a plain column name from a
+// SelectExpressionElementContext.
+func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, error) {
+	return columnNameFromExpr(e.Expression(), "SELECT expression")
 }
 
 // extractSelectParts navigates the parse tree of a SELECT statement.
@@ -768,7 +761,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 	orderByClauseCtx := simpleTable.OrderByClause()
 	if orderByClauseCtx != nil {
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
-			colName, nameErr := selectExprToColumnName2(obExpr.Expression())
+			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr != nil {
 				return nil, nameErr
 			}
@@ -784,7 +777,12 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 	limitClauseCtx := simpleTable.LimitClause()
 	if limitClauseCtx != nil {
 		atoms := limitClauseCtx.AllLimitClauseAtom()
-		if len(atoms) > 0 && atoms[0].DecimalLiteral() != nil {
+		if len(atoms) > 1 {
+			// MySQL allows "LIMIT offset, count" — reject for simplicity.
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"LIMIT offset,count syntax is not supported; use LIMIT count")
+		}
+		if len(atoms) == 1 && atoms[0].DecimalLiteral() != nil {
 			n, parseErr := strconv.ParseInt(atoms[0].DecimalLiteral().GetText(), 10, 64)
 			if parseErr != nil {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
