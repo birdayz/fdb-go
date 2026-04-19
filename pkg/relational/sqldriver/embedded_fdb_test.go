@@ -2640,3 +2640,49 @@ func TestFDB_StringFunctions(t *testing.T) {
 	g.Expect(length).To(gomega.Equal(int64(5)))
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
+
+func TestFDB_ConcatNullIf(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_concat")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_concat")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cn_tmpl CREATE TABLE Person (id BIGINT NOT NULL, first STRING NOT NULL, last STRING NOT NULL, score BIGINT, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_concat/people WITH TEMPLATE cn_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_concat?cluster_file=%s&schema=people", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (1, 'Alice', 'Smith', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (2, 'Bob', 'Jones', 0)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT CONCAT(first, ' ', last), NULLIF(score, 0) FROM Person ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	// Row 1: CONCAT = "Alice Smith", NULLIF(100, 0) = 100
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var fullName string
+	var score any
+	g.Expect(rows.Scan(&fullName, &score)).To(gomega.Succeed())
+	g.Expect(fullName).To(gomega.Equal("Alice Smith"))
+	g.Expect(score).To(gomega.Equal(int64(100)))
+
+	// Row 2: CONCAT = "Bob Jones", NULLIF(0, 0) = NULL
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var fullName2 string
+	var score2 any
+	g.Expect(rows.Scan(&fullName2, &score2)).To(gomega.Succeed())
+	g.Expect(fullName2).To(gomega.Equal("Bob Jones"))
+	g.Expect(score2).To(gomega.BeNil())
+
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}

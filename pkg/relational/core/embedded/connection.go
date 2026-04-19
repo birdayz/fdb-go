@@ -1967,6 +1967,52 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		default:
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS: argument must be numeric, got %T", v)
 		}
+	case "CONCAT", "CONCAT_WS":
+		// CONCAT_WS(sep, s1, s2, ...) — first arg is separator.
+		// CONCAT(s1, s2, ...) — no separator.
+		sep := ""
+		startIdx := 0
+		if name == "CONCAT_WS" {
+			if len(fArgs) < 1 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "CONCAT_WS requires at least 1 argument")
+			}
+			sv, err := evalExpr(msg, fArgs[0].Expression())
+			if err != nil {
+				return nil, err
+			}
+			if sv != nil {
+				sep = fmt.Sprintf("%v", sv)
+			}
+			startIdx = 1
+		}
+		var parts []string
+		for _, fa := range fArgs[startIdx:] {
+			v, err := evalExpr(msg, fa.Expression())
+			if err != nil {
+				return nil, err
+			}
+			if v == nil {
+				continue // NULL args skipped per SQL standard
+			}
+			parts = append(parts, fmt.Sprintf("%v", v))
+		}
+		return strings.Join(parts, sep), nil
+	case "NULLIF":
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "NULLIF requires 2 arguments")
+		}
+		a, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil {
+			return nil, err
+		}
+		b, err2 := evalExpr(msg, fArgs[1].Expression())
+		if err2 != nil {
+			return nil, err2
+		}
+		if compareValues(a, b) == 0 {
+			return nil, nil
+		}
+		return a, nil
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
 	}
