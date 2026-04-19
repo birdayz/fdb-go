@@ -1,6 +1,7 @@
 package ddl_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -369,4 +370,41 @@ func TestSchemaEvolution_AddTable_Allowed(t *testing.T) {
 
 	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
 	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+}
+
+func TestSchemaEvolution_VersionRollback_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v2 := evolutionTemplate(t, "evo", 2, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v2, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidSchemaTemplate))
+}
+
+func TestSchemaEvolution_SameVersion_Rejected(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	_, txn, f := newEnv(t)
+
+	v1 := evolutionTemplate(t, "evo", 1, []tableSpec{{
+		name: "Order", cols: ordersTable(), pkCols: []string{"order_id"},
+	}})
+
+	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidSchemaTemplate))
 }
