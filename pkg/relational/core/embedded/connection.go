@@ -5567,6 +5567,13 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		if err != nil {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
 		}
+		// strconv.ParseFloat returns ±Inf on overflow without setting err.
+		// Reject here — otherwise a literal like `1e400` would leak +Inf
+		// into evaluators that downstream turn `+Inf - +Inf` into NaN
+		// and poison comparisons / aggregates.
+		if math.IsInf(fv, 0) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "decimal literal %q overflows float64", text)
+		}
 		return fv, nil
 	case *antlrgen.NegativeDecimalConstantContext:
 		text := "-" + cv.DecimalLiteral().GetText()
@@ -5576,6 +5583,9 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		fv, err := strconv.ParseFloat(text, 64)
 		if err != nil {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		if math.IsInf(fv, 0) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "decimal literal %q overflows float64", text)
 		}
 		return fv, nil
 	case *antlrgen.StringConstantContext:
