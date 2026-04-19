@@ -5644,9 +5644,13 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeInvalidParameter,
 		},
 		{
+			// nightshift-36: ABS(MinInt64) returns 22003
+			// (NUMERIC_VALUE_OUT_OF_RANGE), matching the arithmetic-
+			// overflow sites. Previously 22023 (INVALID_PARAMETER) —
+			// the more precise SQL-standard class-22 code is now in use.
 			name:     "ABS(MinInt64) overflow",
 			sql:      "SELECT ABS(-9223372036854775808)",
-			wantCode: api.ErrCodeInvalidParameter,
+			wantCode: api.ErrCodeNumericValueOutOfRange,
 		},
 		{
 			name:     "SUBSTRING fractional length",

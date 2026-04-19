@@ -3538,7 +3538,7 @@ func evalScalarFunctionCallCore(
 			// MySQL/Postgres error; mirror that here rather than returning
 			// the still-negative value.
 			if n == math.MinInt64 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"ABS: integer overflow for MinInt64 (-9223372036854775808)")
 			}
 			if n < 0 {
@@ -4173,7 +4173,7 @@ func castValue(v any, typeName string) (any, error) {
 			// comparison against the max/min-as-float (values that *do* fit
 			// exactly into float64).
 			if rounded > 9.2233720368547748e18 || rounded < -9.2233720368547758e18 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value out of range for integer: %v", n)
 			}
 			return int64(rounded), nil
@@ -4389,19 +4389,19 @@ func applyMathOp(left, right any, op string) (any, error) {
 		case "+":
 			r, ok := addInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d + %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d + %d", li, ri)
 			}
 			return r, nil
 		case "-":
 			r, ok := subInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d - %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d - %d", li, ri)
 			}
 			return r, nil
 		case "*":
 			r, ok := mulInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d * %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d * %d", li, ri)
 			}
 			return r, nil
 		case "/":
@@ -4410,7 +4410,7 @@ func applyMathOp(left, right any, op string) (any, error) {
 			}
 			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d / %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d / %d", li, ri)
 			}
 			return li / ri, nil
 		case "%":

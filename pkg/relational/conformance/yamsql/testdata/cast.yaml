@@ -35,9 +35,9 @@ tests:
   - query: SELECT CAST(NULL AS BIGINT) FROM t
     rows:
       - [~]
-  # CAST(huge_float AS BIGINT) — overflow raises 22023 (matches Java's
-  # CastValue range check). Pre-swingshift-35 Go silently wrapped.
+  # CAST(huge_float AS BIGINT) — overflow raises 22003
+  # (NUMERIC_VALUE_OUT_OF_RANGE). Pre-swingshift-35 Go silently wrapped.
   - query: SELECT CAST(1e20 AS BIGINT) FROM t
-    error_code: "22023"
+    error_code: "22003"
   - query: SELECT CAST(-1e20 AS BIGINT) FROM t
-    error_code: "22023"
+    error_code: "22003"
