@@ -5461,6 +5461,28 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			exec:     true,
 			wantCode: api.ErrCodeDatabaseAlreadyExists,
 		},
+		{
+			// Java uses UNKNOWN_DATABASE (42F63) for DROP-not-found;
+			// UNDEFINED_DATABASE (42F00) is used only when a *reference*
+			// to a missing database is encountered (e.g., CREATE SCHEMA
+			// in a nonexistent database).
+			name:     "drop non-existent database",
+			sql:      "DROP DATABASE /testdb_nope_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			exec:     true,
+			wantCode: api.ErrCodeUnknownDatabase,
+		},
+		{
+			name:     "drop non-existent schema",
+			sql:      "DROP SCHEMA /testdb_error_paths/notaschema",
+			exec:     true,
+			wantCode: api.ErrCodeUndefinedSchema,
+		},
+		{
+			name:     "create schema with unknown template",
+			sql:      "CREATE SCHEMA /testdb_error_paths/x WITH TEMPLATE nosuchtemplate",
+			exec:     true,
+			wantCode: api.ErrCodeUnknownSchemaTemplate,
+		},
 	}
 
 	for _, tc := range cases {
