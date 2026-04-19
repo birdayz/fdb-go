@@ -4955,3 +4955,48 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 		`SELECT CASE WHEN EXISTS (SELECT id FROM T) THEN 1 ELSE 0 END`).Scan(&result)).To(gomega.Succeed())
 	g.Expect(result).To(gomega.Equal(0))
 }
+
+func TestFDB_InsertSelectFromCTE(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ins_sel_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_sel_cte")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_sel_cte_tmpl
+		CREATE TABLE Src (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Dst (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ins_sel_cte/main WITH TEMPLATE ins_sel_cte_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ins_sel_cte?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i, amt := range []int64{10, 20, 30, 40, 50} {
+		_, err = db.ExecContext(ctx, "INSERT INTO Src (id, amount) VALUES (?, ?)", int64(i+1), amt)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// INSERT INTO Dst SELECT id, amount FROM Src WHERE amount >= 30.
+	_, err = db.ExecContext(ctx, `INSERT INTO Dst SELECT id, amount FROM Src WHERE amount >= 30`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, amount FROM Dst ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type r struct {
+		id, amt int64
+	}
+	var got []r
+	for rows.Next() {
+		var rr r
+		g.Expect(rows.Scan(&rr.id, &rr.amt)).To(gomega.Succeed())
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{{3, 30}, {4, 40}, {5, 50}}))
+}
