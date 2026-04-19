@@ -93,7 +93,9 @@ func runStoreDump(out io.Writer, db fdb.Database, ss subspace.Subspace, limit in
 	_, err := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
 		snap := rtx.Snapshot()
 		iter := snap.GetRange(fdb.KeyRange{Begin: begin, End: end}, ropts).Iterator()
-		count := 0
+		// Limit enforcement lives entirely in ropts.Limit — the FDB iterator
+		// stops after the requested number of entries, so the previous local
+		// counter was dead code (same pattern already cleaned up in record.go).
 		for iter.Advance() {
 			kv, err := iter.Get()
 			if err != nil {
@@ -105,10 +107,6 @@ func runStoreDump(out io.Writer, db fdb.Database, ss subspace.Subspace, limit in
 			}
 			if _, werr := fmt.Fprintln(out, line); werr != nil {
 				return nil, werr
-			}
-			count++
-			if limit > 0 && count >= limit {
-				return nil, nil
 			}
 		}
 		return nil, nil

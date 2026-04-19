@@ -12,9 +12,9 @@ import (
 
 // withStoreE is the ergonomic twin of withStore for commands whose store
 // closure doesn't need a return value. Most `record scan` / `index ls` /
-// `index scan` style commands stream output directly to the writer;
-// threading a sentinel struct{} through their withStore calls was pure
-// boilerplate.
+// `index scan` style commands stream output directly to the writer and
+// would otherwise thread a sentinel struct{} through their withStore
+// calls — that's the boilerplate this wrapper eliminates.
 func withStoreE(
 	ctx context.Context,
 	cfgCtx *configv1.Context,
