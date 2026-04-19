@@ -1820,3 +1820,38 @@ func TestFDB_SelectWhereBetween(t *testing.T) {
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids2).To(gomega.Equal([]int64{1, 5}))
 }
+
+func TestFDB_SelectWhereLikeUnderscore(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_like_us")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_like_us")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE like_us_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_where_like_us/items WITH TEMPLATE like_us_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_like_us?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, name) VALUES (1, 'cat'), (2, 'car'), (3, 'bat'), (4, 'card')")).Error().NotTo(gomega.HaveOccurred())
+
+	// '_a_' matches exactly 3-char strings with 'a' in middle.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE name LIKE '_a_' ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3})) // cat, car, bat — not card (4 chars)
+}
