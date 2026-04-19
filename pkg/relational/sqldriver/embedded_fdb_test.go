@@ -209,3 +209,71 @@ func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 		t.Fatal("SELECT should return error (query planner not implemented)")
 	}
 }
+
+func TestFDB_EmbeddedShowDatabases(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_show_db")
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_show_db"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SHOW DATABASES")
+	if err != nil {
+		t.Fatalf("SHOW DATABASES: %v", err)
+	}
+	defer rows.Close()
+
+	var found bool
+	for rows.Next() {
+		var dbID string
+		if err := rows.Scan(&dbID); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if dbID == "/testdb_show_db" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if !found {
+		t.Error("SHOW DATABASES: did not find /testdb_show_db")
+	}
+}
+
+func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_show_tmpl")
+	ctx := context.Background()
+
+	const ddl = "CREATE SCHEMA TEMPLATE show_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SHOW SCHEMA TEMPLATES")
+	if err != nil {
+		t.Fatalf("SHOW SCHEMA TEMPLATES: %v", err)
+	}
+	defer rows.Close()
+
+	var found bool
+	for rows.Next() {
+		var name string
+		var version int64
+		if err := rows.Scan(&name, &version); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if name == "show_tmpl" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if !found {
+		t.Error("SHOW SCHEMA TEMPLATES: did not find show_tmpl")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -95,11 +96,131 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 	return driver.RowsAffected(totalRows), nil
 }
 
-// QueryContext is not yet implemented (query planner pending).
-func (c *EmbeddedConnection) QueryContext(_ context.Context, _ string, _ []driver.NamedValue) (driver.Rows, error) {
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-		"query execution is not yet implemented; only DDL is supported")
+// QueryContext handles read-only queries. Currently supports SHOW DATABASES and
+// SHOW SCHEMA TEMPLATES; all other queries return ErrCodeUnsupportedOperation.
+func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
+	if len(args) != 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "parameterised queries are not supported")
+	}
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return nil, err
+	}
+	root, err := parser.Parse(query)
+	if err != nil {
+		return nil, err
+	}
+	stmts := root.Statements()
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return emptyRows{}, nil
+	}
+	if len(stmts.AllStatement()) > 1 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "multi-statement queries are not supported")
+	}
+	stmt := stmts.AllStatement()[0]
+	admin := stmt.AdministrationStatement()
+	if admin == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported in this release")
+	}
+	show := admin.ShowStatement()
+	if show == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported")
+	}
+	return c.execShowStatement(ctx, show)
 }
+
+// execShowStatement routes SHOW … to the appropriate catalog reader.
+func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrgen.IShowStatementContext) (driver.Rows, error) {
+	switch show.(type) {
+	case *antlrgen.ShowDatabasesStatementContext:
+		return c.execShowDatabases(ctx)
+	case *antlrgen.ShowSchemaTemplatesStatementContext:
+		return c.execShowSchemaTemplates(ctx)
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported SHOW statement: %s", show.GetText())
+	}
+}
+
+func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListDatabases(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+		for rs.Next() {
+			id, strErr := rs.StringByName("DATABASE_ID")
+			if strErr != nil {
+				return nil, strErr
+			}
+			data = append(data, row{id})
+		}
+		return nil, rs.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &staticRows{cols: []string{"DATABASE_ID"}, rows: data}, nil
+}
+
+func (c *EmbeddedConnection) execShowSchemaTemplates(ctx context.Context) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.SchemaTemplateCatalog().ListTemplates(txn)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+		for rs.Next() {
+			name, strErr := rs.StringByName("TEMPLATE_NAME")
+			if strErr != nil {
+				return nil, strErr
+			}
+			ver, intErr := rs.LongByName("TEMPLATE_VERSION")
+			if intErr != nil {
+				return nil, intErr
+			}
+			data = append(data, row{name, ver})
+		}
+		return nil, rs.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &staticRows{cols: []string{"TEMPLATE_NAME", "TEMPLATE_VERSION"}, rows: data}, nil
+}
+
+// staticRows is a driver.Rows backed by a pre-materialised slice.
+type staticRows struct {
+	cols    []string
+	rows    [][]driver.Value
+	current int
+}
+
+func (r *staticRows) Columns() []string { return r.cols }
+func (r *staticRows) Close() error      { r.current = len(r.rows); return nil }
+func (r *staticRows) Next(dest []driver.Value) error {
+	if r.current >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.current])
+	r.current++
+	return nil
+}
+
+// emptyRows is a driver.Rows with no columns and no data.
+type emptyRows struct{}
+
+func (emptyRows) Columns() []string           { return nil }
+func (emptyRows) Close() error                { return nil }
+func (emptyRows) Next(_ []driver.Value) error { return io.EOF }
 
 // Prepare returns a prepared statement. DDL statements have no bind parameters.
 func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
