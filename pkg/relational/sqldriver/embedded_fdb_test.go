@@ -5545,6 +5545,62 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_DistinctAggregates pins SUM/AVG/MIN/MAX with DISTINCT: the
+// distinct set must collect each non-null value once, and the per-function
+// accumulator must see that same deduplicated stream. Pre-fix only
+// COUNT(DISTINCT) incremented counts[i] while sums[i]/avgs[i]/mins[i]/maxes[i]
+// stayed zero/unset — SUM(DISTINCT) returned 0 on non-empty groups.
+func TestFDB_DistinctAggregates(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_distinct_agg")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_distinct_agg")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE distinct_agg_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_distinct_agg/main WITH TEMPLATE distinct_agg_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_distinct_agg?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Values: {10, 10, 20, 30, NULL, 30}. Distinct non-null set: {10, 20, 30}.
+	// Expected: SUM(DISTINCT) = 60, AVG(DISTINCT) = 20, MIN(DISTINCT)=10,
+	// MAX(DISTINCT) = 30, COUNT(DISTINCT) = 3.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES
+		(1, 10), (2, 10), (3, 20), (4, 30), (6, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (5)`) // n NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var sum, mn, mx, cnt int64
+	var avg float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum).To(gomega.Equal(int64(60)), "SUM(DISTINCT {10,20,30}) = 60")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT AVG(DISTINCT n) FROM T`).Scan(&avg)).To(gomega.Succeed())
+	g.Expect(avg).To(gomega.Equal(float64(20)), "AVG(DISTINCT {10,20,30}) = 20")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT MIN(DISTINCT n) FROM T`).Scan(&mn)).To(gomega.Succeed())
+	g.Expect(mn).To(gomega.Equal(int64(10)))
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT MAX(DISTINCT n) FROM T`).Scan(&mx)).To(gomega.Succeed())
+	g.Expect(mx).To(gomega.Equal(int64(30)))
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(3)))
+
+	// All-NULL group: every aggregate returns NULL (SQL standard).
+	var s sql.NullInt64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T WHERE id = 5`).Scan(&s)).To(gomega.Succeed())
+	g.Expect(s.Valid).To(gomega.BeFalse(), "SUM(DISTINCT) over all-NULL must be NULL")
+}
+
 // TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
 // when the subquery result contains a NULL row and no concrete match is found,
 // the entire IN expression is UNKNOWN (filters the outer row out in WHERE;

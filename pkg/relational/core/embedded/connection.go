@@ -564,6 +564,32 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					if _, seen := gs.distinctSets[i][dk]; !seen {
 						gs.distinctSets[i][dk] = struct{}{}
 						gs.counts[i]++
+						// Accumulate into the per-function slot so
+						// SUM(DISTINCT)/AVG(DISTINCT)/MIN(DISTINCT)/MAX(DISTINCT)
+						// produce the correct value. COUNT(DISTINCT) already
+						// matches via counts[i] — no extra work.
+						switch ac.aggFunc {
+						case "SUM", "AVG":
+							fv, ok := toFloat64(colVal)
+							if !ok {
+								return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+									"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, colVal)
+							}
+							if ac.aggFunc == "SUM" {
+								gs.sums[i] += fv
+							} else {
+								gs.avgs[i] += fv
+								gs.avgsN[i]++
+							}
+						case "MIN":
+							if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+								gs.mins[i] = colVal
+							}
+						case "MAX":
+							if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+								gs.maxes[i] = colVal
+							}
+						}
 					}
 				}
 				continue
@@ -649,12 +675,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				case "SUM":
 					// SUM of empty-or-all-NULL input is NULL per SQL standard,
 					// not 0. counts[i]>0 means at least one non-null observed.
-					// TODO: SUM(DISTINCT col) doesn't accumulate sums today
-					// (distinct path only increments counts[i]); this emits
-					// NULL correctly for all-NULL DISTINCT groups but would
-					// return 0 (incorrect — should be the distinct sum) for
-					// non-empty DISTINCT groups until the DISTINCT SUM path
-					// accumulates into sums[i].
+					// DISTINCT SUM now accumulates into sums[i] on first-seen
+					// value in the DISTINCT branch, so this path is correct
+					// for both the DISTINCT and non-DISTINCT cases.
 					if gs.counts[i] > 0 {
 						rowVals[i] = gs.sums[i]
 					}
@@ -1315,7 +1338,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						continue // group-by reference, no accumulation
 					}
 					if ac.aggDistinct && aggArgFDs[i] != nil {
-						// COUNT(DISTINCT col): only count each distinct value once.
+						// *(DISTINCT col): accumulate only the first occurrence
+						// of each distinct non-null value — supports COUNT, SUM,
+						// AVG, MIN, MAX symmetrically.
 						if msg.ProtoReflect().Has(aggArgFDs[i]) {
 							v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
 							// Type-tagged to keep distinct values of different
@@ -1325,6 +1350,28 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							if _, seen := gs.distinctSets[i][dk]; !seen {
 								gs.distinctSets[i][dk] = struct{}{}
 								gs.counts[i]++
+								switch ac.aggFunc {
+								case "SUM", "AVG":
+									fv, ok := toFloat64(v)
+									if !ok {
+										return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+											"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
+									}
+									if ac.aggFunc == "SUM" {
+										gs.sums[i] += fv
+									} else {
+										gs.avgs[i] += fv
+										gs.avgsN[i]++
+									}
+								case "MIN":
+									if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+										gs.mins[i] = v
+									}
+								case "MAX":
+									if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+										gs.maxes[i] = v
+									}
+								}
 							}
 						}
 						continue
@@ -1415,7 +1462,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							rowVals[i] = gs.counts[i]
 						case "SUM":
 							// SUM of empty-or-all-NULL group is NULL, not 0.
-							// See aggregateMapRows SUM for the DISTINCT TODO.
+							// DISTINCT path accumulates on first-seen so this
+							// is correct for SUM(DISTINCT col) too.
 							if gs.counts[i] > 0 {
 								rowVals[i] = gs.sums[i]
 							}
