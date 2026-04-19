@@ -17,15 +17,18 @@ go_library(
 
 go_test(
     name = "yamsql_test",
-    srcs = ["runner_test.go"],
+    srcs = [
+        "runner_test.go",
+        "yamsql_test.go",
+    ],
     data = glob(["testdata/**"]),
+    embed = [":yamsql"],
     # Opt-in: this starts its own FDB container; without the manual tag
     # `bazelisk test //...` would run it alongside the other FDB-based
     # test targets, compounding the container-parallelism risk flagged
     # in CLAUDE.md. Use `just conformance-sql` to run it explicitly.
     tags = ["manual"],
     deps = [
-        ":yamsql",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
     ],
