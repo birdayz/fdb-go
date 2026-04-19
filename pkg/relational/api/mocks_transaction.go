@@ -132,3 +132,17 @@ func (mr *MockTransactionMockRecorder) UnsetBoundSchemaTemplate() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetBoundSchemaTemplate", reflect.TypeOf((*MockTransaction)(nil).UnsetBoundSchemaTemplate))
 }
+
+// Unwrap mocks base method.
+func (m *MockTransaction) Unwrap() any {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Unwrap")
+	ret0, _ := ret[0].(any)
+	return ret0
+}
+
+// Unwrap indicates an expected call of Unwrap.
+func (mr *MockTransactionMockRecorder) Unwrap() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Unwrap", reflect.TypeOf((*MockTransaction)(nil).Unwrap))
+}

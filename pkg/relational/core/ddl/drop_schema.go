@@ -3,7 +3,6 @@ package ddl
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
 )
 
@@ -43,14 +42,15 @@ func (a *DropSchemaConstantAction) Execute(txn api.Transaction) error {
 }
 
 func (a *DropSchemaConstantAction) deleteFDBStore(txn api.Transaction) error {
-	fdbTxn, ok := txn.(*catalog.FDBTransaction)
+	rctx, ok := txn.Unwrap().(*recordlayer.FDBRecordContext)
 	if !ok {
 		return api.NewErrorf(api.ErrCodeInternalError,
-			"DropSchema FDB store deletion requires *catalog.FDBTransaction, got %T", txn)
+			"DropSchema FDB store deletion requires a transaction whose Unwrap() returns *recordlayer.FDBRecordContext, got %T from %T",
+			txn.Unwrap(), txn)
 	}
 	ss, err := a.ks.SchemaSubspace(a.dbPath, a.schemaName)
 	if err != nil {
 		return err
 	}
-	return recordlayer.DeleteStore(fdbTxn.Context(), ss)
+	return recordlayer.DeleteStore(rctx, ss)
 }

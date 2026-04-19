@@ -5,7 +5,6 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
@@ -71,10 +70,13 @@ func (a *CreateSchemaConstantAction) Execute(txn api.Transaction) error {
 }
 
 func (a *CreateSchemaConstantAction) createFDBStore(txn api.Transaction, tmpl api.SchemaTemplate) error {
-	fdbTxn, ok := txn.(*catalog.FDBTransaction)
+	// Unwrap returns the underlying FDBRecordContext for FDB-backed txns,
+	// letting future Transaction decorators keep working.
+	rctx, ok := txn.Unwrap().(*recordlayer.FDBRecordContext)
 	if !ok {
 		return api.NewErrorf(api.ErrCodeInternalError,
-			"CreateSchema FDB store creation requires *catalog.FDBTransaction, got %T", txn)
+			"CreateSchema FDB store creation requires a transaction whose Unwrap() returns *recordlayer.FDBRecordContext, got %T from %T",
+			txn.Unwrap(), txn)
 	}
 	rlTmpl, ok := tmpl.(*metadata.RecordLayerSchemaTemplate)
 	if !ok {
@@ -86,7 +88,7 @@ func (a *CreateSchemaConstantAction) createFDBStore(txn api.Transaction, tmpl ap
 		return err
 	}
 	_, err = recordlayer.NewStoreBuilder().
-		SetContext(fdbTxn.Context()).
+		SetContext(rctx).
 		SetSubspace(ss).
 		SetMetaDataProvider(rlTmpl.Underlying()).
 		Create()

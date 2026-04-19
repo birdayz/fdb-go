@@ -77,6 +77,10 @@ func (t *InMemoryTransaction) UnsetBoundSchemaTemplate() {
 	t.boundTemplate = nil
 }
 
+// Unwrap returns the transaction itself because the in-memory catalog is
+// the underlying storage backend. Satisfies api.Transaction.Unwrap.
+func (t *InMemoryTransaction) Unwrap() any { return t }
+
 // closeLocked transitions closed=true; returns an error if the
 // transaction was already closed.
 func (t *InMemoryTransaction) closeLocked(op string) error {
