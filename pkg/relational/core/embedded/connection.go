@@ -837,10 +837,6 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 			// Pre-compute sort keys for expression order-by to avoid redundant
 			// evaluation inside the comparator.
-			type sortKey struct {
-				vals  []driver.Value
-				order int
-			}
 			hasExpr := false
 			for _, ob := range sq.orderBy {
 				if ob.expr != nil {
@@ -848,19 +844,18 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					break
 				}
 			}
-			var keys []sortKey
+			var keys [][]driver.Value
 			if hasExpr && len(filtered) == len(data) {
-				keys = make([]sortKey, len(data))
+				keys = make([][]driver.Value, len(data))
 				for i := range data {
-					keys[i].order = i
-					keys[i].vals = make([]driver.Value, len(sq.orderBy))
+					keys[i] = make([]driver.Value, len(sq.orderBy))
 					for oi, ob := range sq.orderBy {
 						if ob.expr != nil {
 							v, evalErr := evalExprOnMap(ctx, c, filtered[i], ob.expr)
 							if evalErr != nil {
 								return nil, evalErr
 							}
-							keys[i].vals[oi] = v
+							keys[i][oi] = v
 						}
 					}
 				}
@@ -874,7 +869,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				for oi, ob := range sq.orderBy {
 					var cmp int
 					if ob.expr != nil && keys != nil {
-						cmp = compareValues(keys[i].vals[oi], keys[j].vals[oi])
+						cmp = compareValues(keys[i][oi], keys[j][oi])
 					} else {
 						idx, ok := colIdx[ob.colName]
 						if !ok {
