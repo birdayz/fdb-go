@@ -4064,3 +4064,69 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 		{"Bob", 50},
 	}))
 }
+
+func TestFDB_CTEAggregateHaving(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cte_agg_having")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_agg_having")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_agg_h_tmpl
+		CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_agg_having/main WITH TEMPLATE cte_agg_h_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte_agg_having?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i, row := range []struct {
+		region string
+		amount int64
+	}{
+		{"west", 100},
+		{"west", 200},
+		{"west", 300},
+		{"east", 50},
+		{"east", 75},
+		{"north", 1000},
+	} {
+		_, err = db.ExecContext(ctx, "INSERT INTO Sale (id, region, amount) VALUES (?, ?, ?)", int64(i+1), row.region, row.amount)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// CTE + GROUP BY + HAVING: only regions with total > 150.
+	rows, err := db.QueryContext(ctx, `
+		WITH large AS (SELECT id, region, amount FROM Sale WHERE amount > 20)
+		SELECT region, SUM(amount) FROM large GROUP BY region HAVING SUM(amount) > 150 ORDER BY region ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type out struct {
+		region string
+		total  int64
+	}
+	var got []out
+	for rows.Next() {
+		var r out
+		var t any
+		g.Expect(rows.Scan(&r.region, &t)).To(gomega.Succeed())
+		switch v := t.(type) {
+		case int64:
+			r.total = v
+		case float64:
+			r.total = int64(v)
+		}
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// east: 50+75=125 (excluded), north: 1000 (included), west: 100+200+300=600 (included).
+	g.Expect(got).To(gomega.Equal([]out{
+		{"north", 1000},
+		{"west", 600},
+	}))
+}
