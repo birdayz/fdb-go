@@ -3467,3 +3467,73 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 		{"Bob", 1, 50},
 	}))
 }
+
+func TestFDB_ExistsSubquery(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_exists_subquery")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_exists_subquery")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE exists_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Flag (id BIGINT NOT NULL, active BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_exists_subquery/main WITH TEMPLATE exists_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_exists_subquery?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Flag (id, active) VALUES (1, 1)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// EXISTS: Flag table has active=1 rows → all customers returned.
+	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 1) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
+
+	// NOT EXISTS with empty subquery → all customers returned.
+	rows2, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE NOT EXISTS (SELECT id FROM Flag WHERE active = 99) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	var names2 []string
+	for rows2.Next() {
+		var name string
+		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
+		names2 = append(names2, name)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names2).To(gomega.Equal([]string{"Alice", "Bob"}))
+
+	// EXISTS with empty subquery → no customers returned.
+	rows3, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE EXISTS (SELECT id FROM Flag WHERE active = 99) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows3.Close()
+
+	var names3 []string
+	for rows3.Next() {
+		var name string
+		g.Expect(rows3.Scan(&name)).To(gomega.Succeed())
+		names3 = append(names3, name)
+	}
+	g.Expect(rows3.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names3).To(gomega.BeEmpty())
+}

@@ -3432,6 +3432,16 @@ func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Mess
 // col <= constant, col >= constant, AND, OR, NOT.
 func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
 	switch e := expr.(type) {
+	case *antlrgen.ExistsExpressionAtomContext:
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+		}
+		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		if subErr != nil {
+			return false, subErr
+		}
+		return len(subRows) > 0, nil
+
 	case *antlrgen.LogicalExpressionContext:
 		left, err := evalExprPredicate(ctx, conn, msg, e.Expression(0))
 		if err != nil {
