@@ -3046,6 +3046,63 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(shr).To(gomega.Equal(int64(3)), "7 >> 1 = 3")
 }
 
+// TestFDB_IsDistinctFrom pins SQL's null-safe equality operator. Grammar
+// exposes `IS [NOT] DISTINCT FROM` as a comparisonOperator alternative;
+// Java registers isDistinctFrom / notDistinctFrom in SqlFunctionCatalogImpl.
+// Go used to hit the any-NULL→UNKNOWN fallback BEFORE checking the op text,
+// so the special null-safe semantics never applied.
+func TestFDB_IsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_is_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE idf_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_distinct/main WITH TEMPLATE idf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_distinct?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: n=5, id=2: n=NULL
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// `n IS NOT DISTINCT FROM 5` — null-safe =. id=1 matches (5=5 TRUE),
+	// id=2 doesn't (NULL is distinct from 5). Plain `n = 5` would leave
+	// id=2 as UNKNOWN → filtered, same result here, but the operator
+	// must not error / misbehave.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS NOT DISTINCT FROM 5`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)))
+
+	// `n IS NOT DISTINCT FROM NULL` — null-safe =. Matches only the row
+	// with n=NULL. Plain `n = NULL` would be UNKNOWN for every row.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS NOT DISTINCT FROM NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "IS NOT DISTINCT FROM NULL must match the NULL row")
+
+	// `n IS DISTINCT FROM NULL` — negation. Matches the non-NULL row.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS DISTINCT FROM NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "IS DISTINCT FROM NULL must match the non-NULL row")
+
+	// `n IS DISTINCT FROM 5` — matches n=NULL (NULL is distinct from 5).
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IS DISTINCT FROM 5`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "IS DISTINCT FROM 5 must include NULL as distinct")
+}
+
 func TestFDB_HavingCompound(t *testing.T) {
 	// HAVING with AND/OR compound conditions.
 	t.Parallel()

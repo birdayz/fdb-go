@@ -4676,7 +4676,18 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	if err != nil {
 		return triFalse, err
 	}
-	// SQL 3-valued logic: any comparison involving NULL is UNKNOWN.
+	// SQL `IS [NOT] DISTINCT FROM` is null-safe equality — it always
+	// returns TRUE or FALSE, never UNKNOWN, even when operands are NULL.
+	// Grammar joins tokens without whitespace: `IS DISTINCT FROM` →
+	// "ISDISTINCTFROM", `IS NOT DISTINCT FROM` → "ISNOTDISTINCTFROM".
+	// Must branch BEFORE the any-NULL → UNKNOWN fallback below.
+	switch opText {
+	case "ISDISTINCTFROM":
+		return triFromBool(!nullSafeEqual(left, right)), nil
+	case "ISNOTDISTINCTFROM":
+		return triFromBool(nullSafeEqual(left, right)), nil
+	}
+	// SQL 3-valued logic: any other comparison involving NULL is UNKNOWN.
 	// Use IS NULL / IS NOT NULL for explicit NULL tests.
 	if left == nil || right == nil {
 		return triNull, nil
@@ -4699,6 +4710,19 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	default:
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 	}
+}
+
+// nullSafeEqual is the underpinning of SQL's `IS NOT DISTINCT FROM`: two
+// NULLs are equal, a NULL and a non-NULL are never equal, and two non-NULL
+// values are compared by valuesEqual (same type-strict rules as `=`).
+func nullSafeEqual(a, b driver.Value) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return valuesEqual(a, b)
 }
 
 // matchSubqueryIN evaluates `fieldVal [NOT] IN (subRows)` per SQL §8.4.
@@ -5167,11 +5191,18 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if err != nil {
 		return triFalse, err
 	}
+	opText := compPred.ComparisonOperator().GetText()
+	// Null-safe equality (mirror of proto path) — branch before NULL→UNKNOWN.
+	switch opText {
+	case "ISDISTINCTFROM":
+		return triFromBool(!nullSafeEqual(leftVal, rightVal)), nil
+	case "ISNOTDISTINCTFROM":
+		return triFromBool(nullSafeEqual(leftVal, rightVal)), nil
+	}
 	// SQL 3-valued logic: NULL comparison → UNKNOWN.
 	if leftVal == nil || rightVal == nil {
 		return triNull, nil
 	}
-	opText := compPred.ComparisonOperator().GetText()
 	cmp := compareValues(leftVal, rightVal)
 	switch opText {
 	case "=":
