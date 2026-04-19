@@ -1233,14 +1233,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if ac.groupCol != "" {
 					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.groupCol))
 					if fd == nil {
-						return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q not found in table %q", ac.groupCol, sq.tableName)
 					}
 					aggArgFDs[i] = fd
 				} else if ac.aggArg != "" {
 					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.aggArg))
 					if fd == nil {
-						return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"aggregate column %q not found in table %q", ac.aggArg, sq.tableName)
 					}
 					aggArgFDs[i] = fd
@@ -1468,7 +1468,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				fd := allFields.ByName(protoreflect.Name(colName))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q not found in table %q", colName, sq.tableName)
 				}
 				outName := colName
@@ -2910,7 +2910,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 			for i, col := range cols {
 				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", col, tableName)
 				}
 				val, evalErr := evalExpr(ctx, c, nil, exprs[i].Expression())
 				if evalErr != nil {
@@ -3005,7 +3005,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 			for i, col := range cols {
 				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", col, tableName)
 				}
 				val := row[i]
 				if val == nil {
@@ -3134,7 +3134,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		}
 		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
 		if fd == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
 		// Absent proto2 optional fields are SQL NULL — distinct from the zero
 		// value. Predicates already use Has(); function arguments must too,
@@ -4203,7 +4203,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				colName := fullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", colName, tableName)
 				}
 				val, evalErr := evalExpr(ctx, c, cloned, elem.Expression())
 				if evalErr != nil {
@@ -4475,7 +4475,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		colName := fullIdToName(colAtom.FullColumnName().FullId())
 		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
 		if fd == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+			return triFalse, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
 		if !msg.ProtoReflect().Has(fd) {
 			return triNull, nil // NULL [NOT] IN (...) = UNKNOWN
@@ -4552,7 +4552,7 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 		colName := fullIdToName(colAtom.FullColumnName().FullId())
 		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
 		if fd == nil {
-			return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+			return false, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
 		if msg.ProtoReflect().Has(fd) {
 			fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
@@ -4878,7 +4878,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 			}
 		}
 		if !found {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in row", name)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
 		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:

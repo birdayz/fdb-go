@@ -5433,7 +5433,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 		{
 			name:     "unknown column",
 			sql:      "SELECT nosuchcol FROM T",
-			wantCode: api.ErrCodeInvalidParameter,
+			wantCode: api.ErrCodeUndefinedColumn,
 		},
 		{
 			name:     "div by zero (SQL standard error)",
