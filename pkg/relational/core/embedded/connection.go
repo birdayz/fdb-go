@@ -11,6 +11,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,9 +80,9 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
-	if len(args) != 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"parameterised DDL is not supported")
+	var err error
+	if query, err = substituteParams(query, args); err != nil {
+		return nil, err
 	}
 	root, err := parser.Parse(query)
 	if err != nil {
@@ -108,8 +109,9 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
-	if len(args) != 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "parameterised queries are not supported")
+	var subErr error
+	if query, subErr = substituteParams(query, args); subErr != nil {
+		return nil, subErr
 	}
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return nil, err
@@ -143,20 +145,29 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	return c.execShowStatement(ctx, show)
 }
 
-// execSelect executes a SELECT * FROM <tableName> statement.
-// Only full-table scans with no WHERE clause, no projections beyond *, and
-// a single unaliased table source are supported.
+// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val]
+// [ORDER BY col [ASC|DESC]] [LIMIT n].
+// Only single-table scans with simple equality WHERE are supported.
+// Joins, subqueries, GROUP BY, HAVING, etc. are not.
 func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
+	sq, err := extractSelectParts(sel)
+	if err != nil {
+		return nil, err
+	}
+
+	// Route INFORMATION_SCHEMA.* queries to system table handlers.
+	// System table queries do not require a schema to be set.
+	upper := strings.ToUpper(sq.tableName)
+	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
+		sysTable := upper[len("INFORMATION_SCHEMA."):]
+		return c.execSystemTable(ctx, sysTable, sq.whereExpr)
+	}
+
 	if c.schema == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
 	if c.dbPath == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
-	}
-
-	tableName, whereExpr, err := extractSelectParts(sel)
-	if err != nil {
-		return nil, err
 	}
 
 	type row = []driver.Value
@@ -177,18 +188,11 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		}
 		md := rlTmpl.Underlying()
 
-		rt := md.GetRecordType(tableName)
+		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", sq.tableName)
 		}
 		msgDesc := rt.Descriptor
-
-		// Build column list from message descriptor (deterministic field order).
-		fields := msgDesc.Fields()
-		cols = make([]string, fields.Len())
-		for i := 0; i < fields.Len(); i++ {
-			cols[i] = string(fields.Get(i).Name())
-		}
 
 		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
 		if ssErr != nil {
@@ -203,8 +207,62 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
+
+		if sq.countStar {
+			cols = []string{"COUNT(*)"}
+			var count int64
+			for {
+				result, nextErr := cursor.OnNext(ctx)
+				if nextErr != nil {
+					return nil, nextErr
+				}
+				if !result.HasNext() {
+					break
+				}
+				match, matchErr := evalPredicate(result.GetValue().Record, sq.whereExpr)
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if match {
+					count++
+				}
+			}
+			data = []row{{count}}
+			return nil, nil
+		}
+
+		// Resolve output fields: either the explicit projection or all fields.
+		allFields := msgDesc.Fields()
+		type outField struct {
+			name string
+			fd   protoreflect.FieldDescriptor
+		}
+		var outFields []outField
+		if sq.projCols == nil {
+			// SELECT * — all fields in descriptor order.
+			outFields = make([]outField, allFields.Len())
+			for i := 0; i < allFields.Len(); i++ {
+				fd := allFields.Get(i)
+				outFields[i] = outField{string(fd.Name()), fd}
+			}
+		} else {
+			// Named projection — look up each column.
+			outFields = make([]outField, len(sq.projCols))
+			for i, colName := range sq.projCols {
+				fd := allFields.ByName(protoreflect.Name(colName))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"column %q not found in table %q", colName, sq.tableName)
+				}
+				outFields[i] = outField{colName, fd}
+			}
+		}
+		cols = make([]string, len(outFields))
+		for i, f := range outFields {
+			cols[i] = f.name
+		}
 
 		for {
 			result, nextErr := cursor.OnNext(ctx)
@@ -216,18 +274,17 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			rec := result.GetValue()
 			msg := rec.Record
-			match, matchErr := evalPredicate(msg, whereExpr)
+			match, matchErr := evalPredicate(msg, sq.whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
 			if !match {
 				continue
 			}
-			vals := make([]driver.Value, fields.Len())
-			for i := 0; i < fields.Len(); i++ {
-				fd := fields.Get(i)
-				if msg.ProtoReflect().Has(fd) {
-					vals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+			vals := make([]driver.Value, len(outFields))
+			for i, f := range outFields {
+				if msg.ProtoReflect().Has(f.fd) {
+					vals[i] = protoValueToDriver(f.fd, msg.ProtoReflect().Get(f.fd))
 				}
 				// else nil (proto2 optional field absent → NULL)
 			}
@@ -238,62 +295,524 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	if runErr != nil {
 		return nil, runErr
 	}
+
+	// Apply ORDER BY (post-scan in-memory sort).
+	if len(sq.orderBy) > 0 {
+		// Build a map from column name to output index for O(1) lookup.
+		// ORDER BY columns must be in the projected output.
+		colIdx := make(map[string]int, len(cols))
+		for i, c := range cols {
+			colIdx[c] = i
+		}
+		for _, ob := range sq.orderBy {
+			if _, ok := colIdx[ob.colName]; !ok {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"ORDER BY column %q must be in the SELECT list", ob.colName)
+			}
+		}
+		sort.SliceStable(data, func(i, j int) bool {
+			for _, ob := range sq.orderBy {
+				idx := colIdx[ob.colName]
+				a, b := data[i][idx], data[j][idx]
+				cmp := compareValues(a, b)
+				if cmp != 0 {
+					if ob.ascending {
+						return cmp < 0
+					}
+					return cmp > 0
+				}
+			}
+			return false
+		})
+	}
+
+	// Apply LIMIT.
+	if sq.limit >= 0 && int64(len(data)) > sq.limit {
+		data = data[:sq.limit]
+	}
+
 	return &staticRows{cols: cols, rows: data}, nil
 }
 
-// extractSelectParts navigates the parse tree of a SELECT statement to
-// extract the table name and optional WHERE expression.
-// Only supports SELECT * FROM <tableName> [WHERE col = val] (single table, star select).
-func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, antlrgen.IWhereExprContext, error) {
+// execSystemTable dispatches INFORMATION_SCHEMA.* queries.
+func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, whereExpr antlrgen.IWhereExprContext) (driver.Rows, error) {
+	switch name {
+	case "SCHEMATA":
+		return c.execSysSchemata(ctx, whereExpr)
+	case "TABLES":
+		return c.execSysTables(ctx, whereExpr)
+	case "COLUMNS":
+		return c.execSysColumns(ctx, whereExpr)
+	case "INDEXES":
+		return c.execSysIndexes(ctx, whereExpr)
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unknown INFORMATION_SCHEMA table: %q", name)
+	}
+}
+
+// execSysSchemata implements SELECT * FROM INFORMATION_SCHEMA.SCHEMATA.
+func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			data = append(data, row{dbID, schemaName, "", "", ""})
+		}
+		return nil, rs.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{"CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSysTables implements SELECT * FROM INFORMATION_SCHEMA.TABLES.
+// WHERE filtering is not yet supported for system tables.
+func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+
+		// Snapshot (db, schema) pairs first; LoadSchema below opens another txn context.
+		type schemaRef struct{ db, schema string }
+		var refs []schemaRef
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			refs = append(refs, schemaRef{dbID, schemaName})
+		}
+		if e := rs.Err(); e != nil {
+			return nil, e
+		}
+
+		for _, ref := range refs {
+			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			tables, tablesErr := schema.Tables()
+			if tablesErr != nil {
+				return nil, tablesErr
+			}
+			for _, tbl := range tables {
+				data = append(data, row{ref.db, ref.schema, tbl.MetadataName(), "TABLE", "", "", "", "", "", ""})
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE",
+		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
+		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSysColumns implements SELECT * FROM INFORMATION_SCHEMA.COLUMNS.
+// WHERE filtering is not yet supported for system tables.
+func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+
+		type schemaRef struct{ db, schema string }
+		var refs []schemaRef
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			refs = append(refs, schemaRef{dbID, schemaName})
+		}
+		if e := rs.Err(); e != nil {
+			return nil, e
+		}
+
+		for _, ref := range refs {
+			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			tables, tablesErr := schema.Tables()
+			if tablesErr != nil {
+				return nil, tablesErr
+			}
+			for _, tbl := range tables {
+				cols := tbl.Columns()
+				for i, col := range cols {
+					nullable := "NO"
+					if col.DataType().IsNullable() {
+						nullable = "YES"
+					}
+					data = append(data, row{
+						ref.db,
+						ref.schema,
+						tbl.MetadataName(),
+						col.MetadataName(),
+						int64(i + 1),
+						"",
+						nullable,
+						col.DataType().Code().String(),
+						"",
+						"",
+						"",
+					})
+				}
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME",
+		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
+		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSysIndexes implements SELECT * FROM INFORMATION_SCHEMA.INDEXES.
+// Returns one row per index across all (database, schema, table) tuples.
+func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+
+		type schemaRef struct{ db, schema string }
+		var refs []schemaRef
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			refs = append(refs, schemaRef{dbID, schemaName})
+		}
+		if e := rs.Err(); e != nil {
+			return nil, e
+		}
+
+		for _, ref := range refs {
+			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			tables, tablesErr := schema.Tables()
+			if tablesErr != nil {
+				return nil, tablesErr
+			}
+			for _, tbl := range tables {
+				for _, idx := range tbl.Indexes() {
+					isUnique := "NO"
+					if idx.IsUnique() {
+						isUnique = "YES"
+					}
+					isSparse := "NO"
+					if idx.IsSparse() {
+						isSparse = "YES"
+					}
+					data = append(data, row{
+						ref.db,
+						ref.schema,
+						tbl.MetadataName(),
+						idx.MetadataName(),
+						idx.IndexType(),
+						isUnique,
+						isSparse,
+					})
+				}
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
+		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// selectQuery holds the parsed components of a SELECT statement.
+type selectQuery struct {
+	tableName string
+	projCols  []string // nil = SELECT *; ignored when countStar is true
+	countStar bool     // true when SELECT list is exactly COUNT(*)
+	whereExpr antlrgen.IWhereExprContext
+	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
+	orderBy []orderByClause
+	// limit < 0 means no limit.
+	limit int64
+}
+
+type orderByClause struct {
+	colName   string
+	ascending bool
+}
+
+// checkCountStar returns true if e is a bare COUNT(*) expression.
+func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
+	pred, ok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return false
+	}
+	fc, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if !ok {
+		return false
+	}
+	agg, ok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if !ok {
+		return false
+	}
+	awf, ok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if !ok {
+		return false
+	}
+	return awf.COUNT() != nil && awf.STAR() != nil
+}
+
+// columnNameFromExpr extracts a plain column name from an IExpressionContext.
+// context is used in error messages (e.g. "SELECT expression", "ORDER BY expression").
+func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (string, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"%s must be a column name, got %T", context, expr)
+	}
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"%s must be a column name, got expression atom %T", context, pred.ExpressionAtom())
+	}
+	return fullIdToName(colAtom.FullColumnName().FullId()), nil
+}
+
+// selectExprToColumnName extracts a plain column name from a
+// SelectExpressionElementContext.
+func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, error) {
+	return columnNameFromExpr(e.Expression(), "SELECT expression")
+}
+
+// extractSelectParts navigates the parse tree of a SELECT statement.
+// Supports SELECT [* | col, ...] FROM <table> [WHERE col = val]
+//
+//	[ORDER BY col [ASC|DESC], ...] [LIMIT n].
+//
+// Joins, subqueries, aliases, GROUP BY, HAVING, etc. are not supported.
+func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, error) {
 	query := sel.Query()
 	if query == nil {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
 	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported SELECT form %T; only simple SELECT * FROM <table> is supported",
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported SELECT form %T; only simple SELECT FROM <table> is supported",
 			query.QueryExpressionBody())
 	}
 	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported query term %T; only simple SELECT * FROM <table> is supported",
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported query term %T; only simple SELECT FROM <table> is supported",
 			body.QueryTerm())
 	}
 
+	// Parse SELECT list: either *, a list of column name expressions, or COUNT(*).
 	selElems := simpleTable.SelectElements()
-	if selElems == nil || len(selElems.AllSelectElement()) != 1 {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only SELECT * is supported; multi-column projections are not yet implemented")
-	}
-	if _, isStar := selElems.AllSelectElement()[0].(*antlrgen.SelectStarElementContext); !isStar {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only SELECT * is supported; column projections are not yet implemented")
+	var projCols []string // nil = SELECT *
+	var countStar bool
+	if selElems != nil {
+		elems := selElems.AllSelectElement()
+		for _, elem := range elems {
+			switch e := elem.(type) {
+			case *antlrgen.SelectStarElementContext:
+				if len(elems) > 1 {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"cannot mix * with named columns in SELECT list")
+				}
+				// SELECT * — projCols stays nil
+			case *antlrgen.SelectExpressionElementContext:
+				if checkCountStar(e) {
+					if len(elems) > 1 {
+						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+							"cannot mix COUNT(*) with other columns in SELECT list")
+					}
+					countStar = true
+				} else {
+					colName, nameErr := selectExprToColumnName(e)
+					if nameErr != nil {
+						return nil, nameErr
+					}
+					projCols = append(projCols, colName)
+				}
+			default:
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"unsupported SELECT element type %T", elem)
+			}
+		}
 	}
 
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
 	}
 
 	sources := fromClause.TableSources()
 	if sources == nil || len(sources.AllTableSource()) != 1 {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"only single-table SELECT is supported; joins are not yet implemented")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
 	}
 	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
 	}
-	return atomItem.TableName().FullId().GetText(), fromClause.WhereExpr(), nil
+	// Build table name from uid segments, stripping identifier quotes.
+	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
+	uids := atomItem.TableName().FullId().AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = stripIdentifierQuotes(u.GetText())
+	}
+	sq := &selectQuery{
+		tableName: strings.Join(parts, "."),
+		projCols:  projCols,
+		countStar: countStar,
+		whereExpr: fromClause.WhereExpr(),
+		limit:     -1,
+	}
+
+	// Parse ORDER BY clause.
+	orderByClauseCtx := simpleTable.OrderByClause()
+	if orderByClauseCtx != nil {
+		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
+			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
+			if nameErr != nil {
+				return nil, nameErr
+			}
+			ascending := true
+			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
+				ascending = false
+			}
+			sq.orderBy = append(sq.orderBy, orderByClause{colName, ascending})
+		}
+	}
+
+	// Parse LIMIT clause.
+	limitClauseCtx := simpleTable.LimitClause()
+	if limitClauseCtx != nil {
+		atoms := limitClauseCtx.AllLimitClauseAtom()
+		if len(atoms) > 1 {
+			// MySQL allows "LIMIT offset, count" — reject for simplicity.
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"LIMIT offset,count syntax is not supported; use LIMIT count")
+		}
+		if len(atoms) == 1 && atoms[0].DecimalLiteral() != nil {
+			n, parseErr := strconv.ParseInt(atoms[0].DecimalLiteral().GetText(), 10, 64)
+			if parseErr != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"invalid LIMIT value %q: %v", atoms[0].DecimalLiteral().GetText(), parseErr)
+			}
+			sq.limit = n
+		}
+	}
+
+	return sq, nil
+}
+
+// stripIdentifierQuotes removes surrounding double-quotes or backticks from a
+// SQL identifier produced by the ANTLR parser (e.g. `"FOO"` → `FOO`).
+func stripIdentifierQuotes(s string) string {
+	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// fullIdToName converts a FullId parse-tree node to a dot-separated,
+// quote-stripped name. Used for table names in INSERT, UPDATE, DELETE.
+func fullIdToName(fid antlrgen.IFullIdContext) string {
+	uids := fid.AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = stripIdentifierQuotes(u.GetText())
+	}
+	return strings.Join(parts, ".")
 }
 
 // protoValueToDriver converts a protoreflect.Value to a driver.Value.
@@ -506,7 +1025,7 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		}
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
 	}
-	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only DDL and INSERT statements are supported in this release")
+	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
 }
 
 // execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
@@ -525,7 +1044,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 	}
 	var cols []string
 	for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
-		cols = append(cols, uw.Uid().GetText())
+		cols = append(cols, stripIdentifierQuotes(uw.Uid().GetText()))
 	}
 
 	// Only handle VALUES path.
@@ -534,10 +1053,11 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only INSERT ... VALUES (...) is supported")
 	}
 
-	tableName := ins.TableName().FullId().GetText()
+	tableName := fullIdToName(ins.TableName().FullId())
 
 	var totalRows int64
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		totalRows = 0 // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -697,7 +1217,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := upd.TableName().FullId().GetText()
+	tableName := fullIdToName(upd.TableName().FullId())
 	whereExpr := upd.WhereExpr()
 	updatedElems := upd.AllUpdatedElement()
 
@@ -757,7 +1277,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			cloned := proto.Clone(rec.Record)
 			clonedRefl := cloned.ProtoReflect()
 			for _, elem := range updatedElems {
-				colName := elem.FullColumnName().FullId().GetText()
+				colName := fullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
@@ -798,7 +1318,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := del.TableName().FullId().GetText()
+	tableName := fullIdToName(del.TableName().FullId())
 	whereExpr := del.WhereExpr()
 
 	var deleted int64
@@ -871,22 +1391,61 @@ func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (boo
 	if whereExpr == nil {
 		return true, nil
 	}
-	pred, ok := whereExpr.Expression().(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", whereExpr.Expression())
+	return evalExprPredicate(msg, whereExpr.Expression())
+}
+
+// evalExprPredicate evaluates an IExpressionContext as a boolean predicate.
+// Supports: col = constant, col != constant, col < constant, col > constant,
+// col <= constant, col >= constant, AND, OR, NOT.
+func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
+	switch e := expr.(type) {
+	case *antlrgen.LogicalExpressionContext:
+		left, err := evalExprPredicate(msg, e.Expression(0))
+		if err != nil {
+			return false, err
+		}
+		op := e.LogicalOperator()
+		if op.AND() != nil {
+			if !left {
+				return false, nil // short-circuit
+			}
+			return evalExprPredicate(msg, e.Expression(1))
+		}
+		if op.OR() != nil {
+			if left {
+				return true, nil // short-circuit
+			}
+			return evalExprPredicate(msg, e.Expression(1))
+		}
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
+
+	case *antlrgen.NotExpressionContext:
+		v, err := evalExprPredicate(msg, e.Expression())
+		if err != nil {
+			return false, err
+		}
+		return !v, nil
+
+	case *antlrgen.PredicatedExpressionContext:
+		return evalComparisonPredicate(msg, e)
+
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
 	}
+}
+
+// evalComparisonPredicate handles a leaf comparison: col <op> constant.
+func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
 	}
-	if bcp.ComparisonOperator().GetText() != "=" {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "only = comparison supported in WHERE, got %q", bcp.ComparisonOperator().GetText())
-	}
+	opText := bcp.ComparisonOperator().GetText()
 	colAtom, ok := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE left side must be a column name, got %T", bcp.GetLeft())
 	}
-	colName := colAtom.FullColumnName().FullId().GetText()
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
 
 	valAtom, ok := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
 	if !ok {
@@ -904,7 +1463,106 @@ func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (boo
 	}
 	fieldVal := msg.ProtoReflect().Get(fd)
 	driverVal := protoValueToDriver(fd, fieldVal)
-	return valuesEqual(driverVal, litVal), nil
+
+	cmp := compareValues(driverVal, litVal)
+	switch opText {
+	case "=":
+		return cmp == 0, nil
+	case "!=", "<>":
+		return cmp != 0, nil
+	case "<":
+		return cmp < 0, nil
+	case ">":
+		return cmp > 0, nil
+	case "<=":
+		return cmp <= 0, nil
+	case ">=":
+		return cmp >= 0, nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
+	}
+}
+
+// substituteParams replaces positional '?' placeholders in a query with
+// SQL literal representations of the supplied driver values. Named params
+// (@name) are not supported — only positional '?' is handled.
+func substituteParams(query string, args []driver.NamedValue) (string, error) {
+	if len(args) == 0 {
+		return query, nil
+	}
+	var b strings.Builder
+	argIdx := 0
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		// Skip single-quoted string literals so a '?' inside a string value
+		// is not treated as a placeholder.
+		if ch == '\'' {
+			b.WriteByte(ch)
+			i++
+			for i < len(query) {
+				c := query[i]
+				b.WriteByte(c)
+				if c == '\'' {
+					if i+1 < len(query) && query[i+1] == '\'' {
+						// escaped quote inside string
+						i++
+						b.WriteByte(query[i])
+					} else {
+						break
+					}
+				}
+				i++
+			}
+			continue
+		}
+		if ch != '?' {
+			b.WriteByte(ch)
+			continue
+		}
+		if argIdx >= len(args) {
+			return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+				"more '?' placeholders than bound parameters (placeholder %d, have %d args)",
+				argIdx+1, len(args))
+		}
+		v := args[argIdx].Value
+		argIdx++
+		switch val := v.(type) {
+		case nil:
+			b.WriteString("NULL")
+		case bool:
+			if val {
+				b.WriteString("TRUE")
+			} else {
+				b.WriteString("FALSE")
+			}
+		case int64:
+			fmt.Fprintf(&b, "%d", val)
+		case float64:
+			fmt.Fprintf(&b, "%g", val)
+		case string:
+			// Escape single quotes by doubling them.
+			b.WriteByte('\'')
+			b.WriteString(strings.ReplaceAll(val, "'", "''"))
+			b.WriteByte('\'')
+		case []byte:
+			// Represent as hex string literal using SQL standard X'...' is not
+			// in our grammar — encode as quoted string for now.
+			b.WriteByte('\'')
+			for _, bv := range val {
+				fmt.Fprintf(&b, "%02x", bv)
+			}
+			b.WriteByte('\'')
+		default:
+			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported parameter type %T for placeholder %d", v, argIdx)
+		}
+	}
+	if argIdx < len(args) {
+		return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+			"fewer '?' placeholders than bound parameters (%d placeholders, %d args)",
+			argIdx, len(args))
+	}
+	return b.String(), nil
 }
 
 // evalConstant evaluates a constant parse-tree node to a Go value.
@@ -936,6 +1594,8 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		if len(raw) >= 2 {
 			raw = raw[1 : len(raw)-1]
 		}
+		// Unescape doubled single-quotes produced by substituteParams or typed literally.
+		raw = strings.ReplaceAll(raw, "''", "'")
 		return raw, nil
 	case *antlrgen.NullConstantContext:
 		return nil, nil
@@ -954,7 +1614,14 @@ func valuesEqual(a, b any) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	// Normalise numeric types to int64/float64 for comparison.
+	// Exact int64 comparison avoids float64 precision loss for large integers
+	// (> 2^53 cannot be represented exactly as float64).
+	if ai, ok1 := a.(int64); ok1 {
+		if bi, ok2 := b.(int64); ok2 {
+			return ai == bi
+		}
+	}
+	// Normalise mixed int64/float64 pairs to float64.
 	toFloat := func(v any) (float64, bool) {
 		switch n := v.(type) {
 		case int64:
@@ -970,6 +1637,74 @@ func valuesEqual(a, b any) bool {
 		return fa == fb
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
+
+// compareValues returns -1, 0, or 1 for two driver.Values.
+// Used by ORDER BY post-sort. NULL sorts last.
+func compareValues(a, b driver.Value) int {
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return 1
+	}
+	if b == nil {
+		return -1
+	}
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		case float64:
+			fav := float64(av)
+			if fav < bv {
+				return -1
+			}
+			if fav > bv {
+				return 1
+			}
+			return 0
+		}
+	case float64:
+		var fbv float64
+		switch bv := b.(type) {
+		case float64:
+			fbv = bv
+		case int64:
+			fbv = float64(bv)
+		default:
+			return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+		}
+		if av < fbv {
+			return -1
+		}
+		if av > fbv {
+			return 1
+		}
+		return 0
+	case string:
+		if bv, ok := b.(string); ok {
+			return strings.Compare(av, bv)
+		}
+	case bool:
+		if bv, ok := b.(bool); ok {
+			if av == bv {
+				return 0
+			}
+			if !av {
+				return -1
+			}
+			return 1
+		}
+	}
+	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {

@@ -7,6 +7,105 @@ import (
 	"testing"
 )
 
+func TestSubstituteParams(t *testing.T) {
+	t.Parallel()
+	nv := func(ordinal int, v driver.Value) driver.NamedValue {
+		return driver.NamedValue{Ordinal: ordinal, Value: v}
+	}
+	cases := []struct {
+		name    string
+		query   string
+		args    []driver.NamedValue
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "no params",
+			query: "SELECT * FROM t",
+			args:  nil,
+			want:  "SELECT * FROM t",
+		},
+		{
+			name:  "int64",
+			query: "SELECT * FROM t WHERE id = ?",
+			args:  []driver.NamedValue{nv(1, int64(42))},
+			want:  "SELECT * FROM t WHERE id = 42",
+		},
+		{
+			name:  "float64",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, float64(3.14))},
+			want:  "INSERT INTO t VALUES (3.14)",
+		},
+		{
+			name:  "string escaping",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, "it's fine")},
+			want:  "INSERT INTO t VALUES ('it''s fine')",
+		},
+		{
+			name:  "null",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, nil)},
+			want:  "INSERT INTO t VALUES (NULL)",
+		},
+		{
+			name:  "bool true",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, true)},
+			want:  "INSERT INTO t VALUES (TRUE)",
+		},
+		{
+			name:  "bool false",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, false)},
+			want:  "INSERT INTO t VALUES (FALSE)",
+		},
+		{
+			name:  "multiple params",
+			query: "INSERT INTO t VALUES (?, ?, ?)",
+			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, "hello"), nv(3, nil)},
+			want:  "INSERT INTO t VALUES (1, 'hello', NULL)",
+		},
+		{
+			name:    "too few args",
+			query:   "SELECT * FROM t WHERE id = ? AND name = ?",
+			args:    []driver.NamedValue{nv(1, int64(1))},
+			wantErr: true,
+		},
+		{
+			name:    "too many args",
+			query:   "SELECT * FROM t WHERE id = ?",
+			args:    []driver.NamedValue{nv(1, int64(1)), nv(2, int64(2))},
+			wantErr: true,
+		},
+		{
+			name:  "question mark inside string literal not substituted",
+			query: "SELECT * FROM t WHERE name = '?' AND id = ?",
+			args:  []driver.NamedValue{nv(1, int64(5))},
+			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := substituteParams(tc.query, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("substituteParams(%q): want error, got %q", tc.query, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("substituteParams(%q): unexpected error: %v", tc.query, err)
+			}
+			if got != tc.want {
+				t.Errorf("substituteParams(%q) = %q, want %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -114,5 +213,40 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 	conn3.closed.Store(true)
 	if conn3.IsValid() {
 		t.Error("IsValid: want false for closed, got true")
+	}
+}
+
+func TestValuesEqual(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a, b any
+		want bool
+	}{
+		{"nil==nil", nil, nil, true},
+		{"nil!=int", nil, int64(0), false},
+		{"int!=nil", int64(0), nil, false},
+		{"int64 equal", int64(1), int64(1), true},
+		{"int64 not equal", int64(1), int64(2), false},
+		// Large int64 that float64 cannot represent exactly (> 2^53).
+		{"large int64 equal", int64(9007199254740993), int64(9007199254740993), true},
+		{"large int64 not equal", int64(9007199254740992), int64(9007199254740993), false},
+		{"float64 equal", float64(3.14), float64(3.14), true},
+		{"float64 not equal", float64(3.14), float64(2.71), false},
+		{"int64 == float64", int64(5), float64(5.0), true},
+		{"float64 == int64", float64(5.0), int64(5), true},
+		{"string equal", "hello", "hello", true},
+		{"string not equal", "hello", "world", false},
+		{"bool true==true", true, true, true},
+		{"bool false!=true", false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := valuesEqual(tc.a, tc.b)
+			if got != tc.want {
+				t.Errorf("valuesEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
 	}
 }

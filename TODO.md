@@ -321,7 +321,10 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **SELECT * FROM table execution** (nightshift-29) — `execSelect`: navigates ANTLR SELECT parse tree to extract table name, calls `ScanRecordsByType`, buffers rows, converts proto fields to `driver.Value` via `protoValueToDriver`. `defaultSchema` field in `EmbeddedConnection` so `ResetSession` restores DSN-provided schema instead of clearing it. 1 FDB integration test (insert 2 rows + SELECT * verifies 2 rows returned).
 - [x] **DELETE FROM table [WHERE col = value] execution** (nightshift-29) — `execDelete`: scan+filter+DeleteRecord. `evalPredicate` handles simple `col = constant` equality. `evalConstant` factored out and shared with INSERT. 1 FDB integration test.
 - [x] **UPDATE table SET col = val [WHERE col = val] execution** (nightshift-29) — `execUpdate`: scan+filter+clone+set+SaveRecord. `evalExpr` for SET expressions. Full CRUD now implemented. 1 FDB integration test. — `execDelete`: scan+filter+DeleteRecord. `evalPredicate` handles simple `col = constant` equality. `evalConstant` factored out and shared with INSERT. `valuesEqual` normalises int64/float64. 1 FDB integration test. — `execSelect`: navigates ANTLR SELECT parse tree to extract table name, calls `ScanRecordsByType`, buffers rows, converts proto fields to `driver.Value` via `protoValueToDriver`. `defaultSchema` field in `EmbeddedConnection` so `ResetSession` restores DSN-provided schema instead of clearing it. 1 FDB integration test (insert 2 rows + SELECT * verifies 2 rows returned).
-- [ ] **System tables** — `INFORMATION_SCHEMA.TABLES`, `COLUMNS`, `INDEXES`, `SCHEMATA`, etc. Computed on-the-fly from catalog state (Java pattern).
+- [x] **System tables** — `INFORMATION_SCHEMA.SCHEMATA`, `TABLES`, `COLUMNS`, `INDEXES` implemented (nightshift-30). Computed on-the-fly from catalog state via `execSysSchemata`, `execSysTables`, `execSysColumns`. Queries require double-quoted identifiers (`"INFORMATION_SCHEMA"."TABLES"`) due to ANTLR grammar keyword limitations. 3 FDB integration tests.
+- [x] **SELECT COUNT(*) aggregate** (nightshift-30) — `checkCountStar` detects the aggregate in SELECT list; `execSelect` scans + counts matching rows; returns single-row result with column `COUNT(*)`. Works with WHERE. 1 FDB integration test (count all, count with WHERE).
+- [x] **Compound WHERE (AND/OR/NOT + range comparisons)** (nightshift-30) — `evalExprPredicate` recursive dispatcher handles `LogicalExpressionContext` (AND/OR with short-circuit), `NotExpressionContext`, and `PredicatedExpressionContext`. `evalComparisonPredicate` handles `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`. 3 FDB integration tests (AND, OR, range).
+- [x] **ORDER BY + LIMIT in SELECT** (nightshift-30) — post-scan in-memory sort via `sort.SliceStable`; `compareValues` handles int64/float64/string/bool with NULL-sorts-last. `LIMIT n` truncates after sort. `extractSelectParts` refactored to return `*selectQuery` struct. 3 FDB integration tests (ASC, DESC, LIMIT).
 - [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
@@ -409,7 +412,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [x] `sql.Open("fdbsql", dsn)` + `db.Ping()` (nightshift-28)
   - [x] `db.ExecContext` for DDL (CREATE DATABASE/SCHEMA/SCHEMA TEMPLATE + DROP) (nightshift-28)
   - [x] `db.QueryContext` + `rows.Scan` for SELECT (nightshift-29: SELECT * FROM table via ScanRecordsByType)
-  - [ ] `db.PrepareContext` + parameterized exec/query
+  - [x] `db.PrepareContext` + parameterized exec/query (nightshift-30) — `substituteParams()` replaces `?` positional placeholders before parsing. String escape (`''`→`'`) handled in both directions. 11 unit tests + 2 FDB integration tests (basic, apostrophe round-trip).
   - [ ] `db.BeginTx` + Commit/Rollback
   - [ ] Context cancellation mid-query
   - [ ] Concurrent connections from shared `sql.DB`
