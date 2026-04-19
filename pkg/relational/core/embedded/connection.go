@@ -3990,7 +3990,13 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 func evalComparisonPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
+		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`)
+		// — evaluate as a value and treat truthy results as TRUE.
+		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
+		if err != nil {
+			return false, err
+		}
+		return isTruthy(v), nil
 	}
 	opText := bcp.ComparisonOperator().GetText()
 
