@@ -2526,3 +2526,117 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
+
+func TestFDB_LimitOffset(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_limit_offset")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_limit_offset")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE loff_tmpl CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_limit_offset/items WITH TEMPLATE loff_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_limit_offset?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i := int64(1); i <= 5; i++ {
+		_, err = db.ExecContext(ctx, `INSERT INTO Item (id, val) VALUES (?, ?)`, i, i*10)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// LIMIT 2 OFFSET 1 → rows 2, 3 (sorted by id)
+	rows, err := db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+}
+
+func TestFDB_CaseWhen(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_case_when")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_when")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cw_tmpl CREATE TABLE Sale (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_when/sales WITH TEMPLATE cw_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_case_when?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, amount) VALUES (1, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, amount) VALUES (2, 150)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, amount) VALUES (3, 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, CASE WHEN amount < 100 THEN 'small' WHEN amount < 200 THEN 'medium' ELSE 'large' END AS size FROM Sale ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type saleRow struct {
+		id   int64
+		size string
+	}
+	var got []saleRow
+	for rows.Next() {
+		var r saleRow
+		g.Expect(rows.Scan(&r.id, &r.size)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(got).To(gomega.Equal([]saleRow{{1, "small"}, {2, "medium"}, {3, "large"}}))
+}
+
+func TestFDB_StringFunctions(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_strfuncs")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_strfuncs")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE sf_tmpl CREATE TABLE Word (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_strfuncs/words WITH TEMPLATE sf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_strfuncs?cluster_file=%s&schema=words", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Word (id, label) VALUES (1, '  Hello  ')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT UPPER(TRIM(label)), LOWER(TRIM(label)), LENGTH(TRIM(label)) FROM Word WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var upper, lower string
+	var length int64
+	g.Expect(rows.Scan(&upper, &lower, &length)).To(gomega.Succeed())
+	g.Expect(upper).To(gomega.Equal("HELLO"))
+	g.Expect(lower).To(gomega.Equal("hello"))
+	g.Expect(length).To(gomega.Equal(int64(5)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}

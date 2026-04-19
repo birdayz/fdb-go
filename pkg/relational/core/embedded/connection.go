@@ -644,7 +644,14 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		}
 	}
 
-	// Apply LIMIT.
+	// Apply OFFSET then LIMIT.
+	if sq.offset > 0 {
+		if sq.offset >= int64(len(data)) {
+			data = data[:0]
+		} else {
+			data = data[sq.offset:]
+		}
+	}
 	if sq.limit >= 0 && int64(len(data)) > sq.limit {
 		data = data[:sq.limit]
 	}
@@ -935,6 +942,8 @@ type selectQuery struct {
 	orderBy []orderByClause
 	// limit < 0 means no limit.
 	limit int64
+	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
+	offset int64
 	// groupBy holds GROUP BY column names (nil = no GROUP BY).
 	groupBy []string
 	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
@@ -1261,22 +1270,48 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 		}
 	}
 
-	// Parse LIMIT clause.
+	// Parse LIMIT [OFFSET] clause.
 	limitClauseCtx := simpleTable.LimitClause()
 	if limitClauseCtx != nil {
-		atoms := limitClauseCtx.AllLimitClauseAtom()
-		if len(atoms) > 1 {
-			// MySQL allows "LIMIT offset, count" — reject for simplicity.
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"LIMIT offset,count syntax is not supported; use LIMIT count")
-		}
-		if len(atoms) == 1 && atoms[0].DecimalLiteral() != nil {
-			n, parseErr := strconv.ParseInt(atoms[0].DecimalLiteral().GetText(), 10, 64)
+		parseLimitAtom := func(a antlrgen.ILimitClauseAtomContext, label string) (int64, error) {
+			if a == nil || a.DecimalLiteral() == nil {
+				return 0, nil
+			}
+			n, parseErr := strconv.ParseInt(a.DecimalLiteral().GetText(), 10, 64)
 			if parseErr != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-					"invalid LIMIT value %q: %v", atoms[0].DecimalLiteral().GetText(), parseErr)
+				return 0, api.NewErrorf(api.ErrCodeInvalidParameter, "invalid %s value %q: %v", label, a.DecimalLiteral().GetText(), parseErr)
+			}
+			return n, nil
+		}
+		// Grammar exposes GetLimit() / GetOffset() for "LIMIT n OFFSET m" form,
+		// and AllLimitClauseAtom() for the MySQL "LIMIT offset, count" form.
+		if limitClauseCtx.GetLimit() != nil {
+			n, parseErr := parseLimitAtom(limitClauseCtx.GetLimit(), "LIMIT")
+			if parseErr != nil {
+				return nil, parseErr
 			}
 			sq.limit = n
+			if limitClauseCtx.GetOffset() != nil {
+				off, parseErr := parseLimitAtom(limitClauseCtx.GetOffset(), "OFFSET")
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				sq.offset = off
+			}
+		} else {
+			atoms := limitClauseCtx.AllLimitClauseAtom()
+			if len(atoms) > 1 {
+				// MySQL allows "LIMIT offset, count" — reject for simplicity.
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"LIMIT offset,count syntax is not supported; use LIMIT count OFFSET n")
+			}
+			if len(atoms) == 1 {
+				n, parseErr := parseLimitAtom(atoms[0], "LIMIT")
+				if parseErr != nil {
+					return nil, parseErr
+				}
+				sq.limit = n
+			}
 		}
 	}
 
@@ -1811,8 +1846,13 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 	}
 }
 
-// evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, etc.).
+// evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, CASE, etc.).
 func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+	// Handle CASE expressions routed through SpecificFunctionCall.
+	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
+		return evalSpecificFunction(msg, sf.SpecificFunction())
+	}
+
 	var name string
 	var args antlrgen.IFunctionArgsContext
 	switch f := fc.(type) {
@@ -1853,9 +1893,144 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			return v, nil
 		}
 		return evalExpr(msg, fArgs[1].Expression())
+	case "UPPER":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER requires 1 argument")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER: argument must be string, got %T", v)
+		}
+		return strings.ToUpper(s), nil
+	case "LOWER":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER requires 1 argument")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER: argument must be string, got %T", v)
+		}
+		return strings.ToLower(s), nil
+	case "LENGTH", "LEN":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
+		}
+		return int64(len(s)), nil
+	case "TRIM":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM: argument must be string, got %T", v)
+		}
+		return strings.TrimSpace(s), nil
+	case "ABS":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		switch n := v.(type) {
+		case int64:
+			if n < 0 {
+				return -n, nil
+			}
+			return n, nil
+		case float64:
+			if n < 0 {
+				return -n, nil
+			}
+			return n, nil
+		default:
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS: argument must be numeric, got %T", v)
+		}
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
 	}
+}
+
+// evalSpecificFunction handles grammar-level SpecificFunction nodes: CASE WHEN ... END.
+func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
+	switch c := sf.(type) {
+	case *antlrgen.CaseFunctionCallContext:
+		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
+		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).
+		for _, alt := range c.AllCaseFuncAlternative() {
+			ok, err := evalExprPredicate(msg, alt.GetCondition().Expression())
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return evalExpr(msg, alt.GetConsequent().Expression())
+			}
+		}
+		if c.GetElseArg() != nil {
+			return evalExpr(msg, c.GetElseArg().Expression())
+		}
+		return nil, nil
+	case *antlrgen.CaseExpressionFunctionCallContext:
+		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
+		subject, err := evalExpr(msg, c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		for _, alt := range c.AllCaseFuncAlternative() {
+			whenVal, wErr := evalExpr(msg, alt.GetCondition().Expression())
+			if wErr != nil {
+				return nil, wErr
+			}
+			if compareValues(subject, whenVal) == 0 {
+				return evalExpr(msg, alt.GetConsequent().Expression())
+			}
+		}
+		if c.GetElseArg() != nil {
+			return evalExpr(msg, c.GetElseArg().Expression())
+		}
+		return nil, nil
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)
+	}
+}
+
+// isTruthy returns true when v is a non-nil, non-zero boolean or non-zero numeric.
+func isTruthy(v any) bool {
+	if v == nil {
+		return false
+	}
+	switch n := v.(type) {
+	case bool:
+		return n
+	case int64:
+		return n != 0
+	case float64:
+		return n != 0
+	case string:
+		return n != ""
+	}
+	return true
 }
 
 func applyMathOp(left, right any, op string) (any, error) {
