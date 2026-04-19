@@ -4651,6 +4651,18 @@ func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string
 			return nil, err
 		}
 		return ok, nil
+	case *antlrgen.NotExpressionContext:
+		v, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression())
+		if err != nil {
+			return nil, err
+		}
+		return !v, nil
+	case *antlrgen.ExistsExpressionAtomContext:
+		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
+		if err != nil {
+			return nil, err
+		}
+		return ok, nil
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in map eval", expr)
 	}
