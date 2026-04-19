@@ -347,6 +347,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **CAST(expr AS type)** — DataTypeFunctionCallContext in evalSpecificFunction; castValue helper for BIGINT/INTEGER/FLOAT/DOUBLE/STRING/BOOLEAN. swingshift-33.
 - [x] **SUBSTRING/SUBSTR, REPLACE, IF/IIF** — string/conditional functions; BinaryComparisonPredicateContext now handled in evalExprAtom (comparisons as values). 1 integration test. swingshift-33.
 - [x] **FLOOR/CEIL/CEILING/ROUND/MOD/POWER/POW/SIGN** — math functions. 1 integration test. swingshift-33.
+- [x] **compound HAVING (AND/OR/NOT)** — logical operators in HAVING clause via evalHaving recursion. swingshift-33.
+- [x] **INNER JOIN and LEFT OUTER JOIN** — execSelectJoin: nested-loop join, ON condition via evalHaving on merged map, SELECT * across both tables, ORDER BY/LIMIT. Detects LEFT/RIGHT grammar ambiguity (keywords are in keywordsCanBeId). 2 integration tests. swingshift-33.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
