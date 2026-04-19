@@ -42,3 +42,13 @@ tests:
   # rejects fractional floats, not silent truncate-to-0).
   - query: SELECT LEFT(s, 3.5) FROM t WHERE id = 1
     error_code: "22023"
+  # UPPER/LOWER — propagate NULL, error on non-string.
+  - query: SELECT UPPER(s) FROM t WHERE id = 1
+    rows:
+      - ['HELLO WORLD']
+  - query: SELECT LOWER('ABCxyz') FROM t WHERE id = 1
+    rows:
+      - ['abcxyz']
+  - query: SELECT UPPER(s) FROM t WHERE id = 3
+    rows:
+      - [~]
