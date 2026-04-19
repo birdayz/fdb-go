@@ -15,8 +15,8 @@ tests:
   - query: SELECT AVG(v) FROM t
     rows:
       - [2.0]
-  # AVG that is not a whole number — 6/4 = 1.5 (integer division would
-  # truncate to 1).
+  # AVG that is not a whole number — AVG({1,2}) = 3/2 = 1.5 (integer
+  # division would truncate to 1).
   - query: SELECT AVG(v) FROM t WHERE v <= 2
     rows:
       - [1.5]
