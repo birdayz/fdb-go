@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,33 @@ func TestConfigGetContexts_MarksActive(t *testing.T) {
 	// Preservation of config-file order (local before prod).
 	if strings.Index(got, "local") > strings.Index(got, "prod") {
 		t.Errorf("contexts not in config-file order:\n%s", got)
+	}
+}
+
+func TestConfigGetContexts_JSONArray(t *testing.T) {
+	writeTestConfig(t, "prod")
+	c := newConfigGetContextsCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows, got %d:\n%s", len(rows), out.String())
+	}
+	// Order preserved (local before prod).
+	if rows[0]["name"] != "local" || rows[1]["name"] != "prod" {
+		t.Errorf("expected [local, prod], got: %v", rows)
+	}
+	// Active marker.
+	if rows[0]["active"] != false || rows[1]["active"] != true {
+		t.Errorf("expected prod active, local inactive: %v", rows)
 	}
 }
 

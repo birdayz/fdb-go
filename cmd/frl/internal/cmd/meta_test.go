@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,36 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
+
+func TestWriteTypesListJSON_Shape(t *testing.T) {
+	t.Parallel()
+	md := buildDemoMetaData(t)
+	var buf bytes.Buffer
+	if err := writeTypesListJSON(&buf, md); err != nil {
+		t.Fatalf("writeTypesListJSON: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, buf.String())
+	}
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows, got %d:\n%s", len(rows), buf.String())
+	}
+	// Sorted: Customer < Order < TypedRecord.
+	want := []string{"Customer", "Order", "TypedRecord"}
+	for i, w := range want {
+		if rows[i]["name"] != w {
+			t.Errorf("row %d name = %v; want %q", i, rows[i]["name"], w)
+		}
+		if _, ok := rows[i]["primary_key"]; !ok {
+			t.Errorf("row %d missing primary_key", i)
+		}
+	}
+	// since_version is 0 by default and should be elided (omitempty).
+	if _, present := rows[0]["since_version"]; present {
+		t.Errorf("since_version=0 should be omitted; got present:\n%s", buf.String())
+	}
+}
 
 func TestWriteTypesList_RendersFixture(t *testing.T) {
 	t.Parallel()

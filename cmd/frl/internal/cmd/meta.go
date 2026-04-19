@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -108,16 +110,24 @@ func newMetaTypesCmd() *cobra.Command {
 }
 
 func newMetaTypesLsCmd() *cobra.Command {
-	var contextName, metaFile string
+	var contextName, metaFile, outputFmt string
 	c := &cobra.Command{
 		Use:   "ls",
 		Short: "List record types with primary-key fields",
 		Long: "Lists every record type in the metadata with its primary-key " +
 			"fields. Note: FDB-store metadata sources are not yet supported " +
 			"by this command; configure `meta_file` in your context or use " +
-			"--meta-file.",
+			"--meta-file.\n\n" +
+			"--output / -o: 'text' (default, tabwriter) or 'json' (array of " +
+			"{name, primary_key, since_version}).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+				// ok
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
 				return err
@@ -136,12 +146,54 @@ func newMetaTypesLsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if outputFmt == "json" {
+				return writeTypesListJSON(cmd.OutOrStdout(), md)
+			}
 			return writeTypesList(cmd.OutOrStdout(), md)
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
 	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
+}
+
+// typesListRow is the JSON row shape emitted by `meta types ls -o json`.
+type typesListRow struct {
+	Name         string `json:"name"`
+	PrimaryKey   string `json:"primary_key"`
+	SinceVersion int    `json:"since_version,omitempty"` // 0 elided per convention
+}
+
+// writeTypesListJSON renders the record-type list as a JSON array sorted
+// by name. Shape matches writeTypesList's columns one-to-one so operators
+// can switch between formats without re-learning fields.
+func writeTypesListJSON(out io.Writer, md *recordlayer.RecordMetaData) error {
+	rts := md.RecordTypes()
+	names := make([]string, 0, len(rts))
+	for n := range rts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	rows := make([]typesListRow, 0, len(names))
+	for _, name := range names {
+		rt := rts[name]
+		pk := "(unset)"
+		if rt.PrimaryKey != nil {
+			if fn := rt.PrimaryKey.FieldNames(); len(fn) > 0 {
+				pk = strings.Join(fn, ",")
+			}
+		}
+		rows = append(rows, typesListRow{
+			Name:         name,
+			PrimaryKey:   pk,
+			SinceVersion: rt.SinceVersion,
+		})
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rows)
 }
 
 func newMetaGetCmd() *cobra.Command {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -58,16 +59,30 @@ func newConfigCurrentContextCmd() *cobra.Command {
 // with '*'. No sorting — order in config.yaml is preserved so operators
 // can reason about their file.
 func newConfigGetContextsCmd() *cobra.Command {
-	return &cobra.Command{
+	var outputFmt string
+	c := &cobra.Command{
 		Use:   "get-contexts",
 		Short: "List all configured contexts",
-		Args:  cobra.NoArgs,
+		Long: "Prints one line per context; '*' marks the active one. Order " +
+			"preserves the config.yaml layout.\n\n" +
+			"--output / -o: 'text' (default) or 'json' (array of " +
+			"{name, active} objects — use `jq 'map(select(.active)) | .[0].name'` " +
+			"to script the active context).",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
 			}
 			current := cfg.GetCurrentContext()
+			if outputFmt == "json" {
+				return writeContextsJSON(cmd.OutOrStdout(), cfg.GetContexts(), current)
+			}
 			if len(cfg.GetContexts()) == 0 {
 				_, err = fmt.Fprintln(cmd.OutOrStdout(), "(no contexts configured)")
 				return err
@@ -84,6 +99,27 @@ func newConfigGetContextsCmd() *cobra.Command {
 			return nil
 		},
 	}
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
+	return c
+}
+
+// contextRow is the JSON shape emitted by `config get-contexts -o json`.
+type contextRow struct {
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+}
+
+func writeContextsJSON(out interface{ Write([]byte) (int, error) }, contexts []*configv1.Context, current string) error {
+	rows := make([]contextRow, 0, len(contexts))
+	for _, ctx := range contexts {
+		rows = append(rows, contextRow{
+			Name:   ctx.GetName(),
+			Active: ctx.GetName() == current,
+		})
+	}
+	enc := json.NewEncoder(&writerAdapter{out})
+	enc.SetIndent("", "  ")
+	return enc.Encode(rows)
 }
 
 func newConfigSchemaCmd() *cobra.Command {
