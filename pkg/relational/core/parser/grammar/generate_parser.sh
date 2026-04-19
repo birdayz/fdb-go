@@ -39,35 +39,42 @@ if [[ -z "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
     exit 1
 fi
 
-# Use Bazel's hermetic JDK. @bazel_tools//tools/jdk:current_java_runtime is
-# pulled into runfiles via the 'data' attribute; rules_java's toolchain lays
-# it out under runfiles at something like
-# `rules_java++toolchains+remotejdk21_<os>/bin/java`. Platform suffix varies,
-# so we probe instead of hard-coding.
+# Use Bazel's hermetic JDK. `.bazelrc` pins `java_runtime_version=remotejdk_21`,
+# so rules_java ships the JDK as external repo `rules_java++toolchains+remotejdk21_<os>`.
+# We pulled it into runfiles via the `toolchains` attribute on the sh_binary.
+# rlocation works for both RUNFILES_DIR and RUNFILES_MANIFEST_FILE modes.
 find_java() {
-    # 1. $JAVA_HOME (rules_java sets this for java_binary wrappers; may be
-    #    unset for plain sh_binary targets — that's why we fall through).
     if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
         echo "${JAVA_HOME}/bin/java"
         return 0
     fi
-    # 2. Search the runfiles dir for any bin/java shipped by the jdk
-    #    runtime we pulled in via data.
-    for root in "${RUNFILES_DIR:-}" "$(dirname "${BASH_SOURCE[0]}").runfiles"; do
-        if [[ -d "$root" ]]; then
-            local j
-            j="$(find "$root" -path "*jdk*/bin/java" -type f 2>/dev/null | head -1)"
-            if [[ -x "$j" ]]; then
-                echo "$j"
-                return 0
-            fi
-        fi
-    done
+    local os arch j
+    case "$(uname -s)" in
+        Linux*)   os="linux"   ;;
+        Darwin*)  os="macos"   ;;
+        *)        os="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|amd64) arch=""           ;;  # default variant has no arch suffix
+        arm64|aarch64) arch="_aarch64"  ;;
+        *) arch="" ;;
+    esac
+    # Try rlocation with the canonical remote_jdk21 path first.
+    j="$(rlocation "rules_java++toolchains+remotejdk21_${os}${arch}/bin/java" 2>/dev/null || true)"
+    if [[ -x "$j" ]]; then
+        echo "$j"
+        return 0
+    fi
+    # Fallback: search runfiles dir (covers RUNFILES_DIR mode only).
+    if [[ -d "${RUNFILES_DIR:-/dev/null}" ]]; then
+        j="$(find "$RUNFILES_DIR" -path "*jdk*/bin/java" -type f 2>/dev/null | head -1)"
+        [[ -x "$j" ]] && { echo "$j"; return 0; }
+    fi
     return 1
 }
 JAVA_BIN="$(find_java)" || {
     echo "ERROR: cannot locate Bazel's hermetic JDK under runfiles." >&2
-    echo "       JAVA_HOME=${JAVA_HOME:-unset}  RUNFILES_DIR=${RUNFILES_DIR:-unset}" >&2
+    echo "       JAVA_HOME=${JAVA_HOME:-unset}  RUNFILES_DIR=${RUNFILES_DIR:-unset}  RUNFILES_MANIFEST_FILE=${RUNFILES_MANIFEST_FILE:-unset}" >&2
     exit 1
 }
 
