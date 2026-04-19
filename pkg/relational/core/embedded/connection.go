@@ -2575,7 +2575,8 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		"cannot convert %T to proto field kind %s", val, fd.Kind())
 }
 
-// evalExpr evaluates a SET expression from an UPDATE statement against the current row msg.
+// evalExpr evaluates an expression against msg, returning a scalar driver.Value.
+// Used in SELECT projections, UPDATE SET, and WHERE/HAVING predicates.
 // Supports: literals, column references, and binary arithmetic (+, -, *, /).
 func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
@@ -2587,8 +2588,8 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 		}
 		return b, nil
 	}
-	// If this is a predicated expression that has a predicate modifier (IN, IS, LIKE,
-	// BETWEEN) or contains a binary comparison, evaluate it as a boolean value.
+	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate via
+	// evalExprPredicate which handles the full predicate tree.
 	if pred.Predicate() != nil {
 		b, err := evalExprPredicate(msg, expr)
 		if err != nil {
