@@ -3139,3 +3139,57 @@ func TestFDB_LeftJoin(t *testing.T) {
 	g.Expect(amounts[0]).To(gomega.Equal(int64(100)))
 	g.Expect(amounts[1]).To(gomega.BeNil()) // Bob has no orders → NULL
 }
+
+func TestFDB_JoinWhere(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jw_tmpl
+		CREATE TABLE Category (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Product (id BIGINT NOT NULL, cat_id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_where/main WITH TEMPLATE jw_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_where?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, name) VALUES (1, 'Electronics')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, name) VALUES (2, 'Books')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, cat_id, price) VALUES (1, 1, 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, cat_id, price) VALUES (2, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, cat_id, price) VALUES (3, 2, 15)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// JOIN + WHERE: electronics products with price > 300
+	rows, err := db.QueryContext(ctx, `
+		SELECT Product.id, Product.price
+		FROM Product
+		INNER JOIN Category ON Product.cat_id = Category.id
+		WHERE Category.name = 'Electronics' AND Product.price > 300
+		ORDER BY Product.price DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	var prices []int64
+	for rows.Next() {
+		var id, price int64
+		g.Expect(rows.Scan(&id, &price)).To(gomega.Succeed())
+		ids = append(ids, id)
+		prices = append(prices, price)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1}))
+	g.Expect(prices).To(gomega.Equal([]int64{500}))
+}

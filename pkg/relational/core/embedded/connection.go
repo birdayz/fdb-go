@@ -432,7 +432,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					}
 					// Evaluate ON condition.
 					if jc.onExpr != nil {
-						ok, onErr := evalHaving(combined, jc.onExpr)
+						ok, onErr := evalPredicateOnMapExpr(combined, jc.onExpr)
 						if onErr != nil {
 							return nil, onErr
 						}
@@ -489,7 +489,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				filtered = append(filtered, row)
 				continue
 			}
-			ok, wErr := evalHaving(row, sq.whereExpr.Expression())
+			ok, wErr := evalPredicateOnMapExpr(row, sq.whereExpr.Expression())
 			if wErr != nil {
 				return nil, wErr
 			}
@@ -3541,7 +3541,11 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING expression %T", expr)
 	}
-	// The HAVING expression atom is expected to be a BinaryComparisonPredicateContext.
+	// WHERE-style predicate: expressionAtom + separate predicate (IS NULL, LIKE, BETWEEN, IN, =).
+	if pred.Predicate() != nil {
+		return evalPredicateOnMap(row, pred)
+	}
+	// HAVING-style: the full comparison is the expression atom (BinaryComparisonPredicateContext).
 	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING supports only comparison predicates, got %T", pred.ExpressionAtom())
@@ -3618,6 +3622,297 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 		return cmp >= 0, nil
 	}
 	return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING: unsupported operator %q", opText)
+}
+
+// evalExprAtomOnMap resolves an expression atom using a map[string]driver.Value
+// row (used for JOIN WHERE and ON condition evaluation).
+func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
+	switch a := atom.(type) {
+	case *antlrgen.ConstantExpressionAtomContext:
+		v, err := evalConstant(a.Constant())
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	case *antlrgen.FullColumnNameExpressionAtomContext:
+		name := fullIdToName(a.FullColumnName().FullId())
+		v, found := row[name]
+		if !found {
+			// Try unqualified: "Order.amount" → "amount".
+			if dot := strings.LastIndex(name, "."); dot >= 0 {
+				v, found = row[name[dot+1:]]
+			}
+		}
+		if !found {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in row", name)
+		}
+		return v, nil
+	case *antlrgen.BinaryComparisonPredicateContext:
+		left, err := evalExprAtomOnMap(row, a.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		right, err := evalExprAtomOnMap(row, a.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		cmp := compareValues(left, right)
+		switch a.ComparisonOperator().GetText() {
+		case "=":
+			return cmp == 0, nil
+		case "!=", "<>":
+			return cmp != 0, nil
+		case "<":
+			return cmp < 0, nil
+		case ">":
+			return cmp > 0, nil
+		case "<=":
+			return cmp <= 0, nil
+		case ">=":
+			return cmp >= 0, nil
+		}
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator")
+	case *antlrgen.MathExpressionAtomContext:
+		left, err := evalExprAtomOnMap(row, a.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		right, err := evalExprAtomOnMap(row, a.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		return applyArithmeticOp(left, right, a.MathOperator().GetText())
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom type %T in map eval", atom)
+	}
+}
+
+// evalPredicateOnMap evaluates a WHERE-style PredicatedExpressionContext against
+// a map[string]driver.Value row. Handles IS NULL, LIKE, BETWEEN, IN, comparisons.
+func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+	fieldVal, err := evalExprAtomOnMap(row, pred.ExpressionAtom())
+	if err != nil {
+		return false, err
+	}
+
+	if pred.Predicate() == nil {
+		// Leaf expression (e.g. a boolean constant) — treat truthiness.
+		return isTruthy(fieldVal), nil
+	}
+
+	switch p := pred.Predicate().(type) {
+	case *antlrgen.IsExpressionContext:
+		negated := p.NOT() != nil
+		isNull := fieldVal == nil
+		switch {
+		case p.NULL_LITERAL() != nil:
+			res := isNull
+			if negated {
+				return !res, nil
+			}
+			return res, nil
+		case p.TRUE() != nil:
+			b, _ := fieldVal.(bool)
+			res := b
+			if negated {
+				return !res, nil
+			}
+			return res, nil
+		case p.FALSE() != nil:
+			b, _ := fieldVal.(bool)
+			res := !b && fieldVal != nil
+			if negated {
+				return !res, nil
+			}
+			return res, nil
+		}
+		return false, nil
+
+	case *antlrgen.LikePredicateContext:
+		if fieldVal == nil {
+			return false, nil
+		}
+		s, ok := fieldVal.(string)
+		if !ok {
+			s = fmt.Sprintf("%v", fieldVal)
+		}
+		patternLit := p.GetPattern().GetText()
+		matched := likeMatch(stripStringLiteralQuotes(patternLit), s)
+		if p.NOT() != nil {
+			return !matched, nil
+		}
+		return matched, nil
+
+	case *antlrgen.BetweenComparisonPredicateContext:
+		if fieldVal == nil {
+			return false, nil
+		}
+		lo, loErr := evalExprAtomOnMap(row, p.GetLeft())
+		if loErr != nil {
+			return false, loErr
+		}
+		hi, hiErr := evalExprAtomOnMap(row, p.GetRight())
+		if hiErr != nil {
+			return false, hiErr
+		}
+		result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
+		if p.NOT() != nil {
+			return !result, nil
+		}
+		return result, nil
+
+	case *antlrgen.InPredicateContext:
+		if fieldVal == nil {
+			if p.NOT() != nil {
+				return true, nil // NULL NOT IN (...) = UNKNOWN → false per SQL; but treat conservatively
+			}
+			return false, nil
+		}
+		if p.InList().Expressions() == nil {
+			return p.NOT() != nil, nil
+		}
+		for _, inExpr := range p.InList().Expressions().AllExpression() {
+			ep, ok := inExpr.(*antlrgen.PredicatedExpressionContext)
+			if !ok {
+				continue
+			}
+			litVal, litErr := evalExprAtomOnMap(row, ep.ExpressionAtom())
+			if litErr != nil {
+				return false, litErr
+			}
+			if valuesEqual(fieldVal, litVal) {
+				if p.NOT() != nil {
+					return false, nil
+				}
+				return true, nil
+			}
+		}
+		if p.NOT() != nil {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	// Fallback: interpret as binary comparison (the predicate part has = / <> / < / > / <= / >=).
+	// This happens when the predicate is NOT a special predicate type above.
+	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if ok {
+		rightVal, err := evalExprAtomOnMap(row, bcp.GetRight())
+		if err != nil {
+			return false, err
+		}
+		cmp := compareValues(fieldVal, rightVal)
+		switch bcp.ComparisonOperator().GetText() {
+		case "=":
+			return cmp == 0, nil
+		case "!=", "<>":
+			return cmp != 0, nil
+		case "<":
+			return cmp < 0, nil
+		case ">":
+			return cmp > 0, nil
+		case "<=":
+			return cmp <= 0, nil
+		case ">=":
+			return cmp >= 0, nil
+		}
+	}
+	return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported predicate type %T in map eval", pred.Predicate())
+}
+
+// evalPredicateOnMapExpr evaluates a general IExpressionContext against a map row.
+// Mirrors evalExprPredicate but uses map-based column resolution.
+func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+	switch e := expr.(type) {
+	case *antlrgen.LogicalExpressionContext:
+		left, err := evalPredicateOnMapExpr(row, e.Expression(0))
+		if err != nil {
+			return false, err
+		}
+		op := e.LogicalOperator()
+		if op.AND() != nil {
+			if !left {
+				return false, nil
+			}
+			return evalPredicateOnMapExpr(row, e.Expression(1))
+		}
+		if left {
+			return true, nil
+		}
+		return evalPredicateOnMapExpr(row, e.Expression(1))
+	case *antlrgen.NotExpressionContext:
+		v, err := evalPredicateOnMapExpr(row, e.Expression())
+		if err != nil {
+			return false, err
+		}
+		return !v, nil
+	case *antlrgen.PredicatedExpressionContext:
+		if e.Predicate() != nil {
+			return evalPredicateOnMap(row, e)
+		}
+		// No separate predicate — expression atom (e.g. BinaryComparisonPredicateContext).
+		bcp, ok := e.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+		if ok {
+			left, err := evalExprAtomOnMap(row, bcp.GetLeft())
+			if err != nil {
+				return false, err
+			}
+			right, err := evalExprAtomOnMap(row, bcp.GetRight())
+			if err != nil {
+				return false, err
+			}
+			cmp := compareValues(left, right)
+			switch bcp.ComparisonOperator().GetText() {
+			case "=":
+				return cmp == 0, nil
+			case "!=", "<>":
+				return cmp != 0, nil
+			case "<":
+				return cmp < 0, nil
+			case ">":
+				return cmp > 0, nil
+			case "<=":
+				return cmp <= 0, nil
+			case ">=":
+				return cmp >= 0, nil
+			}
+		}
+		v, err := evalExprAtomOnMap(row, e.ExpressionAtom())
+		if err != nil {
+			return false, err
+		}
+		return isTruthy(v), nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T in map eval", expr)
+	}
+}
+
+// applyArithmeticOp applies +/-/*// to two driver.Values (used in map-based eval).
+func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
+	lf, lok := toFloat64(left)
+	rf, rok := toFloat64(right)
+	if !lok || !rok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "arithmetic requires numeric operands, got %T and %T", left, right)
+	}
+	switch op {
+	case "+":
+		return lf + rf, nil
+	case "-":
+		return lf - rf, nil
+	case "*":
+		return lf * rf, nil
+	case "/":
+		if rf == 0 {
+			return nil, nil // NULL for division by zero
+		}
+		return lf / rf, nil
+	case "%":
+		if rf == 0 {
+			return nil, nil
+		}
+		return math.Mod(lf, rf), nil
+	}
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported arithmetic operator %q", op)
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
