@@ -634,8 +634,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					// TODO: SUM(DISTINCT col) doesn't accumulate sums today
 					// (distinct path only increments counts[i]); this emits
 					// NULL correctly for all-NULL DISTINCT groups but would
-					// return NULL for non-empty DISTINCT groups too until
-					// the DISTINCT SUM path is implemented.
+					// return 0 (incorrect — should be the distinct sum) for
+					// non-empty DISTINCT groups until the DISTINCT SUM path
+					// accumulates into sums[i].
 					if gs.counts[i] > 0 {
 						rowVals[i] = gs.sums[i]
 					}
