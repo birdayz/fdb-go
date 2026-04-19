@@ -845,7 +845,15 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 			}
 			var keys [][]driver.Value
-			if hasExpr && len(filtered) == len(data) {
+			if hasExpr {
+				// Aggregation shrinks rows, breaking the filtered[i]↔data[i]
+				// lockstep needed to evaluate ORDER BY expressions. Plain
+				// ORDER BY col / ORDER BY SUM(col) still works via the
+				// colName path (columnNameFromExpr recognises aggregates).
+				if len(filtered) != len(data) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"ORDER BY on an arithmetic / function expression is not supported when the query also aggregates; use a column or a plain aggregate (e.g. ORDER BY SUM(col))")
+				}
 				keys = make([][]driver.Value, len(data))
 				for i := range data {
 					keys[i] = make([]driver.Value, len(sq.orderBy))
@@ -1001,7 +1009,11 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			}
 		}
 		var keys [][]driver.Value
-		if hasExpr && len(mapRows) == len(outRows) {
+		if hasExpr {
+			if len(mapRows) != len(outRows) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"ORDER BY on an arithmetic / function expression is not supported when the query also aggregates; use a column or a plain aggregate (e.g. ORDER BY SUM(col))")
+			}
 			keys = make([][]driver.Value, len(outRows))
 			for i := range outRows {
 				keys[i] = make([]driver.Value, len(sq.orderBy))

@@ -4480,18 +4480,22 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
+	// Insert Alice (id=1) FIRST but with LOW total, Bob (id=2) LAST but HIGH total.
+	// Natural group-iteration order (by insertion / id) gives [Alice, Bob]; ORDER
+	// BY SUM DESC must flip that to [Bob, Alice]. This catches a silent ORDER-BY
+	// no-op on aggregate queries.
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (1, 1, 100)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (1, 1, 50)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 1, 200)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 500)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 50)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 1000)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE + JOIN + GROUP BY + HAVING + ORDER BY expression + LIMIT.
+	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate + LIMIT.
 	rows, err := db.QueryContext(ctx, `
 		WITH big AS (SELECT id, customer_id, amount FROM Sales WHERE amount >= 50)
 		SELECT Customer.name, SUM(big.amount)
@@ -4522,8 +4526,8 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]r{
-		{"Alice", 300},
-		{"Bob", 50},
+		{"Bob", 1500},
+		{"Alice", 50},
 	}))
 }
 
@@ -4685,4 +4689,84 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(vals).To(gomega.Equal([]string{"YES", "NO"}))
+}
+
+func TestFDB_AggregateOrderByStrict(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_agg_ob_strict")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_ob_strict")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_ob_strict_tmpl
+		CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_ob_strict/main WITH TEMPLATE agg_ob_strict_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_agg_ob_strict?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Region 'a' inserted FIRST with LOW total; region 'z' inserted LAST with HIGH total.
+	// So insertion order (likely natural scan order) is [a, z] but ORDER BY SUM DESC should be [z, a].
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (1, 'a', 10)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (2, 'a', 20)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (3, 'z', 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (4, 'z', 1000)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CTE + GROUP BY + ORDER BY SUM(amount) DESC. If ORDER BY is a no-op, we'd get [a, z].
+	rows, err := db.QueryContext(ctx, `
+		WITH s AS (SELECT id, region, amount FROM Sale)
+		SELECT region, SUM(amount) FROM s GROUP BY region ORDER BY SUM(amount) DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var regions []string
+	for rows.Next() {
+		var r string
+		var t any
+		g.Expect(rows.Scan(&r, &t)).To(gomega.Succeed())
+		regions = append(regions, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(regions).To(gomega.Equal([]string{"z", "a"})) // z has 1500, a has 30.
+}
+
+func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ob_agg_err")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_agg_err")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_agg_err_tmpl
+		CREATE TABLE S (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_agg_err/main WITH TEMPLATE ob_agg_err_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ob_agg_err?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO S (id, region, amount) VALUES (1, 'a', 10)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO S (id, region, amount) VALUES (2, 'b', 20)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// ORDER BY SUM(amount) * 2 — arithmetic wrapping an aggregate isn't supported
+	// (aggregation shrinks rows, breaking per-row expression evaluation). Any
+	// error is acceptable; what's NOT acceptable is a silent no-op ORDER BY.
+	_, err = db.QueryContext(ctx, `
+		WITH s AS (SELECT id, region, amount FROM S)
+		SELECT region, SUM(amount) FROM s GROUP BY region ORDER BY SUM(amount) * 2 DESC`)
+	g.Expect(err).To(gomega.HaveOccurred())
 }
