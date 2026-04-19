@@ -3045,6 +3045,10 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
+		// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+		if left == nil || right == nil {
+			return false, nil
+		}
 		cmp := compareValues(left, right)
 		switch a.ComparisonOperator().GetText() {
 		case "=":
@@ -4531,6 +4535,10 @@ func evalHaving(ctx context.Context, conn *EmbeddedConnection, row map[string]dr
 	if err != nil {
 		return false, err
 	}
+	// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
+	if leftVal == nil || rightVal == nil {
+		return false, nil
+	}
 	opText := compPred.ComparisonOperator().GetText()
 	cmp := compareValues(leftVal, rightVal)
 	switch opText {
@@ -4581,6 +4589,10 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		right, err := evalExprAtomOnMap(ctx, conn, row, a.GetRight())
 		if err != nil {
 			return nil, err
+		}
+		// SQL 3-valued logic: NULL comparison → UNKNOWN → false (even NULL = NULL).
+		if left == nil || right == nil {
+			return false, nil
 		}
 		cmp := compareValues(left, right)
 		switch a.ComparisonOperator().GetText() {
