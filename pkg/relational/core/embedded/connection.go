@@ -2457,22 +2457,26 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 	return false, nil
 }
 
-// evalIsNullPredicate handles: col IS [NOT] NULL / IS TRUE / IS FALSE
+// evalIsNullPredicate handles: expr IS [NOT] NULL / IS TRUE / IS FALSE
 func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
-	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IS left side must be a column name, got %T", pred.ExpressionAtom())
-	}
-	colName := fullIdToName(colAtom.FullColumnName().FullId())
-
-	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-	if fd == nil {
-		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
-	}
-	// Use Has() for proto2 optional presence; unset optional = SQL NULL.
+	// Evaluate the expression on the left side (may be a column, function call, etc.).
 	var fieldVal driver.Value
-	if msg.ProtoReflect().Has(fd) {
-		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+		// Column: use proto Has() to distinguish NULL (unset optional) from zero.
+		colName := fullIdToName(colAtom.FullColumnName().FullId())
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		if fd == nil {
+			return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+		}
+		if msg.ProtoReflect().Has(fd) {
+			fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+		}
+	} else {
+		v, err := evalExprAtom(msg, pred.ExpressionAtom())
+		if err != nil {
+			return false, err
+		}
+		fieldVal = v
 	}
 	negated := is.NOT() != nil
 
@@ -2502,30 +2506,26 @@ func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionC
 	}
 }
 
-// evalLikePredicate handles: col [NOT] LIKE 'pattern'
+// evalLikePredicate handles: expr [NOT] LIKE 'pattern'
 // Supports SQL wildcards: % (any sequence) and _ (any single character).
 func evalLikePredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
-	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE left side must be a column name, got %T", pred.ExpressionAtom())
+	rawVal, err := evalExprAtom(msg, pred.ExpressionAtom())
+	if err != nil {
+		return false, err
 	}
-	colName := fullIdToName(colAtom.FullColumnName().FullId())
-
-	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-	if fd == nil {
-		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	if rawVal == nil {
+		return false, nil // NULL LIKE anything = false
 	}
-	if fd.Kind() != protoreflect.StringKind {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string column, got %v", fd.Kind())
+	s, ok2 := rawVal.(string)
+	if !ok2 {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string expression, got %T", rawVal)
 	}
-
-	fieldStr := msg.ProtoReflect().Get(fd).String()
 
 	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.
 	patternLit := like.GetPattern().GetText()
 	pattern := stripStringLiteralQuotes(patternLit)
 
-	matched := likeMatch(pattern, fieldStr)
+	matched := likeMatch(pattern, s)
 	if like.NOT() != nil {
 		return !matched, nil
 	}
