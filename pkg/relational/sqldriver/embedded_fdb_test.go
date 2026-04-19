@@ -5036,6 +5036,12 @@ func TestFDB_LeftRight(t *testing.T) {
 		Scan(&l, &r)).To(gomega.Succeed())
 	g.Expect(l).To(gomega.Equal("ab"))
 	g.Expect(r).To(gomega.Equal("ab"))
+
+	// Negative n: treated as 0, returns empty string.
+	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(name, -5), RIGHT(name, -5) FROM T WHERE id = 1`).
+		Scan(&l, &r)).To(gomega.Succeed())
+	g.Expect(l).To(gomega.Equal(""))
+	g.Expect(r).To(gomega.Equal(""))
 }
 
 func TestFDB_ReversePosition(t *testing.T) {
@@ -5109,6 +5115,11 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	var v sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(-1) FROM T WHERE id = 1`).Scan(&v)).To(gomega.Succeed())
 	g.Expect(v.Valid).To(gomega.BeFalse())
+
+	// EXP overflow → NULL (matches MySQL).
+	var e2 sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT EXP(1000) FROM T WHERE id = 1`).Scan(&e2)).To(gomega.Succeed())
+	g.Expect(e2.Valid).To(gomega.BeFalse())
 }
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {

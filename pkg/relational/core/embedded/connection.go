@@ -3439,7 +3439,11 @@ func evalScalarFunctionCallCore(
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP: argument must be numeric, got %T", v)
 		}
-		return math.Exp(f), nil
+		result := math.Exp(f)
+		if math.IsInf(result, 0) || math.IsNaN(result) {
+			return nil, nil // Overflow / NaN → NULL, matching MySQL.
+		}
+		return result, nil
 	case "LN":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN requires 1 argument")
