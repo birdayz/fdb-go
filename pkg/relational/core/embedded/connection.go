@@ -267,8 +267,10 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 }
 
 // execSysSchemata implements SELECT * FROM INFORMATION_SCHEMA.SCHEMATA.
-// WHERE filtering is not yet supported for system tables.
-func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -301,7 +303,10 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, _ antlrgen.IWh
 
 // execSysTables implements SELECT * FROM INFORMATION_SCHEMA.TABLES.
 // WHERE filtering is not yet supported for system tables.
-func (c *EmbeddedConnection) execSysTables(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -359,7 +364,10 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, _ antlrgen.IWher
 
 // execSysColumns implements SELECT * FROM INFORMATION_SCHEMA.COLUMNS.
 // WHERE filtering is not yet supported for system tables.
-func (c *EmbeddedConnection) execSysColumns(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -435,7 +443,10 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, _ antlrgen.IWhe
 
 // execSysIndexes implements SELECT * FROM INFORMATION_SCHEMA.INDEXES.
 // Returns one row per index across all (database, schema, table) tuples.
-func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+	if where != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
+	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -576,6 +587,17 @@ func stripIdentifierQuotes(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// fullIdToName converts a FullId parse-tree node to a dot-separated,
+// quote-stripped name. Used for table names in INSERT, UPDATE, DELETE.
+func fullIdToName(fid antlrgen.IFullIdContext) string {
+	uids := fid.AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = stripIdentifierQuotes(u.GetText())
+	}
+	return strings.Join(parts, ".")
 }
 
 // protoValueToDriver converts a protoreflect.Value to a driver.Value.
@@ -788,7 +810,7 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		}
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
 	}
-	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only DDL and INSERT statements are supported in this release")
+	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
 }
 
 // execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
@@ -807,7 +829,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 	}
 	var cols []string
 	for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
-		cols = append(cols, uw.Uid().GetText())
+		cols = append(cols, stripIdentifierQuotes(uw.Uid().GetText()))
 	}
 
 	// Only handle VALUES path.
@@ -816,7 +838,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only INSERT ... VALUES (...) is supported")
 	}
 
-	tableName := ins.TableName().FullId().GetText()
+	tableName := fullIdToName(ins.TableName().FullId())
 
 	var totalRows int64
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -980,7 +1002,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := upd.TableName().FullId().GetText()
+	tableName := fullIdToName(upd.TableName().FullId())
 	whereExpr := upd.WhereExpr()
 	updatedElems := upd.AllUpdatedElement()
 
@@ -1040,7 +1062,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			cloned := proto.Clone(rec.Record)
 			clonedRefl := cloned.ProtoReflect()
 			for _, elem := range updatedElems {
-				colName := elem.FullColumnName().FullId().GetText()
+				colName := fullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
@@ -1081,7 +1103,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := del.TableName().FullId().GetText()
+	tableName := fullIdToName(del.TableName().FullId())
 	whereExpr := del.WhereExpr()
 
 	var deleted int64
@@ -1169,7 +1191,7 @@ func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (boo
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE left side must be a column name, got %T", bcp.GetLeft())
 	}
-	colName := colAtom.FullColumnName().FullId().GetText()
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
 
 	valAtom, ok := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
 	if !ok {
@@ -1321,7 +1343,14 @@ func valuesEqual(a, b any) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	// Normalise numeric types to int64/float64 for comparison.
+	// Exact int64 comparison avoids float64 precision loss for large integers
+	// (> 2^53 cannot be represented exactly as float64).
+	if ai, ok1 := a.(int64); ok1 {
+		if bi, ok2 := b.(int64); ok2 {
+			return ai == bi
+		}
+	}
+	// Normalise mixed int64/float64 pairs to float64.
 	toFloat := func(v any) (float64, bool) {
 		switch n := v.(type) {
 		case int64:
