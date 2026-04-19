@@ -277,3 +277,19 @@ func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
 		t.Error("SHOW SCHEMA TEMPLATES: did not find show_tmpl")
 	}
 }
+
+func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t, "/testdb_tmpl_idx")
+	ctx := context.Background()
+
+	ddl := "CREATE SCHEMA TEMPLATE indexed_tmpl " +
+		"CREATE TABLE Order (order_id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (order_id)) " +
+		"CREATE INDEX by_customer ON Order (customer_id)"
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE with index: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE indexed_tmpl"); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
+	}
+}

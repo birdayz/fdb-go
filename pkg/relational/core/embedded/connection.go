@@ -389,6 +389,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	templateID := s.SchemaTemplateId().GetText()
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
+	// First pass: register tables (indexes reference them by name).
 	for _, clause := range s.AllTemplateClause() {
 		td := clause.TableDefinition()
 		if td == nil {
@@ -403,12 +404,47 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		b.AddTable(tableName, cols, pkCols)
 	}
 
+	// Second pass: register indexes.
+	for _, clause := range s.AllTemplateClause() {
+		idxDef := clause.IndexDefinition()
+		if idxDef == nil {
+			continue
+		}
+		if err := parseIndexDefinition(idxDef, b); err != nil {
+			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
+		}
+	}
+
 	tmpl, err := b.Build()
 	if err != nil {
 		return 0, err
 	}
 	action := c.factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
+}
+
+// parseIndexDefinition handles a single CREATE INDEX clause within a schema template.
+// Only INDEX ON SOURCE form (INDEX name ON table (cols)) is supported.
+func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.Builder) error {
+	switch def := idxDef.(type) {
+	case *antlrgen.IndexOnSourceDefinitionContext:
+		indexName := def.GetIndexName().GetText()
+		tableName := def.GetSource().GetText()
+		unique := def.UNIQUE() != nil
+		var cols []string
+		if cl := def.IndexColumnList(); cl != nil {
+			for _, spec := range cl.AllIndexColumnSpec() {
+				cols = append(cols, spec.GetColumnName().GetText())
+			}
+		}
+		if len(cols) == 0 {
+			return fmt.Errorf("index %q has no columns", indexName)
+		}
+		b.AddIndex(tableName, indexName, cols, unique)
+		return nil
+	default:
+		return fmt.Errorf("unsupported index definition type %T; only INDEX … ON … is supported", idxDef)
+	}
 }
 
 // parseTableDefinition extracts column specs and primary key column
