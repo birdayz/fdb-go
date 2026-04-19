@@ -272,7 +272,7 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 - [ ] **Split `connection.go`** (5498 lines, 120 functions) into ~12 files (`exec_select.go`, `exec_join.go`, `exec_dml.go`, `exec_ddl.go`, `exec_sys.go`, `select_parts.go`, `aggregate.go`, `eval_expr.go`, `eval_predicate.go`, `functions.go`, …). Mechanical, no behavioral risk.
 - [ ] **Break up `evalScalarFunctionCallCore`** (576-line switch). Split by family (`evalStringFns`, `evalMathFns`, `evalDateFns`, `evalCastFn`) via `map[string]funcImpl` dispatch.
 - [ ] **Add a `Planner` / `Plan` seam** before Phase 4. `execSelect*` walks the ANTLR parse tree directly; when Cascades lands, there's nowhere to plug in. Define `type Planner interface { Plan(parseTree) (Plan, error) }` + `type Plan interface { Execute(ctx, Transaction) (ResultSet, error) }` and ship a one-impl `NaivePlanner` wrapping today's code.
-- [ ] **Fix `api.Transaction` substitutability.** `store_catalog.checkOpenTxn` and `fdb_transaction.unwrapFDB` do concrete-type assertions, defeating the interface. Add `Unwrap() any` (matches Java's `unwrap<T>`) or a capability interface — otherwise a future remote/gRPC backend is rejected at runtime.
+- [x] **Fix `api.Transaction` substitutability.** ✅ swingshift-35: added `Unwrap() any` to the Transaction interface; all five concrete-type assertions (unwrapFDB, checkOpenTxn, createFDBStore, deleteFDBStore, etc.) now go through `txn.Unwrap()` so a decorator or future remote/gRPC impl that forwards Unwrap continues to satisfy the assertion. Matches Java's `<T> T unwrap(Class<T>)` semantics.
 - [ ] Typed enums for `joinType` / `aggFunc` (currently magic strings).
 
 **Testing gaps (highest ROI item first)**
