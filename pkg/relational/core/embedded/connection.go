@@ -318,7 +318,7 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 			}
 			cols[i] = name
 			if sq.projExprs[i] != nil {
-				v, err := evalExpr(nil, sq.projExprs[i])
+				v, err := evalExpr(ctx, c, nil, sq.projExprs[i])
 				if err != nil {
 					return nil, err
 				}
@@ -1299,7 +1299,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			for i, f := range fullFields {
 				// Check for a computed expression at this position.
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-					v, evalErr := evalExpr(msg, sq.projExprs[i])
+					v, evalErr := evalExpr(ctx, c, msg, sq.projExprs[i])
 					if evalErr != nil {
 						return nil, evalErr
 					}
@@ -2620,7 +2620,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
 				}
-				val, evalErr := evalExpr(nil, exprs[i].Expression())
+				val, evalErr := evalExpr(ctx, c, nil, exprs[i].Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
@@ -2809,11 +2809,11 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 // evalExpr evaluates an expression against msg, returning a scalar driver.Value.
 // Used in SELECT projections, UPDATE SET, and WHERE/HAVING predicates.
 // Supports: literals, column references, and binary arithmetic (+, -, *, /).
-func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
+func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		// Boolean expressions (AND/OR/NOT, comparisons) return bool as a value.
-		b, err := evalExprPredicate(context.TODO(), nil, msg, expr) //nolint:contextcheck // TODO: thread ctx when evalExpr takes ctx
+		b, err := evalExprPredicate(ctx, conn, msg, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -2822,16 +2822,16 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate via
 	// evalExprPredicate which handles the full predicate tree.
 	if pred.Predicate() != nil {
-		b, err := evalExprPredicate(context.TODO(), nil, msg, expr) //nolint:contextcheck // TODO: thread ctx when evalExpr takes ctx
+		b, err := evalExprPredicate(ctx, conn, msg, expr)
 		if err != nil {
 			return nil, err
 		}
 		return b, nil
 	}
-	return evalExprAtom(msg, pred.ExpressionAtom())
+	return evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 }
 
-func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
+func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:
 		return evalConstant(a.Constant())
@@ -2846,24 +2846,24 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 		}
 		return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
 	case *antlrgen.MathExpressionAtomContext:
-		left, err := evalExprAtom(msg, a.GetLeft())
+		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtom(msg, a.GetRight())
+		right, err := evalExprAtom(ctx, conn, msg, a.GetRight())
 		if err != nil {
 			return nil, err
 		}
 		return applyMathOp(left, right, a.MathOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
-		return evalScalarFunctionCall(msg, a.FunctionCall())
+		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
 	case *antlrgen.BinaryComparisonPredicateContext:
 		// Comparison used as a value (e.g. IF(a > b, ...) or CASE WHEN ... END).
-		left, err := evalExprAtom(msg, a.GetLeft())
+		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtom(msg, a.GetRight())
+		right, err := evalExprAtom(ctx, conn, msg, a.GetRight())
 		if err != nil {
 			return nil, err
 		}
@@ -2889,10 +2889,10 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 }
 
 // evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, CASE, etc.).
-func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
 	// Handle CASE expressions routed through SpecificFunctionCall.
 	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return evalSpecificFunction(msg, sf.SpecificFunction())
+		return evalSpecificFunction(ctx, conn, msg, sf.SpecificFunction())
 	}
 
 	var name string
@@ -2914,7 +2914,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 	switch name {
 	case "COALESCE":
 		for _, fa := range fArgs {
-			v, err := evalExpr(msg, fa.Expression())
+			v, err := evalExpr(ctx, conn, msg, fa.Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -2927,19 +2927,19 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IFNULL requires 2 arguments")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		if v != nil {
 			return v, nil
 		}
-		return evalExpr(msg, fArgs[1].Expression())
+		return evalExpr(ctx, conn, msg, fArgs[1].Expression())
 	case "UPPER":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2952,7 +2952,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2965,7 +2965,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2978,7 +2978,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -2991,7 +2991,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3013,7 +3013,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3035,7 +3035,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		case "ROUND":
 			decimals := int64(0)
 			if len(fArgs) >= 2 {
-				dv, derr := evalExpr(msg, fArgs[1].Expression())
+				dv, derr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
 				if derr == nil {
 					if d, ok := dv.(int64); ok {
 						decimals = d
@@ -3058,11 +3058,11 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
 		}
-		av, aerr := evalExpr(msg, fArgs[0].Expression())
+		av, aerr := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if aerr != nil || av == nil {
 			return nil, aerr
 		}
-		bv, berr := evalExpr(msg, fArgs[1].Expression())
+		bv, berr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
 		if berr != nil || bv == nil {
 			return nil, berr
 		}
@@ -3093,11 +3093,11 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
 		}
-		baseV, berr := evalExpr(msg, fArgs[0].Expression())
+		baseV, berr := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if berr != nil || baseV == nil {
 			return nil, berr
 		}
-		expV, eerr := evalExpr(msg, fArgs[1].Expression())
+		expV, eerr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
 		if eerr != nil || expV == nil {
 			return nil, eerr
 		}
@@ -3123,7 +3123,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
 		}
-		v, err := evalExpr(msg, fArgs[0].Expression())
+		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3153,7 +3153,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			if len(fArgs) < 1 {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "CONCAT_WS requires at least 1 argument")
 			}
-			sv, err := evalExpr(msg, fArgs[0].Expression())
+			sv, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -3164,7 +3164,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		}
 		var parts []string
 		for _, fa := range fArgs[startIdx:] {
-			v, err := evalExpr(msg, fa.Expression())
+			v, err := evalExpr(ctx, conn, msg, fa.Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -3178,11 +3178,11 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "NULLIF requires 2 arguments")
 		}
-		a, err := evalExpr(msg, fArgs[0].Expression())
+		a, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
-		b, err2 := evalExpr(msg, fArgs[1].Expression())
+		b, err2 := evalExpr(ctx, conn, msg, fArgs[1].Expression())
 		if err2 != nil {
 			return nil, err2
 		}
@@ -3194,13 +3194,13 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) == 0 {
 			return nil, nil
 		}
-		best, err := evalExpr(msg, fArgs[0].Expression())
+		best, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		isGreatest := name == "GREATEST"
 		for _, fa := range fArgs[1:] {
-			v, verr := evalExpr(msg, fa.Expression())
+			v, verr := evalExpr(ctx, conn, msg, fa.Expression())
 			if verr != nil {
 				return nil, verr
 			}
@@ -3218,12 +3218,12 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SUBSTRING requires at least 2 arguments")
 		}
-		sv, err := evalExpr(msg, fArgs[0].Expression())
+		sv, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || sv == nil {
 			return nil, err
 		}
 		s := fmt.Sprintf("%v", sv)
-		posVal, posErr := evalExpr(msg, fArgs[1].Expression())
+		posVal, posErr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
 		if posErr != nil {
 			return nil, posErr
 		}
@@ -3237,7 +3237,7 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			return "", nil
 		}
 		if len(fArgs) >= 3 {
-			lenVal, lenErr := evalExpr(msg, fArgs[2].Expression())
+			lenVal, lenErr := evalExpr(ctx, conn, msg, fArgs[2].Expression())
 			if lenErr != nil {
 				return nil, lenErr
 			}
@@ -3257,15 +3257,15 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 3 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REPLACE requires 3 arguments")
 		}
-		sv, err := evalExpr(msg, fArgs[0].Expression())
+		sv, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || sv == nil {
 			return nil, err
 		}
-		fromV, err := evalExpr(msg, fArgs[1].Expression())
+		fromV, err := evalExpr(ctx, conn, msg, fArgs[1].Expression())
 		if err != nil || fromV == nil {
 			return nil, err
 		}
-		toV, err := evalExpr(msg, fArgs[2].Expression())
+		toV, err := evalExpr(ctx, conn, msg, fArgs[2].Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -3279,14 +3279,14 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if len(fArgs) < 3 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IF requires 3 arguments")
 		}
-		cond, err := evalExpr(msg, fArgs[0].Expression())
+		cond, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		if isTruthy(cond) {
-			return evalExpr(msg, fArgs[1].Expression())
+			return evalExpr(ctx, conn, msg, fArgs[1].Expression())
 		}
-		return evalExpr(msg, fArgs[2].Expression())
+		return evalExpr(ctx, conn, msg, fArgs[2].Expression())
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
 	}
@@ -3689,46 +3689,46 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 }
 
 // evalSpecificFunction handles grammar-level SpecificFunction nodes: CASE WHEN ... END.
-func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
+func evalSpecificFunction(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
 	switch c := sf.(type) {
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
 		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).
 		for _, alt := range c.AllCaseFuncAlternative() {
-			ok, err := evalExprPredicate(context.TODO(), nil, msg, alt.GetCondition().Expression()) //nolint:contextcheck // TODO: thread ctx when evalScalarFunctionCall takes ctx
+			ok, err := evalExprPredicate(ctx, conn, msg, alt.GetCondition().Expression())
 			if err != nil {
 				return nil, err
 			}
 			if ok {
-				return evalExpr(msg, alt.GetConsequent().Expression())
+				return evalExpr(ctx, conn, msg, alt.GetConsequent().Expression())
 			}
 		}
 		if c.GetElseArg() != nil {
-			return evalExpr(msg, c.GetElseArg().Expression())
+			return evalExpr(ctx, conn, msg, c.GetElseArg().Expression())
 		}
 		return nil, nil
 	case *antlrgen.CaseExpressionFunctionCallContext:
 		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
-		subject, err := evalExpr(msg, c.Expression())
+		subject, err := evalExpr(ctx, conn, msg, c.Expression())
 		if err != nil {
 			return nil, err
 		}
 		for _, alt := range c.AllCaseFuncAlternative() {
-			whenVal, wErr := evalExpr(msg, alt.GetCondition().Expression())
+			whenVal, wErr := evalExpr(ctx, conn, msg, alt.GetCondition().Expression())
 			if wErr != nil {
 				return nil, wErr
 			}
 			if compareValues(subject, whenVal) == 0 {
-				return evalExpr(msg, alt.GetConsequent().Expression())
+				return evalExpr(ctx, conn, msg, alt.GetConsequent().Expression())
 			}
 		}
 		if c.GetElseArg() != nil {
-			return evalExpr(msg, c.GetElseArg().Expression())
+			return evalExpr(ctx, conn, msg, c.GetElseArg().Expression())
 		}
 		return nil, nil
 	case *antlrgen.DataTypeFunctionCallContext:
 		// CAST(expr AS type)
-		val, err := evalExpr(msg, c.Expression())
+		val, err := evalExpr(ctx, conn, msg, c.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -3992,7 +3992,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
 				}
-				val, evalErr := evalExpr(cloned, elem.Expression())
+				val, evalErr := evalExpr(ctx, c, cloned, elem.Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
@@ -4154,14 +4154,14 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 			case *antlrgen.InPredicateContext:
 				return evalInPredicate(ctx, conn, msg, e, p)
 			case *antlrgen.IsExpressionContext:
-				return evalIsNullPredicate(msg, e, p)
+				return evalIsNullPredicate(ctx, conn, msg, e, p)
 			case *antlrgen.LikePredicateContext:
-				return evalLikePredicate(msg, e, p)
+				return evalLikePredicate(ctx, conn, msg, e, p)
 			case *antlrgen.BetweenComparisonPredicateContext:
-				return evalBetweenPredicate(msg, e, p)
+				return evalBetweenPredicate(ctx, conn, msg, e, p)
 			}
 		}
-		return evalComparisonPredicate(msg, e)
+		return evalComparisonPredicate(ctx, conn, msg, e)
 
 	default:
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
@@ -4169,18 +4169,18 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 }
 
 // evalComparisonPredicate handles a leaf comparison between two arbitrary expressions.
-func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+func evalComparisonPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
 	}
 	opText := bcp.ComparisonOperator().GetText()
 
-	left, err := evalExprAtom(msg, bcp.GetLeft())
+	left, err := evalExprAtom(ctx, conn, msg, bcp.GetLeft())
 	if err != nil {
 		return false, err
 	}
-	right, err := evalExprAtom(msg, bcp.GetRight())
+	right, err := evalExprAtom(ctx, conn, msg, bcp.GetRight())
 	if err != nil {
 		return false, err
 	}
@@ -4233,7 +4233,7 @@ func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Me
 		}
 		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 	} else {
-		v, err := evalExprAtom(msg, pred.ExpressionAtom())
+		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
 			return false, err
 		}
@@ -4283,7 +4283,7 @@ func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Me
 }
 
 // evalIsNullPredicate handles: expr IS [NOT] NULL / IS TRUE / IS FALSE
-func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
+func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
 	// Evaluate the expression on the left side (may be a column, function call, etc.).
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
@@ -4297,7 +4297,7 @@ func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionC
 			fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 		}
 	} else {
-		v, err := evalExprAtom(msg, pred.ExpressionAtom())
+		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
 			return false, err
 		}
@@ -4333,8 +4333,8 @@ func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionC
 
 // evalLikePredicate handles: expr [NOT] LIKE 'pattern'
 // Supports SQL wildcards: % (any sequence) and _ (any single character).
-func evalLikePredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
-	rawVal, err := evalExprAtom(msg, pred.ExpressionAtom())
+func evalLikePredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
+	rawVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
@@ -4407,8 +4407,8 @@ func stripStringLiteralQuotes(s string) string {
 }
 
 // evalBetweenPredicate handles: expr [NOT] BETWEEN lo AND hi (inclusive).
-func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
-	fieldVal, err := evalExprAtom(msg, pred.ExpressionAtom())
+func evalBetweenPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
+	fieldVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
@@ -4416,11 +4416,11 @@ func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpression
 		return false, nil // NULL BETWEEN ... = UNKNOWN
 	}
 
-	lo, err := evalExprAtom(msg, bet.GetLeft())
+	lo, err := evalExprAtom(ctx, conn, msg, bet.GetLeft())
 	if err != nil {
 		return false, err
 	}
-	hi, err := evalExprAtom(msg, bet.GetRight())
+	hi, err := evalExprAtom(ctx, conn, msg, bet.GetRight())
 	if err != nil {
 		return false, err
 	}
