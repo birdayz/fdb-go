@@ -426,10 +426,11 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				cols[i] = ac.outName
 			}
 
-			// Emit one row per group.
+			// Emit one row per group (with HAVING filter).
 			for _, key := range groupOrder {
 				gs := groups[key]
 				rowVals := make([]driver.Value, len(sq.aggCols))
+				rowMap := make(map[string]driver.Value, len(sq.aggCols))
 				for i, ac := range sq.aggCols {
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
@@ -451,6 +452,16 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 								rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
 							}
 						}
+					}
+					rowMap[ac.outName] = rowVals[i]
+				}
+				if sq.havingExpr != nil {
+					keep, havErr := evalHaving(rowMap, sq.havingExpr)
+					if havErr != nil {
+						return nil, havErr
+					}
+					if !keep {
+						continue
 					}
 				}
 				data = append(data, rowVals)
@@ -884,6 +895,8 @@ type selectQuery struct {
 	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
 	// Non-nil only when groupBy is non-empty.
 	aggCols []aggSelectCol
+	// havingExpr is the HAVING clause expression (nil = no HAVING).
+	havingExpr antlrgen.IExpressionContext
 }
 
 type orderByClause struct {
@@ -1187,6 +1200,12 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 			}
 			sq.groupBy = append(sq.groupBy, colName)
 		}
+	}
+
+	// Parse HAVING clause (only meaningful with GROUP BY).
+	havingCtx := simpleTable.HavingClause()
+	if havingCtx != nil {
+		sq.havingExpr = havingCtx.GetHavingExpr()
 	}
 
 	return sq, nil
@@ -2269,6 +2288,93 @@ func groupByKey(groupVals []driver.Value) string {
 		fmt.Fprintf(&b, "%v\x00", v)
 	}
 	return b.String()
+}
+
+// evalHaving evaluates a HAVING clause expression against a map of
+// output-column-name → aggregate value.  Only simple comparisons are supported:
+// HAVING aggCol OP constant  or  HAVING constant OP aggCol.
+func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING expression %T", expr)
+	}
+	// The HAVING expression atom is expected to be a BinaryComparisonPredicateContext.
+	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING supports only comparison predicates, got %T", pred.ExpressionAtom())
+	}
+
+	resolveAtom := func(atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
+		switch a := atom.(type) {
+		case *antlrgen.ConstantExpressionAtomContext:
+			return evalConstant(a.Constant())
+		case *antlrgen.FullColumnNameExpressionAtomContext:
+			name := fullIdToName(a.FullColumnName().FullId())
+			v, found := row[name]
+			if !found {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING column %q not in SELECT list", name)
+			}
+			return v, nil
+		case *antlrgen.FunctionCallExpressionAtomContext:
+			// Aggregate function reference — match by reconstructed output name.
+			agg, aggok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+			if !aggok {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING function call %T", a.FunctionCall())
+			}
+			awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+			if !awfok {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING aggregate %T", agg.AggregateWindowedFunction())
+			}
+			var lookupName string
+			switch {
+			case awf.COUNT() != nil && awf.STAR() != nil:
+				lookupName = "COUNT(*)"
+			case awf.COUNT() != nil && awf.FunctionArg() != nil:
+				lookupName = "COUNT(" + awf.FunctionArg().GetText() + ")"
+			case awf.SUM() != nil && awf.FunctionArg() != nil:
+				lookupName = "SUM(" + awf.FunctionArg().GetText() + ")"
+			case awf.MIN() != nil && awf.FunctionArg() != nil:
+				lookupName = "MIN(" + awf.FunctionArg().GetText() + ")"
+			case awf.MAX() != nil && awf.FunctionArg() != nil:
+				lookupName = "MAX(" + awf.FunctionArg().GetText() + ")"
+			case awf.AVG() != nil && awf.FunctionArg() != nil:
+				lookupName = "AVG(" + awf.FunctionArg().GetText() + ")"
+			}
+			v, found := row[lookupName]
+			if !found {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING aggregate %q not in SELECT list", lookupName)
+			}
+			return v, nil
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING atom %T", atom)
+		}
+	}
+
+	leftVal, err := resolveAtom(compPred.GetLeft())
+	if err != nil {
+		return false, err
+	}
+	rightVal, err := resolveAtom(compPred.GetRight())
+	if err != nil {
+		return false, err
+	}
+	opText := compPred.ComparisonOperator().GetText()
+	cmp := compareValues(leftVal, rightVal)
+	switch opText {
+	case "=":
+		return cmp == 0, nil
+	case "!=", "<>":
+		return cmp != 0, nil
+	case "<":
+		return cmp < 0, nil
+	case ">":
+		return cmp > 0, nil
+	case "<=":
+		return cmp <= 0, nil
+	case ">=":
+		return cmp >= 0, nil
+	}
+	return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING: unsupported operator %q", opText)
 }
 
 // substituteParams replaces positional '?' placeholders in a query with

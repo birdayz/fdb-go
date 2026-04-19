@@ -2308,3 +2308,51 @@ func TestFDB_GroupByCount(t *testing.T) {
 	g.Expect(counts["east"]).To(gomega.Equal(int64(2)))
 	g.Expect(counts["west"]).To(gomega.Equal(int64(3)))
 }
+
+func TestFDB_GroupByHaving(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_having")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_having")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE having_tmpl "+
+			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_having/sales WITH TEMPLATE having_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_having?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for _, row := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "east", 100},
+		{2, "east", 200},
+		{3, "west", 50},
+	} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Sale (id, region, amount) VALUES (%d, '%s', %d)", row.id, row.region, row.amount))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// Only groups with COUNT(*) > 1 — should return only "east" (2 rows).
+	rows, err := db.QueryContext(ctx, "SELECT region, COUNT(*) FROM Sale GROUP BY region HAVING COUNT(*) > 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var regions []string
+	for rows.Next() {
+		var region string
+		var cnt int64
+		g.Expect(rows.Scan(&region, &cnt)).To(gomega.Succeed())
+		regions = append(regions, region)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(regions).To(gomega.ConsistOf("east"))
+}
