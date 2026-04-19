@@ -2030,14 +2030,51 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	}
 
 	sources := fromClause.TableSources()
-	if sources == nil || len(sources.AllTableSource()) != 1 {
+	if sources == nil || len(sources.AllTableSource()) == 0 {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only single-table SELECT is supported")
+			"FROM clause missing table source")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
+	}
+	// Additional comma-separated sources become implicit cross joins; the
+	// WHERE clause supplies any join predicate.
+	var extraCrossJoins []joinClause
+	for _, extra := range sources.AllTableSource()[1:] {
+		eb, isBase := extra.(*antlrgen.TableSourceBaseContext)
+		if !isBase {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported extra table source %T", extra)
+		}
+		atomItem, atomOk := eb.TableSourceItem().(*antlrgen.AtomTableItemContext)
+		if !atomOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"FROM: comma-separated sources must be plain table names, got %T",
+				eb.TableSourceItem())
+		}
+		uids := atomItem.TableName().FullId().AllUid()
+		parts := make([]string, len(uids))
+		for i, u := range uids {
+			parts[i] = stripIdentifierQuotes(u.GetText())
+		}
+		tblName := strings.Join(parts, ".")
+		alias := tblName
+		if atomItem.AS() != nil && atomItem.Uid() != nil {
+			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+		}
+		extraCrossJoins = append(extraCrossJoins, joinClause{
+			tableName: tblName,
+			joinType:  "INNER",
+			alias:     alias,
+			onExpr:    nil,
+		})
+		// Bare-source joins are not supported on extras (grammar quirk).
+		if len(eb.AllJoinPart()) > 0 {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+				"JOIN clauses on comma-separated FROM sources are not supported")
+		}
 	}
 	// Check for derived table: FROM (SELECT ...) AS alias
 	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
@@ -2108,6 +2145,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
 		joins[0].joinType = promotedJoinType
 	}
+	// Implicit cross joins from comma-separated FROM sources run last; the
+	// WHERE predicate decides which combinations survive.
+	joins = append(joins, extraCrossJoins...)
 
 	sq := &selectQuery{
 		tableName:   strings.Join(parts, "."),

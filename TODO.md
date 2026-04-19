@@ -365,6 +365,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **ctx+conn threading through evalExpr stack** — evalExpr/evalExprAtom/evalScalarFunctionCall/evalSpecificFunction/predicate helpers all take ctx+conn as first params. Enables subqueries inside CASE conditions and scalar function args. Removes three context.TODO() placeholders. dayshift-34.
 - [x] **Aggregates on CTEs + derived tables** — aggregateMapRows method extracted from execSelectJoin and reused in execSelectFromCTE. Also fixes latent bug: JOIN+GROUP BY+ORDER BY+LIMIT previously returned early, silently ignoring ORDER BY/LIMIT. dayshift-34.
 - [ ] **Unify proto + map evaluators** — evalScalarFunctionCall and evalScalarFunctionCallOnMap are ~400 lines of near-duplicate code differing only in how arguments are evaluated. Could be unified via a `exprEvaluator func(arg) (driver.Value, error)` adapter. Currently every new function must be added in two places.
+- [x] **Multi-table FROM (implicit cross join)** — `SELECT a.x, b.y FROM a, b WHERE a.id = b.id`. Extra comma-separated sources become INNER joinClause entries with no ON condition; WHERE provides the predicate. 1 integration test. dayshift-34.
+- [x] **JOIN on CTE** — confirmed working: `SELECT ... FROM T INNER JOIN cte ON T.id = cte.id` uses scanTableToMaps CTE shortcut. 1 integration test. dayshift-34.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
