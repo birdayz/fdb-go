@@ -1540,6 +1540,7 @@ func TestFDB_SelectWhereNot(t *testing.T) {
 }
 
 func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
+	// ORDER BY on a column not in the SELECT list is now supported.
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -1557,12 +1558,21 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 30), (2, 10), (3, 20)")).Error().NotTo(gomega.HaveOccurred())
 
-	// ORDER BY on a column not in SELECT list must return an error.
-	_, err = db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY val ASC")
-	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("ORDER BY column"))
+	// ORDER BY val (not in SELECT list) — ids should come back sorted by val.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY val ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3, 1}))
 }
 
 func TestFDB_SelectDistinct(t *testing.T) {
@@ -2083,4 +2093,40 @@ func TestFDB_SelectColumnAlias(t *testing.T) {
 	g.Expect(rows.Scan(&id, &amount)).To(gomega.Succeed())
 	g.Expect(id).To(gomega.Equal(int64(1)))
 	g.Expect(amount).To(gomega.Equal(int64(42)))
+}
+
+func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
+	// ORDER BY on a column not in the SELECT list should work.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_orderby_nonproj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_nonproj_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_orderby_nonproj?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val, name) VALUES (1, 30, 'c'), (2, 10, 'a'), (3, 20, 'b')")).Error().NotTo(gomega.HaveOccurred())
+
+	// SELECT only name, ORDER BY val (not projected) — should return names sorted by val.
+	rows, err := db.QueryContext(ctx, "SELECT name FROM Item ORDER BY val ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"a", "b", "c"}))
 }

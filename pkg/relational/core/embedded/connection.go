@@ -236,12 +236,18 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	}
 
 	type row = []driver.Value
+	type outField struct {
+		name string
+		fd   protoreflect.FieldDescriptor
+	}
 	var cols []string
 	var data []row
+	var extraSortFields []outField
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
+		extraSortFields = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -300,11 +306,8 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 
 		// Resolve output fields: either the explicit projection or all fields.
 		allFields := msgDesc.Fields()
-		type outField struct {
-			name string
-			fd   protoreflect.FieldDescriptor
-		}
 		var outFields []outField
+		// extraSortFields (outer variable) are ORDER BY columns not in the projection.
 		if sq.projCols == nil {
 			// SELECT * — all fields in descriptor order.
 			outFields = make([]outField, allFields.Len())
@@ -315,6 +318,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		} else {
 			// Named projection — look up each column, apply alias if present.
 			outFields = make([]outField, len(sq.projCols))
+			projByCol := make(map[string]bool, len(sq.projCols))
 			for i, colName := range sq.projCols {
 				fd := allFields.ByName(protoreflect.Name(colName))
 				if fd == nil {
@@ -326,8 +330,24 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 					outName = sq.projAliases[i]
 				}
 				outFields[i] = outField{outName, fd}
+				projByCol[colName] = true
+			}
+			// Add any ORDER BY columns not already in the projection.
+			for _, ob := range sq.orderBy {
+				if projByCol[ob.colName] {
+					continue
+				}
+				fd := allFields.ByName(protoreflect.Name(ob.colName))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
+				}
+				extraSortFields = append(extraSortFields, outField{ob.colName, fd})
+				projByCol[ob.colName] = true // avoid duplicates
 			}
 		}
+		// fullFields = projected + extra sort columns; output strips extra at end.
+		fullFields := append(outFields, extraSortFields...) //nolint:gocritic
 		cols = make([]string, len(outFields))
 		for i, f := range outFields {
 			cols[i] = f.name
@@ -350,8 +370,8 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			if !match {
 				continue
 			}
-			vals := make([]driver.Value, len(outFields))
-			for i, f := range outFields {
+			vals := make([]driver.Value, len(fullFields))
+			for i, f := range fullFields {
 				if msg.ProtoReflect().Has(f.fd) {
 					vals[i] = protoValueToDriver(f.fd, msg.ProtoReflect().Get(f.fd))
 				}
@@ -381,21 +401,21 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 
 	// Apply ORDER BY (post-scan in-memory sort).
 	if len(sq.orderBy) > 0 {
-		// Build a map from column name to output index for O(1) lookup.
-		// ORDER BY columns must be in the projected output.
-		colIdx := make(map[string]int, len(cols))
+		// Build a map from column name to row index (covers projected + extra sort cols).
+		colIdx := make(map[string]int, len(cols)+len(extraSortFields))
 		for i, c := range cols {
 			colIdx[c] = i
 		}
-		for _, ob := range sq.orderBy {
-			if _, ok := colIdx[ob.colName]; !ok {
-				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-					"ORDER BY column %q must be in the SELECT list", ob.colName)
-			}
+		for i, f := range extraSortFields {
+			colIdx[f.name] = len(cols) + i
 		}
 		sort.SliceStable(data, func(i, j int) bool {
 			for _, ob := range sq.orderBy {
-				idx := colIdx[ob.colName]
+				idx, ok := colIdx[ob.colName]
+				if !ok {
+					// Column validated during scan setup; safe to skip.
+					continue
+				}
 				a, b := data[i][idx], data[j][idx]
 				cmp := compareValues(a, b)
 				if cmp != 0 {
@@ -407,6 +427,14 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			return false
 		})
+	}
+
+	// Strip extra sort columns that were not in the SELECT list.
+	if len(extraSortFields) > 0 {
+		projLen := len(cols)
+		for i, row := range data {
+			data[i] = row[:projLen]
+		}
 	}
 
 	// Apply LIMIT.
