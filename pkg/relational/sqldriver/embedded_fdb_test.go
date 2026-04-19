@@ -3598,3 +3598,28 @@ func TestFDB_CTE(t *testing.T) {
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names2).To(gomega.Equal([]string{"Cheap"}))
 }
+
+func TestFDB_SelectWithoutFrom(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	// SELECT without FROM doesn't need a real schema — just a valid DSN with a path.
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///select_no_from?cluster_file=%s", clusterFilePath))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT 1 + 2, 'hello', 42`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var a, c int64
+	var b string
+	g.Expect(rows.Scan(&a, &b, &c)).To(gomega.Succeed())
+	g.Expect(a).To(gomega.Equal(int64(3)))
+	g.Expect(b).To(gomega.Equal("hello"))
+	g.Expect(c).To(gomega.Equal(int64(42)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+}

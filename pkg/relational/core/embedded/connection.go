@@ -307,6 +307,27 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 // execSelectQuery executes a parsed selectQuery and returns a driver.Rows.
 // Extracted so execQueryBodyRows can call it without an ISelectStatementContext.
 func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
+	// SELECT without FROM: evaluate projExprs as constants and return one row.
+	if sq.tableName == "" {
+		cols := make([]string, len(sq.projCols))
+		row := make([]driver.Value, len(sq.projCols))
+		for i, col := range sq.projCols {
+			name := sq.projAliases[i]
+			if name == "" {
+				name = col
+			}
+			cols[i] = name
+			if sq.projExprs[i] != nil {
+				v, err := evalExpr(nil, sq.projExprs[i])
+				if err != nil {
+					return nil, err
+				}
+				row[i] = v
+			}
+		}
+		return &staticRows{cols: cols, rows: [][]driver.Value{row}}, nil
+	}
+
 	// Check if the table name resolves to a CTE.
 	if c.ctes != nil {
 		if cte, ok := c.ctes[strings.ToUpper(sq.tableName)]; ok {
@@ -1952,7 +1973,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+		// SELECT without FROM: evaluate expressions as constants (single-row result).
+		return &selectQuery{
+			projCols:    projCols,
+			projAliases: projAliases,
+			projExprs:   projExprs,
+		}, nil
 	}
 
 	sources := fromClause.TableSources()
