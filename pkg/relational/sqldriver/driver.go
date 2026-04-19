@@ -107,7 +107,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
 	if c.dsn.Schema != "" {
-		conn.SetSchema(c.dsn.Schema)
+		conn.SetDefaultSchema(c.dsn.Schema)
 	}
 	return conn, nil
 }

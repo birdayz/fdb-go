@@ -40,13 +40,14 @@ import (
 //	DML and queries return ErrCodeUnsupportedOperation until the query
 //	planner lands in a later phase.
 type EmbeddedConnection struct {
-	dbPath  string // current database URI (e.g. "/mydb")
-	schema  string // current schema name (set via USE SCHEMA / SetSchema)
-	fdbDB   *recordlayer.FDBDatabase
-	cat     *catalog.RecordLayerStoreCatalog
-	ks      *keyspace.RelationalKeyspace
-	factory apiddl.MetadataOperationsFactory
-	closed  atomic.Bool
+	dbPath        string // current database URI (e.g. "/mydb")
+	schema        string // current schema name (set via USE SCHEMA / SetSchema)
+	defaultSchema string // schema set at connection creation time; restored on ResetSession
+	fdbDB         *recordlayer.FDBDatabase
+	cat           *catalog.RecordLayerStoreCatalog
+	ks            *keyspace.RelationalKeyspace
+	factory       apiddl.MetadataOperationsFactory
+	closed        atomic.Bool
 
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
@@ -100,8 +101,8 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 	return driver.RowsAffected(totalRows), nil
 }
 
-// QueryContext handles read-only queries. Currently supports SHOW DATABASES and
-// SHOW SCHEMA TEMPLATES; all other queries return ErrCodeUnsupportedOperation.
+// QueryContext handles read-only queries. Supports SHOW statements and
+// SELECT * FROM <table>; all other queries return ErrCodeUnsupportedOperation.
 func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
@@ -124,15 +125,196 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "multi-statement queries are not supported")
 	}
 	stmt := stmts.AllStatement()[0]
+
+	// Route SELECT statements.
+	if sel := stmt.SelectStatement(); sel != nil {
+		return c.execSelect(ctx, sel)
+	}
+
 	admin := stmt.AdministrationStatement()
 	if admin == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW and SELECT statements are supported")
 	}
 	show := admin.ShowStatement()
 	if show == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported")
 	}
 	return c.execShowStatement(ctx, show)
+}
+
+// execSelect executes a SELECT * FROM <tableName> statement.
+// Only full-table scans with no WHERE clause, no projections beyond *, and
+// a single unaliased table source are supported.
+func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
+	if c.schema == "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	tableName, err := extractSelectTableName(sel)
+	if err != nil {
+		return nil, err
+	}
+
+	type row = []driver.Value
+	var cols []string
+	var data []row
+
+	_, runErr := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		// Build column list from message descriptor (deterministic field order).
+		fields := msgDesc.Fields()
+		cols = make([]string, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols[i] = string(fields.Get(i).Name())
+		}
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		for {
+			result, nextErr := cursor.OnNext(ctx)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if !result.HasNext() {
+				break
+			}
+			rec := result.GetValue()
+			msg := rec.Record
+			vals := make([]driver.Value, fields.Len())
+			for i := 0; i < fields.Len(); i++ {
+				fd := fields.Get(i)
+				if msg.ProtoReflect().Has(fd) {
+					vals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+				}
+				// else nil (proto2 optional field absent → NULL)
+			}
+			data = append(data, vals)
+		}
+		return nil, nil
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// extractSelectTableName navigates the parse tree of a SELECT statement to
+// extract the table name. Only supports SELECT * FROM <tableName> (one table,
+// no WHERE clause, select-list must be a single star).
+func extractSelectTableName(sel antlrgen.ISelectStatementContext) (string, error) {
+	query := sel.Query()
+	if query == nil {
+		return "", api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+	}
+	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported SELECT form %T; only simple SELECT * FROM <table> is supported",
+			query.QueryExpressionBody())
+	}
+	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported query term %T; only simple SELECT * FROM <table> is supported",
+			body.QueryTerm())
+	}
+
+	// Validate select list: must be exactly one element and that element must be *.
+	selElems := simpleTable.SelectElements()
+	if selElems == nil || len(selElems.AllSelectElement()) != 1 {
+		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+			"only SELECT * is supported; multi-column projections are not yet implemented")
+	}
+	if _, isStar := selElems.AllSelectElement()[0].(*antlrgen.SelectStarElementContext); !isStar {
+		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+			"only SELECT * is supported; column projections are not yet implemented")
+	}
+
+	// Validate no WHERE clause.
+	fromClause := simpleTable.FromClause()
+	if fromClause == nil {
+		return "", api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+	}
+	if fromClause.WhereExpr() != nil {
+		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+			"WHERE clause is not yet supported; only full-table scans are implemented")
+	}
+
+	// Extract table name from the single table source.
+	sources := fromClause.TableSources()
+	if sources == nil || len(sources.AllTableSource()) != 1 {
+		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+			"only single-table SELECT is supported; joins are not yet implemented")
+	}
+	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source %T", sources.AllTableSource()[0])
+	}
+	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported table source item %T; only plain table names are supported",
+			srcBase.TableSourceItem())
+	}
+	return atomItem.TableName().FullId().GetText(), nil
+}
+
+// protoValueToDriver converts a protoreflect.Value to a driver.Value.
+func protoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) driver.Value {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return v.Bool()
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return v.Int()
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return int64(v.Uint()) //nolint:gosec
+	case protoreflect.FloatKind:
+		return float64(v.Float())
+	case protoreflect.DoubleKind:
+		return v.Float()
+	case protoreflect.StringKind:
+		return v.String()
+	case protoreflect.BytesKind:
+		return []byte(v.Bytes())
+	default:
+		return v.Interface()
+	}
 }
 
 // execShowStatement routes SHOW … to the appropriate catalog reader.
@@ -255,13 +437,20 @@ func (c *EmbeddedConnection) BeginTx(_ context.Context, _ driver.TxOptions) (dri
 		"explicit transactions are not yet implemented")
 }
 
+// SetDefaultSchema sets the initial schema that is restored by ResetSession.
+// Called by the driver when the DSN contains ?schema=.
+func (c *EmbeddedConnection) SetDefaultSchema(s string) {
+	c.defaultSchema = s
+	c.schema = s
+}
+
 // ResetSession implements driver.SessionResetter. Resets per-request
 // state (schema) so pooled connections start clean.
 func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
-	c.schema = ""
+	c.schema = c.defaultSchema
 	return nil
 }
 

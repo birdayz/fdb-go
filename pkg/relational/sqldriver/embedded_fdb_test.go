@@ -408,3 +408,72 @@ func TestFDB_EmbeddedInsertNoSchemaFails(t *testing.T) {
 		t.Fatal("INSERT without schema should fail")
 	}
 }
+
+func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_select_insert")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_select_insert"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sel_tmpl "+
+			"CREATE TABLE Person (person_id BIGINT NOT NULL, name STRING, PRIMARY KEY (person_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_select_insert/people WITH TEMPLATE sel_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_select_insert?cluster_file=%s&schema=people", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Insert two rows.
+	if _, err := db.ExecContext(ctx,
+		"INSERT INTO Person (person_id, name) VALUES (1, 'Alice'), (2, 'Bob')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// SELECT * should return both rows.
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Person")
+	if err != nil {
+		t.Fatalf("SELECT: %v", err)
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("Columns: %v", err)
+	}
+	if len(cols) == 0 {
+		t.Fatal("expected columns, got none")
+	}
+
+	var count int
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("row count = %d, want 2", count)
+	}
+}
