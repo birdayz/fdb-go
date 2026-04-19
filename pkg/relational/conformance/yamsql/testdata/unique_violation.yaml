@@ -30,3 +30,9 @@ tests:
   - query: SELECT name, email FROM t WHERE id = 1
     rows:
       - ['alice', 'a@x.com']
+  # UPDATE setting a unique-indexed column to a value another row
+  # already holds raises 23505. Pre-nightshift-36 wrap-fix this leaked
+  # as *recordlayer.RecordIndexUniquenessViolationError — errors.As to
+  # *api.Error would miss.
+  - query: UPDATE t SET email = 'a@x.com' WHERE id = 2
+    error_code: "23505"

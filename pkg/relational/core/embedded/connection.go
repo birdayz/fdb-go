@@ -4607,8 +4607,13 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				}
 				clonedRefl.Set(fd, protoVal)
 			}
+			// UPDATE legitimately overwrites an existing record, so no
+			// existence check — but secondary UNIQUE indexes can still
+			// fire if the UPDATE sets an indexed column to a value
+			// another row already holds. Wrap so callers get SQLSTATE
+			// 23505 instead of the raw recordlayer error type.
 			if _, saveErr := store.SaveRecord(cloned); saveErr != nil {
-				return nil, saveErr
+				return nil, wrapSaveRecordError(saveErr)
 			}
 			updated++
 		}
