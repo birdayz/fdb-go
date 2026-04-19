@@ -193,6 +193,40 @@ func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	}
 }
 
+// TestGroupByKey pins the collision-free invariant for GROUP BY keys.
+// Encodings must:
+//   - keep NULL distinct from the literal string "<nil>" (pre-fix collision)
+//   - keep int 5 distinct from string "5" (same type-tag rule as rowKey)
+//   - treat two NULLs in the same column as equal (SQL spec)
+//   - keep (NULL, 'x') distinct from ('x', NULL) across columns
+func TestGroupByKey(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		a, b  []driver.Value
+		equal bool
+	}{
+		{"identical non-null", []driver.Value{int64(1), "x"}, []driver.Value{int64(1), "x"}, true},
+		{"both NULL same cols", []driver.Value{nil, nil}, []driver.Value{nil, nil}, true},
+		{"NULL vs nil-string", []driver.Value{nil}, []driver.Value{"<nil>"}, false},
+		{"int 5 vs string '5'", []driver.Value{int64(5)}, []driver.Value{"5"}, false},
+		{"(NULL,x) vs (x,NULL)", []driver.Value{nil, "x"}, []driver.Value{"x", nil}, false},
+		{"same NULL/non-null pattern", []driver.Value{nil, int64(1)}, []driver.Value{nil, int64(1)}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ka := groupByKey(tc.a)
+			kb := groupByKey(tc.b)
+			got := ka == kb
+			if got != tc.equal {
+				t.Errorf("groupByKey %s: got %v (ka=%q kb=%q), want equal=%v",
+					tc.name, got, ka, kb, tc.equal)
+			}
+		})
+	}
+}
+
 // TestTriBool pins the Kleene three-valued truth table so any future tweak
 // of triAnd/triOr/Not doesn't silently violate SQL §8.12. Exhaustively
 // enumerates all 3×3 combinations — 9 AND, 9 OR, 3 NOT.
