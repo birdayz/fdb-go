@@ -301,3 +301,37 @@ func TestCaseInsensitiveCharStream_EOFPassthrough(t *testing.T) {
 		t.Errorf("LA at EOF = %d, want -1", got)
 	}
 }
+
+// TestParseFunction_EmptyInput pins that ParseFunction("") does not panic.
+// ANTLR's ts.Consume() on an empty stream would panic "cannot consume EOF";
+// the pre-consume guard + defer/recover wrapper must surface a clean
+// *api.Error with ErrCodeSyntaxError (or nil error if the parser treats
+// empty as a no-op, which is also fine — we only forbid panics).
+func TestParseFunction_EmptyInput(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{"", " ", "\x00"} {
+		_, err := ParseFunction(sql)
+		if err == nil {
+			continue
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) {
+			t.Errorf("ParseFunction(%q): non-api error %T: %v", sql, err, err)
+		}
+	}
+}
+
+// TestParseView_EmptyInput: same contract for ParseView.
+func TestParseView_EmptyInput(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{"", " ", "\x00"} {
+		_, err := ParseView(sql)
+		if err == nil {
+			continue
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) {
+			t.Errorf("ParseView(%q): non-api error %T: %v", sql, err, err)
+		}
+	}
+}
