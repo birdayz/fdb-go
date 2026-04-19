@@ -16,10 +16,10 @@ ensure-buf:
     curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
     chmod +x "$BUF"
 
-# Regenerate protobuf code + gomock mocks. Both are committed to
-# git (clean + regenerate, same pattern). CI re-runs `just generate`
-# and fails on any diff, so CI is the source of truth for both.
-generate: ensure-buf generate-mocks
+# Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
+# committed to git (clean + regenerate, same pattern). CI re-runs
+# `just generate` and fails on any diff, so CI is the source of truth.
+generate: ensure-buf generate-mocks generate-parser
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
@@ -35,21 +35,6 @@ generate-mocks:
     # go.mod's direct/indirect tags accurate after each regen.
     go mod tidy
 
-# Download ANTLR4 tool jar at pinned version (if missing)
-ANTLR_VERSION := "4.13.1"
-[private]
-ensure-antlr:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    JAR=.tools/antlr-{{ANTLR_VERSION}}-complete.jar
-    if [ -f "$JAR" ]; then
-        exit 0
-    fi
-    mkdir -p .tools
-    curl -fsSL -o "$JAR" "https://www.antlr.org/download/antlr-{{ANTLR_VERSION}}-complete.jar"
-
-# Regenerate Relational SQL parser from grammar/*.g4.
-# Runtime dep: github.com/antlr4-go/antlr/v4 in go.mod (match ANTLR_VERSION major/minor).
 # Smoke-test Relational SQL grammar coverage against the vendored Java
 # yamsql corpus (fdb-record-layer/yaml-tests/...). Runs directly via `go
 # test` — Bazel's test sandbox can't see the submodule tree. Only the
@@ -57,21 +42,13 @@ ensure-antlr:
 smoke-yamsql:
     go test -tags=yamsql -count=1 -v -run TestYamsqlCorpus ./pkg/relational/core/parser
 
-generate-parser: ensure-antlr
-    #!/usr/bin/env bash
-    set -euo pipefail
-    REPO="$(pwd)"
-    GEN="$REPO/pkg/relational/core/parser/gen"
-    JAR="$REPO/.tools/antlr-{{ANTLR_VERSION}}-complete.jar"
-    rm -rf "$GEN"
-    mkdir -p "$GEN"
-    # Run ANTLR from the grammar dir so the generated .tokens file lands next to
-    # the parser grammar, where ANTLR can find it when resolving tokenVocab.
-    # Lexer first, then parser (parser's `options { tokenVocab=... }` reads the
-    # lexer .tokens file for string-literal resolution).
-    cd "$REPO/pkg/relational/core/parser/grammar"
-    java -jar "$JAR" -Dlanguage=Go -package antlrgen -o "$GEN" RelationalLexer.g4
-    java -jar "$JAR" -Dlanguage=Go -package antlrgen -visitor -lib "$GEN" -o "$GEN" RelationalParser.g4
+# Regenerate the Relational SQL parser from grammar/*.g4 via Bazel. The
+# ANTLR4 complete jar is fetched + cached as a Bazel external repo
+# (@antlr4_tool_jar in MODULE.bazel). Version is pinned there — match the
+# antlr4-go runtime declared in go.mod. Requires `java` on PATH at run time.
+# Runs gazelle after, since generated .go files may have been added/renamed.
+generate-parser:
+    bazelisk run //pkg/relational/core/parser/grammar:generate_parser
     bazelisk run //:gazelle
 
 # Build all targets (includes nogo lint)

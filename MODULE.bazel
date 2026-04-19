@@ -7,6 +7,9 @@ module(
 bazel_dep(name = "rules_go", version = "0.60.0")
 bazel_dep(name = "gazelle", version = "0.47.0")
 
+# Shell (sh_binary for codegen wrappers, e.g. the ANTLR parser generator).
+bazel_dep(name = "rules_shell", version = "0.6.1")
+
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 go_deps.module_override(
@@ -121,3 +124,16 @@ use_repo(maven, "maven")
 sift_dataset = use_repo_rule("//:sift_repo.bzl", "sift_dataset")
 
 sift_dataset(name = "sift1m")
+
+# ANTLR4 complete jar (standalone executable with the Tool main class).
+# Used by //pkg/relational/core/parser/grammar:generate_parser to regenerate
+# the Go parser from the .g4 grammar files. Pin must match the antlr4-go
+# runtime declared in go.mod (github.com/antlr4-go/antlr/v4).
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "antlr4_tool_jar",
+    downloaded_file_path = "antlr-4.13.1-complete.jar",
+    sha256 = "bc13a9c57a8dd7d5196888211e5ede657cb64a3ce968608697e4f668251a8487",
+    urls = ["https://www.antlr.org/download/antlr-4.13.1-complete.jar"],
+)
