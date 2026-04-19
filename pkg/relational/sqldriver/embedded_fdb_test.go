@@ -534,3 +534,55 @@ func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(count).To(gomega.Equal(2))
 }
+
+func TestFDB_EmbeddedSelectWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_select_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_select_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sw_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, PRIMARY KEY (item_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_select_where/items WITH TEMPLATE sw_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_select_where?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, name) VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry')")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Item WHERE item_id = 2")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var count int
+	var foundID any
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// item_id is the first field (field order from proto descriptor)
+		foundID = vals[0]
+		count++
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(count).To(gomega.Equal(1))
+	g.Expect(foundID).To(gomega.Equal(int64(2)))
+}

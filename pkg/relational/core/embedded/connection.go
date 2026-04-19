@@ -154,7 +154,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName, err := extractSelectTableName(sel)
+	tableName, whereExpr, err := extractSelectParts(sel)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +214,13 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			rec := result.GetValue()
 			msg := rec.Record
+			match, matchErr := evalPredicate(msg, whereExpr)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if !match {
+				continue
+			}
 			vals := make([]driver.Value, fields.Len())
 			for i := 0; i < fields.Len(); i++ {
 				fd := fields.Get(i)
@@ -232,66 +239,59 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	return &staticRows{cols: cols, rows: data}, nil
 }
 
-// extractSelectTableName navigates the parse tree of a SELECT statement to
-// extract the table name. Only supports SELECT * FROM <tableName> (one table,
-// no WHERE clause, select-list must be a single star).
-func extractSelectTableName(sel antlrgen.ISelectStatementContext) (string, error) {
+// extractSelectParts navigates the parse tree of a SELECT statement to
+// extract the table name and optional WHERE expression.
+// Only supports SELECT * FROM <tableName> [WHERE col = val] (single table, star select).
+func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, antlrgen.IWhereExprContext, error) {
 	query := sel.Query()
 	if query == nil {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
 	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported SELECT form %T; only simple SELECT * FROM <table> is supported",
 			query.QueryExpressionBody())
 	}
 	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported query term %T; only simple SELECT * FROM <table> is supported",
 			body.QueryTerm())
 	}
 
-	// Validate select list: must be exactly one element and that element must be *.
 	selElems := simpleTable.SelectElements()
 	if selElems == nil || len(selElems.AllSelectElement()) != 1 {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"only SELECT * is supported; multi-column projections are not yet implemented")
 	}
 	if _, isStar := selElems.AllSelectElement()[0].(*antlrgen.SelectStarElementContext); !isStar {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"only SELECT * is supported; column projections are not yet implemented")
 	}
 
-	// Validate no WHERE clause.
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
-	}
-	if fromClause.WhereExpr() != nil {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation,
-			"WHERE clause is not yet supported; only full-table scans are implemented")
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
 	}
 
-	// Extract table name from the single table source.
 	sources := fromClause.TableSources()
 	if sources == nil || len(sources.AllTableSource()) != 1 {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"only single-table SELECT is supported; joins are not yet implemented")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
 	}
 	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
 	}
-	return atomItem.TableName().FullId().GetText(), nil
+	return atomItem.TableName().FullId().GetText(), fromClause.WhereExpr(), nil
 }
 
 // protoValueToDriver converts a protoreflect.Value to a driver.Value.
