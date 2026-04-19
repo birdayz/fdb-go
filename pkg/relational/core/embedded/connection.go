@@ -2572,7 +2572,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
 				}
-				val, evalErr := evalLiteralExpr(exprs[i])
+				val, evalErr := evalExpr(nil, exprs[i].Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
