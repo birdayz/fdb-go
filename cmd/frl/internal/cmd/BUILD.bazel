@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "config.go",
         "meta.go",
+        "openstore.go",
+        "record.go",
         "root.go",
         "store.go",
         "version.go",
@@ -29,7 +31,10 @@ go_library(
 
 go_test(
     name = "cmd_test",
-    srcs = ["store_test.go"],
+    srcs = [
+        "record_test.go",
+        "store_test.go",
+    ],
     embed = [":cmd"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
