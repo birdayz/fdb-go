@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +15,7 @@ import (
 )
 
 func newMetaTypesDescribeCmd() *cobra.Command {
-	var contextName, metaFile string
+	var contextName, metaFile, outputFmt string
 	c := &cobra.Command{
 		Use:   "describe <name>",
 		Short: "Show full definition of one record type",
@@ -22,11 +23,19 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 			"multi-type stores that use RecordTypeKeyExpression), since-" +
 			"version, proto field count, and every index that touches this " +
 			"type (including universal/multi-type ones).\n\n" +
+			"--output / -o: 'text' (default, key:value lines) or 'json' " +
+			"(single object with primary_key, record_type_key, proto_message, " +
+			"indexes, multi_type_indexes, universal_indexes).\n\n" +
 			"Note: FDB-store metadata sources are not yet supported by " +
 			"this command; configure `meta_file` in your context or use " +
 			"--meta-file.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
 				return err
@@ -50,12 +59,81 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 				return fmt.Errorf("record type %q not found — available: %s",
 					args[0], strings.Join(sortedRecordTypeNames(md), ", "))
 			}
+			if outputFmt == "json" {
+				return writeRecordTypeDescriptionJSON(cmd.OutOrStdout(), md, rt)
+			}
 			return writeRecordTypeDescription(cmd.OutOrStdout(), md, rt)
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
 	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
+}
+
+// recordTypeDescription is the JSON shape emitted by meta types describe -o json.
+// Fields mirror writeRecordTypeDescription's text output one-to-one.
+type recordTypeDescription struct {
+	Name             string         `json:"name"`
+	PrimaryKey       string         `json:"primary_key"`
+	SinceVersion     int            `json:"since_version,omitempty"`
+	RecordTypeKey    string         `json:"record_type_key"`
+	ProtoMessage     string         `json:"proto_message,omitempty"`
+	ProtoFieldCount  int            `json:"proto_field_count,omitempty"`
+	Indexes          []indexSummary `json:"indexes,omitempty"`
+	MultiTypeIndexes []indexSummary `json:"multi_type_indexes,omitempty"`
+	UniversalIndexes []indexSummary `json:"universal_indexes,omitempty"`
+}
+
+// indexSummary is a compact representation of an index in JSON output.
+type indexSummary struct {
+	Name   string   `json:"name"`
+	Type   string   `json:"type"`
+	Fields []string `json:"fields"`
+}
+
+func writeRecordTypeDescriptionJSON(out io.Writer, md *recordlayer.RecordMetaData, rt *recordlayer.RecordType) error {
+	pk := "(unset)"
+	if rt.PrimaryKey != nil {
+		if fn := rt.PrimaryKey.FieldNames(); len(fn) > 0 {
+			pk = strings.Join(fn, ",")
+		}
+	}
+	rtk := fmt.Sprintf("(implicit: %d)", rt.RecordTypeIndex)
+	if rt.HasExplicitRecordTypeKey() {
+		rtk = fmt.Sprintf("%v", rt.GetRecordTypeKey())
+	}
+	desc := recordTypeDescription{
+		Name:             rt.Name,
+		PrimaryKey:       pk,
+		SinceVersion:     rt.SinceVersion,
+		RecordTypeKey:    rtk,
+		Indexes:          summariseIndexes(rt.GetIndexes()),
+		MultiTypeIndexes: summariseIndexes(rt.GetMultiTypeIndexes()),
+		UniversalIndexes: summariseIndexes(md.GetUniversalIndexes()),
+	}
+	if rt.Descriptor != nil {
+		desc.ProtoMessage = string(rt.Descriptor.FullName())
+		desc.ProtoFieldCount = rt.Descriptor.Fields().Len()
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(desc)
+}
+
+func summariseIndexes(indexes []*recordlayer.Index) []indexSummary {
+	if len(indexes) == 0 {
+		return nil
+	}
+	out := make([]indexSummary, len(indexes))
+	for i, idx := range indexes {
+		out[i] = indexSummary{
+			Name:   idx.Name,
+			Type:   idx.Type,
+			Fields: idx.RootExpression.FieldNames(),
+		}
+	}
+	return out
 }
 
 func sortedRecordTypeNames(md *recordlayer.RecordMetaData) []string {
