@@ -194,6 +194,45 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		}
 		msgDesc := rt.Descriptor
 
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		if sq.countStar {
+			cols = []string{"COUNT(*)"}
+			var count int64
+			for {
+				result, nextErr := cursor.OnNext(ctx)
+				if nextErr != nil {
+					return nil, nextErr
+				}
+				if !result.HasNext() {
+					break
+				}
+				match, matchErr := evalPredicate(result.GetValue().Record, sq.whereExpr)
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if match {
+					count++
+				}
+			}
+			data = []row{{count}}
+			return nil, nil
+		}
+
 		// Resolve output fields: either the explicit projection or all fields.
 		allFields := msgDesc.Fields()
 		type outField struct {
@@ -224,22 +263,6 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		for i, f := range outFields {
 			cols[i] = f.name
 		}
-
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
-		if ssErr != nil {
-			return nil, ssErr
-		}
-		store, storeErr := recordlayer.NewStoreBuilder().
-			SetContext(rctx).
-			SetSubspace(ss).
-			SetMetaDataProvider(md).
-			Open()
-		if storeErr != nil {
-			return nil, storeErr
-		}
-
-		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
-		defer cursor.Close() //nolint:errcheck
 
 		for {
 			result, nextErr := cursor.OnNext(ctx)
@@ -578,7 +601,8 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
 	tableName string
-	projCols  []string // nil = SELECT *
+	projCols  []string // nil = SELECT *; ignored when countStar is true
+	countStar bool     // true when SELECT list is exactly COUNT(*)
 	whereExpr antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
@@ -589,6 +613,27 @@ type selectQuery struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+}
+
+// checkCountStar returns true if e is a bare COUNT(*) expression.
+func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
+	pred, ok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return false
+	}
+	fc, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if !ok {
+		return false
+	}
+	agg, ok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if !ok {
+		return false
+	}
+	awf, ok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if !ok {
+		return false
+	}
+	return awf.COUNT() != nil && awf.STAR() != nil
 }
 
 // selectExprToColumnName extracts a plain column name from a
@@ -648,9 +693,10 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 			body.QueryTerm())
 	}
 
-	// Parse SELECT list: either * or a list of column name expressions.
+	// Parse SELECT list: either *, a list of column name expressions, or COUNT(*).
 	selElems := simpleTable.SelectElements()
 	var projCols []string // nil = SELECT *
+	var countStar bool
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -662,11 +708,19 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectExpressionElementContext:
-				colName, nameErr := selectExprToColumnName(e)
-				if nameErr != nil {
-					return nil, nameErr
+				if checkCountStar(e) {
+					if len(elems) > 1 {
+						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+							"cannot mix COUNT(*) with other columns in SELECT list")
+					}
+					countStar = true
+				} else {
+					colName, nameErr := selectExprToColumnName(e)
+					if nameErr != nil {
+						return nil, nameErr
+					}
+					projCols = append(projCols, colName)
 				}
-				projCols = append(projCols, colName)
 			default:
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"unsupported SELECT element type %T", elem)
@@ -705,6 +759,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 	sq := &selectQuery{
 		tableName: strings.Join(parts, "."),
 		projCols:  projCols,
+		countStar: countStar,
 		whereExpr: fromClause.WhereExpr(),
 		limit:     -1,
 	}

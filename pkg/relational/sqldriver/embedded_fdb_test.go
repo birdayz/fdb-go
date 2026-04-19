@@ -1470,3 +1470,36 @@ func TestFDB_UpdateWhereRange(t *testing.T) {
 	// Row 1 unchanged (val=10), rows 2+3 updated to 99.
 	g.Expect(vals).To(gomega.Equal([]int64{10, 99, 99}))
 }
+
+func TestFDB_SelectCountStar(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_count_star")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_star")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE cs_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_count_star/items WITH TEMPLATE cs_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_count_star?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30)")).Error().NotTo(gomega.HaveOccurred())
+
+	// SELECT COUNT(*) should return 3.
+	row := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Item")
+	var count int64
+	g.Expect(row.Scan(&count)).To(gomega.Succeed())
+	g.Expect(count).To(gomega.Equal(int64(3)))
+
+	// SELECT COUNT(*) WHERE val > 15 should return 2.
+	row2 := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Item WHERE val > 15")
+	var count2 int64
+	g.Expect(row2.Scan(&count2)).To(gomega.Succeed())
+	g.Expect(count2).To(gomega.Equal(int64(2)))
+}
