@@ -5370,6 +5370,59 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 	g.Expect(got3).To(gomega.Equal("five"))
 }
 
+// TestFDB_CTEScopeIsolation pins down nested-query CTE scoping: a derived
+// table or inner WITH clause must not leak names to the enclosing query.
+// Before the scope-stack fix, `c.ctes` was a single shared map — an inner
+// `SELECT (SELECT ... FROM (SELECT ...) AS Inner)` would leave "INNER" in
+// the outer scope until the full query finished, and a nested WITH would
+// clobber the outer map entirely.
+func TestFDB_CTEScopeIsolation(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cte_scope")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_scope")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_scope_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_scope/main WITH TEMPLATE cte_scope_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte_scope?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (2, 20), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Two sibling queries each defining a CTE with the same name "C" with
+	// different contents. Without scope isolation the second query would see
+	// the first query's "C" still in the map.
+	var firstSum, secondSum int64
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT n FROM T WHERE id <= 2) SELECT SUM(n) FROM C`).Scan(&firstSum)).To(gomega.Succeed())
+	g.Expect(firstSum).To(gomega.Equal(int64(30)))
+
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT n FROM T WHERE id >= 2) SELECT SUM(n) FROM C`).Scan(&secondSum)).To(gomega.Succeed())
+	g.Expect(secondSum).To(gomega.Equal(int64(50)), "second C must not see first C's rows")
+
+	// Nested derived-table — alias D visible inside only.
+	var joinSum int64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT SUM(D.n) FROM (SELECT n FROM T WHERE id = 1) AS D`).Scan(&joinSum)).To(gomega.Succeed())
+	g.Expect(joinSum).To(gomega.Equal(int64(10)))
+
+	// After the derived-table query finished, "D" must be gone — a following
+	// query that mentions D must error (unknown table), not accidentally see
+	// the previous materialisation.
+	_, err = db.QueryContext(ctx, `SELECT * FROM D`)
+	g.Expect(err).To(gomega.HaveOccurred(), "derived-table alias D must not leak across queries")
+}
+
 // TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
 // 5-agent QA audit in one place:
 //   - CAST(NULL AS <type>) must return NULL of the target type, not error

@@ -117,6 +117,21 @@ func (c *EmbeddedConnection) schemaCacheKey(dbPath, schemaName string) string {
 	return dbPath + "\x00" + schemaName
 }
 
+// pushCTEScope replaces c.ctes with a fresh map that inherits the outer
+// scope's entries (so inner queries can reference outer CTEs) and returns
+// a pop function that restores the previous scope verbatim. Use with
+// `defer c.pushCTEScope()()` at every point that introduces new CTE names
+// (WITH clauses, derived tables) so inner definitions don't leak out.
+func (c *EmbeddedConnection) pushCTEScope() func() {
+	prior := c.ctes
+	next := make(map[string]*cteData, len(prior))
+	for k, v := range prior {
+		next[k] = v
+	}
+	c.ctes = next
+	return func() { c.ctes = prior }
+}
+
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
 // connection-level cache to avoid repeated FDB reads within the same session.
 // The cache is invalidated by any DDL that modifies schema definitions.
@@ -333,14 +348,13 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 
 	// Execute derived table query and register it as a temporary CTE.
 	if sq.derivedQuery != nil {
+		// Push a CTE scope so the derived-table alias is visible during this
+		// query's evaluation without leaking back out to an enclosing scope.
+		defer c.pushCTEScope()()
 		cols, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter,
 				"derived table %q", sq.tableName)
-		}
-		if c.ctes == nil {
-			c.ctes = make(map[string]*cteData)
-			defer func() { c.ctes = nil }()
 		}
 		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
 	}
@@ -378,10 +392,12 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
 
-	// Materialize CTEs before routing the main query.
+	// Materialize CTEs before routing the main query. Each WITH clause pushes
+	// a CTE scope so inner nested queries with their own WITH do not clobber
+	// the outer names, and outer scopes never see inner CTE names after the
+	// nested query returns.
 	if ctesCtx := query.Ctes(); ctesCtx != nil {
-		c.ctes = make(map[string]*cteData)
-		defer func() { c.ctes = nil }()
+		defer c.pushCTEScope()()
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
 			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
