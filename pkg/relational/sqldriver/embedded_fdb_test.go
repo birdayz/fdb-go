@@ -3348,6 +3348,19 @@ func TestFDB_GreatestLeast(t *testing.T) {
 		{3, 1},
 		{9, 5},
 	}))
+
+	// Java conformance: GREATEST/LEAST return NULL if any argument is NULL
+	// (VariadicFunctionValue.PhysicalOperator.GREATEST_LONG returns null on
+	// the first null arg). We previously skipped NULLs like Postgres — fixed
+	// swingshift-35.
+	rows2, err := db.QueryContext(ctx, `SELECT GREATEST(a, NULL, c), LEAST(a, b, NULL) FROM Product WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	g.Expect(rows2.Next()).To(gomega.BeTrue())
+	var gVal, lVal any
+	g.Expect(rows2.Scan(&gVal, &lVal)).To(gomega.Succeed())
+	g.Expect(gVal).To(gomega.BeNil(), "GREATEST with NULL arg must return NULL (Java conformance)")
+	g.Expect(lVal).To(gomega.BeNil(), "LEAST with NULL arg must return NULL (Java conformance)")
 }
 
 func TestFDB_SubqueryIN(t *testing.T) {

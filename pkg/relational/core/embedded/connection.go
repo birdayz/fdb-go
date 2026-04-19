@@ -3612,12 +3612,21 @@ func evalScalarFunctionCallCore(
 		}
 		return a, nil
 	case "GREATEST", "LEAST":
+		// Java conformance: GREATEST/LEAST return NULL if any argument
+		// is NULL. VariadicFunctionValue.PhysicalOperator's per-typecode
+		// lambdas (GREATEST_INT/LONG/FLOAT/DOUBLE/STRING/BOOLEAN, and
+		// the LEAST_* mirror) all short-circuit `if (i == null) return null`
+		// on the first NULL arg. Postgres skips NULLs; Oracle and Java
+		// propagate them. Match Java.
 		if len(fArgs) == 0 {
 			return nil, nil
 		}
 		best, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
+		}
+		if best == nil {
+			return nil, nil
 		}
 		isGreatest := name == "GREATEST"
 		for _, fa := range fArgs[1:] {
@@ -3626,10 +3635,10 @@ func evalScalarFunctionCallCore(
 				return nil, verr
 			}
 			if v == nil {
-				continue
+				return nil, nil
 			}
 			cmp := compareValues(v, best)
-			if best == nil || (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {
+			if (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {
 				best = v
 			}
 		}
