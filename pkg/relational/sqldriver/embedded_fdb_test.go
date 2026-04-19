@@ -5153,3 +5153,26 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 		int64(150), "silver").Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 }
+
+func TestFDB_PiFunction(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_pi")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_pi")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE pi_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_pi/main WITH TEMPLATE pi_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_pi?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	var pi float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT PI()`).Scan(&pi)).To(gomega.Succeed())
+	g.Expect(pi).To(gomega.BeNumerically("~", 3.14159265358979, 1e-10))
+}

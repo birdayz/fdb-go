@@ -3409,6 +3409,8 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
+	case "PI":
+		return math.Pi, nil
 	case "SQRT":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT requires 1 argument")
