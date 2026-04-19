@@ -3139,9 +3139,9 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
 		}
 		return int64(utf8.RuneCountInString(s)), nil
-	case "TRIM":
+	case "TRIM", "LTRIM", "RTRIM":
 		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
 		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
 		if err != nil || v == nil {
@@ -3149,7 +3149,13 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM: argument must be string, got %T", v)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
+		}
+		switch name {
+		case "LTRIM":
+			return strings.TrimLeft(s, " \t\n\r"), nil
+		case "RTRIM":
+			return strings.TrimRight(s, " \t\n\r"), nil
 		}
 		return strings.TrimSpace(s), nil
 	case "ABS":
@@ -3536,9 +3542,9 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
 		}
 		return int64(utf8.RuneCountInString(s)), nil
-	case "TRIM":
+	case "TRIM", "LTRIM", "RTRIM":
 		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
 		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
 		if err != nil || v == nil {
@@ -3546,7 +3552,13 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM: argument must be string, got %T", v)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
+		}
+		switch name {
+		case "LTRIM":
+			return strings.TrimLeft(s, " \t\n\r"), nil
+		case "RTRIM":
+			return strings.TrimRight(s, " \t\n\r"), nil
 		}
 		return strings.TrimSpace(s), nil
 	case "ABS":

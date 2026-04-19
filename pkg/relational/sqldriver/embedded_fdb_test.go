@@ -4429,3 +4429,33 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"apple", "middle", "zebra"}))
 }
+
+func TestFDB_LtrimRtrim(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ltrim")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ltrim")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ltrim_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, s STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ltrim/main WITH TEMPLATE ltrim_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ltrim?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (1, '  hello  ')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var l, r, both string
+	g.Expect(db.QueryRowContext(ctx, `SELECT LTRIM(s), RTRIM(s), TRIM(s) FROM T WHERE id = 1`).
+		Scan(&l, &r, &both)).To(gomega.Succeed())
+	g.Expect(l).To(gomega.Equal("hello  "))
+	g.Expect(r).To(gomega.Equal("  hello"))
+	g.Expect(both).To(gomega.Equal("hello"))
+}
