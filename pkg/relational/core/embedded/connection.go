@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -3285,6 +3286,9 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 			return protoreflect.ValueOfString(v), nil
 		}
 	case protoreflect.BytesKind:
+		if v, ok := val.([]byte); ok {
+			return protoreflect.ValueOfBytes(v), nil
+		}
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfBytes([]byte(v)), nil
 		}
@@ -6144,9 +6148,79 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		return nil, nil
 	case *antlrgen.BooleanConstantContext:
 		return cv.BooleanLiteral().TRUE() != nil, nil
+	case *antlrgen.BytesConstantContext:
+		// Grammar produces either HEXADECIMAL_LITERAL ('x' followed by
+		// hex in single quotes) or BASE64_LITERAL ('b64' followed by
+		// base64 in single quotes).
+		bl := cv.BytesLiteral()
+		if bl == nil {
+			return nil, api.NewError(api.ErrCodeInvalidParameter, "empty bytes literal")
+		}
+		if hex := bl.HEXADECIMAL_LITERAL(); hex != nil {
+			text := hex.GetText()
+			// text looks like: x'deadbeef' or X'deadbeef'
+			body := stripBytesWrapper(text, "x")
+			if len(body)%2 != 0 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "odd-length hex literal %q", text)
+			}
+			out := make([]byte, len(body)/2)
+			for i := 0; i < len(body); i += 2 {
+				hi, ok1 := hexNibble(body[i])
+				lo, ok2 := hexNibble(body[i+1])
+				if !ok1 || !ok2 {
+					return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "non-hex character in %q", text)
+				}
+				out[i/2] = hi<<4 | lo
+			}
+			return out, nil
+		}
+		if b64 := bl.BASE64_LITERAL(); b64 != nil {
+			text := b64.GetText()
+			body := stripBytesWrapper(text, "b64")
+			out, err := decodeBase64(body)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "invalid base64 in %q: %v", text, err)
+			}
+			return out, nil
+		}
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "bytes literal must be hex or base64")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in WHERE", c)
 	}
+}
+
+// stripBytesWrapper removes the `<prefix>'...'` wrapping from a bytes
+// literal text token. Case-insensitive on the prefix to accept x / X
+// and b64 / B64.
+func stripBytesWrapper(text, prefix string) string {
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, prefix) {
+		text = text[len(prefix):]
+	}
+	text = strings.TrimPrefix(text, "'")
+	text = strings.TrimSuffix(text, "'")
+	return text
+}
+
+func hexNibble(b byte) (byte, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0', true
+	case b >= 'a' && b <= 'f':
+		return 10 + b - 'a', true
+	case b >= 'A' && b <= 'F':
+		return 10 + b - 'A', true
+	}
+	return 0, false
+}
+
+// base64StdStrict is the standard Base64 encoding with strict
+// padding (no line breaks, no URL-safe alternative). Mirrors what
+// Java's Base64.getDecoder() accepts for the b64'...' literal form.
+var base64StdStrict = base64.StdEncoding.Strict()
+
+func decodeBase64(s string) ([]byte, error) {
+	return base64StdStrict.DecodeString(s)
 }
 
 // valuesEqual compares two driver values that may have different numeric types.

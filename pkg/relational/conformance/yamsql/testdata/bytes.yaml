@@ -1,0 +1,36 @@
+# bytes.yaml
+#
+# BYTES column type — hex literals (x'DEADBEEF'), comparisons, IN,
+# IS NULL. Ported (subset) from fdb-record-layer/yaml-tests/src/test/
+# resources/bytes.yamsql.
+name: bytes
+schema_template: |
+  CREATE TABLE lb (a BIGINT NOT NULL, b BYTES, PRIMARY KEY (a))
+setup:
+  - INSERT INTO lb VALUES (1, x'deadbeef'), (2, x'cafe'), (3, null)
+tests:
+  # Equality on BYTES.
+  - query: SELECT a FROM lb WHERE b = x'cafe'
+    rows:
+      - [2]
+  # IN with multiple BYTES literals.
+  - query: SELECT a FROM lb WHERE b IN (x'cafe', x'deadbeef')
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  # Inequality — row with NULL b is filtered (NULL = NULL is UNKNOWN,
+  # so <> also UNKNOWN, so filter).
+  - query: SELECT a FROM lb WHERE b <> x'cafe'
+    rows:
+      - [1]
+  # IS NULL.
+  - query: SELECT a FROM lb WHERE b IS NULL
+    rows:
+      - [3]
+  # IS NOT NULL.
+  - query: SELECT a FROM lb WHERE b IS NOT NULL
+    unordered: true
+    rows:
+      - [1]
+      - [2]
