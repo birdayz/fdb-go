@@ -260,7 +260,7 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 - [x] `ABS(math.MinInt64)` overflow ✅ swingshift-35: return `ErrCodeInvalidParameter` rather than wrap.
 - [x] `LEFT` / `RIGHT` / `SUBSTRING` float length arg ✅ swingshift-35: `toIntegerArg` helper accepts int64 and whole-valued float64, rejects fractional/non-numeric.
 - [x] `ResetSession` leaks ✅ swingshift-35: now rolls back activeTx, clears ctes + schemaCache, restores defaultSchema.
-- [ ] Nested SELECT / derived-table write to the same `ctes` map without a scope stack — outer sees leaked inner CTE names.
+- [x] Nested SELECT / derived-table write to the same `ctes` map without a scope stack ✅ swingshift-35: `pushCTEScope()` returns a pop closure; each CTE-introducing entry point uses `defer c.pushCTEScope()()` so inner CTE names never leak to the outer scope, and a nested WITH no longer wipes the enclosing scope's CTEs.
 - [x] **Production `fmt.Errorf` sites dropping `ErrorCode`** ✅ swingshift-35: ~30 sites across metadata/catalog/embedded/keyspace/ddl swept to `api.NewErrorf`/`api.WrapErrorf`. Added `api.WrapErrorf` helper for the `%w`-wrapping idiom.
 - [ ] **8 panics in `api/datatype_*.go`.** Requires `DataType` interface signature change (WithNullable/Resolve). Punted — full interface-breaking refactor, next shift.
 - [x] `MetaDataEvolutionValidator` exists in `recordlayer` but is **not wired** into `SaveSchemaTemplate` ✅ swingshift-35: `RecordLayerStoreSchemaTemplateCatalog.CreateTemplate` now loads the prior version and runs `Validate(prior, new)` when the new SQL-layer version exceeds the prior one. Uses `SetAllowNoVersionChange(true)` because SQL-layer versions are independent from RecordMetaData versions.
