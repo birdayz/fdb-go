@@ -48,6 +48,7 @@ go_test(
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
         "//gen",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
     ],
 )

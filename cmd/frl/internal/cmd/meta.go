@@ -112,7 +112,11 @@ func newMetaTypesLsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "ls",
 		Short: "List record types with primary-key fields",
-		Args:  cobra.NoArgs,
+		Long: "Lists every record type in the metadata with its primary-key " +
+			"fields. Note: FDB-store metadata sources are not yet supported " +
+			"by this command; configure `meta_file` in your context or use " +
+			"--meta-file.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
@@ -145,11 +149,12 @@ func newMetaGetCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "get",
 		Short: "Dump the loaded RecordMetaData as JSON",
-		Long: "Resolves the current context's metadata source (file or " +
-			"FDBMetaDataStore), loads the MetaData, and prints it as JSON. " +
+		Long: "Loads the current context's MetaData and prints it as JSON. " +
 			"--meta-file overrides the context's metadata source with a " +
 			"file on disk (useful for ad-hoc inspection without editing " +
-			"the config file).",
+			"the config file). Note: FDB-store metadata sources are not " +
+			"yet supported by this command; configure `meta_file` in your " +
+			"context or pass --meta-file.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()

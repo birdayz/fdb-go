@@ -8,6 +8,7 @@ import (
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 func TestParseKeyspacePath(t *testing.T) {
@@ -42,9 +43,17 @@ func TestParseKeyspacePath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseKeyspacePath(%q): %v", tc.in, err)
 			}
-			// Sanity: the packed prefix must be non-empty.
-			if len(ss.Bytes()) == 0 {
-				t.Errorf("parseKeyspacePath(%q) produced empty prefix", tc.in)
+			// Unpack the subspace prefix back to a tuple and verify the
+			// element count matches the input segmentation. Catches silent
+			// segmentation bugs (empty-bytes check isn't enough — must be
+			// exactly wantLen elements).
+			unpacked, err := tuple.Unpack(ss.Bytes())
+			if err != nil {
+				t.Fatalf("tuple.Unpack(%x): %v", ss.Bytes(), err)
+			}
+			if len(unpacked) != tc.wantLen {
+				t.Errorf("parseKeyspacePath(%q) → %d elements, want %d",
+					tc.in, len(unpacked), tc.wantLen)
 			}
 		})
 	}

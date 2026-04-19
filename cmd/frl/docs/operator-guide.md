@@ -113,10 +113,11 @@ frl store info
 frl record scan --limit 10
 ```
 
-Ad-hoc inspection without editing the config:
+Ad-hoc inspection without editing the config — `--meta-file` is a
+per-subcommand flag, so it goes after the verb:
 
 ```sh
-frl --meta-file ./meta.pb record get 42
+frl record get --meta-file ./meta.pb 42
 ```
 
 ---
@@ -131,7 +132,10 @@ needs nothing beyond the keyspace path where that store lives.
 If you're not already doing this, add it once during app init:
 
 ```go
-metaStore := recordlayer.NewFDBMetaDataStore(ctx, keyspace.MetaDataPath())
+// NewFDBMetaDataStore takes a single subspace.Subspace — pass whatever
+// subspace your app uses for the metadata store (often derived from a
+// KeySpace path via path.ToSubspace() or built with subspace.Sub()).
+metaStore := recordlayer.NewFDBMetaDataStore(metaSubspace)
 _, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
     return nil, metaStore.SaveRecordMetaData(rtx.Transaction(), meta.ToProto())
 })
@@ -216,13 +220,15 @@ expressed via proto options.
 
 **Q: My app is Java and `frl` is written in Go. Does that matter?**
 No. `MetaData` wire format is identical; a `meta.pb` written by Java's
-`meta.toProto().writeTo(out)` deserializes cleanly with
-`frl --meta-file`.
+`meta.toProto().writeTo(out)` deserializes cleanly with any `frl`
+command that accepts `--meta-file`.
 
 **Q: Can I run `frl` with no config file?**
-Yes, if every flag is supplied on the CLI:
-`frl --cluster-file ... --keyspace-path ... --meta-file ... store info`.
-Typical operator workflows use `~/.frl/config.yaml` for ergonomics.
+Not fully in v1. `--meta-file` is available on most read commands
+(`record get/scan`, `index ls/describe`, `meta get/types`), but there
+are no root-level `--cluster-file` / `--keyspace-path` flags yet —
+those live only in the context. Until the root-level overrides land,
+the minimum ergonomic setup is a one-context `~/.frl/config.yaml`.
 
 **Q: Do I need to rebuild `frl` when my schema changes?**
 No. `frl` is schema-agnostic — it decodes records using whatever

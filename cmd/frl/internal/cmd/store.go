@@ -18,9 +18,9 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
-// storeInfoKey is the record-layer subspace key where DataStoreInfo lives.
-// Verified against pkg/recordlayer/constants.go (StoreInfoKey = 0).
-const storeInfoKey = 0
+// The DataStoreInfo header lives at recordlayer.StoreInfoKey — we read
+// that constant rather than hard-coding 0 so any future rearrangement
+// of subspace IDs flows through transparently.
 
 // newStoreCmd is the `store` noun. v1 ships only `info`.
 func newStoreCmd() *cobra.Command {
@@ -130,7 +130,7 @@ func parseKeyspacePath(path string) (subspace.Subspace, error) {
 // store's StoreInfoKey subspace, without going through a FDBRecordStore
 // builder (which would require metadata we intentionally don't load here).
 func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspace.Subspace) (*gen.DataStoreInfo, error) {
-	key := ss.Pack(tuple.Tuple{storeInfoKey})
+	key := ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey})
 	result, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		return rtx.Transaction().Get(key).Get()
 	})

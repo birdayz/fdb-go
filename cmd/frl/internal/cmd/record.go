@@ -43,8 +43,11 @@ func newRecordGetCmd() *cobra.Command {
 		Use:   "get <primary-key>",
 		Short: "Load a single record by primary key",
 		Long: "Primary keys are parsed as int64 if the argument is a valid " +
-			"integer, otherwise as a string. Composite primary keys are not " +
-			"yet supported — open an issue if you need them.",
+			"signed 64-bit integer, otherwise as a string. Values above " +
+			"math.MaxInt64 (9223372036854775807) are treated as strings, " +
+			"which will miss records saved with uint64 PKs in that range. " +
+			"Composite primary keys are not yet supported — open an issue " +
+			"if you need them.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
@@ -192,11 +195,11 @@ func scanAndRender(
 	}
 	defer cursor.Close()
 
-	count := 0
+	// Limit enforcement lives entirely in ScanProperties.ReturnedRowLimit
+	// — the cursor returns HasNext()=false after emitting exactly `limit`
+	// rows. No local counter is needed (and would be dead code: the
+	// cursor always terminates the loop first).
 	for {
-		if limit > 0 && count >= limit {
-			return nil
-		}
 		result, err := cursor.OnNext(ctx)
 		if err != nil {
 			return fmt.Errorf("scan: %w", err)
@@ -207,6 +210,5 @@ func scanAndRender(
 		if err := writeRecordAsJSON(out, result.GetValue()); err != nil {
 			return err
 		}
-		count++
 	}
 }
