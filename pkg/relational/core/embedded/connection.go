@@ -3318,6 +3318,22 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 	return evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 }
 
+// looksBoolean reports whether an expression atom is clearly a boolean
+// (comparison or nested parenthesised boolean). Used to route a
+// parenthesised group through the tri-state predicate evaluator
+// instead of the value evaluator when the inner looks predicate-ish.
+// False negatives are OK — they just fall through to the value path
+// which handles non-boolean atoms correctly.
+func looksBoolean(atom antlrgen.IExpressionAtomContext) bool {
+	switch atom.(type) {
+	case *antlrgen.BinaryComparisonPredicateContext:
+		return true
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		return true
+	}
+	return false
+}
+
 func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:
@@ -3362,6 +3378,58 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		// A single-field parenthesised group `(expr)` parses as a
+		// RecordConstructor with one unnamed expression. SQL convention
+		// is that single-element tuples are just the element — treat
+		// it as the inner expression. Real multi-field record
+		// constructors `(a, b)` / `(a AS x, b AS y)` still error.
+		//
+		// For boolean predicates like `(b = NULL)`, route through the
+		// tri-state predicate evaluator so UNKNOWN propagates as nil
+		// (the value-encoding of UNKNOWN — the caller in
+		// evalComparisonPredicateTri maps `nil` back to triNull).
+		// Without this, a NULL comparison would collapse to FALSE
+		// inside the value evaluator and NOT (b = NULL) would wrongly
+		// flip to TRUE.
+		rc := a.RecordConstructor()
+		if rc == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor")
+		}
+		if rc.STAR() != nil || rc.OfTypeClause() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "record constructor with STAR / OF TYPE not supported")
+		}
+		fields := rc.AllExpressionWithOptionalName()
+		if len(fields) != 1 {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "multi-field record constructor not supported in this context")
+		}
+		f := fields[0]
+		if f.AS() != nil || f.Uid() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "named record field not supported in this context")
+		}
+		inner := f.Expression()
+		if pred, ok := inner.(*antlrgen.PredicatedExpressionContext); ok {
+			// If the inner expression is a bare predicate (comparison,
+			// IS, LIKE, IN, BETWEEN, logical op), evaluate as tri-state.
+			// Value-returning atoms fall through to evalExpr below.
+			if pred.Predicate() != nil || looksBoolean(pred.ExpressionAtom()) {
+				t, err := evalExprPredicateTri(ctx, conn, msg, inner)
+				if err != nil {
+					return nil, err
+				}
+				switch t {
+				case triTrue:
+					return true, nil
+				case triFalse:
+					return false, nil
+				default:
+					return nil, nil
+				}
+			}
+		}
+		// Non-predicate (e.g. arithmetic, function call, constant) —
+		// evaluate as a plain value.
+		return evalExpr(ctx, conn, msg, inner)
 	case *antlrgen.BinaryComparisonPredicateContext:
 		// Comparison used as a value (e.g. IF(a > b, ...) or CASE WHEN ... END).
 		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
@@ -5533,6 +5601,25 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		// Single-field parenthesised group — see the proto-path
+		// evaluator for the full rationale. Unwrap and recurse.
+		rc := a.RecordConstructor()
+		if rc == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor")
+		}
+		if rc.STAR() != nil || rc.OfTypeClause() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "record constructor with STAR / OF TYPE not supported")
+		}
+		fields := rc.AllExpressionWithOptionalName()
+		if len(fields) != 1 {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "multi-field record constructor not supported in this context")
+		}
+		f := fields[0]
+		if f.AS() != nil || f.Uid() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "named record field not supported in this context")
+		}
+		return evalExprOnMap(ctx, conn, row, f.Expression())
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom type %T in map eval", atom)
 	}

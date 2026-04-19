@@ -48,9 +48,13 @@ tests:
     rows:
       - [1, true]
       - [2, false]
-  # NOT of UNKNOWN stays UNKNOWN — row filtered out. Pre-swingshift-35 bug
-  # returned TRUE for every row. Grammar quirk: parens around the
-  # comparison parse as RecordConstructorExpressionAtom, so we rely on
-  # SQL precedence (NOT binds tighter) to express this.
+  # NOT of UNKNOWN stays UNKNOWN — row filtered out. Pre-swingshift-35
+  # bug returned TRUE for every row. The parenthesised form (previously
+  # a grammar quirk that parsed as RecordConstructorExpressionAtom) now
+  # works too, as of nightshift-36.
+  - query: SELECT lb.* FROM lb WHERE NOT (b = null)
+    rows: []
+  # Same via SQL precedence (NOT binds tighter than =) — both paths now
+  # produce the same result.
   - query: SELECT lb.* FROM lb WHERE NOT b = null
     rows: []
