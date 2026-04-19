@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // RecordMetaData describes the schema for records stored in a record store.
@@ -817,9 +818,14 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()
 			msgType, err := protoregistry.GlobalTypes.FindMessageByName(rt.Descriptor.FullName())
 			if err != nil {
-				return nil, fmt.Errorf("record type %s not in proto registry: %w", rt.Name, err)
+				// Dynamic schemas (not in global proto registry) fall back to dynamicpb.
+				// This allows runtime-constructed schemas (e.g. from DDL) to be used
+				// for both serialization and deserialization.
+				desc := rt.Descriptor
+				rt.newMessage = func() proto.Message { return dynamicpb.NewMessage(desc) }
+			} else {
+				rt.newMessage = func() proto.Message { return msgType.New().Interface() }
 			}
-			rt.newMessage = func() proto.Message { return msgType.New().Interface() }
 			fnToRT[rt.unionFieldNumber] = rt
 		}
 	}

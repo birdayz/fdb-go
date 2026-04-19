@@ -210,6 +210,20 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 		fdp.MessageType = append(fdp.MessageType, msgDesc)
 	}
 
+	// Generate the UnionDescriptor message required for record serialization.
+	// Each table gets one optional field numbered starting at 1.
+	unionMsg := &descriptorpb.DescriptorProto{Name: proto.String("UnionDescriptor")}
+	for i, tbl := range b.tables {
+		unionMsg.Field = append(unionMsg.Field, &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("_" + tbl.name),
+			Number:   proto.Int32(int32(i + 1)),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+			TypeName: proto.String(tbl.name),
+		})
+	}
+	fdp.MessageType = append(fdp.MessageType, unionMsg)
+
 	// Build a resolver that includes the two dependency files.
 	// RegisterFile returns an error on duplicate registration; ignore it since
 	// the global registry already has these files and we just want them

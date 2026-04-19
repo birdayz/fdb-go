@@ -11,6 +11,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
@@ -285,22 +288,226 @@ func (c *EmbeddedConnection) GetDBPath() string { return c.dbPath }
 
 // execStatement routes a single parsed statement to the right handler.
 func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IStatementContext) (int64, error) {
-	ddl := stmt.DdlStatement()
-	if ddl == nil {
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only DDL statements are supported in this release")
+	if ddl := stmt.DdlStatement(); ddl != nil {
+		create := ddl.CreateStatement()
+		drop := ddl.DropStatement()
+		switch {
+		case create != nil:
+			return c.execCreate(ctx, create)
+		case drop != nil:
+			return c.execDrop(ctx, drop)
+		default:
+			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DDL statement")
+		}
 	}
-	create := ddl.CreateStatement()
-	drop := ddl.DropStatement()
-	switch {
-	case create != nil:
-		return c.execCreate(ctx, create)
-	case drop != nil:
-		return c.execDrop(ctx, drop)
+	if dml := stmt.DmlStatement(); dml != nil {
+		if ins := dml.InsertStatement(); ins != nil {
+			return c.execInsert(ctx, ins)
+		}
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
+	}
+	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only DDL and INSERT statements are supported in this release")
+}
+
+// execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
+func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInsertStatementContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	// Extract column names from the column list.
+	colCtx := ins.UidListWithNestingsInParens()
+	if colCtx == nil {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "INSERT without column list is not supported")
+	}
+	var cols []string
+	for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
+		cols = append(cols, uw.Uid().GetText())
+	}
+
+	// Only handle VALUES path.
+	valCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
+	if !ok {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only INSERT ... VALUES (...) is supported")
+	}
+
+	tableName := ins.TableName().FullId().GetText()
+
+	var totalRows int64
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
+			exprs := rowCtx.AllExpressionWithOptionalName()
+			if len(exprs) != len(cols) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"column count %d does not match value count %d", len(cols), len(exprs))
+			}
+			msg := dynamicpb.NewMessage(msgDesc)
+			for i, col := range cols {
+				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
+				}
+				val, evalErr := evalLiteralExpr(exprs[i])
+				if evalErr != nil {
+					return nil, evalErr
+				}
+				if val == nil {
+					// NULL — leave field absent (proto2 optional semantics).
+					continue
+				}
+				protoVal, convErr := convertToProtoValue(fd, val)
+				if convErr != nil {
+					return nil, convErr
+				}
+				msg.Set(fd, protoVal)
+			}
+			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
+				return nil, saveErr
+			}
+			totalRows++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return totalRows, nil
+}
+
+// evalLiteralExpr evaluates a literal expression from an INSERT VALUES list.
+// Returns nil for NULL literals.
+func evalLiteralExpr(expr antlrgen.IExpressionWithOptionalNameContext) (any, error) {
+	pred, ok := expr.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in INSERT", expr.Expression())
+	}
+	atomCtx, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in INSERT", pred.ExpressionAtom())
+	}
+	switch c := atomCtx.Constant().(type) {
+	case *antlrgen.DecimalConstantContext:
+		text := c.DecimalLiteral().GetText()
+		// Try integer first, fall back to float.
+		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return iv, nil
+		}
+		fv, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		return fv, nil
+	case *antlrgen.NegativeDecimalConstantContext:
+		text := "-" + c.DecimalLiteral().GetText()
+		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return iv, nil
+		}
+		fv, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		return fv, nil
+	case *antlrgen.StringConstantContext:
+		raw := c.StringLiteral().GetText()
+		// Strip surrounding quotes (single or double).
+		if len(raw) >= 2 {
+			raw = raw[1 : len(raw)-1]
+		}
+		return raw, nil
+	case *antlrgen.NullConstantContext:
+		return nil, nil
+	case *antlrgen.BooleanConstantContext:
+		return c.BooleanLiteral().TRUE() != nil, nil
 	default:
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation,
-			"unsupported DDL statement")
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in INSERT", atomCtx.Constant())
 	}
+}
+
+// convertToProtoValue converts a Go value (int64, float64, string, bool) to
+// a protoreflect.Value matching the field descriptor's kind.
+func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		switch v := val.(type) {
+		case bool:
+			return protoreflect.ValueOfBool(v), nil
+		case int64:
+			return protoreflect.ValueOfBool(v != 0), nil
+		}
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfInt32(int32(v)), nil //nolint:gosec
+		}
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfInt64(v), nil
+		}
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfUint32(uint32(v)), nil //nolint:gosec
+		}
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		if v, ok := val.(int64); ok {
+			return protoreflect.ValueOfUint64(uint64(v)), nil //nolint:gosec
+		}
+	case protoreflect.FloatKind:
+		switch v := val.(type) {
+		case float64:
+			return protoreflect.ValueOfFloat32(float32(v)), nil //nolint:gosec
+		case int64:
+			return protoreflect.ValueOfFloat32(float32(v)), nil //nolint:gosec
+		}
+	case protoreflect.DoubleKind:
+		switch v := val.(type) {
+		case float64:
+			return protoreflect.ValueOfFloat64(v), nil
+		case int64:
+			return protoreflect.ValueOfFloat64(float64(v)), nil
+		}
+	case protoreflect.StringKind:
+		if v, ok := val.(string); ok {
+			return protoreflect.ValueOfString(v), nil
+		}
+	case protoreflect.BytesKind:
+		if v, ok := val.(string); ok {
+			return protoreflect.ValueOfBytes([]byte(v)), nil
+		}
+	}
+	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+		"cannot convert %T to proto field kind %s", val, fd.Kind())
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {

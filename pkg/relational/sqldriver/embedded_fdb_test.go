@@ -309,3 +309,102 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
 		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
 	}
 }
+
+func TestFDB_EmbeddedInsert(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	// Use a dedicated DB connection for setup DDL (no schema yet).
+	setup := openTestDB(t, "/testdb_insert")
+
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE insert_tmpl "+
+			"CREATE TABLE Employee (emp_id BIGINT NOT NULL, name STRING, PRIMARY KEY (emp_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_insert/emp WITH TEMPLATE insert_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	// Open a new connection with the schema set via DSN.
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert?cluster_file=%s&schema=emp", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// INSERT a row.
+	res, err := db.ExecContext(ctx, "INSERT INTO Employee (emp_id, name) VALUES (1, 'Alice')")
+	if err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("RowsAffected = %d, want 1", rows)
+	}
+}
+
+func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_insert_multi")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_multi"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE multi_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, label STRING, PRIMARY KEY (item_id))"); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_insert_multi/items WITH TEMPLATE multi_tmpl"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert_multi?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	res, err := db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, label) VALUES (1, 'first'), (2, 'second'), (3, 'third')")
+	if err != nil {
+		t.Fatalf("INSERT multi-row: %v", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if rows != 3 {
+		t.Errorf("RowsAffected = %d, want 3", rows)
+	}
+}
+
+func TestFDB_EmbeddedInsertNoSchemaFails(t *testing.T) {
+	t.Parallel()
+	// No schema= in DSN — INSERT should fail with "no schema selected".
+	db := openTestDB(t, "/testdb_insert_noschema")
+	ctx := context.Background()
+
+	_, err := db.ExecContext(ctx, "INSERT INTO Employee (emp_id) VALUES (1)")
+	if err == nil {
+		t.Fatal("INSERT without schema should fail")
+	}
+}
