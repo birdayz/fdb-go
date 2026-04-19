@@ -349,6 +349,11 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **FLOOR/CEIL/CEILING/ROUND/MOD/POWER/POW/SIGN** — math functions. 1 integration test. swingshift-33.
 - [x] **compound HAVING (AND/OR/NOT)** — logical operators in HAVING clause via evalHaving recursion. swingshift-33.
 - [x] **INNER JOIN and LEFT OUTER JOIN** — execSelectJoin: nested-loop join, ON condition via evalHaving on merged map, SELECT * across both tables, ORDER BY/LIMIT. Detects LEFT/RIGHT grammar ambiguity (keywords are in keywordsCanBeId). 2 integration tests. swingshift-33.
+- [x] **RIGHT OUTER JOIN** — correct unmatched-right-row detection via per-row matchedRight[] boolean slice. 1 integration test. swingshift-33.
+- [x] **JOIN + GROUP BY / aggregates** — GROUP BY with COUNT/SUM/MIN/MAX/AVG, COUNT(DISTINCT), HAVING all work in JOIN queries (map-based in-memory grouping). 1 integration test. swingshift-33.
+- [x] **COUNT(DISTINCT col)** — distinct-set tracking per group (map[string]struct{}); works with and without GROUP BY. 1 integration test. swingshift-33.
+- [x] **GREATEST/LEAST** — multi-argument GREATEST(a,b,c)/LEAST(a,b,c) scalar functions; NULL-argument skipping. 1 integration test. swingshift-33.
+- [x] **filterSysRows compound WHERE** — now routes through evalPredicateOnMapExpr so AND/OR/NOT/IS NULL/LIKE/IN/BETWEEN all work in INFORMATION_SCHEMA WHERE clauses. swingshift-33.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
