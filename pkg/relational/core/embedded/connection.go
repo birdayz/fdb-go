@@ -566,13 +566,18 @@ func (s *embeddedStmt) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation, "query not implemented")
+	named := make([]driver.NamedValue, len(args))
+	for i, v := range args {
+		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
+	}
+	return s.conn.QueryContext(context.Background(), s.query, named)
 }
 
 // Static interface checks.
 var (
 	_ driver.Conn               = (*EmbeddedConnection)(nil)
 	_ driver.ExecerContext      = (*EmbeddedConnection)(nil)
+	_ driver.QueryerContext     = (*EmbeddedConnection)(nil)
 	_ driver.Pinger             = (*EmbeddedConnection)(nil)
 	_ driver.ConnBeginTx        = (*EmbeddedConnection)(nil)
 	_ driver.SessionResetter    = (*EmbeddedConnection)(nil)
