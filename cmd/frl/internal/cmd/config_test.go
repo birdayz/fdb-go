@@ -106,6 +106,20 @@ func TestConfigGetContexts_JSONArray(t *testing.T) {
 	}
 }
 
+func TestConfigPath_HonoursEnv(t *testing.T) {
+	t.Setenv("FRL_CONFIG", "/tmp/explicit.yaml")
+	c := newConfigPathCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "/tmp/explicit.yaml" {
+		t.Errorf("got %q, want /tmp/explicit.yaml", strings.TrimSpace(out.String()))
+	}
+}
+
 func TestConfigGetContexts_Empty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {

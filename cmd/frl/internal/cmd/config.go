@@ -28,8 +28,33 @@ func newConfigCmd() *cobra.Command {
 		newConfigUseContextCmd(),
 		newConfigCurrentContextCmd(),
 		newConfigGetContextsCmd(),
+		newConfigPathCmd(),
 	)
 	return c
+}
+
+// newConfigPathCmd prints the effective config file path (after
+// env-var overrides). Handy for debugging "why isn't my config
+// loading" questions — the answer is almost always "wrong path".
+func newConfigPathCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "path",
+		Short: "Print the effective config file path",
+		Long: "Prints the path frl is currently reading configuration " +
+			"from. Set $FRL_CONFIG to override the default " +
+			"(~/.frl/config.yaml). Exits with the path even if the " +
+			"file doesn't exist yet — useful for `mkdir -p` / `touch` " +
+			"bootstrap scripts.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := config.Path()
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), path)
+			return err
+		},
+	}
 }
 
 // newConfigCurrentContextCmd prints the active context's name (or nothing
