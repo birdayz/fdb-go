@@ -4130,3 +4130,57 @@ func TestFDB_CTEAggregateHaving(t *testing.T) {
 		{"west", 600},
 	}))
 }
+
+func TestFDB_JoinOnCTE(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_cte")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_cte_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_cte/main WITH TEMPLATE join_cte_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_cte?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (1, 1, 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 1, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CTE filters to big sales, then JOIN with Customer.
+	rows, err := db.QueryContext(ctx, `
+		WITH big_sales AS (SELECT id, customer_id, amount FROM Sales WHERE amount > 100)
+		SELECT Customer.name, big_sales.amount
+		FROM Customer INNER JOIN big_sales ON Customer.id = big_sales.customer_id
+		ORDER BY big_sales.amount DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type r struct {
+		name   string
+		amount int64
+	}
+	var got []r
+	for rows.Next() {
+		var rr r
+		g.Expect(rows.Scan(&rr.name, &rr.amount)).To(gomega.Succeed())
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{{"Alice", 500}}))
+}
