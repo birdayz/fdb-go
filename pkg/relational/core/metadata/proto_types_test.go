@@ -3,6 +3,7 @@ package metadata
 import (
 	"testing"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -311,4 +312,83 @@ func TestMessageTypeFromDescriptor_UUIDFallbackStructShape(t *testing.T) {
 	if st.NumFields() != 2 {
 		t.Errorf("UUID struct field count = %d, want 2", st.NumFields())
 	}
+}
+
+// FuzzMessageTypeFromDescriptor feeds arbitrary FileDescriptorProto bytes
+// through protodesc.NewFile + messageTypeFromDescriptor. The walk recurses
+// through nested-message field types; without the visited-set added in
+// swingshift-35, a fuzzer-crafted self-referential shape would stack-overflow.
+// This fuzz pins that guard along with the proto-unmarshal + descriptor
+// resolution paths.
+func FuzzMessageTypeFromDescriptor(f *testing.F) {
+	// Seed 1: a minimal valid proto2 file with one empty message.
+	syntax := "proto2"
+	msgName := "M"
+	seed1 := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("seed1.proto"),
+		Package: proto.String("test"),
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: &msgName},
+		},
+	}
+	if b, err := proto.Marshal(seed1); err == nil {
+		f.Add(b)
+	}
+	// Seed 2: self-referential message (the exact class of bug the
+	// visited-set guards against).
+	childrenName := "children"
+	childrenNum := int32(1)
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	treeTypeName := ".test.M"
+	seed2 := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("seed2.proto"),
+		Package: proto.String("test"),
+		Syntax:  &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: &msgName,
+				Field: []*descriptorpb.FieldDescriptorProto{
+					{
+						Name:     &childrenName,
+						Number:   &childrenNum,
+						Type:     &msgType,
+						TypeName: &treeTypeName,
+						Label:    &repeated,
+					},
+				},
+			},
+		},
+	}
+	if b, err := proto.Marshal(seed2); err == nil {
+		f.Add(b)
+	}
+	// Pathological bytes.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		fdp := &descriptorpb.FileDescriptorProto{}
+		if err := proto.Unmarshal(blob, fdp); err != nil {
+			return
+		}
+		fd, err := protodesc.NewFile(fdp, nil)
+		if err != nil {
+			return
+		}
+		for i := 0; i < fd.Messages().Len(); i++ {
+			md := fd.Messages().Get(i)
+			// Must not panic / stack-overflow. A non-nil error is fine;
+			// a (nil, nil) pair is the forbidden state.
+			st, err := messageTypeFromDescriptor(md, true)
+			if err != nil {
+				continue
+			}
+			if st == nil {
+				t.Fatalf("messageTypeFromDescriptor returned (nil, nil) for %s", md.FullName())
+			}
+		}
+	})
 }
