@@ -3772,3 +3772,63 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids).To(gomega.Equal([]int64{1, 2}))
 }
+
+func TestFDB_FunctionsInMapEval(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_fn_map")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_fn_map")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_map_tmpl
+		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Category (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_fn_map/main WITH TEMPLATE fn_map_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_fn_map?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Widget', 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (2, 'Gadget', 120)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, label) VALUES (1, 'cheap')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, label) VALUES (2, 'pricey')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Function in WHERE on a CTE (map path).
+	rows, err := db.QueryContext(ctx, `
+		WITH products AS (SELECT id, name, price FROM Product)
+		SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+		names = append(names, n)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Widget"}))
+
+	// COALESCE in SELECT projection on a CTE.
+	rows2, err := db.QueryContext(ctx, `
+		WITH p AS (SELECT id, name FROM Product)
+		SELECT COALESCE(name, 'unknown') FROM p WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var vals []string
+	for rows2.Next() {
+		var v string
+		g.Expect(rows2.Scan(&v)).To(gomega.Succeed())
+		vals = append(vals, v)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(vals).To(gomega.Equal([]string{"Widget"}))
+}
