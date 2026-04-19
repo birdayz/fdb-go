@@ -3016,6 +3016,12 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if fd == nil {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
 		}
+		// Absent proto2 optional fields are SQL NULL — distinct from the zero
+		// value. Predicates already use Has(); function arguments must too,
+		// otherwise UPPER(NULL) would produce "" instead of NULL.
+		if !msg.ProtoReflect().Has(fd) {
+			return nil, nil
+		}
 		return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
 	case *antlrgen.MathExpressionAtomContext:
 		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())

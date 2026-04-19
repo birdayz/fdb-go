@@ -5230,3 +5230,44 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
+
+func TestFDB_NullPropagationInFunctions(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_null_prop")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_prop")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_prop_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, name STRING, val BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_prop/main WITH TEMPLATE null_prop_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_null_prop?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert row with NULL name and NULL val.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Scalar functions should propagate NULL (return NULL on NULL input).
+	var upper, lower, trim sql.NullString
+	var absv, sqrtv sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT UPPER(name), LOWER(name), TRIM(name), ABS(val), SQRT(val) FROM T WHERE id = 1`).
+		Scan(&upper, &lower, &trim, &absv, &sqrtv)).To(gomega.Succeed())
+	g.Expect(upper.Valid).To(gomega.BeFalse())
+	g.Expect(lower.Valid).To(gomega.BeFalse())
+	g.Expect(trim.Valid).To(gomega.BeFalse())
+	g.Expect(absv.Valid).To(gomega.BeFalse())
+	g.Expect(sqrtv.Valid).To(gomega.BeFalse())
+
+	// COALESCE short-circuits on non-NULL argument.
+	var coalesced string
+	g.Expect(db.QueryRowContext(ctx, `SELECT COALESCE(name, 'default') FROM T WHERE id = 1`).Scan(&coalesced)).To(gomega.Succeed())
+	g.Expect(coalesced).To(gomega.Equal("default"))
+}
