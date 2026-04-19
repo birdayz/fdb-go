@@ -3348,6 +3348,67 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	}))
 }
 
+func TestFDB_SubqueryIN(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_subquery_in")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subquery_in")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE RestaurantOrder (order_id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (order_id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subquery_in/main WITH TEMPLATE subq_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_subquery_in?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (3, 'Charlie')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO RestaurantOrder (order_id, customer_id, amount) VALUES (1, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO RestaurantOrder (order_id, customer_id, amount) VALUES (2, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO RestaurantOrder (order_id, customer_id, amount) VALUES (3, 1, 150)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Alice has orders > 100, Bob does not, Charlie has no orders.
+	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Alice"}))
+
+	rows2, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	var names2 []string
+	for rows2.Next() {
+		var name string
+		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
+		names2 = append(names2, name)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names2).To(gomega.ConsistOf("Bob", "Charlie"))
+}
+
 func TestFDB_JoinGroupBy(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

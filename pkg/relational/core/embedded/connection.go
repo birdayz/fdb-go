@@ -823,7 +823,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if !result.HasNext() {
 					break
 				}
-				match, matchErr := evalPredicate(result.GetValue().Record, sq.whereExpr)
+				match, matchErr := evalPredicate(ctx, c, result.GetValue().Record, sq.whereExpr)
 				if matchErr != nil {
 					return nil, matchErr
 				}
@@ -890,7 +890,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					break
 				}
 				msg := result.GetValue().Record
-				match, matchErr := evalPredicate(msg, sq.whereExpr)
+				match, matchErr := evalPredicate(ctx, c, msg, sq.whereExpr)
 				if matchErr != nil {
 					return nil, matchErr
 				}
@@ -1089,7 +1089,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			rec := result.GetValue()
 			msg := rec.Record
-			match, matchErr := evalPredicate(msg, sq.whereExpr)
+			match, matchErr := evalPredicate(ctx, c, msg, sq.whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -2582,7 +2582,7 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		// Boolean expressions (AND/OR/NOT, comparisons) return bool as a value.
-		b, err := evalExprPredicate(msg, expr)
+		b, err := evalExprPredicate(context.TODO(), nil, msg, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -2591,7 +2591,7 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate via
 	// evalExprPredicate which handles the full predicate tree.
 	if pred.Predicate() != nil {
-		b, err := evalExprPredicate(msg, expr)
+		b, err := evalExprPredicate(context.TODO(), nil, msg, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -3068,7 +3068,7 @@ func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContex
 		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
 		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).
 		for _, alt := range c.AllCaseFuncAlternative() {
-			ok, err := evalExprPredicate(msg, alt.GetCondition().Expression())
+			ok, err := evalExprPredicate(context.TODO(), nil, msg, alt.GetCondition().Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -3299,7 +3299,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				break
 			}
 			rec := result.GetValue()
-			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			match, matchErr := evalPredicate(ctx, c, rec.Record, whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -3398,7 +3398,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 				break
 			}
 			rec := result.GetValue()
-			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			match, matchErr := evalPredicate(ctx, c, rec.Record, whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -3420,20 +3420,20 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 
 // evalPredicate returns true if msg satisfies whereExpr.
 // Only col = constant comparisons are supported. If whereExpr is nil, returns true.
-func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
+func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
 	if whereExpr == nil {
 		return true, nil
 	}
-	return evalExprPredicate(msg, whereExpr.Expression())
+	return evalExprPredicate(ctx, conn, msg, whereExpr.Expression())
 }
 
 // evalExprPredicate evaluates an IExpressionContext as a boolean predicate.
 // Supports: col = constant, col != constant, col < constant, col > constant,
 // col <= constant, col >= constant, AND, OR, NOT.
-func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
+func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalExprPredicate(msg, e.Expression(0))
+		left, err := evalExprPredicate(ctx, conn, msg, e.Expression(0))
 		if err != nil {
 			return false, err
 		}
@@ -3442,18 +3442,18 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 			if !left {
 				return false, nil // short-circuit
 			}
-			return evalExprPredicate(msg, e.Expression(1))
+			return evalExprPredicate(ctx, conn, msg, e.Expression(1))
 		}
 		if op.OR() != nil {
 			if left {
 				return true, nil // short-circuit
 			}
-			return evalExprPredicate(msg, e.Expression(1))
+			return evalExprPredicate(ctx, conn, msg, e.Expression(1))
 		}
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
 
 	case *antlrgen.NotExpressionContext:
-		v, err := evalExprPredicate(msg, e.Expression())
+		v, err := evalExprPredicate(ctx, conn, msg, e.Expression())
 		if err != nil {
 			return false, err
 		}
@@ -3463,7 +3463,7 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 		if e.Predicate() != nil {
 			switch p := e.Predicate().(type) {
 			case *antlrgen.InPredicateContext:
-				return evalInPredicate(msg, e, p)
+				return evalInPredicate(ctx, conn, msg, e, p)
 			case *antlrgen.IsExpressionContext:
 				return evalIsNullPredicate(msg, e, p)
 			case *antlrgen.LikePredicateContext:
@@ -3515,8 +3515,8 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	}
 }
 
-// evalInPredicate handles: expr [NOT] IN (val1, val2, ...)
-func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
+// evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
+func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() so unset optionals (SQL NULL) return false.
@@ -3538,6 +3538,31 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 			return false, nil // NULL IN (...) = UNKNOWN
 		}
 		fieldVal = v
+	}
+
+	if qb := in.InList().QueryExpressionBody(); qb != nil {
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
+		}
+		_, subRows, err := conn.execQueryBodyRows(ctx, qb)
+		if err != nil {
+			return false, err
+		}
+		for _, row := range subRows {
+			if len(row) == 0 {
+				continue
+			}
+			if valuesEqual(fieldVal, row[0]) {
+				if in.NOT() != nil {
+					return false, nil
+				}
+				return true, nil
+			}
+		}
+		if in.NOT() != nil {
+			return true, nil
+		}
+		return false, nil
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
