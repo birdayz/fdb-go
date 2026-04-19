@@ -1527,15 +1527,37 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
 	}
 	opText := bcp.ComparisonOperator().GetText()
-	colAtom, ok := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE left side must be a column name, got %T", bcp.GetLeft())
-	}
-	colName := fullIdToName(colAtom.FullColumnName().FullId())
 
-	valAtom, ok := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE right side must be a constant, got %T", bcp.GetRight())
+	var colName string
+	var valAtom *antlrgen.ConstantExpressionAtomContext
+
+	leftCol, leftIsCol := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
+	rightConst, rightIsConst := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
+	rightCol, rightIsCol := bcp.GetRight().(*antlrgen.FullColumnNameExpressionAtomContext)
+	leftConst, leftIsConst := bcp.GetLeft().(*antlrgen.ConstantExpressionAtomContext)
+
+	switch {
+	case leftIsCol && rightIsConst:
+		colName = fullIdToName(leftCol.FullColumnName().FullId())
+		valAtom = rightConst
+	case leftIsConst && rightIsCol:
+		// Flip: constant <op> column → column <flipped-op> constant
+		colName = fullIdToName(rightCol.FullColumnName().FullId())
+		valAtom = leftConst
+		switch opText {
+		case "<":
+			opText = ">"
+		case ">":
+			opText = "<"
+		case "<=":
+			opText = ">="
+		case ">=":
+			opText = "<="
+		}
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"WHERE comparison must be col <op> constant or constant <op> col, got %T %s %T",
+			bcp.GetLeft(), opText, bcp.GetRight())
 	}
 
 	litVal, err := evalConstant(valAtom.Constant())
