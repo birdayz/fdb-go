@@ -725,12 +725,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			type groupState struct {
 				groupVals []driver.Value // values for the group-by columns
 				// accumulators parallel to sq.aggCols
-				counts []int64
-				sums   []float64
-				mins   []driver.Value
-				maxes  []driver.Value
-				avgs   []float64 // running sum for AVG
-				avgsN  []int64   // count for AVG
+				counts       []int64
+				sums         []float64
+				mins         []driver.Value
+				maxes        []driver.Value
+				avgs         []float64             // running sum for AVG
+				avgsN        []int64               // count for AVG
+				distinctSets []map[string]struct{} // nil unless COUNT(DISTINCT)
 			}
 			groupOrder := []string{} // insertion order for deterministic output
 			groups := map[string]*groupState{}
@@ -762,14 +763,21 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				key := groupByKey(gVals)
 				gs, exists := groups[key]
 				if !exists {
+					distinctSets := make([]map[string]struct{}, len(sq.aggCols))
+					for di, ac := range sq.aggCols {
+						if ac.aggDistinct {
+							distinctSets[di] = make(map[string]struct{})
+						}
+					}
 					gs = &groupState{
-						groupVals: gVals,
-						counts:    make([]int64, len(sq.aggCols)),
-						sums:      make([]float64, len(sq.aggCols)),
-						mins:      make([]driver.Value, len(sq.aggCols)),
-						maxes:     make([]driver.Value, len(sq.aggCols)),
-						avgs:      make([]float64, len(sq.aggCols)),
-						avgsN:     make([]int64, len(sq.aggCols)),
+						groupVals:    gVals,
+						counts:       make([]int64, len(sq.aggCols)),
+						sums:         make([]float64, len(sq.aggCols)),
+						mins:         make([]driver.Value, len(sq.aggCols)),
+						maxes:        make([]driver.Value, len(sq.aggCols)),
+						avgs:         make([]float64, len(sq.aggCols)),
+						avgsN:        make([]int64, len(sq.aggCols)),
+						distinctSets: distinctSets,
 					}
 					groups[key] = gs
 					groupOrder = append(groupOrder, key)
@@ -778,6 +786,18 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				for i, ac := range sq.aggCols {
 					if ac.groupCol != "" {
 						continue // group-by reference, no accumulation
+					}
+					if ac.aggDistinct && aggArgFDs[i] != nil {
+						// COUNT(DISTINCT col): only count each distinct value once.
+						if msg.ProtoReflect().Has(aggArgFDs[i]) {
+							v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
+							dk := fmt.Sprintf("%v", v)
+							if _, seen := gs.distinctSets[i][dk]; !seen {
+								gs.distinctSets[i][dk] = struct{}{}
+								gs.counts[i]++
+							}
+						}
+						continue
 					}
 					gs.counts[i]++
 					if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
@@ -1364,9 +1384,10 @@ type orderByClause struct {
 type aggSelectCol struct {
 	outName string // output column name
 	// Either groupCol or aggFunc is set.
-	groupCol string // plain group-by column reference
-	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
-	aggArg   string // argument column name (empty for COUNT(*))
+	groupCol    string // plain group-by column reference
+	aggFunc     string // COUNT/SUM/MIN/MAX/AVG
+	aggArg      string // argument column name (empty for COUNT(*))
+	aggDistinct bool   // true when COUNT(DISTINCT col)
 }
 
 // checkCountStar returns true if e is a bare COUNT(*) expression.
@@ -1391,25 +1412,26 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 }
 
 // extractAggFunc attempts to parse an aggregate function (COUNT/SUM/MIN/MAX/AVG)
-// from a SelectExpressionElementContext. Returns (funcName, argColName, alias, ok).
+// from a SelectExpressionElementContext. Returns (funcName, argColName, distinct, alias, ok).
 // funcName is upper-case. argColName is empty for COUNT(*).
-func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol, alias string, ok bool) {
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol, alias string, distinct, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
-		return "", "", "", false
+		return "", "", "", false, false
 	}
 	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if !fcok {
-		return "", "", "", false
+		return "", "", "", false, false
 	}
 	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if !aggok {
-		return "", "", "", false
+		return "", "", "", false, false
 	}
 	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if !awfok {
-		return "", "", "", false
+		return "", "", "", false, false
 	}
+	isDistinct := awf.DISTINCT() != nil
 	switch {
 	case awf.COUNT() != nil && awf.STAR() != nil:
 		funcName = "COUNT"
@@ -1417,6 +1439,9 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 		funcName = "COUNT"
 		if awf.FunctionArg() != nil {
 			argCol = awf.FunctionArg().GetText()
+		} else if awf.FunctionArgs() != nil && len(awf.FunctionArgs().AllFunctionArg()) > 0 {
+			// COUNT(DISTINCT col) — FunctionArgs variant
+			argCol = awf.FunctionArgs().AllFunctionArg()[0].GetText()
 		}
 	case awf.SUM() != nil:
 		funcName = "SUM"
@@ -1439,19 +1464,21 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 			argCol = awf.FunctionArg().GetText()
 		}
 	default:
-		return "", "", "", false
+		return "", "", "", false, false
 	}
 	if e.Uid() != nil {
 		alias = stripIdentifierQuotes(e.Uid().GetText())
 	}
 	if alias == "" {
-		if argCol == "" {
+		if isDistinct && argCol != "" {
+			alias = funcName + "(DISTINCT " + argCol + ")"
+		} else if argCol == "" {
 			alias = funcName + "(*)"
 		} else {
 			alias = funcName + "(" + argCol + ")"
 		}
 	}
-	return funcName, argCol, alias, true
+	return funcName, argCol, alias, isDistinct, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -1566,8 +1593,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
-				} else if fn, argCol, alias, isAgg := extractAggFunc(e); isAgg {
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol})
+				} else if fn, argCol, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggDistinct: isDistinct})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext

@@ -3245,3 +3245,63 @@ func TestFDB_RightJoin(t *testing.T) {
 	g.Expect(names[0]).To(gomega.Equal("Alice"))
 	g.Expect(names[1]).To(gomega.BeNil()) // orphan order → NULL customer name
 }
+
+func TestFDB_CountDistinct(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_count_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_tmpl
+		CREATE TABLE Sale (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, region STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_count_distinct/main WITH TEMPLATE cd_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_count_distinct?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (1, 1, 'US')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (2, 2, 'EU')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (3, 1, 'US')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (4, 3, 'US')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// COUNT(DISTINCT customer_id): 3 distinct customers (1, 2, 3).
+	rows, err := db.QueryContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var n int64
+	g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(int64(3)))
+
+	// COUNT(DISTINCT region) GROUP BY: grouped by region, count distinct customers per region.
+	rows2, err := db.QueryContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	type regionCount struct {
+		region string
+		count  int64
+	}
+	var rc []regionCount
+	for rows2.Next() {
+		var r regionCount
+		g.Expect(rows2.Scan(&r.region, &r.count)).To(gomega.Succeed())
+		rc = append(rc, r)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(rc).To(gomega.Equal([]regionCount{
+		{"EU", 1},
+		{"US", 2}, // customers 1 and 3 in US
+	}))
+}
