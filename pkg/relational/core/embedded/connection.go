@@ -3750,7 +3750,6 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	}
 }
 
-// evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
 // matchSubqueryIN checks whether fieldVal appears in the first column of subRows.
 // Returns (matched, notNegated) following SQL IN/NOT IN semantics.
 func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) bool {
@@ -3765,6 +3764,7 @@ func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bo
 	return negated
 }
 
+// evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
 func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {

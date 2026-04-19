@@ -354,6 +354,12 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **COUNT(DISTINCT col)** — distinct-set tracking per group (map[string]struct{}); works with and without GROUP BY. 1 integration test. swingshift-33.
 - [x] **GREATEST/LEAST** — multi-argument GREATEST(a,b,c)/LEAST(a,b,c) scalar functions; NULL-argument skipping. 1 integration test. swingshift-33.
 - [x] **filterSysRows compound WHERE** — now routes through evalPredicateOnMapExpr so AND/OR/NOT/IS NULL/LIKE/IN/BETWEEN all work in INFORMATION_SCHEMA WHERE clauses. swingshift-33.
+- [x] **Subquery IN / NOT IN** — `WHERE col IN (SELECT ...)` / `WHERE col NOT IN (SELECT ...)`; proto path + map/JOIN path both supported; ctx+conn threaded through evalPredicate/evalExprPredicate/evalInPredicate. dayshift-34.
+- [x] **EXISTS / NOT EXISTS subquery** — `WHERE EXISTS (SELECT ...)` / `WHERE NOT EXISTS (SELECT ...)`; ExistsExpressionAtomContext handled at expression level. dayshift-34.
+- [x] **CTE (WITH clause)** — `WITH name AS (SELECT ...) SELECT ...`; CTEs materialized in order at execSelect start; chaining (CTE B references CTE A) works. dayshift-34.
+- [x] **SELECT without FROM** — `SELECT 1+2, 'hello'`; constant expression row, no catalog access. dayshift-34.
+- [x] **INSERT VALUES with expressions** — `INSERT INTO t VALUES (1+2, UPPER('foo'))`; evalExpr replaces evalLiteralExpr for INSERT value columns. dayshift-34.
+- [x] **Derived tables (subquery in FROM)** — `SELECT name FROM (SELECT id, name FROM t WHERE ...) AS alias`; materialised into temporary CTE slot. dayshift-34.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
