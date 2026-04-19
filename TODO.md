@@ -23,9 +23,195 @@ Operator/developer CLI for the Go Record Layer. Lives at `./cmd/frl` as a **sepa
 
 _Commit: worktree-cli branch. Deps pulled in by CLI: cobra v1.10.1, fang/v2 v2.0.1 (published as charm.land/fang/v2 — repo is github.com/charmbracelet/fang)._
 
-### Phase B — command design (open)
+### Phase A.5 — metadata loading (two sources)
 
-Not started. kaf-style NOUN VERB tree. Candidate nouns: `config`, `store`, `record`, `index`, `meta`, `keyspace`, `tx`. Scope (ops vs dev), read/write defaults, output format (proto/json/yaml/table), context/profile UX — all TBD. Design pass before implementation.
+**Design evolution.** Earlier drafts (scrapped) mandated `FDBMetaDataStore` and a separate proto-descriptor registry (BSR/protocompile/descriptor sources, merge policy, clash rules). Sifting Apple's official docs (`fdb-record-layer/docs/sphinx/source/Overview.md`, `GettingStarted.md`, `SchemaEvolution.md`, `FDBMetaDataStore` Javadoc lines 57–64) revealed that **Apple treats programmatic metadata as the documented default**. `FDBMetaDataStore` is framed as an advanced feature for cross-instance coordination, not the norm. Real-world evidence: `channelmind-ai` (and likely most Java shops) uses programmatic-only metadata with no persistence.
+
+Mandating `FDBMetaDataStore` would have diverged from Apple's guidance and forced every target app to adopt a feature they don't need. Revised.
+
+**Two first-class metadata sources. Both v1.**
+
+```go
+// cmd/frl/internal/meta
+type Source interface {
+    Name() string
+    Load(ctx context.Context) (*recordlayer.RecordMetaData, error)
+}
+
+// Programmatic-metadata apps: app dumps meta.pb at deploy/build time;
+// frl reads the file. Matches Apple's documented norm.
+type FileSource struct { Path string }
+
+// FDBMetaDataStore apps: frl reads metadata straight from FDB at the
+// configured keyspace path. Zero app-side tooling, mandatory FDBMetaDataStore.
+type FDBStoreSource struct {
+    DB           *recordlayer.FDBDatabase
+    KeySpacePath keyspace.Path
+}
+```
+
+Both return the same `*RecordMetaData`. `frl` never needs to know which source produced it. Proto descriptors travel with the metadata — `RecordMetaData.records` is a `FileDescriptorProto`, `RecordMetaData.dependencies` is the transitive closure. No separate descriptor registry needed.
+
+**`.proto` options source deferred.** Could work by running `protocompile` on user-provided `.proto` files, extracting options (`(schema)`, `(record)`, `(field)`), and building a `RecordMetaData`. But Apple's own docs de-emphasize proto options (*"generally preferred to define indexes in our application code"*), and options can't express RANK/TEXT/VECTOR/RANK/FormerIndex/UniversalIndex. High implementation cost, partial coverage, low real-world return. Skip.
+
+**Config shape (revised `Context`):**
+
+```proto
+message Context {
+  string name = 1;
+  string cluster_file = 2;
+  string keyspace_path = 3;          // where the record store lives
+  MetadataSource metadata = 4;       // how to load its RecordMetaData
+}
+
+message MetadataSource {
+  oneof source {
+    // File on disk containing a serialized com.apple.foundationdb.record.RecordMetaDataProto.MetaData
+    // message. App exports once per deploy using a small helper.
+    string meta_file = 1;
+
+    // KeySpace path of an FDBMetaDataStore. frl reads metadata in the same way
+    // the app does — via FDBMetaDataStore.LoadRecordMetaData().
+    string meta_store_keyspace = 2;
+  }
+}
+```
+
+**CLI override:** `--meta-file <path>` takes precedence over `Context.metadata`. Useful for ad-hoc operator sessions against a store whose metadata landed via handover rather than config.
+
+**Helper we ship in the library** (for programmatic-metadata apps to export meta.pb):
+
+```go
+// pkg/recordlayer/metadata_export.go (new)
+func WriteRecordMetaData(meta *RecordMetaData, w io.Writer) error {
+    bytes, err := proto.Marshal(meta.ToProto())
+    if err != nil { return err }
+    _, err = w.Write(bytes)
+    return err
+}
+```
+
+Apps wire a 10-line `cmd/dump-meta/main.go` that builds their metadata, calls this, emits to stdout. Make target → `meta.pb`. Operator uses `frl --meta-file ./meta.pb`.
+
+**Implementation tasks:**
+
+- [ ] Add `MetadataSource` + fields to `cmd/frl/proto/frl/config/v1/config.proto`; regenerate.
+- [ ] `cmd/frl/internal/meta/{source.go,file.go,fdbstore.go}` with unit tests (missing file, corrupt .pb, missing FDBMetaDataStore, FDBMetaDataStore with empty `records`).
+- [ ] `pkg/recordlayer/metadata_export.go` + a `WriteRecordMetaData` helper (lib-side, not CLI-side).
+- [ ] Wire `--meta-file` global flag + context field resolution.
+- [ ] First consumer: `frl store info` (doesn't need metadata yet, but exercises context plumbing) followed by `frl meta get` (dumps the loaded `RecordMetaData` as proto/JSON).
+
+### Phase A.6 — operator guide (Go + Java, blocking v1 release)
+
+`frl` is useless without a clear "how do I wire my app for this?" guide. Target audiences: Go apps using our port, Java apps using Apple's Record Layer.
+
+**Deliverable:** `docs/operator-guide.md` (and/or Markdown under `cmd/frl/docs/`) covering both metadata sources in both languages.
+
+**Outline:**
+
+1. **When do I need to do anything?** — Concrete: *if your app uses `FDBRecordStore`, you already have a store; to make frl work, you need to expose its RecordMetaData somehow.*
+2. **Path A — dump meta.pb (recommended for most apps).**
+   - Go: `pkg/recordlayer.WriteRecordMetaData(meta, w)` in a small `cmd/dump-meta/main.go`. Makefile integration. Ship `meta.pb` alongside binaries.
+   - Java: `RecordMetaDataProto.MetaData proto = meta.toProto(); proto.writeTo(out);` in a small main class. Maven/Gradle integration. Same artifact workflow.
+3. **Path B — use `FDBMetaDataStore`.**
+   - Go: `recordlayer.NewFDBMetaDataStore(ctx, metaPath).SaveRecordMetaData(meta)` at deploy-time init.
+   - Java: `new FDBMetaDataStore(ctx, metaPath).saveRecordMetaData(meta).join();` same.
+   - Note: this is Apple's framed "multi-instance coordination" feature. Overkill for single-deploy apps. Recommend Path A unless you actually need coordinated schema rollouts.
+4. **Schema evolution.** Both paths — how to upgrade metadata. Reference `MetaDataEvolutionValidator` for both.
+5. **Pitfalls.** `MetaData.records` must be populated (empty → frl fails with a specific error). Version number must increment. etc.
+6. **FAQ.** "Why not auto-discover?" "Why must I opt in at all?" "What if my app is Java and frl is Go?" (answer: proto wire format is identical; meta.pb from Java works with frl.)
+
+Doc is part of the v1 deliverable — shipping `frl` without this guide makes both options silently inaccessible to users. Write docs alongside code.
+
+### Phase B — command tree
+
+**Style:** kaf-style **NOUN VERB**. Noun-verb scales past CRUDL — verbs like `build`, `rebuild`, `lock`, `truncate`, `destroy`, `evolve-check` have no natural verb-noun form.
+
+**Seven nouns total** (down from eight — `protos` cut with Phase A.5's proto-registry redesign; metadata now carries descriptors):
+
+`record`, `index`, `store`, `meta`, `config`, `keyspace`, `tx`.
+
+#### B.1 — v1 minimum (ship target)
+
+Six commands. Enough to point `frl` at a cluster, select a context, inspect a store, read data, list indexes. Hits the 80% case.
+
+| Command | Notes |
+|---|---|
+| `config use-context <name>` | Context switch |
+| `config view` | Effective context (no secrets to redact in v1 — no BSR tokens) |
+| `store info` | Format version, incarnation, record count, lock state, header |
+| `record get <pk>` | Single record by primary key |
+| `record scan [--type T] [--limit N]` | Cursor-backed scan with continuations |
+| `index ls` | List indexes + state (readable / write-only / disabled) |
+
+Global flags for v1: `--context`, `--cluster-file`, `--keyspace-path`, `--meta-file`, `-o json|yaml|text`.
+
+#### B.2 — designed, implement later as demand emerges
+
+Kept documented so later waves don't rediscover the design. Each wave is small, no mandated order.
+
+**Data — wave 2**
+| Command | Notes |
+|---|---|
+| `record put --file <file>` | Save a record (proto encoded) |
+| `record delete <pk>` | Single delete |
+| `record count [--type T]` | Store-level or per-type count (atomic ADD indexes) |
+| `index describe <name>` | Full definition: expression, subspace key, options |
+| `index scan <name> [--range R]` | Cursor across index entries |
+
+**Index maintenance — wave 3**
+| Command | Notes |
+|---|---|
+| `index build <name>` | OnlineIndexer run (progress + throttle flags) |
+| `index rebuild <name>` | Inline clear + rebuild |
+| `index set-state <name> <state>` | readable / write-only / disabled |
+
+**Store lifecycle — wave 4**
+| Command | Notes |
+|---|---|
+| `store create --meta <file>` | Fresh store at current context path |
+| `store truncate` | Delete-all-records (retains header, indexes, metadata) |
+| `store destroy` | Drop everything: records, indexes, metadata, header. Explicit naming so blast radius is obvious |
+| `store lock --reason <r>` | Set `FORBID_RECORD_UPDATE` lock state |
+| `store unlock` | Clear lock |
+
+**Meta — wave 5**
+| Command | Notes |
+|---|---|
+| `meta get` | Dump RecordMetaData as proto/JSON |
+| `meta types ls` | Record types in metadata (nested — types live in meta) |
+| `meta types describe <name>` | Single type introspection |
+| `meta validate --file <f>` | `MetaDataValidator` dry run (needs no store) |
+| `meta evolve-check --old <f> --new <f>` | `MetaDataEvolutionValidator` (needs no store) |
+| `meta diff <old> <new>` | Human-readable diff |
+| _`meta set/apply`_ | Deferred — atomically replacing metadata is dangerous. Design later with mandatory dry-run default. |
+
+**Navigation / escape — wave 6**
+| Command | Notes |
+|---|---|
+| `config get-contexts` | List contexts |
+| `config current-context` | Print active name |
+| `config add-context --name <n> ...` | Add/update |
+| `keyspace tree <path>` | Walk directory tree |
+| `keyspace ls <path>` | Direct children |
+| `keyspace resolve <path>` | Logical path → FDB byte prefix (debug) |
+| `tx run` | Ad-hoc transaction wrapping for scripting |
+| `tx read-version` | Current GRV |
+
+**Global flags (full set, added incrementally)**
+```
+--context <name>          # v1
+--cluster-file <path>     # v1
+--keyspace-path <path>    # v1
+--meta-file <path>        # v1 — overrides Context.metadata
+-o|--output json|yaml|text# v1 — default text; record/index output JSON-friendly
+```
+
+(No proto-related flags — Phase A.5 redesign killed them.)
+
+### Phase C — web UI (parked, future)
+
+`frl web` — serves a local web UI for browsing records/indexes/metadata. Not designed. Not scheduled. Revisit after Phase B commands land and we know what the CLI already handles well.
 
 ---
 
