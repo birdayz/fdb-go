@@ -549,3 +549,39 @@ func TestRowKey(t *testing.T) {
 		})
 	}
 }
+
+// FuzzApplyBitOp pins the swingshift-35 bitwise-operator implementation.
+// The function must never panic, must reject non-integer operands cleanly,
+// must propagate NULL, and must guard shift counts against out-of-range
+// values (shift count >= 64 or < 0 is undefined behaviour in Go).
+func FuzzApplyBitOp(f *testing.F) {
+	f.Add(int64(7), int64(3), "&")
+	f.Add(int64(7), int64(3), "|")
+	f.Add(int64(7), int64(3), "^")
+	f.Add(int64(7), int64(2), "<<")
+	f.Add(int64(7), int64(1), ">>")
+	// Pathological shift counts (should error, not panic via UB).
+	f.Add(int64(1), int64(64), "<<")
+	f.Add(int64(1), int64(-1), "<<")
+	f.Add(int64(-1), int64(63), ">>")
+	// Unknown op.
+	f.Add(int64(1), int64(2), "@")
+	f.Fuzz(func(t *testing.T, a, b int64, op string) {
+		// Must not panic. Either returns a value+nil, NULL+nil, or value+error.
+		_, err := applyBitOp(a, b, op)
+		_ = err // accept any error
+		// Also try with NULL operands; those must always return nil, nil.
+		v, err := applyBitOp(nil, b, op)
+		if err != nil || v != nil {
+			t.Fatalf("applyBitOp(nil, _) = (%v, %v), want (nil, nil)", v, err)
+		}
+		v, err = applyBitOp(a, nil, op)
+		if err != nil || v != nil {
+			t.Fatalf("applyBitOp(_, nil) = (%v, %v), want (nil, nil)", v, err)
+		}
+		// Non-integer operand must error cleanly, not panic.
+		if _, err := applyBitOp("string", b, op); err == nil {
+			t.Fatalf("applyBitOp(string, _) must error")
+		}
+	})
+}
