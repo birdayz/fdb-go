@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -3009,7 +3010,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				}
 			}
 			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
-				return nil, saveErr
+				return nil, wrapSaveRecordError(saveErr)
 			}
 			totalRows++
 		}
@@ -3114,7 +3115,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 				}
 			}
 			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
-				return nil, saveErr
+				return nil, wrapSaveRecordError(saveErr)
 			}
 			totalRows++
 		}
@@ -4387,6 +4388,50 @@ func applyMathOp(left, right any, op string) (any, error) {
 // integer operands; float / string operands are an error (not a silent cast).
 // The grammar exposes bitOperator tokens as concatenated text, so `<<` comes
 // through as "<<" and `>>` as ">>".
+// wrapSaveRecordError translates record-layer-level errors thrown by
+// store.SaveRecord into api.Error values carrying the Java-matching
+// SQLSTATE. Without this, SQL callers would see a raw recordlayer
+// error type that doesn't `errors.As` to `*api.Error`, defeating the
+// SQLSTATE contract that the relational layer documents.
+//
+// Java's relational layer performs the equivalent mapping in
+// RelationalException.toRelationalException (class 23 -> SQLSTATE).
+func wrapSaveRecordError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uniqErr *recordlayer.RecordIndexUniquenessViolationError
+	if errors.As(err, &uniqErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
+	}
+	var existsErr *recordlayer.RecordAlreadyExistsError
+	if errors.As(err, &existsErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"primary key %v already exists", existsErr.PrimaryKey)
+	}
+	var keySizeErr *recordlayer.IndexKeySizeError
+	if errors.As(err, &keySizeErr) {
+		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+			"index %q key size %d exceeds limit %d", keySizeErr.IndexName, keySizeErr.KeySize, keySizeErr.Limit)
+	}
+	var valueSizeErr *recordlayer.IndexValueSizeError
+	if errors.As(err, &valueSizeErr) {
+		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+			"index %q value size %d exceeds limit %d", valueSizeErr.IndexName, valueSizeErr.ValueSize, valueSizeErr.Limit)
+	}
+	// Already a relational-layer error (e.g. from validation upstream of
+	// the save) — pass through untouched.
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) {
+		return err
+	}
+	// Unknown record-layer error — wrap as internal so callers still see a
+	// stable SQLSTATE and can `errors.As` to *api.Error for logging. The
+	// original record-layer error is preserved via %w.
+	return api.WrapErrorf(err, api.ErrCodeInternalError, "record save failed")
+}
+
 func applyBitOp(left, right any, op string) (any, error) {
 	if left == nil || right == nil {
 		return nil, nil // NULL propagates

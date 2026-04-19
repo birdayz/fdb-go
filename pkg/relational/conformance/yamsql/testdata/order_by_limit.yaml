@@ -1,0 +1,35 @@
+# order_by_limit.yaml
+#
+# ORDER BY with LIMIT — common query pattern. Pins ORDER BY multi-column
+# with mixed ASC/DESC and LIMIT truncation.
+name: order_by_limit
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 3), (2, 'a', 1), (3, 'b', 4), (4, 'b', 1), (5, 'a', 2)
+tests:
+  # Multi-column ORDER BY: grp ASC, v DESC.
+  - query: SELECT id, grp, v FROM t ORDER BY grp, v DESC
+    rows:
+      - [1, 'a', 3]
+      - [5, 'a', 2]
+      - [2, 'a', 1]
+      - [3, 'b', 4]
+      - [4, 'b', 1]
+  # LIMIT caps rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 3
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # LIMIT larger than result set returns all.
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # LIMIT 0 returns nothing.
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    rows: []
