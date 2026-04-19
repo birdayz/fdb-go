@@ -46,11 +46,21 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 	return c, nil
 }
 
-// DefaultCatalogSubspace returns the standard __SYS/CATALOG subspace.
-// Mirrors Java's RelationalKeyspaceProvider layout for cross-language
-// compatibility.
+// DefaultCatalogSubspace returns the standard __SYS/CATALOG subspace in the
+// exact byte layout Java writes. Java's RelationalKeyspaceProvider defines:
+//
+//	KeySpaceDirectory(SYS,     KeyType.NULL)                            // __SYS domain
+//	  KeySpaceDirectory(SYS,   KeyType.NULL)                            // __SYS database
+//	    KeySpaceDirectory(CATALOG, KeyType.LONG, 0L)                    // CATALOG schema
+//
+// The directory *names* (__SYS, __SYS, CATALOG) are path labels; the on-wire
+// tuple element for each level is the KeyType constant. So the catalog's
+// actual subspace prefix is the tuple (NULL, NULL, int64(0)) — NOT three
+// strings. Go previously used subspace.Sub("__SYS", "CATALOG") which encodes
+// two string tuple elements and is incompatible with Java-written catalogs.
+// See fdb-record-layer/.../RelationalKeyspaceProvider.java#getSystemDirectory.
 func DefaultCatalogSubspace() subspace.Subspace {
-	return subspace.Sub(SysConstant, CatalogConstant)
+	return subspace.Sub(nil, nil, int64(0))
 }
 
 // OpenRecordLayerStoreCatalog is the standard entry point — opens the
