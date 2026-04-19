@@ -2410,24 +2410,30 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	}
 }
 
-// evalInPredicate handles: col [NOT] IN (val1, val2, ...)
+// evalInPredicate handles: expr [NOT] IN (val1, val2, ...)
 func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
-	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN left side must be a column name, got %T", pred.ExpressionAtom())
+	var fieldVal driver.Value
+	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+		// Column: use proto Has() so unset optionals (SQL NULL) return false.
+		colName := fullIdToName(colAtom.FullColumnName().FullId())
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		if fd == nil {
+			return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+		}
+		if !msg.ProtoReflect().Has(fd) {
+			return false, nil // NULL IN (...) = UNKNOWN → treat as false
+		}
+		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+	} else {
+		v, err := evalExprAtom(msg, pred.ExpressionAtom())
+		if err != nil {
+			return false, err
+		}
+		if v == nil {
+			return false, nil // NULL IN (...) = UNKNOWN
+		}
+		fieldVal = v
 	}
-	colName := fullIdToName(colAtom.FullColumnName().FullId())
-
-	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-	if fd == nil {
-		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
-	}
-	// NULL IN (...) and NULL NOT IN (...) are both UNKNOWN in SQL 3-valued logic;
-	// rows with a NULL column are filtered out in both cases.
-	if !msg.ProtoReflect().Has(fd) {
-		return false, nil
-	}
-	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 
 	exprs := in.InList().Expressions().AllExpression()
 	for _, expr := range exprs {
@@ -2581,34 +2587,21 @@ func stripStringLiteralQuotes(s string) string {
 	return strings.ReplaceAll(s, "''", "'")
 }
 
-// evalBetweenPredicate handles: col [NOT] BETWEEN lo AND hi (inclusive).
+// evalBetweenPredicate handles: expr [NOT] BETWEEN lo AND hi (inclusive).
 func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
-	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN left side must be a column name, got %T", pred.ExpressionAtom())
-	}
-	colName := fullIdToName(colAtom.FullColumnName().FullId())
-
-	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-	if fd == nil {
-		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
-	}
-	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
-
-	loAtom, ok := bet.GetLeft().(*antlrgen.ConstantExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN low bound must be a constant, got %T", bet.GetLeft())
-	}
-	hiAtom, ok := bet.GetRight().(*antlrgen.ConstantExpressionAtomContext)
-	if !ok {
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN high bound must be a constant, got %T", bet.GetRight())
-	}
-
-	lo, err := evalConstant(loAtom.Constant())
+	fieldVal, err := evalExprAtom(msg, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
-	hi, err := evalConstant(hiAtom.Constant())
+	if fieldVal == nil {
+		return false, nil // NULL BETWEEN ... = UNKNOWN
+	}
+
+	lo, err := evalExprAtom(msg, bet.GetLeft())
+	if err != nil {
+		return false, err
+	}
+	hi, err := evalExprAtom(msg, bet.GetRight())
 	if err != nil {
 		return false, err
 	}
