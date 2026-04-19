@@ -1443,6 +1443,11 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 		return !v, nil
 
 	case *antlrgen.PredicatedExpressionContext:
+		if e.Predicate() != nil {
+			if in, ok := e.Predicate().(*antlrgen.InPredicateContext); ok {
+				return evalInPredicate(msg, e, in)
+			}
+		}
 		return evalComparisonPredicate(msg, e)
 
 	default:
@@ -1497,6 +1502,48 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	default:
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 	}
+}
+
+// evalInPredicate handles: col [NOT] IN (val1, val2, ...)
+func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+
+	exprs := in.InList().Expressions().AllExpression()
+	for _, expr := range exprs {
+		ep, ok := expr.(*antlrgen.PredicatedExpressionContext)
+		if !ok {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got %T", expr)
+		}
+		cAtom, ok := ep.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+		if !ok {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got atom %T", ep.ExpressionAtom())
+		}
+		litVal, err := evalConstant(cAtom.Constant())
+		if err != nil {
+			return false, err
+		}
+		if valuesEqual(fieldVal, litVal) {
+			if in.NOT() != nil {
+				return false, nil
+			}
+			return true, nil
+		}
+	}
+	// none matched
+	if in.NOT() != nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 // substituteParams replaces positional '?' placeholders in a query with

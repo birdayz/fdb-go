@@ -1600,3 +1600,73 @@ func TestFDB_SelectDistinct(t *testing.T) {
 	// Expect exactly 2 distinct values.
 	g.Expect(vals).To(gomega.Equal([]int64{10, 20}))
 }
+
+func TestFDB_SelectWhereIn(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_in")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE in_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_where_in/items WITH TEMPLATE in_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_in?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30), (4, 40)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item WHERE val IN (10, 30) ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{1, 10}, {3, 30}}))
+}
+
+func TestFDB_SelectWhereNotIn(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_not_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_not_in")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE nin_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_where_not_in/items WITH TEMPLATE nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_not_in?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30), (4, 40)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item WHERE val NOT IN (10, 30) ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{2, 20}, {4, 40}}))
+}
