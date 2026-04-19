@@ -33,6 +33,11 @@ func (a *SaveSchemaTemplateConstantAction) Execute(txn api.Transaction) error {
 		if loadErr != nil {
 			return loadErr
 		}
+		if a.template.Version() <= oldTemplate.Version() {
+			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"template %q: new version %d must be greater than current version %d",
+				a.template.MetadataName(), a.template.Version(), oldTemplate.Version())
+		}
 		if valErr := a.validator.Validate(oldTemplate, a.template); valErr != nil {
 			return valErr
 		}

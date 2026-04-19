@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -76,8 +77,9 @@ type embeddedTx struct {
 // Commit runs pre-commit hooks, flushes version mutations, commits the FDB
 // transaction, runs post-commit hooks, and clears the connection's activeTx.
 func (tx *embeddedTx) Commit() error {
+	err := tx.rctx.CommitWithHooks()
 	tx.conn.activeTx = nil
-	return tx.rctx.CommitWithHooks()
+	return err
 }
 
 // Rollback cancels the FDB transaction and clears the connection's activeTx.
@@ -119,7 +121,8 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 	if c.activeTx != nil {
 		// Read catalog outside the user transaction to avoid adding catalog
 		// read-conflict ranges that conflict with concurrent DDL.
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		_, err = c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 			readTxn := catalog.NewFDBTransaction(rctx)
 			s, err = c.cat.LoadSchema(readTxn, dbPath, schemaName)
@@ -1475,6 +1478,10 @@ func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (
 			"isolation level %v is not supported; use LevelDefault or LevelSerializable",
 			sql.IsolationLevel(opts.Isolation))
 	}
+	return c.beginTransaction()
+}
+
+func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 	fdbTx, err := c.fdbDB.CreateTransaction()
 	if err != nil {
 		return nil, err
@@ -1578,12 +1585,9 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 		if c.activeTx != nil {
 			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "nested transactions are not supported")
 		}
-		fdbTx, err := c.fdbDB.CreateTransaction()
-		if err != nil {
+		if _, err := c.beginTransaction(); err != nil {
 			return 0, err
 		}
-		rctx := recordlayer.NewFDBRecordContext(fdbTx)
-		c.activeTx = &embeddedTx{conn: c, rctx: rctx}
 		return 0, nil
 	default:
 		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported transaction statement: %s", txn.GetText())

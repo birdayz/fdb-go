@@ -73,7 +73,7 @@ func (v *RelationalSchemaEvolutionValidator) validateTable(oldTbl, newTbl api.Ta
 		}
 		// Primary key ordering: the first len(oldCols) columns must remain in the
 		// same relative order in the new template (additional columns may be appended).
-		if i < len(newCols) && newCols[i].MetadataName() != oldCol.MetadataName() {
+		if newCols[i].MetadataName() != oldCol.MetadataName() {
 			// Only flag if this is a PK column (position 0 to len(pk)-1).
 			// Heuristic: if the old table's PK is inferred from declared column order,
 			// a reorder of any existing column is breaking.
