@@ -5110,3 +5110,46 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(-1) FROM T WHERE id = 1`).Scan(&v)).To(gomega.Succeed())
 	g.Expect(v.Valid).To(gomega.BeFalse())
 }
+
+func TestFDB_ParameterizedSubquery(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_param_subq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_param_subq")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE param_subq_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, tier STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_param_subq/main WITH TEMPLATE param_subq_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_param_subq?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, tier) VALUES (1, 'gold')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, tier) VALUES (2, 'silver')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Parameter in the subquery WHERE.
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM Sales WHERE customer_id IN (SELECT id FROM Customer WHERE tier = ?)`,
+		"gold").Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)))
+
+	// Parameter in both outer and inner.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM Sales WHERE amount >= ? AND customer_id IN (SELECT id FROM Customer WHERE tier = ?)`,
+		int64(150), "silver").Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)))
+}
