@@ -3193,3 +3193,55 @@ func TestFDB_JoinWhere(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{1}))
 	g.Expect(prices).To(gomega.Equal([]int64{500}))
 }
+
+func TestFDB_RightJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_right_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_right_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE rj_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_right_join/main WITH TEMPLATE rj_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_right_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// One order for Alice; one orphan order with no matching customer.
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 99, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// RIGHT JOIN: all orders appear; orphan order has NULL customer name.
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Order.amount
+		FROM Customer
+		RIGHT JOIN Order ON Customer.id = Order.customer_id
+		ORDER BY Order.amount ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []any
+	var amounts []int64
+	for rows.Next() {
+		var name any
+		var amount int64
+		g.Expect(rows.Scan(&name, &amount)).To(gomega.Succeed())
+		names = append(names, name)
+		amounts = append(amounts, amount)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(amounts).To(gomega.Equal([]int64{100, 200}))
+	g.Expect(names[0]).To(gomega.Equal("Alice"))
+	g.Expect(names[1]).To(gomega.BeNil()) // orphan order → NULL customer name
+}

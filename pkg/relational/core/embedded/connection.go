@@ -452,24 +452,33 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					next = append(next, nullRight)
 				}
 			}
-			// RIGHT JOIN: swap logic — scan for unmatched right rows.
+			// RIGHT JOIN: also emit right rows that had no left match (null left side).
 			if jc.joinType == "RIGHT" {
-				for _, right := range rightRows {
-					found := false
-					for _, n := range next {
-						// Check if this right row appeared in any combined row.
-						for k, v := range right {
-							if nv, ok2 := n[k]; ok2 && valuesEqual(nv, v) {
-								found = true
-								break
-							}
+				matchedRight := make([]bool, len(rightRows))
+				for _, left := range joined {
+					for ri, right := range rightRows {
+						combined := make(map[string]driver.Value, len(left)+len(right))
+						for k, v := range left {
+							combined[k] = v
 						}
-						if found {
-							break
+						for k, v := range right {
+							combined[k] = v
+						}
+						if jc.onExpr != nil {
+							ok, onErr := evalPredicateOnMapExpr(combined, jc.onExpr)
+							if onErr != nil {
+								return nil, onErr
+							}
+							if ok {
+								matchedRight[ri] = true
+							}
+						} else {
+							matchedRight[ri] = true
 						}
 					}
-					if !found {
-						// Emit null left side + right row.
+				}
+				for ri, right := range rightRows {
+					if !matchedRight[ri] {
 						combined := make(map[string]driver.Value, len(right)+10)
 						for k, v := range right {
 							combined[k] = v
