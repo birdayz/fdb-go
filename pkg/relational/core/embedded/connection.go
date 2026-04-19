@@ -3844,6 +3844,10 @@ func isTruthy(v any) bool {
 }
 
 func applyMathOp(left, right any, op string) (any, error) {
+	// NULL propagates through arithmetic per SQL 3-valued logic.
+	if left == nil || right == nil {
+		return nil, nil
+	}
 	lf, lok := toFloat64(left)
 	rf, rok := toFloat64(right)
 	if !lok || !rok {
@@ -4860,6 +4864,9 @@ func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row m
 
 // applyArithmeticOp applies +/-/*// to two driver.Values (used in map-based eval).
 func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
+	if left == nil || right == nil {
+		return nil, nil // SQL NULL propagation.
+	}
 	lf, lok := toFloat64(left)
 	rf, rok := toFloat64(right)
 	if !lok || !rok {

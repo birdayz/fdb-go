@@ -5270,4 +5270,9 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	var coalesced string
 	g.Expect(db.QueryRowContext(ctx, `SELECT COALESCE(name, 'default') FROM T WHERE id = 1`).Scan(&coalesced)).To(gomega.Succeed())
 	g.Expect(coalesced).To(gomega.Equal("default"))
+
+	// Arithmetic propagates NULL.
+	var sum sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT val + 5 FROM T WHERE id = 1`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse())
 }
