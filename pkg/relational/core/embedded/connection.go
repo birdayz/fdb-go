@@ -3577,6 +3577,14 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
 		}
 		result := math.Pow(base, exp)
+		// NaN (e.g. POWER(-1, 0.5)) and ±Inf (e.g. POWER(0, -1)) are math
+		// domain errors. SQL standard says these are undefined; returning
+		// NULL matches SQRT's existing negative-arg convention on this
+		// engine and avoids poisoning downstream aggregates / comparisons
+		// (which treat NaN != NaN).
+		if math.IsNaN(result) || math.IsInf(result, 0) {
+			return nil, nil
+		}
 		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
 			return int64(result), nil
 		}
