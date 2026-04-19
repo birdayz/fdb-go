@@ -3664,3 +3664,111 @@ func TestFDB_DerivedTable(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"Expensive", "Pricey"}))
 }
+
+func TestFDB_CTEChaining(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cte_chaining")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_chaining")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_tmpl
+		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_chaining/main WITH TEMPLATE chain_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte_chaining?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Cheap', 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (2, 'Mid', 150)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Pricey', 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CTE b references CTE a.
+	rows, err := db.QueryContext(ctx, `
+		WITH over50 AS (SELECT id, name, price FROM Product WHERE price > 50),
+		     over100 AS (SELECT id, name FROM over50 WHERE price > 100)
+		SELECT name FROM over100 ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Mid", "Pricey"}))
+}
+
+func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_upd_del_subq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_del_subq")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE uds_tmpl
+		CREATE TABLE Category (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Product (id BIGINT NOT NULL, category_id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_upd_del_subq/main WITH TEMPLATE uds_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_upd_del_subq?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, name) VALUES (1, 'electronics')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, name) VALUES (2, 'books')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, category_id, price) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, category_id, price) VALUES (2, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, category_id, price) VALUES (3, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// UPDATE products in electronics category (id IN (SELECT id FROM Category WHERE name = 'electronics')).
+	_, err = db.ExecContext(ctx, `UPDATE Product SET price = 999 WHERE category_id IN (SELECT id FROM Category WHERE name = 'electronics')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT price FROM Product WHERE category_id = 1 ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var prices []int64
+	for rows.Next() {
+		var p int64
+		g.Expect(rows.Scan(&p)).To(gomega.Succeed())
+		prices = append(prices, p)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(prices).To(gomega.Equal([]int64{999, 999}))
+
+	// DELETE products in books category.
+	_, err = db.ExecContext(ctx, `DELETE FROM Product WHERE category_id IN (SELECT id FROM Category WHERE name = 'books')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows2, err := db.QueryContext(ctx, `SELECT id FROM Product ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var ids []int64
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 2}))
+}
