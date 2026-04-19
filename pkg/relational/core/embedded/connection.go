@@ -3283,6 +3283,18 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 			return nil, err
 		}
 		return applyMathOp(left, right, a.MathOperator().GetText())
+	case *antlrgen.BitExpressionAtomContext:
+		// Grammar: bitOperator : '<' '<' | '>' '>' | '&' | '^' | '|'
+		// Java registers bitand/bitor/bitxor + shifts in SqlFunctionCatalog.
+		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		right, err := evalExprAtom(ctx, conn, msg, a.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
 	case *antlrgen.BinaryComparisonPredicateContext:
@@ -4286,6 +4298,45 @@ func applyMathOp(left, right any, op string) (any, error) {
 	return result, nil
 }
 
+// applyBitOp evaluates a bitwise operator. SQL standard + Java both require
+// integer operands; float / string operands are an error (not a silent cast).
+// The grammar exposes bitOperator tokens as concatenated text, so `<<` comes
+// through as "<<" and `>>` as ">>".
+func applyBitOp(left, right any, op string) (any, error) {
+	if left == nil || right == nil {
+		return nil, nil // NULL propagates
+	}
+	li, lok := left.(int64)
+	ri, rok := right.(int64)
+	if !lok || !rok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"bitwise operator %q requires integer operands, got %T and %T", op, left, right)
+	}
+	switch op {
+	case "&":
+		return li & ri, nil
+	case "|":
+		return li | ri, nil
+	case "^":
+		return li ^ ri, nil
+	case "<<":
+		if ri < 0 || ri >= 64 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"shift count out of range: %d", ri)
+		}
+		return li << uint64(ri), nil
+	case ">>":
+		if ri < 0 || ri >= 64 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"shift count out of range: %d", ri)
+		}
+		// Arithmetic right shift (Java >>). Use unsigned (>>>) for logical;
+		// we don't expose that operator.
+		return li >> uint64(ri), nil
+	}
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported bitwise operator %q", op)
+}
+
 func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
 	case int64:
@@ -5201,6 +5252,16 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 			return nil, err
 		}
 		return applyArithmeticOp(left, right, a.MathOperator().GetText())
+	case *antlrgen.BitExpressionAtomContext:
+		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		right, err := evalExprAtomOnMap(ctx, conn, row, a.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
 	default:

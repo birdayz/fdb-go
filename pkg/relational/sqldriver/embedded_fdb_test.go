@@ -3028,6 +3028,22 @@ func TestFDB_MathFunctions(t *testing.T) {
 	var pow int64
 	g.Expect(rows2.Scan(&pow)).To(gomega.Succeed())
 	g.Expect(pow).To(gomega.Equal(int64(8)))
+
+	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
+	// in SqlFunctionCatalogImpl; Go was missing the BitExpressionAtomContext
+	// branch entirely, so `SELECT 5 & 3` used to error with "unsupported
+	// expression atom type").
+	var bitAnd, bitOr, bitXor, shl, shr int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT val & 3 FROM Num WHERE id = 1`).Scan(&bitAnd)).To(gomega.Succeed())
+	g.Expect(bitAnd).To(gomega.Equal(int64(3)), "7 & 3 = 3")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val | 8 FROM Num WHERE id = 1`).Scan(&bitOr)).To(gomega.Succeed())
+	g.Expect(bitOr).To(gomega.Equal(int64(15)), "7 | 8 = 15")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val ^ 5 FROM Num WHERE id = 1`).Scan(&bitXor)).To(gomega.Succeed())
+	g.Expect(bitXor).To(gomega.Equal(int64(2)), "7 ^ 5 = 2")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)).To(gomega.Succeed())
+	g.Expect(shl).To(gomega.Equal(int64(28)), "7 << 2 = 28")
+	g.Expect(db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)).To(gomega.Succeed())
+	g.Expect(shr).To(gomega.Equal(int64(3)), "7 >> 1 = 3")
 }
 
 func TestFDB_HavingCompound(t *testing.T) {
