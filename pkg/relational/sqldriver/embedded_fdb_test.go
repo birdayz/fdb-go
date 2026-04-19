@@ -837,3 +837,89 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 	g.Expect(colRows[1].nullable).To(gomega.Equal("YES"))
 	g.Expect(colRows[1].dataType).To(gomega.Equal("STRING"))
 }
+
+func TestFDB_ParameterizedQuery(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_paramquery")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_paramquery")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE pq_tmpl "+
+			"CREATE TABLE Widget (widget_id BIGINT NOT NULL, label STRING, PRIMARY KEY (widget_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_paramquery/widgets WITH TEMPLATE pq_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_paramquery?cluster_file=%s&schema=widgets", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Parameterized INSERT.
+	stmt, err := db.PrepareContext(ctx,
+		"INSERT INTO Widget (widget_id, label) VALUES (?, ?)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer stmt.Close()
+
+	for i := int64(1); i <= 3; i++ {
+		label := fmt.Sprintf("widget-%d", i)
+		_, err = stmt.ExecContext(ctx, i, label)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// Parameterized SELECT WHERE.
+	rows, err := db.QueryContext(ctx,
+		"SELECT * FROM Widget WHERE widget_id = ?", int64(2))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var count int
+	var foundID any
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		foundID = vals[0]
+		count++
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(count).To(gomega.Equal(1))
+	g.Expect(foundID).To(gomega.Equal(int64(2)))
+
+	// Parameterized DELETE WHERE.
+	res, err := db.ExecContext(ctx,
+		"DELETE FROM Widget WHERE widget_id = ?", int64(1))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	affected, err := res.RowsAffected()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(affected).To(gomega.Equal(int64(1)))
+
+	// Verify 2 rows remain.
+	rows2, err := db.QueryContext(ctx, "SELECT * FROM Widget")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var remaining int
+	for rows2.Next() {
+		remaining++
+		vals2 := make([]any, len(cols))
+		ptrs2 := make([]any, len(cols))
+		for i := range vals2 {
+			ptrs2[i] = &vals2[i]
+		}
+		g.Expect(rows2.Scan(ptrs2...)).To(gomega.Succeed())
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(remaining).To(gomega.Equal(2))
+}

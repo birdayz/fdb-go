@@ -79,9 +79,9 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
-	if len(args) != 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"parameterised DDL is not supported")
+	var err error
+	if query, err = substituteParams(query, args); err != nil {
+		return nil, err
 	}
 	root, err := parser.Parse(query)
 	if err != nil {
@@ -108,8 +108,9 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
-	if len(args) != 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "parameterised queries are not supported")
+	var subErr error
+	if query, subErr = substituteParams(query, args); subErr != nil {
+		return nil, subErr
 	}
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return nil, err
@@ -1110,6 +1111,88 @@ func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (boo
 	fieldVal := msg.ProtoReflect().Get(fd)
 	driverVal := protoValueToDriver(fd, fieldVal)
 	return valuesEqual(driverVal, litVal), nil
+}
+
+// substituteParams replaces positional '?' placeholders in a query with
+// SQL literal representations of the supplied driver values. Named params
+// (@name) are not supported — only positional '?' is handled.
+func substituteParams(query string, args []driver.NamedValue) (string, error) {
+	if len(args) == 0 {
+		return query, nil
+	}
+	var b strings.Builder
+	argIdx := 0
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		// Skip single-quoted string literals so a '?' inside a string value
+		// is not treated as a placeholder.
+		if ch == '\'' {
+			b.WriteByte(ch)
+			i++
+			for i < len(query) {
+				c := query[i]
+				b.WriteByte(c)
+				if c == '\'' {
+					if i+1 < len(query) && query[i+1] == '\'' {
+						// escaped quote inside string
+						i++
+						b.WriteByte(query[i])
+					} else {
+						break
+					}
+				}
+				i++
+			}
+			continue
+		}
+		if ch != '?' {
+			b.WriteByte(ch)
+			continue
+		}
+		if argIdx >= len(args) {
+			return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+				"more '?' placeholders than bound parameters (placeholder %d, have %d args)",
+				argIdx+1, len(args))
+		}
+		v := args[argIdx].Value
+		argIdx++
+		switch val := v.(type) {
+		case nil:
+			b.WriteString("NULL")
+		case bool:
+			if val {
+				b.WriteString("TRUE")
+			} else {
+				b.WriteString("FALSE")
+			}
+		case int64:
+			fmt.Fprintf(&b, "%d", val)
+		case float64:
+			fmt.Fprintf(&b, "%g", val)
+		case string:
+			// Escape single quotes by doubling them.
+			b.WriteByte('\'')
+			b.WriteString(strings.ReplaceAll(val, "'", "''"))
+			b.WriteByte('\'')
+		case []byte:
+			// Represent as hex string literal using SQL standard X'...' is not
+			// in our grammar — encode as quoted string for now.
+			b.WriteByte('\'')
+			for _, bv := range val {
+				fmt.Fprintf(&b, "%02x", bv)
+			}
+			b.WriteByte('\'')
+		default:
+			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported parameter type %T for placeholder %d", v, argIdx)
+		}
+	}
+	if argIdx < len(args) {
+		return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+			"fewer '?' placeholders than bound parameters (%d placeholders, %d args)",
+			argIdx, len(args))
+	}
+	return b.String(), nil
 }
 
 // evalConstant evaluates a constant parse-tree node to a Go value.

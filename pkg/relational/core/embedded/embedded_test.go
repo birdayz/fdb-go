@@ -7,6 +7,105 @@ import (
 	"testing"
 )
 
+func TestSubstituteParams(t *testing.T) {
+	t.Parallel()
+	nv := func(ordinal int, v driver.Value) driver.NamedValue {
+		return driver.NamedValue{Ordinal: ordinal, Value: v}
+	}
+	cases := []struct {
+		name    string
+		query   string
+		args    []driver.NamedValue
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "no params",
+			query: "SELECT * FROM t",
+			args:  nil,
+			want:  "SELECT * FROM t",
+		},
+		{
+			name:  "int64",
+			query: "SELECT * FROM t WHERE id = ?",
+			args:  []driver.NamedValue{nv(1, int64(42))},
+			want:  "SELECT * FROM t WHERE id = 42",
+		},
+		{
+			name:  "float64",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, float64(3.14))},
+			want:  "INSERT INTO t VALUES (3.14)",
+		},
+		{
+			name:  "string escaping",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, "it's fine")},
+			want:  "INSERT INTO t VALUES ('it''s fine')",
+		},
+		{
+			name:  "null",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, nil)},
+			want:  "INSERT INTO t VALUES (NULL)",
+		},
+		{
+			name:  "bool true",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, true)},
+			want:  "INSERT INTO t VALUES (TRUE)",
+		},
+		{
+			name:  "bool false",
+			query: "INSERT INTO t VALUES (?)",
+			args:  []driver.NamedValue{nv(1, false)},
+			want:  "INSERT INTO t VALUES (FALSE)",
+		},
+		{
+			name:  "multiple params",
+			query: "INSERT INTO t VALUES (?, ?, ?)",
+			args:  []driver.NamedValue{nv(1, int64(1)), nv(2, "hello"), nv(3, nil)},
+			want:  "INSERT INTO t VALUES (1, 'hello', NULL)",
+		},
+		{
+			name:    "too few args",
+			query:   "SELECT * FROM t WHERE id = ? AND name = ?",
+			args:    []driver.NamedValue{nv(1, int64(1))},
+			wantErr: true,
+		},
+		{
+			name:    "too many args",
+			query:   "SELECT * FROM t WHERE id = ?",
+			args:    []driver.NamedValue{nv(1, int64(1)), nv(2, int64(2))},
+			wantErr: true,
+		},
+		{
+			name:  "question mark inside string literal not substituted",
+			query: "SELECT * FROM t WHERE name = '?' AND id = ?",
+			args:  []driver.NamedValue{nv(1, int64(5))},
+			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := substituteParams(tc.query, tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("substituteParams(%q): want error, got %q", tc.query, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("substituteParams(%q): unexpected error: %v", tc.query, err)
+			}
+			if got != tc.want {
+				t.Errorf("substituteParams(%q) = %q, want %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
