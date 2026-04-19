@@ -2813,6 +2813,29 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			return nil, nil
 		}
 		return a, nil
+	case "GREATEST", "LEAST":
+		if len(fArgs) == 0 {
+			return nil, nil
+		}
+		best, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil {
+			return nil, err
+		}
+		isGreatest := name == "GREATEST"
+		for _, fa := range fArgs[1:] {
+			v, verr := evalExpr(msg, fa.Expression())
+			if verr != nil {
+				return nil, verr
+			}
+			if v == nil {
+				continue
+			}
+			cmp := compareValues(v, best)
+			if best == nil || (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {
+				best = v
+			}
+		}
+		return best, nil
 	case "SUBSTRING", "SUBSTR":
 		// SUBSTRING(str, pos [, len]) — 1-based position per SQL standard.
 		if len(fArgs) < 2 {
