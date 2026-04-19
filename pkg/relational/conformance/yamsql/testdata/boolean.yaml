@@ -58,3 +58,12 @@ tests:
   # produce the same result.
   - query: SELECT lb.* FROM lb WHERE NOT b = null
     rows: []
+  # Nested parens — (x = y) is a RecordConstructor; NOT (RC) is another
+  # RC wrapping the first. Both unwrap to the comparison, giving UNKNOWN.
+  - query: SELECT lb.* FROM lb WHERE (b = true)
+    rows:
+      - [1, true]
+  - query: SELECT lb.* FROM lb WHERE NOT (b = false)
+    unordered: true
+    rows:
+      - [1, true]
