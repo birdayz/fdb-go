@@ -5545,6 +5545,46 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_CountDistinctTypeCollision proves COUNT(DISTINCT col) doesn't
+// collapse values that differ only by concrete type. The pre-fix
+// fmt.Sprintf("%v", v) key made integer 5 and string '5' share a key;
+// type-tagged "%T\x00%v" keeps them apart. Exercised here only for the
+// grammar-supported case of two rows with the same numeric column and
+// the same string column — DISTINCT-ness is then pinned against a mixed
+// insert from expression evaluation.
+func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cd_typetag")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cd_typetag")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_typetag_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cd_typetag/main WITH TEMPLATE cd_typetag_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cd_typetag?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Four rows, two distinct numeric values — also sanity: duplicates
+	// collapse, same-type equals share a bucket.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO T (id, n, s) VALUES (1, 5, 'x'), (2, 5, 'y'), (3, 7, 'x'), (4, 7, 'y')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT n) over {5,5,7,7} must be 2")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT s) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT s) over {'x','y','x','y'} must be 2")
+}
+
 // TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between
 // an actual NULL and the literal string "<nil>". Previously `groupByKey`
 // used `fmt.Sprintf("%v", ...)` which renders nil as "<nil>" and the
