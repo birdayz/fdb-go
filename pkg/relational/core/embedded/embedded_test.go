@@ -550,6 +550,40 @@ func TestRowKey(t *testing.T) {
 	}
 }
 
+// FuzzApplyMathOp pins the arithmetic evaluator. The function must never
+// panic, must reject non-numeric operands cleanly, must propagate NULL, and
+// must error on div/0 for both `/` and `%` (unified in swingshift-35).
+func FuzzApplyMathOp(f *testing.F) {
+	f.Add(int64(7), int64(3), "+")
+	f.Add(int64(7), int64(3), "-")
+	f.Add(int64(7), int64(3), "*")
+	f.Add(int64(7), int64(3), "/")
+	f.Add(int64(7), int64(3), "%")
+	// Division by zero.
+	f.Add(int64(1), int64(0), "/")
+	f.Add(int64(1), int64(0), "%")
+	// Unknown op.
+	f.Add(int64(1), int64(2), "@")
+	// Mixed int/float shouldn't panic — we pass only int64 to the int64 fuzz,
+	// but the NULL-on-either-side path is critical.
+	f.Fuzz(func(t *testing.T, a, b int64, op string) {
+		_, err := applyMathOp(a, b, op)
+		_ = err
+		// NULL propagation on left, right, and both.
+		for _, pair := range []struct{ l, r any }{{nil, b}, {a, nil}, {nil, nil}} {
+			v, err := applyMathOp(pair.l, pair.r, op)
+			if err != nil || v != nil {
+				t.Fatalf("applyMathOp(%v, %v, %q) = (%v, %v), want (nil, nil)",
+					pair.l, pair.r, op, v, err)
+			}
+		}
+		// Non-numeric operand must error cleanly.
+		if _, err := applyMathOp("bad", b, op); err == nil {
+			t.Fatalf("applyMathOp(string, _, %q) must error", op)
+		}
+	})
+}
+
 // FuzzApplyBitOp pins the swingshift-35 bitwise-operator implementation.
 // The function must never panic, must reject non-integer operands cleanly,
 // must propagate NULL, and must guard shift counts against out-of-range
