@@ -3537,3 +3537,64 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	g.Expect(rows3.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names3).To(gomega.BeEmpty())
 }
+
+// TestFDB_CTE verifies WITH (CTE) support: materialization, WHERE filter,
+// projection, and ORDER BY on the CTE result.
+func TestFDB_CTE(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE cte_tmpl "+
+			"CREATE TABLE Product (id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte/store WITH TEMPLATE cte_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte?cluster_file=%s&schema=store", clusterFilePath)
+	db, openErr := sql.Open("fdbsql", dsn)
+	g.Expect(openErr).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Cheap', 50), (2, 'Pricey', 200), (3, 'Expensive', 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CTE with WHERE + projection + ORDER BY.
+	rows, err := db.QueryContext(ctx,
+		`WITH expensive AS (SELECT id, name FROM Product WHERE price > 100)
+		 SELECT name FROM expensive ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		g.Expect(rows.Scan(&name)).To(gomega.Succeed())
+		names = append(names, name)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Expensive", "Pricey"}))
+
+	// CTE SELECT * (all columns).
+	rows2, err := db.QueryContext(ctx,
+		`WITH cheap AS (SELECT * FROM Product WHERE price < 100)
+		 SELECT name FROM cheap ORDER BY name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	var names2 []string
+	for rows2.Next() {
+		var name string
+		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
+		names2 = append(names2, name)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names2).To(gomega.Equal([]string{"Cheap"}))
+}

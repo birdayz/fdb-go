@@ -34,6 +34,12 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
+// cteData holds the materialized result of a WITH clause named query.
+type cteData struct {
+	cols []string
+	rows [][]driver.Value
+}
+
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
 //
 // Implements driver.Conn and driver.ExecerContext so DDL statements can
@@ -61,6 +67,10 @@ type EmbeddedConnection struct {
 	// schemaCache is a connection-level cache: (dbPath+"\x00"+schemaName) → api.Schema.
 	// Safe because driver connections are single-goroutine. Invalidated by DDL.
 	schemaCache map[string]api.Schema
+
+	// ctes holds materialized CTE results for the current SELECT statement.
+	// Non-nil only during execSelect; nil outside of that scope.
+	ctes map[string]*cteData
 
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
@@ -297,6 +307,13 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 // execSelectQuery executes a parsed selectQuery and returns a driver.Rows.
 // Extracted so execQueryBodyRows can call it without an ISelectStatementContext.
 func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
+	// Check if the table name resolves to a CTE.
+	if c.ctes != nil {
+		if cte, ok := c.ctes[strings.ToUpper(sq.tableName)]; ok {
+			return c.execSelectFromCTE(ctx, sq, cte)
+		}
+	}
+
 	// Route INFORMATION_SCHEMA.* queries to system table handlers.
 	upper := strings.ToUpper(sq.tableName)
 	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
@@ -322,6 +339,21 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	if query == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
+
+	// Materialize CTEs before routing the main query.
+	if ctesCtx := query.Ctes(); ctesCtx != nil {
+		c.ctes = make(map[string]*cteData)
+		defer func() { c.ctes = nil }()
+		for _, nq := range ctesCtx.AllNamedQuery() {
+			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
+			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
+			if cteErr != nil {
+				return nil, fmt.Errorf("CTE %q: %w", cteName, cteErr)
+			}
+			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
+		}
+	}
+
 	if setQ, ok := query.QueryExpressionBody().(*antlrgen.SetQueryContext); ok {
 		return c.execUnion(ctx, setQ)
 	}
@@ -330,6 +362,20 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		return nil, err
 	}
 	return c.execSelectQuery(ctx, sq)
+}
+
+// cteRowsToMaps converts materialized CTE data into the map format used by JOIN evaluation.
+func cteRowsToMaps(cte *cteData, alias string) []map[string]driver.Value {
+	result := make([]map[string]driver.Value, len(cte.rows))
+	for i, row := range cte.rows {
+		m := make(map[string]driver.Value, len(cte.cols)*2)
+		for j, col := range cte.cols {
+			m[col] = row[j]
+			m[alias+"."+col] = row[j]
+		}
+		result[i] = m
+	}
+	return result
 }
 
 // scanTableToMaps scans all records of tableName into a slice of maps.
@@ -341,6 +387,13 @@ func (c *EmbeddedConnection) scanTableToMaps(
 	store *recordlayer.FDBRecordStore,
 	tableName, alias string,
 ) ([]map[string]driver.Value, error) {
+	// If the table name resolves to a CTE, return materialized rows directly.
+	if c.ctes != nil {
+		if cte, ok := c.ctes[strings.ToUpper(tableName)]; ok {
+			return cteRowsToMaps(cte, alias), nil
+		}
+	}
+
 	cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 	defer cursor.Close() //nolint:errcheck
 
@@ -759,6 +812,108 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		return nil, runErr
 	}
 	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSelectFromCTE executes a SELECT against a materialized CTE result set.
+// Supports WHERE, projected columns, ORDER BY, LIMIT, and OFFSET.
+// Aggregate queries and JOINs against CTEs are not yet supported.
+func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQuery, cte *cteData) (driver.Rows, error) {
+	alias := sq.tableAlias
+	if alias == "" {
+		alias = sq.tableName
+	}
+
+	// Build map rows.
+	mapRows := cteRowsToMaps(cte, alias)
+
+	// Apply WHERE filter.
+	if sq.whereExpr != nil {
+		filtered := mapRows[:0]
+		for _, row := range mapRows {
+			ok, err := evalPredicateOnMapExpr(ctx, c, row, sq.whereExpr.Expression())
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				filtered = append(filtered, row)
+			}
+		}
+		mapRows = filtered
+	}
+
+	// Determine output columns and build output rows.
+	var colNames []string
+	var outRows [][]driver.Value
+
+	if sq.projCols == nil && !sq.countStar && len(sq.aggCols) == 0 {
+		// SELECT * — emit all CTE columns in definition order.
+		colNames = cte.cols
+		for _, row := range mapRows {
+			outRow := make([]driver.Value, len(cte.cols))
+			for j, col := range cte.cols {
+				outRow[j] = row[col]
+			}
+			outRows = append(outRows, outRow)
+		}
+	} else if sq.countStar {
+		colNames = []string{"COUNT(*)"}
+		outRows = [][]driver.Value{{int64(len(mapRows))}}
+	} else if sq.projCols != nil {
+		colNames = make([]string, len(sq.projCols))
+		for j, col := range sq.projCols {
+			if j < len(sq.projAliases) && sq.projAliases[j] != "" {
+				colNames[j] = sq.projAliases[j]
+			} else {
+				colNames[j] = col
+			}
+		}
+		for _, row := range mapRows {
+			outRow := make([]driver.Value, len(sq.projCols))
+			for j, col := range sq.projCols {
+				outRow[j] = row[col]
+			}
+			outRows = append(outRows, outRow)
+		}
+	}
+
+	// ORDER BY.
+	if len(sq.orderBy) > 0 {
+		colIdx := make(map[string]int, len(colNames))
+		for i, cn := range colNames {
+			colIdx[cn] = i
+		}
+		sort.SliceStable(outRows, func(i, j int) bool {
+			for _, ob := range sq.orderBy {
+				idx, ok := colIdx[ob.colName]
+				if !ok {
+					continue
+				}
+				a, b := outRows[i][idx], outRows[j][idx]
+				cmp := compareValues(a, b)
+				if cmp != 0 {
+					if ob.ascending {
+						return cmp < 0
+					}
+					return cmp > 0
+				}
+			}
+			return false
+		})
+	}
+
+	// OFFSET then LIMIT.
+	if sq.offset > 0 {
+		if sq.offset >= int64(len(outRows)) {
+			outRows = nil
+		} else {
+			outRows = outRows[sq.offset:]
+		}
+	}
+	if sq.limit >= 0 && int64(len(outRows)) > sq.limit {
+		outRows = outRows[:sq.limit]
+	}
+
+	return &staticRows{cols: colNames, rows: outRows}, nil
 }
 
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
