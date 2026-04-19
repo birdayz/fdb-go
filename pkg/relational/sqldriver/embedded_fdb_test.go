@@ -4321,3 +4321,60 @@ func TestFDB_UpdateSetWithFunction(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 2`).Scan(&n)).To(gomega.Succeed())
 	g.Expect(n).To(gomega.Equal("gadget"))
 }
+
+func TestFDB_OrderByExpression(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ob_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_expr")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_expr_tmpl
+		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, qty BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_expr/main WITH TEMPLATE ob_expr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ob_expr?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price, qty) VALUES (1, 'a', 10, 5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price, qty) VALUES (2, 'b', 7, 10)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price, qty) VALUES (3, 'c', 100, 1)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// ORDER BY price * qty via CTE (price*qty: a=50, b=70, c=100 → ASC: a, b, c).
+	rows, err := db.QueryContext(ctx, `
+		WITH p AS (SELECT id, name, price, qty FROM Product)
+		SELECT name FROM p ORDER BY price * qty ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+		names = append(names, n)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"a", "b", "c"}))
+
+	// ORDER BY UPPER(name) DESC via CTE.
+	rows2, err := db.QueryContext(ctx, `
+		WITH p AS (SELECT id, name FROM Product)
+		SELECT id FROM p ORDER BY UPPER(name) DESC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var ids []int64
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{3, 2, 1})) // c, b, a
+}

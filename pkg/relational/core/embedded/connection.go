@@ -826,19 +826,62 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 		}
 
-		// ORDER BY.
+		// ORDER BY. For aggregate results, `filtered` and `data` diverge — the
+		// colName path handles that. For non-aggregate rows, data[i] matches
+		// filtered[i] in lockstep, so `ob.expr` can be evaluated against
+		// filtered[i] for arbitrary-expression sort keys.
 		if len(sq.orderBy) > 0 {
 			colIdx := make(map[string]int, len(cols))
 			for i, c := range cols {
 				colIdx[c] = i
 			}
-			sort.SliceStable(data, func(i, j int) bool {
-				for _, ob := range sq.orderBy {
-					idx, ok := colIdx[ob.colName]
-					if !ok {
-						continue
+			// Pre-compute sort keys for expression order-by to avoid redundant
+			// evaluation inside the comparator.
+			type sortKey struct {
+				vals  []driver.Value
+				order int
+			}
+			hasExpr := false
+			for _, ob := range sq.orderBy {
+				if ob.expr != nil {
+					hasExpr = true
+					break
+				}
+			}
+			var keys []sortKey
+			if hasExpr && len(filtered) == len(data) {
+				keys = make([]sortKey, len(data))
+				for i := range data {
+					keys[i].order = i
+					keys[i].vals = make([]driver.Value, len(sq.orderBy))
+					for oi, ob := range sq.orderBy {
+						if ob.expr != nil {
+							v, evalErr := evalExprOnMap(ctx, c, filtered[i], ob.expr)
+							if evalErr != nil {
+								return nil, evalErr
+							}
+							keys[i].vals[oi] = v
+						}
 					}
-					cmp := compareValues(data[i][idx], data[j][idx])
+				}
+			}
+			indexes := make([]int, len(data))
+			for i := range indexes {
+				indexes[i] = i
+			}
+			sort.SliceStable(indexes, func(ii, jj int) bool {
+				i, j := indexes[ii], indexes[jj]
+				for oi, ob := range sq.orderBy {
+					var cmp int
+					if ob.expr != nil && keys != nil {
+						cmp = compareValues(keys[i].vals[oi], keys[j].vals[oi])
+					} else {
+						idx, ok := colIdx[ob.colName]
+						if !ok {
+							continue
+						}
+						cmp = compareValues(data[i][idx], data[j][idx])
+					}
 					if cmp != 0 {
 						if ob.ascending {
 							return cmp < 0
@@ -848,6 +891,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 				return false
 			})
+			sorted := make([][]driver.Value, len(data))
+			for nn, oldIdx := range indexes {
+				sorted[nn] = data[oldIdx]
+			}
+			data = sorted
 		}
 
 		// LIMIT / OFFSET.
@@ -942,20 +990,54 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		}
 	}
 
-	// ORDER BY.
+	// ORDER BY. For aggregate CTE results, outRows was built via
+	// aggregateMapRows and mapRows is no longer in lockstep — use colName
+	// path only. For non-aggregate CTE, mapRows[i] matches outRows[i].
 	if len(sq.orderBy) > 0 {
 		colIdx := make(map[string]int, len(colNames))
 		for i, cn := range colNames {
 			colIdx[cn] = i
 		}
-		sort.SliceStable(outRows, func(i, j int) bool {
-			for _, ob := range sq.orderBy {
-				idx, ok := colIdx[ob.colName]
-				if !ok {
-					continue
+		hasExpr := false
+		for _, ob := range sq.orderBy {
+			if ob.expr != nil {
+				hasExpr = true
+				break
+			}
+		}
+		var keys [][]driver.Value
+		if hasExpr && len(mapRows) == len(outRows) {
+			keys = make([][]driver.Value, len(outRows))
+			for i := range outRows {
+				keys[i] = make([]driver.Value, len(sq.orderBy))
+				for oi, ob := range sq.orderBy {
+					if ob.expr != nil {
+						v, evalErr := evalExprOnMap(ctx, c, mapRows[i], ob.expr)
+						if evalErr != nil {
+							return nil, evalErr
+						}
+						keys[i][oi] = v
+					}
 				}
-				a, b := outRows[i][idx], outRows[j][idx]
-				cmp := compareValues(a, b)
+			}
+		}
+		indexes := make([]int, len(outRows))
+		for i := range indexes {
+			indexes[i] = i
+		}
+		sort.SliceStable(indexes, func(ii, jj int) bool {
+			i, j := indexes[ii], indexes[jj]
+			for oi, ob := range sq.orderBy {
+				var cmp int
+				if ob.expr != nil && keys != nil {
+					cmp = compareValues(keys[i][oi], keys[j][oi])
+				} else {
+					idx, ok := colIdx[ob.colName]
+					if !ok {
+						continue
+					}
+					cmp = compareValues(outRows[i][idx], outRows[j][idx])
+				}
 				if cmp != 0 {
 					if ob.ascending {
 						return cmp < 0
@@ -965,6 +1047,11 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			}
 			return false
 		})
+		sorted := make([][]driver.Value, len(outRows))
+		for nn, oldIdx := range indexes {
+			sorted[nn] = outRows[oldIdx]
+		}
+		outRows = sorted
 	}
 
 	// OFFSET then LIMIT.
@@ -1359,6 +1446,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 	// Apply ORDER BY (post-scan in-memory sort).
 	if len(sq.orderBy) > 0 {
+		for _, ob := range sq.orderBy {
+			if ob.expr != nil {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"ORDER BY on an expression is only supported in CTE / JOIN queries; use a column name or alias")
+			}
+		}
 		// Build a map from column name to row index (covers projected + extra sort cols).
 		colIdx := make(map[string]int, len(cols)+len(extraSortFields))
 		for i, c := range cols {
@@ -1747,6 +1840,12 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// expr is non-nil for ORDER BY on a non-trivial expression (e.g.
+	// `ORDER BY UPPER(name)`, `ORDER BY price * qty`). When set, colName is
+	// empty and the expression is evaluated per row at sort time. Only the
+	// CTE and JOIN paths (which retain map rows) honor this; the proto /
+	// single-table scan path still requires a column/aggregate name.
+	expr antlrgen.IExpressionContext
 }
 
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
@@ -2167,15 +2266,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	orderByClauseCtx := simpleTable.OrderByClause()
 	if orderByClauseCtx != nil {
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
-			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
-			if nameErr != nil {
-				return nil, nameErr
-			}
 			ascending := true
 			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
 				ascending = false
 			}
-			sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending})
+			// Prefer plain column / aggregate lookup (works in all sort paths,
+			// including the proto single-table path). Fall back to storing the
+			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
+			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
+			if nameErr == nil {
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending})
+			} else {
+				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, expr: obExpr.Expression()})
+			}
 		}
 	}
 

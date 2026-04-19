@@ -367,7 +367,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **Unify proto + map evaluators** — evalScalarFunctionCall and evalScalarFunctionCallOnMap are ~400 lines of near-duplicate code differing only in how arguments are evaluated. Could be unified via a `exprEvaluator func(arg) (driver.Value, error)` adapter. Currently every new function must be added in two places.
 - [x] **Multi-table FROM (implicit cross join)** — `SELECT a.x, b.y FROM a, b WHERE a.id = b.id`. Extra comma-separated sources become INNER joinClause entries with no ON condition; WHERE provides the predicate. 1 integration test. dayshift-34.
 - [x] **JOIN on CTE** — confirmed working: `SELECT ... FROM T INNER JOIN cte ON T.id = cte.id` uses scanTableToMaps CTE shortcut. 1 integration test. dayshift-34.
-- [ ] **ORDER BY expression** — currently only column names / aggregate output names are accepted. Support `ORDER BY UPPER(name)`, `ORDER BY a + b`, etc. Requires extending orderByClause with an `expr antlrgen.IExpressionContext`, and evaluating per row at sort time in all three sort sites (proto, CTE, JOIN).
+- [x] **ORDER BY expression (CTE / JOIN paths)** — `ORDER BY UPPER(name)`, `ORDER BY a + b`, etc. Parser stores the expression when it's not a plain column/aggregate; sort sites pre-compute expression keys from map rows and sort via indexes. The proto / single-table-scan path returns a clear error since msgs aren't retained past projection. 1 integration test. dayshift-34.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
