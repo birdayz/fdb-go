@@ -927,6 +927,55 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 	g.Expect(remaining).To(gomega.Equal(2))
 }
 
+// TestFDB_ParameterizedQueryApostrophe verifies that a string with an
+// apostrophe round-trips correctly through substituteParams → SQL → parser →
+// FDB → SELECT. This catches the ”→' unescaping in evalConstant.
+func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_apostrophe")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_apostrophe")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE apos_tmpl "+
+			"CREATE TABLE Note (note_id BIGINT NOT NULL, body STRING, PRIMARY KEY (note_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_apostrophe/notes WITH TEMPLATE apos_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_apostrophe?cluster_file=%s&schema=notes", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	const wantBody = "it's a test"
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Note (note_id, body) VALUES (?, ?)", int64(1), wantBody)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Note WHERE note_id = ?", int64(1))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var gotBody string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		gotBody, _ = vals[1].(string)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(gotBody).To(gomega.Equal(wantBody))
+}
+
 // TestFDB_InsertMissingPK verifies that INSERT without a required PRIMARY KEY
 // column returns an error. Proto2 marks NOT NULL columns as "required", and
 // proto serialization enforces required-field presence, so the INSERT fails

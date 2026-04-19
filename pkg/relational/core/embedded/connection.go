@@ -744,6 +744,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 
 	var totalRows int64
 	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		totalRows = 0 // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -1224,6 +1225,8 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		if len(raw) >= 2 {
 			raw = raw[1 : len(raw)-1]
 		}
+		// Unescape doubled single-quotes produced by substituteParams or typed literally.
+		raw = strings.ReplaceAll(raw, "''", "'")
 		return raw, nil
 	case *antlrgen.NullConstantContext:
 		return nil, nil
