@@ -431,7 +431,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					}
 					// Evaluate ON condition.
 					if jc.onExpr != nil {
-						ok, onErr := evalPredicateOnMapExpr(combined, jc.onExpr)
+						ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
 						if onErr != nil {
 							return nil, onErr
 						}
@@ -465,7 +465,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 							combined[k] = v
 						}
 						if jc.onExpr != nil {
-							ok, onErr := evalPredicateOnMapExpr(combined, jc.onExpr)
+							ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
 							if onErr != nil {
 								return nil, onErr
 							}
@@ -497,7 +497,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				filtered = append(filtered, row)
 				continue
 			}
-			ok, wErr := evalPredicateOnMapExpr(row, sq.whereExpr.Expression())
+			ok, wErr := evalPredicateOnMapExpr(ctx, c, row, sq.whereExpr.Expression())
 			if wErr != nil {
 				return nil, wErr
 			}
@@ -637,7 +637,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						rowMap[ac.outName] = rowVals[i]
 					}
 					if sq.havingExpr != nil {
-						ok, hErr := evalHaving(rowMap, sq.havingExpr)
+						ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
 						if hErr != nil {
 							return nil, hErr
 						}
@@ -1007,7 +1007,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					rowMap[ac.outName] = rowVals[i]
 				}
 				if sq.havingExpr != nil {
-					keep, havErr := evalHaving(rowMap, sq.havingExpr)
+					keep, havErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
 					if havErr != nil {
 						return nil, havErr
 					}
@@ -1207,7 +1207,7 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 
 // filterSysRows applies WHERE filtering to system-table rows (map-based, no proto).
 // Column names are matched case-insensitively against the cols slice.
-func filterSysRows(rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
+func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
 	if where == nil {
 		return rows, nil
 	}
@@ -1218,7 +1218,7 @@ func filterSysRows(rows [][]driver.Value, cols []string, where antlrgen.IWhereEx
 		for i, c := range cols {
 			m[strings.ToUpper(c)] = row[i]
 		}
-		ok, err := evalPredicateOnMapExpr(m, expr)
+		ok, err := evalPredicateOnMapExpr(ctx, conn, m, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -1258,7 +1258,7 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 		return nil, err
 	}
 	cols := []string{"CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"}
-	filtered, ferr := filterSysRows(data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -1319,7 +1319,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
 		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
 	}
-	filtered, ferr := filterSysRows(data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -1398,7 +1398,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
 		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
 	}
-	filtered, ferr := filterSysRows(data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
 	if ferr != nil {
 		return nil, ferr
 	}
@@ -1476,7 +1476,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
 		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
 	}
-	data, err = filterSysRows(data, cols, where)
+	data, err = filterSysRows(ctx, c, data, cols, where)
 	if err != nil {
 		return nil, err
 	}
@@ -3765,10 +3765,10 @@ func groupByKey(groupVals []driver.Value) string {
 // evalHaving evaluates a HAVING clause expression against a map of
 // output-column-name → aggregate value.
 // Supports comparisons, AND/OR/NOT, and aggregate function references.
-func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+func evalHaving(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
 	// Handle logical expressions: AND / OR
 	if le, ok := expr.(*antlrgen.LogicalExpressionContext); ok {
-		left, err := evalHaving(row, le.Expression(0))
+		left, err := evalHaving(ctx, conn, row, le.Expression(0))
 		if err != nil {
 			return false, err
 		}
@@ -3777,17 +3777,17 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 			if !left {
 				return false, nil
 			}
-			return evalHaving(row, le.Expression(1))
+			return evalHaving(ctx, conn, row, le.Expression(1))
 		}
 		// OR
 		if left {
 			return true, nil
 		}
-		return evalHaving(row, le.Expression(1))
+		return evalHaving(ctx, conn, row, le.Expression(1))
 	}
 	// Handle NOT
 	if ne, ok := expr.(*antlrgen.NotExpressionContext); ok {
-		v, err := evalHaving(row, ne.Expression())
+		v, err := evalHaving(ctx, conn, row, ne.Expression())
 		return !v, err
 	}
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
@@ -3796,7 +3796,7 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 	}
 	// WHERE-style predicate: expressionAtom + separate predicate (IS NULL, LIKE, BETWEEN, IN, =).
 	if pred.Predicate() != nil {
-		return evalPredicateOnMap(row, pred)
+		return evalPredicateOnMap(ctx, conn, row, pred)
 	}
 	// HAVING-style: the full comparison is the expression atom (BinaryComparisonPredicateContext).
 	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
@@ -3879,7 +3879,7 @@ func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (
 
 // evalExprAtomOnMap resolves an expression atom using a map[string]driver.Value
 // row (used for JOIN WHERE and ON condition evaluation).
-func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
+func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
 	switch a := atom.(type) {
 	case *antlrgen.ConstantExpressionAtomContext:
 		v, err := evalConstant(a.Constant())
@@ -3901,11 +3901,11 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:
-		left, err := evalExprAtomOnMap(row, a.GetLeft())
+		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtomOnMap(row, a.GetRight())
+		right, err := evalExprAtomOnMap(ctx, conn, row, a.GetRight())
 		if err != nil {
 			return nil, err
 		}
@@ -3926,11 +3926,11 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator")
 	case *antlrgen.MathExpressionAtomContext:
-		left, err := evalExprAtomOnMap(row, a.GetLeft())
+		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {
 			return nil, err
 		}
-		right, err := evalExprAtomOnMap(row, a.GetRight())
+		right, err := evalExprAtomOnMap(ctx, conn, row, a.GetRight())
 		if err != nil {
 			return nil, err
 		}
@@ -3942,19 +3942,19 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 
 // evalExprOnMap evaluates a scalar IExpressionContext against a map row, returning
 // a driver.Value. Handles arithmetic, column refs, constants, and nested expressions.
-func evalExprOnMap(row map[string]driver.Value, expr antlrgen.IExpressionContext) (driver.Value, error) {
+func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (driver.Value, error) {
 	switch e := expr.(type) {
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			ok, err := evalPredicateOnMap(row, e)
+			ok, err := evalPredicateOnMap(ctx, conn, row, e)
 			if err != nil {
 				return nil, err
 			}
 			return ok, nil
 		}
-		return evalExprAtomOnMap(row, e.ExpressionAtom())
+		return evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:
-		ok, err := evalPredicateOnMapExpr(row, expr)
+		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -3966,8 +3966,8 @@ func evalExprOnMap(row map[string]driver.Value, expr antlrgen.IExpressionContext
 
 // evalPredicateOnMap evaluates a WHERE-style PredicatedExpressionContext against
 // a map[string]driver.Value row. Handles IS NULL, LIKE, BETWEEN, IN, comparisons.
-func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
-	fieldVal, err := evalExprAtomOnMap(row, pred.ExpressionAtom())
+func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
+	fieldVal, err := evalExprAtomOnMap(ctx, conn, row, pred.ExpressionAtom())
 	if err != nil {
 		return false, err
 	}
@@ -4024,11 +4024,11 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 		if fieldVal == nil {
 			return false, nil
 		}
-		lo, loErr := evalExprAtomOnMap(row, p.GetLeft())
+		lo, loErr := evalExprAtomOnMap(ctx, conn, row, p.GetLeft())
 		if loErr != nil {
 			return false, loErr
 		}
-		hi, hiErr := evalExprAtomOnMap(row, p.GetRight())
+		hi, hiErr := evalExprAtomOnMap(ctx, conn, row, p.GetRight())
 		if hiErr != nil {
 			return false, hiErr
 		}
@@ -4045,6 +4045,30 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 			}
 			return false, nil
 		}
+		if qb := p.InList().QueryExpressionBody(); qb != nil {
+			if conn == nil {
+				return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
+			}
+			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
+			if subErr != nil {
+				return false, subErr
+			}
+			for _, row2 := range subRows {
+				if len(row2) == 0 {
+					continue
+				}
+				if valuesEqual(fieldVal, row2[0]) {
+					if p.NOT() != nil {
+						return false, nil
+					}
+					return true, nil
+				}
+			}
+			if p.NOT() != nil {
+				return true, nil
+			}
+			return false, nil
+		}
 		if p.InList().Expressions() == nil {
 			return p.NOT() != nil, nil
 		}
@@ -4053,7 +4077,7 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 			if !ok {
 				continue
 			}
-			litVal, litErr := evalExprAtomOnMap(row, ep.ExpressionAtom())
+			litVal, litErr := evalExprAtomOnMap(ctx, conn, row, ep.ExpressionAtom())
 			if litErr != nil {
 				return false, litErr
 			}
@@ -4074,7 +4098,7 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 	// This happens when the predicate is NOT a special predicate type above.
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if ok {
-		rightVal, err := evalExprAtomOnMap(row, bcp.GetRight())
+		rightVal, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 		if err != nil {
 			return false, err
 		}
@@ -4099,10 +4123,19 @@ func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedEx
 
 // evalPredicateOnMapExpr evaluates a general IExpressionContext against a map row.
 // Mirrors evalExprPredicate but uses map-based column resolution.
-func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
 	switch e := expr.(type) {
+	case *antlrgen.ExistsExpressionAtomContext:
+		if conn == nil {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
+		}
+		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		if subErr != nil {
+			return false, subErr
+		}
+		return len(subRows) > 0, nil
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalPredicateOnMapExpr(row, e.Expression(0))
+		left, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression(0))
 		if err != nil {
 			return false, err
 		}
@@ -4111,30 +4144,30 @@ func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressi
 			if !left {
 				return false, nil
 			}
-			return evalPredicateOnMapExpr(row, e.Expression(1))
+			return evalPredicateOnMapExpr(ctx, conn, row, e.Expression(1))
 		}
 		if left {
 			return true, nil
 		}
-		return evalPredicateOnMapExpr(row, e.Expression(1))
+		return evalPredicateOnMapExpr(ctx, conn, row, e.Expression(1))
 	case *antlrgen.NotExpressionContext:
-		v, err := evalPredicateOnMapExpr(row, e.Expression())
+		v, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression())
 		if err != nil {
 			return false, err
 		}
 		return !v, nil
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			return evalPredicateOnMap(row, e)
+			return evalPredicateOnMap(ctx, conn, row, e)
 		}
 		// No separate predicate — expression atom (e.g. BinaryComparisonPredicateContext).
 		bcp, ok := e.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 		if ok {
-			left, err := evalExprAtomOnMap(row, bcp.GetLeft())
+			left, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetLeft())
 			if err != nil {
 				return false, err
 			}
-			right, err := evalExprAtomOnMap(row, bcp.GetRight())
+			right, err := evalExprAtomOnMap(ctx, conn, row, bcp.GetRight())
 			if err != nil {
 				return false, err
 			}
@@ -4154,7 +4187,7 @@ func evalPredicateOnMapExpr(row map[string]driver.Value, expr antlrgen.IExpressi
 				return cmp >= 0, nil
 			}
 		}
-		v, err := evalExprAtomOnMap(row, e.ExpressionAtom())
+		v, err := evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 		if err != nil {
 			return false, err
 		}
