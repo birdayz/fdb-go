@@ -1,8 +1,6 @@
 package ddl
 
 import (
-	"fmt"
-
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -47,7 +45,8 @@ func (a *DropSchemaConstantAction) Execute(txn api.Transaction) error {
 func (a *DropSchemaConstantAction) deleteFDBStore(txn api.Transaction) error {
 	fdbTxn, ok := txn.(*catalog.FDBTransaction)
 	if !ok {
-		return fmt.Errorf("DropSchema FDB store deletion requires *catalog.FDBTransaction, got %T", txn)
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"DropSchema FDB store deletion requires *catalog.FDBTransaction, got %T", txn)
 	}
 	ss, err := a.ks.SchemaSubspace(a.dbPath, a.schemaName)
 	if err != nil {

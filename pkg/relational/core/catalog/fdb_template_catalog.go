@@ -1,8 +1,6 @@
 package catalog
 
 import (
-	"fmt"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -150,7 +148,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 		META_DATA:        payload,
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return fmt.Errorf("save schema template: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema template")
 	}
 	return nil
 }
@@ -243,7 +241,7 @@ func serializeTemplate(rl *metadata.RecordLayerSchemaTemplate) ([]byte, error) {
 	md := rl.Underlying()
 	p, err := md.ToProto()
 	if err != nil {
-		return nil, fmt.Errorf("template to-proto: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template to-proto")
 	}
 	return proto.Marshal(p)
 }
@@ -255,11 +253,11 @@ func serializeTemplate(rl *metadata.RecordLayerSchemaTemplate) ([]byte, error) {
 func deserializeTemplate(msg *gen.Templates) (api.SchemaTemplate, error) {
 	p := &gen.MetaData{}
 	if err := proto.Unmarshal(msg.GetMETA_DATA(), p); err != nil {
-		return nil, fmt.Errorf("template unmarshal: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template unmarshal")
 	}
 	md, err := recordlayer.RecordMetaDataFromProto(p)
 	if err != nil {
-		return nil, fmt.Errorf("template from-proto: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template from-proto")
 	}
 	return metadata.NewRecordLayerSchemaTemplateWithVersion(
 		msg.GetTEMPLATE_NAME(), md, int(msg.GetTEMPLATE_VERSION()))

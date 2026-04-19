@@ -1,8 +1,6 @@
 package metadata
 
 import (
-	"fmt"
-
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -115,7 +113,7 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 		}
 		for _, col := range columns {
 			if !colSet[col] {
-				b.errs = append(b.errs, fmt.Errorf(
+				b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 					"index %q on table %q: column %q not defined in table",
 					indexName, tableName, col))
 				return b
@@ -128,7 +126,8 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 		})
 		return b
 	}
-	b.errs = append(b.errs, fmt.Errorf("index %q references unknown table %q", indexName, tableName))
+	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		"index %q references unknown table %q", indexName, tableName))
 	return b
 }
 
@@ -147,7 +146,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 
 	fd, err := b.buildFileDescriptor()
 	if err != nil {
-		return nil, fmt.Errorf("build file descriptor: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate, "build file descriptor")
 	}
 
 	mdBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
@@ -158,18 +157,21 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	for _, tbl := range b.tables {
 		rt := mdBuilder.GetRecordType(tbl.name)
 		if rt == nil {
-			return nil, fmt.Errorf("record type %q not found after SetRecords", tbl.name)
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"record type %q not found after SetRecords", tbl.name)
 		}
 		pkExpr, err := buildPrimaryKeyExpression(tbl, b.intermingleTbls)
 		if err != nil {
-			return nil, fmt.Errorf("table %q primary key: %w", tbl.name, err)
+			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"table %q primary key", tbl.name)
 		}
 		rt.SetPrimaryKey(pkExpr)
 
 		for _, idx := range tbl.indexes {
 			keyExpr, idxErr := buildIndexKeyExpression(idx.columns)
 			if idxErr != nil {
-				return nil, fmt.Errorf("table %q index %q: %w", tbl.name, idx.name, idxErr)
+				return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
+					"table %q index %q", tbl.name, idx.name)
 			}
 			rl := recordlayer.NewIndex(idx.name, keyExpr)
 			if idx.unique {
@@ -181,7 +183,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 
 	md, err := mdBuilder.Build()
 	if err != nil {
-		return nil, fmt.Errorf("build RecordMetaData: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "build RecordMetaData")
 	}
 
 	return NewRecordLayerSchemaTemplateWithVersion(b.name, md, b.version)
@@ -205,7 +207,8 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 	for _, tbl := range b.tables {
 		msgDesc, err := buildMessageDescriptor(tbl)
 		if err != nil {
-			return nil, fmt.Errorf("table %q: %w", tbl.name, err)
+			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"table %q", tbl.name)
 		}
 		fdp.MessageType = append(fdp.MessageType, msgDesc)
 	}
@@ -234,7 +237,7 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 
 	fd, err := protodesc.NewFile(fdp, resolver)
 	if err != nil {
-		return nil, fmt.Errorf("protodesc.NewFile: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "protodesc.NewFile")
 	}
 	return fd, nil
 }
@@ -245,7 +248,8 @@ func buildMessageDescriptor(tbl tableSpec) (*descriptorpb.DescriptorProto, error
 	for _, col := range tbl.columns {
 		ft, err := datatypeToProtoFieldType(col.dt)
 		if err != nil {
-			return nil, fmt.Errorf("column %q: %w", col.name, err)
+			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"column %q", col.name)
 		}
 		msg.Field = append(msg.Field, &descriptorpb.FieldDescriptorProto{
 			Name:   proto.String(col.name),
@@ -276,7 +280,8 @@ func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProt
 	case api.CodeBytes:
 		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, nil
 	default:
-		return 0, fmt.Errorf("unsupported DataType code %v", dt.Code())
+		return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"unsupported DataType code %v", dt.Code())
 	}
 }
 
@@ -294,7 +299,8 @@ func datatypeToLabel(dt api.DataType) descriptorpb.FieldDescriptorProto_Label {
 // a RecordType prefix is prepended (matching Java).
 func buildIndexKeyExpression(columns []string) (recordlayer.KeyExpression, error) {
 	if len(columns) == 0 {
-		return nil, fmt.Errorf("index must have at least one column")
+		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"index must have at least one column")
 	}
 	if len(columns) == 1 {
 		return recordlayer.Field(columns[0]), nil
@@ -308,7 +314,8 @@ func buildIndexKeyExpression(columns []string) (recordlayer.KeyExpression, error
 
 func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.KeyExpression, error) {
 	if len(tbl.primaryKey) == 0 {
-		return nil, fmt.Errorf("no primary key columns specified")
+		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate,
+			"no primary key columns specified")
 	}
 
 	exprs := make([]recordlayer.KeyExpression, 0, len(tbl.primaryKey)+1)

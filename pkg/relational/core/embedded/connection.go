@@ -335,7 +335,8 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 	if sq.derivedQuery != nil {
 		cols, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
 		if err != nil {
-			return nil, fmt.Errorf("derived table %q: %w", sq.tableName, err)
+			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+				"derived table %q", sq.tableName)
 		}
 		if c.ctes == nil {
 			c.ctes = make(map[string]*cteData)
@@ -385,7 +386,8 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
 			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
 			if cteErr != nil {
-				return nil, fmt.Errorf("CTE %q: %w", cteName, cteErr)
+				return nil, api.WrapErrorf(cteErr, api.ErrCodeInvalidParameter,
+					"CTE %q", cteName)
 			}
 			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
 		}
@@ -5580,12 +5582,14 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 			}
 		}
 		if len(cols) == 0 {
-			return fmt.Errorf("index %q has no columns", indexName)
+			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"index %q has no columns", indexName)
 		}
 		b.AddIndex(tableName, indexName, cols, unique)
 		return nil
 	default:
-		return fmt.Errorf("unsupported index definition type %T; only INDEX … ON … is supported", idxDef)
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported index definition type %T; only INDEX … ON … is supported", idxDef)
 	}
 }
 
@@ -5599,7 +5603,8 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 		colName := colDef.Uid().GetText()
 		ct := colDef.ColumnType()
 		if ct == nil {
-			return nil, nil, fmt.Errorf("column %q has no type", colName)
+			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"column %q has no type", colName)
 		}
 		nullable := true
 		if cc := colDef.ColumnConstraint(); cc != nil {
@@ -5611,7 +5616,8 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 		}
 		dt, err := parseColumnType(ct, nullable)
 		if err != nil {
-			return nil, nil, fmt.Errorf("column %q: %w", colName, err)
+			return nil, nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
+				"column %q", colName)
 		}
 		cols = append(cols, metadata.NewColumnSpec(colName, dt, int32(i+1)))
 	}
@@ -5629,7 +5635,8 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataType, error) {
 	pt := ct.PrimitiveType()
 	if pt == nil {
-		return nil, fmt.Errorf("only primitive column types are supported")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"only primitive column types are supported")
 	}
 	switch {
 	case pt.BOOLEAN() != nil:
@@ -5647,7 +5654,8 @@ func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataTyp
 	case pt.BYTES() != nil:
 		return api.NewBytesType(nullable), nil
 	default:
-		return nil, fmt.Errorf("unsupported column type: %s", ct.GetText())
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported column type: %s", ct.GetText())
 	}
 }
 

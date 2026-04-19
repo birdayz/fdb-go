@@ -2,7 +2,6 @@ package ddl
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -52,7 +51,7 @@ func (a *CreateSchemaConstantAction) Execute(txn api.Transaction) error {
 	}
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedSchema {
-		return fmt.Errorf("checking schema existence: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "checking schema existence")
 	}
 
 	// Load template and generate schema.
@@ -74,11 +73,13 @@ func (a *CreateSchemaConstantAction) Execute(txn api.Transaction) error {
 func (a *CreateSchemaConstantAction) createFDBStore(txn api.Transaction, tmpl api.SchemaTemplate) error {
 	fdbTxn, ok := txn.(*catalog.FDBTransaction)
 	if !ok {
-		return fmt.Errorf("CreateSchema FDB store creation requires *catalog.FDBTransaction, got %T", txn)
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"CreateSchema FDB store creation requires *catalog.FDBTransaction, got %T", txn)
 	}
 	rlTmpl, ok := tmpl.(*metadata.RecordLayerSchemaTemplate)
 	if !ok {
-		return fmt.Errorf("CreateSchema requires *metadata.RecordLayerSchemaTemplate, got %T", tmpl)
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"CreateSchema requires *metadata.RecordLayerSchemaTemplate, got %T", tmpl)
 	}
 	ss, err := a.ks.SchemaSubspace(a.dbPath, a.schemaName)
 	if err != nil {

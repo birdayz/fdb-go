@@ -1,8 +1,6 @@
 package metadata
 
 import (
-	"fmt"
-
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -96,7 +94,8 @@ func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nulla
 		}
 		return messageTypeFromDescriptor(md, nullable)
 	}
-	return nil, fmt.Errorf("unsupported proto field kind %v for field %s", fd.Kind(), fd.FullName())
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		"unsupported proto field kind %v for field %s", fd.Kind(), fd.FullName())
 }
 
 // messageTypeFromDescriptor turns a proto message descriptor into an
@@ -108,7 +107,8 @@ func messageTypeFromDescriptor(md protoreflect.MessageDescriptor, nullable bool)
 		fd := fields.Get(i)
 		dt, err := protoFieldToDataType(fd)
 		if err != nil {
-			return nil, fmt.Errorf("%s.%s: %w", md.FullName(), fd.Name(), err)
+			return nil, api.WrapErrorf(err, api.ErrCodeUnsupportedOperation,
+				"%s.%s", md.FullName(), fd.Name())
 		}
 		structFields = append(structFields, api.NewStructField(string(fd.Name()), dt, i))
 	}
