@@ -18,3 +18,10 @@ tests:
     rows:
       - [1, 'alpha']
       - [3, 'gamma']
+  # Cross-join + parenthesised NULL predicate. Pins the map-path
+  # RecordConstructor fix (review-caught round-6). NOT (a.k = NULL)
+  # evaluates UNKNOWN for every row so every row is filtered out.
+  # Pre-fix the map-path collapsed NULL=NULL to false, so NOT would
+  # flip to TRUE and every (a,b) pair would survive.
+  - query: SELECT a.id FROM a, b WHERE NOT (a.k = null) AND a.id = 1
+    rows: []

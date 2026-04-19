@@ -5625,8 +5625,14 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
 	case *antlrgen.RecordConstructorExpressionAtomContext:
-		// Single-field parenthesised group — see the proto-path
-		// evaluator for the full rationale. Unwrap and recurse.
+		// Single-field parenthesised group — unwrap and recurse. For
+		// boolean inners route through the tri-state predicate
+		// evaluator so NULL comparisons encode as nil (UNKNOWN) rather
+		// than collapsing to false — without this, JOIN `WHERE NOT (b
+		// = NULL)` would return TRUE instead of UNKNOWN because
+		// evalExprOnMap's fallback through evalExprAtomOnMap collapses
+		// NULL-compared operands to false at the value-evaluator
+		// boundary.
 		rc := a.RecordConstructor()
 		if rc == nil {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor")
@@ -5642,7 +5648,24 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if f.AS() != nil || f.Uid() != nil {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "named record field not supported in this context")
 		}
-		return evalExprOnMap(ctx, conn, row, f.Expression())
+		inner := f.Expression()
+		if pred, ok := inner.(*antlrgen.PredicatedExpressionContext); ok {
+			if pred.Predicate() != nil || looksBoolean(pred.ExpressionAtom()) {
+				t, err := evalPredicateOnMapExprTri(ctx, conn, row, inner)
+				if err != nil {
+					return nil, err
+				}
+				switch t {
+				case triTrue:
+					return true, nil
+				case triFalse:
+					return false, nil
+				default:
+					return nil, nil
+				}
+			}
+		}
+		return evalExprOnMap(ctx, conn, row, inner)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom type %T in map eval", atom)
 	}

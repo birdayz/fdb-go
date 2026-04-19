@@ -4,7 +4,7 @@
 # ArithmeticValue.PhysicalOperator ADD_LL / SUB_LL / MUL_LL use
 # Math.addExact / subtractExact / multiplyExact which throw
 # ArithmeticException on overflow. Our applyMathOp int64 fast-path
-# now mirrors that by returning SQLSTATE 22023 instead of silently
+# now mirrors that by returning SQLSTATE 22003 instead of silently
 # wrapping `MAX_INT + 1` back to `MIN_INT`.
 #
 # SQLSTATE: 22003 NUMERIC_VALUE_OUT_OF_RANGE — SQL standard code for
