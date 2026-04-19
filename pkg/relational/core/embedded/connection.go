@@ -6072,11 +6072,10 @@ func valuesEqual(a, b any) bool {
 // by type name, so that `'5' = 5` never matches. Numeric coercion across
 // int64/float64 is preserved because SQL treats them as the same type family.
 func compareValues(a, b driver.Value) int {
-	// NULL ordering: NULL < non-NULL. Callers sort ASC by `cmp<0 wins` so
-	// NULLs surface first, matching Java's default `ASC NULLS FIRST` per
-	// ParseHelpers.isNullsLast (returns isDescending, so ASC → false →
-	// NULLS FIRST). DESC flips the sign at the sort call site so NULLs
-	// land last — also Java-conformant (ASC NULLS FIRST + DESC NULLS LAST).
+	// NULL ordering: NULL < non-NULL. Sort callers go through orderByLess
+	// which handles NULLs before reaching compareValues (to honour
+	// explicit NULLS FIRST/LAST), so this branch only matters for
+	// non-sort callers (WHERE comparisons where -1 == less-than).
 	if a == nil && b == nil {
 		return 0
 	}
