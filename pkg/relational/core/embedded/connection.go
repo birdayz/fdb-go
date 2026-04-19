@@ -2175,7 +2175,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
 				ascending = false
 			}
-			sq.orderBy = append(sq.orderBy, orderByClause{colName, ascending})
+			sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending})
 		}
 	}
 
