@@ -2954,6 +2954,21 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		}
 	}
 	g.Expect(errCast).To(gomega.HaveOccurred(), "CAST('t' AS BOOLEAN) must error (Java rejects 't', only 'true'/'false'/'0'/'1')")
+
+	// Java CastValue range-checks the rounded value against target type
+	// limits. Go used to silently wrap via int64() on overflow. Any float
+	// that can't fit an int64 (> MaxInt64 or <  MinInt64) must now error.
+	rowsOverflow, errOF := db.QueryContext(ctx, `SELECT CAST(1e20 AS BIGINT) FROM Item WHERE id = 1`)
+	if errOF == nil && rowsOverflow != nil {
+		defer rowsOverflow.Close()
+		if rowsOverflow.Next() {
+			var x int64
+			errOF = rowsOverflow.Scan(&x)
+		} else {
+			errOF = rowsOverflow.Err()
+		}
+	}
+	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {
