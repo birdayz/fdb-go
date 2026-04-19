@@ -4582,3 +4582,68 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM Product`).Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(0)))
 }
+
+func TestFDB_NestedFunctionsAndCase(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_nested_fn_case")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_nested_fn_case")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE nfc_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, qty BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_nested_fn_case/main WITH TEMPLATE nfc_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_nested_fn_case?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (1, ' alpha ', 3)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (2, 'BETA', 0)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (3, 'gamma', 10)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Proto path: CASE WHEN + nested scalar functions in projection + WHERE.
+	rows, err := db.QueryContext(ctx, `
+		SELECT LOWER(TRIM(name)) AS clean,
+		       CASE WHEN qty = 0 THEN 'empty' WHEN qty < 5 THEN 'low' ELSE 'high' END AS tier
+		FROM T WHERE LENGTH(TRIM(name)) > 3 ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type r struct{ clean, tier string }
+	var got []r
+	for rows.Next() {
+		var rr r
+		g.Expect(rows.Scan(&rr.clean, &rr.tier)).To(gomega.Succeed())
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{
+		{"alpha", "low"},
+		{"beta", "empty"},
+		{"gamma", "high"},
+	}))
+
+	// Map path via CTE: same expressions work via the unified evaluator core.
+	rows2, err := db.QueryContext(ctx, `
+		WITH cte AS (SELECT id, name, qty FROM T)
+		SELECT LOWER(TRIM(name)) AS clean,
+		       CASE WHEN qty = 0 THEN 'empty' WHEN qty < 5 THEN 'low' ELSE 'high' END AS tier
+		FROM cte WHERE LENGTH(TRIM(name)) > 3 ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	var got2 []r
+	for rows2.Next() {
+		var rr r
+		g.Expect(rows2.Scan(&rr.clean, &rr.tier)).To(gomega.Succeed())
+		got2 = append(got2, rr)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got2).To(gomega.Equal(got))
+}
