@@ -2130,3 +2130,61 @@ func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"a", "b", "c"}))
 }
+
+func TestFDB_SQLCommitRollback(t *testing.T) {
+	// Verifies that COMMIT/ROLLBACK can be sent as SQL text statements,
+	// matching the behavior of tools/ORMs that manage transactions via raw SQL.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sql_txn")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sql_txn")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sql_txn_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sql_txn/items WITH TEMPLATE sql_txn_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sql_txn?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Use a single connection to control transaction boundaries via raw SQL.
+	conn, err := db.Conn(ctx)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer conn.Close()
+
+	// Insert + COMMIT → row visible.
+	g.Expect(conn.ExecContext(ctx, "START TRANSACTION")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "COMMIT")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := conn.QueryContext(ctx, "SELECT item_id FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	rows.Close()
+	g.Expect(ids).To(gomega.Equal([]int64{1}))
+
+	// Insert + ROLLBACK → row NOT visible.
+	g.Expect(conn.ExecContext(ctx, "START TRANSACTION")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(conn.ExecContext(ctx, "ROLLBACK")).Error().NotTo(gomega.HaveOccurred())
+
+	rows2, err := conn.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	ids = nil
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	rows2.Close()
+	g.Expect(ids).To(gomega.Equal([]int64{1})) // only item 1 survived
+}

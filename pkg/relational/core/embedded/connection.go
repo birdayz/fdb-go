@@ -1172,7 +1172,45 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		}
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
 	}
+	if txn := stmt.TransactionStatement(); txn != nil {
+		return c.execTransactionStatement(txn)
+	}
 	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
+}
+
+// execTransactionStatement handles SQL COMMIT, ROLLBACK, and START TRANSACTION.
+// These mirror what database/sql sends when applications use explicit transactions
+// via the driver rather than BeginTx directly.
+func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionStatementContext) (int64, error) {
+	switch {
+	case txn.CommitStatement() != nil:
+		if c.activeTx == nil {
+			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "COMMIT: no active transaction")
+		}
+		if err := c.activeTx.Commit(); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	case txn.RollbackStatement() != nil:
+		if c.activeTx == nil {
+			return 0, nil // ROLLBACK outside transaction is a no-op
+		}
+		return 0, c.activeTx.Rollback()
+	case txn.StartTransaction() != nil:
+		if c.activeTx != nil {
+			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "nested transactions are not supported")
+		}
+		fdbTx, err := c.fdbDB.CreateTransaction()
+		if err != nil {
+			return 0, err
+		}
+		fdbTx.Options().SetReadSystemKeys()
+		rctx := recordlayer.NewFDBRecordContext(fdbTx)
+		c.activeTx = &embeddedTx{conn: c, rctx: rctx}
+		return 0, nil
+	default:
+		return 0, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported transaction statement: %s", txn.GetText())
+	}
 }
 
 // execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
