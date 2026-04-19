@@ -503,6 +503,16 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			outFields = make([]outField, len(sq.projCols))
 			projByCol := make(map[string]bool, len(sq.projCols))
 			for i, colName := range sq.projCols {
+				// Computed expression: no field descriptor needed.
+				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+					outName := colName
+					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+						outName = sq.projAliases[i]
+					}
+					outFields[i] = outField{outName, nil}
+					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
+					continue
+				}
 				fd := allFields.ByName(protoreflect.Name(colName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -555,6 +565,17 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			vals := make([]driver.Value, len(fullFields))
 			for i, f := range fullFields {
+				// Check for a computed expression at this position.
+				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+					v, evalErr := evalExpr(msg, sq.projExprs[i])
+					if evalErr != nil {
+						return nil, evalErr
+					}
+					if v != nil {
+						vals[i] = v.(driver.Value) //nolint:forcetypeassert
+					}
+					continue
+				}
 				if msg.ProtoReflect().Has(f.fd) {
 					vals[i] = protoValueToDriver(f.fd, msg.ProtoReflect().Get(f.fd))
 				}
@@ -901,9 +922,12 @@ type selectQuery struct {
 	tableName   string
 	projCols    []string // nil = SELECT *; ignored when countStar or aggCols non-empty
 	projAliases []string // parallel to projCols; empty string = no alias (use column name)
-	countStar   bool     // true when SELECT list is exactly COUNT(*)
-	distinct    bool     // true when SELECT DISTINCT
-	whereExpr   antlrgen.IWhereExprContext
+	// projExprs holds computed projection expressions parallel to projCols.
+	// Non-nil entry overrides the plain column lookup for that position.
+	projExprs []antlrgen.IExpressionContext
+	countStar bool // true when SELECT list is exactly COUNT(*)
+	distinct  bool // true when SELECT DISTINCT
+	whereExpr antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
@@ -1103,8 +1127,9 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
-	var projCols []string    // nil = SELECT *
-	var projAliases []string // parallel to projCols
+	var projCols []string                       // nil = SELECT *
+	var projAliases []string                    // parallel to projCols
+	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
 	var countStar bool
 	var aggCols []aggSelectCol
 	if selElems != nil {
@@ -1124,8 +1149,19 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
+					var expr antlrgen.IExpressionContext
 					if nameErr != nil {
-						return nil, nameErr
+						// Not a plain column name — treat as a computed expression.
+						// Use alias as the output name; fall back to the raw expression text.
+						alias = ""
+						if e.Uid() != nil {
+							alias = stripIdentifierQuotes(e.Uid().GetText())
+						}
+						if alias == "" {
+							alias = e.Expression().GetText()
+						}
+						colName = alias
+						expr = e.Expression()
 					}
 					if len(aggCols) > 0 {
 						// Mixed aggregate query — this column is a group-by reference.
@@ -1138,6 +1174,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 					} else {
 						projCols = append(projCols, colName)
 						projAliases = append(projAliases, alias)
+						projExprs = append(projExprs, expr) // nil when it's a plain column
 					}
 				}
 			default:
@@ -1161,6 +1198,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 			aggCols = append(extra, aggCols...)
 			projCols = nil
 			projAliases = nil
+			projExprs = nil
 		}
 	}
 
@@ -1196,6 +1234,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 		tableName:   strings.Join(parts, "."),
 		projCols:    projCols,
 		projAliases: projAliases,
+		projExprs:   projExprs,
 		countStar:   countStar,
 		aggCols:     aggCols,
 		distinct:    simpleTable.DISTINCT() != nil,

@@ -2451,3 +2451,37 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g.Expect(sum).To(gomega.Equal(float64(60)))
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
+
+func TestFDB_SelectScalarExpression(t *testing.T) {
+	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_scalar_sel")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_scalar_sel")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE scalar_sel_tmpl "+
+			"CREATE TABLE Item (id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_scalar_sel/items WITH TEMPLATE scalar_sel_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_scalar_sel?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (id, amount) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, amount * 2 AS doubled FROM Item WHERE id = 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id int64
+	var doubled float64
+	g.Expect(rows.Scan(&id, &doubled)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(doubled).To(gomega.Equal(float64(20)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
