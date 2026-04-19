@@ -832,6 +832,7 @@ func fullIdToName(fid antlrgen.IFullIdContext) string {
 }
 
 // protoValueToDriver converts a protoreflect.Value to a driver.Value.
+// For proto2 optional fields that are not set, returns nil (SQL NULL).
 func protoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) driver.Value {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
@@ -1444,8 +1445,11 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 
 	case *antlrgen.PredicatedExpressionContext:
 		if e.Predicate() != nil {
-			if in, ok := e.Predicate().(*antlrgen.InPredicateContext); ok {
-				return evalInPredicate(msg, e, in)
+			switch p := e.Predicate().(type) {
+			case *antlrgen.InPredicateContext:
+				return evalInPredicate(msg, e, p)
+			case *antlrgen.IsExpressionContext:
+				return evalIsNullPredicate(msg, e, p)
 			}
 		}
 		return evalComparisonPredicate(msg, e)
@@ -1544,6 +1548,51 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 		return true, nil
 	}
 	return false, nil
+}
+
+// evalIsNullPredicate handles: col IS [NOT] NULL / IS TRUE / IS FALSE
+func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IS left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	// Use Has() for proto2 optional presence; unset optional = SQL NULL.
+	var fieldVal driver.Value
+	if msg.ProtoReflect().Has(fd) {
+		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+	}
+	negated := is.NOT() != nil
+
+	switch {
+	case is.NULL_LITERAL() != nil:
+		isNull := fieldVal == nil
+		if negated {
+			return !isNull, nil
+		}
+		return isNull, nil
+	case is.TRUE() != nil:
+		b, ok := fieldVal.(bool)
+		result := ok && b
+		if negated {
+			return !result, nil
+		}
+		return result, nil
+	case is.FALSE() != nil:
+		b, ok := fieldVal.(bool)
+		result := ok && !b
+		if negated {
+			return !result, nil
+		}
+		return result, nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported IS test value")
+	}
 }
 
 // substituteParams replaces positional '?' placeholders in a query with

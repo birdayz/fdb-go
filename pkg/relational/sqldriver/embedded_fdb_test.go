@@ -1670,3 +1670,55 @@ func TestFDB_SelectWhereNotIn(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]row{{2, 20}, {4, 40}}))
 }
+
+func TestFDB_SelectWhereIsNull(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_is_null")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_is_null")).Error().NotTo(gomega.HaveOccurred())
+	// val is nullable (no NOT NULL constraint) so unset fields appear as NULL.
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE isnull_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_where_is_null/items WITH TEMPLATE isnull_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_is_null?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// item_id=1 has val set, item_id=2 has no val (NULL).
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 42)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id) VALUES (2)")).Error().NotTo(gomega.HaveOccurred())
+
+	// IS NULL — should return only item_id=2.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE val IS NULL ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2}))
+
+	// IS NOT NULL — should return only item_id=1.
+	rows2, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE val IS NOT NULL ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	var ids2 []int64
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids2 = append(ids2, id)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids2).To(gomega.Equal([]int64{1}))
+}
