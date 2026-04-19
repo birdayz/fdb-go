@@ -2909,6 +2909,46 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
 }
 
+func TestFDB_MathFunctions(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_math_funcs")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_funcs")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mf_tmpl CREATE TABLE Num (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_funcs/data WITH TEMPLATE mf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_math_funcs?cluster_file=%s&schema=data", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Num (id, val) VALUES (1, 7), (2, 3)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// MOD(7, 3) = 1
+	rows, err := db.QueryContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	rows.Next()
+	var mod int64
+	g.Expect(rows.Scan(&mod)).To(gomega.Succeed())
+	g.Expect(mod).To(gomega.Equal(int64(1)))
+
+	// POWER(2, 3) = 8
+	rows2, err := db.QueryContext(ctx, `SELECT POWER(2, 3) FROM Num WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	rows2.Next()
+	var pow int64
+	g.Expect(rows2.Scan(&pow)).To(gomega.Succeed())
+	g.Expect(pow).To(gomega.Equal(int64(8)))
+}
+
 func TestFDB_WhereExprComparison(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

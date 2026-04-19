@@ -12,6 +12,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -2211,6 +2212,129 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		default:
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS: argument must be numeric, got %T", v)
 		}
+	case "FLOOR", "CEIL", "CEILING", "ROUND":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		var f float64
+		switch n := v.(type) {
+		case int64:
+			return n, nil // already integer
+		case float64:
+			f = n
+		default:
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be numeric", name)
+		}
+		var result float64
+		switch name {
+		case "FLOOR":
+			result = math.Floor(f)
+		case "CEIL", "CEILING":
+			result = math.Ceil(f)
+		case "ROUND":
+			decimals := int64(0)
+			if len(fArgs) >= 2 {
+				dv, derr := evalExpr(msg, fArgs[1].Expression())
+				if derr == nil {
+					if d, ok := dv.(int64); ok {
+						decimals = d
+					}
+				}
+			}
+			if decimals == 0 {
+				result = math.Round(f)
+			} else {
+				factor := math.Pow(10, float64(decimals))
+				result = math.Round(f*factor) / factor
+			}
+		}
+		// Return int64 if no fractional part.
+		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+			return int64(result), nil
+		}
+		return result, nil
+	case "MOD":
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
+		}
+		av, aerr := evalExpr(msg, fArgs[0].Expression())
+		if aerr != nil || av == nil {
+			return nil, aerr
+		}
+		bv, berr := evalExpr(msg, fArgs[1].Expression())
+		if berr != nil || bv == nil {
+			return nil, berr
+		}
+		switch a := av.(type) {
+		case int64:
+			if b, ok := bv.(int64); ok && b != 0 {
+				return a % b, nil
+			}
+		case float64:
+			if b, ok := bv.(float64); ok {
+				return math.Mod(a, b), nil
+			}
+		}
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
+	case "POWER", "POW":
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
+		}
+		baseV, berr := evalExpr(msg, fArgs[0].Expression())
+		if berr != nil || baseV == nil {
+			return nil, berr
+		}
+		expV, eerr := evalExpr(msg, fArgs[1].Expression())
+		if eerr != nil || expV == nil {
+			return nil, eerr
+		}
+		var base, exp float64
+		switch n := baseV.(type) {
+		case int64:
+			base = float64(n)
+		case float64:
+			base = n
+		}
+		switch n := expV.(type) {
+		case int64:
+			exp = float64(n)
+		case float64:
+			exp = n
+		}
+		result := math.Pow(base, exp)
+		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+			return int64(result), nil
+		}
+		return result, nil
+	case "SIGN":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
+		}
+		v, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		switch n := v.(type) {
+		case int64:
+			if n > 0 {
+				return int64(1), nil
+			} else if n < 0 {
+				return int64(-1), nil
+			}
+			return int64(0), nil
+		case float64:
+			if n > 0 {
+				return float64(1), nil
+			} else if n < 0 {
+				return float64(-1), nil
+			}
+			return float64(0), nil
+		}
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN: argument must be numeric")
 	case "CONCAT", "CONCAT_WS":
 		// CONCAT_WS(sep, s1, s2, ...) — first arg is separator.
 		// CONCAT(s1, s2, ...) — no separator.
