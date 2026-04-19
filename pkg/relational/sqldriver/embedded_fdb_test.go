@@ -4239,3 +4239,48 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 		{"Bob", 200},
 	}))
 }
+
+func TestFDB_ThreeTableFrom(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_three_from")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_three_from")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE three_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Region (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, region_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_three_from/main WITH TEMPLATE three_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_three_from?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Region (id, label) VALUES (10, 'west')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, region_id, amount) VALUES (100, 1, 10, 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Region.label, Sales.amount
+		FROM Customer, Region, Sales
+		WHERE Customer.id = Sales.customer_id AND Region.id = Sales.region_id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var name, label string
+	var amount int64
+	rows.Next()
+	g.Expect(rows.Scan(&name, &label, &amount)).To(gomega.Succeed())
+	g.Expect(name).To(gomega.Equal("Alice"))
+	g.Expect(label).To(gomega.Equal("west"))
+	g.Expect(amount).To(gomega.Equal(int64(500)))
+	g.Expect(rows.Next()).To(gomega.BeFalse())
+}
