@@ -3,6 +3,9 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -11,16 +14,65 @@ import (
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
-// newMetaCmd is the `meta` noun. v1 ships only `get` — dump the loaded
-// RecordMetaData from the current context's metadata source as JSON.
+// newMetaCmd is the `meta` noun.
 func newMetaCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "meta",
 		Short: "Inspect the RecordMetaData for the current context",
 	}
-	c.AddCommand(newMetaGetCmd())
+	c.AddCommand(
+		newMetaGetCmd(),
+		newMetaTypesCmd(),
+	)
+	return c
+}
+
+// newMetaTypesCmd covers `meta types {ls}` — record-type introspection.
+// Kept nested under `meta` rather than promoted to a top-level noun because
+// record types live inside metadata; treating them separately would suggest
+// they have independent lifecycle which they don't.
+func newMetaTypesCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "types",
+		Short: "Inspect record types declared in the metadata",
+	}
+	c.AddCommand(newMetaTypesLsCmd())
+	return c
+}
+
+func newMetaTypesLsCmd() *cobra.Command {
+	var contextName, metaFile string
+	c := &cobra.Command{
+		Use:   "ls",
+		Short: "List record types with primary-key fields",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			if err != nil {
+				return err
+			}
+			if override == nil {
+				src, err := meta.FromContext(cfgCtx, nil, nil)
+				if err != nil {
+					if errors.Is(err, meta.ErrMissingSource) {
+						return fmt.Errorf("%w (context %q)", err, cfgCtx.GetName())
+					}
+					return err
+				}
+				override = src
+			}
+			md, err := override.Load(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeTypesList(cmd.OutOrStdout(), md)
+		},
+	}
+	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
 	return c
 }
 
@@ -77,6 +129,41 @@ func applyMetaFileOverride(ctx *configv1.Context, path string) *configv1.Context
 		Source: &configv1.MetadataSource_MetaFile{MetaFile: path},
 	}
 	return cp
+}
+
+// writeTypesList renders one row per record type: name, primary-key
+// fields (comma-joined), "since" version (when the type entered the
+// metadata). Since-version 0 is treated as "never upgraded" — suppress it.
+func writeTypesList(out interface{ Write([]byte) (int, error) }, md *recordlayer.RecordMetaData) error {
+	rts := md.RecordTypes()
+	if len(rts) == 0 {
+		_, err := fmt.Fprintln(out, "(no record types in metadata)")
+		return err
+	}
+	names := make([]string, 0, len(rts))
+	for n := range rts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tPRIMARY KEY\tSINCE VERSION")
+	for _, name := range names {
+		rt := rts[name]
+		pk := "(unset)"
+		if rt.PrimaryKey != nil {
+			fn := rt.PrimaryKey.FieldNames()
+			if len(fn) > 0 {
+				pk = strings.Join(fn, ",")
+			}
+		}
+		since := ""
+		if rt.SinceVersion > 0 {
+			since = fmt.Sprintf("%d", rt.SinceVersion)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, pk, since)
+	}
+	return tw.Flush()
 }
 
 func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context) error {
