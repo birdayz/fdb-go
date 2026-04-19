@@ -1,8 +1,6 @@
 package catalog
 
 import (
-	"errors"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -117,12 +115,15 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn 
 // CreateTemplate persists a new (name, version). Returns
 // ErrCodeDuplicateSchemaTemplate when (name, version) already exists.
 //
-// When a prior version of the same template exists, the new metadata is
-// run through MetaDataEvolutionValidator before it is persisted — this
-// blocks a Go writer from silently creating a schema evolution that
-// Java's validator would reject (removed fields, incompatible type
-// changes, etc.). Without this guard, concurrent Go+Java writes could
-// diverge schema history per the dayshift-34 audit finding.
+// Matches Java's RecordLayerStoreSchemaTemplateCatalog.createTemplate()
+// exactly: no evolution validation here. Java only validates metadata
+// evolution inside FDBMetaDataStore.saveAndSetCurrent() (record-layer
+// level, not relational); the relational createTemplate / saveSchema
+// paths do not invoke MetaDataEvolutionValidator. Adding validation in
+// Go would diverge — a Go writer would reject templates Java accepts.
+// See TODO.md entry on the template-evolution validation gap (open
+// both in Java and Go; worth an upstream discussion before unilateral
+// Go-side enforcement).
 func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newTemplate api.SchemaTemplate) error {
 	if newTemplate == nil {
 		return api.NewError(api.ErrCodeInvalidParameter, "template is nil")
@@ -145,37 +146,6 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 	if existing != nil {
 		return api.NewErrorf(api.ErrCodeDuplicateSchemaTemplate,
 			"schema template %q version %d already exists", rl.MetadataName(), rl.Version())
-	}
-
-	// If a prior version exists, validate the evolution. SQL-layer template
-	// versions are independent from the RecordMetaData's own version (the
-	// latter only bumps on structural changes), so SetAllowNoVersionChange
-	// lets a new SQL-layer version re-use the same RecordMetaData.
-	prior, err := c.LoadSchemaTemplate(txn, rl.MetadataName())
-	if err == nil {
-		priorRL, priorOK := prior.(*metadata.RecordLayerSchemaTemplate)
-		// priorRL.Version() >= rl.Version() is out-of-order insertion
-		// (e.g. inserting v3 when v5 already exists). The exact-version
-		// duplicate check above handles the == case; < skips validation
-		// because we can't meaningfully "evolve backward" from the latest.
-		if priorOK && priorRL.Version() < rl.Version() {
-			validator := recordlayer.NewMetaDataEvolutionValidator().
-				SetAllowNoVersionChange(true).
-				Build()
-			if vErr := validator.Validate(priorRL.Underlying(), rl.Underlying()); vErr != nil {
-				return api.WrapErrorf(vErr, api.ErrCodeInvalidSchemaTemplate,
-					"schema template %q version %d does not evolve cleanly from version %d",
-					rl.MetadataName(), rl.Version(), priorRL.Version())
-			}
-		}
-	} else {
-		// Only tolerate the "no prior version" case. Any other error —
-		// transient FDB issue, proto decode of the prior row — must
-		// surface; silently creating an evolution would be worse.
-		var apiErr *api.Error
-		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnknownSchemaTemplate {
-			return err
-		}
 	}
 
 	payload, err := serializeTemplate(rl)
