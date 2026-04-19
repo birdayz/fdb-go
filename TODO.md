@@ -245,25 +245,26 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 
 **HIGH — correctness / Java conformance bugs**
 
-- [ ] **`NOT` of UNKNOWN returns TRUE.** `evalExprPredicate` NotExpression does `!v` on a bool that already collapsed NULL→false, so `NOT (x = NULL)` → TRUE. Same pattern in `NOT LIKE NULL`, `NOT BETWEEN NULL`. Fix: propagate UNKNOWN explicitly (tri-state) or invert before collapse.
-- [ ] **Div/0 divergence between evaluator paths.** `applyMathOp` (proto) errors on `/0`; `applyArithmeticOp` (map/JOIN/CTE) returns NULL. Same SQL produces different results. Pick one (SQL standard is error) and use in both.
-- [ ] **`%` operator missing in proto path.** `applyArithmeticOp` supports it; `applyMathOp` errors. Add `%` to proto.
-- [ ] **`COUNT(col)` counts NULLs.** `aggregateMapRows:~549` increments counter before the null check; SQL spec skips NULLs for `COUNT(<expr>)`.
-- [ ] **`SUM`/`AVG` of empty-or-all-NULL group returns 0, not NULL.** Track a non-null flag like AVG's `avgsN`, emit NULL when zero.
-- [ ] **`SUM` silently treats string columns as 0.** `fv, _ := toFloat64(colVal)` swallows the type error — should return ErrCodeInvalidParameter.
-- [ ] **Mixed-type equality via stringification.** `valuesEqual` falls through to `fmt.Sprintf`, so `'5' = 5` → TRUE. Leaks into IN, NULLIF, subquery IN. Return false (or error) on genuinely incompatible types.
-- [ ] **Catalog subspace incompatible with Java.** Go uses `tuple.Tuple{"__SYS","__SYS","CATALOG"}`; Java uses `DirectoryLayerDirectory → [NULL, NULL, long(0)]`. **A Go-written catalog is not readable by Java** — blocking for the stated wire-compat goal.
+- [x] **`NOT` of UNKNOWN returns TRUE.** `evalExprPredicate` NotExpression does `!v` on a bool that already collapsed NULL→false, so `NOT (x = NULL)` → TRUE. Same pattern in `NOT LIKE NULL`, `NOT BETWEEN NULL`. ✅ swingshift-35: introduced `triBool` Kleene type; all predicate evaluators now have Tri variants that preserve UNKNOWN. Bool wrappers collapse at filter boundary.
+- [x] **Div/0 divergence between evaluator paths.** ✅ swingshift-35: unified on SQL-standard error. `applyArithmeticOp` now delegates to `applyMathOp` — one canonical implementation.
+- [x] **`%` operator missing in proto path.** ✅ swingshift-35: added to `applyMathOp`.
+- [x] **`COUNT(col)` counts NULLs.** ✅ swingshift-35: increment moved inside non-null check; `COUNT(*)` still counts every row (special-cased by `aggArg == ""`).
+- [x] **`SUM`/`AVG` of empty-or-all-NULL group returns 0, not NULL.** ✅ swingshift-35: use `counts[i] > 0` as "non-null seen" gate; synth empty-set row added for ungrouped queries.
+- [x] **`SUM` silently treats string columns as 0.** ✅ swingshift-35: `toFloat64` result now checked; non-numeric → `ErrCodeInvalidParameter`.
+- [x] **Mixed-type equality via stringification.** ✅ swingshift-35: `valuesEqual` + `compareValues` reject cross-type comparisons; only numeric↔numeric coercion preserved.
+- [x] **Catalog subspace incompatible with Java.** ✅ swingshift-35: `DefaultCatalogSubspace()` now packs tuple `(NULL, NULL, int64(0))` = `0x000014` matching Java's `KeySpaceDirectory(SYS, NULL) → (SYS, NULL) → (CATALOG, LONG, 0L)`. Byte-prefix pinned in `TestDefaultCatalogSubspaceBytes`.
 
 **MEDIUM**
 
-- [ ] `CAST(NULL AS <type>)` returns "unsupported CAST" error instead of NULL. Early-return `nil, nil` when `v == nil` in `castValue`.
-- [ ] `ABS(math.MinInt64)` overflow (two's-complement negation).
-- [ ] `LEFT` / `RIGHT` / `SUBSTRING` silent truncation on float length argument (blind `int64` type assertion on `nVal`).
-- [ ] `ResetSession` leaks `activeTx`, `ctes`, `schemaCache` → pooled-connection corruption risk.
+- [x] `CAST(NULL AS <type>)` ✅ swingshift-35: early-return `nil, nil` in `castValue`.
+- [x] `ABS(math.MinInt64)` overflow ✅ swingshift-35: return `ErrCodeInvalidParameter` rather than wrap.
+- [x] `LEFT` / `RIGHT` / `SUBSTRING` float length arg ✅ swingshift-35: `toIntegerArg` helper accepts int64 and whole-valued float64, rejects fractional/non-numeric.
+- [x] `ResetSession` leaks ✅ swingshift-35: now rolls back activeTx, clears ctes + schemaCache, restores defaultSchema.
 - [ ] Nested SELECT / derived-table write to the same `ctes` map without a scope stack — outer sees leaked inner CTE names.
-- [ ] **~172 `fmt.Errorf` sites across embedded / catalog / ddl drop the `ErrorCode`.** `errors.As(&apiErr)` misses them → users can't map to SQLSTATE. Violates the project error-handling rule. Wrap with `api.WrapError` or `NewErrorf`.
-- [ ] **8 panics in `api/datatype_*.go`.** CLAUDE.md forbids panics in library code — convert to returned errors.
+- [x] **Production `fmt.Errorf` sites dropping `ErrorCode`** ✅ swingshift-35: ~30 sites across metadata/catalog/embedded/keyspace/ddl swept to `api.NewErrorf`/`api.WrapErrorf`. Added `api.WrapErrorf` helper for the `%w`-wrapping idiom.
+- [ ] **8 panics in `api/datatype_*.go`.** Requires `DataType` interface signature change (WithNullable/Resolve). Punted — full interface-breaking refactor, next shift.
 - [ ] `MetaDataEvolutionValidator` exists in `recordlayer` but is **not wired** into `SaveSchemaTemplate` — concurrent Java+Go writes can silently create incompatible schema template evolutions.
+- [ ] **DISTINCT SUM never accumulates** (surfaced by swingshift-35 reviewer). `aggregateMapRows` / proto path increment `counts[i]` inside the DISTINCT branch but never add to `sums[i]`. Removing the `|| aggDistinct` guard now correctly emits NULL for all-NULL DISTINCT groups, but SUM(DISTINCT col) on a non-empty group also emits NULL — broken. Needs its own distinct-value-sum pass.
 
 **Architecture / design**
 
