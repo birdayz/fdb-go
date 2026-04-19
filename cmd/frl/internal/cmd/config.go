@@ -25,8 +25,65 @@ func newConfigCmd() *cobra.Command {
 		newConfigSchemaCmd(),
 		newConfigViewCmd(),
 		newConfigUseContextCmd(),
+		newConfigCurrentContextCmd(),
+		newConfigGetContextsCmd(),
 	)
 	return c
+}
+
+// newConfigCurrentContextCmd prints the active context's name (or nothing
+// + an error if none is set). Matches kubectl / kaf convention.
+func newConfigCurrentContextCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "current-context",
+		Short: "Print the active context's name",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			name := cfg.GetCurrentContext()
+			if name == "" {
+				path, _ := config.Path()
+				return fmt.Errorf("current_context is empty in %s — run `frl config use-context <name>`", path)
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), name)
+			return err
+		},
+	}
+}
+
+// newConfigGetContextsCmd lists every context, marking the active one
+// with '*'. No sorting — order in config.yaml is preserved so operators
+// can reason about their file.
+func newConfigGetContextsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get-contexts",
+		Short: "List all configured contexts",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			current := cfg.GetCurrentContext()
+			if len(cfg.GetContexts()) == 0 {
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "(no contexts configured)")
+				return err
+			}
+			for _, ctx := range cfg.GetContexts() {
+				marker := " "
+				if ctx.GetName() == current {
+					marker = "*"
+				}
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", marker, ctx.GetName()); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
 }
 
 func newConfigSchemaCmd() *cobra.Command {

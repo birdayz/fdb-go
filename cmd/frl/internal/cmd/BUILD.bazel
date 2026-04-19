@@ -40,6 +40,7 @@ go_library(
 go_test(
     name = "cmd_test",
     srcs = [
+        "config_test.go",
         "index_describe_test.go",
         "index_test.go",
         "keyspace_test.go",
