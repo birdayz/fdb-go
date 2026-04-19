@@ -31,5 +31,6 @@ go_test(
     deps = [
         "//pkg/relational/api",
         "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
     ],
 )

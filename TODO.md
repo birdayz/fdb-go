@@ -406,7 +406,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **Integration test matrix**
   - [x] `sql.Open("fdbsql", dsn)` + `db.Ping()` (nightshift-28)
   - [x] `db.ExecContext` for DDL (CREATE DATABASE/SCHEMA/SCHEMA TEMPLATE + DROP) (nightshift-28)
-  - [ ] `db.QueryContext` + `rows.Scan` for SELECT
+  - [x] `db.QueryContext` + `rows.Scan` for SELECT (nightshift-29: SELECT * FROM table via ScanRecordsByType)
   - [ ] `db.PrepareContext` + parameterized exec/query
   - [ ] `db.BeginTx` + Commit/Rollback
   - [ ] Context cancellation mid-query

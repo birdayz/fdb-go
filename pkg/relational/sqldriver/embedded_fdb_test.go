@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onsi/gomega"
+
 	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
@@ -476,4 +478,59 @@ func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 	if count != 2 {
 		t.Errorf("row count = %d, want 2", count)
 	}
+}
+
+func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_delete_pk")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_delete_pk")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE del_tmpl "+
+			"CREATE TABLE Widget (widget_id BIGINT NOT NULL, label STRING, PRIMARY KEY (widget_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_delete_pk/widgets WITH TEMPLATE del_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_delete_pk?cluster_file=%s&schema=widgets", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Widget (widget_id, label) VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	res, err := db.ExecContext(ctx, "DELETE FROM Widget WHERE widget_id = 2")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	affected, err := res.RowsAffected()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(affected).To(gomega.Equal(int64(1)))
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Widget")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var count int
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		count++
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(count).To(gomega.Equal(2))
 }

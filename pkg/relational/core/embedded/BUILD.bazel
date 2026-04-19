@@ -14,6 +14,7 @@ go_library(
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
+        "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],

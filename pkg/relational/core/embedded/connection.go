@@ -25,6 +25,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
@@ -493,6 +494,9 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		if ins := dml.InsertStatement(); ins != nil {
 			return c.execInsert(ctx, ins)
 		}
+		if del := dml.DeleteStatement(); del != nil {
+			return c.execDelete(ctx, del)
+		}
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
 	}
 	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only DDL and INSERT statements are supported in this release")
@@ -607,42 +611,7 @@ func evalLiteralExpr(expr antlrgen.IExpressionWithOptionalNameContext) (any, err
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in INSERT", pred.ExpressionAtom())
 	}
-	switch c := atomCtx.Constant().(type) {
-	case *antlrgen.DecimalConstantContext:
-		text := c.DecimalLiteral().GetText()
-		// Try integer first, fall back to float.
-		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return iv, nil
-		}
-		fv, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-		}
-		return fv, nil
-	case *antlrgen.NegativeDecimalConstantContext:
-		text := "-" + c.DecimalLiteral().GetText()
-		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return iv, nil
-		}
-		fv, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-		}
-		return fv, nil
-	case *antlrgen.StringConstantContext:
-		raw := c.StringLiteral().GetText()
-		// Strip surrounding quotes (single or double).
-		if len(raw) >= 2 {
-			raw = raw[1 : len(raw)-1]
-		}
-		return raw, nil
-	case *antlrgen.NullConstantContext:
-		return nil, nil
-	case *antlrgen.BooleanConstantContext:
-		return c.BooleanLiteral().TRUE() != nil, nil
-	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in INSERT", atomCtx.Constant())
-	}
+	return evalConstant(atomCtx.Constant())
 }
 
 // convertToProtoValue converts a Go value (int64, float64, string, bool) to
@@ -697,6 +666,189 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	}
 	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
 		"cannot convert %T to proto field kind %s", val, fd.Kind())
+}
+
+// execDelete executes DELETE FROM <table> [WHERE col = value].
+func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDeleteStatementContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	tableName := del.TableName().FullId().GetText()
+	whereExpr := del.WhereExpr()
+
+	var deleted int64
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		deleted = 0
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		for {
+			result, nextErr := cursor.OnNext(ctx)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if !result.HasNext() {
+				break
+			}
+			rec := result.GetValue()
+			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if !match {
+				continue
+			}
+			if _, delErr := store.DeleteRecord(rec.PrimaryKey); delErr != nil {
+				return nil, delErr
+			}
+			deleted++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// evalPredicate returns true if msg satisfies whereExpr.
+// Only col = constant comparisons are supported. If whereExpr is nil, returns true.
+func evalPredicate(msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
+	if whereExpr == nil {
+		return true, nil
+	}
+	pred, ok := whereExpr.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", whereExpr.Expression())
+	}
+	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE predicate type %T", pred.ExpressionAtom())
+	}
+	if bcp.ComparisonOperator().GetText() != "=" {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "only = comparison supported in WHERE, got %q", bcp.ComparisonOperator().GetText())
+	}
+	colAtom, ok := bcp.GetLeft().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE left side must be a column name, got %T", bcp.GetLeft())
+	}
+	colName := colAtom.FullColumnName().FullId().GetText()
+
+	valAtom, ok := bcp.GetRight().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "WHERE right side must be a constant, got %T", bcp.GetRight())
+	}
+
+	litVal, err := evalConstant(valAtom.Constant())
+	if err != nil {
+		return false, err
+	}
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	fieldVal := msg.ProtoReflect().Get(fd)
+	driverVal := protoValueToDriver(fd, fieldVal)
+	return valuesEqual(driverVal, litVal), nil
+}
+
+// evalConstant evaluates a constant parse-tree node to a Go value.
+// Returns nil for NULL.
+func evalConstant(c antlrgen.IConstantContext) (any, error) {
+	switch cv := c.(type) {
+	case *antlrgen.DecimalConstantContext:
+		text := cv.DecimalLiteral().GetText()
+		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return iv, nil
+		}
+		fv, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		return fv, nil
+	case *antlrgen.NegativeDecimalConstantContext:
+		text := "-" + cv.DecimalLiteral().GetText()
+		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return iv, nil
+		}
+		fv, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+		}
+		return fv, nil
+	case *antlrgen.StringConstantContext:
+		raw := cv.StringLiteral().GetText()
+		if len(raw) >= 2 {
+			raw = raw[1 : len(raw)-1]
+		}
+		return raw, nil
+	case *antlrgen.NullConstantContext:
+		return nil, nil
+	case *antlrgen.BooleanConstantContext:
+		return cv.BooleanLiteral().TRUE() != nil, nil
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in WHERE", c)
+	}
+}
+
+// valuesEqual compares two driver values that may have different numeric types.
+func valuesEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	// Normalise numeric types to int64/float64 for comparison.
+	toFloat := func(v any) (float64, bool) {
+		switch n := v.(type) {
+		case int64:
+			return float64(n), true
+		case float64:
+			return n, true
+		}
+		return 0, false
+	}
+	fa, aIsNum := toFloat(a)
+	fb, bIsNum := toFloat(b)
+	if aIsNum && bIsNum {
+		return fa == fb
+	}
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {
