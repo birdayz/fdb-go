@@ -5370,6 +5370,75 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 	g.Expect(got3).To(gomega.Equal("five"))
 }
 
+// TestFDB_ArithmeticUnifiedSemantics proves that proto and map evaluator
+// paths produce identical arithmetic results:
+//   - division by zero errors (SQL standard) in both paths
+//   - modulo (`%`) works in both paths
+//   - modulo by zero errors in both paths
+func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_arith_unified")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_arith_unified")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE arith_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_arith_unified/main WITH TEMPLATE arith_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_arith_unified?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, a, b) VALUES (1, 10, 3), (2, 5, 0)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// queryErr exhausts a SQL query, surfacing the first error from prepare,
+	// iteration, or scan. Used for tests that expect a single error to reach
+	// the caller regardless of which stage materialises it.
+	queryErr := func(sql string) error {
+		rows, e := db.QueryContext(ctx, sql)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			if se := rows.Scan(&v); se != nil {
+				return se
+			}
+		}
+		return rows.Err()
+	}
+
+	// Proto path — `%` previously errored, now works.
+	var mod int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT a % b FROM T WHERE id = 1`).Scan(&mod)).To(gomega.Succeed())
+	g.Expect(mod).To(gomega.Equal(int64(1)))
+
+	// Proto path — division by zero errors (SQL standard).
+	g.Expect(queryErr(`SELECT a / b FROM T WHERE id = 2`)).To(gomega.HaveOccurred(),
+		"proto path div/0 must error")
+
+	// Proto path — modulo by zero errors (consistent with /0).
+	g.Expect(queryErr(`SELECT a % b FROM T WHERE id = 2`)).To(gomega.HaveOccurred(),
+		"proto path mod/0 must error")
+
+	// Map path (via CTE) — same SQL-standard error, was previously NULL.
+	g.Expect(queryErr(`WITH C AS (SELECT a, b FROM T WHERE id = 2) SELECT a / b FROM C`)).
+		To(gomega.HaveOccurred(), "map path (CTE) div/0 must error")
+
+	// Map path — `%` continues to work.
+	var mod2 int64
+	g.Expect(db.QueryRowContext(ctx,
+		`WITH C AS (SELECT a, b FROM T WHERE id = 1) SELECT a % b FROM C`).Scan(&mod2)).To(gomega.Succeed())
+	g.Expect(mod2).To(gomega.Equal(int64(1)))
+}
+
 // TestFDB_MixedTypeEqualityNoStringCoerce proves that mixed-type equality
 // does NOT fall through to string coercion: an int column `= '5'` must not
 // match the integer 5, and similarly for IN-lists.

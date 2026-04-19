@@ -3878,6 +3878,11 @@ func applyMathOp(left, right any, op string) (any, error) {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
 		}
 		result = lf / rf
+	case "%":
+		if rf == 0 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+		}
+		result = math.Mod(lf, rf)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
 	}
@@ -4902,35 +4907,11 @@ func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row m
 	}
 }
 
-// applyArithmeticOp applies +/-/*// to two driver.Values (used in map-based eval).
+// applyArithmeticOp is the map-path arithmetic entry. It delegates to the
+// canonical `applyMathOp` so proto and map paths stay behaviourally identical
+// (div/0 errors per SQL standard, int64 preservation, `%` support).
 func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
-	if left == nil || right == nil {
-		return nil, nil // SQL NULL propagation.
-	}
-	lf, lok := toFloat64(left)
-	rf, rok := toFloat64(right)
-	if !lok || !rok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "arithmetic requires numeric operands, got %T and %T", left, right)
-	}
-	switch op {
-	case "+":
-		return lf + rf, nil
-	case "-":
-		return lf - rf, nil
-	case "*":
-		return lf * rf, nil
-	case "/":
-		if rf == 0 {
-			return nil, nil // NULL for division by zero
-		}
-		return lf / rf, nil
-	case "%":
-		if rf == 0 {
-			return nil, nil
-		}
-		return math.Mod(lf, rf), nil
-	}
-	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported arithmetic operator %q", op)
+	return applyMathOp(left, right, op)
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
