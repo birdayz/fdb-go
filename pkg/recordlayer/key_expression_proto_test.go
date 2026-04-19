@@ -240,6 +240,29 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 			t.Fatal("expected error for split_point beyond inner columnSize, got nil")
 		}
 	})
+
+	t.Run("depth_limit", func(t *testing.T) {
+		t.Parallel()
+		// Build a Nesting chain deeper than maxKeyExpressionDepth. Each
+		// layer wraps the inner KeyExpression in another Nesting; the
+		// depth guard must trip before the goroutine stack blows.
+		ft := gen.Field_SCALAR
+		var current *gen.KeyExpression = &gen.KeyExpression{
+			Field: &gen.Field{FieldName: proto.String("leaf"), FanType: &ft},
+		}
+		for i := 0; i < maxKeyExpressionDepth+10; i++ {
+			current = &gen.KeyExpression{
+				Nesting: &gen.Nesting{
+					Parent: &gen.Field{FieldName: proto.String("p"), FanType: &ft},
+					Child:  current,
+				},
+			}
+		}
+		_, err := KeyExpressionFromProto(current)
+		if err == nil {
+			t.Fatal("expected depth-limit error, got nil")
+		}
+	})
 }
 
 func TestKeyExpressionProtoWireRoundtrip(t *testing.T) {
