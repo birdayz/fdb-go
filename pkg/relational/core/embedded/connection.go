@@ -3049,10 +3049,33 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 }
 
 // evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, CASE, etc.).
-func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+// exprEvaluator is the function-pointer adapter that abstracts over the two
+// expression-evaluation contexts (proto record vs. map row). Both the scalar
+// and specific function cores drive all argument evaluation through this.
+type exprEvaluator func(expr antlrgen.IExpressionContext) (driver.Value, error)
+
+// predicateEvaluator is the boolean-predicate counterpart of exprEvaluator,
+// used by the searched CASE WHEN branch of evalSpecificFunctionCore.
+type predicateEvaluator func(expr antlrgen.IExpressionContext) (bool, error)
+
+// evalScalarFunctionCallCore is the unified implementation shared by
+// evalScalarFunctionCall (proto path) and evalScalarFunctionCallOnMap (map
+// path). The two callers differ only in how they evaluate sub-expressions;
+// that variation is captured in the eval / predicateEval adapters.
+//
+// unsupportedFmt is the format string ("... %q ...") used for the default
+// case — proto and map paths use subtly different wording which we preserve
+// verbatim. It must accept exactly one %q for the function name.
+func evalScalarFunctionCallCore(
+	eval exprEvaluator,
+	predicateEval predicateEvaluator,
+	unsupportedFmt string,
+	unsupportedSpecificFmt string,
+	fc antlrgen.IFunctionCallContext,
+) (driver.Value, error) {
 	// Handle CASE expressions routed through SpecificFunctionCall.
 	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return evalSpecificFunction(ctx, conn, msg, sf.SpecificFunction())
+		return evalSpecificFunctionCore(eval, predicateEval, unsupportedSpecificFmt, sf.SpecificFunction())
 	}
 
 	var name string
@@ -3074,7 +3097,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 	switch name {
 	case "COALESCE":
 		for _, fa := range fArgs {
-			v, err := evalExpr(ctx, conn, msg, fa.Expression())
+			v, err := eval(fa.Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -3087,19 +3110,19 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IFNULL requires 2 arguments")
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		if v != nil {
 			return v, nil
 		}
-		return evalExpr(ctx, conn, msg, fArgs[1].Expression())
+		return eval(fArgs[1].Expression())
 	case "UPPER":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER requires 1 argument")
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3112,7 +3135,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER requires 1 argument")
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3125,7 +3148,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3138,7 +3161,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3157,7 +3180,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3179,7 +3202,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3201,7 +3224,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		case "ROUND":
 			decimals := int64(0)
 			if len(fArgs) >= 2 {
-				dv, derr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
+				dv, derr := eval(fArgs[1].Expression())
 				if derr == nil {
 					if d, ok := dv.(int64); ok {
 						decimals = d
@@ -3224,11 +3247,11 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
 		}
-		av, aerr := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		av, aerr := eval(fArgs[0].Expression())
 		if aerr != nil || av == nil {
 			return nil, aerr
 		}
-		bv, berr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
+		bv, berr := eval(fArgs[1].Expression())
 		if berr != nil || bv == nil {
 			return nil, berr
 		}
@@ -3259,11 +3282,11 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
 		}
-		baseV, berr := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		baseV, berr := eval(fArgs[0].Expression())
 		if berr != nil || baseV == nil {
 			return nil, berr
 		}
-		expV, eerr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
+		expV, eerr := eval(fArgs[1].Expression())
 		if eerr != nil || expV == nil {
 			return nil, eerr
 		}
@@ -3284,7 +3307,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
 		}
-		v, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
 			return nil, err
 		}
@@ -3314,7 +3337,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 			if len(fArgs) < 1 {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "CONCAT_WS requires at least 1 argument")
 			}
-			sv, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+			sv, err := eval(fArgs[0].Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -3325,7 +3348,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		}
 		var parts []string
 		for _, fa := range fArgs[startIdx:] {
-			v, err := evalExpr(ctx, conn, msg, fa.Expression())
+			v, err := eval(fa.Expression())
 			if err != nil {
 				return nil, err
 			}
@@ -3339,11 +3362,11 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "NULLIF requires 2 arguments")
 		}
-		a, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		a, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
-		b, err2 := evalExpr(ctx, conn, msg, fArgs[1].Expression())
+		b, err2 := eval(fArgs[1].Expression())
 		if err2 != nil {
 			return nil, err2
 		}
@@ -3355,13 +3378,13 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) == 0 {
 			return nil, nil
 		}
-		best, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		best, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		isGreatest := name == "GREATEST"
 		for _, fa := range fArgs[1:] {
-			v, verr := evalExpr(ctx, conn, msg, fa.Expression())
+			v, verr := eval(fa.Expression())
 			if verr != nil {
 				return nil, verr
 			}
@@ -3379,12 +3402,12 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SUBSTRING requires at least 2 arguments")
 		}
-		sv, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		sv, err := eval(fArgs[0].Expression())
 		if err != nil || sv == nil {
 			return nil, err
 		}
 		s := fmt.Sprintf("%v", sv)
-		posVal, posErr := evalExpr(ctx, conn, msg, fArgs[1].Expression())
+		posVal, posErr := eval(fArgs[1].Expression())
 		if posErr != nil {
 			return nil, posErr
 		}
@@ -3398,7 +3421,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 			return "", nil
 		}
 		if len(fArgs) >= 3 {
-			lenVal, lenErr := evalExpr(ctx, conn, msg, fArgs[2].Expression())
+			lenVal, lenErr := eval(fArgs[2].Expression())
 			if lenErr != nil {
 				return nil, lenErr
 			}
@@ -3418,15 +3441,15 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 3 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REPLACE requires 3 arguments")
 		}
-		sv, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		sv, err := eval(fArgs[0].Expression())
 		if err != nil || sv == nil {
 			return nil, err
 		}
-		fromV, err := evalExpr(ctx, conn, msg, fArgs[1].Expression())
+		fromV, err := eval(fArgs[1].Expression())
 		if err != nil || fromV == nil {
 			return nil, err
 		}
-		toV, err := evalExpr(ctx, conn, msg, fArgs[2].Expression())
+		toV, err := eval(fArgs[2].Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -3440,457 +3463,110 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if len(fArgs) < 3 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IF requires 3 arguments")
 		}
-		cond, err := evalExpr(ctx, conn, msg, fArgs[0].Expression())
+		cond, err := eval(fArgs[0].Expression())
 		if err != nil {
 			return nil, err
 		}
 		if isTruthy(cond) {
-			return evalExpr(ctx, conn, msg, fArgs[1].Expression())
+			return eval(fArgs[1].Expression())
 		}
-		return evalExpr(ctx, conn, msg, fArgs[2].Expression())
+		return eval(fArgs[2].Expression())
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, name)
 	}
+}
+
+// makeProtoExprEvaluator builds the exprEvaluator adapter for the proto path.
+// evalExpr returns (any, error); driver.Value is an alias for any so the
+// conversion is a no-op except we explicitly preserve nil → nil.
+func makeProtoExprEvaluator(ctx context.Context, conn *EmbeddedConnection, msg proto.Message) exprEvaluator {
+	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
+		v, err := evalExpr(ctx, conn, msg, e)
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			return nil, nil
+		}
+		return driver.Value(v), nil
+	}
+}
+
+// makeMapExprEvaluator builds the exprEvaluator adapter for the map path.
+func makeMapExprEvaluator(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value) exprEvaluator {
+	return func(e antlrgen.IExpressionContext) (driver.Value, error) {
+		return evalExprOnMap(ctx, conn, row, e)
+	}
+}
+
+func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
+	eval := makeProtoExprEvaluator(ctx, conn, msg)
+	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
+		return evalExprPredicate(ctx, conn, msg, e)
+	}
+	return evalScalarFunctionCallCore(eval, predEval, "unsupported scalar function %q", "unsupported specific function %T", fc)
 }
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
-	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return evalSpecificFunctionOnMap(ctx, conn, row, sf.SpecificFunction())
+	eval := makeMapExprEvaluator(ctx, conn, row)
+	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
+		return evalPredicateOnMapExpr(ctx, conn, row, e)
 	}
-
-	var name string
-	var args antlrgen.IFunctionArgsContext
-	switch f := fc.(type) {
-	case *antlrgen.ScalarFunctionCallContext:
-		name = strings.ToUpper(f.ScalarFunctionName().GetText())
-		args = f.FunctionArgs()
-	case *antlrgen.UserDefinedScalarFunctionCallContext:
-		name = strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
-		args = f.FunctionArgs()
-	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported function call type %T", fc)
-	}
-	var fArgs []antlrgen.IFunctionArgContext
-	if args != nil {
-		fArgs = args.AllFunctionArg()
-	}
-	switch name {
-	case "COALESCE":
-		for _, fa := range fArgs {
-			v, err := evalExprOnMap(ctx, conn, row, fa.Expression())
-			if err != nil {
-				return nil, err
-			}
-			if v != nil {
-				return v, nil
-			}
-		}
-		return nil, nil
-	case "IFNULL":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IFNULL requires 2 arguments")
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		if v != nil {
-			return v, nil
-		}
-		return evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-	case "UPPER":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER requires 1 argument")
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER: argument must be string, got %T", v)
-		}
-		return strings.ToUpper(s), nil
-	case "LOWER":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER requires 1 argument")
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER: argument must be string, got %T", v)
-		}
-		return strings.ToLower(s), nil
-	case "LENGTH", "LEN":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
-		}
-		return int64(utf8.RuneCountInString(s)), nil
-	case "TRIM", "LTRIM", "RTRIM":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
-		}
-		switch name {
-		case "LTRIM":
-			return strings.TrimLeft(s, " \t\n\r"), nil
-		case "RTRIM":
-			return strings.TrimRight(s, " \t\n\r"), nil
-		}
-		return strings.TrimSpace(s), nil
-	case "ABS":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		switch n := v.(type) {
-		case int64:
-			if n < 0 {
-				return -n, nil
-			}
-			return n, nil
-		case float64:
-			if n < 0 {
-				return -n, nil
-			}
-			return n, nil
-		default:
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS: argument must be numeric, got %T", v)
-		}
-	case "FLOOR", "CEIL", "CEILING", "ROUND":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		var f float64
-		switch n := v.(type) {
-		case int64:
-			return n, nil
-		case float64:
-			f = n
-		default:
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be numeric", name)
-		}
-		var result float64
-		switch name {
-		case "FLOOR":
-			result = math.Floor(f)
-		case "CEIL", "CEILING":
-			result = math.Ceil(f)
-		case "ROUND":
-			decimals := int64(0)
-			if len(fArgs) >= 2 {
-				dv, derr := evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-				if derr == nil {
-					if d, ok := dv.(int64); ok {
-						decimals = d
-					}
-				}
-			}
-			if decimals == 0 {
-				result = math.Round(f)
-			} else {
-				factor := math.Pow(10, float64(decimals))
-				result = math.Round(f*factor) / factor
-			}
-		}
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
-			return int64(result), nil
-		}
-		return result, nil
-	case "MOD":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
-		}
-		av, aerr := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if aerr != nil || av == nil {
-			return nil, aerr
-		}
-		bv, berr := evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-		if berr != nil || bv == nil {
-			return nil, berr
-		}
-		toFloat := func(v driver.Value) (float64, bool) {
-			switch n := v.(type) {
-			case int64:
-				return float64(n), true
-			case float64:
-				return n, true
-			}
-			return 0, false
-		}
-		af, aok := toFloat(av)
-		bf, bok := toFloat(bv)
-		if !aok || !bok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
-		}
-		if bf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: division by zero")
-		}
-		if _, aIsInt := av.(int64); aIsInt {
-			if _, bIsInt := bv.(int64); bIsInt {
-				return int64(af) % int64(bf), nil
-			}
-		}
-		return math.Mod(af, bf), nil
-	case "POWER", "POW":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
-		}
-		baseV, berr := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if berr != nil || baseV == nil {
-			return nil, berr
-		}
-		expV, eerr := evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-		if eerr != nil || expV == nil {
-			return nil, eerr
-		}
-		base, ok := toFloat64(baseV)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: base must be numeric, got %T", baseV)
-		}
-		exp, ok := toFloat64(expV)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
-		}
-		result := math.Pow(base, exp)
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
-			return int64(result), nil
-		}
-		return result, nil
-	case "SIGN":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
-		}
-		v, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		switch n := v.(type) {
-		case int64:
-			if n > 0 {
-				return int64(1), nil
-			} else if n < 0 {
-				return int64(-1), nil
-			}
-			return int64(0), nil
-		case float64:
-			if n > 0 {
-				return float64(1), nil
-			} else if n < 0 {
-				return float64(-1), nil
-			}
-			return float64(0), nil
-		}
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN: argument must be numeric")
-	case "CONCAT", "CONCAT_WS":
-		sep := ""
-		startIdx := 0
-		if name == "CONCAT_WS" {
-			if len(fArgs) < 1 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "CONCAT_WS requires at least 1 argument")
-			}
-			sv, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-			if err != nil {
-				return nil, err
-			}
-			if sv != nil {
-				sep = fmt.Sprintf("%v", sv)
-			}
-			startIdx = 1
-		}
-		var parts []string
-		for _, fa := range fArgs[startIdx:] {
-			v, err := evalExprOnMap(ctx, conn, row, fa.Expression())
-			if err != nil {
-				return nil, err
-			}
-			if v == nil {
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("%v", v))
-		}
-		return strings.Join(parts, sep), nil
-	case "NULLIF":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "NULLIF requires 2 arguments")
-		}
-		a, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		b, err2 := evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-		if err2 != nil {
-			return nil, err2
-		}
-		if compareValues(a, b) == 0 {
-			return nil, nil
-		}
-		return a, nil
-	case "GREATEST", "LEAST":
-		if len(fArgs) == 0 {
-			return nil, nil
-		}
-		best, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		isGreatest := name == "GREATEST"
-		for _, fa := range fArgs[1:] {
-			v, verr := evalExprOnMap(ctx, conn, row, fa.Expression())
-			if verr != nil {
-				return nil, verr
-			}
-			if v == nil {
-				continue
-			}
-			cmp := compareValues(v, best)
-			if best == nil || (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {
-				best = v
-			}
-		}
-		return best, nil
-	case "SUBSTRING", "SUBSTR":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SUBSTRING requires at least 2 arguments")
-		}
-		sv, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		s := fmt.Sprintf("%v", sv)
-		posVal, posErr := evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-		if posErr != nil {
-			return nil, posErr
-		}
-		pos, _ := posVal.(int64)
-		if pos < 1 {
-			pos = 1
-		}
-		runes := []rune(s)
-		start := int(pos) - 1
-		if start >= len(runes) {
-			return "", nil
-		}
-		if len(fArgs) >= 3 {
-			lenVal, lenErr := evalExprOnMap(ctx, conn, row, fArgs[2].Expression())
-			if lenErr != nil {
-				return nil, lenErr
-			}
-			n, _ := lenVal.(int64)
-			end := start + int(n)
-			if end > len(runes) {
-				end = len(runes)
-			}
-			if end < start {
-				return "", nil
-			}
-			return string(runes[start:end]), nil
-		}
-		return string(runes[start:]), nil
-	case "REPLACE":
-		if len(fArgs) < 3 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REPLACE requires 3 arguments")
-		}
-		sv, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		fromV, err := evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-		if err != nil || fromV == nil {
-			return nil, err
-		}
-		toV, err := evalExprOnMap(ctx, conn, row, fArgs[2].Expression())
-		if err != nil {
-			return nil, err
-		}
-		toStr := ""
-		if toV != nil {
-			toStr = fmt.Sprintf("%v", toV)
-		}
-		return strings.ReplaceAll(fmt.Sprintf("%v", sv), fmt.Sprintf("%v", fromV), toStr), nil
-	case "IF", "IIF":
-		if len(fArgs) < 3 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IF requires 3 arguments")
-		}
-		cond, err := evalExprOnMap(ctx, conn, row, fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		if isTruthy(cond) {
-			return evalExprOnMap(ctx, conn, row, fArgs[1].Expression())
-		}
-		return evalExprOnMap(ctx, conn, row, fArgs[2].Expression())
-	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported function %q in map eval context", name)
-	}
+	return evalScalarFunctionCallCore(eval, predEval, "unsupported function %q in map eval context", "unsupported specific function %T in map eval", fc)
 }
 
-// evalSpecificFunction handles grammar-level SpecificFunction nodes: CASE WHEN ... END.
-func evalSpecificFunction(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
+// evalSpecificFunctionCore is the unified implementation shared by
+// evalSpecificFunction (proto path) and evalSpecificFunctionOnMap (map path).
+// Handles grammar-level SpecificFunction nodes: CASE WHEN ... END, simple CASE,
+// and CAST(expr AS type). The searched CASE branch needs a boolean predicate
+// evaluator, hence predicateEval in addition to eval.
+//
+// unsupportedFmt must accept exactly one %T for the specific-function type.
+func evalSpecificFunctionCore(
+	eval exprEvaluator,
+	predicateEval predicateEvaluator,
+	unsupportedFmt string,
+	sf antlrgen.ISpecificFunctionContext,
+) (driver.Value, error) {
 	switch c := sf.(type) {
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
 		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).
 		for _, alt := range c.AllCaseFuncAlternative() {
-			ok, err := evalExprPredicate(ctx, conn, msg, alt.GetCondition().Expression())
+			ok, err := predicateEval(alt.GetCondition().Expression())
 			if err != nil {
 				return nil, err
 			}
 			if ok {
-				return evalExpr(ctx, conn, msg, alt.GetConsequent().Expression())
+				return eval(alt.GetConsequent().Expression())
 			}
 		}
 		if c.GetElseArg() != nil {
-			return evalExpr(ctx, conn, msg, c.GetElseArg().Expression())
+			return eval(c.GetElseArg().Expression())
 		}
 		return nil, nil
 	case *antlrgen.CaseExpressionFunctionCallContext:
 		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
-		subject, err := evalExpr(ctx, conn, msg, c.Expression())
+		subject, err := eval(c.Expression())
 		if err != nil {
 			return nil, err
 		}
 		for _, alt := range c.AllCaseFuncAlternative() {
-			whenVal, wErr := evalExpr(ctx, conn, msg, alt.GetCondition().Expression())
+			whenVal, wErr := eval(alt.GetCondition().Expression())
 			if wErr != nil {
 				return nil, wErr
 			}
 			if compareValues(subject, whenVal) == 0 {
-				return evalExpr(ctx, conn, msg, alt.GetConsequent().Expression())
+				return eval(alt.GetConsequent().Expression())
 			}
 		}
 		if c.GetElseArg() != nil {
-			return evalExpr(ctx, conn, msg, c.GetElseArg().Expression())
+			return eval(c.GetElseArg().Expression())
 		}
 		return nil, nil
 	case *antlrgen.DataTypeFunctionCallContext:
 		// CAST(expr AS type)
-		val, err := evalExpr(ctx, conn, msg, c.Expression())
+		val, err := eval(c.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -3900,58 +3576,26 @@ func evalSpecificFunction(ctx context.Context, conn *EmbeddedConnection, msg pro
 		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
 		return castValue(val, typeName)
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, sf)
 	}
+}
+
+// evalSpecificFunction handles grammar-level SpecificFunction nodes: CASE WHEN ... END.
+func evalSpecificFunction(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
+	eval := makeProtoExprEvaluator(ctx, conn, msg)
+	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
+		return evalExprPredicate(ctx, conn, msg, e)
+	}
+	return evalSpecificFunctionCore(eval, predEval, "unsupported specific function %T", sf)
 }
 
 // evalSpecificFunctionOnMap is the map-eval variant of evalSpecificFunction: handles CASE WHEN and CAST.
 func evalSpecificFunctionOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, sf antlrgen.ISpecificFunctionContext) (driver.Value, error) {
-	switch c := sf.(type) {
-	case *antlrgen.CaseFunctionCallContext:
-		for _, alt := range c.AllCaseFuncAlternative() {
-			ok, err := evalPredicateOnMapExpr(ctx, conn, row, alt.GetCondition().Expression())
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				return evalExprOnMap(ctx, conn, row, alt.GetConsequent().Expression())
-			}
-		}
-		if c.GetElseArg() != nil {
-			return evalExprOnMap(ctx, conn, row, c.GetElseArg().Expression())
-		}
-		return nil, nil
-	case *antlrgen.CaseExpressionFunctionCallContext:
-		subject, err := evalExprOnMap(ctx, conn, row, c.Expression())
-		if err != nil {
-			return nil, err
-		}
-		for _, alt := range c.AllCaseFuncAlternative() {
-			whenVal, wErr := evalExprOnMap(ctx, conn, row, alt.GetCondition().Expression())
-			if wErr != nil {
-				return nil, wErr
-			}
-			if compareValues(subject, whenVal) == 0 {
-				return evalExprOnMap(ctx, conn, row, alt.GetConsequent().Expression())
-			}
-		}
-		if c.GetElseArg() != nil {
-			return evalExprOnMap(ctx, conn, row, c.GetElseArg().Expression())
-		}
-		return nil, nil
-	case *antlrgen.DataTypeFunctionCallContext:
-		val, err := evalExprOnMap(ctx, conn, row, c.Expression())
-		if err != nil {
-			return nil, err
-		}
-		if val == nil {
-			return nil, nil
-		}
-		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
-		return castValue(val, typeName)
-	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T in map eval", sf)
+	eval := makeMapExprEvaluator(ctx, conn, row)
+	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
+		return evalPredicateOnMapExpr(ctx, conn, row, e)
 	}
+	return evalSpecificFunctionCore(eval, predEval, "unsupported specific function %T in map eval", sf)
 }
 
 // castValue converts v to the SQL type named by typeName (e.g. "BIGINT", "VARCHAR", "TEXT", "BOOLEAN").
