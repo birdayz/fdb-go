@@ -296,6 +296,20 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		return nil, runErr
 	}
 
+	// Apply DISTINCT deduplication before sort.
+	if sq.distinct && !sq.countStar {
+		seen := make(map[string]struct{}, len(data))
+		deduped := data[:0]
+		for _, row := range data {
+			key := rowKey(row)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				deduped = append(deduped, row)
+			}
+		}
+		data = deduped
+	}
+
 	// Apply ORDER BY (post-scan in-memory sort).
 	if len(sq.orderBy) > 0 {
 		// Build a map from column name to output index for O(1) lookup.
@@ -607,6 +621,7 @@ type selectQuery struct {
 	tableName string
 	projCols  []string // nil = SELECT *; ignored when countStar is true
 	countStar bool     // true when SELECT list is exactly COUNT(*)
+	distinct  bool     // true when SELECT DISTINCT
 	whereExpr antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
@@ -753,6 +768,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 		tableName: strings.Join(parts, "."),
 		projCols:  projCols,
 		countStar: countStar,
+		distinct:  simpleTable.DISTINCT() != nil,
 		whereExpr: fromClause.WhereExpr(),
 		limit:     -1,
 	}
@@ -1705,6 +1721,22 @@ func compareValues(a, b driver.Value) int {
 		}
 	}
 	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+}
+
+// rowKey serializes a result row to a string key for DISTINCT deduplication.
+func rowKey(row []driver.Value) string {
+	var b strings.Builder
+	for i, v := range row {
+		if i > 0 {
+			b.WriteByte('\x00')
+		}
+		if v == nil {
+			b.WriteString("\x01NULL")
+		} else {
+			b.WriteString(fmt.Sprintf("\x02%T\x03%v", v, v))
+		}
+	}
+	return b.String()
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {

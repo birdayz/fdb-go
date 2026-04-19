@@ -325,6 +325,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **SELECT COUNT(*) aggregate** (nightshift-30) — `checkCountStar` detects the aggregate in SELECT list; `execSelect` scans + counts matching rows; returns single-row result with column `COUNT(*)`. Works with WHERE. 1 FDB integration test (count all, count with WHERE).
 - [x] **Compound WHERE (AND/OR/NOT + range comparisons)** (nightshift-30) — `evalExprPredicate` recursive dispatcher handles `LogicalExpressionContext` (AND/OR with short-circuit), `NotExpressionContext`, and `PredicatedExpressionContext`. `evalComparisonPredicate` handles `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`. 3 FDB integration tests (AND, OR, range).
 - [x] **ORDER BY + LIMIT in SELECT** (nightshift-30) — post-scan in-memory sort via `sort.SliceStable`; `compareValues` handles int64/float64/string/bool with NULL-sorts-last. `LIMIT n` truncates after sort. `extractSelectParts` refactored to return `*selectQuery` struct. 3 FDB integration tests (ASC, DESC, LIMIT).
+- [x] **SELECT DISTINCT** (nightshift-31) — `simpleTable.DISTINCT()` detection in `extractSelectParts`; `rowKey()` string-serializes rows for dedup; deduplicated before ORDER BY + LIMIT. 1 FDB integration test (4 rows → 2 distinct values).
 - [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
