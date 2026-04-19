@@ -4526,3 +4526,59 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 		{"Bob", 50},
 	}))
 }
+
+func TestFDB_UpdateDeleteWithExists(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ud_exists")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ud_exists")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ud_exists_tmpl
+		CREATE TABLE Flag (name STRING NOT NULL, PRIMARY KEY (name))
+		CREATE TABLE Product (id BIGINT NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ud_exists/main WITH TEMPLATE ud_exists_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ud_exists?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Flag (name) VALUES ('apply_discount')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, price) VALUES (1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, price) VALUES (2, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Non-correlated EXISTS: if any Flag row named apply_discount exists, halve prices.
+	_, err = db.ExecContext(ctx, `UPDATE Product SET price = price / 2 WHERE EXISTS (SELECT name FROM Flag WHERE name = 'apply_discount')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, price FROM Product ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type r struct {
+		id    int64
+		price int64
+	}
+	var got []r
+	for rows.Next() {
+		var rr r
+		g.Expect(rows.Scan(&rr.id, &rr.price)).To(gomega.Succeed())
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{{1, 50}, {2, 100}}))
+
+	// NOT EXISTS with no matching rows → DELETE takes effect.
+	_, err = db.ExecContext(ctx, `DELETE FROM Product WHERE NOT EXISTS (SELECT name FROM Flag WHERE name = 'disable_delete')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM Product`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)))
+}
