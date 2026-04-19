@@ -1,0 +1,30 @@
+# insert_select.yaml
+#
+# INSERT INTO ... SELECT ... copies rows from one table to another.
+# Exercises: computed columns in the SELECT, NOT NULL enforcement
+# (swingshift-35 38410fec: INSERT...SELECT with NULL source raises
+# 23502), and the primary-key-duplicate-during-bulk-copy path.
+name: insert_select
+schema_template: |
+  CREATE TABLE src (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dst (id BIGINT NOT NULL, v BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO src VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Basic INSERT ... SELECT copies rows.
+  - query: INSERT INTO dst SELECT id, v FROM src
+  - query: SELECT id, v FROM dst ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # Duplicate PK during INSERT...SELECT: re-copying src into dst raises
+  # 23505 on the first conflict — nightshift-36's INSERT-PK-check fix
+  # applies to this path too.
+  - query: INSERT INTO dst SELECT id, v FROM src
+    error_code: "23505"
+  # After the failed bulk copy, dst must still have exactly 3 rows from
+  # the first successful insert (no partial state leaked).
+  - query: SELECT COUNT(*) FROM dst
+    rows:
+      - [3]
