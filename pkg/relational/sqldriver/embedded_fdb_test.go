@@ -1001,6 +1001,63 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	g.Expect(byName["by_id"].isUnique).To(gomega.Equal("YES"))
 }
 
+func TestFDB_SelectColumnProjection(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_proj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_proj")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE proj_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_proj/store WITH TEMPLATE proj_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_proj?cluster_file=%s&schema=store", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, name, price) VALUES (1, 'apple', 100), (2, 'banana', 50)")).Error().NotTo(gomega.HaveOccurred())
+
+	// Single-column projection.
+	rows, err := db.QueryContext(ctx, "SELECT name FROM Item WHERE item_id = ?", int64(1))
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.Equal([]string{"name"}))
+	var names []string
+	for rows.Next() {
+		var n string
+		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+		names = append(names, n)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"apple"}))
+
+	// Multi-column projection.
+	rows2, err := db.QueryContext(ctx, "SELECT item_id, price FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	cols2, err := rows2.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cols2).To(gomega.Equal([]string{"item_id", "price"}))
+	var itemCount int
+	for rows2.Next() {
+		var id, p any
+		g.Expect(rows2.Scan(&id, &p)).To(gomega.Succeed())
+		itemCount++
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(itemCount).To(gomega.Equal(2))
+}
+
 // TestFDB_ParameterizedQueryApostrophe verifies that a string with an
 // apostrophe round-trips correctly through substituteParams → SQL → parser →
 // FDB → SELECT. This catches the ”→' unescaping in evalConstant.

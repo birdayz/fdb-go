@@ -144,11 +144,11 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	return c.execShowStatement(ctx, show)
 }
 
-// execSelect executes a SELECT * FROM <tableName> statement.
-// Only full-table scans with no WHERE clause, no projections beyond *, and
-// a single unaliased table source are supported.
+// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val].
+// Only single-table scans with simple equality WHERE and optional named column
+// projection are supported. Joins, subqueries, ORDER BY, LIMIT, etc. are not.
 func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
-	tableName, whereExpr, err := extractSelectParts(sel)
+	tableName, projCols, whereExpr, err := extractSelectParts(sel)
 	if err != nil {
 		return nil, err
 	}
@@ -192,11 +192,35 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		}
 		msgDesc := rt.Descriptor
 
-		// Build column list from message descriptor (deterministic field order).
-		fields := msgDesc.Fields()
-		cols = make([]string, fields.Len())
-		for i := 0; i < fields.Len(); i++ {
-			cols[i] = string(fields.Get(i).Name())
+		// Resolve output fields: either the explicit projection or all fields.
+		allFields := msgDesc.Fields()
+		type outField struct {
+			name string
+			fd   protoreflect.FieldDescriptor
+		}
+		var outFields []outField
+		if projCols == nil {
+			// SELECT * — all fields in descriptor order.
+			outFields = make([]outField, allFields.Len())
+			for i := 0; i < allFields.Len(); i++ {
+				fd := allFields.Get(i)
+				outFields[i] = outField{string(fd.Name()), fd}
+			}
+		} else {
+			// Named projection — look up each column.
+			outFields = make([]outField, len(projCols))
+			for i, colName := range projCols {
+				fd := allFields.ByName(protoreflect.Name(colName))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"column %q not found in table %q", colName, tableName)
+				}
+				outFields[i] = outField{colName, fd}
+			}
+		}
+		cols = make([]string, len(outFields))
+		for i, f := range outFields {
+			cols[i] = f.name
 		}
 
 		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
@@ -232,11 +256,10 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			if !match {
 				continue
 			}
-			vals := make([]driver.Value, fields.Len())
-			for i := 0; i < fields.Len(); i++ {
-				fd := fields.Get(i)
-				if msg.ProtoReflect().Has(fd) {
-					vals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+			vals := make([]driver.Value, len(outFields))
+			for i, f := range outFields {
+				if msg.ProtoReflect().Has(f.fd) {
+					vals[i] = protoValueToDriver(f.fd, msg.ProtoReflect().Get(f.fd))
 				}
 				// else nil (proto2 optional field absent → NULL)
 			}
@@ -518,55 +541,90 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	return &staticRows{cols: cols, rows: data}, nil
 }
 
+// selectExprToColumnName extracts a plain column name from a
+// SelectExpressionElementContext. Only bare column references (no aliases,
+// no expressions) are supported.
+func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, error) {
+	pred, ok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"SELECT expression must be a column name, got %T", e.Expression())
+	}
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"SELECT expression must be a column name, got expression atom %T", pred.ExpressionAtom())
+	}
+	return fullIdToName(colAtom.FullColumnName().FullId()), nil
+}
+
 // extractSelectParts navigates the parse tree of a SELECT statement to
-// extract the table name and optional WHERE expression.
-// Only supports SELECT * FROM <tableName> [WHERE col = val] (single table, star select).
-func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, antlrgen.IWhereExprContext, error) {
+// extract the table name, column projection list (nil = SELECT *), and
+// optional WHERE expression.
+// Supports SELECT * or SELECT col1, col2, ... FROM <tableName> [WHERE col = val].
+// Joins, subqueries, aliases, ORDER BY, LIMIT etc. are not supported.
+func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, []string, antlrgen.IWhereExprContext, error) {
 	query := sel.Query()
 	if query == nil {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+		return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
 	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported SELECT form %T; only simple SELECT * FROM <table> is supported",
+		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported SELECT form %T; only simple SELECT FROM <table> is supported",
 			query.QueryExpressionBody())
 	}
 	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported query term %T; only simple SELECT * FROM <table> is supported",
+		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported query term %T; only simple SELECT FROM <table> is supported",
 			body.QueryTerm())
 	}
 
+	// Parse SELECT list: either * or a list of column name expressions.
 	selElems := simpleTable.SelectElements()
-	if selElems == nil || len(selElems.AllSelectElement()) != 1 {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only SELECT * is supported; multi-column projections are not yet implemented")
-	}
-	if _, isStar := selElems.AllSelectElement()[0].(*antlrgen.SelectStarElementContext); !isStar {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only SELECT * is supported; column projections are not yet implemented")
+	var projCols []string // nil = SELECT *
+	if selElems != nil {
+		elems := selElems.AllSelectElement()
+		for _, elem := range elems {
+			switch e := elem.(type) {
+			case *antlrgen.SelectStarElementContext:
+				if len(elems) > 1 {
+					return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"cannot mix * with named columns in SELECT list")
+				}
+				// SELECT * — projCols stays nil
+			case *antlrgen.SelectExpressionElementContext:
+				colName, nameErr := selectExprToColumnName(e)
+				if nameErr != nil {
+					return "", nil, nil, nameErr
+				}
+				projCols = append(projCols, colName)
+			default:
+				return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"unsupported SELECT element type %T", elem)
+			}
+		}
 	}
 
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+		return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
 	}
 
 	sources := fromClause.TableSources()
 	if sources == nil || len(sources.AllTableSource()) != 1 {
-		return "", nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"only single-table SELECT is supported; joins are not yet implemented")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
 	}
 	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
-		return "", nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
 	}
@@ -577,7 +635,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, antlrgen.
 	for i, u := range uids {
 		parts[i] = stripIdentifierQuotes(u.GetText())
 	}
-	return strings.Join(parts, "."), fromClause.WhereExpr(), nil
+	return strings.Join(parts, "."), projCols, fromClause.WhereExpr(), nil
 }
 
 // stripIdentifierQuotes removes surrounding double-quotes or backticks from a
