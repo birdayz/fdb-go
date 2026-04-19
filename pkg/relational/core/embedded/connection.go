@@ -4257,29 +4257,91 @@ func triOr(a, b triBool) triBool {
 	return triFalse
 }
 
+// addInt64Checked returns a+b and a success flag. On signed overflow
+// the flag is false and the first return value is undefined — mirrors
+// Java's Math.addExact (throws on overflow). Overflow happens iff the
+// signs of a and b match but the sign of the sum flips, i.e.
+// (a^b) >= 0 && (a^sum) < 0.
+func addInt64Checked(a, b int64) (int64, bool) {
+	s := a + b
+	if (a^b) < 0 || (a^s) >= 0 {
+		return s, true
+	}
+	return 0, false
+}
+
+// subInt64Checked returns a-b and a success flag. Overflow iff the
+// signs of a and b differ and the sign of the result flips against a.
+func subInt64Checked(a, b int64) (int64, bool) {
+	d := a - b
+	if (a^b) >= 0 || (a^d) >= 0 {
+		return d, true
+	}
+	return 0, false
+}
+
+// mulInt64Checked returns a*b and a success flag. Mirrors Java's
+// Math.multiplyExact. Uses the textbook "divide back" check with
+// special cases for 0 and MinInt64.
+func mulInt64Checked(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	// MinInt64 * -1 overflows (MaxInt64 + 1 doesn't fit).
+	if a == math.MinInt64 && b == -1 {
+		return 0, false
+	}
+	if b == math.MinInt64 && a == -1 {
+		return 0, false
+	}
+	p := a * b
+	if p/b != a {
+		return 0, false
+	}
+	return p, true
+}
+
 func applyMathOp(left, right any, op string) (any, error) {
 	// NULL propagates through arithmetic per SQL 3-valued logic.
 	if left == nil || right == nil {
 		return nil, nil
 	}
-	// Integer / integer stays integer — Java's DIV_LL / DIV_II do Java-level
-	// `long / long` (truncation toward zero). Going through float first
-	// would turn `10 / 3` into 3.333 instead of 3, diverging from Java.
-	// Same for `%` (MOD_LL = `long % long`). The full table is at
-	// ArithmeticValue.java PhysicalOperator.DIV_LL/MOD_LL.
+	// Integer / integer stays integer and is overflow-checked — matches
+	// Java's ArithmeticValue.PhysicalOperator.ADD_LL/SUB_LL/MUL_LL/DIV_LL/
+	// MOD_LL which are `Math.addExact/subtractExact/multiplyExact` on
+	// longs (throwing ArithmeticException on overflow) and literal
+	// `long / long` / `long % long` (truncation toward zero). Going
+	// through float first would turn `10 / 3` into 3.333 instead of 3,
+	// and unchecked ops would silently wrap `MAX_INT + 1` to `MIN_INT`.
 	li, lok := left.(int64)
 	ri, rok := right.(int64)
 	if lok && rok {
 		switch op {
 		case "+":
-			return li + ri, nil
+			r, ok := addInt64Checked(li, ri)
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d + %d", li, ri)
+			}
+			return r, nil
 		case "-":
-			return li - ri, nil
+			r, ok := subInt64Checked(li, ri)
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d - %d", li, ri)
+			}
+			return r, nil
 		case "*":
-			return li * ri, nil
+			r, ok := mulInt64Checked(li, ri)
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d * %d", li, ri)
+			}
+			return r, nil
 		case "/":
 			if ri == 0 {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			}
+			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
+			if li == math.MinInt64 && ri == -1 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "integer overflow on %d / %d", li, ri)
 			}
 			return li / ri, nil
 		case "%":

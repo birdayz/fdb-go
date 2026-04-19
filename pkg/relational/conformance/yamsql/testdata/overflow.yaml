@@ -1,0 +1,36 @@
+# overflow.yaml
+#
+# nightshift-36: integer overflow is now checked. Java's
+# ArithmeticValue.PhysicalOperator ADD_LL / SUB_LL / MUL_LL use
+# Math.addExact / subtractExact / multiplyExact which throw
+# ArithmeticException on overflow. Our applyMathOp int64 fast-path
+# now mirrors that by returning SQLSTATE 22023 instead of silently
+# wrapping `MAX_INT + 1` back to `MIN_INT`.
+#
+# SQLSTATE: 22023 (INVALID_PARAMETER) — closest existing code to
+# Java's ArithmeticException / class 22 (data exception). No explicit
+# 22003 (NUMERIC_VALUE_OUT_OF_RANGE) in either Go or Java's error code
+# tables.
+name: overflow
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  # MaxInt64 = 9223372036854775807, MinInt64 = -9223372036854775808.
+  - INSERT INTO t VALUES (1, 9223372036854775807, 1), (2, -9223372036854775808, 1), (3, 4611686018427387904, 3), (4, -9223372036854775808, -1)
+tests:
+  # MaxInt64 + 1 → overflow.
+  - query: SELECT a + b FROM t WHERE id = 1
+    error_code: "22023"
+  # MinInt64 - 1 → overflow.
+  - query: SELECT a - b FROM t WHERE id = 2
+    error_code: "22023"
+  # (MaxInt64/2 + 1) * 3 → overflow.
+  - query: SELECT a * b FROM t WHERE id = 3
+    error_code: "22023"
+  # MinInt64 / -1 → overflow (abs(MinInt64) doesn't fit in int64).
+  - query: SELECT a / b FROM t WHERE id = 4
+    error_code: "22023"
+  # Baseline: in-range ops succeed.
+  - query: SELECT a + 0 FROM t WHERE id = 1
+    rows:
+      - [9223372036854775807]
