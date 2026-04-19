@@ -4038,7 +4038,9 @@ func castValue(v any, typeName string) (any, error) {
 			}
 			return int64(rounded), nil
 		case string:
-			i, err := strconv.ParseInt(n, 10, 64)
+			// Java CastValue.STRING_TO_LONG: Integer.parseInt(in.trim()) —
+			// trims whitespace before parsing.
+			i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
 			if err != nil {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to integer: %v", n, err)
 			}
@@ -4056,7 +4058,9 @@ func castValue(v any, typeName string) (any, error) {
 		case int64:
 			return float64(n), nil
 		case string:
-			f, err := strconv.ParseFloat(n, 64)
+			// Java CastValue.STRING_TO_DOUBLE: Double.parseDouble(in.trim()) —
+			// trims whitespace before parsing.
+			f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
 			if err != nil {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to float: %v", n, err)
 			}
@@ -4083,11 +4087,19 @@ func castValue(v any, typeName string) (any, error) {
 		case int64:
 			return n != 0, nil
 		case string:
-			b, err := strconv.ParseBool(n)
-			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to boolean: %v", n, err)
+			// Java CastValue.STRING_TO_BOOLEAN only accepts trim()ed
+			// "true"/"false" (case-insensitive) plus "1"/"0"; Go's
+			// strconv.ParseBool is wider (accepts "t", "T", "F", …).
+			// Narrow to match Java so Go and Java reject / accept the
+			// same strings.
+			s := strings.ToLower(strings.TrimSpace(n))
+			switch s {
+			case "true", "1":
+				return true, nil
+			case "false", "0":
+				return false, nil
 			}
-			return b, nil
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to boolean", n)
 		}
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)

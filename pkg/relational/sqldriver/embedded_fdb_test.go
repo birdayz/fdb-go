@@ -2923,6 +2923,37 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 
 	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(-2.6 AS BIGINT) FROM Item WHERE id = 1`).Scan(&rounded)).To(gomega.Succeed())
 	g.Expect(rounded).To(gomega.Equal(int64(-3)), "CAST(-2.6 AS BIGINT) must round to -3")
+
+	// Java's STRING_TO_LONG / STRING_TO_DOUBLE trim whitespace before parse.
+	// Previously Go's ParseInt/ParseFloat rejected leading/trailing spaces.
+	var trimmed int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST('  42  ' AS BIGINT) FROM Item WHERE id = 1`).Scan(&trimmed)).To(gomega.Succeed())
+	g.Expect(trimmed).To(gomega.Equal(int64(42)), "CAST of whitespace-padded string must trim (Java conformance)")
+
+	// Java's STRING_TO_BOOLEAN only accepts trim()ed "true"/"false"/"1"/"0"
+	// (case-insensitive). Go's strconv.ParseBool is wider — accepts "t",
+	// "T", "F", etc. — so Go used to take strings Java would reject.
+	var bv bool
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST('true' AS BOOLEAN) FROM Item WHERE id = 1`).Scan(&bv)).To(gomega.Succeed())
+	g.Expect(bv).To(gomega.BeTrue())
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST('  FALSE  ' AS BOOLEAN) FROM Item WHERE id = 1`).Scan(&bv)).To(gomega.Succeed())
+	g.Expect(bv).To(gomega.BeFalse(), "CAST of padded mixed-case boolean string must trim+lowercase per Java")
+	// Single-letter 't' — Go used to accept via ParseBool, Java rejects.
+	_, errCast := db.QueryContext(ctx, `SELECT CAST('t' AS BOOLEAN) FROM Item WHERE id = 1`)
+	if errCast == nil {
+		// If the driver permits the query (may error at Next/Scan), try to read.
+		rowsT, _ := db.QueryContext(ctx, `SELECT CAST('t' AS BOOLEAN) FROM Item WHERE id = 1`)
+		if rowsT != nil {
+			defer rowsT.Close()
+			if rowsT.Next() {
+				var b bool
+				errCast = rowsT.Scan(&b)
+			} else {
+				errCast = rowsT.Err()
+			}
+		}
+	}
+	g.Expect(errCast).To(gomega.HaveOccurred(), "CAST('t' AS BOOLEAN) must error (Java rejects 't', only 'true'/'false'/'0'/'1')")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {
