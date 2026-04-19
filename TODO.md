@@ -330,7 +330,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **WHERE col IS [NOT] NULL / IS TRUE / IS FALSE** (nightshift-31) — `evalIsNullPredicate` handles IsExpressionContext; uses `ProtoReflect().Has()` for proto2 optional presence (unset = NULL). 1 FDB integration test (IS NULL + IS NOT NULL).
 - [x] **WHERE LIKE / NOT LIKE** (nightshift-31) — `evalLikePredicate` + `likeMatchRunes` recursive % / _ pattern matching. `stripStringLiteralQuotes` for SQL string literal unescaping. 2 FDB integration tests (LIKE + NOT LIKE).
 - [x] **WHERE BETWEEN / NOT BETWEEN** (nightshift-31) — `evalBetweenPredicate` inclusive range via `compareValues`. 2 FDB integration tests (BETWEEN + NOT BETWEEN).
-- [ ] **Schema evolution validator** — reuse our existing `MetaDataEvolutionValidator` where possible; add the relational-specific checks (column type widening, etc.).
+- [x] **Schema evolution validator** — `RelationalSchemaEvolutionValidator` in `pkg/relational/core/ddl/`. Validates: no table removal, no column removal, no type changes, no column reordering; additions allowed. Wired into `SaveSchemaTemplateConstantAction.Execute()`. 6 unit tests. dayshift-32.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 

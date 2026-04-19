@@ -1581,6 +1581,11 @@ func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionConte
 	if fd == nil {
 		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
 	}
+	// NULL IN (...) and NULL NOT IN (...) are both UNKNOWN in SQL 3-valued logic;
+	// rows with a NULL column are filtered out in both cases.
+	if !msg.ProtoReflect().Has(fd) {
+		return false, nil
+	}
 	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 
 	exprs := in.InList().Expressions().AllExpression()

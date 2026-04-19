@@ -1972,3 +1972,43 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]row{{1, 99}, {2, 20}}))
 }
+
+func TestFDB_SelectWhereNullNotIn(t *testing.T) {
+	// NULL NOT IN (...) must be UNKNOWN (filtered out), not true.
+	// Previously a bug returned true for rows with NULL column values.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_null_not_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_not_in")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE null_nin_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_null_not_in/items WITH TEMPLATE null_nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_null_not_in?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// item 1: val=10 (in list), item 2: val=NULL, item 3: val=30 (not in list)
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id) VALUES (2)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (3, 30)")).Error().NotTo(gomega.HaveOccurred())
+
+	// NOT IN (10): should return only item 3 (val=30). Item 2 has NULL val — must be filtered out.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE val NOT IN (10) ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{3}))
+}
