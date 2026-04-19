@@ -8,6 +8,7 @@ package embedded
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"io"
@@ -36,11 +37,11 @@ import (
 // Implements driver.Conn and driver.ExecerContext so DDL statements can
 // execute without a Prepare round-trip.
 //
-// Transaction model (phase 1 — auto-commit only):
+// Transaction model:
 //
-//	Every DDL statement runs in its own FDB transaction.
-//	DML and queries return ErrCodeUnsupportedOperation until the query
-//	planner lands in a later phase.
+//	Auto-commit: every statement runs in its own FDB transaction via fdbDB.Run().
+//	Explicit transaction: BeginTx opens an FDB transaction; all statements in
+//	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
 	dbPath        string // current database URI (e.g. "/mydb")
 	schema        string // current schema name (set via USE SCHEMA / SetSchema)
@@ -51,10 +52,45 @@ type EmbeddedConnection struct {
 	factory       apiddl.MetadataOperationsFactory
 	closed        atomic.Bool
 
+	// activeTx is non-nil when an explicit transaction is open (BeginTx called).
+	// nil means auto-commit mode.
+	activeTx *embeddedTx
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
 	catalogReady bool
+}
+
+// embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
+// record context for the duration of the explicit transaction.
+type embeddedTx struct {
+	conn *EmbeddedConnection
+	rctx *recordlayer.FDBRecordContext
+}
+
+// Commit runs pre-commit hooks, flushes version mutations, commits the FDB
+// transaction, runs post-commit hooks, and clears the connection's activeTx.
+func (tx *embeddedTx) Commit() error {
+	tx.conn.activeTx = nil
+	return tx.rctx.CommitWithHooks()
+}
+
+// Rollback cancels the FDB transaction and clears the connection's activeTx.
+func (tx *embeddedTx) Rollback() error {
+	tx.conn.activeTx = nil
+	tx.rctx.Cancel()
+	return nil
+}
+
+// runInTx executes fn either inside the open explicit transaction (if one
+// exists) or inside a new auto-commit transaction via fdbDB.Run.
+// In explicit-transaction mode, fn errors propagate without retry.
+func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	if c.activeTx != nil {
+		return fn(c.activeTx.rctx)
+	}
+	return c.fdbDB.Run(ctx, fn)
 }
 
 // New returns a ready-to-use embedded connection.
@@ -174,7 +210,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	var cols []string
 	var data []row
 
-	_, runErr := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
 		txn := catalog.NewFDBTransaction(rctx)
@@ -371,7 +407,7 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 	}
 	type row = []driver.Value
 	var data []row
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.ListSchemas(txn, nil)
@@ -407,7 +443,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 	}
 	type row = []driver.Value
 	var data []row
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.ListSchemas(txn, nil)
@@ -468,7 +504,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 	}
 	type row = []driver.Value
 	var data []row
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.ListSchemas(txn, nil)
@@ -547,7 +583,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	}
 	type row = []driver.Value
 	var data []row
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.ListSchemas(txn, nil)
@@ -871,7 +907,7 @@ func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrge
 func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.ListDatabases(txn, nil)
@@ -897,7 +933,7 @@ func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows
 func (c *EmbeddedConnection) execShowSchemaTemplates(ctx context.Context) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		rs, rsErr := c.cat.SchemaTemplateCatalog().ListTemplates(txn)
@@ -963,19 +999,40 @@ func (c *EmbeddedConnection) Close() error {
 	return nil
 }
 
-// Begin is a no-op stub. Phase 1 is auto-commit only.
+// Begin implements driver.Conn by delegating to BeginTx with default options.
 func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-		"explicit transactions are not yet implemented")
+	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
 
-// BeginTx implements driver.ConnBeginTx. Phase 1 is auto-commit only.
-func (c *EmbeddedConnection) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error) {
+// BeginTx implements driver.ConnBeginTx. Opens an FDB transaction that spans
+// all subsequent statements until Commit or Rollback is called.
+// Isolation levels other than the default and ReadCommitted return an error.
+// Read-only transactions are not separately enforced at the FDB level.
+func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
-	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-		"explicit transactions are not yet implemented")
+	if c.activeTx != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"nested transactions are not supported")
+	}
+	switch sql.IsolationLevel(opts.Isolation) { //nolint:exhaustive
+	case sql.LevelDefault, sql.LevelSerializable:
+		// FDB is always serializable — this is fine.
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"isolation level %v is not supported; use LevelDefault or LevelSerializable",
+			sql.IsolationLevel(opts.Isolation))
+	}
+	fdbTx, err := c.fdbDB.CreateTransaction()
+	if err != nil {
+		return nil, err
+	}
+	fdbTx.Options().SetReadSystemKeys()
+	rctx := recordlayer.NewFDBRecordContext(fdbTx)
+	tx := &embeddedTx{conn: c, rctx: rctx}
+	c.activeTx = tx
+	return tx, nil
 }
 
 // SetDefaultSchema sets the initial schema that is restored by ResetSession.
@@ -1073,7 +1130,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 	tableName := fullIdToName(ins.TableName().FullId())
 
 	var totalRows int64
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		totalRows = 0 // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
@@ -1239,7 +1296,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 	updatedElems := upd.AllUpdatedElement()
 
 	var updated int64
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		updated = 0
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
@@ -1339,7 +1396,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 	whereExpr := del.WhereExpr()
 
 	var deleted int64
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		deleted = 0
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
