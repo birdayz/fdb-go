@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -634,4 +635,69 @@ func FuzzApplyBitOp(f *testing.F) {
 			t.Fatalf("applyBitOp(string, _) must error")
 		}
 	})
+}
+
+// TestInt64CheckedArithmetic pins the overflow semantics of the
+// helpers behind applyMathOp's int64 fast-path. They mirror Java's
+// Math.addExact / subtractExact / multiplyExact — the moment the true
+// mathematical result doesn't fit in a signed 64-bit integer, the
+// operation reports overflow rather than silently wrapping.
+func TestInt64CheckedArithmetic(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		op     func(a, b int64) (int64, bool)
+		a, b   int64
+		want   int64
+		wantOK bool
+	}{
+		// Add
+		{"add/ok", addInt64Checked, 1, 2, 3, true},
+		{"add/zero", addInt64Checked, 0, 0, 0, true},
+		{"add/negatives", addInt64Checked, -3, -4, -7, true},
+		{"add/max+0", addInt64Checked, math.MaxInt64, 0, math.MaxInt64, true},
+		{"add/max+1", addInt64Checked, math.MaxInt64, 1, 0, false},
+		{"add/max+max", addInt64Checked, math.MaxInt64, math.MaxInt64, 0, false},
+		{"add/min-1", addInt64Checked, math.MinInt64, -1, 0, false},
+		{"add/min+min", addInt64Checked, math.MinInt64, math.MinInt64, 0, false},
+		// Cross-sign cannot overflow.
+		{"add/max-1", addInt64Checked, math.MaxInt64, -1, math.MaxInt64 - 1, true},
+		{"add/min+1", addInt64Checked, math.MinInt64, 1, math.MinInt64 + 1, true},
+		// Sub
+		{"sub/ok", subInt64Checked, 5, 3, 2, true},
+		{"sub/zero", subInt64Checked, 0, 0, 0, true},
+		{"sub/max-max", subInt64Checked, math.MaxInt64, math.MaxInt64, 0, true},
+		{"sub/min-min", subInt64Checked, math.MinInt64, math.MinInt64, 0, true},
+		{"sub/min-1", subInt64Checked, math.MinInt64, 1, 0, false},
+		{"sub/min-max", subInt64Checked, math.MinInt64, math.MaxInt64, 0, false},
+		{"sub/max-(-1)", subInt64Checked, math.MaxInt64, -1, 0, false},
+		// Same-sign subtraction cannot overflow.
+		{"sub/max-1", subInt64Checked, math.MaxInt64, 1, math.MaxInt64 - 1, true},
+		{"sub/min-(-1)", subInt64Checked, math.MinInt64, -1, math.MinInt64 + 1, true},
+		// Mul
+		{"mul/zero.l", mulInt64Checked, 0, math.MaxInt64, 0, true},
+		{"mul/zero.r", mulInt64Checked, math.MinInt64, 0, 0, true},
+		{"mul/small", mulInt64Checked, 7, 8, 56, true},
+		{"mul/neg", mulInt64Checked, -7, 8, -56, true},
+		{"mul/min*-1", mulInt64Checked, math.MinInt64, -1, 0, false},
+		{"mul/-1*min", mulInt64Checked, -1, math.MinInt64, 0, false},
+		{"mul/min*1", mulInt64Checked, math.MinInt64, 1, math.MinInt64, true},
+		{"mul/max*2", mulInt64Checked, math.MaxInt64, 2, 0, false},
+		{"mul/half*3", mulInt64Checked, math.MaxInt64 / 2, 3, 0, false},
+		{"mul/half*2", mulInt64Checked, math.MaxInt64 / 2, 2, (math.MaxInt64 / 2) * 2, true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := tc.op(tc.a, tc.b)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (a=%d b=%d got=%d)", ok, tc.wantOK, tc.a, tc.b, got)
+			}
+			if tc.wantOK && got != tc.want {
+				t.Fatalf("result = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }
