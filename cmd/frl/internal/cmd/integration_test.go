@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,6 +166,96 @@ func seedStore(ctx context.Context, db *recordlayer.FDBDatabase, md *recordlayer
 	return err
 }
 
+// countFixture is a second fixture with record counting enabled. Built
+// lazily on first access so tests that don't need it pay nothing.
+var (
+	countFixtureOnce sync.Once
+	countFixture     *integrationFixture
+	countFixtureErr  error
+)
+
+// setupCountFixture builds a store under /frl/integration-count with
+// ungrouped record counting enabled (record_count_key = EmptyKeyExpression)
+// and one seeded Order so record count returns a non-zero number.
+func setupCountFixture(t *testing.T) *integrationFixture {
+	t.Helper()
+	countFixtureOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		// Reuse the cluster the primary fixture already started.
+		db, err := fdb.OpenDatabase(fixture.clusterFilePath)
+		if err != nil {
+			countFixtureErr = fmt.Errorf("open FDB: %w", err)
+			return
+		}
+		recDB := recordlayer.NewFDBDatabase(db)
+
+		// Count-enabled metadata.
+		b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		b.SetRecordCountKey(&recordlayer.EmptyKeyExpression{})
+		md, err := b.Build()
+		if err != nil {
+			countFixtureErr = fmt.Errorf("build count metadata: %w", err)
+			return
+		}
+
+		tmp, err := os.MkdirTemp("", "frl-integration-count-*")
+		if err != nil {
+			countFixtureErr = fmt.Errorf("tmpdir: %w", err)
+			return
+		}
+		metaFile := filepath.Join(tmp, "meta.pb")
+		mf, err := os.Create(metaFile)
+		if err != nil {
+			countFixtureErr = fmt.Errorf("create meta.pb: %w", err)
+			return
+		}
+		if err := recordlayer.WriteRecordMetaData(md, mf); err != nil {
+			mf.Close()
+			countFixtureErr = fmt.Errorf("write meta.pb: %w", err)
+			return
+		}
+		mf.Close()
+
+		keyspacePath := "/frl/integration-count"
+		ss := subspace.Sub("frl", "integration-count")
+		if err := seedStore(ctx, recDB, md, ss); err != nil {
+			countFixtureErr = fmt.Errorf("seed count store: %w", err)
+			return
+		}
+
+		configFile := filepath.Join(tmp, "config.yaml")
+		cfgYAML := fmt.Sprintf(`current_context: count
+contexts:
+  - name: count
+    cluster_file: %s
+    keyspace_path: %s
+    metadata:
+      meta_file: %s
+`, fixture.clusterFilePath, keyspacePath, metaFile)
+		if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+			countFixtureErr = fmt.Errorf("write count config: %w", err)
+			return
+		}
+
+		countFixture = &integrationFixture{
+			clusterFilePath: fixture.clusterFilePath,
+			metaFilePath:    metaFile,
+			configFilePath:  configFile,
+			keyspacePath:    keyspacePath,
+			cleanupDir:      tmp,
+		}
+	})
+	if countFixtureErr != nil {
+		t.Fatalf("setupCountFixture: %v", countFixtureErr)
+	}
+	return countFixture
+}
+
 // runCmd drives one cobra command through NewRoot() with captured IO.
 func runCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
@@ -301,5 +392,20 @@ func TestIntegration_RecordCount_NotEnabled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not enabled") {
 		t.Errorf("error = %v; want 'not enabled'", err)
+	}
+}
+
+func TestIntegration_RecordCount_Enabled(t *testing.T) {
+	f := setupCountFixture(t)
+	t.Setenv("FRL_CONFIG", f.configFilePath)
+
+	out, err := runCmd(t, "record", "count")
+	if err != nil {
+		t.Fatalf("record count: %v\nout:\n%s", err, out)
+	}
+	// Seeded three orders in setupCountFixture → seedStore.
+	trimmed := strings.TrimSpace(out)
+	if trimmed != "3" {
+		t.Errorf("record count = %q, want 3 (three seeded orders)", trimmed)
 	}
 }
