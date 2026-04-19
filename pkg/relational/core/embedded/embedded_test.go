@@ -475,9 +475,47 @@ func TestLikeMatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
 			t.Parallel()
-			got := likeMatch(tc.pattern, tc.s)
+			got := likeMatch(tc.pattern, tc.s, -1) // no escape
 			if got != tc.want {
 				t.Errorf("likeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLikeMatchWithEscape pins the ESCAPE clause behaviour added in
+// swingshift-35. Matches Java ExpressionVisitor.visitLikePredicate which
+// passes the escape char into the pattern-compile step so `\_` is literal.
+func TestLikeMatchWithEscape(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		pattern string
+		s       string
+		escape  rune
+		want    bool
+	}{
+		// Literal underscore via escape.
+		{`a\_b`, "a_b", '\\', true},
+		{`a\_b`, "axb", '\\', false}, // escaped _ doesn't match arbitrary char
+		// Literal percent via escape.
+		{`a\%b`, "a%b", '\\', true},
+		{`a\%b`, "abb", '\\', false},
+		// Escape char itself can be escaped.
+		{`a\\b`, `a\b`, '\\', true},
+		// Alt escape char.
+		{`a!_b`, "a_b", '!', true},
+		{`a!_b`, "axb", '!', false},
+		// Without escape the same char is literal (escape=-1).
+		{`a\_b`, "a_b", -1, false}, // `\` is literal, `_` still wildcard → "a\Xb"
+		{`a\_b`, `a\xb`, -1, true}, // matches `a\` + any char + `b`
+	}
+	for _, tc := range cases {
+		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
+			t.Parallel()
+			got := likeMatch(tc.pattern, tc.s, tc.escape)
+			if got != tc.want {
+				t.Errorf("likeMatch(%q, %q, %q) = %v, want %v",
+					tc.pattern, tc.s, string(tc.escape), got, tc.want)
 			}
 		})
 	}

@@ -4817,8 +4817,11 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 	}
 }
 
-// evalLikePredicateTri handles: expr [NOT] LIKE 'pattern'.
+// evalLikePredicateTri handles: expr [NOT] LIKE 'pattern' [ESCAPE 'char'].
 // Supports SQL wildcards: % (any sequence) and _ (any single character).
+// If ESCAPE is given, the escape char preceding %, _, or itself makes the
+// following char literal. Matches Java's ExpressionVisitor.visitLikePredicate
+// behaviour (escape char must be exactly one char).
 // Returns triNull when the expression is NULL so NOT LIKE NULL stays UNKNOWN.
 func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (triBool, error) {
 	rawVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
@@ -4837,24 +4840,48 @@ func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 	patternLit := like.GetPattern().GetText()
 	pattern := stripStringLiteralQuotes(patternLit)
 
-	matched := likeMatch(pattern, s)
+	// Optional ESCAPE 'c' clause — Java asserts length==1 too.
+	var escape rune = -1
+	if esc := like.GetEscape(); esc != nil {
+		escStr := stripStringLiteralQuotes(esc.GetText())
+		runes := []rune(escStr)
+		if len(runes) != 1 {
+			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"LIKE ESCAPE must be exactly one character, got %q", escStr)
+		}
+		escape = runes[0]
+	}
+
+	matched := likeMatch(pattern, s, escape)
 	if like.NOT() != nil {
 		return triFromBool(!matched), nil
 	}
 	return triFromBool(matched), nil
 }
 
-// likeMatch implements SQL LIKE pattern matching: % = any sequence, _ = any single char.
-func likeMatch(pattern, s string) bool {
+// likeMatch implements SQL LIKE pattern matching: % = any sequence, _ = any
+// single char. If escape >= 0, that rune makes the following char literal
+// (only valid before %, _, or escape itself per SQL standard).
+func likeMatch(pattern, s string, escape rune) bool {
 	if pattern == "" {
 		return s == ""
 	}
 	p, str := []rune(pattern), []rune(s)
-	return likeMatchRunes(p, str)
+	return likeMatchRunes(p, str, escape)
 }
 
-func likeMatchRunes(p, s []rune) bool {
+func likeMatchRunes(p, s []rune, escape rune) bool {
 	for len(p) > 0 {
+		// Escape handling: consume the escape char and treat the next char
+		// as a literal. SQL: escape must precede %, _, or itself; otherwise
+		// undefined. Match Java's lenient interpretation (just literal char).
+		if escape >= 0 && p[0] == escape && len(p) >= 2 {
+			if len(s) == 0 || p[1] != s[0] {
+				return false
+			}
+			p, s = p[2:], s[1:]
+			continue
+		}
 		switch p[0] {
 		case '%':
 			// skip consecutive %
@@ -4865,7 +4892,7 @@ func likeMatchRunes(p, s []rune) bool {
 				return true
 			}
 			for i := 0; i <= len(s); i++ {
-				if likeMatchRunes(p, s[i:]) {
+				if likeMatchRunes(p, s[i:], escape) {
 					return true
 				}
 			}
@@ -5277,7 +5304,17 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				"LIKE requires a string expression, got %T", fieldVal)
 		}
 		patternLit := p.GetPattern().GetText()
-		matched := likeMatch(stripStringLiteralQuotes(patternLit), s)
+		var escape rune = -1
+		if esc := p.GetEscape(); esc != nil {
+			escStr := stripStringLiteralQuotes(esc.GetText())
+			runes := []rune(escStr)
+			if len(runes) != 1 {
+				return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"LIKE ESCAPE must be exactly one character, got %q", escStr)
+			}
+			escape = runes[0]
+		}
+		matched := likeMatch(stripStringLiteralQuotes(patternLit), s, escape)
 		if p.NOT() != nil {
 			matched = !matched
 		}
