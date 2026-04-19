@@ -235,6 +235,66 @@ func buildMessageDesc(t *testing.T, name string, fields []*descriptorpb.FieldDes
 	return fd.Messages().Get(0)
 }
 
+func TestMessageTypeFromDescriptor_RecursiveMessageTerminates(t *testing.T) {
+	t.Parallel()
+
+	// Build `message Tree { repeated Tree children = 1; }` — without the
+	// visited-set cycle check, messageTypeFromDescriptor would recurse
+	// into children's element type forever and blow the goroutine stack.
+	fileName := "test_recursive.proto"
+	pkg := "test.recursive"
+	syntax := "proto2"
+	treeName := "Tree"
+	childrenName := "children"
+	childrenNum := int32(1)
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	treeTypeName := ".test.recursive.Tree"
+
+	tree := &descriptorpb.DescriptorProto{
+		Name: &treeName,
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     &childrenName,
+				Number:   &childrenNum,
+				Type:     &msgType,
+				TypeName: &treeTypeName,
+				Label:    &repeated,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:        &fileName,
+		Package:     &pkg,
+		Syntax:      &syntax,
+		MessageType: []*descriptorpb.DescriptorProto{tree},
+	}
+	fd, err := protodesc.NewFile(file, nil)
+	if err != nil {
+		t.Fatalf("protodesc.NewFile: %v", err)
+	}
+
+	treeMD := fd.Messages().Get(0)
+	st, err := messageTypeFromDescriptor(treeMD, true)
+	if err != nil {
+		t.Fatalf("messageTypeFromDescriptor(Tree): %v", err)
+	}
+	if st.NumFields() != 1 {
+		t.Fatalf("Tree struct field count = %d, want 1", st.NumFields())
+	}
+	// The children field is repeated → ArrayType(inner); the inner
+	// should be the Unresolved placeholder because entering Tree a
+	// second time hits the cycle guard.
+	childDT := st.Fields()[0].Type()
+	arr, ok := childDT.(*api.ArrayType)
+	if !ok {
+		t.Fatalf("children type %T, want *ArrayType", childDT)
+	}
+	if _, ok := arr.ElementType().(*api.UnresolvedType); !ok {
+		t.Errorf("children element type %T, want *UnresolvedType (cycle placeholder)", arr.ElementType())
+	}
+}
+
 func TestMessageTypeFromDescriptor_UUIDFallbackStructShape(t *testing.T) {
 	t.Parallel()
 

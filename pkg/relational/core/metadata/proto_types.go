@@ -19,13 +19,21 @@ import (
 // (Java: arrays are always nullable); the inner element type is
 // derived non-repeated.
 func protoFieldToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error) {
+	return protoFieldToDataTypeWithVisited(fd, map[string]bool{})
+}
+
+// protoFieldToDataTypeWithVisited tracks message-type descent to break
+// self-referential cycles — e.g., `message Tree { repeated Tree children = 1; }`
+// would otherwise recurse until the goroutine stack overflows. Java's
+// Type.fromProtoType does the same via a visited set keyed on full name.
+func protoFieldToDataTypeWithVisited(fd protoreflect.FieldDescriptor, visited map[string]bool) (api.DataType, error) {
 	// Maps are represented as repeated synthesised message types in
 	// protoreflect; flag them explicitly since the SQL layer has no
 	// native map support yet (Java mirrors this as UnresolvedType).
 	if fd.IsMap() {
 		return api.NewUnresolvedType("map", true), nil
 	}
-	inner, err := protoScalarToDataTypeWithNullability(fd, isFieldNullable(fd))
+	inner, err := protoScalarToDataTypeWithNullabilityVisited(fd, isFieldNullable(fd), visited)
 	if err != nil {
 		return nil, err
 	}
@@ -48,12 +56,21 @@ func isFieldNullable(fd protoreflect.FieldDescriptor) bool {
 // extracts an element type from a repeated field (elements are
 // conceptually optional).
 func protoScalarToDataType(fd protoreflect.FieldDescriptor) (api.DataType, error) {
-	return protoScalarToDataTypeWithNullability(fd, true)
+	return protoScalarToDataTypeWithNullabilityVisited(fd, true, map[string]bool{})
 }
 
 // protoScalarToDataTypeWithNullability handles the element type only;
 // cardinality (repeated → array) is applied by the caller.
 func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nullable bool) (api.DataType, error) {
+	return protoScalarToDataTypeWithNullabilityVisited(fd, nullable, map[string]bool{})
+}
+
+// protoScalarToDataTypeWithNullabilityVisited is the recursion-aware
+// implementation. `visited` carries the set of message full names
+// currently in-progress on the descent; re-entering one returns an
+// UnresolvedType placeholder so a recursive message like `Tree` maps
+// to a well-typed fixed-point rather than infinite recursion.
+func protoScalarToDataTypeWithNullabilityVisited(fd protoreflect.FieldDescriptor, nullable bool, visited map[string]bool) (api.DataType, error) {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		return api.NewBooleanType(nullable), nil
@@ -75,24 +92,21 @@ func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nulla
 		return enumTypeFromDescriptor(fd.Enum(), nullable), nil
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		md := fd.Message()
-		// Matches Java's fromProtoType() UUID short-circuit: a
-		// com.apple.foundationdb.record.UUID message is surfaced as a
-		// dedicated UUIDType, not a two-field struct. Without this the
-		// SQL layer would see {mostSignificantBits, leastSignificantBits}
-		// instead of a single UUID column.
 		if isUUIDDescriptor(md) {
 			return api.NewUUIDType(nullable), nil
 		}
-		// Matches Java's NullableArrayTypeUtils.describesWrappedArray:
-		// the record-layer serializer encodes a nullable array as a
-		// single-field wrapper message. Unwrap it here so the SQL
-		// layer sees an ArrayType, not a struct holding an array.
-		// The wrapper itself is nullable=true (it's a message), the
-		// inner element type is derived from the repeated field.
 		if inner, ok := unwrapWrappedArray(md); ok {
 			return inner, nil
 		}
-		return messageTypeFromDescriptor(md, nullable)
+		fullName := string(md.FullName())
+		if visited[fullName] {
+			// Recursive type — surface as UnresolvedType (matches Java's
+			// fromProtoType fixed-point handling). The SQL layer doesn't
+			// flatten recursive structs today; this avoids the stack-
+			// overflow and lets the column type round-trip by name.
+			return api.NewUnresolvedType(fullName, nullable), nil
+		}
+		return messageTypeFromDescriptorVisited(md, nullable, visited)
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 		"unsupported proto field kind %v for field %s", fd.Kind(), fd.FullName())
@@ -101,11 +115,24 @@ func protoScalarToDataTypeWithNullability(fd protoreflect.FieldDescriptor, nulla
 // messageTypeFromDescriptor turns a proto message descriptor into an
 // api.StructType with one StructField per proto field.
 func messageTypeFromDescriptor(md protoreflect.MessageDescriptor, nullable bool) (*api.StructType, error) {
+	return messageTypeFromDescriptorVisited(md, nullable, map[string]bool{})
+}
+
+// messageTypeFromDescriptorVisited is the recursion-aware implementation.
+// Marks the current message's full name as visited before descending into
+// fields so self-referential types (e.g. `message Tree { repeated Tree
+// children = 1; }`) terminate at the nested occurrence via the cycle check
+// in protoScalarToDataTypeWithNullabilityVisited.
+func messageTypeFromDescriptorVisited(md protoreflect.MessageDescriptor, nullable bool, visited map[string]bool) (*api.StructType, error) {
+	fullName := string(md.FullName())
+	visited[fullName] = true
+	defer delete(visited, fullName)
+
 	fields := md.Fields()
 	structFields := make([]api.StructField, 0, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
-		dt, err := protoFieldToDataType(fd)
+		dt, err := protoFieldToDataTypeWithVisited(fd, visited)
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeUnsupportedOperation,
 				"%s.%s", md.FullName(), fd.Name())
