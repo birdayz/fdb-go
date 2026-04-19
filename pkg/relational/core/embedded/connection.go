@@ -2059,8 +2059,34 @@ func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any,
 		return applyMathOp(left, right, a.MathOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(msg, a.FunctionCall())
+	case *antlrgen.BinaryComparisonPredicateContext:
+		// Comparison used as a value (e.g. IF(a > b, ...) or CASE WHEN ... END).
+		left, err := evalExprAtom(msg, a.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		right, err := evalExprAtom(msg, a.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		cmp := compareValues(left, right)
+		switch a.ComparisonOperator().GetText() {
+		case "=":
+			return cmp == 0, nil
+		case "!=", "<>":
+			return cmp != 0, nil
+		case "<":
+			return cmp < 0, nil
+		case "<=":
+			return cmp <= 0, nil
+		case ">":
+			return cmp > 0, nil
+		case ">=":
+			return cmp >= 0, nil
+		}
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", a.ComparisonOperator().GetText())
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in SET", atom)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T", atom)
 	}
 }
 
@@ -2231,6 +2257,80 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 			return nil, nil
 		}
 		return a, nil
+	case "SUBSTRING", "SUBSTR":
+		// SUBSTRING(str, pos [, len]) — 1-based position per SQL standard.
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SUBSTRING requires at least 2 arguments")
+		}
+		sv, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		posVal, posErr := evalExpr(msg, fArgs[1].Expression())
+		if posErr != nil {
+			return nil, posErr
+		}
+		pos, _ := posVal.(int64)
+		if pos < 1 {
+			pos = 1
+		}
+		runes := []rune(s)
+		start := int(pos) - 1
+		if start >= len(runes) {
+			return "", nil
+		}
+		if len(fArgs) >= 3 {
+			lenVal, lenErr := evalExpr(msg, fArgs[2].Expression())
+			if lenErr != nil {
+				return nil, lenErr
+			}
+			n, _ := lenVal.(int64)
+			end := start + int(n)
+			if end > len(runes) {
+				end = len(runes)
+			}
+			if end < start {
+				return "", nil
+			}
+			return string(runes[start:end]), nil
+		}
+		return string(runes[start:]), nil
+	case "REPLACE":
+		// REPLACE(str, from, to)
+		if len(fArgs) < 3 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REPLACE requires 3 arguments")
+		}
+		sv, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		fromV, err := evalExpr(msg, fArgs[1].Expression())
+		if err != nil || fromV == nil {
+			return nil, err
+		}
+		toV, err := evalExpr(msg, fArgs[2].Expression())
+		if err != nil {
+			return nil, err
+		}
+		toStr := ""
+		if toV != nil {
+			toStr = fmt.Sprintf("%v", toV)
+		}
+		return strings.ReplaceAll(fmt.Sprintf("%v", sv), fmt.Sprintf("%v", fromV), toStr), nil
+	case "IF", "IIF":
+		// IF(cond, true_val, false_val)
+		if len(fArgs) < 3 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IF requires 3 arguments")
+		}
+		cond, err := evalExpr(msg, fArgs[0].Expression())
+		if err != nil {
+			return nil, err
+		}
+		if isTruthy(cond) {
+			return evalExpr(msg, fArgs[1].Expression())
+		}
+		return evalExpr(msg, fArgs[2].Expression())
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported scalar function %q", name)
 	}
@@ -2274,9 +2374,85 @@ func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContex
 			return evalExpr(msg, c.GetElseArg().Expression())
 		}
 		return nil, nil
+	case *antlrgen.DataTypeFunctionCallContext:
+		// CAST(expr AS type)
+		val, err := evalExpr(msg, c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		if val == nil {
+			return nil, nil // CAST(NULL AS type) = NULL
+		}
+		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
+		return castValue(val, typeName)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)
 	}
+}
+
+// castValue converts v to the SQL type named by typeName (e.g. "BIGINT", "VARCHAR", "TEXT", "BOOLEAN").
+func castValue(v any, typeName string) (any, error) {
+	switch {
+	case strings.HasPrefix(typeName, "BIGINT"), strings.HasPrefix(typeName, "INT"), typeName == "INTEGER", typeName == "LONG":
+		switch n := v.(type) {
+		case int64:
+			return n, nil
+		case float64:
+			return int64(n), nil
+		case string:
+			i, err := strconv.ParseInt(n, 10, 64)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to integer: %v", n, err)
+			}
+			return i, nil
+		case bool:
+			if n {
+				return int64(1), nil
+			}
+			return int64(0), nil
+		}
+	case strings.HasPrefix(typeName, "FLOAT"), strings.HasPrefix(typeName, "DOUBLE"), strings.HasPrefix(typeName, "DECIMAL"), strings.HasPrefix(typeName, "NUMERIC"):
+		switch n := v.(type) {
+		case float64:
+			return n, nil
+		case int64:
+			return float64(n), nil
+		case string:
+			f, err := strconv.ParseFloat(n, 64)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to float: %v", n, err)
+			}
+			return f, nil
+		}
+	case strings.HasPrefix(typeName, "VARCHAR"), strings.HasPrefix(typeName, "CHAR"), typeName == "TEXT", typeName == "STRING":
+		switch n := v.(type) {
+		case string:
+			return n, nil
+		case int64:
+			return strconv.FormatInt(n, 10), nil
+		case float64:
+			return strconv.FormatFloat(n, 'g', -1, 64), nil
+		case bool:
+			if n {
+				return "true", nil
+			}
+			return "false", nil
+		}
+	case typeName == "BOOLEAN", typeName == "BOOL":
+		switch n := v.(type) {
+		case bool:
+			return n, nil
+		case int64:
+			return n != 0, nil
+		case string:
+			b, err := strconv.ParseBool(n)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to boolean: %v", n, err)
+			}
+			return b, nil
+		}
+	}
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)
 }
 
 // isTruthy returns true when v is a non-nil, non-zero boolean or non-zero numeric.

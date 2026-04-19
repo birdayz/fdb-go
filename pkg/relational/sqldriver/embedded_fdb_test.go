@@ -2848,6 +2848,67 @@ func TestFDB_InsertSelect(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]row{{2, 20}, {3, 30}}))
 }
 
+func TestFDB_CastAndSubstring(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cast_substr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cast_substr")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cast_substr_tmpl CREATE TABLE Item (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cast_substr/shop WITH TEMPLATE cast_substr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cast_substr?cluster_file=%s&schema=shop", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Item (id, name, price) VALUES (1, 'Widget', 42), (2, 'Gadget', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CAST price to STRING
+	rows, err := db.QueryContext(ctx, `SELECT CAST(price AS STRING) FROM Item WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	rows.Next()
+	var priceStr string
+	g.Expect(rows.Scan(&priceStr)).To(gomega.Succeed())
+	g.Expect(priceStr).To(gomega.Equal("42"))
+
+	// SUBSTRING
+	rows2, err := db.QueryContext(ctx, `SELECT SUBSTRING(name, 1, 3) FROM Item WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+	rows2.Next()
+	var sub string
+	g.Expect(rows2.Scan(&sub)).To(gomega.Succeed())
+	g.Expect(sub).To(gomega.Equal("Wid"))
+
+	// REPLACE
+	rows3, err := db.QueryContext(ctx, `SELECT REPLACE(name, 'Widget', 'Thing') FROM Item WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows3.Close()
+	rows3.Next()
+	var replaced string
+	g.Expect(rows3.Scan(&replaced)).To(gomega.Succeed())
+	g.Expect(replaced).To(gomega.Equal("Thing"))
+
+	// IF function
+	rows4, err := db.QueryContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows4.Close()
+	var cats []string
+	for rows4.Next() {
+		var c string
+		g.Expect(rows4.Scan(&c)).To(gomega.Succeed())
+		cats = append(cats, c)
+	}
+	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
+}
+
 func TestFDB_WhereExprComparison(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
