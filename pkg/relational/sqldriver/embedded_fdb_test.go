@@ -2808,6 +2808,46 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
 }
 
+func TestFDB_InsertSelect(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_insert_select")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_select")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE is_tmpl CREATE TABLE Src (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id)) CREATE TABLE Dst (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_select/data WITH TEMPLATE is_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert_select?cluster_file=%s&schema=data", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Src (id, val) VALUES (1, 10), (2, 20), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// INSERT INTO Dst SELECT * FROM Src WHERE val > 10
+	_, err = db.ExecContext(ctx, `INSERT INTO Dst SELECT * FROM Src WHERE val > 10`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, val FROM Dst ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ id, val int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.id, &r.val)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{2, 20}, {3, 30}}))
+}
+
 func TestFDB_WhereExprComparison(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

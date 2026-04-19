@@ -1757,13 +1757,18 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		}
 	}
 
+	tableName := fullIdToName(ins.TableName().FullId())
+
+	// Handle INSERT INTO ... SELECT (insertStatementValueSelect).
+	if selCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueSelectContext); ok {
+		return c.execInsertSelect(ctx, tableName, explicitCols, selCtx.QueryExpressionBody())
+	}
+
 	// Only handle VALUES path.
 	valCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
 	if !ok {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only INSERT ... VALUES (...) is supported")
 	}
-
-	tableName := fullIdToName(ins.TableName().FullId())
 
 	var totalRows int64
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -1826,6 +1831,95 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				}
 				if val == nil {
 					// NULL — leave field absent (proto2 optional semantics).
+					continue
+				}
+				protoVal, convErr := convertToProtoValue(fd, val)
+				if convErr != nil {
+					return nil, convErr
+				}
+				msg.Set(fd, protoVal)
+			}
+			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
+				return nil, saveErr
+			}
+			totalRows++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return totalRows, nil
+}
+
+// execInsertSelect implements INSERT INTO table (cols) SELECT ...
+// It evaluates the SELECT query and inserts each row into the table.
+func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName string, explicitCols []string, body antlrgen.IQueryExpressionBodyContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	// Execute the SELECT first (outside the INSERT transaction to avoid conflicts).
+	srcCols, srcRows, err := c.execQueryBodyRows(ctx, body)
+	if err != nil {
+		return 0, err
+	}
+
+	var totalRows int64
+	_, err = c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		totalRows = 0
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		// Determine target columns: explicit list or use source column names.
+		cols := explicitCols
+		if cols == nil {
+			cols = srcCols
+		}
+		if len(cols) != len(srcCols) {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"column count %d does not match SELECT column count %d", len(cols), len(srcCols))
+		}
+
+		for _, row := range srcRows {
+			msg := dynamicpb.NewMessage(msgDesc)
+			for i, col := range cols {
+				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", col, tableName)
+				}
+				val := row[i]
+				if val == nil {
 					continue
 				}
 				protoVal, convErr := convertToProtoValue(fd, val)
