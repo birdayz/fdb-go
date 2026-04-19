@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
@@ -36,7 +37,7 @@ func newStoreCmd() *cobra.Command {
 }
 
 func newStoreInfoCmd() *cobra.Command {
-	var contextName string
+	var contextName, outputFmt string
 	c := &cobra.Command{
 		Use:   "info",
 		Short: "Print DataStoreInfo for the current context's store",
@@ -44,9 +45,18 @@ func newStoreInfoCmd() *cobra.Command {
 			"user version, record count state, lock state, user fields) " +
 			"directly from FDB at the keyspace path in the active context. " +
 			"No metadata is loaded — this command works even against a " +
-			"store whose metadata isn't yet configured in frl.",
+			"store whose metadata isn't yet configured in frl.\n\n" +
+			"--output / -o: 'text' (default, human-readable) or 'json' " +
+			"(protojson of the raw DataStoreInfo, suitable for jq / " +
+			"monitoring systems).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+				// ok
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -59,15 +69,17 @@ func newStoreInfoCmd() *cobra.Command {
 				}
 				return err
 			}
-			return runStoreInfo(cmd.Context(), cmd.OutOrStdout(), ctx)
+			return runStoreInfo(cmd.Context(), cmd.OutOrStdout(), ctx, outputFmt)
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "",
 		"context name to use (default: Config.current_context)")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text",
+		"output format: text or json")
 	return c
 }
 
-func runStoreInfo(ctx context.Context, out interface{ Write([]byte) (int, error) }, cfgCtx *configv1.Context) error {
+func runStoreInfo(ctx context.Context, out interface{ Write([]byte) (int, error) }, cfgCtx *configv1.Context, outputFmt string) error {
 	if cfgCtx.GetKeyspacePath() == "" {
 		return fmt.Errorf("context %q has empty keyspace_path; add it to the config",
 			cfgCtx.GetName())
@@ -88,8 +100,34 @@ func runStoreInfo(ctx context.Context, out interface{ Write([]byte) (int, error)
 	if err != nil {
 		return err
 	}
+	if outputFmt == "json" {
+		return writeStoreInfoJSON(out, info)
+	}
 	return writeStoreInfo(out, cfgCtx, info)
 }
+
+// writeStoreInfoJSON emits the raw DataStoreInfo proto as indented JSON.
+// Uses protojson so enums render as canonical names (e.g.
+// "RECORD_COUNT_STATE_READABLE") rather than integer codes. Context
+// identity is intentionally omitted — the caller already knows which
+// context they asked about; the JSON output is the store's own data.
+func writeStoreInfoJSON(out interface{ Write([]byte) (int, error) }, info *gen.DataStoreInfo) error {
+	bytes, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("marshal DataStoreInfo: %w", err)
+	}
+	_, err = fmt.Fprintln(&writerAdapter{out}, string(bytes))
+	return err
+}
+
+// writerAdapter bridges the minimal "io.Writer-ish" interface the store
+// helpers accept to io.Writer so fmt.Fprintln can use it. Cheap enough
+// that defining a whole io.Writer-typed parameter isn't worth the churn.
+type writerAdapter struct {
+	inner interface{ Write([]byte) (int, error) }
+}
+
+func (w *writerAdapter) Write(p []byte) (int, error) { return w.inner.Write(p) }
 
 // fdbAPIVersion is the wire protocol version frl talks to FDB with. Must
 // match what the record-layer library and testcontainers use (730 today;

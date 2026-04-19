@@ -133,11 +133,36 @@ func TestWriteStoreInfoRendersAllFields(t *testing.T) {
 	}
 }
 
+func TestWriteStoreInfoJSON_RendersProtoFields(t *testing.T) {
+	t.Parallel()
+	info := &gen.DataStoreInfo{
+		FormatVersion:   proto_int32(12),
+		MetaDataversion: proto_int32(17),
+		Cacheable:       proto_bool(true),
+	}
+	var buf bytes.Buffer
+	if err := writeStoreInfoJSON(&buf, info); err != nil {
+		t.Fatalf("writeStoreInfoJSON: %v", err)
+	}
+	out := buf.String()
+	// protojson uses camelCase keys matching the proto field names;
+	// int32 fields render as bare numbers, bool as true/false.
+	for _, want := range []string{
+		`"formatVersion": 12`,
+		`"metaDataversion": 17`,
+		`"cacheable": true`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("JSON output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunStoreInfo_EmptyKeyspaceErrors(t *testing.T) {
 	t.Parallel()
 	ctx := &configv1.Context{Name: "bad"} // keyspace_path left empty
 	var buf bytes.Buffer
-	err := runStoreInfo(context.Background(), &buf, ctx)
+	err := runStoreInfo(context.Background(), &buf, ctx, "text")
 	if err == nil {
 		t.Fatal("runStoreInfo with empty keyspace succeeded, want error")
 	}
