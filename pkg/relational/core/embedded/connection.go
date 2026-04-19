@@ -121,6 +121,41 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 		"explicit transactions are not yet implemented")
 }
 
+// BeginTx implements driver.ConnBeginTx. Phase 1 is auto-commit only.
+func (c *EmbeddedConnection) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error) {
+	if c.closed {
+		return nil, driver.ErrBadConn
+	}
+	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		"explicit transactions are not yet implemented")
+}
+
+// ResetSession implements driver.SessionResetter. Resets per-request
+// state (schema) so pooled connections start clean.
+func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
+	if c.closed {
+		return driver.ErrBadConn
+	}
+	c.schema = ""
+	return nil
+}
+
+// IsValid implements driver.Validator. Returns true if the connection
+// is open and the catalog was successfully initialised.
+func (c *EmbeddedConnection) IsValid() bool {
+	if c.closed {
+		return false
+	}
+	c.catalogMu.Lock()
+	defer c.catalogMu.Unlock()
+	return c.catalogReady
+}
+
+// PrepareContext implements driver.ConnPrepareContext.
+func (c *EmbeddedConnection) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
+	return c.Prepare(query)
+}
+
 // SetSchema sets the current schema label used when no schema is specified in SQL.
 func (c *EmbeddedConnection) SetSchema(s string) { c.schema = s }
 
@@ -415,7 +450,11 @@ func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
 
 // Static interface checks.
 var (
-	_ driver.Conn          = (*EmbeddedConnection)(nil)
-	_ driver.ExecerContext = (*EmbeddedConnection)(nil)
-	_ driver.Pinger        = (*EmbeddedConnection)(nil)
+	_ driver.Conn               = (*EmbeddedConnection)(nil)
+	_ driver.ExecerContext      = (*EmbeddedConnection)(nil)
+	_ driver.Pinger             = (*EmbeddedConnection)(nil)
+	_ driver.ConnBeginTx        = (*EmbeddedConnection)(nil)
+	_ driver.SessionResetter    = (*EmbeddedConnection)(nil)
+	_ driver.Validator          = (*EmbeddedConnection)(nil)
+	_ driver.ConnPrepareContext = (*EmbeddedConnection)(nil)
 )

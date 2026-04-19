@@ -1,6 +1,8 @@
 package embedded
 
 import (
+	"context"
+	"database/sql/driver"
 	"testing"
 )
 
@@ -53,5 +55,58 @@ func TestValidateDatabasePath(t *testing.T) {
 		if err := validateDatabasePath(p); err == nil {
 			t.Errorf("validateDatabasePath(%q): expected error, got nil", p)
 		}
+	}
+}
+
+func TestEmbeddedConnection_BeginTxReturnsUnsupported(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
+	if err == nil {
+		t.Fatal("BeginTx: want error, got nil")
+	}
+}
+
+func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{closed: true}
+	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
+	if err == nil {
+		t.Fatal("BeginTx on closed conn: want error, got nil")
+	}
+}
+
+func TestEmbeddedConnection_ResetSession(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{schema: "myschema"}
+	if err := conn.ResetSession(context.TODO()); err != nil {
+		t.Fatalf("ResetSession: unexpected error: %v", err)
+	}
+	if conn.schema != "" {
+		t.Errorf("ResetSession: schema not cleared, got %q", conn.schema)
+	}
+}
+
+func TestEmbeddedConnection_ResetSessionClosedReturnsError(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{closed: true}
+	if err := conn.ResetSession(context.TODO()); err == nil {
+		t.Fatal("ResetSession on closed conn: want error, got nil")
+	}
+}
+
+func TestEmbeddedConnection_IsValid(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{catalogReady: true}
+	if !conn.IsValid() {
+		t.Error("IsValid: want true, got false")
+	}
+	conn2 := &EmbeddedConnection{catalogReady: false}
+	if conn2.IsValid() {
+		t.Error("IsValid: want false for uninitialized, got true")
+	}
+	conn3 := &EmbeddedConnection{closed: true, catalogReady: true}
+	if conn3.IsValid() {
+		t.Error("IsValid: want false for closed, got true")
 	}
 }
