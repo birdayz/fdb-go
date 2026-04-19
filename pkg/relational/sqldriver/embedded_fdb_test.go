@@ -5418,6 +5418,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 		name     string
 		sql      string
 		exec     bool // true = ExecContext, false = Query
+		onDB     bool // true = run on schema-attached db, false = root setup conn
 		wantCode api.ErrorCode
 	}{
 		{
@@ -5483,6 +5484,25 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			exec:     true,
 			wantCode: api.ErrCodeUnknownSchemaTemplate,
 		},
+		{
+			// id is BIGINT NOT NULL. Proto2's LABEL_REQUIRED should reject
+			// an INSERT that leaves it unset. Ideal SQLSTATE is
+			// ErrCodeNotNullViolation (23502) per Java. Currently serialised
+			// through proto's missing-required-field surface as InvalidParameter.
+			// TODO: short-circuit with 23502 at execInsert — see TODO.md.
+			name:     "INSERT omitting NOT NULL primary key",
+			sql:      "INSERT INTO T (n) VALUES (42)",
+			exec:     true,
+			onDB:     true, // needs the schema-attached db connection
+			wantCode: api.ErrCodeNotNullViolation,
+		},
+		{
+			name:     "INSERT explicit NULL into NOT NULL column",
+			sql:      "INSERT INTO T (id, n) VALUES (NULL, 99)",
+			exec:     true,
+			onDB:     true,
+			wantCode: api.ErrCodeNotNullViolation,
+		},
 	}
 
 	for _, tc := range cases {
@@ -5490,12 +5510,15 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
 			var err error
+			conn := setup
+			if tc.onDB {
+				conn = db
+			}
 			if tc.exec {
-				// Duplicate database is issued on setup connection, not `db`,
-				// because `db` is pinned to /testdb_error_paths and CREATE
-				// DATABASE targets the root.
-				_, err = setup.ExecContext(ctx, tc.sql)
+				_, err = conn.ExecContext(ctx, tc.sql)
 			} else {
+				// Queries always go through the schema-attached `db`
+				// (queryErr closure captures it).
 				err = queryErr(tc.sql)
 			}
 			g.Expect(err).To(gomega.HaveOccurred(), "case: %s", tc.name)

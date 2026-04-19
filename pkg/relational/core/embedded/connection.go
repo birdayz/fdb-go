@@ -2922,7 +2922,12 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 					return nil, evalErr
 				}
 				if val == nil {
-					// NULL — leave field absent (proto2 optional semantics).
+					// NULL — must reject for NOT NULL columns per SQL standard.
+					if fd.Cardinality() == protoreflect.Required {
+						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+							"NULL value in column %q violates NOT NULL constraint", col)
+					}
+					// Nullable — leave field absent (proto2 optional semantics).
 					continue
 				}
 				protoVal, convErr := convertToProtoValue(fd, val)
@@ -2930,6 +2935,16 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 					return nil, convErr
 				}
 				msg.Set(fd, protoVal)
+			}
+			// Catch the case where a NOT NULL column is missing from the
+			// explicit column list entirely (no value provided at all).
+			fds := msgDesc.Fields()
+			for i := 0; i < fds.Len(); i++ {
+				fd := fds.Get(i)
+				if fd.Cardinality() == protoreflect.Required && !msg.Has(fd) {
+					return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+						"column %q has NOT NULL constraint but no value was provided", fd.Name())
+				}
 			}
 			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
 				return nil, saveErr
