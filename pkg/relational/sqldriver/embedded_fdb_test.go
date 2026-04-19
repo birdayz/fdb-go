@@ -3698,6 +3698,17 @@ func TestFDB_SelectWithoutFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
+	// Guard: SELECT without FROM still opens an FDB connection (sql.Open
+	// triggers the connector's initialize, which calls purefdb.OpenDatabase).
+	// If TestMain's testcontainer setup failed, clusterFilePath is empty →
+	// purefdb falls back to /etc/foundationdb/fdb.cluster (127.0.0.1:4500)
+	// which isn't listening, producing a 60s timeout flake. Other tests skip
+	// via openTestDB's guard; this one constructed its own DSN so we have
+	// to check here. Flake root-caused swingshift-35.
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+
 	// SELECT without FROM doesn't need a real schema — just a valid DSN with a path.
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///select_no_from?cluster_file=%s", clusterFilePath))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
