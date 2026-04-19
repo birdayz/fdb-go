@@ -56,6 +56,10 @@ type EmbeddedConnection struct {
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
 
+	// schemaCache is a connection-level cache: (dbPath+"\x00"+schemaName) → api.Schema.
+	// Safe because driver connections are single-goroutine. Invalidated by DDL.
+	schemaCache map[string]api.Schema
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
@@ -93,6 +97,30 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 	return c.fdbDB.Run(ctx, fn)
 }
 
+func (c *EmbeddedConnection) schemaCacheKey(dbPath, schemaName string) string {
+	return dbPath + "\x00" + schemaName
+}
+
+// cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
+// connection-level cache to avoid repeated FDB reads within the same session.
+// The cache is invalidated by any DDL that modifies schema definitions.
+func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
+	key := c.schemaCacheKey(dbPath, schemaName)
+	if s, ok := c.schemaCache[key]; ok {
+		return s, nil
+	}
+	s, err := c.cat.LoadSchema(txn, dbPath, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	c.schemaCache[key] = s
+	return s, nil
+}
+
+func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
+	delete(c.schemaCache, c.schemaCacheKey(dbPath, schemaName))
+}
+
 // New returns a ready-to-use embedded connection.
 func New(
 	dbPath string,
@@ -102,11 +130,12 @@ func New(
 	ks *keyspace.RelationalKeyspace,
 ) *EmbeddedConnection {
 	return &EmbeddedConnection{
-		dbPath:  dbPath,
-		fdbDB:   fdbDB,
-		cat:     cat,
-		factory: factory,
-		ks:      ks,
+		dbPath:      dbPath,
+		fdbDB:       fdbDB,
+		cat:         cat,
+		factory:     factory,
+		ks:          ks,
+		schemaCache: make(map[string]api.Schema),
 	}
 }
 
@@ -214,7 +243,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -471,7 +500,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 		}
 
 		for _, ref := range refs {
-			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			schema, loadErr := c.cachedLoadSchema(txn, ref.db, ref.schema)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -531,7 +560,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 		}
 
 		for _, ref := range refs {
-			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			schema, loadErr := c.cachedLoadSchema(txn, ref.db, ref.schema)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -610,7 +639,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 		}
 
 		for _, ref := range refs {
-			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			schema, loadErr := c.cachedLoadSchema(txn, ref.db, ref.schema)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -1133,7 +1162,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		totalRows = 0 // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -1299,7 +1328,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		updated = 0
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -1399,7 +1428,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		deleted = 0
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -2110,7 +2139,11 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 			"invalid database identifier in %q", schemaText)
 	}
 	action := c.factory.DropSchema(dbPath, schemaName, *api.NoOptions())
-	return 0, c.runDDL(ctx, action)
+	if err := c.runDDL(ctx, action); err != nil {
+		return 0, err
+	}
+	c.invalidateSchemaCache(dbPath, schemaName)
+	return 0, nil
 }
 
 func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antlrgen.DropSchemaTemplateStatementContext) (int64, error) {
@@ -2155,7 +2188,12 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		return 0, err
 	}
 	action := c.factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
-	return 0, c.runDDL(ctx, action)
+	if err := c.runDDL(ctx, action); err != nil {
+		return 0, err
+	}
+	// Template change may affect any schema using it — flush the whole cache.
+	c.schemaCache = make(map[string]api.Schema)
+	return 0, nil
 }
 
 // parseIndexDefinition handles a single CREATE INDEX clause within a schema template.
