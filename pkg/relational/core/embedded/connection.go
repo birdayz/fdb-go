@@ -3751,24 +3751,6 @@ func evalSpecificFunctionCore(
 	}
 }
 
-// evalSpecificFunction handles grammar-level SpecificFunction nodes: CASE WHEN ... END.
-func evalSpecificFunction(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, sf antlrgen.ISpecificFunctionContext) (any, error) {
-	eval := makeProtoExprEvaluator(ctx, conn, msg)
-	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
-		return evalExprPredicate(ctx, conn, msg, e)
-	}
-	return evalSpecificFunctionCore(eval, predEval, "unsupported specific function %T", sf)
-}
-
-// evalSpecificFunctionOnMap is the map-eval variant of evalSpecificFunction: handles CASE WHEN and CAST.
-func evalSpecificFunctionOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, sf antlrgen.ISpecificFunctionContext) (driver.Value, error) {
-	eval := makeMapExprEvaluator(ctx, conn, row)
-	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
-		return evalPredicateOnMapExpr(ctx, conn, row, e)
-	}
-	return evalSpecificFunctionCore(eval, predEval, "unsupported specific function %T in map eval", sf)
-}
-
 // castValue converts v to the SQL type named by typeName (e.g. "BIGINT", "VARCHAR", "TEXT", "BOOLEAN").
 func castValue(v any, typeName string) (any, error) {
 	switch {
