@@ -5369,3 +5369,47 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 		Scan(&got3)).To(gomega.Succeed())
 	g.Expect(got3).To(gomega.Equal("five"))
 }
+
+// TestFDB_MixedTypeEqualityNoStringCoerce proves that mixed-type equality
+// does NOT fall through to string coercion: an int column `= '5'` must not
+// match the integer 5, and similarly for IN-lists.
+func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_mixedtype_eq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_mixedtype_eq")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE mixedtype_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_mixedtype_eq/main WITH TEMPLATE mixedtype_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_mixedtype_eq?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 5, '5'), (2, 6, '6')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Proto path (single-table WHERE): int column = string literal must NOT match.
+	var cnt int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n = '5'`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)), "int n=5 must not equal string '5'")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = 5`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(0)), "string s='5' must not equal int 5")
+
+	// IN-list with mixed types: only matches on the same-type element.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n IN ('5', 6)`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)), "only int 6 should match; string '5' must not match int 5")
+
+	// Sanity: same-type equality still works.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n = 5`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)))
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = '5'`).Scan(&cnt)).To(gomega.Succeed())
+	g.Expect(cnt).To(gomega.Equal(int64(1)))
+}

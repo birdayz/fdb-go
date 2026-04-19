@@ -253,6 +253,18 @@ func TestValuesEqual(t *testing.T) {
 		{"string not equal", "hello", "world", false},
 		{"bool true==true", true, true, true},
 		{"bool false!=true", false, true, false},
+		// Mixed-type comparisons must return false — no string coercion.
+		{"string '5' != int 5", "5", int64(5), false},
+		{"int 5 != string '5'", int64(5), "5", false},
+		{"string '5.0' != float 5.0", "5.0", float64(5.0), false},
+		{"float 5.0 != string '5.0'", float64(5.0), "5.0", false},
+		{"bool true != int 1", true, int64(1), false},
+		{"int 1 != bool true", int64(1), true, false},
+		{"bool true != string 'true'", true, "true", false},
+		{"string 'true' != bool true", "true", true, false},
+		{"bytes equal", []byte("abc"), []byte("abc"), true},
+		{"bytes not equal", []byte("abc"), []byte("abd"), false},
+		{"bytes != string", []byte("abc"), "abc", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

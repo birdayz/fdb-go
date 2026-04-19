@@ -7,12 +7,14 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -5084,11 +5086,36 @@ func valuesEqual(a, b any) bool {
 	if aIsNum && bIsNum {
 		return fa == fb
 	}
+	// One numeric and one non-numeric → not equal. SQL rejects cross-type
+	// comparison (PostgreSQL errors; we return false to stay non-fatal).
+	if aIsNum != bIsNum {
+		return false
+	}
+	switch av := a.(type) {
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	case []byte:
+		bv, ok := b.([]byte)
+		return ok && bytes.Equal(av, bv)
+	}
+	// Last resort for exotic driver values: compare only if concrete types
+	// match, avoid `'5' = 5` stringification bugs.
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
 // compareValues returns -1, 0, or 1 for two driver.Values.
-// Used by ORDER BY post-sort. NULL sorts last.
+// Used by ORDER BY post-sort (NULL sorts last) and by comparison predicates.
+//
+// Cross-type comparisons (e.g. int vs string) return a non-zero value ordered
+// by type name, so that `'5' = 5` never matches. Numeric coercion across
+// int64/float64 is preserved because SQL treats them as the same type family.
 func compareValues(a, b driver.Value) int {
 	if a == nil && b == nil {
 		return 0
@@ -5099,50 +5126,53 @@ func compareValues(a, b driver.Value) int {
 	if b == nil {
 		return -1
 	}
-	switch av := a.(type) {
-	case int64:
-		switch bv := b.(type) {
-		case int64:
-			if av < bv {
+
+	// Exact int64 compare when both are int64 avoids float64 precision loss
+	// for values beyond ±2^53.
+	if ai, ok1 := a.(int64); ok1 {
+		if bi, ok2 := b.(int64); ok2 {
+			switch {
+			case ai < bi:
 				return -1
-			}
-			if av > bv {
-				return 1
-			}
-			return 0
-		case float64:
-			fav := float64(av)
-			if fav < bv {
-				return -1
-			}
-			if fav > bv {
+			case ai > bi:
 				return 1
 			}
 			return 0
 		}
-	case float64:
-		var fbv float64
-		switch bv := b.(type) {
-		case float64:
-			fbv = bv
+	}
+	toFloat := func(v any) (float64, bool) {
+		switch n := v.(type) {
 		case int64:
-			fbv = float64(bv)
-		default:
-			return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+			return float64(n), true
+		case float64:
+			return n, true
 		}
-		if av < fbv {
+		return 0, false
+	}
+	fa, aNum := toFloat(a)
+	fb, bNum := toFloat(b)
+	if aNum && bNum {
+		switch {
+		case fa < fb:
 			return -1
-		}
-		if av > fbv {
+		case fa > fb:
 			return 1
 		}
 		return 0
-	case string:
-		if bv, ok := b.(string); ok {
-			return strings.Compare(av, bv)
-		}
-	case bool:
-		if bv, ok := b.(bool); ok {
+	}
+	// One numeric and one non-numeric → not equal. SQL rejects cross-type
+	// comparison; we return a stable non-zero ordering so `=` fails.
+	if aNum != bNum {
+		return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
+	}
+
+	// Same concrete type.
+	if reflect.TypeOf(a) == reflect.TypeOf(b) {
+		switch av := a.(type) {
+		case string:
+			return strings.Compare(av, b.(string))
+		case bool:
+			bv := b.(bool)
 			if av == bv {
 				return 0
 			}
@@ -5150,9 +5180,15 @@ func compareValues(a, b driver.Value) int {
 				return -1
 			}
 			return 1
+		case []byte:
+			return bytes.Compare(av, b.([]byte))
 		}
+		// Exotic driver types with equal concrete type: compare via fmt.
+		return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
 	}
-	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+
+	// Genuinely different types (e.g. string vs bool) — stable non-zero order.
+	return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
 }
 
 // rowKey serializes a result row to a collision-free string key for DISTINCT deduplication.
