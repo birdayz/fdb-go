@@ -5037,3 +5037,38 @@ func TestFDB_LeftRight(t *testing.T) {
 	g.Expect(l).To(gomega.Equal("ab"))
 	g.Expect(r).To(gomega.Equal("ab"))
 }
+
+func TestFDB_ReversePosition(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_str_more")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_str_more")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE str_more_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, s STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_str_more/main WITH TEMPLATE str_more_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_str_more?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (1, 'hello')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var rev string
+	var pos int64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT REVERSE(s), POSITION('ll', s) FROM T WHERE id = 1`).
+		Scan(&rev, &pos)).To(gomega.Succeed())
+	g.Expect(rev).To(gomega.Equal("olleh"))
+	g.Expect(pos).To(gomega.Equal(int64(3))) // POSITION(ll, hello) → 3 (1-based)
+
+	var notFound int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POSITION('zzz', s) FROM T WHERE id = 1`).Scan(&notFound)).To(gomega.Succeed())
+	g.Expect(notFound).To(gomega.Equal(int64(0)))
+}

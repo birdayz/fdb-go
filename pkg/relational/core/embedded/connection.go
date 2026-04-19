@@ -3409,6 +3409,41 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
+	case "REVERSE":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REVERSE requires 1 argument")
+		}
+		sv, err := eval(fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		runes := []rune(s)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return string(runes), nil
+	case "POSITION":
+		// POSITION(substr, str) — 1-based rune index of first occurrence, 0 if not found.
+		// (POSITION(substr IN str) has a special grammar form — not supported here.)
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POSITION requires 2 arguments")
+		}
+		substrV, err := eval(fArgs[0].Expression())
+		if err != nil || substrV == nil {
+			return nil, err
+		}
+		strV, err := eval(fArgs[1].Expression())
+		if err != nil || strV == nil {
+			return nil, err
+		}
+		needle := fmt.Sprintf("%v", substrV)
+		haystack := fmt.Sprintf("%v", strV)
+		byteIdx := strings.Index(haystack, needle)
+		if byteIdx < 0 {
+			return int64(0), nil
+		}
+		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1), nil
 	case "LEFT":
 		// LEFT(str, n) — first n runes, or whole string if n >= length.
 		if len(fArgs) < 2 {
