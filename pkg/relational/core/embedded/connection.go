@@ -866,7 +866,9 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	var colNames []string
 	var outRows [][]driver.Value
 
-	if sq.projCols == nil && !sq.countStar && len(sq.aggCols) == 0 {
+	if len(sq.aggCols) > 0 {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "aggregate functions on CTEs are not yet supported")
+	} else if sq.projCols == nil && !sq.countStar {
 		// SELECT * — emit all CTE columns in definition order.
 		colNames = cte.cols
 		for _, row := range mapRows {
@@ -2763,7 +2765,7 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		// Boolean expressions (AND/OR/NOT, comparisons) return bool as a value.
-		b, err := evalExprPredicate(context.TODO(), nil, msg, expr)
+		b, err := evalExprPredicate(context.TODO(), nil, msg, expr) //nolint:contextcheck // TODO: thread ctx when evalExpr takes ctx
 		if err != nil {
 			return nil, err
 		}
@@ -2772,7 +2774,7 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate via
 	// evalExprPredicate which handles the full predicate tree.
 	if pred.Predicate() != nil {
-		b, err := evalExprPredicate(context.TODO(), nil, msg, expr)
+		b, err := evalExprPredicate(context.TODO(), nil, msg, expr) //nolint:contextcheck // TODO: thread ctx when evalExpr takes ctx
 		if err != nil {
 			return nil, err
 		}
@@ -3249,7 +3251,7 @@ func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContex
 		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
 		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).
 		for _, alt := range c.AllCaseFuncAlternative() {
-			ok, err := evalExprPredicate(context.TODO(), nil, msg, alt.GetCondition().Expression())
+			ok, err := evalExprPredicate(context.TODO(), nil, msg, alt.GetCondition().Expression()) //nolint:contextcheck // TODO: thread ctx when evalScalarFunctionCall takes ctx
 			if err != nil {
 				return nil, err
 			}
@@ -3617,6 +3619,8 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 		if conn == nil {
 			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
+		// NOTE: Correlated subqueries are not supported — the subquery cannot
+		// reference column values from the outer query row.
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
 			return false, subErr
@@ -3707,6 +3711,20 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 }
 
 // evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
+// matchSubqueryIN checks whether fieldVal appears in the first column of subRows.
+// Returns (matched, notNegated) following SQL IN/NOT IN semantics.
+func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) bool {
+	for _, row := range subRows {
+		if len(row) == 0 {
+			continue
+		}
+		if valuesEqual(fieldVal, row[0]) {
+			return !negated
+		}
+	}
+	return negated
+}
+
 func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
@@ -3739,21 +3757,7 @@ func evalInPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Me
 		if err != nil {
 			return false, err
 		}
-		for _, row := range subRows {
-			if len(row) == 0 {
-				continue
-			}
-			if valuesEqual(fieldVal, row[0]) {
-				if in.NOT() != nil {
-					return false, nil
-				}
-				return true, nil
-			}
-		}
-		if in.NOT() != nil {
-			return true, nil
-		}
-		return false, nil
+		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil), nil
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
@@ -4234,21 +4238,7 @@ func evalPredicateOnMap(ctx context.Context, conn *EmbeddedConnection, row map[s
 			if subErr != nil {
 				return false, subErr
 			}
-			for _, row2 := range subRows {
-				if len(row2) == 0 {
-					continue
-				}
-				if valuesEqual(fieldVal, row2[0]) {
-					if p.NOT() != nil {
-						return false, nil
-					}
-					return true, nil
-				}
-			}
-			if p.NOT() != nil {
-				return true, nil
-			}
-			return false, nil
+			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil), nil
 		}
 		if p.InList().Expressions() == nil {
 			return p.NOT() != nil, nil
