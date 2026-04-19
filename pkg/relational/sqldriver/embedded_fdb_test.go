@@ -5214,6 +5214,22 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	var e2 sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx, `SELECT EXP(1000) FROM T WHERE id = 1`).Scan(&e2)).To(gomega.Succeed())
 	g.Expect(e2.Valid).To(gomega.BeFalse())
+
+	// swingshift-35: POWER returns NULL on math domain errors.
+	// POWER(0, -1) → +Inf (division by zero); POWER(-1, 0.5) → NaN (complex).
+	// Both must be NULL, not silently returned as NaN/Inf that would poison
+	// downstream comparisons (NaN != NaN).
+	var p sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(0, -1) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
+	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(0, -1) must be NULL, not +Inf")
+
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(-1, 0.5) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
+	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(-1, 0.5) must be NULL, not NaN")
+
+	// Normal POWER still works.
+	var p2 float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(2, 10) FROM T WHERE id = 1`).Scan(&p2)).To(gomega.Succeed())
+	g.Expect(p2).To(gomega.Equal(1024.0))
 }
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {
