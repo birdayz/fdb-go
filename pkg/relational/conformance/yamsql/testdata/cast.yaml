@@ -1,0 +1,37 @@
+# cast.yaml
+#
+# swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance.
+#   - CAST(float AS INT) uses Math.round semantics (floor(x+0.5))
+#   - CAST(string AS INT/FLOAT) trims whitespace before parsing
+#   - CAST(string AS BOOLEAN) accepts only trim+lowercased 'true'/'false'/'1'/'0'
+#   - CAST(NULL AS <type>) returns NULL (not "unsupported cast" error)
+name: cast
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+tests:
+  # Float rounding — 1.6 → 2 (rounds up).
+  - query: SELECT CAST(1.6 AS BIGINT) FROM t
+    rows:
+      - [2]
+  # Negative tie: Java rounds toward +Inf, so -1.5 → -1 (not -2).
+  - query: SELECT CAST(-1.5 AS BIGINT) FROM t
+    rows:
+      - [-1]
+  # Negative rounding: -2.6 → -3 (rounds away from zero).
+  - query: SELECT CAST(-2.6 AS BIGINT) FROM t
+    rows:
+      - [-3]
+  # Whitespace trim on string → int.
+  - query: SELECT CAST(' 42 ' AS BIGINT) FROM t
+    rows:
+      - [42]
+  # Whitespace trim on string → float.
+  - query: SELECT CAST(' 3.14 ' AS DOUBLE) FROM t
+    rows:
+      - [3.14]
+  # CAST(NULL AS <type>) → NULL.
+  - query: SELECT CAST(NULL AS BIGINT) FROM t
+    rows:
+      - [~]

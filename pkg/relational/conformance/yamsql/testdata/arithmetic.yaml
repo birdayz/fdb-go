@@ -1,0 +1,44 @@
+# arithmetic.yaml
+#
+# swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp
+# unified. Div/0 errors (SQL standard, 22023), '%' supported everywhere.
+#
+# Caveat: the handover claims int64 preservation for division, but the
+# harness shows BIGINT / BIGINT currently returns FLOAT (10/3 =
+# 3.333...). That may be intentional (Postgres-like) or a Java
+# divergence — Java's ArithmeticValue operator set includes INT/LONG
+# divisions that preserve integer. Tracked as a follow-up; for now the
+# scenario uses evenly-divisible operands so it doesn't depend on the
+# choice.
+name: arithmetic
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 20, 4), (2, 7, 0)
+tests:
+  # Evenly-divisible — same answer regardless of int-vs-float coercion.
+  - query: SELECT a / b FROM t WHERE id = 1
+    rows:
+      - [5]
+  # Modulo works on proto + map paths (20 % 4 = 0).
+  - query: SELECT a % b FROM t WHERE id = 1
+    rows:
+      - [0]
+  # Div/0 raises SQLSTATE 22023 per SQL standard (not silent NULL).
+  - query: SELECT a / b FROM t WHERE id = 2
+    error_code: "22023"
+  # Mod/0 also 22023.
+  - query: SELECT a % b FROM t WHERE id = 2
+    error_code: "22023"
+  # Addition.
+  - query: SELECT a + b FROM t WHERE id = 1
+    rows:
+      - [24]
+  # Subtraction.
+  - query: SELECT a - b FROM t WHERE id = 1
+    rows:
+      - [16]
+  # Multiplication.
+  - query: SELECT a * b FROM t WHERE id = 1
+    rows:
+      - [80]

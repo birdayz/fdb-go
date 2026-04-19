@@ -137,15 +137,25 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 }
 
 func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
-	_, err := db.ExecContext(ctx, t.Query)
-	if err == nil {
+	var err error
+	if isQuery(t.Query) {
 		rows, qerr := db.QueryContext(ctx, t.Query)
 		if qerr == nil {
-			_, _ = scanAll(rows)
+			// SELECT errors may surface only during row iteration (e.g.
+			// div/0 in a projection), not at query-prepare time.
+			_, err = scanAll(rows)
 			rows.Close()
+			if err == nil {
+				return fmt.Sprintf("expected error %s, got nil", t.ErrorCode)
+			}
+		} else {
+			err = qerr
+		}
+	} else {
+		_, err = db.ExecContext(ctx, t.Query)
+		if err == nil {
 			return fmt.Sprintf("expected error %s, got nil", t.ErrorCode)
 		}
-		err = qerr
 	}
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) {
@@ -157,6 +167,25 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 		return fmt.Sprintf("expected error code %q, got %q (msg: %s)", wantCode, gotCode, apiErr.Message)
 	}
 	return ""
+}
+
+// isQuery reports whether stmt should be routed through database/sql's
+// Query path. SELECT (and its lead keywords WITH / VALUES) return result
+// sets; everything else goes through Exec.
+func isQuery(stmt string) bool {
+	s := strings.TrimLeft(stmt, " \t\r\n(")
+	// Uppercase the leading word without allocating a full upper-cased copy.
+	for i, r := range s {
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '(' {
+			s = s[:i]
+			break
+		}
+	}
+	switch strings.ToUpper(s) {
+	case "SELECT", "WITH", "VALUES":
+		return true
+	}
+	return false
 }
 
 func scanAll(rows *sql.Rows) ([][]any, error) {
