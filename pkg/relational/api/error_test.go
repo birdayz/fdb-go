@@ -160,7 +160,7 @@ func TestEveryCodeRoundTrips(t *testing.T) {
 		ErrCodeSchemaMappingAlreadyExists, ErrCodeUndefinedSchema, ErrCodeUndefinedIndex,
 		ErrCodeUnknownSchemaTemplate, ErrCodeAnnotationAlreadyExists,
 		ErrCodeIndexAlreadyExists, ErrCodeIncorrectMetadataTableVersion,
-		ErrCodeInvalidSchemaTemplate, ErrCodeInvalidPreparedStatementParam,
+		ErrCodeInvalidSchemaTemplate, ErrCodeInvalidPreparedStatementParameter,
 		ErrCodeExecuteUpdateReturnedResultSet, ErrCodeDuplicateSchemaTemplate,
 		ErrCodeUnknownDatabase, ErrCodeUnionIncorrectColumnCount,
 		ErrCodeUnionIncompatibleColumns, ErrCodeInvalidDatabase,
