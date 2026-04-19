@@ -2188,3 +2188,37 @@ func TestFDB_SQLCommitRollback(t *testing.T) {
 	rows2.Close()
 	g.Expect(ids).To(gomega.Equal([]int64{1})) // only item 1 survived
 }
+
+func TestFDB_InsertWithoutColumnList(t *testing.T) {
+	// INSERT INTO t VALUES (...) without explicit column list uses field
+	// declaration order from the schema template.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_ins_nocollist")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_nocollist")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE nocollist_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_ins_nocollist/items WITH TEMPLATE nocollist_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_ins_nocollist?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert without column list: values in (item_id, val) order.
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item VALUES (1, 42)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id, val int64
+	g.Expect(rows.Scan(&id, &val)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(val).To(gomega.Equal(int64(42)))
+}

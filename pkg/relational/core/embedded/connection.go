@@ -1222,14 +1222,13 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	// Extract column names from the column list.
+	// Explicit column list (optional).
 	colCtx := ins.UidListWithNestingsInParens()
-	if colCtx == nil {
-		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "INSERT without column list is not supported")
-	}
-	var cols []string
-	for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
-		cols = append(cols, stripIdentifierQuotes(uw.Uid().GetText()))
+	var explicitCols []string // nil = no column list (use schema order)
+	if colCtx != nil {
+		for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
+			explicitCols = append(explicitCols, stripIdentifierQuotes(uw.Uid().GetText()))
+		}
 	}
 
 	// Only handle VALUES path.
@@ -1271,6 +1270,16 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 			Open()
 		if storeErr != nil {
 			return nil, storeErr
+		}
+
+		// Resolve column order: explicit list or all fields in descriptor order.
+		cols := explicitCols
+		if cols == nil {
+			fds := msgDesc.Fields()
+			cols = make([]string, fds.Len())
+			for i := 0; i < fds.Len(); i++ {
+				cols[i] = string(fds.Get(i).Name())
+			}
 		}
 
 		for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
