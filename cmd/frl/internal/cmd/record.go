@@ -33,6 +33,7 @@ func newRecordCmd() *cobra.Command {
 	c.AddCommand(
 		newRecordGetCmd(),
 		newRecordScanCmd(),
+		newRecordCountCmd(),
 	)
 	return c
 }

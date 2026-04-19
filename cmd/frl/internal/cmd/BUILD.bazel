@@ -11,6 +11,7 @@ go_library(
         "meta_diff.go",
         "openstore.go",
         "record.go",
+        "record_count.go",
         "root.go",
         "store.go",
         "tx.go",
