@@ -497,6 +497,9 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		if del := dml.DeleteStatement(); del != nil {
 			return c.execDelete(ctx, del)
 		}
+		if upd := dml.UpdateStatement(); upd != nil {
+			return c.execUpdate(ctx, upd)
+		}
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DML statement")
 	}
 	return 0, api.NewError(api.ErrCodeUnsupportedOperation, "only DDL and INSERT statements are supported in this release")
@@ -666,6 +669,120 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	}
 	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
 		"cannot convert %T to proto field kind %s", val, fd.Kind())
+}
+
+// evalExpr evaluates a SET expression (literal only) from an UPDATE statement.
+func evalExpr(expr antlrgen.IExpressionContext) (any, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in SET", expr)
+	}
+	atomCtx, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in SET", pred.ExpressionAtom())
+	}
+	return evalConstant(atomCtx.Constant())
+}
+
+// execUpdate executes UPDATE <table> SET col = val [, ...] [WHERE col = val].
+func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdateStatementContext) (int64, error) {
+	if c.schema == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
+	}
+	if c.dbPath == "" {
+		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
+	}
+
+	tableName := upd.TableName().FullId().GetText()
+	whereExpr := upd.WhereExpr()
+	updatedElems := upd.AllUpdatedElement()
+
+	var updated int64
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		updated = 0
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cat.LoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+
+		rt := md.GetRecordType(tableName)
+		if rt == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+		}
+		msgDesc := rt.Descriptor
+
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		defer cursor.Close() //nolint:errcheck
+
+		for {
+			result, nextErr := cursor.OnNext(ctx)
+			if nextErr != nil {
+				return nil, nextErr
+			}
+			if !result.HasNext() {
+				break
+			}
+			rec := result.GetValue()
+			match, matchErr := evalPredicate(rec.Record, whereExpr)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if !match {
+				continue
+			}
+
+			cloned := proto.Clone(rec.Record)
+			clonedRefl := cloned.ProtoReflect()
+			for _, elem := range updatedElems {
+				colName := elem.FullColumnName().FullId().GetText()
+				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
+				}
+				val, evalErr := evalExpr(elem.Expression())
+				if evalErr != nil {
+					return nil, evalErr
+				}
+				if val == nil {
+					clonedRefl.Clear(fd)
+					continue
+				}
+				protoVal, convErr := convertToProtoValue(fd, val)
+				if convErr != nil {
+					return nil, convErr
+				}
+				clonedRefl.Set(fd, protoVal)
+			}
+			if _, saveErr := store.SaveRecord(cloned); saveErr != nil {
+				return nil, saveErr
+			}
+			updated++
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return updated, nil
 }
 
 // execDelete executes DELETE FROM <table> [WHERE col = value].

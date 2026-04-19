@@ -535,6 +535,70 @@ func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 	g.Expect(count).To(gomega.Equal(2))
 }
 
+func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_update_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_update_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE upd_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING, PRIMARY KEY (item_id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_update_where/items WITH TEMPLATE upd_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_update_where?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx,
+		"INSERT INTO Item (item_id, name) VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	res, err := db.ExecContext(ctx, "UPDATE Item SET name = 'updated' WHERE item_id = 2")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	affected, err := res.RowsAffected()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(affected).To(gomega.Equal(int64(1)))
+
+	// Verify via SELECT * that only row 2 changed.
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Collect item_id → name mapping.
+	nameByID := map[int64]string{}
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// cols[0] = item_id, cols[1] = name (proto field declaration order)
+		id, ok := vals[0].(int64)
+		g.Expect(ok).To(gomega.BeTrue(), "item_id should be int64")
+		name, _ := vals[1].(string)
+		nameByID[id] = name
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(nameByID).To(gomega.HaveLen(3))
+	g.Expect(nameByID[1]).To(gomega.Equal("alpha"))
+	g.Expect(nameByID[2]).To(gomega.Equal("updated"))
+	g.Expect(nameByID[3]).To(gomega.Equal("gamma"))
+}
+
 func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
