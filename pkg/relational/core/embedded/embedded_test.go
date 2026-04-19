@@ -215,3 +215,38 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 		t.Error("IsValid: want false for closed, got true")
 	}
 }
+
+func TestValuesEqual(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a, b any
+		want bool
+	}{
+		{"nil==nil", nil, nil, true},
+		{"nil!=int", nil, int64(0), false},
+		{"int!=nil", int64(0), nil, false},
+		{"int64 equal", int64(1), int64(1), true},
+		{"int64 not equal", int64(1), int64(2), false},
+		// Large int64 that float64 cannot represent exactly (> 2^53).
+		{"large int64 equal", int64(9007199254740993), int64(9007199254740993), true},
+		{"large int64 not equal", int64(9007199254740992), int64(9007199254740993), false},
+		{"float64 equal", float64(3.14), float64(3.14), true},
+		{"float64 not equal", float64(3.14), float64(2.71), false},
+		{"int64 == float64", int64(5), float64(5.0), true},
+		{"float64 == int64", float64(5.0), int64(5), true},
+		{"string equal", "hello", "hello", true},
+		{"string not equal", "hello", "world", false},
+		{"bool true==true", true, true, true},
+		{"bool false!=true", false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := valuesEqual(tc.a, tc.b)
+			if got != tc.want {
+				t.Errorf("valuesEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
