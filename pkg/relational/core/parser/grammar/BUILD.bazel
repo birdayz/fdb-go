@@ -26,6 +26,6 @@ sh_binary(
         "@antlr4_tool_jar//file",
         "@bazel_tools//tools/jdk:current_java_runtime",
     ],
-    deps = ["@bazel_tools//tools/bash/runfiles"],
     toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
 )
