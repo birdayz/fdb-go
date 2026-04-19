@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -27,7 +28,7 @@ func newIndexCmd() *cobra.Command {
 }
 
 func newIndexLsCmd() *cobra.Command {
-	var contextName, metaFile string
+	var contextName, metaFile, outputFmt string
 	var noFDB bool
 	c := &cobra.Command{
 		Use:   "ls",
@@ -37,9 +38,17 @@ func newIndexLsCmd() *cobra.Command {
 			"disabled / readable-unique-pending), the record types it " +
 			"applies to, and the metadata version that last touched it. " +
 			"--no-fdb skips opening the store and shows STATE as '—' " +
-			"so that `--meta-file` can be used as a pure offline lister.",
+			"so that `--meta-file` can be used as a pure offline lister.\n\n" +
+			"--output / -o: 'text' (default, tabwriter-aligned) or 'json' " +
+			"(array of {name, type, state, record_types, last_modified_version}).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+				// ok
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
 				return err
@@ -48,9 +57,6 @@ func newIndexLsCmd() *cobra.Command {
 				if override == nil {
 					src, err := meta.FromContext(cfgCtx, nil, nil)
 					if err != nil {
-						// --no-fdb can't fall back to an FDB-store metadata
-						// source; rewrite the internal error into an
-						// actionable operator message.
 						return fmt.Errorf("--no-fdb requires a file metadata source: %w "+
 							"(add `meta_file` to the context or pass --meta-file)", err)
 					}
@@ -60,20 +66,86 @@ func newIndexLsCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return writeIndexList(cmd.OutOrStdout(), md, nil)
+				return renderIndexList(cmd.OutOrStdout(), md, nil, outputFmt)
 			}
 			return withStoreE(cmd.Context(), cfgCtx, override,
 				func(store *recordlayer.FDBRecordStore) error {
-					return writeIndexList(cmd.OutOrStdout(),
+					return renderIndexList(cmd.OutOrStdout(),
 						store.GetRecordMetaData(),
-						func(name string) string { return store.GetIndexState(name).String() })
+						func(name string) string { return store.GetIndexState(name).String() },
+						outputFmt)
 				})
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
 	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
 	c.Flags().BoolVar(&noFDB, "no-fdb", false, "render from metadata only; skip opening the store")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
+}
+
+// renderIndexList dispatches on outputFmt. Keeps the text/tabwriter
+// renderer in writeIndexList for backwards-compatibility and because
+// nothing else prints a table; JSON rendering lives in its own helper
+// so the shape is easy to evolve.
+func renderIndexList(out io.Writer, md *recordlayer.RecordMetaData, stateFn func(string) string, outputFmt string) error {
+	if outputFmt == "json" {
+		return writeIndexListJSON(out, md, stateFn)
+	}
+	return writeIndexList(out, md, stateFn)
+}
+
+// writeIndexListJSON renders the index catalog as a JSON array. Shape:
+//
+//	[
+//	  {
+//	    "name": "Order$price",
+//	    "type": "value",
+//	    "state": "readable",        # or "—" when stateFn is nil
+//	    "record_types": ["Order"],  # or ["*"] for universal indexes
+//	    "last_modified_version": 1
+//	  },
+//	  ...
+//	]
+//
+// Sorted by name for stable diff-across-invocations (same as text mode).
+func writeIndexListJSON(out io.Writer, md *recordlayer.RecordMetaData, stateFn func(string) string) error {
+	all := md.GetAllIndexes()
+	names := make([]string, 0, len(all))
+	for n := range all {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	rows := make([]indexListRow, 0, len(names))
+	for _, name := range names {
+		idx := all[name]
+		state := "—"
+		if stateFn != nil {
+			state = stateFn(name)
+		}
+		rows = append(rows, indexListRow{
+			Name:                name,
+			Type:                idx.Type,
+			State:               state,
+			RecordTypes:         recordTypeNames(md, idx),
+			LastModifiedVersion: idx.LastModifiedVersion,
+		})
+	}
+	return enc.Encode(rows)
+}
+
+// indexListRow is the JSON row shape emitted by `index ls -o json`.
+// Field names are snake_case to match the Go proto/JSON convention
+// across the rest of frl's structured output.
+type indexListRow struct {
+	Name                string   `json:"name"`
+	Type                string   `json:"type"`
+	State               string   `json:"state"`
+	RecordTypes         []string `json:"record_types"`
+	LastModifiedVersion int      `json:"last_modified_version"`
 }
 
 // writeIndexList renders a tabwriter-aligned table of every index in md,

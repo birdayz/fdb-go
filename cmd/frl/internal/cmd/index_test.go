@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -58,5 +60,58 @@ func TestDemoMetaDataIndexCount(t *testing.T) {
 	md := buildDemoMetaData(t)
 	if got := len(md.GetAllIndexes()); got != 2 {
 		t.Errorf("demo metadata indexes = %d, want 2", got)
+	}
+}
+
+func TestWriteIndexListJSON_RendersArray(t *testing.T) {
+	t.Parallel()
+	md := buildDemoMetaData(t)
+
+	var buf bytes.Buffer
+	if err := writeIndexListJSON(&buf, md, func(name string) string { return "readable" }); err != nil {
+		t.Fatalf("writeIndexListJSON: %v", err)
+	}
+
+	// Parse output back and assert structural invariants.
+	var rows []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
+		t.Fatalf("decode JSON output: %v\nraw:\n%s", err, buf.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2:\n%s", len(rows), buf.String())
+	}
+
+	// Rows must be sorted by name alphabetically.
+	if rows[0]["name"] != "Customer$name" || rows[1]["name"] != "Order$price" {
+		t.Errorf("rows not alphabetically sorted by name:\n%s", buf.String())
+	}
+
+	// Every row must carry the fixed schema fields.
+	for i, row := range rows {
+		for _, key := range []string{"name", "type", "state", "record_types", "last_modified_version"} {
+			if _, ok := row[key]; !ok {
+				t.Errorf("row %d missing %q key:\n%s", i, key, buf.String())
+			}
+		}
+		if row["state"] != "readable" {
+			t.Errorf("row %d state = %v; want readable", i, row["state"])
+		}
+	}
+}
+
+func TestWriteIndexListJSON_EmptyMetadata(t *testing.T) {
+	t.Parallel()
+	// Metadata with no indexes renders an empty array, not a text fallback.
+	md := describeBuilder(t, func(b *recordlayer.RecordMetaDataBuilder) {})
+	var buf bytes.Buffer
+	if err := writeIndexListJSON(&buf, md, nil); err != nil {
+		t.Fatalf("writeIndexListJSON: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, buf.String())
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected empty array, got %d rows:\n%s", len(rows), buf.String())
 	}
 }
