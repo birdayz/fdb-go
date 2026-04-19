@@ -4284,3 +4284,40 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	g.Expect(amount).To(gomega.Equal(int64(500)))
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
+
+func TestFDB_UpdateSetWithFunction(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_upd_fn")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_fn")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE upd_fn_tmpl
+		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_upd_fn/main WITH TEMPLATE upd_fn_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_upd_fn?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name) VALUES (1, 'widget')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name) VALUES (2, 'gadget')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// UPDATE with UPPER() scalar function.
+	_, err = db.ExecContext(ctx, `UPDATE Product SET name = UPPER(name) WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var n string
+	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 1`).Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal("WIDGET"))
+
+	// Unchanged row.
+	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 2`).Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal("gadget"))
+}
