@@ -97,13 +97,14 @@ func TestEmbeddedConnection_ResetSessionClosedReturnsError(t *testing.T) {
 
 func TestEmbeddedConnection_IsValid(t *testing.T) {
 	t.Parallel()
+	// Open connections are valid regardless of catalog init state.
 	conn := &EmbeddedConnection{catalogReady: true}
 	if !conn.IsValid() {
 		t.Error("IsValid: want true, got false")
 	}
 	conn2 := &EmbeddedConnection{catalogReady: false}
-	if conn2.IsValid() {
-		t.Error("IsValid: want false for uninitialized, got true")
+	if !conn2.IsValid() {
+		t.Error("IsValid: uninitialized but open should be valid")
 	}
 	conn3 := &EmbeddedConnection{closed: true, catalogReady: true}
 	if conn3.IsValid() {

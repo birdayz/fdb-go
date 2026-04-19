@@ -262,14 +262,10 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 }
 
 // IsValid implements driver.Validator. Returns true if the connection
-// is open and the catalog was successfully initialised.
+// is open; the FDB client is stateless so a non-closed connection is
+// always usable (catalog init is lazy, not a validity condition).
 func (c *EmbeddedConnection) IsValid() bool {
-	if c.closed {
-		return false
-	}
-	c.catalogMu.Lock()
-	defer c.catalogMu.Unlock()
-	return c.catalogReady
+	return !c.closed
 }
 
 // PrepareContext implements driver.ConnPrepareContext.
