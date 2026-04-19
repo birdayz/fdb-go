@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 func TestSubstituteParams(t *testing.T) {
@@ -199,6 +201,41 @@ func TestEmbeddedConnection_ResetSession(t *testing.T) {
 	}
 	if conn.schema != "" {
 		t.Errorf("ResetSession: schema not cleared, got %q", conn.schema)
+	}
+}
+
+// TestEmbeddedConnection_ResetSessionClearsPerRequestState pins the
+// pooled-connection hygiene invariants that were missing before:
+// activeTx, ctes, and schemaCache must not leak across checkouts.
+func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{
+		schema:        "other",
+		defaultSchema: "main",
+		ctes: map[string]*cteData{
+			"LEAKED": {cols: []string{"x"}, rows: [][]driver.Value{{int64(1)}}},
+		},
+		schemaCache: map[string]api.Schema{
+			"stale": nil,
+		},
+		// activeTx left nil — rolling back a nil tx must not panic, but the
+		// reset must still run to completion (the schemaCache / ctes cleanup
+		// would be skipped if we early-returned on activeTx presence).
+	}
+	if err := conn.ResetSession(context.TODO()); err != nil {
+		t.Fatalf("ResetSession: unexpected error: %v", err)
+	}
+	if conn.schema != "main" {
+		t.Errorf("schema not restored to defaultSchema: got %q want %q", conn.schema, "main")
+	}
+	if conn.ctes != nil {
+		t.Errorf("ctes not cleared: %v", conn.ctes)
+	}
+	if len(conn.schemaCache) != 0 {
+		t.Errorf("schemaCache not cleared: %v", conn.schemaCache)
+	}
+	if conn.activeTx != nil {
+		t.Errorf("activeTx not cleared: %v", conn.activeTx)
 	}
 }
 

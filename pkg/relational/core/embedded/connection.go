@@ -2701,12 +2701,27 @@ func (c *EmbeddedConnection) SetDefaultSchema(s string) {
 }
 
 // ResetSession implements driver.SessionResetter. Resets per-request
-// state (schema) so pooled connections start clean.
+// state so pooled connections start clean:
+//   - schema → defaultSchema (original CONNECT value)
+//   - activeTx → rolled back (prevents a leaked transaction bleeding into
+//     the next checkout)
+//   - ctes → cleared (mid-query panic/error could leave the map populated)
+//   - schemaCache → cleared (schema evolution between checkouts would
+//     otherwise serve a stale descriptor)
 func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
 	c.schema = c.defaultSchema
+	if c.activeTx != nil {
+		// Best-effort rollback; we're about to release the connection
+		// back to the pool and must not leak the open FDB tx.
+		tx := c.activeTx
+		c.activeTx = nil
+		tx.rctx.Cancel()
+	}
+	c.ctes = nil
+	c.schemaCache = make(map[string]api.Schema)
 	return nil
 }
 

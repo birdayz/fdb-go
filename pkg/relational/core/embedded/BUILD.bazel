@@ -24,4 +24,5 @@ go_test(
     name = "embedded_test",
     srcs = ["embedded_test.go"],
     embed = [":embedded"],
+    deps = ["//pkg/relational/api"],
 )
