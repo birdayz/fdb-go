@@ -5545,6 +5545,57 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
+// when the subquery result contains a NULL row and no concrete match is found,
+// the entire IN expression is UNKNOWN (filters the outer row out in WHERE;
+// NOT IN must not flip it to TRUE). Pre-fix, matchSubqueryIN silently skipped
+// NULL rows — `WHERE NOT IN (subquery with NULL)` returned TRUE instead of
+// UNKNOWN, keeping rows that Java rejects.
+func TestFDB_SubqueryInNullRow(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_subq_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subq_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+		CREATE TABLE U (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subq_null/main WITH TEMPLATE subq_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_subq_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// T: 3 rows; U: two rows, one with v NULL.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (2, 20), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO U (id, v) VALUES (1, 10)`) // v=10
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO U (id) VALUES (2)`) // v=NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// n IN (SELECT v FROM U): id=1 matches v=10; id=2,3 don't match + U has a
+	// NULL → UNKNOWN → filtered out. Only id=1 passes.
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "id=1 matches v=10; others UNKNOWN due to NULL in subquery")
+
+	// n NOT IN (SELECT v FROM U): id=1 matches so excluded; id=2,3 don't
+	// match but NULL in subquery → UNKNOWN → all excluded. Result: 0 rows.
+	// Pre-fix returned 2 rows (id=2 and id=3).
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)),
+		"n NOT IN (subquery with NULL) is UNKNOWN for every row; no rows pass")
+}
+
 // TestFDB_CountDistinctTypeCollision proves COUNT(DISTINCT col) doesn't
 // collapse values that differ only by concrete type. The pre-fix
 // fmt.Sprintf("%v", v) key made integer 5 and string '5' share a key;

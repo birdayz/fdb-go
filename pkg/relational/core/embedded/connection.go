@@ -4493,18 +4493,38 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	}
 }
 
-// matchSubqueryIN checks whether fieldVal appears in the first column of subRows.
-// Returns (matched, notNegated) following SQL IN/NOT IN semantics.
-func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) bool {
+// matchSubqueryIN evaluates `fieldVal [NOT] IN (subRows)` per SQL §8.4.
+// Returns triTrue/triFalse if a concrete match/non-match can be decided,
+// or triNull when no concrete match is found and at least one subquery row
+// contributed a NULL (the expansion into an AND/OR chain of equalities
+// collapses to UNKNOWN in that case). WHERE callers collapse triNull to
+// false; NOT IN sees an UNKNOWN that must not flip to TRUE.
+func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) triBool {
+	var hadNull bool
 	for _, row := range subRows {
 		if len(row) == 0 {
 			continue
 		}
-		if valuesEqual(fieldVal, row[0]) {
-			return !negated
+		v := row[0]
+		if v == nil {
+			// NULL in subquery result contributes UNKNOWN to the expansion.
+			hadNull = true
+			continue
+		}
+		if valuesEqual(fieldVal, v) {
+			if negated {
+				return triFalse
+			}
+			return triTrue
 		}
 	}
-	return negated
+	if hadNull {
+		return triNull
+	}
+	if negated {
+		return triTrue
+	}
+	return triFalse
 }
 
 // evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
@@ -4540,7 +4560,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if err != nil {
 			return triFalse, err
 		}
-		return triFromBool(matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)), nil
+		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil), nil
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
@@ -5111,7 +5131,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			if subErr != nil {
 				return triFalse, subErr
 			}
-			return triFromBool(matchSubqueryIN(fieldVal, subRows, p.NOT() != nil)), nil
+			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil), nil
 		}
 		if p.InList().Expressions() == nil {
 			return triFromBool(p.NOT() != nil), nil
