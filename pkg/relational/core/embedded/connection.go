@@ -5683,6 +5683,35 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			}
 			continue
 		}
+		// Skip line comments `-- ...\n`. A '?' in a comment is literal.
+		if ch == '-' && i+1 < len(query) && query[i+1] == '-' {
+			for i < len(query) && query[i] != '\n' {
+				b.WriteByte(query[i])
+				i++
+			}
+			if i < len(query) {
+				b.WriteByte(query[i]) // write the trailing newline
+			}
+			continue
+		}
+		// Skip block comments `/* ... */`. A '?' in a comment is literal.
+		if ch == '/' && i+1 < len(query) && query[i+1] == '*' {
+			b.WriteByte(query[i])
+			i++
+			b.WriteByte(query[i])
+			i++
+			for i+1 < len(query) {
+				if query[i] == '*' && query[i+1] == '/' {
+					b.WriteByte(query[i])
+					i++
+					b.WriteByte(query[i])
+					break
+				}
+				b.WriteByte(query[i])
+				i++
+			}
+			continue
+		}
 		if ch != '?' {
 			b.WriteByte(ch)
 			continue

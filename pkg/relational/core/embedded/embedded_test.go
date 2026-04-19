@@ -89,6 +89,22 @@ func TestSubstituteParams(t *testing.T) {
 			args:  []driver.NamedValue{nv(1, int64(5))},
 			want:  "SELECT * FROM t WHERE name = '?' AND id = 5",
 		},
+		{
+			// swingshift-35: line comments must not consume ? placeholders.
+			// Previously: `id = ? -- why?` would eat two args (the first for
+			// the real placeholder, the second trying to satisfy the ? in
+			// the comment) and either over-consume or error on arg count.
+			name:  "question mark inside line comment not substituted",
+			query: "SELECT * FROM t WHERE id = ? -- why?\nAND name = ?",
+			args:  []driver.NamedValue{nv(1, int64(5)), nv(2, "x")},
+			want:  "SELECT * FROM t WHERE id = 5 -- why?\nAND name = 'x'",
+		},
+		{
+			name:  "question mark inside block comment not substituted",
+			query: "SELECT /* hmm? */ id FROM t WHERE id = ?",
+			args:  []driver.NamedValue{nv(1, int64(5))},
+			want:  "SELECT /* hmm? */ id FROM t WHERE id = 5",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
