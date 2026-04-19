@@ -5509,6 +5509,62 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_OrderByNullOrdering pins Java-conformant NULL ordering:
+//
+//	ORDER BY col ASC  → NULLs FIRST
+//	ORDER BY col DESC → NULLs LAST
+//
+// Matches Java's ParseHelpers.isNullsLast default (returns isDescending).
+// Before the compareValues NULL-direction fix, Go returned NULL > non-NULL
+// so ASC put NULLs last — the opposite of Java.
+func TestFDB_OrderByNullOrdering(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_order_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_order_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE order_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_order_null/main WITH TEMPLATE order_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_order_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: n=10; id=2: n=NULL; id=3: n=30.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 10), (3, 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (2)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	collect := func(sql string) []int64 {
+		rows, err := db.QueryContext(ctx, sql)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+			ids = append(ids, id)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		return ids
+	}
+
+	// ASC NULLS FIRST (Java default): NULL row (id=2) first, then 10 then 30.
+	g.Expect(collect(`SELECT id FROM T ORDER BY n ASC`)).
+		To(gomega.Equal([]int64{2, 1, 3}), "ASC default must be NULLS FIRST per Java")
+
+	// DESC NULLS LAST (Java default): 30, 10, then NULL.
+	g.Expect(collect(`SELECT id FROM T ORDER BY n DESC`)).
+		To(gomega.Equal([]int64{3, 1, 2}), "DESC default must be NULLS LAST per Java")
+}
+
 // TestFDB_CTEScopeIsolation pins down nested-query CTE scoping: a derived
 // table or inner WITH clause must not leak names to the enclosing query.
 // Before the scope-stack fix, `c.ctes` was a single shared map — an inner
