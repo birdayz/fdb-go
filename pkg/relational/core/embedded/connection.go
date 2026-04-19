@@ -3409,6 +3409,82 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
+	case "SQRT":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT: argument must be numeric, got %T", v)
+		}
+		if f < 0 {
+			return nil, nil // SQRT of negative returns NULL per SQL standard.
+		}
+		return math.Sqrt(f), nil
+	case "EXP":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP: argument must be numeric, got %T", v)
+		}
+		return math.Exp(f), nil
+	case "LN":
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN: argument must be numeric, got %T", v)
+		}
+		if f <= 0 {
+			return nil, nil
+		}
+		return math.Log(f), nil
+	case "LOG":
+		// LOG(x) = natural log; LOG(base, x) = log_base(x).
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG requires 1 or 2 arguments")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		f, ok := toFloat64(v)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v)
+		}
+		if len(fArgs) == 1 {
+			if f <= 0 {
+				return nil, nil
+			}
+			return math.Log(f), nil
+		}
+		v2, err := eval(fArgs[1].Expression())
+		if err != nil || v2 == nil {
+			return nil, err
+		}
+		f2, ok := toFloat64(v2)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v2)
+		}
+		if f <= 0 || f == 1 || f2 <= 0 {
+			return nil, nil
+		}
+		return math.Log(f2) / math.Log(f), nil
 	case "REVERSE":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REVERSE requires 1 argument")

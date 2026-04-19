@@ -5072,3 +5072,41 @@ func TestFDB_ReversePosition(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT POSITION('zzz', s) FROM T WHERE id = 1`).Scan(&notFound)).To(gomega.Succeed())
 	g.Expect(notFound).To(gomega.Equal(int64(0)))
 }
+
+func TestFDB_MathFunctionsTranscendental(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_math_fn")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_fn")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE math_fn_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, x BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_fn/main WITH TEMPLATE math_fn_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_math_fn?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, x) VALUES (1, 16)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// SQRT(16) = 4.0, EXP(0) = 1.0, LN(1) = 0, LOG(2, 8) = 3.
+	var s, e, l, lb float64
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT SQRT(x), EXP(0), LN(1), LOG(2, 8) FROM T WHERE id = 1`).
+		Scan(&s, &e, &l, &lb)).To(gomega.Succeed())
+	g.Expect(s).To(gomega.Equal(4.0))
+	g.Expect(e).To(gomega.Equal(1.0))
+	g.Expect(l).To(gomega.Equal(0.0))
+	g.Expect(lb).To(gomega.BeNumerically("~", 3.0, 1e-9))
+
+	// SQRT of negative → NULL.
+	var v sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(-1) FROM T WHERE id = 1`).Scan(&v)).To(gomega.Succeed())
+	g.Expect(v.Valid).To(gomega.BeFalse())
+}
