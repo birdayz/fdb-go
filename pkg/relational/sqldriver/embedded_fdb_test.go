@@ -5509,6 +5509,61 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between
+// an actual NULL and the literal string "<nil>". Previously `groupByKey`
+// used `fmt.Sprintf("%v", ...)` which renders nil as "<nil>" and the
+// string "<nil>" identically, collapsing the two groups. Using a
+// length-prefixed type-tagged encoding fixes the collision while keeping
+// SQL's NULL=NULL-for-GROUP-BY semantics intact (every NULL normalises to
+// the same "N|" sentinel).
+func TestFDB_GroupByNullVsNilString(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_gb_nil")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_nil")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_nil_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_nil/main WITH TEMPLATE gb_nil_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_gb_nil?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: s NULL; id=2: s=literal "<nil>"; id=3: s=literal "<nil>" again.
+	// Three rows with two distinct groups expected: (NULL, count=1) and
+	// ("<nil>", count=2). The pre-fix `fmt.Sprintf("%v", nil)` collision
+	// would have produced a single group with count=3.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`) // s NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (2, '<nil>'), (3, '<nil>')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT s, COUNT(*) FROM T GROUP BY s`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	seen := map[string]int64{}
+	for rows.Next() {
+		var s sql.NullString
+		var c int64
+		g.Expect(rows.Scan(&s, &c)).To(gomega.Succeed())
+		key := "NULL"
+		if s.Valid {
+			key = s.String
+		}
+		seen[key] = c
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(seen).To(gomega.Equal(map[string]int64{"NULL": 1, "<nil>": 2}),
+		"GROUP BY must split NULL from literal '<nil>' into two groups")
+}
+
 // TestFDB_OrderByNullOrdering pins Java-conformant NULL ordering:
 //
 //	ORDER BY col ASC  → NULLs FIRST

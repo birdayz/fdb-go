@@ -4700,10 +4700,21 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 }
 
 // groupByKey builds a comparable string key from the group-by column values.
+// Uses a type-tagged, length-prefixed encoding so that a NULL entry and the
+// literal string "<nil>" produce different keys (fmt.Sprintf("%v", nil)
+// would otherwise collide them), and so that values containing the
+// separator byte cannot accidentally straddle adjacent columns. SQL groups
+// NULLs together (NULL=NULL under GROUP BY), which is preserved because
+// every NULL produces the same "N|" sentinel regardless of column type.
 func groupByKey(groupVals []driver.Value) string {
 	var b strings.Builder
 	for _, v := range groupVals {
-		fmt.Fprintf(&b, "%v\x00", v)
+		if v == nil {
+			b.WriteString("N|")
+			continue
+		}
+		s := fmt.Sprintf("%T\x00%v", v, v)
+		fmt.Fprintf(&b, "V:%d:%s|", len(s), s)
 	}
 	return b.String()
 }
