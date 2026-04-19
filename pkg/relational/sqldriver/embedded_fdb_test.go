@@ -5545,6 +5545,56 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_GroupByCountStarOrdering pins SELECT grouping + ORDER BY COUNT(*)
+// interplay. Exercises the countStar demote fix together with ORDER BY on
+// the resulting aggregate — regression guard for the "groups in arbitrary
+// order" subset of the GROUP BY countStar bug.
+func TestFDB_GroupByCountStarOrdering(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_gb_cs_order")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_cs_order")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_cs_order_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, k STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_cs_order/main WITH TEMPLATE gb_cs_order_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_gb_cs_order?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Groups by k: a=3, b=1, c=2. Sorted by count ASC: b(1), c(2), a(3).
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO T (id, k) VALUES (1, 'a'), (2, 'a'), (3, 'a'),
+			(4, 'b'), (5, 'c'), (6, 'c')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT k, COUNT(*) FROM T GROUP BY k ORDER BY COUNT(*) ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		k string
+		c int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.k, &r.c)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"b", 1}, {"c", 2}, {"a", 3},
+	}), "groups ordered by COUNT(*) ascending")
+}
+
 // TestFDB_JoinWithNullKey pins that JOIN ON with NULL keys behaves per
 // SQL spec: NULL = NULL in an ON clause is UNKNOWN, so rows with NULL
 // keys do NOT match. INNER JOIN skips them; LEFT JOIN preserves the
