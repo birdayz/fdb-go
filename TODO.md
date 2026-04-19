@@ -344,6 +344,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **INFORMATION_SCHEMA WHERE filtering** — filterSysRows helper reuses evalHaving on col→value map; applies to SCHEMATA, TABLES, COLUMNS, INDEXES. 1 FDB integration test. swingshift-33.
 - [x] **UNION ALL / UNION DISTINCT** — execQueryBodyRows + execUnion handle recursive UNION trees. execSelectQuery/execSelectQueryFull refactor splits routing from FDB scan. 2 FDB integration tests. swingshift-33.
 - [x] **INSERT INTO ... SELECT** — execInsertSelect evaluates QueryExpressionBody (incl. UNION), maps source→target columns via convertToProtoValue. 1 FDB integration test. swingshift-33.
+- [x] **CAST(expr AS type)** — DataTypeFunctionCallContext in evalSpecificFunction; castValue helper for BIGINT/INTEGER/FLOAT/DOUBLE/STRING/BOOLEAN. swingshift-33.
+- [x] **SUBSTRING/SUBSTR, REPLACE, IF/IIF** — string/conditional functions; BinaryComparisonPredicateContext now handled in evalExprAtom (comparisons as values). 1 integration test. swingshift-33.
+- [x] **FLOOR/CEIL/CEILING/ROUND/MOD/POWER/POW/SIGN** — math functions. 1 integration test. swingshift-33.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
