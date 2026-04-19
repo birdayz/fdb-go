@@ -2458,6 +2458,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if parseErr != nil {
 				return 0, api.NewErrorf(api.ErrCodeInvalidParameter, "invalid %s value %q: %v", label, a.DecimalLiteral().GetText(), parseErr)
 			}
+			// Postgres, MySQL, Oracle, and SQL:2008 all reject negative
+			// LIMIT/OFFSET. Previously Go silently treated negative LIMIT
+			// as "no limit" (the downstream guard uses `sq.limit >= 0`),
+			// hiding user bugs like `LIMIT -1` instead of surfacing them.
+			if n < 0 {
+				return 0, api.NewErrorf(api.ErrCodeInvalidParameter, "%s cannot be negative: %d", label, n)
+			}
 			return n, nil
 		}
 		// Grammar exposes GetLimit() / GetOffset() for "LIMIT n OFFSET m" form,
