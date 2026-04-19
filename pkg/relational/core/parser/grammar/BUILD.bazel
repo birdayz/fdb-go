@@ -14,8 +14,9 @@ go_library(
 #     bazelisk run //pkg/relational/core/parser/grammar:generate_parser
 #
 # Wrapped by `just generate-parser`; CI gates drift via `just generate && git
-# diff --exit-code`. Requires `java` on PATH at run time — we don't ship a JDK
-# via Bazel just for this non-hermetic tool invocation.
+# diff --exit-code`. Uses Bazel's hermetic JDK via
+# @bazel_tools//tools/jdk:current_java_runtime, so CI runners don't need
+# `java` on PATH. The ANTLR complete jar is a standalone executable.
 sh_binary(
     name = "generate_parser",
     srcs = ["generate_parser.sh"],
@@ -23,6 +24,8 @@ sh_binary(
         "RelationalLexer.g4",
         "RelationalParser.g4",
         "@antlr4_tool_jar//file",
+        "@bazel_tools//tools/jdk:current_java_runtime",
     ],
     deps = ["@bazel_tools//tools/bash/runfiles"],
+    toolchains = ["@bazel_tools//tools/jdk:current_java_runtime"],
 )

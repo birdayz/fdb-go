@@ -39,9 +39,18 @@ if [[ -z "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
     exit 1
 fi
 
-if ! command -v java >/dev/null 2>&1; then
-    echo "ERROR: 'java' not found on PATH. Install a JDK (17+) and retry." >&2
-    exit 1
+# Use Bazel's hermetic JDK (provided by @bazel_tools//tools/jdk:current_java_runtime
+# via the toolchains attribute). $JAVA_HOME is set by Bazel when the binary
+# runs; it points to the JDK under rules_java's runtime.
+if [[ -z "${JAVA_HOME:-}" || ! -x "${JAVA_HOME}/bin/java" ]]; then
+    # Fallback: search runfiles for Bazel's JDK runtime.
+    JAVA_BIN="$(find "${RUNFILES_DIR:-.}" -name java -path "*/bin/java" -type f 2>/dev/null | head -1)"
+    if [[ -z "$JAVA_BIN" || ! -x "$JAVA_BIN" ]]; then
+        echo "ERROR: cannot locate Bazel's hermetic JDK. JAVA_HOME=${JAVA_HOME:-unset}" >&2
+        exit 1
+    fi
+else
+    JAVA_BIN="${JAVA_HOME}/bin/java"
 fi
 
 JAR="$(rlocation antlr4_tool_jar/file/antlr-4.13.1-complete.jar)"
@@ -74,9 +83,9 @@ mkdir -p "$STAGE_OUT"
 
 cd "$STAGE"
 # Lexer first; produces RelationalLexer.tokens in $STAGE_OUT.
-java -jar "$JAR" -Dlanguage=Go -package antlrgen -o "$STAGE_OUT" RelationalLexer.g4
+"$JAVA_BIN" -jar "$JAR" -Dlanguage=Go -package antlrgen -o "$STAGE_OUT" RelationalLexer.g4
 # Parser reads the lexer's .tokens via `-lib $STAGE_OUT`.
-java -jar "$JAR" -Dlanguage=Go -package antlrgen -visitor -lib "$STAGE_OUT" -o "$STAGE_OUT" RelationalParser.g4
+"$JAVA_BIN" -jar "$JAR" -Dlanguage=Go -package antlrgen -visitor -lib "$STAGE_OUT" -o "$STAGE_OUT" RelationalParser.g4
 
 # Preserve the committed BUILD.bazel (gazelle-managed) across regen.
 BUILD_BAZEL=""
