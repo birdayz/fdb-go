@@ -26,7 +26,70 @@ func newMetaCmd() *cobra.Command {
 	c.AddCommand(
 		newMetaGetCmd(),
 		newMetaTypesCmd(),
+		newMetaValidateCmd(),
+		newMetaEvolveCheckCmd(),
 	)
+	return c
+}
+
+// newMetaValidateCmd validates a standalone MetaData .pb file. Run it on
+// the artifact your deploy pipeline produced before shipping — if this
+// passes, the file parses AND passes all structural invariants the
+// record-layer enforces at Build() time. No FDB needed.
+func newMetaValidateCmd() *cobra.Command {
+	var path string
+	c := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate a standalone MetaData.pb file",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if path == "" {
+				return fmt.Errorf("--file is required")
+			}
+			src := &meta.FileSource{Path: path}
+			if _, err := src.Load(cmd.Context()); err != nil {
+				return err
+			}
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "ok: %s parses and validates\n", path)
+			return err
+		},
+	}
+	c.Flags().StringVar(&path, "file", "", "path to MetaData.pb (required)")
+	return c
+}
+
+// newMetaEvolveCheckCmd compares two MetaData files and reports whether
+// evolving from --old to --new is safe (Java-compatible per
+// MetaDataEvolutionValidator). Intended for CI pre-merge checks — catch
+// migration bugs before they hit FDBMetaDataStore.saveRecordMetaData().
+func newMetaEvolveCheckCmd() *cobra.Command {
+	var oldPath, newPath string
+	c := &cobra.Command{
+		Use:   "evolve-check",
+		Short: "Verify an evolution from --old to --new metadata is safe",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if oldPath == "" || newPath == "" {
+				return fmt.Errorf("both --old and --new are required")
+			}
+			oldMeta, err := (&meta.FileSource{Path: oldPath}).Load(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("load --old: %w", err)
+			}
+			newMeta, err := (&meta.FileSource{Path: newPath}).Load(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("load --new: %w", err)
+			}
+			validator := recordlayer.NewMetaDataEvolutionValidator().Build()
+			if err := validator.Validate(oldMeta, newMeta); err != nil {
+				return fmt.Errorf("incompatible evolution: %w", err)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "ok: %s -> %s is a valid evolution\n", oldPath, newPath)
+			return err
+		},
+	}
+	c.Flags().StringVar(&oldPath, "old", "", "path to the existing MetaData.pb (required)")
+	c.Flags().StringVar(&newPath, "new", "", "path to the proposed MetaData.pb (required)")
 	return c
 }
 
