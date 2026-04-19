@@ -12,38 +12,38 @@ schema_template: |
 setup:
   - INSERT INTO lb VALUES (1, true), (2, false), (3, null)
 tests:
-  - query: SELECT a, b FROM lb WHERE b = true
+  - query: SELECT lb.* FROM lb WHERE b = true
     rows:
       - [1, true]
-  - query: SELECT a, b FROM lb WHERE b = false
+  - query: SELECT lb.* FROM lb WHERE b = false
     rows:
       - [2, false]
-  - query: SELECT a, b FROM lb WHERE b <> TRUE
+  - query: SELECT lb.* FROM lb WHERE b <> TRUE
     rows:
       - [2, false]
-  - query: SELECT a, b FROM lb WHERE b <> FALSE
+  - query: SELECT lb.* FROM lb WHERE b <> FALSE
     rows:
       - [1, true]
-  - query: SELECT a, b FROM lb WHERE b IS TRUE
+  - query: SELECT lb.* FROM lb WHERE b IS TRUE
     rows:
       - [1, true]
-  - query: SELECT a, b FROM lb WHERE b IS FALSE
+  - query: SELECT lb.* FROM lb WHERE b IS FALSE
     rows:
       - [2, false]
-  - query: SELECT a, b FROM lb WHERE b IS NULL
+  - query: SELECT lb.* FROM lb WHERE b IS NULL
     rows:
       - [3, ~]
-  - query: SELECT a, b FROM lb WHERE b IS NOT TRUE
+  - query: SELECT lb.* FROM lb WHERE b IS NOT TRUE
     unordered: true
     rows:
       - [2, false]
       - [3, ~]
-  - query: SELECT a, b FROM lb WHERE b IS NOT FALSE
+  - query: SELECT lb.* FROM lb WHERE b IS NOT FALSE
     unordered: true
     rows:
       - [1, true]
       - [3, ~]
-  - query: SELECT a, b FROM lb WHERE b IS NOT NULL
+  - query: SELECT lb.* FROM lb WHERE b IS NOT NULL
     unordered: true
     rows:
       - [1, true]
@@ -52,5 +52,5 @@ tests:
   # returned TRUE for every row. Grammar quirk: parens around the
   # comparison parse as RecordConstructorExpressionAtom, so we rely on
   # SQL precedence (NOT binds tighter) to express this.
-  - query: SELECT a, b FROM lb WHERE NOT b = null
+  - query: SELECT lb.* FROM lb WHERE NOT b = null
     rows: []
