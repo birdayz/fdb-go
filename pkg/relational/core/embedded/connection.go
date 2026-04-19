@@ -548,26 +548,61 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				continue
 			}
+			// COUNT(*) (aggArg empty) counts every row, including all-NULL.
+			// COUNT(<expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
+			if ac.aggFunc == "COUNT" && ac.aggArg == "" {
+				gs.counts[i]++
+				continue
+			}
+			if colVal == nil {
+				continue
+			}
 			gs.counts[i]++
-			if colVal != nil {
-				fv, _ := toFloat64(colVal)
-				switch ac.aggFunc {
-				case "SUM":
+			switch ac.aggFunc {
+			case "SUM", "AVG":
+				fv, ok := toFloat64(colVal)
+				if !ok {
+					return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"%s requires numeric input, got %T", ac.aggFunc, colVal)
+				}
+				if ac.aggFunc == "SUM" {
 					gs.sums[i] += fv
-				case "MIN":
-					if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
-						gs.mins[i] = colVal
-					}
-				case "MAX":
-					if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
-						gs.maxes[i] = colVal
-					}
-				case "AVG":
+				} else {
 					gs.avgs[i] += fv
 					gs.avgsN[i]++
 				}
+			case "MIN":
+				if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+					gs.mins[i] = colVal
+				}
+			case "MAX":
+				if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+					gs.maxes[i] = colVal
+				}
 			}
 		}
+	}
+	// SQL spec: ungrouped aggregate over an empty input still emits one row
+	// (COUNT=0, SUM/MIN/MAX/AVG=NULL). Materialise a synthetic empty group so
+	// the emit loop produces that row.
+	if !hasGroups && len(groupOrder) == 0 {
+		dsets := make([]map[string]struct{}, len(sq.aggCols))
+		for di, ac := range sq.aggCols {
+			if ac.aggDistinct {
+				dsets[di] = make(map[string]struct{})
+			}
+		}
+		groups[""] = &mapGroupState{
+			groupVals:    nil,
+			counts:       make([]int64, len(sq.aggCols)),
+			sums:         make([]float64, len(sq.aggCols)),
+			mins:         make([]driver.Value, len(sq.aggCols)),
+			maxes:        make([]driver.Value, len(sq.aggCols)),
+			avgs:         make([]float64, len(sq.aggCols)),
+			avgsN:        make([]int64, len(sq.aggCols)),
+			distinctSets: dsets,
+		}
+		groupOrder = append(groupOrder, "")
 	}
 	groupColIdx := map[string]int{}
 	for i, col := range sq.groupBy {
@@ -592,7 +627,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				case "COUNT":
 					rowVals[i] = gs.counts[i]
 				case "SUM":
-					rowVals[i] = gs.sums[i]
+					// SUM of empty-or-all-NULL input is NULL per SQL standard,
+					// not 0. counts[i]>0 means at least one non-null observed.
+					if gs.counts[i] > 0 || ac.aggDistinct {
+						rowVals[i] = gs.sums[i]
+					}
 				case "MIN":
 					rowVals[i] = gs.mins[i]
 				case "MAX":
@@ -1261,27 +1300,63 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						}
 						continue
 					}
+					// COUNT(*) counts every row including all-NULL. Detected by
+					// empty aggArg (aggArgFDs[i] is nil when argCol is "").
+					if ac.aggFunc == "COUNT" && ac.aggArg == "" {
+						gs.counts[i]++
+						continue
+					}
+					// COUNT(<expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
+					if aggArgFDs[i] == nil || !msg.ProtoReflect().Has(aggArgFDs[i]) {
+						continue
+					}
+					v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
 					gs.counts[i]++
-					if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
-						v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
-						fv, _ := toFloat64(v)
-						switch ac.aggFunc {
-						case "SUM":
+					switch ac.aggFunc {
+					case "SUM", "AVG":
+						fv, ok := toFloat64(v)
+						if !ok {
+							return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+								"%s requires numeric input, got %T", ac.aggFunc, v)
+						}
+						if ac.aggFunc == "SUM" {
 							gs.sums[i] += fv
-						case "MIN":
-							if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
-								gs.mins[i] = v
-							}
-						case "MAX":
-							if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
-								gs.maxes[i] = v
-							}
-						case "AVG":
+						} else {
 							gs.avgs[i] += fv
 							gs.avgsN[i]++
 						}
+					case "MIN":
+						if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+							gs.mins[i] = v
+						}
+					case "MAX":
+						if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+							gs.maxes[i] = v
+						}
 					}
 				}
+			}
+
+			// SQL spec: ungrouped aggregate over empty input emits one row
+			// (COUNT=0, SUM/MIN/MAX/AVG=NULL).
+			if len(sq.groupBy) == 0 && len(groupOrder) == 0 {
+				dsets := make([]map[string]struct{}, len(sq.aggCols))
+				for di, ac := range sq.aggCols {
+					if ac.aggDistinct {
+						dsets[di] = make(map[string]struct{})
+					}
+				}
+				groups[""] = &groupState{
+					groupVals:    nil,
+					counts:       make([]int64, len(sq.aggCols)),
+					sums:         make([]float64, len(sq.aggCols)),
+					mins:         make([]driver.Value, len(sq.aggCols)),
+					maxes:        make([]driver.Value, len(sq.aggCols)),
+					avgs:         make([]float64, len(sq.aggCols)),
+					avgsN:        make([]int64, len(sq.aggCols)),
+					distinctSets: dsets,
+				}
+				groupOrder = append(groupOrder, "")
 			}
 
 			// Build output cols.
@@ -1310,7 +1385,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						case "COUNT":
 							rowVals[i] = gs.counts[i]
 						case "SUM":
-							rowVals[i] = gs.sums[i]
+							// SUM of empty-or-all-NULL group is NULL, not 0.
+							if gs.counts[i] > 0 || ac.aggDistinct {
+								rowVals[i] = gs.sums[i]
+							}
 						case "MIN":
 							rowVals[i] = gs.mins[i]
 						case "MAX":

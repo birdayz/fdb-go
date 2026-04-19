@@ -5370,6 +5370,102 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 	g.Expect(got3).To(gomega.Equal("five"))
 }
 
+// TestFDB_AggregateNullSemantics pins down SQL-standard aggregate behaviour:
+//   - COUNT(col) skips NULLs; COUNT(*) does not
+//   - SUM of empty-or-all-NULL returns NULL, not 0
+//   - AVG of empty-or-all-NULL returns NULL
+//   - MIN/MAX of all-NULL returns NULL
+//   - SUM of a non-numeric column errors instead of silently producing 0
+//
+// Covers both the proto path (plain SELECT FROM table) and the map path
+// (CTE / aggregate) so the two evaluators stay consistent.
+func TestFDB_AggregateNullSemantics(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_agg_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_null")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_null_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_null/main WITH TEMPLATE agg_null_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_agg_null?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Rows: (1, 10, 'a'), (2, NULL, 'b'), (3, 20, NULL), (4, NULL, NULL)
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 10, 'a'), (3, 20, 'x')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (2, 'b')`) // n=NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (4)`) // n=NULL, s=NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// One extra row with non-null s for UPDATE below.
+	_, err = db.ExecContext(ctx, `UPDATE T SET s = NULL WHERE id = 3`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// COUNT(*) sees all rows.
+	var c int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(4)))
+
+	// COUNT(n) must skip NULLs → 2 (ids 1 & 3).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(n) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(col) must skip NULLs")
+
+	// SUM over some non-null values → 30 (10+20).
+	var sum sql.NullInt64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(n) FROM T`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeTrue())
+	g.Expect(sum.Int64).To(gomega.Equal(int64(30)))
+
+	// SUM over all-NULL group → NULL. `id = 4` gives n=NULL only.
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(n) FROM T WHERE id = 4`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse(), "SUM of all-NULL group must be NULL, not 0")
+
+	// SUM over empty set (no rows) → NULL.
+	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(n) FROM T WHERE id = 999`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse(), "SUM of empty set must be NULL, not 0")
+
+	// AVG over all-NULL → NULL.
+	var avg sql.NullFloat64
+	g.Expect(db.QueryRowContext(ctx, `SELECT AVG(n) FROM T WHERE id = 4`).Scan(&avg)).To(gomega.Succeed())
+	g.Expect(avg.Valid).To(gomega.BeFalse())
+
+	// MIN/MAX over all-NULL → NULL.
+	g.Expect(db.QueryRowContext(ctx, `SELECT MIN(n) FROM T WHERE id = 4`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse())
+	g.Expect(db.QueryRowContext(ctx, `SELECT MAX(n) FROM T WHERE id = 4`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse())
+
+	// SUM over a STRING column must error (cannot silently treat as 0).
+	rows, err := db.QueryContext(ctx, `SELECT SUM(s) FROM T WHERE id = 1`)
+	// error may surface at query time or during iteration/scan
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			err = rows.Scan(&v)
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+	}
+	g.Expect(err).To(gomega.HaveOccurred(), "SUM of STRING column must error, not silently sum to 0")
+
+	// Same invariants via the map path (CTE).
+	g.Expect(db.QueryRowContext(ctx, `WITH C AS (SELECT n FROM T) SELECT COUNT(n) FROM C`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)), "map-path COUNT(col) must skip NULLs")
+
+	g.Expect(db.QueryRowContext(ctx, `WITH C AS (SELECT n FROM T WHERE id = 4) SELECT SUM(n) FROM C`).Scan(&sum)).To(gomega.Succeed())
+	g.Expect(sum.Valid).To(gomega.BeFalse(), "map-path SUM of all-NULL group must be NULL")
+}
+
 // TestFDB_ArithmeticUnifiedSemantics proves that proto and map evaluator
 // paths produce identical arithmetic results:
 //   - division by zero errors (SQL standard) in both paths
