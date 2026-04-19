@@ -3029,3 +3029,113 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 	// price * 2: Widget=20, Gadget=100, Gizmo=200; > 50 → Gadget (2), Gizmo (3)
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
+
+func TestFDB_InnerJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_inner_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_inner_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ij_tmpl
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_inner_join/main WITH TEMPLATE ij_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_inner_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (12, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// INNER JOIN: Customer JOIN Order ON Customer.id = Order.customer_id
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Order.amount
+		FROM Customer
+		INNER JOIN Order ON Customer.id = Order.customer_id
+		ORDER BY Order.amount ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name   string
+		amount int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.amount)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"Bob", 50},
+		{"Alice", 100},
+		{"Alice", 200},
+	}))
+}
+
+func TestFDB_LeftJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_left_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lj_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_join/main WITH TEMPLATE lj_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_left_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	// Only Alice has orders.
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// LEFT JOIN: all customers, NULL amount for Bob.
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, Order.amount
+		FROM Customer
+		LEFT JOIN Order ON Customer.id = Order.customer_id
+		ORDER BY Customer.id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var names []string
+	var amounts []any
+	for rows.Next() {
+		var name string
+		var amount any
+		g.Expect(rows.Scan(&name, &amount)).To(gomega.Succeed())
+		names = append(names, name)
+		amounts = append(amounts, amount)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
+	g.Expect(amounts[0]).To(gomega.Equal(int64(100)))
+	g.Expect(amounts[1]).To(gomega.BeNil()) // Bob has no orders → NULL
+}

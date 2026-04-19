@@ -333,7 +333,286 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	return c.execSelectQuery(ctx, sq)
 }
 
+// scanTableToMaps scans all records of tableName into a slice of maps.
+// Each map has two key styles:
+//   - "alias.colName" (qualified, using alias or tableName)
+//   - "colName" (unqualified, for convenience)
+func (c *EmbeddedConnection) scanTableToMaps(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	tableName, alias string,
+) ([]map[string]driver.Value, error) {
+	cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+	defer cursor.Close() //nolint:errcheck
+
+	var rows []map[string]driver.Value
+	for {
+		result, nextErr := cursor.OnNext(ctx)
+		if nextErr != nil {
+			return nil, nextErr
+		}
+		if !result.HasNext() {
+			break
+		}
+		msg := result.GetValue().Record
+		msgRef := msg.ProtoReflect()
+		fields := msgRef.Descriptor().Fields()
+		m := make(map[string]driver.Value, fields.Len()*2)
+		for i := 0; i < fields.Len(); i++ {
+			fd := fields.Get(i)
+			col := string(fd.Name())
+			var v driver.Value
+			if msgRef.Has(fd) {
+				v = protoValueToDriver(fd, msgRef.Get(fd))
+			}
+			m[col] = v
+			m[alias+"."+col] = v
+		}
+		rows = append(rows, m)
+	}
+	return rows, nil
+}
+
+// execSelectJoin executes a SELECT with one or more JOIN clauses.
+// Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
+func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
+	var cols []string
+	var data [][]driver.Value
+
+	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		cols = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rlTmpl, tmplOk := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+		if !tmplOk {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
+		}
+		md := rlTmpl.Underlying()
+		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		if ssErr != nil {
+			return nil, ssErr
+		}
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(md).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		// Scan left table.
+		leftRows, leftErr := c.scanTableToMaps(ctx, store, sq.tableName, sq.tableAlias)
+		if leftErr != nil {
+			return nil, leftErr
+		}
+
+		// Scan each joined table; apply nested-loop join.
+		joined := leftRows
+		for _, jc := range sq.joins {
+			rightRows, rightErr := c.scanTableToMaps(ctx, store, jc.tableName, jc.alias)
+			if rightErr != nil {
+				return nil, rightErr
+			}
+			var next []map[string]driver.Value
+			for _, left := range joined {
+				matched := false
+				for _, right := range rightRows {
+					// Merge rows into combined map.
+					combined := make(map[string]driver.Value, len(left)+len(right))
+					for k, v := range left {
+						combined[k] = v
+					}
+					for k, v := range right {
+						combined[k] = v
+					}
+					// Evaluate ON condition.
+					if jc.onExpr != nil {
+						ok, onErr := evalHaving(combined, jc.onExpr)
+						if onErr != nil {
+							return nil, onErr
+						}
+						if !ok {
+							continue
+						}
+					}
+					matched = true
+					next = append(next, combined)
+				}
+				// LEFT JOIN: emit left row with NULLs if no right match.
+				if jc.joinType == "LEFT" && !matched {
+					// Build null right side.
+					nullRight := make(map[string]driver.Value, len(left)+10)
+					for k, v := range left {
+						nullRight[k] = v
+					}
+					next = append(next, nullRight)
+				}
+			}
+			// RIGHT JOIN: swap logic — scan for unmatched right rows.
+			if jc.joinType == "RIGHT" {
+				for _, right := range rightRows {
+					found := false
+					for _, n := range next {
+						// Check if this right row appeared in any combined row.
+						for k, v := range right {
+							if nv, ok2 := n[k]; ok2 && valuesEqual(nv, v) {
+								found = true
+								break
+							}
+						}
+						if found {
+							break
+						}
+					}
+					if !found {
+						// Emit null left side + right row.
+						combined := make(map[string]driver.Value, len(right)+10)
+						for k, v := range right {
+							combined[k] = v
+						}
+						next = append(next, combined)
+					}
+				}
+			}
+			joined = next
+		}
+
+		// Apply WHERE filter using map-based evaluation.
+		var filtered []map[string]driver.Value
+		for _, row := range joined {
+			if sq.whereExpr == nil {
+				filtered = append(filtered, row)
+				continue
+			}
+			ok, wErr := evalHaving(row, sq.whereExpr.Expression())
+			if wErr != nil {
+				return nil, wErr
+			}
+			if ok {
+				filtered = append(filtered, row)
+			}
+		}
+
+		// Determine output columns.
+		// For SELECT *, collect all unique unqualified column names in order.
+		if sq.projCols == nil && !sq.countStar {
+			seen := make(map[string]bool)
+			// Order: left table columns first, then join table columns.
+			leftRt := md.GetRecordType(sq.tableName)
+			if leftRt != nil {
+				for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
+					name := string(leftRt.Descriptor.Fields().Get(i).Name())
+					if !seen[name] {
+						cols = append(cols, name)
+						seen[name] = true
+					}
+				}
+			}
+			for _, jc := range sq.joins {
+				jRt := md.GetRecordType(jc.tableName)
+				if jRt != nil {
+					for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
+						name := string(jRt.Descriptor.Fields().Get(i).Name())
+						if !seen[name] {
+							cols = append(cols, name)
+							seen[name] = true
+						}
+					}
+				}
+			}
+		} else if !sq.countStar {
+			cols = make([]string, len(sq.projCols))
+			for i, c := range sq.projCols {
+				out := c
+				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+					out = sq.projAliases[i]
+				}
+				cols[i] = out
+			}
+		}
+
+		// Build output rows.
+		for _, row := range filtered {
+			var vals []driver.Value
+			if sq.countStar {
+				// handled below (not really expected with JOIN, but be safe)
+				continue
+			}
+			if sq.projCols == nil {
+				// SELECT * — use cols order.
+				vals = make([]driver.Value, len(cols))
+				for i, col := range cols {
+					vals[i] = row[col]
+				}
+			} else {
+				vals = make([]driver.Value, len(sq.projCols))
+				for i, col := range sq.projCols {
+					// Try qualified first, then unqualified.
+					if v, ok := row[col]; ok {
+						vals[i] = v
+					} else {
+						// Strip table prefix: "a.id" → try "id" in map.
+						if dot := strings.LastIndex(col, "."); dot >= 0 {
+							vals[i] = row[col[dot+1:]]
+						}
+					}
+				}
+			}
+			data = append(data, vals)
+		}
+
+		// ORDER BY.
+		if len(sq.orderBy) > 0 {
+			colIdx := make(map[string]int, len(cols))
+			for i, c := range cols {
+				colIdx[c] = i
+			}
+			sort.SliceStable(data, func(i, j int) bool {
+				for _, ob := range sq.orderBy {
+					idx, ok := colIdx[ob.colName]
+					if !ok {
+						continue
+					}
+					cmp := compareValues(data[i][idx], data[j][idx])
+					if cmp != 0 {
+						if ob.ascending {
+							return cmp < 0
+						}
+						return cmp > 0
+					}
+				}
+				return false
+			})
+		}
+
+		// LIMIT / OFFSET.
+		if sq.offset > 0 && int(sq.offset) < len(data) {
+			data = data[sq.offset:]
+		} else if sq.offset > 0 {
+			data = nil
+		}
+		if sq.limit >= 0 && int(sq.limit) < len(data) {
+			data = data[:sq.limit]
+		}
+
+		return nil, nil
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
+	if len(sq.joins) > 0 {
+		return c.execSelectJoin(ctx, sq)
+	}
+
 	type row = []driver.Value
 	type outField struct {
 		name string
@@ -1034,6 +1313,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
 	tableName   string
+	tableAlias  string   // alias or tableName if no alias given
 	projCols    []string // nil = SELECT *; ignored when countStar or aggCols non-empty
 	projAliases []string // parallel to projCols; empty string = no alias (use column name)
 	// projExprs holds computed projection expressions parallel to projCols.
@@ -1055,6 +1335,16 @@ type selectQuery struct {
 	aggCols []aggSelectCol
 	// havingExpr is the HAVING clause expression (nil = no HAVING).
 	havingExpr antlrgen.IExpressionContext
+	// joins describes JOIN clauses (nil = no joins).
+	joins []joinClause
+}
+
+// joinClause describes a single JOIN part in a SELECT query.
+type joinClause struct {
+	tableName string
+	joinType  string // "INNER", "LEFT", "RIGHT"
+	alias     string
+	onExpr    antlrgen.IExpressionContext
 }
 
 type orderByClause struct {
@@ -1333,7 +1623,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	sources := fromClause.TableSources()
 	if sources == nil || len(sources.AllTableSource()) != 1 {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-			"only single-table SELECT is supported; joins are not yet implemented")
+			"only single-table SELECT is supported")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
@@ -1353,8 +1643,43 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	for i, u := range uids {
 		parts[i] = stripIdentifierQuotes(u.GetText())
 	}
+	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
+	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
+	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
+	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
+	// InnerJoinContext to a LEFT/RIGHT join.
+	leftAlias := ""
+	promotedJoinType := ""
+	if atomItem.AS() != nil && atomItem.Uid() != nil {
+		leftAlias = stripIdentifierQuotes(atomItem.Uid().GetText())
+	} else if atomItem.Uid() != nil {
+		misAlias := strings.ToUpper(atomItem.Uid().GetText())
+		if misAlias == "LEFT" || misAlias == "RIGHT" {
+			promotedJoinType = misAlias
+		}
+	}
+	if leftAlias == "" {
+		leftAlias = strings.Join(parts, ".")
+	}
+
+	// Parse JOIN clauses.
+	var joins []joinClause
+	for _, jp := range srcBase.AllJoinPart() {
+		jc, jErr := extractJoinClause(jp)
+		if jErr != nil {
+			return nil, jErr
+		}
+		joins = append(joins, jc)
+	}
+	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
+	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
+		joins[0].joinType = promotedJoinType
+	}
+
 	sq := &selectQuery{
 		tableName:   strings.Join(parts, "."),
+		tableAlias:  leftAlias,
+		joins:       joins,
 		projCols:    projCols,
 		projAliases: projAliases,
 		projExprs:   projExprs,
@@ -1445,6 +1770,64 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	}
 
 	return sq, nil
+}
+
+// extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from
+// the grammar. Only INNER JOIN and LEFT OUTER JOIN are implemented.
+func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
+	switch j := jp.(type) {
+	case *antlrgen.InnerJoinContext:
+		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
+		if !ok {
+			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"JOIN: unsupported table source item %T", j.TableSourceItem())
+		}
+		uids := atomItem.TableName().FullId().AllUid()
+		parts := make([]string, len(uids))
+		for i, u := range uids {
+			parts[i] = stripIdentifierQuotes(u.GetText())
+		}
+		tblName := strings.Join(parts, ".")
+		alias := tblName
+		if atomItem.AS() != nil && atomItem.Uid() != nil {
+			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+		}
+		var onExpr antlrgen.IExpressionContext
+		if j.Expression() != nil {
+			onExpr = j.Expression()
+		}
+		return joinClause{tableName: tblName, joinType: "INNER", alias: alias, onExpr: onExpr}, nil
+
+	case *antlrgen.OuterJoinContext:
+		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
+		if !ok {
+			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"JOIN: unsupported table source item %T", j.TableSourceItem())
+		}
+		uids := atomItem.TableName().FullId().AllUid()
+		parts := make([]string, len(uids))
+		for i, u := range uids {
+			parts[i] = stripIdentifierQuotes(u.GetText())
+		}
+		tblName := strings.Join(parts, ".")
+		alias := tblName
+		if atomItem.AS() != nil && atomItem.Uid() != nil {
+			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+		}
+		jt := "LEFT"
+		if j.RIGHT() != nil {
+			jt = "RIGHT"
+		}
+		var onExpr antlrgen.IExpressionContext
+		if j.Expression() != nil {
+			onExpr = j.Expression()
+		}
+		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr}, nil
+
+	default:
+		return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported JOIN type %T; only INNER JOIN and LEFT/RIGHT OUTER JOIN are supported", jp)
+	}
 }
 
 // stripIdentifierQuotes removes surrounding double-quotes or backticks from a
