@@ -1810,7 +1810,21 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in SET", expr)
+		// Boolean expressions (AND/OR/NOT, comparisons) return bool as a value.
+		b, err := evalExprPredicate(msg, expr)
+		if err != nil {
+			return nil, err
+		}
+		return b, nil
+	}
+	// If this is a plain predicated expression with no predicate modifier (IN, IS, LIKE,
+	// BETWEEN) and the atom is a binary comparison, treat it as a boolean value too.
+	if pred.Predicate() != nil {
+		b, err := evalExprPredicate(msg, expr)
+		if err != nil {
+			return nil, err
+		}
+		return b, nil
 	}
 	return evalExprAtom(msg, pred.ExpressionAtom())
 }

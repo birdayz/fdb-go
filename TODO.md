@@ -336,6 +336,11 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **Catalog read conflict fix** — cachedLoadSchema reads catalog via separate auto-commit tx when inside explicit user transaction; prevents spurious FDB 1020 not_committed errors under parallel DDL. dayshift-32.
 - [x] **Arithmetic in UPDATE SET** — `evalExpr` extended with `MathExpressionAtomContext` + `FullColumnNameExpressionAtomContext`; `SET col = col + N` now works. 1 FDB integration test. dayshift-32.
 - [x] **GROUP BY + aggregate functions** — `SELECT col, COUNT(*)/SUM/MIN/MAX/AVG FROM t GROUP BY col`; in-memory grouping; mixed group-col + aggregate SELECT lists. 1 FDB integration test. dayshift-32.
+- [x] **LIMIT OFFSET** — `LIMIT n OFFSET m` via grammar GetLimit()/GetOffset(); applied post-sort/group. 1 FDB integration test. dayshift-32.
+- [x] **CASE WHEN THEN END** — searched CASE (conditions via evalExprPredicate) and simple CASE (compareValues). ELSE optional. 1 FDB integration test. dayshift-32.
+- [x] **String functions** — UPPER, LOWER, LENGTH/LEN, TRIM, ABS; nested calls chain. dayshift-32.
+- [x] **CONCAT, CONCAT_WS, NULLIF** — CONCAT(s1,s2,...), CONCAT_WS(sep,...), NULLIF(a,b). 1 FDB integration test. dayshift-32.
+- [x] **Generalized WHERE comparisons** — evalComparisonPredicate uses evalExprAtom on both sides; functions/arithmetic now allowed in WHERE (e.g., WHERE price * 2 > 50). 1 FDB integration test. dayshift-32.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
