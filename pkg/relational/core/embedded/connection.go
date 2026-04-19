@@ -3706,8 +3706,11 @@ func evalScalarFunctionCallCore(
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT: argument must be numeric, got %T", v)
 		}
-		if f < 0 {
-			return nil, nil // SQRT of negative returns NULL per SQL standard.
+		// NaN input already fails the < 0 check (NaN comparisons always
+		// return false), so it would propagate a NaN result. Treat it the
+		// same as the negative-arg case — NULL.
+		if math.IsNaN(f) || f < 0 {
+			return nil, nil // SQRT of NaN or negative returns NULL per SQL standard.
 		}
 		return math.Sqrt(f), nil
 	case "EXP":
@@ -3739,7 +3742,9 @@ func evalScalarFunctionCallCore(
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN: argument must be numeric, got %T", v)
 		}
-		if f <= 0 {
+		// NaN: `f <= 0` is false for NaN, so guard misses. Same treatment
+		// as <= 0 — undefined → NULL.
+		if math.IsNaN(f) || f <= 0 {
 			return nil, nil
 		}
 		return math.Log(f), nil
@@ -3757,7 +3762,9 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v)
 		}
 		if len(fArgs) == 1 {
-			if f <= 0 {
+			// NaN input: `f <= 0` is false for NaN, so the guard misses.
+			// Same treatment as <= 0 — undefined → NULL.
+			if math.IsNaN(f) || f <= 0 {
 				return nil, nil
 			}
 			return math.Log(f), nil
@@ -3770,7 +3777,7 @@ func evalScalarFunctionCallCore(
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v2)
 		}
-		if f <= 0 || f == 1 || f2 <= 0 {
+		if math.IsNaN(f) || math.IsNaN(f2) || f <= 0 || f == 1 || f2 <= 0 {
 			return nil, nil
 		}
 		return math.Log(f2) / math.Log(f), nil
