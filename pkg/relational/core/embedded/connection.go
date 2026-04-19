@@ -3905,6 +3905,30 @@ func evalExprAtomOnMap(row map[string]driver.Value, atom antlrgen.IExpressionAto
 	}
 }
 
+// evalExprOnMap evaluates a scalar IExpressionContext against a map row, returning
+// a driver.Value. Handles arithmetic, column refs, constants, and nested expressions.
+func evalExprOnMap(row map[string]driver.Value, expr antlrgen.IExpressionContext) (driver.Value, error) {
+	switch e := expr.(type) {
+	case *antlrgen.PredicatedExpressionContext:
+		if e.Predicate() != nil {
+			ok, err := evalPredicateOnMap(row, e)
+			if err != nil {
+				return nil, err
+			}
+			return ok, nil
+		}
+		return evalExprAtomOnMap(row, e.ExpressionAtom())
+	case *antlrgen.LogicalExpressionContext:
+		ok, err := evalPredicateOnMapExpr(row, expr)
+		if err != nil {
+			return nil, err
+		}
+		return ok, nil
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in map eval", expr)
+	}
+}
+
 // evalPredicateOnMap evaluates a WHERE-style PredicatedExpressionContext against
 // a map[string]driver.Value row. Handles IS NULL, LIKE, BETWEEN, IN, comparisons.
 func evalPredicateOnMap(row map[string]driver.Value, pred *antlrgen.PredicatedExpressionContext) (bool, error) {
