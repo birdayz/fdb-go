@@ -131,83 +131,66 @@ Doc is part of the v1 deliverable — shipping `frl` without this guide makes bo
 
 `record`, `index`, `store`, `meta`, `config`, `keyspace`, `tx`.
 
-#### B.1 — v1 minimum (ship target)
+#### B.1 — v1 minimum (shipped on PR #86)
 
-Six commands. Enough to point `frl` at a cluster, select a context, inspect a store, read data, list indexes. Hits the 80% case.
+- [x] `config use-context <name>` — Context switch
+- [x] `config view` — Effective context as YAML
+- [x] `store info` — Format version, metadata version, user version, cacheable, record count state, lock state, user fields. Also supports `-o json` for scriptable output.
+- [x] `record get <pk>` — Single record by primary key (int64 or string)
+- [x] `record scan [--type T] [--limit N]` — Cursor-backed newline-delimited JSON scan
+- [x] `index ls [--no-fdb]` — Lists indexes + state; `--no-fdb` renders from metadata only
 
-| Command | Notes |
-|---|---|
-| `config use-context <name>` | Context switch |
-| `config view` | Effective context (no secrets to redact in v1 — no BSR tokens) |
-| `store info` | Format version, incarnation, record count, lock state, header |
-| `record get <pk>` | Single record by primary key |
-| `record scan [--type T] [--limit N]` | Cursor-backed scan with continuations |
-| `index ls` | List indexes + state (readable / write-only / disabled) |
-
-Global flags for v1: `--context`, `--cluster-file`, `--keyspace-path`, `--meta-file`, `-o json|yaml|text`.
-
-#### B.2 — designed, implement later as demand emerges
-
-Kept documented so later waves don't rediscover the design. Each wave is small, no mandated order.
+#### B.2 — implemented read-only follow-ups (shipped on PR #86)
 
 **Data — wave 2**
-| Command | Notes |
-|---|---|
-| `record put --file <file>` | Save a record (proto encoded) |
-| `record delete <pk>` | Single delete |
-| `record count [--type T]` | Store-level or per-type count (atomic ADD indexes) |
-| `index describe <name>` | Full definition: expression, subspace key, options |
-| `index scan <name> [--range R]` | Cursor across index entries |
+- [x] `record count [--type T]` — Store-level or per-type count via atomic ADD indexes
+- [x] `index describe <name>` — Full definition from metadata (no FDB needed)
+- [x] `index scan <name> [--reverse] [--limit N]` — Cursor across index entries
 
-**Index maintenance — wave 3**
-| Command | Notes |
-|---|---|
-| `index build <name>` | OnlineIndexer run (progress + throttle flags) |
-| `index rebuild <name>` | Inline clear + rebuild |
-| `index set-state <name> <state>` | readable / write-only / disabled |
-
-**Store lifecycle — wave 4**
-| Command | Notes |
-|---|---|
-| `store create --meta <file>` | Fresh store at current context path |
-| `store truncate` | Delete-all-records (retains header, indexes, metadata) |
-| `store destroy` | Drop everything: records, indexes, metadata, header. Explicit naming so blast radius is obvious |
-| `store lock --reason <r>` | Set `FORBID_RECORD_UPDATE` lock state |
-| `store unlock` | Clear lock |
+**Store introspection — wave 4 (subset)**
+- [x] `store dump [--limit N]` — Tuple-decoded forensic view with subspace labels
 
 **Meta — wave 5**
-| Command | Notes |
-|---|---|
-| `meta get` | Dump RecordMetaData as proto/JSON |
-| `meta types ls` | Record types in metadata (nested — types live in meta) |
-| `meta types describe <name>` | Single type introspection |
-| `meta validate --file <f>` | `MetaDataValidator` dry run (needs no store) |
-| `meta evolve-check --old <f> --new <f>` | `MetaDataEvolutionValidator` (needs no store) |
-| `meta diff <old> <new>` | Human-readable diff |
-| _`meta set/apply`_ | Deferred — atomically replacing metadata is dangerous. Design later with mandatory dry-run default. |
+- [x] `meta get` — Dump RecordMetaData as JSON (file sources only)
+- [x] `meta types ls` — Record types + PK fields
+- [x] `meta validate --file <f>` — Standalone file validation
+- [x] `meta evolve-check --old <f> --new <f>` — MetaDataEvolutionValidator gate
+- [x] `meta diff <old> <new>` — Human-readable diff (added/removed/changed types + indexes + version)
 
-**Navigation / escape — wave 6**
-| Command | Notes |
-|---|---|
-| `config get-contexts` | List contexts |
-| `config current-context` | Print active name |
-| `config add-context --name <n> ...` | Add/update |
-| `keyspace tree <path>` | Walk directory tree |
-| `keyspace ls <path>` | Direct children |
-| `keyspace resolve <path>` | Logical path → FDB byte prefix (debug) |
-| `tx run` | Ad-hoc transaction wrapping for scripting |
-| `tx read-version` | Current GRV |
+**Navigation / escape — wave 6 (subset)**
+- [x] `config current-context` — Active context name
+- [x] `config get-contexts` — List all, mark active with `*`
+- [x] `keyspace resolve <path>` — Logical path → FDB byte prefix
+- [x] `tx read-version` — Current GRV (+ cluster connectivity smoke test)
 
-**Global flags (full set, added incrementally)**
+#### B.3 — not yet implemented (writes + advanced scans)
+
+Writes deferred pending UX design (confirmation, dry-run defaults):
+- [ ] `record put --file <file>`
+- [ ] `record delete <pk>`
+- [ ] `meta set / apply` — deferred, dangerous without dry-run
+- [ ] `meta types describe <name>`
+- [ ] `store create --meta <file>`
+- [ ] `store truncate`
+- [ ] `store destroy`
+- [ ] `store lock --reason <r>` / `store unlock`
+- [ ] `index build <name>` — OnlineIndexer run (progress + throttle flags)
+- [ ] `index rebuild <name>`
+- [ ] `index set-state <name> <state>`
+- [ ] `config add-context --name <n> ...` — flag design pending
+- [ ] `keyspace ls <path>` / `keyspace tree <path>` — FDB directory layer reads
+- [ ] `tx run` — ad-hoc transaction wrapping
+
+**Global flags (current)**
 ```
---context <name>          # v1
---cluster-file <path>     # v1
---keyspace-path <path>    # v1
---meta-file <path>        # v1 — overrides Context.metadata
--o|--output json|yaml|text# v1 — default text; record/index output JSON-friendly
+--context <name>                 # all store-touching commands
+--meta-file <path>               # overrides Context.metadata for this call
+-o|--output text|json            # on store info so far; more commands as needed
 ```
 
-(No proto-related flags — Phase A.5 redesign killed them.)
+Root-level `--cluster-file` / `--keyspace-path` not wired yet (contexts cover the case for now).
+
+**Testing:** `//go:build integration` suite in `cmd/frl/internal/cmd/integration_test.go` drives every read-only command end-to-end against an FDB testcontainer. Opt-in via `go test -tags=integration ./cmd/frl/internal/cmd/...`.
 
 ### Phase C — web UI (parked, future)
 
