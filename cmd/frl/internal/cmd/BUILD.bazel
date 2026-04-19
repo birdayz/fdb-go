@@ -6,6 +6,7 @@ go_library(
         "config.go",
         "index.go",
         "index_describe.go",
+        "index_scan.go",
         "keyspace.go",
         "meta.go",
         "meta_diff.go",
