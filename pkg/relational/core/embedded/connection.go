@@ -259,6 +259,8 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 		return c.execSysTables(ctx, whereExpr)
 	case "COLUMNS":
 		return c.execSysColumns(ctx, whereExpr)
+	case "INDEXES":
+		return c.execSysIndexes(ctx, whereExpr)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unknown INFORMATION_SCHEMA table: %q", name)
 	}
@@ -427,6 +429,80 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, _ antlrgen.IWhe
 		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME",
 		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
 		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
+	}
+	return &staticRows{cols: cols, rows: data}, nil
+}
+
+// execSysIndexes implements SELECT * FROM INFORMATION_SCHEMA.INDEXES.
+// Returns one row per index across all (database, schema, table) tuples.
+func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, _ antlrgen.IWhereExprContext) (driver.Rows, error) {
+	type row = []driver.Value
+	var data []row
+	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		data = nil
+		txn := catalog.NewFDBTransaction(rctx)
+		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		if rsErr != nil {
+			return nil, rsErr
+		}
+		defer rs.Close() //nolint:errcheck
+
+		type schemaRef struct{ db, schema string }
+		var refs []schemaRef
+		for rs.Next() {
+			dbID, e := rs.StringByName("DATABASE_ID")
+			if e != nil {
+				return nil, e
+			}
+			schemaName, e := rs.StringByName("SCHEMA_NAME")
+			if e != nil {
+				return nil, e
+			}
+			refs = append(refs, schemaRef{dbID, schemaName})
+		}
+		if e := rs.Err(); e != nil {
+			return nil, e
+		}
+
+		for _, ref := range refs {
+			schema, loadErr := c.cat.LoadSchema(txn, ref.db, ref.schema)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			tables, tablesErr := schema.Tables()
+			if tablesErr != nil {
+				return nil, tablesErr
+			}
+			for _, tbl := range tables {
+				for _, idx := range tbl.Indexes() {
+					isUnique := "NO"
+					if idx.IsUnique() {
+						isUnique = "YES"
+					}
+					isSparse := "NO"
+					if idx.IsSparse() {
+						isSparse = "YES"
+					}
+					data = append(data, row{
+						ref.db,
+						ref.schema,
+						tbl.MetadataName(),
+						idx.MetadataName(),
+						idx.IndexType(),
+						isUnique,
+						isSparse,
+					})
+				}
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	cols := []string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
+		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
 	}
 	return &staticRows{cols: cols, rows: data}, nil
 }

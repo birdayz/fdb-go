@@ -927,6 +927,80 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 	g.Expect(remaining).To(gomega.Equal(2))
 }
 
+func TestFDB_InfoSchema_Indexes(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_is_indexes")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_indexes")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE is_idx_tmpl "+
+			"CREATE TABLE Product (prod_id BIGINT NOT NULL, name STRING, PRIMARY KEY (prod_id)) "+
+			"CREATE INDEX by_name ON Product (name) "+
+			"CREATE UNIQUE INDEX by_id ON Product (prod_id)")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_is_indexes/catalog WITH TEMPLATE is_idx_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_indexes?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."INDEXES"`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.Equal([]string{
+		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
+		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
+	}))
+
+	type idxRow struct {
+		tableName string
+		indexName string
+		isUnique  string
+	}
+	var idxRows []idxRow
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		dbCat, _ := vals[0].(string)
+		if dbCat != "/testdb_is_indexes" {
+			continue
+		}
+		idxRows = append(idxRows, idxRow{
+			tableName: vals[2].(string),
+			indexName: vals[3].(string),
+			isUnique:  vals[5].(string),
+		})
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(idxRows).To(gomega.HaveLen(2))
+
+	// Build a name→row map for order-independent assertions.
+	byName := map[string]idxRow{}
+	for _, r := range idxRows {
+		byName[r.indexName] = r
+	}
+	g.Expect(byName).To(gomega.HaveKey("by_name"))
+	g.Expect(byName["by_name"].tableName).To(gomega.Equal("Product"))
+	g.Expect(byName["by_name"].isUnique).To(gomega.Equal("NO"))
+
+	g.Expect(byName).To(gomega.HaveKey("by_id"))
+	g.Expect(byName["by_id"].tableName).To(gomega.Equal("Product"))
+	g.Expect(byName["by_id"].isUnique).To(gomega.Equal("YES"))
+}
+
 // TestFDB_ParameterizedQueryApostrophe verifies that a string with an
 // apostrophe round-trips correctly through substituteParams → SQL → parser →
 // FDB → SELECT. This catches the ”→' unescaping in evalConstant.
