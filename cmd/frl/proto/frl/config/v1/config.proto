@@ -1,0 +1,29 @@
+// Configuration schema for the `frl` CLI.
+//
+// Loaded via `github.com/birdayz/protobuf-ecosystem/protoconfig.Load` —
+// YAML on disk, env-var overlay on top. A single `Config` message drives
+// kubectl-style context switching; individual commands extend `Context`
+// with the fields they need (cluster file, keyspace path, metadata source,
+// etc.) as the command tree is designed.
+syntax = "proto3";
+
+package frl.config.v1;
+
+// Top-level config, typically at ~/.frl/config.yaml.
+message Config {
+  // Name of the context to use when no `--context` flag is supplied.
+  string current_context = 1;
+
+  // All known contexts. A context is a named bundle of
+  // connection + metadata-source settings.
+  repeated Context contexts = 2;
+}
+
+// One named environment (e.g. "prod", "staging", "local").
+// Fields will be filled in alongside the command design; keeping the
+// message intentionally empty here so the skeleton compiles and the
+// schema is reserved.
+message Context {
+  // Identifier used by `--context` and `current_context`.
+  string name = 1;
+}

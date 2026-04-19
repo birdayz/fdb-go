@@ -1,6 +1,11 @@
 # Don't inherit shell environment into actions — use Bazel's fixed defaults
 build --incompatible_strict_action_env
 
+# Isolated module extension usage — required for the multi-module Go setup.
+# cmd/frl has its own go.mod and is registered via a second `use_extension(..., isolate=True)`
+# in MODULE.bazel. Without this flag Bazel rejects the isolate argument.
+common --experimental_isolated_extension_usages
+
 # Use remote JDK — no system Java dependency required
 build --java_runtime_version=remotejdk_21
 

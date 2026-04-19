@@ -7,6 +7,28 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 
 ---
 
+## frl CLI
+
+Operator/developer CLI for the Go Record Layer. Lives at `./cmd/frl` as a **separate Go module** (own `go.mod`) so library users don't inherit CLI deps. Root `go.work` ties both modules together for local dev. Config uses [`github.com/birdayz/protobuf-ecosystem/protoconfig`](https://github.com/birdayz/protobuf-ecosystem/tree/main/protoconfig) (YAML + proto + env overlay). UX framework: `github.com/charmbracelet/fang` wrapping `spf13/cobra`. Command hierarchy is kubectl/kaf-style (NOUN VERB). Branch: `worktree-cli`.
+
+### Phase A — skeleton (no commands yet)
+
+- [x] **go.work + cmd/frl module** — `go.work` at root with `use (. ./cmd/frl)`. `cmd/frl/go.mod` declares `github.com/birdayz/fdb-record-layer-go/cmd/frl`, `require`s the root module + `replace` to `../..`. `go.work` is now committed (un-gitignored) so every contributor and CI sees the same workspace.
+- [x] **Self-contained buf config** — `cmd/frl/buf.yaml` + `cmd/frl/buf.gen.yaml` living inside the CLI module. Generates into `cmd/frl/gen/` (separate from root `gen/`). Library codegen stays untouched.
+- [x] **Config proto** — `cmd/frl/proto/frl/config/v1/config.proto` with `Config { string current_context; repeated Context contexts; }` + `Context { string name; }`. Fields filled in as commands are designed.
+- [x] **Cobra + fang entrypoint** — `cmd/frl/main.go` calls `fang.Execute(ctx, rootCmd)`. Cobra tree under `cmd/frl/internal/cmd/` (root.go, version.go, config.go). `version` proves cross-module import works (packs a sample tuple via `pkg/fdbgo/fdb/tuple`); `config schema` proves the generated proto package works (prints empty Config as JSON).
+- [x] **Bazel wiring** — `MODULE.bazel` gets a second `go_deps.from_file(go_mod = "//cmd/frl:go.mod")` via `use_extension(..., isolate = True)` (`go_deps_frl`) + `--experimental_isolated_extension_usages` in `.bazelrc`. `bazel mod tidy` settled `use_repo` entries. Gazelle walks the nested module correctly — BUILD files auto-generated across both modules in one pass.
+- [x] **Justfile recipes** — `just generate-frl` (buf generate inside cmd/frl, output `cmd/frl/gen/`), folded into `just generate`. `just frl <args>` convenience wrapper for `bazelisk run //cmd/frl --`.
+- [x] **Verify** — `just generate-frl && just gazelle && just build` all green. `bazelisk build //...` passes (80 targets). `just frl version` + `just frl config schema` work end-to-end. Known limitation: `frl version` via Bazel reports "build info unavailable" (rules_go strips build info from binaries by default; works via `go run .`). Fix later if needed.
+
+_Commit: worktree-cli branch. Deps pulled in by CLI: cobra v1.10.1, fang/v2 v2.0.1 (published as charm.land/fang/v2 — repo is github.com/charmbracelet/fang)._
+
+### Phase B — command design (open)
+
+Not started. kaf-style NOUN VERB tree. Candidate nouns: `config`, `store`, `record`, `index`, `meta`, `keyspace`, `tx`. Scope (ops vs dev), read/write defaults, output format (proto/json/yaml/table), context/profile UX — all TBD. Design pass before implementation.
+
+---
+
 ## Pure Go FDB Client (`pkg/fdbgo/`)
 
 ### Bugs

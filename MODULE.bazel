@@ -33,10 +33,23 @@ use_repo(
     "com_github_testcontainers_testcontainers_go",
     "com_github_zeebo_xxh3",
     "in_gopkg_yaml_v3",
-    "org_uber_go_mock",
     "org_golang_google_protobuf",
     "org_golang_x_text",
     "org_golang_x_tools",
+    "org_uber_go_mock",
+)
+
+# cmd/frl is a separate Go module so library consumers of
+# github.com/birdayz/fdb-record-layer-go don't inherit the CLI's deps.
+# gazelle requires isolate=True to register a second go.mod; the isolated
+# extension keeps its repo namespace separate from the root module's.
+go_deps_frl = use_extension("@gazelle//:extensions.bzl", "go_deps", isolate = True)
+go_deps_frl.from_file(go_mod = "//cmd/frl:go.mod")
+use_repo(
+    go_deps_frl,
+    "com_github_birdayz_fdb_record_layer_go",
+    "com_github_spf13_cobra",
+    "land_charm_fang_v2",
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
