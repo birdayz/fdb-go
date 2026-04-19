@@ -13,6 +13,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -42,7 +43,7 @@ type EmbeddedConnection struct {
 	cat     *catalog.RecordLayerStoreCatalog
 	ks      *keyspace.RelationalKeyspace
 	factory apiddl.MetadataOperationsFactory
-	closed  bool
+	closed  atomic.Bool
 
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
@@ -70,7 +71,7 @@ func New(
 // ExecContext executes SQL (DDL only in phase 1) and returns the result.
 // Implements driver.ExecerContext so database/sql skips the Prepare round-trip.
 func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	if len(args) != 0 {
@@ -99,7 +100,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 // QueryContext handles read-only queries. Currently supports SHOW DATABASES and
 // SHOW SCHEMA TEMPLATES; all other queries return ErrCodeUnsupportedOperation.
 func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	if len(args) != 0 {
@@ -122,7 +123,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	stmt := stmts.AllStatement()[0]
 	admin := stmt.AdministrationStatement()
 	if admin == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported in this release")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported")
 	}
 	show := admin.ShowStatement()
 	if show == nil {
@@ -224,7 +225,7 @@ func (emptyRows) Next(_ []driver.Value) error { return io.EOF }
 
 // Prepare returns a prepared statement. DDL statements have no bind parameters.
 func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	return &embeddedStmt{conn: c, query: query}, nil
@@ -232,7 +233,7 @@ func (c *EmbeddedConnection) Prepare(query string) (driver.Stmt, error) {
 
 // Close marks the connection as closed.
 func (c *EmbeddedConnection) Close() error {
-	c.closed = true
+	c.closed.Store(true)
 	return nil
 }
 
@@ -244,7 +245,7 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 
 // BeginTx implements driver.ConnBeginTx. Phase 1 is auto-commit only.
 func (c *EmbeddedConnection) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error) {
-	if c.closed {
+	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	return nil, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -254,7 +255,7 @@ func (c *EmbeddedConnection) BeginTx(_ context.Context, _ driver.TxOptions) (dri
 // ResetSession implements driver.SessionResetter. Resets per-request
 // state (schema) so pooled connections start clean.
 func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
-	if c.closed {
+	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
 	c.schema = ""
@@ -265,7 +266,7 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 // is open; the FDB client is stateless so a non-closed connection is
 // always usable (catalog init is lazy, not a validity condition).
 func (c *EmbeddedConnection) IsValid() bool {
-	return !c.closed
+	return !c.closed.Load()
 }
 
 // PrepareContext implements driver.ConnPrepareContext.
@@ -529,7 +530,7 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 
 // Ping implements driver.Pinger. Bootstraps the catalog on first call.
 func (c *EmbeddedConnection) Ping(ctx context.Context) error {
-	if c.closed {
+	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
 	return c.ensureCatalogInit(ctx)
@@ -602,6 +603,8 @@ func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
 	for i, v := range args {
 		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
 	}
+	// TODO: driver.Stmt.Query has no context parameter; use context.Background() until
+	// database/sql upgrades all call sites to QueryContext.
 	return s.conn.QueryContext(context.Background(), s.query, named)
 }
 

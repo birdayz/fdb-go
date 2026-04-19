@@ -69,7 +69,8 @@ func TestEmbeddedConnection_BeginTxReturnsUnsupported(t *testing.T) {
 
 func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	t.Parallel()
-	conn := &EmbeddedConnection{closed: true}
+	conn := &EmbeddedConnection{}
+	conn.closed.Store(true)
 	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
 	if err == nil {
 		t.Fatal("BeginTx on closed conn: want error, got nil")
@@ -89,7 +90,8 @@ func TestEmbeddedConnection_ResetSession(t *testing.T) {
 
 func TestEmbeddedConnection_ResetSessionClosedReturnsError(t *testing.T) {
 	t.Parallel()
-	conn := &EmbeddedConnection{closed: true}
+	conn := &EmbeddedConnection{}
+	conn.closed.Store(true)
 	if err := conn.ResetSession(context.TODO()); err == nil {
 		t.Fatal("ResetSession on closed conn: want error, got nil")
 	}
@@ -106,7 +108,8 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 	if !conn2.IsValid() {
 		t.Error("IsValid: uninitialized but open should be valid")
 	}
-	conn3 := &EmbeddedConnection{closed: true, catalogReady: true}
+	conn3 := &EmbeddedConnection{catalogReady: true}
+	conn3.closed.Store(true)
 	if conn3.IsValid() {
 		t.Error("IsValid: want false for closed, got true")
 	}
