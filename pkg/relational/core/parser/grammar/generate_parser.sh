@@ -39,19 +39,37 @@ if [[ -z "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
     exit 1
 fi
 
-# Use Bazel's hermetic JDK (provided by @bazel_tools//tools/jdk:current_java_runtime
-# via the toolchains attribute). $JAVA_HOME is set by Bazel when the binary
-# runs; it points to the JDK under rules_java's runtime.
-if [[ -z "${JAVA_HOME:-}" || ! -x "${JAVA_HOME}/bin/java" ]]; then
-    # Fallback: search runfiles for Bazel's JDK runtime.
-    JAVA_BIN="$(find "${RUNFILES_DIR:-.}" -name java -path "*/bin/java" -type f 2>/dev/null | head -1)"
-    if [[ -z "$JAVA_BIN" || ! -x "$JAVA_BIN" ]]; then
-        echo "ERROR: cannot locate Bazel's hermetic JDK. JAVA_HOME=${JAVA_HOME:-unset}" >&2
-        exit 1
+# Use Bazel's hermetic JDK. @bazel_tools//tools/jdk:current_java_runtime is
+# pulled into runfiles via the 'data' attribute; rules_java's toolchain lays
+# it out under runfiles at something like
+# `rules_java++toolchains+remotejdk21_<os>/bin/java`. Platform suffix varies,
+# so we probe instead of hard-coding.
+find_java() {
+    # 1. $JAVA_HOME (rules_java sets this for java_binary wrappers; may be
+    #    unset for plain sh_binary targets — that's why we fall through).
+    if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
+        echo "${JAVA_HOME}/bin/java"
+        return 0
     fi
-else
-    JAVA_BIN="${JAVA_HOME}/bin/java"
-fi
+    # 2. Search the runfiles dir for any bin/java shipped by the jdk
+    #    runtime we pulled in via data.
+    for root in "${RUNFILES_DIR:-}" "$(dirname "${BASH_SOURCE[0]}").runfiles"; do
+        if [[ -d "$root" ]]; then
+            local j
+            j="$(find "$root" -path "*jdk*/bin/java" -type f 2>/dev/null | head -1)"
+            if [[ -x "$j" ]]; then
+                echo "$j"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+JAVA_BIN="$(find_java)" || {
+    echo "ERROR: cannot locate Bazel's hermetic JDK under runfiles." >&2
+    echo "       JAVA_HOME=${JAVA_HOME:-unset}  RUNFILES_DIR=${RUNFILES_DIR:-unset}" >&2
+    exit 1
+}
 
 JAR="$(rlocation antlr4_tool_jar/file/antlr-4.13.1-complete.jar)"
 LEXER_G4="$(rlocation _main/pkg/relational/core/parser/grammar/RelationalLexer.g4)"
