@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -809,5 +810,23 @@ func TestBuilder_IndexOnUnknownTableFails(t *testing.T) {
 		Build()
 	if err == nil {
 		t.Fatal("expected error for index on unknown table, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown table") {
+		t.Fatalf("want 'unknown table' in error, got %v", err)
+	}
+}
+
+func TestBuilder_IndexOnUnknownColumnFails(t *testing.T) {
+	t.Parallel()
+	_, err := NewSchemaTemplateBuilder().
+		SetName("bad_col_idx").
+		AddTable("T", []ColumnSpec{NewColumnSpec("id", api.NewLongType(false), 1)}, []string{"id"}).
+		AddIndex("T", "idx", []string{"nonexistent"}, false).
+		Build()
+	if err == nil {
+		t.Fatal("expected error for index on unknown column, got nil")
+	}
+	if !strings.Contains(err.Error(), "column") {
+		t.Fatalf("want 'column' in error, got %v", err)
 	}
 }

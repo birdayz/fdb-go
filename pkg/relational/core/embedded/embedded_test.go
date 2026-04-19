@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"testing"
 )
 
@@ -72,8 +73,8 @@ func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	conn := &EmbeddedConnection{}
 	conn.closed.Store(true)
 	_, err := conn.BeginTx(context.TODO(), driver.TxOptions{})
-	if err == nil {
-		t.Fatal("BeginTx on closed conn: want error, got nil")
+	if !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("BeginTx on closed conn: want driver.ErrBadConn, got %v", err)
 	}
 }
 
@@ -92,8 +93,9 @@ func TestEmbeddedConnection_ResetSessionClosedReturnsError(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{}
 	conn.closed.Store(true)
-	if err := conn.ResetSession(context.TODO()); err == nil {
-		t.Fatal("ResetSession on closed conn: want error, got nil")
+	err := conn.ResetSession(context.TODO())
+	if !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("ResetSession on closed conn: want driver.ErrBadConn, got %v", err)
 	}
 }
 

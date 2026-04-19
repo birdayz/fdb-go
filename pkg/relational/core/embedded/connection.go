@@ -222,7 +222,7 @@ func (r *staticRows) Next(dest []driver.Value) error {
 // emptyRows is a driver.Rows with no columns and no data.
 type emptyRows struct{}
 
-func (emptyRows) Columns() []string           { return nil }
+func (emptyRows) Columns() []string           { return []string{} }
 func (emptyRows) Close() error                { return nil }
 func (emptyRows) Next(_ []driver.Value) error { return io.EOF }
 
