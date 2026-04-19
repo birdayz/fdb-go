@@ -409,3 +409,20 @@ func TestIntegration_RecordCount_Enabled(t *testing.T) {
 		t.Errorf("record count = %q, want 3 (three seeded orders)", trimmed)
 	}
 }
+
+func TestIntegration_RecordCount_JSON(t *testing.T) {
+	f := setupCountFixture(t)
+	t.Setenv("FRL_CONFIG", f.configFilePath)
+
+	out, err := runCmd(t, "record", "count", "-o", "json")
+	if err != nil {
+		t.Fatalf("record count -o json: %v\nout:\n%s", err, out)
+	}
+	// JSON should contain "count": 3 as a bare int.
+	if !strings.Contains(out, `"count"`) {
+		t.Errorf("JSON output missing count key:\n%s", out)
+	}
+	if !strings.Contains(out, `3`) {
+		t.Errorf("JSON output missing expected count value (3):\n%s", out)
+	}
+}
