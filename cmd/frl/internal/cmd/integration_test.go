@@ -199,6 +199,25 @@ func TestIntegration_StoreInfo(t *testing.T) {
 	}
 }
 
+func TestIntegration_StoreInfo_JSON(t *testing.T) {
+	bindConfig(t)
+	out, err := runCmd(t, "store", "info", "-o", "json")
+	if err != nil {
+		t.Fatalf("store info -o json: %v\nout:\n%s", err, out)
+	}
+	// protojson shape of DataStoreInfo. We don't assert specific values
+	// because format/metadata versions depend on the record-layer
+	// defaults at write time; instead, assert that the structure is
+	// parseable JSON and contains at least one expected field name.
+	trimmed := strings.TrimSpace(out)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		t.Errorf("-o json output is not a JSON object:\n%s", out)
+	}
+	if !strings.Contains(out, `"formatVersion"`) {
+		t.Errorf("-o json output missing formatVersion key:\n%s", out)
+	}
+}
+
 func TestIntegration_RecordScan(t *testing.T) {
 	bindConfig(t)
 	out, err := runCmd(t, "record", "scan", "--type", "Order", "--limit", "10")
