@@ -31,7 +31,16 @@ tests:
     rows:
       - [3]
       - [4]
-  # NOTE: cross-joining two CTEs currently returns 1 row instead of the
-  # expected |lo|*|hi| product. Harness-surfaced gap — tracked in
-  # TODO.md. Scalar subquery in SELECT isn't supported either, so we
-  # can't pin multi-CTE composition via COUNT. Left for next shift.
+  # Multi-CTE cross-join. Previously the wrapper routed the primary
+  # source to execSelectFromCTE without checking for joins, which
+  # ignored sq.joins entirely. Fixed nightshift-36 by gating that
+  # short-circuit on len(sq.joins) == 0 so multi-source queries flow
+  # through execSelectJoin, whose scanTableToMaps already resolves
+  # CTE names.
+  - query: |-
+      WITH lo AS (SELECT id FROM t WHERE v < 20),
+           hi AS (SELECT id FROM t WHERE v >= 30)
+      SELECT COUNT(*) FROM lo, hi
+    rows:
+      # lo has 1 row (id=1), hi has 2 rows (id=3, id=4). Cross-join = 1*2 = 2.
+      - [2]

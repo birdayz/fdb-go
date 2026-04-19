@@ -360,8 +360,13 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
 	}
 
-	// Check if the table name resolves to a CTE.
-	if c.ctes != nil {
+	// Check if the table name resolves to a CTE. Only route to the
+	// CTE-only path when there are no joins — that path materialises
+	// the one CTE's rows without looking at sq.joins, so a
+	// comma-joined `SELECT ... FROM lo, hi` would drop the rhs. With
+	// joins, fall through to execSelectQueryFull → execSelectJoin,
+	// whose scanTableToMaps already resolves CTE names.
+	if c.ctes != nil && len(sq.joins) == 0 {
 		if cte, ok := c.ctes[strings.ToUpper(sq.tableName)]; ok {
 			return c.execSelectFromCTE(ctx, sq, cte)
 		}
