@@ -2222,3 +2222,38 @@ func TestFDB_InsertWithoutColumnList(t *testing.T) {
 	g.Expect(id).To(gomega.Equal(int64(1)))
 	g.Expect(val).To(gomega.Equal(int64(42)))
 }
+
+func TestFDB_UpdateSetArithmetic(t *testing.T) {
+	// UPDATE SET col = col + N — arithmetic with a column reference.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_upd_arith")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_arith")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE upd_arith_tmpl "+
+			"CREATE TABLE Counter (id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_upd_arith/counters WITH TEMPLATE upd_arith_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_upd_arith?cluster_file=%s&schema=counters", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Counter (id, val) VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+
+	// Increment val by 5.
+	g.Expect(db.ExecContext(ctx, "UPDATE Counter SET val = val + 5 WHERE id = 1")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, val FROM Counter WHERE id = 1")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	var id, val int64
+	g.Expect(rows.Scan(&id, &val)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(val).To(gomega.Equal(int64(15)))
+}

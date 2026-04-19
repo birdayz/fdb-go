@@ -1389,17 +1389,86 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		"cannot convert %T to proto field kind %s", val, fd.Kind())
 }
 
-// evalExpr evaluates a SET expression (literal only) from an UPDATE statement.
-func evalExpr(expr antlrgen.IExpressionContext) (any, error) {
+// evalExpr evaluates a SET expression from an UPDATE statement against the current row msg.
+// Supports: literals, column references, and binary arithmetic (+, -, *, /).
+func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in SET", expr)
 	}
-	atomCtx, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in SET", pred.ExpressionAtom())
+	return evalExprAtom(msg, pred.ExpressionAtom())
+}
+
+func evalExprAtom(msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
+	switch a := atom.(type) {
+	case *antlrgen.ConstantExpressionAtomContext:
+		return evalConstant(a.Constant())
+	case *antlrgen.FullColumnNameExpressionAtomContext:
+		colName := fullIdToName(a.FullColumnName().FullId())
+		if msg == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "column reference %q not allowed in this context", colName)
+		}
+		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+		if fd == nil {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+		}
+		return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
+	case *antlrgen.MathExpressionAtomContext:
+		left, err := evalExprAtom(msg, a.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		right, err := evalExprAtom(msg, a.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		return applyMathOp(left, right, a.MathOperator().GetText())
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in SET", atom)
 	}
-	return evalConstant(atomCtx.Constant())
+}
+
+func applyMathOp(left, right any, op string) (any, error) {
+	lf, lok := toFloat64(left)
+	rf, rok := toFloat64(right)
+	if !lok || !rok {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"arithmetic operator %q requires numeric operands, got %T and %T", op, left, right)
+	}
+	var result float64
+	switch op {
+	case "+":
+		result = lf + rf
+	case "-":
+		result = lf - rf
+	case "*":
+		result = lf * rf
+	case "/":
+		if rf == 0 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+		}
+		result = lf / rf
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
+	}
+	// Preserve int64 if both operands were integers and result is whole.
+	_, leftIsInt := left.(int64)
+	_, rightIsInt := right.(int64)
+	if leftIsInt && rightIsInt && result == float64(int64(result)) {
+		return int64(result), nil
+	}
+	return result, nil
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	default:
+		return 0, false
+	}
 }
 
 // execUpdate executes UPDATE <table> SET col = val [, ...] [WHERE col = val].
@@ -1476,7 +1545,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found in table %q", colName, tableName)
 				}
-				val, evalErr := evalExpr(elem.Expression())
+				val, evalErr := evalExpr(cloned, elem.Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
