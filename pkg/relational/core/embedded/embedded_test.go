@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -246,6 +247,77 @@ func TestValuesEqual(t *testing.T) {
 			got := valuesEqual(tc.a, tc.b)
 			if got != tc.want {
 				t.Errorf("valuesEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLikeMatch(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		pattern, s string
+		want       bool
+	}{
+		{"", "", true},
+		{"", "x", false},
+		{"abc", "abc", true},
+		{"abc", "abcd", false},
+		{"abc", "ab", false},
+		{"%", "", true},
+		{"%", "anything", true},
+		{"a%", "a", true},
+		{"a%", "abc", true},
+		{"a%", "bc", false},
+		{"%c", "abc", true},
+		{"%c", "abx", false},
+		{"a%c", "abc", true},
+		{"a%c", "axyzc", true},
+		{"a%c", "axyz", false},
+		{"_", "a", true},
+		{"_", "ab", false},
+		{"_", "", false},
+		{"a_c", "abc", true},
+		{"a_c", "ac", false},
+		{"a_c", "abbc", false},
+		{"%%", "anything", true},
+		{"a%b%c", "aXbYc", true},
+		{"a%b%c", "aXbY", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
+			t.Parallel()
+			got := likeMatch(tc.pattern, tc.s)
+			if got != tc.want {
+				t.Errorf("likeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRowKey(t *testing.T) {
+	t.Parallel()
+	row := func(vals ...driver.Value) []driver.Value { return vals }
+
+	cases := []struct {
+		a, b []driver.Value
+		same bool
+	}{
+		{row(int64(1)), row(int64(1)), true},
+		{row(int64(1)), row(int64(2)), false},
+		{row(nil), row(nil), true},
+		{row(nil), row(int64(0)), false},
+		// Binary string containing separator bytes must not collide.
+		{row("foo\x00"), row("foo", "\x00"), false},
+		{row("a", "b"), row("ab"), false},
+	}
+	for i, tc := range cases {
+		t.Run(fmt.Sprintf("case%d", i), func(t *testing.T) {
+			t.Parallel()
+			ka, kb := rowKey(tc.a), rowKey(tc.b)
+			if tc.same && ka != kb {
+				t.Errorf("expected equal keys for %v and %v, got %q vs %q", tc.a, tc.b, ka, kb)
+			} else if !tc.same && ka == kb {
+				t.Errorf("expected distinct keys for %v and %v, both got %q", tc.a, tc.b, ka)
 			}
 		})
 	}

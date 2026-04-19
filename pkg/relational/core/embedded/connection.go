@@ -296,6 +296,20 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		return nil, runErr
 	}
 
+	// Apply DISTINCT deduplication before sort.
+	if sq.distinct && !sq.countStar {
+		seen := make(map[string]struct{}, len(data))
+		deduped := data[:0]
+		for _, row := range data {
+			key := rowKey(row)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				deduped = append(deduped, row)
+			}
+		}
+		data = deduped
+	}
+
 	// Apply ORDER BY (post-scan in-memory sort).
 	if len(sq.orderBy) > 0 {
 		// Build a map from column name to output index for O(1) lookup.
@@ -607,6 +621,7 @@ type selectQuery struct {
 	tableName string
 	projCols  []string // nil = SELECT *; ignored when countStar is true
 	countStar bool     // true when SELECT list is exactly COUNT(*)
+	distinct  bool     // true when SELECT DISTINCT
 	whereExpr antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
@@ -753,6 +768,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 		tableName: strings.Join(parts, "."),
 		projCols:  projCols,
 		countStar: countStar,
+		distinct:  simpleTable.DISTINCT() != nil,
 		whereExpr: fromClause.WhereExpr(),
 		limit:     -1,
 	}
@@ -816,6 +832,7 @@ func fullIdToName(fid antlrgen.IFullIdContext) string {
 }
 
 // protoValueToDriver converts a protoreflect.Value to a driver.Value.
+// For proto2 optional fields that are not set, returns nil (SQL NULL).
 func protoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) driver.Value {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
@@ -1427,6 +1444,18 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 		return !v, nil
 
 	case *antlrgen.PredicatedExpressionContext:
+		if e.Predicate() != nil {
+			switch p := e.Predicate().(type) {
+			case *antlrgen.InPredicateContext:
+				return evalInPredicate(msg, e, p)
+			case *antlrgen.IsExpressionContext:
+				return evalIsNullPredicate(msg, e, p)
+			case *antlrgen.LikePredicateContext:
+				return evalLikePredicate(msg, e, p)
+			case *antlrgen.BetweenComparisonPredicateContext:
+				return evalBetweenPredicate(msg, e, p)
+			}
+		}
 		return evalComparisonPredicate(msg, e)
 
 	default:
@@ -1481,6 +1510,211 @@ func evalComparisonPredicate(msg proto.Message, pred *antlrgen.PredicatedExpress
 	default:
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 	}
+}
+
+// evalInPredicate handles: col [NOT] IN (val1, val2, ...)
+func evalInPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, in *antlrgen.InPredicateContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+
+	exprs := in.InList().Expressions().AllExpression()
+	for _, expr := range exprs {
+		ep, ok := expr.(*antlrgen.PredicatedExpressionContext)
+		if !ok {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got %T", expr)
+		}
+		cAtom, ok := ep.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+		if !ok {
+			return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got atom %T", ep.ExpressionAtom())
+		}
+		litVal, err := evalConstant(cAtom.Constant())
+		if err != nil {
+			return false, err
+		}
+		if valuesEqual(fieldVal, litVal) {
+			if in.NOT() != nil {
+				return false, nil
+			}
+			return true, nil
+		}
+	}
+	// none matched
+	if in.NOT() != nil {
+		return true, nil
+	}
+	return false, nil
+}
+
+// evalIsNullPredicate handles: col IS [NOT] NULL / IS TRUE / IS FALSE
+func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, is *antlrgen.IsExpressionContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IS left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	// Use Has() for proto2 optional presence; unset optional = SQL NULL.
+	var fieldVal driver.Value
+	if msg.ProtoReflect().Has(fd) {
+		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+	}
+	negated := is.NOT() != nil
+
+	switch {
+	case is.NULL_LITERAL() != nil:
+		isNull := fieldVal == nil
+		if negated {
+			return !isNull, nil
+		}
+		return isNull, nil
+	case is.TRUE() != nil:
+		b, ok := fieldVal.(bool)
+		result := ok && b
+		if negated {
+			return !result, nil
+		}
+		return result, nil
+	case is.FALSE() != nil:
+		b, ok := fieldVal.(bool)
+		result := ok && !b
+		if negated {
+			return !result, nil
+		}
+		return result, nil
+	default:
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported IS test value")
+	}
+}
+
+// evalLikePredicate handles: col [NOT] LIKE 'pattern'
+// Supports SQL wildcards: % (any sequence) and _ (any single character).
+func evalLikePredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	if fd.Kind() != protoreflect.StringKind {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string column, got %v", fd.Kind())
+	}
+
+	fieldStr := msg.ProtoReflect().Get(fd).String()
+
+	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.
+	patternLit := like.GetPattern().GetText()
+	pattern := stripStringLiteralQuotes(patternLit)
+
+	matched := likeMatch(pattern, fieldStr)
+	if like.NOT() != nil {
+		return !matched, nil
+	}
+	return matched, nil
+}
+
+// likeMatch implements SQL LIKE pattern matching: % = any sequence, _ = any single char.
+func likeMatch(pattern, s string) bool {
+	if pattern == "" {
+		return s == ""
+	}
+	p, str := []rune(pattern), []rune(s)
+	return likeMatchRunes(p, str)
+}
+
+func likeMatchRunes(p, s []rune) bool {
+	for len(p) > 0 {
+		switch p[0] {
+		case '%':
+			// skip consecutive %
+			for len(p) > 0 && p[0] == '%' {
+				p = p[1:]
+			}
+			if len(p) == 0 {
+				return true
+			}
+			for i := 0; i <= len(s); i++ {
+				if likeMatchRunes(p, s[i:]) {
+					return true
+				}
+			}
+			return false
+		case '_':
+			if len(s) == 0 {
+				return false
+			}
+			p, s = p[1:], s[1:]
+		default:
+			if len(s) == 0 || p[0] != s[0] {
+				return false
+			}
+			p, s = p[1:], s[1:]
+		}
+	}
+	return len(s) == 0
+}
+
+// stripStringLiteralQuotes removes surrounding single-quotes and unescapes ” → '.
+func stripStringLiteralQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		s = s[1 : len(s)-1]
+	}
+	return strings.ReplaceAll(s, "''", "'")
+}
+
+// evalBetweenPredicate handles: col [NOT] BETWEEN lo AND hi (inclusive).
+func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+
+	loAtom, ok := bet.GetLeft().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN low bound must be a constant, got %T", bet.GetLeft())
+	}
+	hiAtom, ok := bet.GetRight().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN high bound must be a constant, got %T", bet.GetRight())
+	}
+
+	lo, err := evalConstant(loAtom.Constant())
+	if err != nil {
+		return false, err
+	}
+	hi, err := evalConstant(hiAtom.Constant())
+	if err != nil {
+		return false, err
+	}
+
+	result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
+	if bet.NOT() != nil {
+		return !result, nil
+	}
+	return result, nil
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
@@ -1705,6 +1939,22 @@ func compareValues(a, b driver.Value) int {
 		}
 	}
 	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+}
+
+// rowKey serializes a result row to a collision-free string key for DISTINCT deduplication.
+// Each field is length-prefixed: "<type-tag>:<len>:<bytes>|" so that string values
+// containing separator characters cannot collide with other fields or NULL markers.
+func rowKey(row []driver.Value) string {
+	var b strings.Builder
+	for _, v := range row {
+		if v == nil {
+			b.WriteString("N:0:|")
+			continue
+		}
+		s := fmt.Sprintf("%T\x00%v", v, v)
+		fmt.Fprintf(&b, "V:%d:%s|", len(s), s)
+	}
+	return b.String()
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {
