@@ -202,6 +202,43 @@ No open test items.
 
 **Started nightshift-24 (2026-04-18).** Port of Java's `fdb-relational-*` modules. Goal: full SQL over FoundationDB, wire-compatible with Java.
 
+### Status quo — Phase 0-2 quality assessment (dayshift-34, 2026-04-19)
+
+**What we have that's solid**
+
+- 13,238 lines of relational test code, 34 test files, ~200 integration tests hitting real FDB
+- 1587/1587 real SQL statements from Java's yamsql corpus parse cleanly — strong signal the grammar is the same
+- Parser is literally the Java grammar vendored verbatim (`RelationalLexer.g4` + `RelationalParser.g4`) — no translation risk
+- 22 files in `pkg/relational/` actually import `pkg/recordlayer` — real wiring, not a parallel universe
+- `metadata` wraps `recordlayer.RecordMetaData`, `catalog` is FDB-backed via `recordlayer.FDBRecordStore`, `embedded.execInsert/Update/Delete` call `SaveRecord`/`DeleteRecord` directly. INSERT round-trips a dynamic protobuf through the actual record-layer store.
+- 52 `// matching Java` / `// ported from Java` markers in the code trace the lineage
+- Catalog subspace layout matches Java's `SystemTableRegistry`
+
+**What's weak / fragile**
+
+1. **Zero cross-language conformance tests for SQL.** `conformance/` has Java↔Go round-trips for record-layer operations (18 conformance files), but nothing for the SQL layer. We have no proof that `SELECT ... FROM t` returns byte-identical rows from Go and Java. We only test Go → Go.
+2. **The yamsql corpus test only verifies that statements *parse*** — nothing verifies that they execute identically. Parsing is the easy half.
+3. **NULL semantics were silently broken in 7 places until dayshift-34.** `UPPER(NULL)` returned `''`, `NULL > 5` returned true, `NULL + 5` errored. Caught only because a dedicated NULL test was written. Raises the question: what else is silently wrong that we haven't stumbled into?
+4. **No SQL-level fuzz testing.** Record-layer parsers have 24 fuzz targets; SQL has zero.
+5. **`connection.go` is 5498 lines.** Half the execution engine in one file. Not a correctness issue but a review/maintenance red flag.
+6. **Hand-rolled plans, not Cascades.** Execution paths (proto scan, CTE, JOIN) have three diverging evaluators that were near-duplicates until the scalar function cores were unified dayshift-34. Anything else that diverges is latent inconsistency.
+7. **No cascading index scan planning.** We always do table scan + filter. Java uses indexes. Performance gap is unknown but probably large.
+
+**Concrete Java-alignment gaps worth testing before trusting**
+
+- [ ] Feed the yamsql **execution** corpus (not just parse) through both engines and diff result sets — "SQL semantic equivalence" below is the unchecked item.
+- [ ] Run Go's `INSERT INTO t ...` then read it back via Java's JDBC connector. Run the reverse. Both unchecked.
+- [ ] Plan cache key stability (Go hash == Java hash) is unchecked. Doesn't block correctness but blocks shared RPC caching.
+
+**Wiring with core FDB layer — this part is solid**
+
+- `recordlayer.RecordMetaData` / `recordlayer.FDBRecordStore` are the only paths to FDB. No shadow storage, no mocks.
+- Dynamic proto messages built at `CREATE TABLE` via `dynamicpb` go through the same `SaveRecord` path as static proto records — same wire format, same split handling, same index maintainers.
+- Catalog uses `recordlayer.NewStoreBuilder()` like any other consumer.
+- Same FDB transaction model (`db.Run`, `ctx.Transact`), same conflict resolution.
+
+**Bottom line:** the integration with core FDB is real and correct. The Java behavioral equivalence is asserted by construction (same grammar, same wire format, ported code patterns) but not *verified* end-to-end. For something we want bidirectional Java interop on, that's the biggest gap to close — and it's straightforward to do with a Java JDBC round-trip harness in `conformance/`.
+
 ### Core requirements
 
 1. **1:1 aligned with Java.** Package names, class/struct names, behavior, wire format — mirror Java unless there is a very good reason. Catalog storage, plan cache keys, protobuf encodings, SQL dialect must be bit-compatible.
