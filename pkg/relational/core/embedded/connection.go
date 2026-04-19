@@ -313,7 +313,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				outFields[i] = outField{string(fd.Name()), fd}
 			}
 		} else {
-			// Named projection — look up each column.
+			// Named projection — look up each column, apply alias if present.
 			outFields = make([]outField, len(sq.projCols))
 			for i, colName := range sq.projCols {
 				fd := allFields.ByName(protoreflect.Name(colName))
@@ -321,7 +321,11 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"column %q not found in table %q", colName, sq.tableName)
 				}
-				outFields[i] = outField{colName, fd}
+				outName := colName
+				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+					outName = sq.projAliases[i]
+				}
+				outFields[i] = outField{outName, fd}
 			}
 		}
 		cols = make([]string, len(outFields))
@@ -683,11 +687,12 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
-	tableName string
-	projCols  []string // nil = SELECT *; ignored when countStar is true
-	countStar bool     // true when SELECT list is exactly COUNT(*)
-	distinct  bool     // true when SELECT DISTINCT
-	whereExpr antlrgen.IWhereExprContext
+	tableName   string
+	projCols    []string // nil = SELECT *; ignored when countStar is true
+	projAliases []string // parallel to projCols; empty string = no alias (use column name)
+	countStar   bool     // true when SELECT list is exactly COUNT(*)
+	distinct    bool     // true when SELECT DISTINCT
+	whereExpr   antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
@@ -736,10 +741,18 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 	return fullIdToName(colAtom.FullColumnName().FullId()), nil
 }
 
-// selectExprToColumnName extracts a plain column name from a
-// SelectExpressionElementContext.
-func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, error) {
-	return columnNameFromExpr(e.Expression(), "SELECT expression")
+// selectExprToColumnName extracts a plain column name and optional alias from a
+// SelectExpressionElementContext. Returns (colName, alias, error).
+func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string, string, error) {
+	colName, err := columnNameFromExpr(e.Expression(), "SELECT expression")
+	if err != nil {
+		return "", "", err
+	}
+	alias := ""
+	if e.Uid() != nil {
+		alias = stripIdentifierQuotes(e.Uid().GetText())
+	}
+	return colName, alias, nil
 }
 
 // extractSelectParts navigates the parse tree of a SELECT statement.
@@ -768,7 +781,8 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 
 	// Parse SELECT list: either *, a list of column name expressions, or COUNT(*).
 	selElems := simpleTable.SelectElements()
-	var projCols []string // nil = SELECT *
+	var projCols []string    // nil = SELECT *
+	var projAliases []string // parallel to projCols
 	var countStar bool
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
@@ -788,11 +802,12 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 					}
 					countStar = true
 				} else {
-					colName, nameErr := selectExprToColumnName(e)
+					colName, alias, nameErr := selectExprToColumnName(e)
 					if nameErr != nil {
 						return nil, nameErr
 					}
 					projCols = append(projCols, colName)
+					projAliases = append(projAliases, alias)
 				}
 			default:
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -830,12 +845,13 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 		parts[i] = stripIdentifierQuotes(u.GetText())
 	}
 	sq := &selectQuery{
-		tableName: strings.Join(parts, "."),
-		projCols:  projCols,
-		countStar: countStar,
-		distinct:  simpleTable.DISTINCT() != nil,
-		whereExpr: fromClause.WhereExpr(),
-		limit:     -1,
+		tableName:   strings.Join(parts, "."),
+		projCols:    projCols,
+		projAliases: projAliases,
+		countStar:   countStar,
+		distinct:    simpleTable.DISTINCT() != nil,
+		whereExpr:   fromClause.WhereExpr(),
+		limit:       -1,
 	}
 
 	// Parse ORDER BY clause.

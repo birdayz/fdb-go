@@ -2047,3 +2047,40 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids).To(gomega.Equal([]int64{2}))
 }
+
+func TestFDB_SelectColumnAlias(t *testing.T) {
+	// SELECT col AS alias — result column name should use the alias.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_col_alias")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_col_alias")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE alias_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_col_alias/items WITH TEMPLATE alias_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_col_alias?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 42)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id AS id, val AS amount FROM Item")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	// Verify column names use aliases.
+	cols, colsErr := rows.Columns()
+	g.Expect(colsErr).NotTo(gomega.HaveOccurred())
+	g.Expect(cols).To(gomega.Equal([]string{"id", "amount"}))
+
+	var id, amount int64
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	g.Expect(rows.Scan(&id, &amount)).To(gomega.Succeed())
+	g.Expect(id).To(gomega.Equal(int64(1)))
+	g.Expect(amount).To(gomega.Equal(int64(42)))
+}
