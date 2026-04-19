@@ -5545,6 +5545,71 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	}
 }
 
+// TestFDB_NullHandlingSanityPack bundles a handful of quick SQL-standard
+// NULL-semantic checks whose failure would indicate a regression in the
+// NULL-aware evaluator stack (tri-state, mixed-type equality, valuesEqual,
+// groupByKey) across the proto and map paths. Each is intentionally small
+// — the point is early detection of a broad regression, not exhaustive
+// coverage (other dedicated tests go deeper on each dimension).
+func TestFDB_NullHandlingSanityPack(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_null_sanity")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_sanity")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_sanity_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_sanity/main WITH TEMPLATE null_sanity_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_null_sanity?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// id=1: (5, 5, 'x'); id=2: (5, NULL, 'x'); id=3: (NULL, 3, 'y')
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, a, b, s) VALUES (1, 5, 5, 'x')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, a, s) VALUES (2, 5, 'x')`) // b NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, b, s) VALUES (3, 3, 'y')`) // a NULL
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var c int64
+
+	// a = b: NULL in either side ⇒ UNKNOWN. Only id=1 matches (5=5).
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE a = b`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "a=b with NULL on either side is UNKNOWN")
+
+	// a <> b: NULL ⇒ UNKNOWN (id=2 a=5 b=NULL UNKNOWN, id=3 a=NULL b=3 UNKNOWN). Zero matches.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE a <> b`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "a<>b with NULL is UNKNOWN, not TRUE")
+
+	// COUNT(*) always counts every row. COUNT(a) skips NULL.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(3)))
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(a) FROM T`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(2)))
+
+	// GROUP BY two columns where one is NULL in some rows — rows with NULL
+	// in the same column must group together (NULL=NULL for GROUP BY).
+	// (a=5, s='x') → 2 rows (id=1,2); (a=NULL, s='y') → 1 row (id=3).
+	rows, err := db.QueryContext(ctx, `SELECT COUNT(*) FROM T GROUP BY a, s`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	groupCounts := []int64{}
+	for rows.Next() {
+		var cnt int64
+		g.Expect(rows.Scan(&cnt)).To(gomega.Succeed())
+		groupCounts = append(groupCounts, cnt)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(len(groupCounts)).To(gomega.Equal(2), "2 groups: (5,'x') and (NULL,'y')")
+}
+
 // TestFDB_DistinctAggregates pins SUM/AVG/MIN/MAX with DISTINCT: the
 // distinct set must collect each non-null value once, and the per-function
 // accumulator must see that same deduplicated stream. Pre-fix only

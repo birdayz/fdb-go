@@ -2510,6 +2510,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		sq.havingExpr = havingCtx.GetHavingExpr()
 	}
 
+	// countStar fast path assumes a single synthetic row. With GROUP BY
+	// present we need a per-group COUNT(*), so demote to aggCols.
+	if sq.countStar && len(sq.groupBy) > 0 {
+		sq.countStar = false
+		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: "COUNT(*)", aggFunc: "COUNT"})
+	}
+
 	return sq, nil
 }
 
