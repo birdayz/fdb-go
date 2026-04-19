@@ -3832,3 +3832,52 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(vals).To(gomega.Equal([]string{"Widget"}))
 }
+
+func TestFDB_CaseInMapEval(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_case_map")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_map")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_map_tmpl
+		CREATE TABLE Product (id BIGINT NOT NULL, name STRING NOT NULL, price BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_map/main WITH TEMPLATE case_map_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_case_map?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (1, 'Widget', 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (2, 'Gadget', 150)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name, price) VALUES (3, 'Gizmo', 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CASE WHEN in CTE SELECT projection.
+	rows, err := db.QueryContext(ctx, `
+		WITH p AS (SELECT id, name, price FROM Product)
+		SELECT name, CASE WHEN price < 100 THEN 'cheap' WHEN price < 200 THEN 'mid' ELSE 'pricey' END AS tier
+		FROM p ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct{ name, tier string }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.tier)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"Widget", "cheap"},
+		{"Gadget", "mid"},
+		{"Gizmo", "pricey"},
+	}))
+}

@@ -360,6 +360,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **SELECT without FROM** — `SELECT 1+2, 'hello'`; constant expression row, no catalog access. dayshift-34.
 - [x] **INSERT VALUES with expressions** — `INSERT INTO t VALUES (1+2, UPPER('foo'))`; evalExpr replaces evalLiteralExpr for INSERT value columns. dayshift-34.
 - [x] **Derived tables (subquery in FROM)** — `SELECT name FROM (SELECT id, name FROM t WHERE ...) AS alias`; materialised into temporary CTE slot. dayshift-34.
+- [x] **Scalar functions in map eval** — evalExprAtomOnMap now handles FunctionCallExpressionAtomContext via evalScalarFunctionCallOnMap; all scalar functions work in JOIN ON/WHERE, CTE WHERE/SELECT, derived table filters. CTE projection evaluates projExprs via evalExprOnMap. NULL NOT IN map path fixed (was returning true). EXISTS added to evalHaving. dayshift-34.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 

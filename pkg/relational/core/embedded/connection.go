@@ -3293,8 +3293,8 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 }
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
-	if _, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "CASE expressions not supported in map eval context")
+	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
+		return evalSpecificFunctionOnMap(ctx, conn, row, sf.SpecificFunction())
 	}
 
 	var name string
@@ -3739,6 +3739,56 @@ func evalSpecificFunction(msg proto.Message, sf antlrgen.ISpecificFunctionContex
 		return castValue(val, typeName)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)
+	}
+}
+
+// evalSpecificFunctionOnMap is the map-eval variant of evalSpecificFunction: handles CASE WHEN and CAST.
+func evalSpecificFunctionOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, sf antlrgen.ISpecificFunctionContext) (driver.Value, error) {
+	switch c := sf.(type) {
+	case *antlrgen.CaseFunctionCallContext:
+		for _, alt := range c.AllCaseFuncAlternative() {
+			ok, err := evalPredicateOnMapExpr(ctx, conn, row, alt.GetCondition().Expression())
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return evalExprOnMap(ctx, conn, row, alt.GetConsequent().Expression())
+			}
+		}
+		if c.GetElseArg() != nil {
+			return evalExprOnMap(ctx, conn, row, c.GetElseArg().Expression())
+		}
+		return nil, nil
+	case *antlrgen.CaseExpressionFunctionCallContext:
+		subject, err := evalExprOnMap(ctx, conn, row, c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		for _, alt := range c.AllCaseFuncAlternative() {
+			whenVal, wErr := evalExprOnMap(ctx, conn, row, alt.GetCondition().Expression())
+			if wErr != nil {
+				return nil, wErr
+			}
+			if compareValues(subject, whenVal) == 0 {
+				return evalExprOnMap(ctx, conn, row, alt.GetConsequent().Expression())
+			}
+		}
+		if c.GetElseArg() != nil {
+			return evalExprOnMap(ctx, conn, row, c.GetElseArg().Expression())
+		}
+		return nil, nil
+	case *antlrgen.DataTypeFunctionCallContext:
+		val, err := evalExprOnMap(ctx, conn, row, c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		if val == nil {
+			return nil, nil
+		}
+		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
+		return castValue(val, typeName)
+	default:
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T in map eval", sf)
 	}
 }
 
