@@ -3409,6 +3409,52 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
+	case "LEFT":
+		// LEFT(str, n) — first n runes, or whole string if n >= length.
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LEFT requires 2 arguments")
+		}
+		sv, err := eval(fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		nVal, nErr := eval(fArgs[1].Expression())
+		if nErr != nil {
+			return nil, nErr
+		}
+		n, _ := nVal.(int64)
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s, nil
+		}
+		return string(runes[:n]), nil
+	case "RIGHT":
+		// RIGHT(str, n) — last n runes, or whole string if n >= length.
+		if len(fArgs) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "RIGHT requires 2 arguments")
+		}
+		sv, err := eval(fArgs[0].Expression())
+		if err != nil || sv == nil {
+			return nil, err
+		}
+		s := fmt.Sprintf("%v", sv)
+		nVal, nErr := eval(fArgs[1].Expression())
+		if nErr != nil {
+			return nil, nErr
+		}
+		n, _ := nVal.(int64)
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s, nil
+		}
+		return string(runes[len(runes)-int(n):]), nil
 	case "SUBSTRING", "SUBSTR":
 		// SUBSTRING(str, pos [, len]) — 1-based position per SQL standard.
 		if len(fArgs) < 2 {

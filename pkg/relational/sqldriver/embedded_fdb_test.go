@@ -5000,3 +5000,40 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]r{{3, 30}, {4, 40}, {5, 50}}))
 }
+
+func TestFDB_LeftRight(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_left_right")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_right")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lr_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_right/main WITH TEMPLATE lr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_left_right?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name) VALUES (1, 'foobar')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name) VALUES (2, 'ab')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var l, r string
+	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(name, 3), RIGHT(name, 3) FROM T WHERE id = 1`).
+		Scan(&l, &r)).To(gomega.Succeed())
+	g.Expect(l).To(gomega.Equal("foo"))
+	g.Expect(r).To(gomega.Equal("bar"))
+
+	// n larger than length: return whole string.
+	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(name, 100), RIGHT(name, 100) FROM T WHERE id = 2`).
+		Scan(&l, &r)).To(gomega.Succeed())
+	g.Expect(l).To(gomega.Equal("ab"))
+	g.Expect(r).To(gomega.Equal("ab"))
+}
