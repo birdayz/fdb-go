@@ -331,6 +331,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **WHERE LIKE / NOT LIKE** (nightshift-31) — `evalLikePredicate` + `likeMatchRunes` recursive % / _ pattern matching. `stripStringLiteralQuotes` for SQL string literal unescaping. 2 FDB integration tests (LIKE + NOT LIKE).
 - [x] **WHERE BETWEEN / NOT BETWEEN** (nightshift-31) — `evalBetweenPredicate` inclusive range via `compareValues`. 2 FDB integration tests (BETWEEN + NOT BETWEEN).
 - [x] **Schema evolution validator** — `RelationalSchemaEvolutionValidator` in `pkg/relational/core/ddl/`. Validates: no table removal, no column removal, no type changes, no column reordering; additions allowed. Wired into `SaveSchemaTemplateConstantAction.Execute()`. 6 unit tests. dayshift-32.
+- [x] **GROUP BY + aggregate functions** — `SELECT col, COUNT(*)/SUM/MIN/MAX/AVG FROM t GROUP BY col`; HAVING clause; ORDER BY on aggregates; bare aggregates without GROUP BY. 4 FDB integration tests. dayshift-32.
+- [x] **Scalar expressions in SELECT** — `SELECT id, amount * 2 AS doubled FROM t`; arithmetic / column references in projection via evalExpr. 1 FDB integration test. dayshift-32.
+- [x] **Catalog read conflict fix** — cachedLoadSchema reads catalog via separate auto-commit tx when inside explicit user transaction; prevents spurious FDB 1020 not_committed errors under parallel DDL. dayshift-32.
 - [x] **Arithmetic in UPDATE SET** — `evalExpr` extended with `MathExpressionAtomContext` + `FullColumnNameExpressionAtomContext`; `SET col = col + N` now works. 1 FDB integration test. dayshift-32.
 - [x] **GROUP BY + aggregate functions** — `SELECT col, COUNT(*)/SUM/MIN/MAX/AVG FROM t GROUP BY col`; in-memory grouping; mixed group-col + aggregate SELECT lists. 1 FDB integration test. dayshift-32.
 
