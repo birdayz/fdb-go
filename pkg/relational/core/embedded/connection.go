@@ -4793,16 +4793,24 @@ func stripStringLiteralQuotes(s string) string {
 }
 
 // evalBetweenPredicateTri handles: expr [NOT] BETWEEN lo AND hi (inclusive).
-// NULL in any position yields triNull so NOT BETWEEN NULL AND x stays UNKNOWN.
+//
+// Java conformance: rather than collapsing any NULL to UNKNOWN, decompose
+// per Java's ExpressionVisitor.visitBetweenComparisonPredicate:
+//
+//	x BETWEEN lo AND hi    →  (lo <= x) AND (x <= hi)
+//	x NOT BETWEEN lo AND hi →  (x < lo)  OR  (x > hi)
+//
+// then let triAnd/triOr do Kleene short-circuit. This matters when one
+// side is definitively FALSE (NOT BETWEEN) or TRUE (NOT BETWEEN with
+// OR short-circuit) — e.g. `5 NOT BETWEEN 1 AND NULL` evaluates to
+// `5 < 1 OR 5 > NULL` = `FALSE OR UNKNOWN` = UNKNOWN (previously correct),
+// but `0 NOT BETWEEN 1 AND NULL` evaluates to `0 < 1 OR 0 > NULL` =
+// `TRUE OR UNKNOWN` = TRUE (previously UNKNOWN, wrongly filtered out).
 func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (triBool, error) {
 	fieldVal, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 	if err != nil {
 		return triFalse, err
 	}
-	if fieldVal == nil {
-		return triNull, nil // NULL BETWEEN ... = UNKNOWN
-	}
-
 	lo, err := evalExprAtom(ctx, conn, msg, bet.GetLeft())
 	if err != nil {
 		return triFalse, err
@@ -4811,16 +4819,26 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 	if err != nil {
 		return triFalse, err
 	}
-	// SQL 3-valued logic: NULL bound → UNKNOWN.
-	if lo == nil || hi == nil {
-		return triNull, nil
+
+	// compareTri returns TRUE/FALSE/NULL based on whether the comparison
+	// can be determined; any NULL operand yields UNKNOWN.
+	compareTri := func(a, b driver.Value, want func(int) bool) triBool {
+		if a == nil || b == nil {
+			return triNull
+		}
+		return triFromBool(want(compareValues(a, b)))
 	}
 
-	result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
 	if bet.NOT() != nil {
-		return triFromBool(!result), nil
+		// (x < lo) OR (x > hi)
+		lt := compareTri(fieldVal, lo, func(c int) bool { return c < 0 })
+		gt := compareTri(fieldVal, hi, func(c int) bool { return c > 0 })
+		return triOr(lt, gt), nil
 	}
-	return triFromBool(result), nil
+	// (lo <= x) AND (x <= hi)
+	geLo := compareTri(fieldVal, lo, func(c int) bool { return c >= 0 })
+	leHi := compareTri(fieldVal, hi, func(c int) bool { return c <= 0 })
+	return triAnd(geLo, leHi), nil
 }
 
 // groupByKey builds a comparable string key from the group-by column values.

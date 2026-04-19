@@ -6212,6 +6212,22 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	g.Expect(c).To(gomega.Equal(int64(0)), "BETWEEN NULL AND x must be UNKNOWN")
 	// Grammar does not allow NULL as a LIKE pattern — the semantic path is
 	// covered in evalLikePredicateTri by NULL input returning triNull.
+
+	// Java conformance (swingshift-35): Java's ExpressionVisitor rewrites
+	// NOT BETWEEN as `x < lo OR x > hi`, so NULL in one bound short-circuits
+	// when the other side is definitively TRUE. n=5 (id=1), n=NULL (id=2).
+	//   id=1: 5 NOT BETWEEN 10 AND NULL = 5 < 10 OR 5 > NULL = TRUE OR UNKNOWN = TRUE
+	//   id=2: NULL NOT BETWEEN 10 AND NULL = UNKNOWN OR UNKNOWN = UNKNOWN
+	// Previously both evaluated to UNKNOWN (any-NULL→UNKNOWN), wrongly filtering id=1.
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n NOT BETWEEN 10 AND NULL`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(1)), "NOT BETWEEN with short-circuitable bound: n=5 NOT BETWEEN 10 AND NULL is TRUE (5<10)")
+
+	// Mirror case: BETWEEN decomposes to `lo <= x AND x <= hi`; one side
+	// FALSE → whole AND FALSE, regardless of other side's NULL.
+	//   id=1: 5 BETWEEN NULL AND 1 = UNKNOWN AND FALSE = FALSE  (5 > 1)
+	//   id=2: NULL BETWEEN NULL AND 1 = UNKNOWN AND UNKNOWN = UNKNOWN
+	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n BETWEEN NULL AND 1`).Scan(&c)).To(gomega.Succeed())
+	g.Expect(c).To(gomega.Equal(int64(0)), "BETWEEN with one bound FALSE short-circuits to FALSE, not UNKNOWN")
 }
 
 // TestFDB_AggregateNullSemantics pins down SQL-standard aggregate behaviour:
