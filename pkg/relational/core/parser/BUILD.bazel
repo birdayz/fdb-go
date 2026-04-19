@@ -23,6 +23,7 @@ go_test(
         "fuzz_test.go",
         "parser_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":parser"],
     deps = ["//pkg/relational/api"],
 )

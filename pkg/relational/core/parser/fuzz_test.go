@@ -16,6 +16,14 @@ import (
 // Seed corpus mixes well-formed SQL (to exercise the full grammar) with
 // pathological edge cases that historically tripped ANTLR generators
 // (unclosed string, leading NUL, high-bit bytes, control characters).
+//
+// The testdata/fuzz/FuzzParse corpus also holds regression entries from
+// prior fuzz runs. Notable: `a1c9802306691af3` — 3.4KB `CASE WHEN x IS
+// NULL T((((...((HEN 'a' ELSE 'b' END FROM t` input that takes ~8.7s
+// to parse due to exponential ANTLR ATN behaviour on deeply-unclosed
+// parens. Parsed correctly (returns syntax error), just slow. Same
+// grammar as Java so Java has the same vulnerability — deferring
+// upstream rather than adding a Go-only size limit.
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		"",
