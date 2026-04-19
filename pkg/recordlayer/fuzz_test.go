@@ -562,3 +562,52 @@ func fuzzTupleElemEqual(a, b any) bool {
 	}
 	return false
 }
+
+// FuzzKeyExpressionFromProto stresses the proto → KeyExpression parser with
+// arbitrary byte sequences. The recursive descent over Then/Nesting/Grouping
+// etc. is a DoS candidate: a crafted proto with deep or self-referential
+// nesting could blow the stack. This fuzz ensures parsing always terminates
+// either with a concrete (non-nil) expression or an error (not a panic).
+//
+// Seeds: a handful of simple KeyExpressions (field, empty, record type key,
+// nested then) plus a random few bytes to get mutation started.
+func FuzzKeyExpressionFromProto(f *testing.F) {
+	// Seed with a few valid KeyExpressions serialised to bytes.
+	seeds := []*gen.KeyExpression{
+		{Empty: &gen.Empty{}},
+		{RecordTypeKey: &gen.RecordTypeKey{}},
+		{Field: &gen.Field{FieldName: proto.String("x"), FanType: gen.Field_SCALAR.Enum()}},
+		{
+			Then: &gen.Then{Child: []*gen.KeyExpression{
+				{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
+				{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+			}},
+		},
+	}
+	for _, s := range seeds {
+		if b, err := proto.Marshal(s); err == nil {
+			f.Add(b)
+		}
+	}
+	// Pathological seeds.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(bytes.Repeat([]byte{0xff}, 64))
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		expr := &gen.KeyExpression{}
+		if err := proto.Unmarshal(blob, expr); err != nil {
+			// Bad proto bytes: parser rejects upstream, no work for us.
+			return
+		}
+		// Must not panic, must not return (nil, nil) — either a valid
+		// KeyExpression or a non-nil error.
+		ke, err := KeyExpressionFromProto(expr)
+		if err != nil {
+			return
+		}
+		if ke == nil {
+			t.Fatalf("KeyExpressionFromProto returned (nil, nil) for bytes %x", blob)
+		}
+	})
+}

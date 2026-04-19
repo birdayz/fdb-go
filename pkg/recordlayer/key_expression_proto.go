@@ -346,12 +346,18 @@ func functionFromProto(fn *gen.Function) (*FunctionKeyExpression, error) {
 }
 
 // splitFromProto reconstructs a SplitKeyExpression from a proto Split.
+// Rejects splitSize <= 0 with a typed error instead of letting Split() panic
+// — proto bytes from an untrusted catalog can trigger this path.
 func splitFromProto(s *gen.Split) (*SplitKeyExpression, error) {
+	size := int(s.GetSplitSize())
+	if size <= 0 {
+		return nil, fmt.Errorf("split size must be positive, got %d", size)
+	}
 	joined, err := KeyExpressionFromProto(s.Joined)
 	if err != nil {
 		return nil, fmt.Errorf("split joined: %w", err)
 	}
-	return Split(joined, int(s.GetSplitSize())), nil
+	return Split(joined, size), nil
 }
 
 // listFromProto reconstructs a ListKeyExpression from a proto List.
