@@ -4597,7 +4597,15 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
-		if op.AND() != nil {
+		// Grammar: AND | '&' '&' | XOR | OR | '|' '|'. op.AND()/OR()/XOR()
+		// are only non-nil for the keyword forms; the symbolic `&&` and
+		// `||` forms need text-based detection.
+		opText := strings.ReplaceAll(op.GetText(), " ", "")
+		isAnd := op.AND() != nil || opText == "&&"
+		isOr := op.OR() != nil || opText == "||"
+		isXor := op.XOR() != nil
+		switch {
+		case isAnd:
 			if left == triFalse {
 				return triFalse, nil // short-circuit
 			}
@@ -4606,8 +4614,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 				return triFalse, err
 			}
 			return triAnd(left, right), nil
-		}
-		if op.OR() != nil {
+		case isOr:
 			if left == triTrue {
 				return triTrue, nil // short-circuit
 			}
@@ -4616,6 +4623,17 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 				return triFalse, err
 			}
 			return triOr(left, right), nil
+		case isXor:
+			// SQL XOR: a XOR b = (a AND NOT b) OR (NOT a AND b). Any NULL
+			// operand → NULL (can't short-circuit without both concrete).
+			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			if left == triNull || right == triNull {
+				return triNull, nil
+			}
+			return triFromBool((left == triTrue) != (right == triTrue)), nil
 		}
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
 
@@ -5086,14 +5104,28 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		}
 		return triFromBool(len(subRows) > 0), nil
 	}
-	// Handle logical expressions: AND / OR
+	// Handle logical expressions: AND / OR / XOR (+ symbolic forms).
 	if le, ok := expr.(*antlrgen.LogicalExpressionContext); ok {
 		left, err := evalHavingTri(ctx, conn, row, le.Expression(0))
 		if err != nil {
 			return triFalse, err
 		}
-		op := strings.ToUpper(le.LogicalOperator().GetText())
-		if op == "AND" || op == "&&" {
+		op := le.LogicalOperator()
+		opText := strings.ReplaceAll(strings.ToUpper(op.GetText()), " ", "")
+		isAnd := op.AND() != nil || opText == "&&"
+		isOr := op.OR() != nil || opText == "||"
+		isXor := op.XOR() != nil
+		if isXor {
+			right, err := evalHavingTri(ctx, conn, row, le.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			if left == triNull || right == triNull {
+				return triNull, nil
+			}
+			return triFromBool((left == triTrue) != (right == triTrue)), nil
+		}
+		if isAnd {
 			if left == triFalse {
 				return triFalse, nil
 			}
@@ -5103,7 +5135,10 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			}
 			return triAnd(left, right), nil
 		}
-		// OR
+		if !isOr {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
+		}
+		// OR (including symbolic ||)
 		if left == triTrue {
 			return triTrue, nil
 		}
