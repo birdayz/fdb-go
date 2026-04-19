@@ -120,6 +120,20 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	if t.ErrorCode != "" {
 		return runErrorTest(ctx, db, t)
 	}
+	// Non-query statements (UPDATE/DELETE/INSERT) go through Exec and
+	// must not be sent to Query — the driver rejects them there. They
+	// are sequenced steps that mutate state for a subsequent SELECT;
+	// the scenario declares them with rows: absent or [] and the runner
+	// asserts only that they succeed.
+	if !isQuery(t.Query) {
+		if _, err := db.ExecContext(ctx, t.Query); err != nil {
+			return fmt.Sprintf("exec error: %v", err)
+		}
+		if len(t.Rows) != 0 {
+			return fmt.Sprintf("non-query statement returned no rows but scenario expects %d", len(t.Rows))
+		}
+		return ""
+	}
 	rows, err := db.QueryContext(ctx, t.Query)
 	if err != nil {
 		return fmt.Sprintf("query error: %v", err)
