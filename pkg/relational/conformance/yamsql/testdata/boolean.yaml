@@ -1,0 +1,56 @@
+# boolean.yaml
+#
+# Subset of fdb-record-layer/yaml-tests/src/test/resources/boolean.yamsql
+# adapted for our direct-YAML format: [v1, v2] for rows (no yamsql
+# {v1, v2} flow-map shorthand), ~ for NULL.
+#
+# Pins the three-valued NULL semantics hardening from swingshift-35
+# (commits 6853cee5, 35bea829, ad249d55, 97e0c731, 8ee5e98d, 4570981c).
+name: boolean
+schema_template: |
+  CREATE TABLE lb (a BIGINT NOT NULL, b BOOLEAN, PRIMARY KEY (a))
+setup:
+  - INSERT INTO lb VALUES (1, true), (2, false), (3, null)
+tests:
+  - query: SELECT a, b FROM lb WHERE b = true
+    rows:
+      - [1, true]
+  - query: SELECT a, b FROM lb WHERE b = false
+    rows:
+      - [2, false]
+  - query: SELECT a, b FROM lb WHERE b <> TRUE
+    rows:
+      - [2, false]
+  - query: SELECT a, b FROM lb WHERE b <> FALSE
+    rows:
+      - [1, true]
+  - query: SELECT a, b FROM lb WHERE b IS TRUE
+    rows:
+      - [1, true]
+  - query: SELECT a, b FROM lb WHERE b IS FALSE
+    rows:
+      - [2, false]
+  - query: SELECT a, b FROM lb WHERE b IS NULL
+    rows:
+      - [3, ~]
+  - query: SELECT a, b FROM lb WHERE b IS NOT TRUE
+    unordered: true
+    rows:
+      - [2, false]
+      - [3, ~]
+  - query: SELECT a, b FROM lb WHERE b IS NOT FALSE
+    unordered: true
+    rows:
+      - [1, true]
+      - [3, ~]
+  - query: SELECT a, b FROM lb WHERE b IS NOT NULL
+    unordered: true
+    rows:
+      - [1, true]
+      - [2, false]
+  # NOT of UNKNOWN stays UNKNOWN — row filtered out. Pre-swingshift-35 bug
+  # returned TRUE for every row. Grammar quirk: parens around the
+  # comparison parse as RecordConstructorExpressionAtom, so we rely on
+  # SQL precedence (NOT binds tighter) to express this.
+  - query: SELECT a, b FROM lb WHERE NOT b = null
+    rows: []
