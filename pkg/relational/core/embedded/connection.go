@@ -675,11 +675,32 @@ func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, w
 	}
 }
 
+// filterSysRows applies WHERE filtering to system-table rows (map-based, no proto).
+// Column names are matched case-insensitively against the cols slice.
+func filterSysRows(rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
+	if where == nil {
+		return rows, nil
+	}
+	expr := where.Expression()
+	var out [][]driver.Value
+	for _, row := range rows {
+		m := make(map[string]driver.Value, len(cols))
+		for i, c := range cols {
+			m[strings.ToUpper(c)] = row[i]
+		}
+		ok, err := evalHaving(m, expr)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
 // execSysSchemata implements SELECT * FROM INFORMATION_SCHEMA.SCHEMATA.
 func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
-	if where != nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
-	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -707,15 +728,15 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 		return nil, err
 	}
 	cols := []string{"CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"}
-	return &staticRows{cols: cols, rows: data}, nil
+	filtered, ferr := filterSysRows(data, cols, where)
+	if ferr != nil {
+		return nil, ferr
+	}
+	return &staticRows{cols: cols, rows: filtered}, nil
 }
 
 // execSysTables implements SELECT * FROM INFORMATION_SCHEMA.TABLES.
-// WHERE filtering is not yet supported for system tables.
 func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
-	if where != nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
-	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -768,15 +789,15 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
 		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
 	}
-	return &staticRows{cols: cols, rows: data}, nil
+	filtered, ferr := filterSysRows(data, cols, where)
+	if ferr != nil {
+		return nil, ferr
+	}
+	return &staticRows{cols: cols, rows: filtered}, nil
 }
 
 // execSysColumns implements SELECT * FROM INFORMATION_SCHEMA.COLUMNS.
-// WHERE filtering is not yet supported for system tables.
 func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
-	if where != nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
-	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -847,15 +868,16 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
 		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
 	}
-	return &staticRows{cols: cols, rows: data}, nil
+	filtered, ferr := filterSysRows(data, cols, where)
+	if ferr != nil {
+		return nil, ferr
+	}
+	return &staticRows{cols: cols, rows: filtered}, nil
 }
 
 // execSysIndexes implements SELECT * FROM INFORMATION_SCHEMA.INDEXES.
 // Returns one row per index across all (database, schema, table) tuples.
 func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
-	if where != nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "WHERE filtering is not yet supported for INFORMATION_SCHEMA tables")
-	}
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -923,6 +945,10 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	cols := []string{
 		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
 		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
+	}
+	data, err = filterSysRows(data, cols, where)
+	if err != nil {
+		return nil, err
 	}
 	return &staticRows{cols: cols, rows: data}, nil
 }
