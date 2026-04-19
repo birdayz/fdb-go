@@ -1722,3 +1722,101 @@ func TestFDB_SelectWhereIsNull(t *testing.T) {
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids2).To(gomega.Equal([]int64{1}))
 }
+
+func TestFDB_SelectWhereLike(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_like")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_like")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE like_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_where_like/items WITH TEMPLATE like_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_like?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, name) VALUES (1, 'apple'), (2, 'apricot'), (3, 'banana'), (4, 'cherry')")).Error().NotTo(gomega.HaveOccurred())
+
+	// LIKE 'ap%' — should return apple, apricot.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE name LIKE 'ap%' ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 2}))
+
+	// NOT LIKE 'ap%' — should return banana, cherry.
+	rows2, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE name NOT LIKE 'ap%' ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	var ids2 []int64
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids2 = append(ids2, id)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids2).To(gomega.Equal([]int64{3, 4}))
+}
+
+func TestFDB_SelectWhereBetween(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_where_between")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_between")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE between_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_where_between/items WITH TEMPLATE between_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_where_between?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")).Error().NotTo(gomega.HaveOccurred())
+
+	// BETWEEN 20 AND 40 — inclusive, should return 2, 3, 4.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE val BETWEEN 20 AND 40 ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{2, 3, 4}))
+
+	// NOT BETWEEN 20 AND 40 — should return 1, 5.
+	rows2, err := db.QueryContext(ctx, "SELECT item_id FROM Item WHERE val NOT BETWEEN 20 AND 40 ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows2.Close()
+
+	var ids2 []int64
+	for rows2.Next() {
+		var id int64
+		g.Expect(rows2.Scan(&id)).To(gomega.Succeed())
+		ids2 = append(ids2, id)
+	}
+	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids2).To(gomega.Equal([]int64{1, 5}))
+}

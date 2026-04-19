@@ -1450,6 +1450,10 @@ func evalExprPredicate(msg proto.Message, expr antlrgen.IExpressionContext) (boo
 				return evalInPredicate(msg, e, p)
 			case *antlrgen.IsExpressionContext:
 				return evalIsNullPredicate(msg, e, p)
+			case *antlrgen.LikePredicateContext:
+				return evalLikePredicate(msg, e, p)
+			case *antlrgen.BetweenComparisonPredicateContext:
+				return evalBetweenPredicate(msg, e, p)
 			}
 		}
 		return evalComparisonPredicate(msg, e)
@@ -1593,6 +1597,124 @@ func evalIsNullPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionC
 	default:
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported IS test value")
 	}
+}
+
+// evalLikePredicate handles: col [NOT] LIKE 'pattern'
+// Supports SQL wildcards: % (any sequence) and _ (any single character).
+func evalLikePredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, like *antlrgen.LikePredicateContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	if fd.Kind() != protoreflect.StringKind {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "LIKE requires a string column, got %v", fd.Kind())
+	}
+
+	fieldStr := msg.ProtoReflect().Get(fd).String()
+
+	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.
+	patternLit := like.GetPattern().GetText()
+	pattern := stripStringLiteralQuotes(patternLit)
+
+	matched := likeMatch(pattern, fieldStr)
+	if like.NOT() != nil {
+		return !matched, nil
+	}
+	return matched, nil
+}
+
+// likeMatch implements SQL LIKE pattern matching: % = any sequence, _ = any single char.
+func likeMatch(pattern, s string) bool {
+	if pattern == "" {
+		return s == ""
+	}
+	p, str := []rune(pattern), []rune(s)
+	return likeMatchRunes(p, str)
+}
+
+func likeMatchRunes(p, s []rune) bool {
+	for len(p) > 0 {
+		switch p[0] {
+		case '%':
+			// skip consecutive %
+			for len(p) > 0 && p[0] == '%' {
+				p = p[1:]
+			}
+			if len(p) == 0 {
+				return true
+			}
+			for i := 0; i <= len(s); i++ {
+				if likeMatchRunes(p, s[i:]) {
+					return true
+				}
+			}
+			return false
+		case '_':
+			if len(s) == 0 {
+				return false
+			}
+			p, s = p[1:], s[1:]
+		default:
+			if len(s) == 0 || p[0] != s[0] {
+				return false
+			}
+			p, s = p[1:], s[1:]
+		}
+	}
+	return len(s) == 0
+}
+
+// stripStringLiteralQuotes removes surrounding single-quotes and unescapes ” → '.
+func stripStringLiteralQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		s = s[1 : len(s)-1]
+	}
+	return strings.ReplaceAll(s, "''", "'")
+}
+
+// evalBetweenPredicate handles: col [NOT] BETWEEN lo AND hi (inclusive).
+func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpressionContext, bet *antlrgen.BetweenComparisonPredicateContext) (bool, error) {
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN left side must be a column name, got %T", pred.ExpressionAtom())
+	}
+	colName := fullIdToName(colAtom.FullColumnName().FullId())
+
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
+	if fd == nil {
+		return false, api.NewErrorf(api.ErrCodeInvalidParameter, "column %q not found", colName)
+	}
+	fieldVal := protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+
+	loAtom, ok := bet.GetLeft().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN low bound must be a constant, got %T", bet.GetLeft())
+	}
+	hiAtom, ok := bet.GetRight().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "BETWEEN high bound must be a constant, got %T", bet.GetRight())
+	}
+
+	lo, err := evalConstant(loAtom.Constant())
+	if err != nil {
+		return false, err
+	}
+	hi, err := evalConstant(hiAtom.Constant())
+	if err != nil {
+		return false, err
+	}
+
+	result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
+	if bet.NOT() != nil {
+		return !result, nil
+	}
+	return result, nil
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
