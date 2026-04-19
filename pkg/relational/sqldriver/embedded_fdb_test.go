@@ -2969,6 +2969,25 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		}
 	}
 	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
+
+	// ROUND's `decimals` argument must validate: fractional float, string,
+	// and other non-integer types should error (was silently ignored before
+	// swingshift-35). NULL decimals → NULL result.
+	var rnd any
+	g.Expect(db.QueryRowContext(ctx, `SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`).Scan(&rnd)).To(gomega.Succeed())
+	g.Expect(rnd).To(gomega.BeNil(), "ROUND(x, NULL) must return NULL")
+
+	rowsRnd, errRnd := db.QueryContext(ctx, `SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`)
+	if errRnd == nil && rowsRnd != nil {
+		defer rowsRnd.Close()
+		if rowsRnd.Next() {
+			var r any
+			errRnd = rowsRnd.Scan(&r)
+		} else {
+			errRnd = rowsRnd.Err()
+		}
+	}
+	g.Expect(errRnd).To(gomega.HaveOccurred(), "ROUND(x, 'abc') must error, not silently default to 0 decimals")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {

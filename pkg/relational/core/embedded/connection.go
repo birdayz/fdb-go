@@ -3462,11 +3462,18 @@ func evalScalarFunctionCallCore(
 			decimals := int64(0)
 			if len(fArgs) >= 2 {
 				dv, derr := eval(fArgs[1].Expression())
-				if derr == nil {
-					if d, ok := dv.(int64); ok {
-						decimals = d
-					}
+				if derr != nil {
+					return nil, derr
 				}
+				// NULL decimals → NULL result (SQL standard NULL propagation).
+				if dv == nil {
+					return nil, nil
+				}
+				d, ierr := toIntegerArg(dv, "ROUND", "decimals")
+				if ierr != nil {
+					return nil, ierr
+				}
+				decimals = d
 			}
 			if decimals == 0 {
 				result = math.Round(f)
