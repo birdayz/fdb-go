@@ -4713,9 +4713,17 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
-		_, subRows, err := conn.execQueryBodyRows(ctx, qb)
+		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
 		if err != nil {
 			return triFalse, err
+		}
+		// SQL standard: `x IN (SELECT a, b FROM t)` is a column-count
+		// mismatch error (row constructor IN needs `(a, b) IN (...)`).
+		// Previously matchSubqueryIN silently compared against column 0
+		// only — wrong semantics.
+		if len(subCols) != 1 {
+			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"subquery for IN must return exactly one column, got %d", len(subCols))
 		}
 		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil), nil
 	}
