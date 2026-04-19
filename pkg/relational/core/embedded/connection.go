@@ -11,6 +11,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,21 +145,22 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	return c.execShowStatement(ctx, show)
 }
 
-// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val].
-// Only single-table scans with simple equality WHERE and optional named column
-// projection are supported. Joins, subqueries, ORDER BY, LIMIT, etc. are not.
+// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val]
+// [ORDER BY col [ASC|DESC]] [LIMIT n].
+// Only single-table scans with simple equality WHERE are supported.
+// Joins, subqueries, GROUP BY, HAVING, etc. are not.
 func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
-	tableName, projCols, whereExpr, err := extractSelectParts(sel)
+	sq, err := extractSelectParts(sel)
 	if err != nil {
 		return nil, err
 	}
 
 	// Route INFORMATION_SCHEMA.* queries to system table handlers.
 	// System table queries do not require a schema to be set.
-	upper := strings.ToUpper(tableName)
+	upper := strings.ToUpper(sq.tableName)
 	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
 		sysTable := upper[len("INFORMATION_SCHEMA."):]
-		return c.execSystemTable(ctx, sysTable, whereExpr)
+		return c.execSystemTable(ctx, sysTable, sq.whereExpr)
 	}
 
 	if c.schema == "" {
@@ -186,9 +188,9 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		}
 		md := rlTmpl.Underlying()
 
-		rt := md.GetRecordType(tableName)
+		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "table %q not found in schema", sq.tableName)
 		}
 		msgDesc := rt.Descriptor
 
@@ -199,7 +201,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			fd   protoreflect.FieldDescriptor
 		}
 		var outFields []outField
-		if projCols == nil {
+		if sq.projCols == nil {
 			// SELECT * — all fields in descriptor order.
 			outFields = make([]outField, allFields.Len())
 			for i := 0; i < allFields.Len(); i++ {
@@ -208,12 +210,12 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 		} else {
 			// Named projection — look up each column.
-			outFields = make([]outField, len(projCols))
-			for i, colName := range projCols {
+			outFields = make([]outField, len(sq.projCols))
+			for i, colName := range sq.projCols {
 				fd := allFields.ByName(protoreflect.Name(colName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-						"column %q not found in table %q", colName, tableName)
+						"column %q not found in table %q", colName, sq.tableName)
 				}
 				outFields[i] = outField{colName, fd}
 			}
@@ -236,7 +238,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
 
 		for {
@@ -249,7 +251,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			rec := result.GetValue()
 			msg := rec.Record
-			match, matchErr := evalPredicate(msg, whereExpr)
+			match, matchErr := evalPredicate(msg, sq.whereExpr)
 			if matchErr != nil {
 				return nil, matchErr
 			}
@@ -270,6 +272,38 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	if runErr != nil {
 		return nil, runErr
 	}
+
+	// Apply ORDER BY (post-scan in-memory sort).
+	if len(sq.orderBy) > 0 {
+		// Build a map from column name to output index for O(1) lookup.
+		colIdx := make(map[string]int, len(cols))
+		for i, c := range cols {
+			colIdx[c] = i
+		}
+		sort.SliceStable(data, func(i, j int) bool {
+			for _, ob := range sq.orderBy {
+				idx, ok := colIdx[ob.colName]
+				if !ok {
+					continue
+				}
+				a, b := data[i][idx], data[j][idx]
+				cmp := compareValues(a, b)
+				if cmp != 0 {
+					if ob.ascending {
+						return cmp < 0
+					}
+					return cmp > 0
+				}
+			}
+			return false
+		})
+	}
+
+	// Apply LIMIT.
+	if sq.limit >= 0 && int64(len(data)) > sq.limit {
+		data = data[:sq.limit]
+	}
+
 	return &staticRows{cols: cols, rows: data}, nil
 }
 
@@ -541,6 +575,22 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	return &staticRows{cols: cols, rows: data}, nil
 }
 
+// selectQuery holds the parsed components of a SELECT statement.
+type selectQuery struct {
+	tableName string
+	projCols  []string // nil = SELECT *
+	whereExpr antlrgen.IWhereExprContext
+	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
+	orderBy []orderByClause
+	// limit < 0 means no limit.
+	limit int64
+}
+
+type orderByClause struct {
+	colName   string
+	ascending bool
+}
+
 // selectExprToColumnName extracts a plain column name from a
 // SelectExpressionElementContext. Only bare column references (no aliases,
 // no expressions) are supported.
@@ -558,25 +608,42 @@ func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string,
 	return fullIdToName(colAtom.FullColumnName().FullId()), nil
 }
 
-// extractSelectParts navigates the parse tree of a SELECT statement to
-// extract the table name, column projection list (nil = SELECT *), and
-// optional WHERE expression.
-// Supports SELECT * or SELECT col1, col2, ... FROM <tableName> [WHERE col = val].
-// Joins, subqueries, aliases, ORDER BY, LIMIT etc. are not supported.
-func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, []string, antlrgen.IWhereExprContext, error) {
+// selectExprToColumnName2 extracts a plain column name from an IExpressionContext
+// (used for ORDER BY expressions).
+func selectExprToColumnName2(expr antlrgen.IExpressionContext) (string, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"ORDER BY expression must be a column name, got %T", expr)
+	}
+	colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"ORDER BY expression must be a column name, got expression atom %T", pred.ExpressionAtom())
+	}
+	return fullIdToName(colAtom.FullColumnName().FullId()), nil
+}
+
+// extractSelectParts navigates the parse tree of a SELECT statement.
+// Supports SELECT [* | col, ...] FROM <table> [WHERE col = val]
+//
+//	[ORDER BY col [ASC|DESC], ...] [LIMIT n].
+//
+// Joins, subqueries, aliases, GROUP BY, HAVING, etc. are not supported.
+func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, error) {
 	query := sel.Query()
 	if query == nil {
-		return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
 	}
 	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
 	if !ok {
-		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported SELECT form %T; only simple SELECT FROM <table> is supported",
 			query.QueryExpressionBody())
 	}
 	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
-		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported query term %T; only simple SELECT FROM <table> is supported",
 			body.QueryTerm())
 	}
@@ -590,18 +657,18 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, []string,
 			switch e := elem.(type) {
 			case *antlrgen.SelectStarElementContext:
 				if len(elems) > 1 {
-					return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"cannot mix * with named columns in SELECT list")
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectExpressionElementContext:
 				colName, nameErr := selectExprToColumnName(e)
 				if nameErr != nil {
-					return "", nil, nil, nameErr
+					return nil, nameErr
 				}
 				projCols = append(projCols, colName)
 			default:
-				return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"unsupported SELECT element type %T", elem)
 			}
 		}
@@ -609,22 +676,22 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, []string,
 
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "SELECT without FROM is not supported")
 	}
 
 	sources := fromClause.TableSources()
 	if sources == nil || len(sources.AllTableSource()) != 1 {
-		return "", nil, nil, api.NewError(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"only single-table SELECT is supported; joins are not yet implemented")
 	}
 	srcBase, ok := sources.AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
 	if !ok {
-		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source %T", sources.AllTableSource()[0])
 	}
 	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
-		return "", nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
 	}
@@ -635,7 +702,44 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (string, []string,
 	for i, u := range uids {
 		parts[i] = stripIdentifierQuotes(u.GetText())
 	}
-	return strings.Join(parts, "."), projCols, fromClause.WhereExpr(), nil
+	sq := &selectQuery{
+		tableName: strings.Join(parts, "."),
+		projCols:  projCols,
+		whereExpr: fromClause.WhereExpr(),
+		limit:     -1,
+	}
+
+	// Parse ORDER BY clause.
+	orderByClauseCtx := simpleTable.OrderByClause()
+	if orderByClauseCtx != nil {
+		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
+			colName, nameErr := selectExprToColumnName2(obExpr.Expression())
+			if nameErr != nil {
+				return nil, nameErr
+			}
+			ascending := true
+			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
+				ascending = false
+			}
+			sq.orderBy = append(sq.orderBy, orderByClause{colName, ascending})
+		}
+	}
+
+	// Parse LIMIT clause.
+	limitClauseCtx := simpleTable.LimitClause()
+	if limitClauseCtx != nil {
+		atoms := limitClauseCtx.AllLimitClauseAtom()
+		if len(atoms) > 0 && atoms[0].DecimalLiteral() != nil {
+			n, parseErr := strconv.ParseInt(atoms[0].DecimalLiteral().GetText(), 10, 64)
+			if parseErr != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"invalid LIMIT value %q: %v", atoms[0].DecimalLiteral().GetText(), parseErr)
+			}
+			sq.limit = n
+		}
+	}
+
+	return sq, nil
 }
 
 // stripIdentifierQuotes removes surrounding double-quotes or backticks from a
@@ -1424,6 +1528,74 @@ func valuesEqual(a, b any) bool {
 		return fa == fb
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
+
+// compareValues returns -1, 0, or 1 for two driver.Values.
+// Used by ORDER BY post-sort. NULL sorts last.
+func compareValues(a, b driver.Value) int {
+	if a == nil && b == nil {
+		return 0
+	}
+	if a == nil {
+		return 1
+	}
+	if b == nil {
+		return -1
+	}
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		case float64:
+			fav := float64(av)
+			if fav < bv {
+				return -1
+			}
+			if fav > bv {
+				return 1
+			}
+			return 0
+		}
+	case float64:
+		var fbv float64
+		switch bv := b.(type) {
+		case float64:
+			fbv = bv
+		case int64:
+			fbv = float64(bv)
+		default:
+			return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+		}
+		if av < fbv {
+			return -1
+		}
+		if av > fbv {
+			return 1
+		}
+		return 0
+	case string:
+		if bv, ok := b.(string); ok {
+			return strings.Compare(av, bv)
+		}
+	case bool:
+		if bv, ok := b.(bool); ok {
+			if av == bv {
+				return 0
+			}
+			if !av {
+				return -1
+			}
+			return 1
+		}
+	}
+	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
 }
 
 func (c *EmbeddedConnection) execCreate(ctx context.Context, cs antlrgen.ICreateStatementContext) (int64, error) {
