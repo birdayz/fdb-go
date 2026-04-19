@@ -93,11 +93,10 @@ func newRecordScanCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = withStore(cmd.Context(), cfgCtx, override,
-				func(store *recordlayer.FDBRecordStore) (struct{}, error) {
-					return struct{}{}, scanAndRender(cmd.Context(), cmd.OutOrStdout(), store, recordType, limit)
+			return withStoreE(cmd.Context(), cfgCtx, override,
+				func(store *recordlayer.FDBRecordStore) error {
+					return scanAndRender(cmd.Context(), cmd.OutOrStdout(), store, recordType, limit)
 				})
-			return err
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")

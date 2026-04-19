@@ -34,15 +34,14 @@ func newIndexScanCmd() *cobra.Command {
 				return err
 			}
 			name := args[0]
-			_, err = withStore(cmd.Context(), cfgCtx, override,
-				func(store *recordlayer.FDBRecordStore) (struct{}, error) {
+			return withStoreE(cmd.Context(), cfgCtx, override,
+				func(store *recordlayer.FDBRecordStore) error {
 					idx := store.GetRecordMetaData().GetIndex(name)
 					if idx == nil {
-						return struct{}{}, fmt.Errorf("index %q not found in metadata for store", name)
+						return fmt.Errorf("index %q not found in metadata for store", name)
 					}
-					return struct{}{}, scanIndexAndRender(cmd.Context(), cmd.OutOrStdout(), store, idx, limit, reverse)
+					return scanIndexAndRender(cmd.Context(), cmd.OutOrStdout(), store, idx, limit, reverse)
 				})
-			return err
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")

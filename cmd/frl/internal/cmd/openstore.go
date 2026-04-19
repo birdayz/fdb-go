@@ -10,6 +10,24 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
+// withStoreE is the ergonomic twin of withStore for commands whose store
+// closure doesn't need a return value. Most `record scan` / `index ls` /
+// `index scan` style commands stream output directly to the writer;
+// threading a sentinel struct{} through their withStore calls was pure
+// boilerplate.
+func withStoreE(
+	ctx context.Context,
+	cfgCtx *configv1.Context,
+	metaOverride meta.Source,
+	fn func(store *recordlayer.FDBRecordStore) error,
+) error {
+	_, err := withStore(ctx, cfgCtx, metaOverride,
+		func(s *recordlayer.FDBRecordStore) (struct{}, error) {
+			return struct{}{}, fn(s)
+		})
+	return err
+}
+
 // withStore wires the plumbing that every data command needs: open the FDB
 // connection from the context's cluster_file, resolve the metadata source,
 // open the record store inside a read-write transaction, and hand the

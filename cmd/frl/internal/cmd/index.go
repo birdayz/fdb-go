@@ -58,13 +58,12 @@ func newIndexLsCmd() *cobra.Command {
 				}
 				return writeIndexList(cmd.OutOrStdout(), md, nil)
 			}
-			_, err = withStore(cmd.Context(), cfgCtx, override,
-				func(store *recordlayer.FDBRecordStore) (struct{}, error) {
-					return struct{}{}, writeIndexList(cmd.OutOrStdout(),
+			return withStoreE(cmd.Context(), cfgCtx, override,
+				func(store *recordlayer.FDBRecordStore) error {
+					return writeIndexList(cmd.OutOrStdout(),
 						store.GetRecordMetaData(),
 						func(name string) string { return store.GetIndexState(name).String() })
 				})
-			return err
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
