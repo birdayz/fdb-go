@@ -361,6 +361,10 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [x] **INSERT VALUES with expressions** — `INSERT INTO t VALUES (1+2, UPPER('foo'))`; evalExpr replaces evalLiteralExpr for INSERT value columns. dayshift-34.
 - [x] **Derived tables (subquery in FROM)** — `SELECT name FROM (SELECT id, name FROM t WHERE ...) AS alias`; materialised into temporary CTE slot. dayshift-34.
 - [x] **Scalar functions in map eval** — evalExprAtomOnMap now handles FunctionCallExpressionAtomContext via evalScalarFunctionCallOnMap; all scalar functions work in JOIN ON/WHERE, CTE WHERE/SELECT, derived table filters. CTE projection evaluates projExprs via evalExprOnMap. NULL NOT IN map path fixed (was returning true). EXISTS added to evalHaving. dayshift-34.
+- [x] **CASE WHEN + CAST in map eval** — evalSpecificFunctionOnMap mirrors evalSpecificFunction for CTE/JOIN/derived-table contexts. dayshift-34.
+- [x] **ctx+conn threading through evalExpr stack** — evalExpr/evalExprAtom/evalScalarFunctionCall/evalSpecificFunction/predicate helpers all take ctx+conn as first params. Enables subqueries inside CASE conditions and scalar function args. Removes three context.TODO() placeholders. dayshift-34.
+- [x] **Aggregates on CTEs + derived tables** — aggregateMapRows method extracted from execSelectJoin and reused in execSelectFromCTE. Also fixes latent bug: JOIN+GROUP BY+ORDER BY+LIMIT previously returned early, silently ignoring ORDER BY/LIMIT. dayshift-34.
+- [ ] **Unify proto + map evaluators** — evalScalarFunctionCall and evalScalarFunctionCallOnMap are ~400 lines of near-duplicate code differing only in how arguments are evaluated. Could be unified via a `exprEvaluator func(arg) (driver.Value, error)` adapter. Currently every new function must be added in two places.
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 

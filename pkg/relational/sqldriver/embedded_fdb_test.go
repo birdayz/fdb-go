@@ -3909,7 +3909,7 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CASE WHEN with subquery in the consequent.
+	// CASE WHEN with subquery in the condition.
 	rows, err := db.QueryContext(ctx, `
 		SELECT name, CASE WHEN id IN (SELECT product_id FROM Discount) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)

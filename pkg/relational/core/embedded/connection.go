@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -2994,7 +2995,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
 		}
-		return int64(len(s)), nil
+		return int64(utf8.RuneCountInString(s)), nil
 	case "TRIM":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
@@ -3122,18 +3123,13 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 		if eerr != nil || expV == nil {
 			return nil, eerr
 		}
-		var base, exp float64
-		switch n := baseV.(type) {
-		case int64:
-			base = float64(n)
-		case float64:
-			base = n
+		base, ok := toFloat64(baseV)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: base must be numeric, got %T", baseV)
 		}
-		switch n := expV.(type) {
-		case int64:
-			exp = float64(n)
-		case float64:
-			exp = n
+		exp, ok := toFloat64(expV)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
 		}
 		result := math.Pow(base, exp)
 		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
@@ -3396,7 +3392,7 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
 		}
-		return int64(len(s)), nil
+		return int64(utf8.RuneCountInString(s)), nil
 	case "TRIM":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "TRIM requires 1 argument")
@@ -3523,18 +3519,13 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 		if eerr != nil || expV == nil {
 			return nil, eerr
 		}
-		var base, exp float64
-		switch n := baseV.(type) {
-		case int64:
-			base = float64(n)
-		case float64:
-			base = n
+		base, ok := toFloat64(baseV)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: base must be numeric, got %T", baseV)
 		}
-		switch n := expV.(type) {
-		case int64:
-			exp = float64(n)
-		case float64:
-			exp = n
+		exp, ok := toFloat64(expV)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
 		}
 		result := math.Pow(base, exp)
 		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
