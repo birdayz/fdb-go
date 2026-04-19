@@ -231,18 +231,72 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	return c.execShowStatement(ctx, show)
 }
 
-// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val]
-// [ORDER BY col [ASC|DESC]] [LIMIT n].
-// Only single-table scans with simple equality WHERE are supported.
-// Joins, subqueries, GROUP BY, HAVING, etc. are not.
-func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
-	sq, err := extractSelectParts(sel)
+// execQueryBodyRows executes a queryExpressionBody and returns (colNames, rows).
+// Handles both simple queries (QueryTermDefaultContext) and UNION (SetQueryContext).
+func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrgen.IQueryExpressionBodyContext) ([]string, [][]driver.Value, error) {
+	switch b := body.(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		sq, err := extractFromQueryTerm(b)
+		if err != nil {
+			return nil, nil, err
+		}
+		rows, err := c.execSelectQuery(ctx, sq)
+		if err != nil {
+			return nil, nil, err
+		}
+		sr := rows.(*staticRows)
+		return sr.cols, sr.rows, nil
+	case *antlrgen.SetQueryContext:
+		r, err := c.execUnion(ctx, b)
+		if err != nil {
+			return nil, nil, err
+		}
+		sr := r.(*staticRows)
+		return sr.cols, sr.rows, nil
+	default:
+		return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported query expression type %T", body)
+	}
+}
+
+// execUnion executes a UNION ALL / UNION DISTINCT query.
+func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQueryContext) (driver.Rows, error) {
+	leftCols, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
+	if err != nil {
+		return nil, err
+	}
+	_, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
 	if err != nil {
 		return nil, err
 	}
 
+	combined := append(leftRows, rightRows...) //nolint:gocritic
+
+	quantifier := ""
+	if q := setQ.GetQuantifier(); q != nil {
+		quantifier = strings.ToUpper(q.GetText())
+	}
+	if quantifier != "ALL" {
+		// UNION (implicit DISTINCT) — deduplicate.
+		seen := make(map[string]struct{}, len(combined))
+		deduped := combined[:0]
+		for _, row := range combined {
+			key := rowKey(row)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				deduped = append(deduped, row)
+			}
+		}
+		combined = deduped
+	}
+
+	return &staticRows{cols: leftCols, rows: combined}, nil
+}
+
+// execSelectQuery executes a parsed selectQuery and returns a driver.Rows.
+// Extracted so execQueryBodyRows can call it without an ISelectStatementContext.
+func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	// Route INFORMATION_SCHEMA.* queries to system table handlers.
-	// System table queries do not require a schema to be set.
 	upper := strings.ToUpper(sq.tableName)
 	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
 		sysTable := upper[len("INFORMATION_SCHEMA."):]
@@ -255,7 +309,30 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	if c.dbPath == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
+	// Delegate to the existing full implementation.
+	return c.execSelectQueryFull(ctx, sq)
+}
 
+// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val]
+// [ORDER BY col [ASC|DESC]] [LIMIT n].
+// Only single-table scans with simple equality WHERE are supported.
+// Joins, subqueries, GROUP BY, HAVING, etc. are not.
+func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
+	query := sel.Query()
+	if query == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "malformed SELECT statement")
+	}
+	if setQ, ok := query.QueryExpressionBody().(*antlrgen.SetQueryContext); ok {
+		return c.execUnion(ctx, setQ)
+	}
+	sq, err := extractSelectParts(sel)
+	if err != nil {
+		return nil, err
+	}
+	return c.execSelectQuery(ctx, sq)
+}
+
+func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	type row = []driver.Value
 	type outField struct {
 		name string
@@ -1155,13 +1232,20 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 			"unsupported SELECT form %T; only simple SELECT FROM <table> is supported",
 			query.QueryExpressionBody())
 	}
+	return extractFromQueryTerm(body)
+}
+
+func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery, error) {
 	simpleTable, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported query term %T; only simple SELECT FROM <table> is supported",
 			body.QueryTerm())
 	}
+	return extractFromSimpleTable(simpleTable)
+}
 
+func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQuery, error) {
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()

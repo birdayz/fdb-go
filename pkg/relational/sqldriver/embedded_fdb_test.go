@@ -2687,6 +2687,127 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
+func TestFDB_UnionAll(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_union_all")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_all")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ua_tmpl CREATE TABLE Item (id BIGINT NOT NULL, label STRING NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_all/store WITH TEMPLATE ua_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_union_all?cluster_file=%s&schema=store", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Item (id, label) VALUES (1, 'alpha'), (2, 'beta')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// UNION ALL: duplicates preserved.
+	rows, err := db.QueryContext(ctx, `SELECT label FROM Item WHERE id = 1 UNION ALL SELECT label FROM Item WHERE id = 2`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var labels []string
+	for rows.Next() {
+		var lbl string
+		g.Expect(rows.Scan(&lbl)).To(gomega.Succeed())
+		labels = append(labels, lbl)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(labels).To(gomega.ConsistOf("alpha", "beta"))
+}
+
+func TestFDB_UnionDistinct(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_union_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ud_tmpl CREATE TABLE Tag (id BIGINT NOT NULL, tag STRING NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_distinct/tags WITH TEMPLATE ud_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_union_distinct?cluster_file=%s&schema=tags", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Tag (id, tag) VALUES (1, 'go'), (2, 'go'), (3, 'fdb')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// UNION (implicit DISTINCT): duplicates removed.
+	rows, err := db.QueryContext(ctx, `SELECT tag FROM Tag WHERE id = 1 UNION SELECT tag FROM Tag WHERE id = 2`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		g.Expect(rows.Scan(&tag)).To(gomega.Succeed())
+		tags = append(tags, tag)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// Two rows with tag='go' UNION'd → one row.
+	g.Expect(tags).To(gomega.ConsistOf("go"))
+}
+
+func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_is_schemata_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_where")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE iswt_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/alpha WITH TEMPLATE iswt_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/beta WITH TEMPLATE iswt_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_schemata_where?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// WHERE filter: only 'alpha' schema.
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE SCHEMA_NAME = 'alpha'`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var schemas []string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		// SCHEMA_NAME is at index 1.
+		if s, ok := vals[1].(string); ok {
+			schemas = append(schemas, s)
+		}
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
+}
+
 func TestFDB_WhereExprComparison(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
