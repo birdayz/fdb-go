@@ -1,16 +1,12 @@
 # unique_violation.yaml
 #
-# UNIQUE index violations raise SQLSTATE 23505. Our store-layer unique
-# check (via index maintenance) catches new-value-already-taken cases
-# on the secondary-index side.
-#
-# NOTE: there's a parallel divergence the harness surfaced — a plain
-# INSERT with a duplicate PRIMARY KEY currently succeeds and REPLACES
-# the existing row (record-layer save() semantics passing through
-# verbatim). Java's relational layer raises 23505 for duplicate PK. We
-# don't exercise that case here because the fix is out of scope for
-# nightshift-36; it's tracked in TODO.md. This scenario pins the
-# UNIQUE index path only.
+# UNIQUE constraint violations raise SQLSTATE 23505 per the SQL
+# standard — covers both PRIMARY KEY conflict and explicit UNIQUE
+# index conflict. Prior to nightshift-36, PK conflicts silently
+# replaced the existing row via record-layer SaveRecord pass-through.
+# Fixed by routing INSERT through SaveRecordWithOptions with
+# RecordExistenceCheckErrorIfExists, whose resulting
+# RecordAlreadyExistsError is wrapped as SQLSTATE 23505.
 name: unique_violation
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, name STRING NOT NULL, email STRING, PRIMARY KEY (id))
@@ -18,7 +14,10 @@ schema_template: |
 setup:
   - INSERT INTO t VALUES (1, 'alice', 'a@x.com'), (2, 'bob', 'b@x.com')
 tests:
-  # Duplicate unique-indexed column on fresh PK — raised as 23505.
+  # Duplicate PRIMARY KEY — now raises 23505 (nightshift-36 fix).
+  - query: INSERT INTO t VALUES (1, 'carol', 'c@x.com')
+    error_code: "23505"
+  # Duplicate unique-indexed column on fresh PK — raises 23505.
   - query: INSERT INTO t VALUES (3, 'carol', 'a@x.com')
     error_code: "23505"
   # Non-conflicting insert succeeds; table now has 3 rows.
@@ -26,3 +25,8 @@ tests:
   - query: SELECT COUNT(*) FROM t
     rows:
       - [3]
+  # Original rows are untouched — prove the prior failed INSERT did not
+  # overwrite PK=1.
+  - query: SELECT name, email FROM t WHERE id = 1
+    rows:
+      - ['alice', 'a@x.com']

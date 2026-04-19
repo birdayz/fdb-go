@@ -3009,7 +3009,12 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 						"column %q has NOT NULL constraint but no value was provided", fd.Name())
 				}
 			}
-			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
+			// ErrorIfExists: duplicate PRIMARY KEY raises
+			// *recordlayer.RecordAlreadyExistsError which wrapSaveRecordError
+			// maps to SQLSTATE 23505 (unique_constraint_violation). Without
+			// this check, plain SaveRecord silently overwrites the existing
+			// row — divergence from Java's INSERT semantics.
+			if _, saveErr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists); saveErr != nil {
 				return nil, wrapSaveRecordError(saveErr)
 			}
 			totalRows++
@@ -3114,7 +3119,8 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 						"column %q has NOT NULL constraint but no value was provided", fd.Name())
 				}
 			}
-			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
+			// ErrorIfExists: same rationale as execInsert above.
+			if _, saveErr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists); saveErr != nil {
 				return nil, wrapSaveRecordError(saveErr)
 			}
 			totalRows++
