@@ -2257,3 +2257,54 @@ func TestFDB_UpdateSetArithmetic(t *testing.T) {
 	g.Expect(id).To(gomega.Equal(int64(1)))
 	g.Expect(val).To(gomega.Equal(int64(15)))
 }
+
+func TestFDB_GroupByCount(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_grpby")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpby")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE grpby_tmpl "+
+			"CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_grpby/sales WITH TEMPLATE grpby_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_grpby?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert: 2 east, 3 west.
+	for _, row := range []struct {
+		id     int
+		region string
+		amount int
+	}{
+		{1, "east", 100},
+		{2, "east", 200},
+		{3, "west", 50},
+		{4, "west", 75},
+		{5, "west", 25},
+	} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Sale (id, region, amount) VALUES (%d, '%s', %d)", row.id, row.region, row.amount))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT region, COUNT(*) FROM Sale GROUP BY region")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	counts := map[string]int64{}
+	for rows.Next() {
+		var region string
+		var cnt int64
+		g.Expect(rows.Scan(&region, &cnt)).To(gomega.Succeed())
+		counts[region] = cnt
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(counts["east"]).To(gomega.Equal(int64(2)))
+	g.Expect(counts["west"]).To(gomega.Equal(int64(3)))
+}

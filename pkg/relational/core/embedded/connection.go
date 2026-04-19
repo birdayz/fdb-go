@@ -304,6 +304,160 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			return nil, nil
 		}
 
+		// GROUP BY aggregate query: scan → group → aggregate.
+		if len(sq.aggCols) > 0 {
+			// Resolve group-by field descriptors.
+			groupFDs := make([]protoreflect.FieldDescriptor, len(sq.groupBy))
+			for i, col := range sq.groupBy {
+				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
+				if fd == nil {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"GROUP BY column %q not found in table %q", col, sq.tableName)
+				}
+				groupFDs[i] = fd
+			}
+			// Resolve aggregate arg field descriptors (nil for COUNT(*)).
+			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
+			for i, ac := range sq.aggCols {
+				if ac.groupCol != "" {
+					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.groupCol))
+					if fd == nil {
+						return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+							"column %q not found in table %q", ac.groupCol, sq.tableName)
+					}
+					aggArgFDs[i] = fd
+				} else if ac.aggArg != "" {
+					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.aggArg))
+					if fd == nil {
+						return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+							"aggregate column %q not found in table %q", ac.aggArg, sq.tableName)
+					}
+					aggArgFDs[i] = fd
+				}
+			}
+
+			type groupState struct {
+				groupVals []driver.Value // values for the group-by columns
+				// accumulators parallel to sq.aggCols
+				counts []int64
+				sums   []float64
+				mins   []driver.Value
+				maxes  []driver.Value
+				avgs   []float64 // running sum for AVG
+				avgsN  []int64   // count for AVG
+			}
+			groupOrder := []string{} // insertion order for deterministic output
+			groups := map[string]*groupState{}
+
+			for {
+				result, nextErr := cursor.OnNext(ctx)
+				if nextErr != nil {
+					return nil, nextErr
+				}
+				if !result.HasNext() {
+					break
+				}
+				msg := result.GetValue().Record
+				match, matchErr := evalPredicate(msg, sq.whereExpr)
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if !match {
+					continue
+				}
+
+				// Build group-by key.
+				gVals := make([]driver.Value, len(groupFDs))
+				for i, fd := range groupFDs {
+					if fd != nil && msg.ProtoReflect().Has(fd) {
+						gVals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+					}
+				}
+				key := groupByKey(gVals)
+				gs, exists := groups[key]
+				if !exists {
+					gs = &groupState{
+						groupVals: gVals,
+						counts:    make([]int64, len(sq.aggCols)),
+						sums:      make([]float64, len(sq.aggCols)),
+						mins:      make([]driver.Value, len(sq.aggCols)),
+						maxes:     make([]driver.Value, len(sq.aggCols)),
+						avgs:      make([]float64, len(sq.aggCols)),
+						avgsN:     make([]int64, len(sq.aggCols)),
+					}
+					groups[key] = gs
+					groupOrder = append(groupOrder, key)
+				}
+				// Update accumulators.
+				for i, ac := range sq.aggCols {
+					if ac.groupCol != "" {
+						continue // group-by reference, no accumulation
+					}
+					gs.counts[i]++
+					if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
+						v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
+						fv, _ := toFloat64(v)
+						switch ac.aggFunc {
+						case "SUM":
+							gs.sums[i] += fv
+						case "MIN":
+							if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+								gs.mins[i] = v
+							}
+						case "MAX":
+							if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+								gs.maxes[i] = v
+							}
+						case "AVG":
+							gs.avgs[i] += fv
+							gs.avgsN[i]++
+						}
+					}
+				}
+			}
+
+			// Build output cols.
+			groupColIdx := map[string]int{}
+			for i, col := range sq.groupBy {
+				groupColIdx[col] = i
+			}
+			cols = make([]string, len(sq.aggCols))
+			for i, ac := range sq.aggCols {
+				cols[i] = ac.outName
+			}
+
+			// Emit one row per group.
+			for _, key := range groupOrder {
+				gs := groups[key]
+				rowVals := make([]driver.Value, len(sq.aggCols))
+				for i, ac := range sq.aggCols {
+					if ac.groupCol != "" {
+						idx, ok := groupColIdx[ac.groupCol]
+						if ok {
+							rowVals[i] = gs.groupVals[idx]
+						}
+					} else {
+						switch ac.aggFunc {
+						case "COUNT":
+							rowVals[i] = gs.counts[i]
+						case "SUM":
+							rowVals[i] = gs.sums[i]
+						case "MIN":
+							rowVals[i] = gs.mins[i]
+						case "MAX":
+							rowVals[i] = gs.maxes[i]
+						case "AVG":
+							if gs.avgsN[i] > 0 {
+								rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+							}
+						}
+					}
+				}
+				data = append(data, rowVals)
+			}
+			return nil, nil
+		}
+
 		// Resolve output fields: either the explicit projection or all fields.
 		allFields := msgDesc.Fields()
 		var outFields []outField
@@ -716,7 +870,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
 	tableName   string
-	projCols    []string // nil = SELECT *; ignored when countStar is true
+	projCols    []string // nil = SELECT *; ignored when countStar or aggCols non-empty
 	projAliases []string // parallel to projCols; empty string = no alias (use column name)
 	countStar   bool     // true when SELECT list is exactly COUNT(*)
 	distinct    bool     // true when SELECT DISTINCT
@@ -725,11 +879,25 @@ type selectQuery struct {
 	orderBy []orderByClause
 	// limit < 0 means no limit.
 	limit int64
+	// groupBy holds GROUP BY column names (nil = no GROUP BY).
+	groupBy []string
+	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
+	// Non-nil only when groupBy is non-empty.
+	aggCols []aggSelectCol
 }
 
 type orderByClause struct {
 	colName   string
 	ascending bool
+}
+
+// aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
+type aggSelectCol struct {
+	outName string // output column name
+	// Either groupCol or aggFunc is set.
+	groupCol string // plain group-by column reference
+	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
+	aggArg   string // argument column name (empty for COUNT(*))
 }
 
 // checkCountStar returns true if e is a bare COUNT(*) expression.
@@ -751,6 +919,70 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 		return false
 	}
 	return awf.COUNT() != nil && awf.STAR() != nil
+}
+
+// extractAggFunc attempts to parse an aggregate function (COUNT/SUM/MIN/MAX/AVG)
+// from a SelectExpressionElementContext. Returns (funcName, argColName, alias, ok).
+// funcName is upper-case. argColName is empty for COUNT(*).
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol, alias string, ok bool) {
+	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !pok {
+		return "", "", "", false
+	}
+	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if !fcok {
+		return "", "", "", false
+	}
+	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if !aggok {
+		return "", "", "", false
+	}
+	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if !awfok {
+		return "", "", "", false
+	}
+	switch {
+	case awf.COUNT() != nil && awf.STAR() != nil:
+		funcName = "COUNT"
+	case awf.COUNT() != nil:
+		funcName = "COUNT"
+		if awf.FunctionArg() != nil {
+			argCol = awf.FunctionArg().GetText()
+		}
+	case awf.SUM() != nil:
+		funcName = "SUM"
+		if awf.FunctionArg() != nil {
+			argCol = awf.FunctionArg().GetText()
+		}
+	case awf.MIN() != nil:
+		funcName = "MIN"
+		if awf.FunctionArg() != nil {
+			argCol = awf.FunctionArg().GetText()
+		}
+	case awf.MAX() != nil:
+		funcName = "MAX"
+		if awf.FunctionArg() != nil {
+			argCol = awf.FunctionArg().GetText()
+		}
+	case awf.AVG() != nil:
+		funcName = "AVG"
+		if awf.FunctionArg() != nil {
+			argCol = awf.FunctionArg().GetText()
+		}
+	default:
+		return "", "", "", false
+	}
+	if e.Uid() != nil {
+		alias = stripIdentifierQuotes(e.Uid().GetText())
+	}
+	if alias == "" {
+		if argCol == "" {
+			alias = funcName + "(*)"
+		} else {
+			alias = funcName + "(" + argCol + ")"
+		}
+	}
+	return funcName, argCol, alias, true
 }
 
 // columnNameFromExpr extracts a plain column name from an IExpressionContext.
@@ -807,11 +1039,13 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 			body.QueryTerm())
 	}
 
-	// Parse SELECT list: either *, a list of column name expressions, or COUNT(*).
+	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
+	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
 	var projCols []string    // nil = SELECT *
 	var projAliases []string // parallel to projCols
 	var countStar bool
+	var aggCols []aggSelectCol
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -823,24 +1057,49 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectExpressionElementContext:
-				if checkCountStar(e) {
-					if len(elems) > 1 {
-						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-							"cannot mix COUNT(*) with other columns in SELECT list")
-					}
+				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
+				} else if fn, argCol, alias, isAgg := extractAggFunc(e); isAgg {
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					if nameErr != nil {
 						return nil, nameErr
 					}
-					projCols = append(projCols, colName)
-					projAliases = append(projAliases, alias)
+					if len(aggCols) > 0 {
+						// Mixed aggregate query — this column is a group-by reference.
+						aggCols = append(aggCols, aggSelectCol{outName: func() string {
+							if alias != "" {
+								return alias
+							}
+							return colName
+						}(), groupCol: colName})
+					} else {
+						projCols = append(projCols, colName)
+						projAliases = append(projAliases, alias)
+					}
 				}
 			default:
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"unsupported SELECT element type %T", elem)
 			}
+		}
+		// If we found aggregate functions mixed with plain columns, the plain cols
+		// that were added to projCols before the first aggregate need to be re-
+		// classified as group-by references.
+		if len(aggCols) > 0 && len(projCols) > 0 {
+			// Prepend the already-collected plain cols as group-by cols.
+			extra := make([]aggSelectCol, len(projCols))
+			for i, c := range projCols {
+				out := projAliases[i]
+				if out == "" {
+					out = c
+				}
+				extra[i] = aggSelectCol{outName: out, groupCol: c}
+			}
+			aggCols = append(extra, aggCols...)
+			projCols = nil
+			projAliases = nil
 		}
 	}
 
@@ -877,6 +1136,7 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 		projCols:    projCols,
 		projAliases: projAliases,
 		countStar:   countStar,
+		aggCols:     aggCols,
 		distinct:    simpleTable.DISTINCT() != nil,
 		whereExpr:   fromClause.WhereExpr(),
 		limit:       -1,
@@ -914,6 +1174,18 @@ func extractSelectParts(sel antlrgen.ISelectStatementContext) (*selectQuery, err
 					"invalid LIMIT value %q: %v", atoms[0].DecimalLiteral().GetText(), parseErr)
 			}
 			sq.limit = n
+		}
+	}
+
+	// Parse GROUP BY clause.
+	groupByCtx := simpleTable.GroupByClause()
+	if groupByCtx != nil {
+		for _, item := range groupByCtx.AllGroupByItem() {
+			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
+			if nameErr != nil {
+				return nil, nameErr
+			}
+			sq.groupBy = append(sq.groupBy, colName)
 		}
 	}
 
@@ -1988,6 +2260,15 @@ func evalBetweenPredicate(msg proto.Message, pred *antlrgen.PredicatedExpression
 		return !result, nil
 	}
 	return result, nil
+}
+
+// groupByKey builds a comparable string key from the group-by column values.
+func groupByKey(groupVals []driver.Value) string {
+	var b strings.Builder
+	for _, v := range groupVals {
+		fmt.Fprintf(&b, "%v\x00", v)
+	}
+	return b.String()
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
