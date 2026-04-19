@@ -1,0 +1,25 @@
+# count_distinct.yaml
+#
+# swingshift-35 commit ee249664: COUNT(DISTINCT) uses a type-tagged
+# key so `int 5` and `string "5"` are kept as distinct set members
+# (matching valuesEqual's mixed-type-equality rule). Pre-fix the
+# stringified %v key made them collide.
+name: count_distinct
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))
+setup:
+  # Mixed types that happen to share a string representation.
+  - INSERT INTO t VALUES (1, 5, '5'), (2, 10, '10'), (3, 5, '5'), (4, null, null)
+tests:
+  # Distinct non-null ints: {5, 10}.
+  - query: SELECT COUNT(DISTINCT n) FROM t
+    rows:
+      - [2]
+  # Distinct non-null strings: {'5', '10'}.
+  - query: SELECT COUNT(DISTINCT s) FROM t
+    rows:
+      - [2]
+  # COUNT(*) counts every row including NULLs.
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [4]
