@@ -4459,3 +4459,70 @@ func TestFDB_LtrimRtrim(t *testing.T) {
 	g.Expect(r).To(gomega.Equal("  hello"))
 	g.Expect(both).To(gomega.Equal("hello"))
 }
+
+func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_cte_join_ob")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_join_ob")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_join_ob_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_join_ob/main WITH TEMPLATE cte_join_ob_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_cte_join_ob?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CTE + JOIN + GROUP BY + HAVING + ORDER BY expression + LIMIT.
+	rows, err := db.QueryContext(ctx, `
+		WITH big AS (SELECT id, customer_id, amount FROM Sales WHERE amount >= 50)
+		SELECT Customer.name, SUM(big.amount)
+		FROM Customer INNER JOIN big ON Customer.id = big.customer_id
+		GROUP BY Customer.name
+		HAVING SUM(big.amount) > 0
+		ORDER BY SUM(big.amount) DESC
+		LIMIT 2`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type r struct {
+		name  string
+		total int64
+	}
+	var got []r
+	for rows.Next() {
+		var rr r
+		var t any
+		g.Expect(rows.Scan(&rr.name, &t)).To(gomega.Succeed())
+		switch v := t.(type) {
+		case int64:
+			rr.total = v
+		case float64:
+			rr.total = int64(v)
+		}
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{
+		{"Alice", 300},
+		{"Bob", 50},
+	}))
+}
