@@ -809,8 +809,11 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 			ptrs[i] = &vals[i]
 		}
 		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		dbCatalog, _ := vals[0].(string)
 		tbl, _ := vals[2].(string)
-		if tbl != "Employee" {
+		// Filter to this test's database only — other parallel tests may also
+		// have an "Employee" table in a different database.
+		if dbCatalog != "/testdb_is_columns" || tbl != "Employee" {
 			continue
 		}
 		ordinal, _ := vals[4].(int64)
@@ -922,4 +925,81 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 	}
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(remaining).To(gomega.Equal(2))
+}
+
+// TestFDB_InsertMissingPK verifies that INSERT without a required PRIMARY KEY
+// column returns an error. Proto2 marks NOT NULL columns as "required", and
+// proto serialization enforces required-field presence, so the INSERT fails
+// with RecordSerializationError rather than silently inserting a zero-keyed row.
+func TestFDB_InsertMissingPK(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_missing_pk")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_missing_pk")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE mpk_tmpl "+
+			"CREATE TABLE Rec (rec_id BIGINT NOT NULL, val STRING, PRIMARY KEY (rec_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_missing_pk/recs WITH TEMPLATE mpk_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_missing_pk?cluster_file=%s&schema=recs", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// INSERT without pk — proto2 NOT NULL fields are "required"; protobuf
+	// serialization rejects the message with RecordSerializationError.
+	_, err = db.ExecContext(ctx, "INSERT INTO Rec (val) VALUES ('no-pk')")
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("rec_id"))
+}
+
+// TestFDB_SelectWhereTypeMismatch verifies that comparing a BIGINT column
+// against a string constant returns no rows (valuesEqual returns false)
+// rather than panicking or erroring.
+func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_type_mismatch")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_type_mismatch")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE tm_tmpl "+
+			"CREATE TABLE Obj (obj_id BIGINT NOT NULL, name STRING, PRIMARY KEY (obj_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_type_mismatch/objs WITH TEMPLATE tm_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_type_mismatch?cluster_file=%s&schema=objs", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Obj (obj_id, name) VALUES (1, 'a'), (2, 'b')")).Error().NotTo(gomega.HaveOccurred())
+
+	// Compare BIGINT column against a string — should return no rows (type mismatch → false predicate).
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Obj WHERE obj_id = 'notanumber'")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var count int
+	cols, _ := rows.Columns()
+	for rows.Next() {
+		count++
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(count).To(gomega.Equal(0))
 }
