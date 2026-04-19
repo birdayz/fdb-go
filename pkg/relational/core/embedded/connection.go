@@ -4230,6 +4230,12 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					return nil, evalErr
 				}
 				if val == nil {
+					// UPDATE SET col = NULL on a NOT NULL column must reject
+					// with ErrCodeNotNullViolation (23502), matching Java.
+					if fd.Cardinality() == protoreflect.Required {
+						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
+							"NULL value in column %q violates NOT NULL constraint", colName)
+					}
 					clonedRefl.Clear(fd)
 					continue
 				}

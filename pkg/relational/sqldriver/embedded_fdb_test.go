@@ -5397,6 +5397,11 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
+	// Seed one row so UPDATE/DELETE test cases have a target. The NOT NULL
+	// UPDATE case would otherwise be a no-op (zero rows matched).
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
 	// Helper: exec the query and surface the first error from prepare,
 	// iteration, or scan. Returns nil on success.
 	queryErr := func(sql string) error {
@@ -5499,6 +5504,14 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 		{
 			name:     "INSERT explicit NULL into NOT NULL column",
 			sql:      "INSERT INTO T (id, n) VALUES (NULL, 99)",
+			exec:     true,
+			onDB:     true,
+			wantCode: api.ErrCodeNotNullViolation,
+		},
+		{
+			// Precede with an INSERT so UPDATE has a row to target.
+			name:     "UPDATE SET col = NULL on NOT NULL column",
+			sql:      "UPDATE T SET id = NULL",
 			exec:     true,
 			onDB:     true,
 			wantCode: api.ErrCodeNotNullViolation,
