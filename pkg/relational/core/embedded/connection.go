@@ -5144,7 +5144,9 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		}
 		s, ok := fieldVal.(string)
 		if !ok {
-			s = fmt.Sprintf("%v", fieldVal)
+			// Proto path errors on non-string LIKE; match that for consistency.
+			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"LIKE requires a string expression, got %T", fieldVal)
 		}
 		patternLit := p.GetPattern().GetText()
 		matched := likeMatch(stripStringLiteralQuotes(patternLit), s)
