@@ -3,24 +3,30 @@
 # swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp
 # unified. Div/0 errors (SQL standard, 22023), '%' supported everywhere.
 #
-# Caveat: the handover claims int64 preservation for division, but the
-# harness shows BIGINT / BIGINT currently returns FLOAT (10/3 =
-# 3.333...). That may be intentional (Postgres-like) or a Java
-# divergence — Java's ArithmeticValue operator set includes INT/LONG
-# divisions that preserve integer. Tracked as a follow-up; for now the
-# scenario uses evenly-divisible operands so it doesn't depend on the
-# choice.
+# BIGINT / BIGINT does integer division (truncation toward zero) to
+# match Java's ArithmeticValue.PhysicalOperator.DIV_LL which is literal
+# `long / long`. `10 / 3 = 3`, not 3.333. MOD_LL similarly. Fixed
+# nightshift-36 (harness caught the divergence).
 name: arithmetic
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
 setup:
-  - INSERT INTO t VALUES (1, 20, 4), (2, 7, 0)
+  - INSERT INTO t VALUES (1, 20, 4), (2, 7, 0), (3, 10, 3)
 tests:
-  # Evenly-divisible — same answer regardless of int-vs-float coercion.
+  # Evenly-divisible integer division — 20 / 4 = 5.
   - query: SELECT a / b FROM t WHERE id = 1
     rows:
       - [5]
-  # Modulo works on proto + map paths (20 % 4 = 0).
+  # Non-evenly-divisible integer division — 10 / 3 = 3 (truncation,
+  # matches Java DIV_LL). Pre-fix Go returned 3.3333... (float64).
+  - query: SELECT a / b FROM t WHERE id = 3
+    rows:
+      - [3]
+  # Integer remainder — 10 % 3 = 1 (matches Java MOD_LL).
+  - query: SELECT a % b FROM t WHERE id = 3
+    rows:
+      - [1]
+  # Modulo on evenly-divisible — 20 % 4 = 0.
   - query: SELECT a % b FROM t WHERE id = 1
     rows:
       - [0]

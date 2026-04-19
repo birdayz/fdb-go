@@ -4262,6 +4262,35 @@ func applyMathOp(left, right any, op string) (any, error) {
 	if left == nil || right == nil {
 		return nil, nil
 	}
+	// Integer / integer stays integer — Java's DIV_LL / DIV_II do Java-level
+	// `long / long` (truncation toward zero). Going through float first
+	// would turn `10 / 3` into 3.333 instead of 3, diverging from Java.
+	// Same for `%` (MOD_LL = `long % long`). The full table is at
+	// ArithmeticValue.java PhysicalOperator.DIV_LL/MOD_LL.
+	li, lok := left.(int64)
+	ri, rok := right.(int64)
+	if lok && rok {
+		switch op {
+		case "+":
+			return li + ri, nil
+		case "-":
+			return li - ri, nil
+		case "*":
+			return li * ri, nil
+		case "/":
+			if ri == 0 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			}
+			return li / ri, nil
+		case "%":
+			if ri == 0 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			}
+			return li % ri, nil
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
+		}
+	}
 	lf, lok := toFloat64(left)
 	rf, rok := toFloat64(right)
 	if !lok || !rok {
@@ -4288,12 +4317,6 @@ func applyMathOp(left, right any, op string) (any, error) {
 		result = math.Mod(lf, rf)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
-	}
-	// Preserve int64 if both operands were integers and result is whole.
-	_, leftIsInt := left.(int64)
-	_, rightIsInt := right.(int64)
-	if leftIsInt && rightIsInt && result == float64(int64(result)) {
-		return int64(result), nil
 	}
 	return result, nil
 }
