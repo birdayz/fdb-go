@@ -3127,9 +3127,33 @@ func groupByKey(groupVals []driver.Value) string {
 }
 
 // evalHaving evaluates a HAVING clause expression against a map of
-// output-column-name → aggregate value.  Only simple comparisons are supported:
-// HAVING aggCol OP constant  or  HAVING constant OP aggCol.
+// output-column-name → aggregate value.
+// Supports comparisons, AND/OR/NOT, and aggregate function references.
 func evalHaving(row map[string]driver.Value, expr antlrgen.IExpressionContext) (bool, error) {
+	// Handle logical expressions: AND / OR
+	if le, ok := expr.(*antlrgen.LogicalExpressionContext); ok {
+		left, err := evalHaving(row, le.Expression(0))
+		if err != nil {
+			return false, err
+		}
+		op := strings.ToUpper(le.LogicalOperator().GetText())
+		if op == "AND" || op == "&&" {
+			if !left {
+				return false, nil
+			}
+			return evalHaving(row, le.Expression(1))
+		}
+		// OR
+		if left {
+			return true, nil
+		}
+		return evalHaving(row, le.Expression(1))
+	}
+	// Handle NOT
+	if ne, ok := expr.(*antlrgen.NotExpressionContext); ok {
+		v, err := evalHaving(row, ne.Expression())
+		return !v, err
+	}
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING expression %T", expr)

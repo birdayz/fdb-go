@@ -2949,6 +2949,47 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(pow).To(gomega.Equal(int64(8)))
 }
 
+func TestFDB_HavingCompound(t *testing.T) {
+	// HAVING with AND/OR compound conditions.
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_having_compound")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_having_compound")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE hc_tmpl CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_having_compound/sales WITH TEMPLATE hc_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_having_compound?cluster_file=%s&schema=sales", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (1, 'north', 100), (2, 'south', 50), (3, 'north', 200), (4, 'south', 30)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// GROUP BY region HAVING SUM > 100 AND COUNT > 1
+	rows, err := db.QueryContext(ctx, `SELECT region, SUM(amount), COUNT(*) FROM Sale GROUP BY region HAVING SUM(amount) > 100 AND COUNT(*) > 1 ORDER BY region`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	var regions []string
+	for rows.Next() {
+		var region string
+		var sum, cnt int64
+		g.Expect(rows.Scan(&region, &sum, &cnt)).To(gomega.Succeed())
+		regions = append(regions, region)
+		g.Expect(sum).To(gomega.BeNumerically(">", int64(100)))
+		g.Expect(cnt).To(gomega.BeNumerically(">", int64(1)))
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// north: SUM=300, COUNT=2 → passes; south: SUM=80, COUNT=2 → fails SUM>100
+	g.Expect(regions).To(gomega.ConsistOf("north"))
+}
+
 func TestFDB_WhereExprComparison(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
