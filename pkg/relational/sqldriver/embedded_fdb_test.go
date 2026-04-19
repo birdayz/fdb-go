@@ -3347,3 +3347,62 @@ func TestFDB_GreatestLeast(t *testing.T) {
 		{9, 5},
 	}))
 }
+
+func TestFDB_JoinGroupBy(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_groupby")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_groupby")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jgb_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Order (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_groupby/main WITH TEMPLATE jgb_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_groupby?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (10, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (11, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Order (id, customer_id, amount) VALUES (12, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// JOIN + GROUP BY: count orders per customer.
+	rows, err := db.QueryContext(ctx, `
+		SELECT Customer.name, COUNT(*), SUM(Order.amount)
+		FROM Customer
+		INNER JOIN Order ON Customer.id = Order.customer_id
+		GROUP BY Customer.name
+		ORDER BY Customer.name ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name  string
+		count int64
+		total float64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.name, &r.count, &r.total)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"Alice", 2, 300},
+		{"Bob", 1, 50},
+	}))
+}

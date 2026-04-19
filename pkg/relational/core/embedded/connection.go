@@ -506,6 +506,151 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 		}
 
+		// GROUP BY + aggregate on map rows (for JOIN queries).
+		if sq.countStar || len(sq.aggCols) > 0 {
+			type mapGroupState struct {
+				groupVals    []driver.Value
+				counts       []int64
+				sums         []float64
+				mins         []driver.Value
+				maxes        []driver.Value
+				avgs         []float64
+				avgsN        []int64
+				distinctSets []map[string]struct{}
+			}
+			groupOrder := []string{}
+			groups := map[string]*mapGroupState{}
+			hasGroups := len(sq.groupBy) > 0
+			for _, row := range filtered {
+				gVals := make([]driver.Value, len(sq.groupBy))
+				for gi, gcol := range sq.groupBy {
+					if v, ok := row[gcol]; ok {
+						gVals[gi] = v
+					} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
+						gVals[gi] = row[gcol[dot+1:]]
+					}
+				}
+				key := groupByKey(gVals)
+				if !hasGroups {
+					key = ""
+				}
+				gs, exists := groups[key]
+				if !exists {
+					dsets := make([]map[string]struct{}, len(sq.aggCols))
+					for di, ac := range sq.aggCols {
+						if ac.aggDistinct {
+							dsets[di] = make(map[string]struct{})
+						}
+					}
+					gs = &mapGroupState{
+						groupVals:    gVals,
+						counts:       make([]int64, len(sq.aggCols)),
+						sums:         make([]float64, len(sq.aggCols)),
+						mins:         make([]driver.Value, len(sq.aggCols)),
+						maxes:        make([]driver.Value, len(sq.aggCols)),
+						avgs:         make([]float64, len(sq.aggCols)),
+						avgsN:        make([]int64, len(sq.aggCols)),
+						distinctSets: dsets,
+					}
+					groups[key] = gs
+					groupOrder = append(groupOrder, key)
+				}
+				for i, ac := range sq.aggCols {
+					if ac.groupCol != "" {
+						continue
+					}
+					colVal := row[ac.aggArg]
+					if colVal == nil && ac.aggArg != "" {
+						if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+							colVal = row[ac.aggArg[dot+1:]]
+						}
+					}
+					if ac.aggDistinct && ac.aggArg != "" {
+						if colVal != nil {
+							dk := fmt.Sprintf("%v", colVal)
+							if _, seen := gs.distinctSets[i][dk]; !seen {
+								gs.distinctSets[i][dk] = struct{}{}
+								gs.counts[i]++
+							}
+						}
+						continue
+					}
+					gs.counts[i]++
+					if colVal != nil {
+						fv, _ := toFloat64(colVal)
+						switch ac.aggFunc {
+						case "SUM":
+							gs.sums[i] += fv
+						case "MIN":
+							if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+								gs.mins[i] = colVal
+							}
+						case "MAX":
+							if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+								gs.maxes[i] = colVal
+							}
+						case "AVG":
+							gs.avgs[i] += fv
+							gs.avgsN[i]++
+						}
+					}
+				}
+			}
+			groupColIdx := map[string]int{}
+			for i, col := range sq.groupBy {
+				groupColIdx[col] = i
+			}
+			if sq.countStar {
+				cols = []string{"COUNT(*)"}
+				data = [][]driver.Value{{int64(len(filtered))}}
+			} else {
+				cols = make([]string, len(sq.aggCols))
+				for i, ac := range sq.aggCols {
+					cols[i] = ac.outName
+				}
+				for _, key := range groupOrder {
+					gs := groups[key]
+					rowVals := make([]driver.Value, len(sq.aggCols))
+					rowMap := make(map[string]driver.Value, len(sq.aggCols))
+					for i, ac := range sq.aggCols {
+						if ac.groupCol != "" {
+							idx, ok := groupColIdx[ac.groupCol]
+							if ok {
+								rowVals[i] = gs.groupVals[idx]
+							}
+						} else {
+							switch ac.aggFunc {
+							case "COUNT":
+								rowVals[i] = gs.counts[i]
+							case "SUM":
+								rowVals[i] = gs.sums[i]
+							case "MIN":
+								rowVals[i] = gs.mins[i]
+							case "MAX":
+								rowVals[i] = gs.maxes[i]
+							case "AVG":
+								if gs.avgsN[i] > 0 {
+									rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+								}
+							}
+						}
+						rowMap[ac.outName] = rowVals[i]
+					}
+					if sq.havingExpr != nil {
+						ok, hErr := evalHaving(rowMap, sq.havingExpr)
+						if hErr != nil {
+							return nil, hErr
+						}
+						if !ok {
+							continue
+						}
+					}
+					data = append(data, rowVals)
+				}
+			}
+			return nil, nil
+		}
+
 		// Determine output columns.
 		// For SELECT *, collect all unique unqualified column names in order.
 		if sq.projCols == nil && !sq.countStar {
