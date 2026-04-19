@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -108,5 +109,86 @@ func TestDiff_VersionChange(t *testing.T) {
 	got := buf.String()
 	if !strings.Contains(got, "VERSION:") || !strings.Contains(got, "-> 42") {
 		t.Errorf("expected VERSION change line, got:\n%s", got)
+	}
+}
+
+func TestDiffJSON_IndexAddedAndRemoved(t *testing.T) {
+	t.Parallel()
+	m1 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+	})
+	m2 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$quantity", recordlayer.Field("quantity")))
+	})
+
+	var buf bytes.Buffer
+	if err := writeMetaDiffJSON(&buf, m1, m2); err != nil {
+		t.Fatalf("writeMetaDiffJSON: %v", err)
+	}
+	var d map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &d); err != nil {
+		t.Fatalf("decode JSON: %v\nraw:\n%s", err, buf.String())
+	}
+	idx, ok := d["indexes"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing indexes key:\n%s", buf.String())
+	}
+	// added
+	added, _ := idx["added"].([]any)
+	if len(added) != 1 || added[0] != "Order$quantity" {
+		t.Errorf("indexes.added = %v; want [Order$quantity]", added)
+	}
+	// removed
+	removed, _ := idx["removed"].([]any)
+	if len(removed) != 1 || removed[0] != "Order$price" {
+		t.Errorf("indexes.removed = %v; want [Order$price]", removed)
+	}
+}
+
+func TestDiffJSON_VersionBumpEmitsVersion(t *testing.T) {
+	t.Parallel()
+	m1 := buildMetaWith(t)
+	m2 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.SetVersion(7)
+	})
+	var buf bytes.Buffer
+	if err := writeMetaDiffJSON(&buf, m1, m2); err != nil {
+		t.Fatalf("writeMetaDiffJSON: %v", err)
+	}
+	var d map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &d); err != nil {
+		t.Fatalf("decode JSON: %v\nraw:\n%s", err, buf.String())
+	}
+	v, ok := d["version"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing version key:\n%s", buf.String())
+	}
+	if v["new"].(float64) != 7 {
+		t.Errorf("version.new = %v; want 7", v["new"])
+	}
+}
+
+func TestSplitDiffLine(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in           string
+		wantCategory string
+		wantName     string
+	}{
+		{"+ Order$new_idx (value on price)", "+", "Order$new_idx"},
+		{"- Order$old_idx", "-", "Order$old_idx"},
+		{"~ Order: pk changed (x -> y)", "~", "Order"},
+		{"~ Order$price: type value -> count", "~", "Order$price"},
+		{"invalid", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			cat, name := splitDiffLine(tc.in)
+			if cat != tc.wantCategory || name != tc.wantName {
+				t.Errorf("splitDiffLine(%q) = (%q, %q); want (%q, %q)",
+					tc.in, cat, name, tc.wantCategory, tc.wantName)
+			}
+		})
 	}
 }

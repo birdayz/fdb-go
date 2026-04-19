@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -13,15 +14,26 @@ import (
 )
 
 func newMetaDiffCmd() *cobra.Command {
+	var outputFmt string
 	c := &cobra.Command{
 		Use:   "diff <old.pb> <new.pb>",
 		Short: "Human-readable diff of two metadata files",
+		Example: `  frl meta diff old.pb new.pb
+  frl meta diff old.pb new.pb -o json | jq '.indexes.added'`,
 		Long: "Compares two MetaData.pb files and reports added / removed / " +
 			"changed record types and indexes. Intended for PR reviews and " +
 			"deploy-time sanity checks; pair with `meta evolve-check` in CI " +
-			"to catch incompatible evolutions before saveRecordMetaData().",
+			"to catch incompatible evolutions before saveRecordMetaData().\n\n" +
+			"--output / -o: 'text' (default) or 'json' (structured object " +
+			"with version, record_types.{added,removed,changed}, and " +
+			"indexes.{added,removed,changed}).",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			oldMeta, err := (&meta.FileSource{Path: args[0]}).Load(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("load old: %w", err)
@@ -30,9 +42,13 @@ func newMetaDiffCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load new: %w", err)
 			}
+			if outputFmt == "json" {
+				return writeMetaDiffJSON(cmd.OutOrStdout(), oldMeta, newMeta)
+			}
 			return writeMetaDiff(cmd.OutOrStdout(), oldMeta, newMeta)
 		},
 	}
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
 
@@ -156,6 +172,104 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) []string {
 	}
 	sort.Strings(lines)
 	return lines
+}
+
+// --- JSON diff ---
+
+// metaDiffJSON is the structured-output shape for `meta diff -o json`.
+// Three buckets (added / removed / changed) per section mirror the +/-/~
+// categories in the text output but give CI systems cleanly separable
+// lists — e.g. `jq '.indexes.changed | length'`.
+type metaDiffJSON struct {
+	Version     *versionChangeJSON `json:"version,omitempty"`
+	RecordTypes sectionJSON        `json:"record_types"`
+	Indexes     sectionJSON        `json:"indexes"`
+}
+
+type versionChangeJSON struct {
+	Old int `json:"old"`
+	New int `json:"new"`
+}
+
+type sectionJSON struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+	Changed []string `json:"changed"`
+}
+
+func writeMetaDiffJSON(out io.Writer, oldMeta, newMeta *recordlayer.RecordMetaData) error {
+	d := metaDiffJSON{
+		RecordTypes: sectionJSON{Added: []string{}, Removed: []string{}, Changed: []string{}},
+		Indexes:     sectionJSON{Added: []string{}, Removed: []string{}, Changed: []string{}},
+	}
+	if oldMeta.Version() != newMeta.Version() {
+		d.Version = &versionChangeJSON{Old: oldMeta.Version(), New: newMeta.Version()}
+	}
+	// Split the existing diff helpers' `+ / - / ~` lines into buckets.
+	// Keeps the JSON shape in sync with the text output by construction —
+	// if a future text change adds a category, this function gets a
+	// matching parse branch or the test catches the drift.
+	for _, line := range diffRecordTypes(oldMeta, newMeta) {
+		category, name := splitDiffLine(line)
+		switch category {
+		case "+":
+			d.RecordTypes.Added = append(d.RecordTypes.Added, name)
+		case "-":
+			d.RecordTypes.Removed = append(d.RecordTypes.Removed, name)
+		case "~":
+			d.RecordTypes.Changed = append(d.RecordTypes.Changed, name)
+		}
+	}
+	for _, line := range diffIndexes(oldMeta, newMeta) {
+		category, name := splitDiffLine(line)
+		switch category {
+		case "+":
+			d.Indexes.Added = append(d.Indexes.Added, name)
+		case "-":
+			d.Indexes.Removed = append(d.Indexes.Removed, name)
+		case "~":
+			d.Indexes.Changed = append(d.Indexes.Changed, name)
+		}
+	}
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(d)
+}
+
+// splitDiffLine extracts the category marker (+ / - / ~) and the bare
+// name out of a diff-line produced by diffRecordTypes/diffIndexes:
+//
+//	"+ Order$new_idx (value on price)" → "+", "Order$new_idx"
+//	"- Order$old_idx"                  → "-", "Order$old_idx"
+//	"~ Order: pk changed (…)"          → "~", "Order"
+//
+// Anything else returns ("", "") and gets dropped by the caller.
+func splitDiffLine(line string) (category, name string) {
+	if len(line) < 3 || line[1] != ' ' {
+		return "", ""
+	}
+	category = line[:1]
+	rest := line[2:]
+	// Name runs up to the first ' ' (for + lines with trailing details)
+	// or ':' (for ~ lines with "pk changed" / "type value -> count" etc.).
+	// Either separator wins — whichever comes first.
+	spaceIdx := strings.IndexByte(rest, ' ')
+	colonIdx := strings.IndexByte(rest, ':')
+	cut := -1
+	switch {
+	case spaceIdx == -1 && colonIdx == -1:
+		cut = len(rest)
+	case spaceIdx == -1:
+		cut = colonIdx
+	case colonIdx == -1:
+		cut = spaceIdx
+	default:
+		cut = spaceIdx
+		if colonIdx < spaceIdx {
+			cut = colonIdx
+		}
+	}
+	return category, rest[:cut]
 }
 
 // pkFieldsOrUnset returns a human-readable PK representation: comma-joined
