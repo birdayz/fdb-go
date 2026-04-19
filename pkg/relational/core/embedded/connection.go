@@ -3287,6 +3287,13 @@ func evalScalarFunctionCallCore(
 		}
 		switch n := v.(type) {
 		case int64:
+			// Two's-complement: -math.MinInt64 overflows back to MinInt64.
+			// MySQL/Postgres error; mirror that here rather than returning
+			// the still-negative value.
+			if n == math.MinInt64 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"ABS: integer overflow for MinInt64 (-9223372036854775808)")
+			}
 			if n < 0 {
 				return -n, nil
 			}
@@ -3629,7 +3636,10 @@ func evalScalarFunctionCallCore(
 		if nErr != nil {
 			return nil, nErr
 		}
-		n, _ := nVal.(int64)
+		n, err := toIntegerArg(nVal, "LEFT", "length")
+		if err != nil {
+			return nil, err
+		}
 		if n < 0 {
 			n = 0
 		}
@@ -3652,7 +3662,10 @@ func evalScalarFunctionCallCore(
 		if nErr != nil {
 			return nil, nErr
 		}
-		n, _ := nVal.(int64)
+		n, err := toIntegerArg(nVal, "RIGHT", "length")
+		if err != nil {
+			return nil, err
+		}
 		if n < 0 {
 			n = 0
 		}
@@ -3675,7 +3688,10 @@ func evalScalarFunctionCallCore(
 		if posErr != nil {
 			return nil, posErr
 		}
-		pos, _ := posVal.(int64)
+		pos, err := toIntegerArg(posVal, "SUBSTRING", "position")
+		if err != nil {
+			return nil, err
+		}
 		if pos < 1 {
 			pos = 1
 		}
@@ -3689,7 +3705,10 @@ func evalScalarFunctionCallCore(
 			if lenErr != nil {
 				return nil, lenErr
 			}
-			n, _ := lenVal.(int64)
+			n, err := toIntegerArg(lenVal, "SUBSTRING", "length")
+			if err != nil {
+				return nil, err
+			}
 			end := start + int(n)
 			if end > len(runes) {
 				end = len(runes)
@@ -3851,6 +3870,10 @@ func evalSpecificFunctionCore(
 
 // castValue converts v to the SQL type named by typeName (e.g. "BIGINT", "VARCHAR", "TEXT", "BOOLEAN").
 func castValue(v any, typeName string) (any, error) {
+	// SQL: CAST(NULL AS <type>) is NULL of the target type.
+	if v == nil {
+		return nil, nil
+	}
 	switch {
 	case strings.HasPrefix(typeName, "BIGINT"), strings.HasPrefix(typeName, "INT"), typeName == "INTEGER", typeName == "LONG":
 		switch n := v.(type) {
@@ -4040,6 +4063,31 @@ func toFloat64(v any) (float64, bool) {
 		return n, true
 	default:
 		return 0, false
+	}
+}
+
+// toIntegerArg coerces v to int64 for integer-typed function arguments
+// (position, length, count). Whole-value floats are accepted as a
+// convenience (`LEFT('hi', 2.0)` works); fractional floats and non-numeric
+// types error rather than silently truncating to 0.
+func toIntegerArg(v any, funcName, argName string) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"%s: %s must be an integer, got %v", funcName, argName, n)
+		}
+		i := int64(n)
+		if float64(i) != n {
+			return 0, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"%s: %s must be an integer, got %v", funcName, argName, n)
+		}
+		return i, nil
+	default:
+		return 0, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"%s: %s must be an integer, got %T", funcName, argName, v)
 	}
 }
 

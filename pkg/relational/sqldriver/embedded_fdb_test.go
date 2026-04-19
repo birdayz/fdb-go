@@ -5370,6 +5370,81 @@ func TestFDB_SimpleCaseWithNull(t *testing.T) {
 	g.Expect(got3).To(gomega.Equal("five"))
 }
 
+// TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
+// 5-agent QA audit in one place:
+//   - CAST(NULL AS <type>) must return NULL of the target type, not error
+//   - ABS(MinInt64) must error (two's-complement overflow is undefined)
+//   - LEFT/RIGHT/SUBSTRING float-length arg must error, not silently truncate
+func TestFDB_MediumAuditFixes(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_medium_audit")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_medium_audit")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE medium_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, s STRING, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_medium_audit/main WITH TEMPLATE medium_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_medium_audit?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, -9223372036854775808, 'hello world'), (2, 5, 'xy')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// CAST(NULL AS <type>) — must be NULL of that type in every family.
+	// The grammar accepts a narrow set of type names in CAST; use the ones
+	// already covered by existing tests (STRING, BIGINT, DOUBLE, BOOLEAN).
+	for _, cast := range []string{"STRING", "BIGINT", "DOUBLE", "BOOLEAN"} {
+		var out sql.NullString
+		sqlStr := fmt.Sprintf(`SELECT CAST(NULL AS %s) FROM T WHERE id = 2`, cast)
+		g.Expect(db.QueryRowContext(ctx, sqlStr).Scan(&out)).To(gomega.Succeed())
+		g.Expect(out.Valid).To(gomega.BeFalse(), "CAST(NULL AS %s) must be NULL", cast)
+	}
+
+	// ABS(MinInt64) must error (previously flipped sign back to MinInt64 silently).
+	queryErr := func(sql string) error {
+		rows, e := db.QueryContext(ctx, sql)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v any
+			if se := rows.Scan(&v); se != nil {
+				return se
+			}
+		}
+		return rows.Err()
+	}
+	g.Expect(queryErr(`SELECT ABS(n) FROM T WHERE id = 1`)).
+		To(gomega.HaveOccurred(), "ABS(MinInt64) must error rather than wrap")
+
+	// Sanity: ABS on positive/negative non-MinInt64 still works.
+	var absOut int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT ABS(n) FROM T WHERE id = 2`).Scan(&absOut)).To(gomega.Succeed())
+	g.Expect(absOut).To(gomega.Equal(int64(5)))
+
+	// LEFT / RIGHT / SUBSTRING with a fractional float length must error.
+	for _, q := range []string{
+		`SELECT LEFT(s, 2.5) FROM T WHERE id = 1`,
+		`SELECT RIGHT(s, 2.5) FROM T WHERE id = 1`,
+		`SELECT SUBSTRING(s, 1, 2.5) FROM T WHERE id = 1`,
+	} {
+		g.Expect(queryErr(q)).To(gomega.HaveOccurred(), "fractional float length must error: %s", q)
+	}
+
+	// Whole-valued floats should still work (caller convenience).
+	var lft string
+	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(s, 2.0) FROM T WHERE id = 1`).Scan(&lft)).To(gomega.Succeed())
+	g.Expect(lft).To(gomega.Equal("he"))
+}
+
 // TestFDB_NotOfUnknownIsUnknown pins down SQL three-valued logic for NOT:
 //
 //	NOT TRUE    = FALSE
