@@ -135,11 +135,12 @@ func unwrapFDB(txn api.Transaction) (*recordlayer.FDBRecordContext, error) {
 	if txn == nil {
 		return nil, api.NewError(api.ErrCodeTransactionInactive, "transaction is nil")
 	}
-	rctx, ok := txn.Unwrap().(*recordlayer.FDBRecordContext)
+	raw := txn.Unwrap()
+	rctx, ok := raw.(*recordlayer.FDBRecordContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
 			"FDB catalog requires a transaction whose Unwrap() returns *recordlayer.FDBRecordContext, got %T from %T",
-			txn.Unwrap(), txn)
+			raw, txn)
 	}
 	if txn.IsClosed() {
 		return nil, api.NewError(api.ErrCodeTransactionInactive, "transaction is closed")

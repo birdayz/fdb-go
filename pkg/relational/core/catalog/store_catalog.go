@@ -354,11 +354,12 @@ func checkOpenTxn(txn api.Transaction) error {
 	if txn == nil {
 		return api.NewError(api.ErrCodeTransactionInactive, "transaction is nil")
 	}
-	imt, ok := txn.Unwrap().(*InMemoryTransaction)
+	raw := txn.Unwrap()
+	imt, ok := raw.(*InMemoryTransaction)
 	if !ok {
 		return api.NewErrorf(api.ErrCodeInternalError,
 			"in-memory catalog requires a transaction whose Unwrap() returns *InMemoryTransaction, got %T from %T",
-			txn.Unwrap(), txn)
+			raw, txn)
 	}
 	return imt.checkOpen()
 }
