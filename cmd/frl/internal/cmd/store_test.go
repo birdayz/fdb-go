@@ -147,10 +147,16 @@ func TestWriteStoreInfoJSON_RendersProtoFields(t *testing.T) {
 	out := buf.String()
 	// protojson uses camelCase keys matching the proto field names;
 	// int32 fields render as bare numbers, bool as true/false.
+	// Whitespace between ':' and the value isn't guaranteed by the
+	// protojson contract — assert key and value separately to stay
+	// resilient to any formatter changes.
 	for _, want := range []string{
-		`"formatVersion": 12`,
-		`"metaDataversion": 17`,
-		`"cacheable": true`,
+		`"formatVersion"`,
+		` 12`,
+		`"metaDataversion"`,
+		` 17`,
+		`"cacheable"`,
+		` true`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %q:\n%s", want, out)

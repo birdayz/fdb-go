@@ -100,7 +100,10 @@ func newMetaTypesCmd() *cobra.Command {
 		Use:   "types",
 		Short: "Inspect record types declared in the metadata",
 	}
-	c.AddCommand(newMetaTypesLsCmd())
+	c.AddCommand(
+		newMetaTypesLsCmd(),
+		newMetaTypesDescribeCmd(),
+	)
 	return c
 }
 
