@@ -3060,7 +3060,6 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 	}
 }
 
-// evalScalarFunctionCall evaluates a scalar SQL function call (COALESCE, IFNULL, CASE, etc.).
 // exprEvaluator is the function-pointer adapter that abstracts over the two
 // expression-evaluation contexts (proto record vs. map row). Both the scalar
 // and specific function cores drive all argument evaluation through this.
