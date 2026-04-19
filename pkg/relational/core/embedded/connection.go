@@ -1819,18 +1819,18 @@ func compareValues(a, b driver.Value) int {
 	return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
 }
 
-// rowKey serializes a result row to a string key for DISTINCT deduplication.
+// rowKey serializes a result row to a collision-free string key for DISTINCT deduplication.
+// Each field is length-prefixed: "<type-tag>:<len>:<bytes>|" so that string values
+// containing separator characters cannot collide with other fields or NULL markers.
 func rowKey(row []driver.Value) string {
 	var b strings.Builder
-	for i, v := range row {
-		if i > 0 {
-			b.WriteByte('\x00')
-		}
+	for _, v := range row {
 		if v == nil {
-			b.WriteString("\x01NULL")
-		} else {
-			b.WriteString(fmt.Sprintf("\x02%T\x03%v", v, v))
+			b.WriteString("N:0:|")
+			continue
 		}
+		s := fmt.Sprintf("%T\x00%v", v, v)
+		fmt.Fprintf(&b, "V:%d:%s|", len(s), s)
 	}
 	return b.String()
 }
