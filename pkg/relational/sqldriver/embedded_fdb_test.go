@@ -1391,3 +1391,82 @@ func TestFDB_SelectWhereRangeComparison(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(vals).To(gomega.Equal([]int64{30, 40}))
 }
+
+func TestFDB_DeleteWhereAnd(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_del_and")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_del_and")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE da_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_del_and/items WITH TEMPLATE da_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_del_and?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30)")).Error().NotTo(gomega.HaveOccurred())
+
+	// DELETE WHERE item_id = 2 AND val = 20 — should delete only row 2.
+	res, err := db.ExecContext(ctx, "DELETE FROM Item WHERE item_id = 2 AND val = 20")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	n, _ := res.RowsAffected()
+	g.Expect(n).To(gomega.Equal(int64(1)))
+
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 3}))
+}
+
+func TestFDB_UpdateWhereRange(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_upd_range")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_range")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ur_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_upd_range/items WITH TEMPLATE ur_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_upd_range?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10), (2, 20), (3, 30)")).Error().NotTo(gomega.HaveOccurred())
+
+	// UPDATE SET val = 99 WHERE val >= 20 — should update rows 2 and 3.
+	res, err := db.ExecContext(ctx, "UPDATE Item SET val = 99 WHERE val >= 20")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	n, _ := res.RowsAffected()
+	g.Expect(n).To(gomega.Equal(int64(2)))
+
+	rows, err := db.QueryContext(ctx, "SELECT val FROM Item ORDER BY item_id ASC")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var vals []int64
+	for rows.Next() {
+		var v int64
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		vals = append(vals, v)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// Row 1 unchanged (val=10), rows 2+3 updated to 99.
+	g.Expect(vals).To(gomega.Equal([]int64{10, 99, 99}))
+}
