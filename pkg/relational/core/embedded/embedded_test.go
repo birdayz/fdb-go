@@ -193,6 +193,99 @@ func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	}
 }
 
+// TestTriBool pins the Kleene three-valued truth table so any future tweak
+// of triAnd/triOr/Not doesn't silently violate SQL §8.12. Exhaustively
+// enumerates all 3×3 combinations — 9 AND, 9 OR, 3 NOT.
+func TestTriBool(t *testing.T) {
+	t.Parallel()
+	name := func(v triBool) string {
+		switch v {
+		case triTrue:
+			return "T"
+		case triFalse:
+			return "F"
+		case triNull:
+			return "N"
+		}
+		return "?"
+	}
+
+	andCases := []struct {
+		a, b, want triBool
+	}{
+		{triTrue, triTrue, triTrue},
+		{triTrue, triFalse, triFalse},
+		{triTrue, triNull, triNull},
+		{triFalse, triTrue, triFalse},
+		{triFalse, triFalse, triFalse},
+		{triFalse, triNull, triFalse}, // FALSE short-circuits
+		{triNull, triTrue, triNull},
+		{triNull, triFalse, triFalse},
+		{triNull, triNull, triNull},
+	}
+	for _, tc := range andCases {
+		if got := triAnd(tc.a, tc.b); got != tc.want {
+			t.Errorf("triAnd(%s, %s) = %s, want %s", name(tc.a), name(tc.b), name(got), name(tc.want))
+		}
+	}
+
+	orCases := []struct {
+		a, b, want triBool
+	}{
+		{triTrue, triTrue, triTrue},
+		{triTrue, triFalse, triTrue},
+		{triTrue, triNull, triTrue}, // TRUE short-circuits
+		{triFalse, triTrue, triTrue},
+		{triFalse, triFalse, triFalse},
+		{triFalse, triNull, triNull},
+		{triNull, triTrue, triTrue},
+		{triNull, triFalse, triNull},
+		{triNull, triNull, triNull},
+	}
+	for _, tc := range orCases {
+		if got := triOr(tc.a, tc.b); got != tc.want {
+			t.Errorf("triOr(%s, %s) = %s, want %s", name(tc.a), name(tc.b), name(got), name(tc.want))
+		}
+	}
+
+	notCases := []struct {
+		in, want triBool
+	}{
+		{triTrue, triFalse},
+		{triFalse, triTrue},
+		{triNull, triNull},
+	}
+	for _, tc := range notCases {
+		if got := tc.in.Not(); got != tc.want {
+			t.Errorf("Not(%s) = %s, want %s", name(tc.in), name(got), name(tc.want))
+		}
+	}
+
+	// IsTrue: only triTrue is truthy. UNKNOWN must NOT pass the filter
+	// boundary — that's the whole point of the tri-state.
+	truthyCases := []struct {
+		in   triBool
+		want bool
+	}{
+		{triTrue, true},
+		{triFalse, false},
+		{triNull, false},
+	}
+	for _, tc := range truthyCases {
+		if got := tc.in.IsTrue(); got != tc.want {
+			t.Errorf("%s.IsTrue() = %v, want %v", name(tc.in), got, tc.want)
+		}
+	}
+
+	// triFromBool — round-trip.
+	if triFromBool(true) != triTrue {
+		t.Error("triFromBool(true) != triTrue")
+	}
+	if triFromBool(false) != triFalse {
+		t.Error("triFromBool(false) != triFalse")
+	}
+}
+
 func TestEmbeddedConnection_ResetSession(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{schema: "myschema"}
