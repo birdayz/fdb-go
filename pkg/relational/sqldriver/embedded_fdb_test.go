@@ -4861,3 +4861,51 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3})) // id=2 closed+100>50, id=3 open+1<3
 }
+
+func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_insert_multi_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_multi_expr")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_multi_expr_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, name STRING NOT NULL, doubled BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_multi_expr/main WITH TEMPLATE ins_multi_expr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_insert_multi_expr?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Insert three rows where each value uses an expression.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES
+		(1, UPPER('alpha'), 5 + 5),
+		(2, LOWER('BETA'), 20 * 2),
+		(3, CONCAT('a', 'b'), ABS(-42))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, `SELECT id, name, doubled FROM T ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type r struct {
+		id      int64
+		name    string
+		doubled int64
+	}
+	var got []r
+	for rows.Next() {
+		var rr r
+		g.Expect(rows.Scan(&rr.id, &rr.name, &rr.doubled)).To(gomega.Succeed())
+		got = append(got, rr)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]r{
+		{1, "ALPHA", 10},
+		{2, "beta", 40},
+		{3, "ab", 42},
+	}))
+}
