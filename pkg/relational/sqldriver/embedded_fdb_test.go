@@ -6517,3 +6517,42 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = '5'`).Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 }
+
+// TestFDB_IntegerRangeEnforcement pins that INSERT of an out-of-range
+// int64 into an INT32 column errors cleanly instead of silently wrapping.
+// Schema templates lower `INTEGER` to proto Int32Kind (see metadata
+// builder's datatypeToProtoFieldType), so writing 2_147_483_648 (one past
+// int32 max) would previously silently become -2_147_483_648 — a value
+// corruption with no user-visible signal. Matches Java's
+// CastValue.LONG_TO_INT range check.
+func TestFDB_IntegerRangeEnforcement(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_int_range")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_int_range")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE int_range_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, n INTEGER, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_int_range/main WITH TEMPLATE int_range_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_int_range?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// In range: must succeed.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 2147483647)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred(), "INT32 max value must be accepted")
+
+	// Over max: must error, not silently wrap to -2147483648.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (2, 2147483648)`)
+	g.Expect(err).To(gomega.HaveOccurred(), "INT32 overflow must error; previously silently wrapped")
+
+	// Under min: same.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (3, -2147483649)`)
+	g.Expect(err).To(gomega.HaveOccurred(), "INT32 underflow must error")
+}

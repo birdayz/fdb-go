@@ -3146,7 +3146,15 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		}
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
 		if v, ok := val.(int64); ok {
-			return protoreflect.ValueOfInt32(int32(v)), nil //nolint:gosec
+			// Java CastValue.LONG_TO_INT range-checks before narrowing. Go
+			// used to silently wrap via int32() which could turn an
+			// INSERT of 2147483648 into -2147483648 — a value-corrupting
+			// divergence. Reject cleanly.
+			if v < math.MinInt32 || v > math.MaxInt32 {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
+			}
+			return protoreflect.ValueOfInt32(int32(v)), nil
 		}
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		if v, ok := val.(int64); ok {
@@ -3154,11 +3162,19 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		if v, ok := val.(int64); ok {
-			return protoreflect.ValueOfUint32(uint32(v)), nil //nolint:gosec
+			if v < 0 || v > math.MaxUint32 {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
+			}
+			return protoreflect.ValueOfUint32(uint32(v)), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		if v, ok := val.(int64); ok {
-			return protoreflect.ValueOfUint64(uint64(v)), nil //nolint:gosec
+			if v < 0 {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"negative value %d cannot be stored in unsigned %s column %q", v, fd.Kind(), fd.Name())
+			}
+			return protoreflect.ValueOfUint64(uint64(v)), nil
 		}
 	case protoreflect.FloatKind:
 		switch v := val.(type) {
