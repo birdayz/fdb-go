@@ -314,10 +314,9 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 	return c.execSelectQueryFull(ctx, sq)
 }
 
-// execSelect executes a SELECT [cols | *] FROM <tableName> [WHERE col = val]
-// [ORDER BY col [ASC|DESC]] [LIMIT n].
-// Only single-table scans with simple equality WHERE are supported.
-// Joins, subqueries, GROUP BY, HAVING, etc. are not.
+// execSelect executes a SELECT statement. Supports single-table and multi-table
+// (INNER/LEFT JOIN) queries, WHERE, ORDER BY, GROUP BY, HAVING, LIMIT/OFFSET,
+// aggregate functions, and INFORMATION_SCHEMA system tables.
 func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelectStatementContext) (driver.Rows, error) {
 	query := sel.Query()
 	if query == nil {
@@ -1045,7 +1044,7 @@ func filterSysRows(rows [][]driver.Value, cols []string, where antlrgen.IWhereEx
 		for i, c := range cols {
 			m[strings.ToUpper(c)] = row[i]
 		}
-		ok, err := evalHaving(m, expr)
+		ok, err := evalPredicateOnMapExpr(m, expr)
 		if err != nil {
 			return nil, err
 		}
@@ -2246,7 +2245,9 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	// Execute the SELECT first (outside the INSERT transaction to avoid conflicts).
+	// Execute the SELECT in a separate transaction from the INSERT. The two operations are
+	// not atomic — a concurrent writer may modify rows between the SELECT and INSERT
+	// (TOCTOU window). This is a known limitation of the current implementation.
 	srcCols, srcRows, err := c.execQueryBodyRows(ctx, body)
 	if err != nil {
 		return 0, err
@@ -2405,8 +2406,8 @@ func evalExpr(msg proto.Message, expr antlrgen.IExpressionContext) (any, error) 
 		}
 		return b, nil
 	}
-	// If this is a plain predicated expression with no predicate modifier (IN, IS, LIKE,
-	// BETWEEN) and the atom is a binary comparison, treat it as a boolean value too.
+	// If this is a predicated expression that has a predicate modifier (IN, IS, LIKE,
+	// BETWEEN) or contains a binary comparison, evaluate it as a boolean value.
 	if pred.Predicate() != nil {
 		b, err := evalExprPredicate(msg, expr)
 		if err != nil {
@@ -2652,17 +2653,29 @@ func evalScalarFunctionCall(msg proto.Message, fc antlrgen.IFunctionCallContext)
 		if berr != nil || bv == nil {
 			return nil, berr
 		}
-		switch a := av.(type) {
-		case int64:
-			if b, ok := bv.(int64); ok && b != 0 {
-				return a % b, nil
+		toFloat := func(v driver.Value) (float64, bool) {
+			switch n := v.(type) {
+			case int64:
+				return float64(n), true
+			case float64:
+				return n, true
 			}
-		case float64:
-			if b, ok := bv.(float64); ok {
-				return math.Mod(a, b), nil
+			return 0, false
+		}
+		af, aok := toFloat(av)
+		bf, bok := toFloat(bv)
+		if !aok || !bok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
+		}
+		if bf == 0 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: division by zero")
+		}
+		if _, aIsInt := av.(int64); aIsInt {
+			if _, bIsInt := bv.(int64); bIsInt {
+				return int64(af) % int64(bf), nil
 			}
 		}
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
+		return math.Mod(af, bf), nil
 	case "POWER", "POW":
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
