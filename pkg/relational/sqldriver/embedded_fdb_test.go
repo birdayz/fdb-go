@@ -4647,3 +4647,42 @@ func TestFDB_NestedFunctionsAndCase(t *testing.T) {
 	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got2).To(gomega.Equal(got))
 }
+
+func TestFDB_FunctionWrappingCase(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_fn_wrap_case")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_fn_wrap_case")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_wc_tmpl
+		CREATE TABLE T (id BIGINT NOT NULL, qty BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_fn_wrap_case/main WITH TEMPLATE fn_wc_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_fn_wrap_case?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, qty) VALUES (1, 5)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, qty) VALUES (2, 0)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Scalar function (UPPER) wrapping CASE.
+	rows, err := db.QueryContext(ctx, `
+		SELECT UPPER(CASE WHEN qty > 0 THEN 'yes' ELSE 'no' END) FROM T ORDER BY id ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var vals []string
+	for rows.Next() {
+		var v string
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		vals = append(vals, v)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(vals).To(gomega.Equal([]string{"YES", "NO"}))
+}
