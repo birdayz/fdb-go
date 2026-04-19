@@ -3929,3 +3929,138 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 		{"Gadget", "full price"},
 	}))
 }
+
+func TestFDB_AggregateOnCTE(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_agg_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_cte")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_cte_tmpl
+		CREATE TABLE Sale (id BIGINT NOT NULL, region STRING NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_cte/main WITH TEMPLATE agg_cte_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_agg_cte?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (1, 'west', 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (2, 'west', 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (3, 'east', 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, region, amount) VALUES (4, 'east', 300)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// GROUP BY + SUM on a CTE, ORDER BY.
+	rows, err := db.QueryContext(ctx, `
+		WITH big_sales AS (SELECT id, region, amount FROM Sale WHERE amount >= 100)
+		SELECT region, SUM(amount) FROM big_sales GROUP BY region ORDER BY region ASC`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		region string
+		total  int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		var t any
+		g.Expect(rows.Scan(&r.region, &t)).To(gomega.Succeed())
+		switch v := t.(type) {
+		case int64:
+			r.total = v
+		case float64:
+			r.total = int64(v)
+		}
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{"east", 300},
+		{"west", 300},
+	}))
+
+	// COUNT(*) on derived table.
+	var cnt int64
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT id FROM Sale WHERE amount > 100) AS big`).Scan(&cnt)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cnt).To(gomega.Equal(int64(2)))
+}
+
+func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_join_gb_ol")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_gb_ol")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_gb_tmpl
+		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+		CREATE TABLE Sales (id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_gb_ol/main WITH TEMPLATE join_gb_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_join_gb_ol?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (1, 'Alice')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (2, 'Bob')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Customer (id, name) VALUES (3, 'Carol')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (1, 1, 100)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 1, 200)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 50)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (4, 3, 500)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (5, 3, 400)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// JOIN + GROUP BY + ORDER BY on aggregate + LIMIT. Previously LIMIT was silently ignored.
+	rows, err := db.QueryContext(ctx, `
+		SELECT name, SUM(amount) FROM Customer INNER JOIN Sales ON Customer.id = Sales.customer_id
+		GROUP BY name ORDER BY name DESC LIMIT 2`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		name  string
+		total int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		var t any
+		g.Expect(rows.Scan(&r.name, &t)).To(gomega.Succeed())
+		switch v := t.(type) {
+		case int64:
+			r.total = v
+		case float64:
+			r.total = int64(v)
+		}
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	// DESC: Carol, Bob, Alice; LIMIT 2 → Carol, Bob.
+	g.Expect(got).To(gomega.Equal([]row{
+		{"Carol", 900},
+		{"Bob", 50},
+	}))
+}

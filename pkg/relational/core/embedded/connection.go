@@ -461,6 +461,161 @@ func (c *EmbeddedConnection) scanTableToMaps(
 
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
 // Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
+// aggregateMapRows applies GROUP BY + aggregate computation to a slice of map rows
+// (as produced by JOIN evaluation or CTE materialization). Returns the resulting
+// output column names and tuple rows.
+//
+// Behavior:
+//   - COUNT(*) (sq.countStar, no aggCols): returns [["COUNT(*)"]] with a single row
+//     holding int64(len(filtered)). NOTE: parser sets countStar only when the
+//     entire SELECT list is a bare COUNT(*); with GROUP BY, COUNT(*) flows through
+//     sq.aggCols instead.
+//   - Otherwise: computes per-group aggregates (COUNT, COUNT(DISTINCT col), SUM,
+//     MIN, MAX, AVG), emits one row per group (or a single synthetic group when
+//     sq.groupBy is empty), optionally filtered by sq.havingExpr.
+func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
+	if sq.countStar {
+		return []string{"COUNT(*)"}, [][]driver.Value{{int64(len(filtered))}}, nil
+	}
+
+	type mapGroupState struct {
+		groupVals    []driver.Value
+		counts       []int64
+		sums         []float64
+		mins         []driver.Value
+		maxes        []driver.Value
+		avgs         []float64
+		avgsN        []int64
+		distinctSets []map[string]struct{}
+	}
+	groupOrder := []string{}
+	groups := map[string]*mapGroupState{}
+	hasGroups := len(sq.groupBy) > 0
+	for _, row := range filtered {
+		gVals := make([]driver.Value, len(sq.groupBy))
+		for gi, gcol := range sq.groupBy {
+			if v, ok := row[gcol]; ok {
+				gVals[gi] = v
+			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
+				gVals[gi] = row[gcol[dot+1:]]
+			}
+		}
+		key := groupByKey(gVals)
+		if !hasGroups {
+			key = ""
+		}
+		gs, exists := groups[key]
+		if !exists {
+			dsets := make([]map[string]struct{}, len(sq.aggCols))
+			for di, ac := range sq.aggCols {
+				if ac.aggDistinct {
+					dsets[di] = make(map[string]struct{})
+				}
+			}
+			gs = &mapGroupState{
+				groupVals:    gVals,
+				counts:       make([]int64, len(sq.aggCols)),
+				sums:         make([]float64, len(sq.aggCols)),
+				mins:         make([]driver.Value, len(sq.aggCols)),
+				maxes:        make([]driver.Value, len(sq.aggCols)),
+				avgs:         make([]float64, len(sq.aggCols)),
+				avgsN:        make([]int64, len(sq.aggCols)),
+				distinctSets: dsets,
+			}
+			groups[key] = gs
+			groupOrder = append(groupOrder, key)
+		}
+		for i, ac := range sq.aggCols {
+			if ac.groupCol != "" {
+				continue
+			}
+			colVal := row[ac.aggArg]
+			if colVal == nil && ac.aggArg != "" {
+				if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+					colVal = row[ac.aggArg[dot+1:]]
+				}
+			}
+			if ac.aggDistinct && ac.aggArg != "" {
+				if colVal != nil {
+					dk := fmt.Sprintf("%v", colVal)
+					if _, seen := gs.distinctSets[i][dk]; !seen {
+						gs.distinctSets[i][dk] = struct{}{}
+						gs.counts[i]++
+					}
+				}
+				continue
+			}
+			gs.counts[i]++
+			if colVal != nil {
+				fv, _ := toFloat64(colVal)
+				switch ac.aggFunc {
+				case "SUM":
+					gs.sums[i] += fv
+				case "MIN":
+					if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+						gs.mins[i] = colVal
+					}
+				case "MAX":
+					if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+						gs.maxes[i] = colVal
+					}
+				case "AVG":
+					gs.avgs[i] += fv
+					gs.avgsN[i]++
+				}
+			}
+		}
+	}
+	groupColIdx := map[string]int{}
+	for i, col := range sq.groupBy {
+		groupColIdx[col] = i
+	}
+	cols = make([]string, len(sq.aggCols))
+	for i, ac := range sq.aggCols {
+		cols[i] = ac.outName
+	}
+	for _, key := range groupOrder {
+		gs := groups[key]
+		rowVals := make([]driver.Value, len(sq.aggCols))
+		rowMap := make(map[string]driver.Value, len(sq.aggCols))
+		for i, ac := range sq.aggCols {
+			if ac.groupCol != "" {
+				idx, ok := groupColIdx[ac.groupCol]
+				if ok {
+					rowVals[i] = gs.groupVals[idx]
+				}
+			} else {
+				switch ac.aggFunc {
+				case "COUNT":
+					rowVals[i] = gs.counts[i]
+				case "SUM":
+					rowVals[i] = gs.sums[i]
+				case "MIN":
+					rowVals[i] = gs.mins[i]
+				case "MAX":
+					rowVals[i] = gs.maxes[i]
+				case "AVG":
+					if gs.avgsN[i] > 0 {
+						rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+					}
+				}
+			}
+			rowMap[ac.outName] = rowVals[i]
+		}
+		if sq.havingExpr != nil {
+			ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
+			if hErr != nil {
+				return nil, nil, hErr
+			}
+			if !ok {
+				continue
+			}
+		}
+		data = append(data, rowVals)
+	}
+	return cols, data, nil
+}
+
 func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	var cols []string
 	var data [][]driver.Value
@@ -594,216 +749,80 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		}
 
 		// GROUP BY + aggregate on map rows (for JOIN queries).
-		if sq.countStar || len(sq.aggCols) > 0 {
-			type mapGroupState struct {
-				groupVals    []driver.Value
-				counts       []int64
-				sums         []float64
-				mins         []driver.Value
-				maxes        []driver.Value
-				avgs         []float64
-				avgsN        []int64
-				distinctSets []map[string]struct{}
+		// Aggregated results fall through to ORDER BY/LIMIT/OFFSET below;
+		// the normal column-selection and row-building blocks are skipped.
+		isAggregate := sq.countStar || len(sq.aggCols) > 0
+		if isAggregate {
+			aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, filtered)
+			if aggErr != nil {
+				return nil, aggErr
 			}
-			groupOrder := []string{}
-			groups := map[string]*mapGroupState{}
-			hasGroups := len(sq.groupBy) > 0
-			for _, row := range filtered {
-				gVals := make([]driver.Value, len(sq.groupBy))
-				for gi, gcol := range sq.groupBy {
-					if v, ok := row[gcol]; ok {
-						gVals[gi] = v
-					} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
-						gVals[gi] = row[gcol[dot+1:]]
-					}
-				}
-				key := groupByKey(gVals)
-				if !hasGroups {
-					key = ""
-				}
-				gs, exists := groups[key]
-				if !exists {
-					dsets := make([]map[string]struct{}, len(sq.aggCols))
-					for di, ac := range sq.aggCols {
-						if ac.aggDistinct {
-							dsets[di] = make(map[string]struct{})
-						}
-					}
-					gs = &mapGroupState{
-						groupVals:    gVals,
-						counts:       make([]int64, len(sq.aggCols)),
-						sums:         make([]float64, len(sq.aggCols)),
-						mins:         make([]driver.Value, len(sq.aggCols)),
-						maxes:        make([]driver.Value, len(sq.aggCols)),
-						avgs:         make([]float64, len(sq.aggCols)),
-						avgsN:        make([]int64, len(sq.aggCols)),
-						distinctSets: dsets,
-					}
-					groups[key] = gs
-					groupOrder = append(groupOrder, key)
-				}
-				for i, ac := range sq.aggCols {
-					if ac.groupCol != "" {
-						continue
-					}
-					colVal := row[ac.aggArg]
-					if colVal == nil && ac.aggArg != "" {
-						if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-							colVal = row[ac.aggArg[dot+1:]]
-						}
-					}
-					if ac.aggDistinct && ac.aggArg != "" {
-						if colVal != nil {
-							dk := fmt.Sprintf("%v", colVal)
-							if _, seen := gs.distinctSets[i][dk]; !seen {
-								gs.distinctSets[i][dk] = struct{}{}
-								gs.counts[i]++
-							}
-						}
-						continue
-					}
-					gs.counts[i]++
-					if colVal != nil {
-						fv, _ := toFloat64(colVal)
-						switch ac.aggFunc {
-						case "SUM":
-							gs.sums[i] += fv
-						case "MIN":
-							if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
-								gs.mins[i] = colVal
-							}
-						case "MAX":
-							if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
-								gs.maxes[i] = colVal
-							}
-						case "AVG":
-							gs.avgs[i] += fv
-							gs.avgsN[i]++
-						}
-					}
-				}
-			}
-			groupColIdx := map[string]int{}
-			for i, col := range sq.groupBy {
-				groupColIdx[col] = i
-			}
-			if sq.countStar {
-				cols = []string{"COUNT(*)"}
-				data = [][]driver.Value{{int64(len(filtered))}}
-			} else {
-				cols = make([]string, len(sq.aggCols))
-				for i, ac := range sq.aggCols {
-					cols[i] = ac.outName
-				}
-				for _, key := range groupOrder {
-					gs := groups[key]
-					rowVals := make([]driver.Value, len(sq.aggCols))
-					rowMap := make(map[string]driver.Value, len(sq.aggCols))
-					for i, ac := range sq.aggCols {
-						if ac.groupCol != "" {
-							idx, ok := groupColIdx[ac.groupCol]
-							if ok {
-								rowVals[i] = gs.groupVals[idx]
-							}
-						} else {
-							switch ac.aggFunc {
-							case "COUNT":
-								rowVals[i] = gs.counts[i]
-							case "SUM":
-								rowVals[i] = gs.sums[i]
-							case "MIN":
-								rowVals[i] = gs.mins[i]
-							case "MAX":
-								rowVals[i] = gs.maxes[i]
-							case "AVG":
-								if gs.avgsN[i] > 0 {
-									rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
-								}
-							}
-						}
-						rowMap[ac.outName] = rowVals[i]
-					}
-					if sq.havingExpr != nil {
-						ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
-						if hErr != nil {
-							return nil, hErr
-						}
-						if !ok {
-							continue
-						}
-					}
-					data = append(data, rowVals)
-				}
-			}
-			return nil, nil
-		}
-
-		// Determine output columns.
-		// For SELECT *, collect all unique unqualified column names in order.
-		if sq.projCols == nil && !sq.countStar {
-			seen := make(map[string]bool)
-			// Order: left table columns first, then join table columns.
-			leftRt := md.GetRecordType(sq.tableName)
-			if leftRt != nil {
-				for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
-					name := string(leftRt.Descriptor.Fields().Get(i).Name())
-					if !seen[name] {
-						cols = append(cols, name)
-						seen[name] = true
-					}
-				}
-			}
-			for _, jc := range sq.joins {
-				jRt := md.GetRecordType(jc.tableName)
-				if jRt != nil {
-					for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
-						name := string(jRt.Descriptor.Fields().Get(i).Name())
+			cols = aggCols
+			data = aggData
+		} else {
+			// Determine output columns.
+			// For SELECT *, collect all unique unqualified column names in order.
+			if sq.projCols == nil {
+				seen := make(map[string]bool)
+				// Order: left table columns first, then join table columns.
+				leftRt := md.GetRecordType(sq.tableName)
+				if leftRt != nil {
+					for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
+						name := string(leftRt.Descriptor.Fields().Get(i).Name())
 						if !seen[name] {
 							cols = append(cols, name)
 							seen[name] = true
 						}
 					}
 				}
-			}
-		} else if !sq.countStar {
-			cols = make([]string, len(sq.projCols))
-			for i, c := range sq.projCols {
-				out := c
-				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
-					out = sq.projAliases[i]
-				}
-				cols[i] = out
-			}
-		}
-
-		// Build output rows.
-		for _, row := range filtered {
-			var vals []driver.Value
-			if sq.countStar {
-				// handled below (not really expected with JOIN, but be safe)
-				continue
-			}
-			if sq.projCols == nil {
-				// SELECT * — use cols order.
-				vals = make([]driver.Value, len(cols))
-				for i, col := range cols {
-					vals[i] = row[col]
-				}
-			} else {
-				vals = make([]driver.Value, len(sq.projCols))
-				for i, col := range sq.projCols {
-					// Try qualified first, then unqualified.
-					if v, ok := row[col]; ok {
-						vals[i] = v
-					} else {
-						// Strip table prefix: "a.id" → try "id" in map.
-						if dot := strings.LastIndex(col, "."); dot >= 0 {
-							vals[i] = row[col[dot+1:]]
+				for _, jc := range sq.joins {
+					jRt := md.GetRecordType(jc.tableName)
+					if jRt != nil {
+						for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
+							name := string(jRt.Descriptor.Fields().Get(i).Name())
+							if !seen[name] {
+								cols = append(cols, name)
+								seen[name] = true
+							}
 						}
 					}
 				}
+			} else {
+				cols = make([]string, len(sq.projCols))
+				for i, c := range sq.projCols {
+					out := c
+					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+						out = sq.projAliases[i]
+					}
+					cols[i] = out
+				}
 			}
-			data = append(data, vals)
+
+			// Build output rows.
+			for _, row := range filtered {
+				var vals []driver.Value
+				if sq.projCols == nil {
+					// SELECT * — use cols order.
+					vals = make([]driver.Value, len(cols))
+					for i, col := range cols {
+						vals[i] = row[col]
+					}
+				} else {
+					vals = make([]driver.Value, len(sq.projCols))
+					for i, col := range sq.projCols {
+						// Try qualified first, then unqualified.
+						if v, ok := row[col]; ok {
+							vals[i] = v
+						} else {
+							// Strip table prefix: "a.id" → try "id" in map.
+							if dot := strings.LastIndex(col, "."); dot >= 0 {
+								vals[i] = row[col[dot+1:]]
+							}
+						}
+					}
+				}
+				data = append(data, vals)
+			}
 		}
 
 		// ORDER BY.
@@ -879,9 +898,14 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	var colNames []string
 	var outRows [][]driver.Value
 
-	if len(sq.aggCols) > 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "aggregate functions on CTEs are not yet supported")
-	} else if sq.projCols == nil && !sq.countStar {
+	if len(sq.aggCols) > 0 || sq.countStar {
+		aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, mapRows)
+		if aggErr != nil {
+			return nil, aggErr
+		}
+		colNames = aggCols
+		outRows = aggData
+	} else if sq.projCols == nil {
 		// SELECT * — emit all CTE columns in definition order.
 		colNames = cte.cols
 		for _, row := range mapRows {
@@ -891,9 +915,6 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			}
 			outRows = append(outRows, outRow)
 		}
-	} else if sq.countStar {
-		colNames = []string{"COUNT(*)"}
-		outRows = [][]driver.Value{{int64(len(mapRows))}}
 	} else if sq.projCols != nil {
 		colNames = make([]string, len(sq.projCols))
 		for j, col := range sq.projCols {
