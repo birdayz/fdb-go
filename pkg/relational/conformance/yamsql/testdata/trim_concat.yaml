@@ -1,0 +1,57 @@
+# trim_concat.yaml
+#
+# String functions: TRIM / LTRIM / RTRIM / CONCAT / REPLACE.
+name: trim_concat
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, '  hello  '), (2, 'abc'), (3, null)
+tests:
+  - query: SELECT TRIM(s) FROM t WHERE id = 1
+    rows:
+      - ['hello']
+  - query: SELECT LTRIM(s) FROM t WHERE id = 1
+    rows:
+      - ['hello  ']
+  - query: SELECT RTRIM(s) FROM t WHERE id = 1
+    rows:
+      - ['  hello']
+  # NULL propagates through all three.
+  - query: SELECT TRIM(s) FROM t WHERE id = 3
+    rows:
+      - [~]
+  # CONCAT of string literals.
+  - query: SELECT CONCAT('a', 'b', 'c') FROM t WHERE id = 1
+    rows:
+      - ['abc']
+  # CONCAT with column.
+  - query: SELECT CONCAT('>> ', s, ' <<') FROM t WHERE id = 2
+    rows:
+      - ['>> abc <<']
+  # REPLACE: replace substring.
+  - query: SELECT REPLACE(s, 'b', 'X') FROM t WHERE id = 2
+    rows:
+      - ['aXc']
+  # Nested function calls — common pattern.
+  - query: SELECT UPPER(TRIM(s)) FROM t WHERE id = 1
+    rows:
+      - ['HELLO']
+  - query: SELECT LOWER(CONCAT('ABC', 'xyz')) FROM t WHERE id = 1
+    rows:
+      - ['abcxyz']
+  # CONCAT with a NULL argument: current behaviour is NULL-skip (one
+  # of the two SQL conventions, matching MySQL/Postgres ≥ 9). SQL
+  # standard / Oracle / SQL Server propagate NULL. Pin the current
+  # Go behaviour as a regression guard — if we later discover Java
+  # does NULL-propagation, flip this expectation + fix the evaluator.
+  - query: SELECT CONCAT('a', NULL, 'c') FROM t WHERE id = 1
+    rows:
+      - ['ac']
+  # REPLACE with NULL replacement treats NULL as empty string (our
+  # evaluator's NULL-skip path). Pin the current behaviour — arguably
+  # SQL standard says REPLACE(x, y, NULL) should be NULL, but we
+  # match MySQL behaviour of treating NULL as empty for the third arg.
+  # Track as follow-up if Java-conformance diverges.
+  - query: SELECT REPLACE(s, 'b', NULL) FROM t WHERE id = 2
+    rows:
+      - ['ac']

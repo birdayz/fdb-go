@@ -1,0 +1,41 @@
+# between.yaml
+#
+# swingshift-35 commit 8ee5e98d: BETWEEN / NOT BETWEEN Kleene short-circuit.
+# Java ExpressionVisitor rewrites
+#   x BETWEEN lo AND hi -> (lo <= x) AND (x <= hi)
+#   x NOT BETWEEN lo AND hi -> (x < lo) OR (x > hi)
+# then AND/OR combine via proper tri-state. Pre-fix Go collapsed any-NULL
+# operand to UNKNOWN up front, missing cases where one side is definitive.
+name: between
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 0), (2, 5), (3, 10), (4, 15), (5, 100)
+tests:
+  - query: SELECT id FROM t WHERE v BETWEEN 5 AND 15
+    unordered: true
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 5 AND 15
+    unordered: true
+    rows:
+      - [1]
+      - [5]
+  # Kleene short-circuit: v=0, NOT BETWEEN 1 AND NULL
+  # -> (0 < 1) OR (0 > NULL)
+  # -> TRUE OR UNKNOWN
+  # -> TRUE (included). Pre-fix Go returned UNKNOWN (filtered out).
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 1 AND NULL
+    rows:
+      - [1]
+  # Inverse: v=100, BETWEEN NULL AND 50
+  # -> (NULL <= 100) AND (100 <= 50)
+  # -> UNKNOWN AND FALSE
+  # -> FALSE (excluded). Pre-fix Go returned UNKNOWN (also excluded by
+  # WHERE but the semantic is wrong).
+  - query: SELECT id FROM t WHERE v BETWEEN NULL AND 50
+    # Short-circuit on AND-FALSE gives FALSE for id=100, UNKNOWN for the
+    # rest — all filtered out.
+    rows: []

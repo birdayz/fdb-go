@@ -6,8 +6,11 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
@@ -634,4 +637,166 @@ func FuzzApplyBitOp(f *testing.F) {
 			t.Fatalf("applyBitOp(string, _) must error")
 		}
 	})
+}
+
+// TestWrapSaveRecordError pins the mapping between record-layer
+// error types and SQLSTATE-carrying api.Error values. Tests run
+// without FDB — the helper is pure.
+func TestWrapSaveRecordError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		in       error
+		wantOK   bool // nil wrap for nil input
+		wantCode api.ErrorCode
+	}{
+		{
+			name: "nil passes through",
+			in:   nil,
+		},
+		{
+			name: "RecordIndexUniquenessViolationError -> 23505",
+			in: &recordlayer.RecordIndexUniquenessViolationError{
+				IndexName:  "t_email",
+				IndexKey:   tuple.Tuple{"a@x.com"},
+				PrimaryKey: tuple.Tuple{int64(1)},
+			},
+			wantOK:   true,
+			wantCode: api.ErrCodeUniqueConstraintViolation,
+		},
+		{
+			name: "RecordAlreadyExistsError -> 23505",
+			in: &recordlayer.RecordAlreadyExistsError{
+				Message:    "duplicate",
+				PrimaryKey: tuple.Tuple{int64(1)},
+			},
+			wantOK:   true,
+			wantCode: api.ErrCodeUniqueConstraintViolation,
+		},
+		{
+			name: "IndexKeySizeError -> 22023",
+			in: &recordlayer.IndexKeySizeError{
+				IndexName: "big",
+				KeySize:   10240,
+				Limit:     1024,
+			},
+			wantOK:   true,
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name: "IndexValueSizeError -> 22023",
+			in: &recordlayer.IndexValueSizeError{
+				IndexName: "big",
+				ValueSize: 1024 * 1024,
+				Limit:     65536,
+			},
+			wantOK:   true,
+			wantCode: api.ErrCodeInvalidParameter,
+		},
+		{
+			name:     "already-wrapped *api.Error passes through",
+			in:       api.NewError(api.ErrCodeNotNullViolation, "pre-wrapped"),
+			wantOK:   true,
+			wantCode: api.ErrCodeNotNullViolation,
+		},
+		{
+			name:     "unknown error wraps as internal",
+			in:       errors.New("mystery"),
+			wantOK:   true,
+			wantCode: api.ErrCodeInternalError,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := wrapSaveRecordError(tc.in)
+			if tc.in == nil {
+				if out != nil {
+					t.Fatalf("nil in, want nil out, got %v", out)
+				}
+				return
+			}
+			if out == nil {
+				t.Fatal("want wrapped error, got nil")
+			}
+			var apiErr *api.Error
+			if !errors.As(out, &apiErr) {
+				t.Fatalf("want *api.Error, got %T: %v", out, out)
+			}
+			if apiErr.Code != tc.wantCode {
+				t.Errorf("code = %s, want %s (msg: %s)", apiErr.Code, tc.wantCode, apiErr.Message)
+			}
+			// Original error must remain reachable via Unwrap chain —
+			// errors.Is on the original instance must succeed.
+			if !errors.Is(out, tc.in) {
+				t.Errorf("errors.Is failed — wrapped error must preserve original via Unwrap")
+			}
+		})
+	}
+}
+
+// TestInt64CheckedArithmetic pins the overflow semantics of the
+// helpers behind applyMathOp's int64 fast-path. They mirror Java's
+// Math.addExact / subtractExact / multiplyExact — the moment the true
+// mathematical result doesn't fit in a signed 64-bit integer, the
+// operation reports overflow rather than silently wrapping.
+func TestInt64CheckedArithmetic(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		op     func(a, b int64) (int64, bool)
+		a, b   int64
+		want   int64
+		wantOK bool
+	}{
+		// Add
+		{"add/ok", addInt64Checked, 1, 2, 3, true},
+		{"add/zero", addInt64Checked, 0, 0, 0, true},
+		{"add/negatives", addInt64Checked, -3, -4, -7, true},
+		{"add/max+0", addInt64Checked, math.MaxInt64, 0, math.MaxInt64, true},
+		{"add/max+1", addInt64Checked, math.MaxInt64, 1, 0, false},
+		{"add/max+max", addInt64Checked, math.MaxInt64, math.MaxInt64, 0, false},
+		{"add/min-1", addInt64Checked, math.MinInt64, -1, 0, false},
+		{"add/min+min", addInt64Checked, math.MinInt64, math.MinInt64, 0, false},
+		// Cross-sign cannot overflow.
+		{"add/max-1", addInt64Checked, math.MaxInt64, -1, math.MaxInt64 - 1, true},
+		{"add/min+1", addInt64Checked, math.MinInt64, 1, math.MinInt64 + 1, true},
+		// Sub
+		{"sub/ok", subInt64Checked, 5, 3, 2, true},
+		{"sub/zero", subInt64Checked, 0, 0, 0, true},
+		{"sub/max-max", subInt64Checked, math.MaxInt64, math.MaxInt64, 0, true},
+		{"sub/min-min", subInt64Checked, math.MinInt64, math.MinInt64, 0, true},
+		{"sub/min-1", subInt64Checked, math.MinInt64, 1, 0, false},
+		{"sub/min-max", subInt64Checked, math.MinInt64, math.MaxInt64, 0, false},
+		{"sub/max-(-1)", subInt64Checked, math.MaxInt64, -1, 0, false},
+		// Same-sign subtraction cannot overflow.
+		{"sub/max-1", subInt64Checked, math.MaxInt64, 1, math.MaxInt64 - 1, true},
+		{"sub/min-(-1)", subInt64Checked, math.MinInt64, -1, math.MinInt64 + 1, true},
+		// Mul
+		{"mul/zero.l", mulInt64Checked, 0, math.MaxInt64, 0, true},
+		{"mul/zero.r", mulInt64Checked, math.MinInt64, 0, 0, true},
+		{"mul/small", mulInt64Checked, 7, 8, 56, true},
+		{"mul/neg", mulInt64Checked, -7, 8, -56, true},
+		{"mul/min*-1", mulInt64Checked, math.MinInt64, -1, 0, false},
+		{"mul/-1*min", mulInt64Checked, -1, math.MinInt64, 0, false},
+		{"mul/min*1", mulInt64Checked, math.MinInt64, 1, math.MinInt64, true},
+		{"mul/max*2", mulInt64Checked, math.MaxInt64, 2, 0, false},
+		{"mul/half*3", mulInt64Checked, math.MaxInt64 / 2, 3, 0, false},
+		{"mul/half*2", mulInt64Checked, math.MaxInt64 / 2, 2, (math.MaxInt64 / 2) * 2, true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := tc.op(tc.a, tc.b)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (a=%d b=%d got=%d)", ok, tc.wantOK, tc.a, tc.b, got)
+			}
+			if tc.wantOK && got != tc.want {
+				t.Fatalf("result = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }

@@ -1,0 +1,30 @@
+# select_no_from.yaml
+#
+# SELECT without FROM — evaluate expressions as constants, returning
+# exactly one row. Exercises the evaluator's constant-expression
+# path independent of row scanning.
+name: select_no_from
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+tests:
+  - query: SELECT 1 + 2
+    rows:
+      - [3]
+  - query: SELECT 'hello'
+    rows:
+      - ['hello']
+  - query: SELECT NULL
+    rows:
+      - [~]
+  # String function on literal.
+  - query: SELECT UPPER('abc')
+    rows:
+      - ['ABC']
+  # Kleene — NOT TRUE is FALSE.
+  - query: SELECT NOT TRUE
+    rows:
+      - [false]
+  # CAST on literal.
+  - query: SELECT CAST(1.7 AS BIGINT)
+    rows:
+      - [2]

@@ -24,5 +24,9 @@ go_test(
     name = "embedded_test",
     srcs = ["embedded_test.go"],
     embed = [":embedded"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+    ],
 )

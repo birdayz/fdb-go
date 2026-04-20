@@ -1,0 +1,58 @@
+# arithmetic.yaml
+#
+# swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp
+# unified. Div/0 errors (SQL standard, 22023), '%' supported everywhere.
+#
+# BIGINT / BIGINT does integer division (truncation toward zero) to
+# match Java's ArithmeticValue.PhysicalOperator.DIV_LL which is literal
+# `long / long`. `10 / 3 = 3`, not 3.333. MOD_LL similarly. Fixed
+# nightshift-36 (harness caught the divergence).
+name: arithmetic
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 20, 4), (2, 7, 0), (3, 10, 3)
+tests:
+  # Evenly-divisible integer division — 20 / 4 = 5.
+  - query: SELECT a / b FROM t WHERE id = 1
+    rows:
+      - [5]
+  # Non-evenly-divisible integer division — 10 / 3 = 3 (truncation,
+  # matches Java DIV_LL). Pre-fix Go returned 3.3333... (float64).
+  - query: SELECT a / b FROM t WHERE id = 3
+    rows:
+      - [3]
+  # Integer remainder — 10 % 3 = 1 (matches Java MOD_LL).
+  - query: SELECT a % b FROM t WHERE id = 3
+    rows:
+      - [1]
+  # Modulo on evenly-divisible — 20 % 4 = 0.
+  - query: SELECT a % b FROM t WHERE id = 1
+    rows:
+      - [0]
+  # Div/0 raises SQLSTATE 22023 per SQL standard (not silent NULL).
+  - query: SELECT a / b FROM t WHERE id = 2
+    error_code: "22023"
+  # Mod/0 also 22023.
+  - query: SELECT a % b FROM t WHERE id = 2
+    error_code: "22023"
+  # Addition.
+  - query: SELECT a + b FROM t WHERE id = 1
+    rows:
+      - [24]
+  # Subtraction.
+  - query: SELECT a - b FROM t WHERE id = 1
+    rows:
+      - [16]
+  # Multiplication.
+  - query: SELECT a * b FROM t WHERE id = 1
+    rows:
+      - [80]
+  # Negative dividend: sign follows dividend for `/` and `%` (Java and
+  # Go both do truncation toward zero). `-10 / 3 = -3`, `-10 % 3 = -1`.
+  - query: SELECT -10 / 3
+    rows:
+      - [-3]
+  - query: SELECT -10 % 3
+    rows:
+      - [-1]

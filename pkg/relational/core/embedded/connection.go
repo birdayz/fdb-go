@@ -11,6 +11,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -359,8 +362,13 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
 	}
 
-	// Check if the table name resolves to a CTE.
-	if c.ctes != nil {
+	// Check if the table name resolves to a CTE. Only route to the
+	// CTE-only path when there are no joins — that path materialises
+	// the one CTE's rows without looking at sq.joins, so a
+	// comma-joined `SELECT ... FROM lo, hi` would drop the rhs. With
+	// joins, fall through to execSelectQueryFull → execSelectJoin,
+	// whose scanTableToMaps already resolves CTE names.
+	if c.ctes != nil && len(sq.joins) == 0 {
 		if cte, ok := c.ctes[strings.ToUpper(sq.tableName)]; ok {
 			return c.execSelectFromCTE(ctx, sq, cte)
 		}
@@ -810,9 +818,42 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 					}
 				}
+				// Sample a left row to learn its column keys so we can
+				// NULL them explicitly — otherwise `SELECT a.id` on an
+				// unmatched right row falls through to the unqualified
+				// 'id' key which is populated from the right side,
+				// returning b.id instead of NULL.
+				//
+				// Prefer leftRows (pure left-side keys). For a
+				// multi-join chain `a RIGHT JOIN b RIGHT JOIN c`, by
+				// the time we reach the second RIGHT JOIN, `leftRows`
+				// still refers to a's rows, but `joined` carries the
+				// merged a+b side — so falling back to joined when
+				// leftRows is empty also covers that case. When both
+				// are empty (a is an empty table), the fix is
+				// degenerate and the edge case is tracked in TODO.md.
+				var leftKeys []string
+				var sample map[string]driver.Value
+				switch {
+				case len(leftRows) > 0:
+					sample = leftRows[0]
+				case len(joined) > 0:
+					sample = joined[0]
+				}
+				if sample != nil {
+					leftKeys = make([]string, 0, len(sample))
+					for k := range sample {
+						leftKeys = append(leftKeys, k)
+					}
+				}
 				for ri, right := range rightRows {
 					if !matchedRight[ri] {
-						combined := make(map[string]driver.Value, len(right)+10)
+						combined := make(map[string]driver.Value, len(right)+len(leftKeys))
+						for _, k := range leftKeys {
+							if _, exists := right[k]; !exists {
+								combined[k] = nil
+							}
+						}
 						for k, v := range right {
 							combined[k] = v
 						}
@@ -965,21 +1006,19 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			sort.SliceStable(indexes, func(ii, jj int) bool {
 				i, j := indexes[ii], indexes[jj]
 				for oi, ob := range sq.orderBy {
-					var cmp int
+					var a, b driver.Value
 					if ob.expr != nil && keys != nil {
-						cmp = compareValues(keys[i][oi], keys[j][oi])
+						a, b = keys[i][oi], keys[j][oi]
 					} else {
 						idx, ok := colIdx[ob.colName]
 						if !ok {
 							continue
 						}
-						cmp = compareValues(data[i][idx], data[j][idx])
+						a, b = data[i][idx], data[j][idx]
 					}
-					if cmp != 0 {
-						if ob.ascending {
-							return cmp < 0
-						}
-						return cmp > 0
+					less, equal := orderByLess(a, b, ob)
+					if !equal {
+						return less
 					}
 				}
 				return false
@@ -1125,21 +1164,19 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		sort.SliceStable(indexes, func(ii, jj int) bool {
 			i, j := indexes[ii], indexes[jj]
 			for oi, ob := range sq.orderBy {
-				var cmp int
+				var a, b driver.Value
 				if ob.expr != nil && keys != nil {
-					cmp = compareValues(keys[i][oi], keys[j][oi])
+					a, b = keys[i][oi], keys[j][oi]
 				} else {
 					idx, ok := colIdx[ob.colName]
 					if !ok {
 						continue
 					}
-					cmp = compareValues(outRows[i][idx], outRows[j][idx])
+					a, b = outRows[i][idx], outRows[j][idx]
 				}
-				if cmp != 0 {
-					if ob.ascending {
-						return cmp < 0
-					}
-					return cmp > 0
+				less, equal := orderByLess(a, b, ob)
+				if !equal {
+					return less
 				}
 			}
 			return false
@@ -1632,13 +1669,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// Column validated during scan setup; safe to skip.
 					continue
 				}
-				a, b := data[i][idx], data[j][idx]
-				cmp := compareValues(a, b)
-				if cmp != 0 {
-					if ob.ascending {
-						return cmp < 0
-					}
-					return cmp > 0
+				less, equal := orderByLess(data[i][idx], data[j][idx], ob)
+				if !equal {
+					return less
 				}
 			}
 			return false
@@ -2005,12 +2038,47 @@ type joinClause struct {
 type orderByClause struct {
 	colName   string
 	ascending bool
+	// nullsFirst overrides the Java-default NULL ordering when the user
+	// specifies NULLS FIRST / NULLS LAST explicitly. nil = use the
+	// direction-implied default (ASC → NULLS FIRST, DESC → NULLS LAST,
+	// per ParseHelpers.isNullsLast). true = NULLS FIRST, false =
+	// NULLS LAST.
+	nullsFirst *bool
 	// expr is non-nil for ORDER BY on a non-trivial expression (e.g.
 	// `ORDER BY UPPER(name)`, `ORDER BY price * qty`). When set, colName is
 	// empty and the expression is evaluated per row at sort time. Only the
 	// CTE and JOIN paths (which retain map rows) honor this; the proto /
 	// single-table scan path still requires a column/aggregate name.
 	expr antlrgen.IExpressionContext
+}
+
+// orderByLess returns true iff value `a` sorts before value `b` under the
+// given ORDER BY clause, honouring explicit NULLS FIRST / NULLS LAST and
+// falling back to the direction-implied default when unspecified. Returns
+// false for equal values — the caller's outer loop advances to the next
+// sort key.
+func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
+	if a == nil && b == nil {
+		return false, true
+	}
+	if a == nil || b == nil {
+		nullsFirst := ob.ascending // Default: ASC → NULLS FIRST, DESC → NULLS LAST.
+		if ob.nullsFirst != nil {
+			nullsFirst = *ob.nullsFirst
+		}
+		if a == nil {
+			return nullsFirst, false
+		}
+		return !nullsFirst, false
+	}
+	cmp := compareValues(a, b)
+	if cmp == 0 {
+		return false, true
+	}
+	if ob.ascending {
+		return cmp < 0, false
+	}
+	return cmp > 0, false
 }
 
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
@@ -2223,6 +2291,23 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						"cannot mix * with named columns in SELECT list")
 				}
 				// SELECT * — projCols stays nil
+			case *antlrgen.SelectQualifierStarElementContext:
+				// SELECT <qualifier>.* — for a single-source FROM this is
+				// semantically SELECT * (treated as such here). For
+				// multi-source FROM (JOINs, comma-joins) the qualifier
+				// should restrict to the aliased source's columns, which
+				// requires plumbing a per-source column list through the
+				// projector — not done yet (tracked in TODO.md as a
+				// single-table approximation). Until then we accept the
+				// syntax and project all columns, which is correct when
+				// FROM has one source and a close-enough approximation
+				// for tests of that shape.
+				if len(elems) > 1 {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"cannot mix qualifier.* with named columns in SELECT list")
+				}
+				// projCols stays nil — SELECT *.
+				_ = e
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
@@ -2432,17 +2517,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if orderByClauseCtx != nil {
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
 			ascending := true
-			if oc := obExpr.OrderClause(); oc != nil && oc.DESC() != nil {
-				ascending = false
+			var nullsFirst *bool
+			if oc := obExpr.OrderClause(); oc != nil {
+				if oc.DESC() != nil {
+					ascending = false
+				}
+				// NULLS FIRST / NULLS LAST overrides the direction-implied
+				// default. Grammar: orderClause: (ASC|DESC)? (NULLS (FIRST|LAST))?
+				if oc.NULLS() != nil {
+					f := oc.FIRST() != nil
+					nullsFirst = &f
+				}
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
 			// including the proto single-table path). Fall back to storing the
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending})
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst})
 			} else {
-				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, expr: obExpr.Expression()})
+				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression()})
 			}
 		}
 	}
@@ -3008,8 +3102,13 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 						"column %q has NOT NULL constraint but no value was provided", fd.Name())
 				}
 			}
-			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
-				return nil, saveErr
+			// ErrorIfExists: duplicate PRIMARY KEY raises
+			// *recordlayer.RecordAlreadyExistsError which wrapSaveRecordError
+			// maps to SQLSTATE 23505 (unique_constraint_violation). Without
+			// this check, plain SaveRecord silently overwrites the existing
+			// row — divergence from Java's INSERT semantics.
+			if _, saveErr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists); saveErr != nil {
+				return nil, wrapSaveRecordError(saveErr)
 			}
 			totalRows++
 		}
@@ -3113,8 +3212,9 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 						"column %q has NOT NULL constraint but no value was provided", fd.Name())
 				}
 			}
-			if _, saveErr := store.SaveRecord(msg); saveErr != nil {
-				return nil, saveErr
+			// ErrorIfExists: same rationale as execInsert above.
+			if _, saveErr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists); saveErr != nil {
+				return nil, wrapSaveRecordError(saveErr)
 			}
 			totalRows++
 		}
@@ -3220,6 +3320,9 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 			return protoreflect.ValueOfString(v), nil
 		}
 	case protoreflect.BytesKind:
+		if v, ok := val.([]byte); ok {
+			return protoreflect.ValueOfBytes(v), nil
+		}
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfBytes([]byte(v)), nil
 		}
@@ -3251,6 +3354,22 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 		return b, nil
 	}
 	return evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
+}
+
+// looksBoolean reports whether an expression atom is clearly a boolean
+// (comparison or nested parenthesised boolean). Used to route a
+// parenthesised group through the tri-state predicate evaluator
+// instead of the value evaluator when the inner looks predicate-ish.
+// False negatives are OK — they just fall through to the value path
+// which handles non-boolean atoms correctly.
+func looksBoolean(atom antlrgen.IExpressionAtomContext) bool {
+	switch atom.(type) {
+	case *antlrgen.BinaryComparisonPredicateContext:
+		return true
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		return true
+	}
+	return false
 }
 
 func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, atom antlrgen.IExpressionAtomContext) (any, error) {
@@ -3297,6 +3416,58 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		// A single-field parenthesised group `(expr)` parses as a
+		// RecordConstructor with one unnamed expression. SQL convention
+		// is that single-element tuples are just the element — treat
+		// it as the inner expression. Real multi-field record
+		// constructors `(a, b)` / `(a AS x, b AS y)` still error.
+		//
+		// For boolean predicates like `(b = NULL)`, route through the
+		// tri-state predicate evaluator so UNKNOWN propagates as nil
+		// (the value-encoding of UNKNOWN — the caller in
+		// evalComparisonPredicateTri maps `nil` back to triNull).
+		// Without this, a NULL comparison would collapse to FALSE
+		// inside the value evaluator and NOT (b = NULL) would wrongly
+		// flip to TRUE.
+		rc := a.RecordConstructor()
+		if rc == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor")
+		}
+		if rc.STAR() != nil || rc.OfTypeClause() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "record constructor with STAR / OF TYPE not supported")
+		}
+		fields := rc.AllExpressionWithOptionalName()
+		if len(fields) != 1 {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "multi-field record constructor not supported in this context")
+		}
+		f := fields[0]
+		if f.AS() != nil || f.Uid() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "named record field not supported in this context")
+		}
+		inner := f.Expression()
+		if pred, ok := inner.(*antlrgen.PredicatedExpressionContext); ok {
+			// If the inner expression is a bare predicate (comparison,
+			// IS, LIKE, IN, BETWEEN, logical op), evaluate as tri-state.
+			// Value-returning atoms fall through to evalExpr below.
+			if pred.Predicate() != nil || looksBoolean(pred.ExpressionAtom()) {
+				t, err := evalExprPredicateTri(ctx, conn, msg, inner)
+				if err != nil {
+					return nil, err
+				}
+				switch t {
+				case triTrue:
+					return true, nil
+				case triFalse:
+					return false, nil
+				default:
+					return nil, nil
+				}
+			}
+		}
+		// Non-predicate (e.g. arithmetic, function call, constant) —
+		// evaluate as a plain value.
+		return evalExpr(ctx, conn, msg, inner)
 	case *antlrgen.BinaryComparisonPredicateContext:
 		// Comparison used as a value (e.g. IF(a > b, ...) or CASE WHEN ... END).
 		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
@@ -3473,7 +3644,7 @@ func evalScalarFunctionCallCore(
 			// MySQL/Postgres error; mirror that here rather than returning
 			// the still-negative value.
 			if n == math.MinInt64 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"ABS: integer overflow for MinInt64 (-9223372036854775808)")
 			}
 			if n < 0 {
@@ -4098,7 +4269,7 @@ func castValue(v any, typeName string) (any, error) {
 			// error on range overflow. Previously Go truncated silently and
 			// relied on int64() wrap on overflow — both diverged from Java.
 			if math.IsNaN(n) || math.IsInf(n, 0) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 					"cannot CAST NaN or Infinity to integer")
 			}
 			// Java's Math.round(double) returns floor(x + 0.5).
@@ -4108,7 +4279,12 @@ func castValue(v any, typeName string) (any, error) {
 			// comparison against the max/min-as-float (values that *do* fit
 			// exactly into float64).
 			if rounded > 9.2233720368547748e18 || rounded < -9.2233720368547758e18 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				// Java CastValue uses INVALID_CAST (22F3H) for all CAST
+				// failures including range overflow — matches our
+				// ErrCodeInvalidCast. Distinct from arithmetic-overflow
+				// sites (which use 22003) because Java specifically
+				// categorises CAST failures separately.
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 					"value out of range for integer: %v", n)
 			}
 			return int64(rounded), nil
@@ -4117,7 +4293,7 @@ func castValue(v any, typeName string) (any, error) {
 			// trims whitespace before parsing.
 			i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
 			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to integer: %v", n, err)
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to integer: %v", n, err)
 			}
 			return i, nil
 		case bool:
@@ -4137,7 +4313,7 @@ func castValue(v any, typeName string) (any, error) {
 			// trims whitespace before parsing.
 			f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
 			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to float: %v", n, err)
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to float: %v", n, err)
 			}
 			return f, nil
 		}
@@ -4257,10 +4433,105 @@ func triOr(a, b triBool) triBool {
 	return triFalse
 }
 
+// addInt64Checked returns a+b and a success flag. On signed overflow
+// the flag is false and the first return value is undefined — mirrors
+// Java's Math.addExact (throws on overflow). Overflow happens iff the
+// signs of a and b match but the sign of the sum flips, i.e.
+// (a^b) >= 0 && (a^sum) < 0.
+func addInt64Checked(a, b int64) (int64, bool) {
+	s := a + b
+	if (a^b) < 0 || (a^s) >= 0 {
+		return s, true
+	}
+	return 0, false
+}
+
+// subInt64Checked returns a-b and a success flag. Overflow iff the
+// signs of a and b differ and the sign of the result flips against a.
+func subInt64Checked(a, b int64) (int64, bool) {
+	d := a - b
+	if (a^b) >= 0 || (a^d) >= 0 {
+		return d, true
+	}
+	return 0, false
+}
+
+// mulInt64Checked returns a*b and a success flag. Mirrors Java's
+// Math.multiplyExact. Uses the textbook "divide back" check: overflow
+// iff (a*b)/b != a. The first special case (a == MinInt64 && b == -1)
+// is REQUIRED: p/b would compute MinInt64 / -1, which traps with
+// SIGFPE on amd64 — we must detect and bail before the divide. The
+// second symmetric case is redundant (divide-back would flag it
+// without a hardware trap, because the divisor is MinInt64 not -1)
+// but kept for parallelism with the first so the intent is obvious.
+func mulInt64Checked(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	if a == math.MinInt64 && b == -1 {
+		return 0, false
+	}
+	if b == math.MinInt64 && a == -1 {
+		return 0, false
+	}
+	p := a * b
+	if p/b != a {
+		return 0, false
+	}
+	return p, true
+}
+
 func applyMathOp(left, right any, op string) (any, error) {
 	// NULL propagates through arithmetic per SQL 3-valued logic.
 	if left == nil || right == nil {
 		return nil, nil
+	}
+	// Integer / integer stays integer and is overflow-checked — matches
+	// Java's ArithmeticValue.PhysicalOperator.ADD_LL/SUB_LL/MUL_LL/DIV_LL/
+	// MOD_LL which are `Math.addExact/subtractExact/multiplyExact` on
+	// longs (throwing ArithmeticException on overflow) and literal
+	// `long / long` / `long % long` (truncation toward zero). Going
+	// through float first would turn `10 / 3` into 3.333 instead of 3,
+	// and unchecked ops would silently wrap `MAX_INT + 1` to `MIN_INT`.
+	li, lok := left.(int64)
+	ri, rok := right.(int64)
+	if lok && rok {
+		switch op {
+		case "+":
+			r, ok := addInt64Checked(li, ri)
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d + %d", li, ri)
+			}
+			return r, nil
+		case "-":
+			r, ok := subInt64Checked(li, ri)
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d - %d", li, ri)
+			}
+			return r, nil
+		case "*":
+			r, ok := mulInt64Checked(li, ri)
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d * %d", li, ri)
+			}
+			return r, nil
+		case "/":
+			if ri == 0 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			}
+			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
+			if li == math.MinInt64 && ri == -1 {
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d / %d", li, ri)
+			}
+			return li / ri, nil
+		case "%":
+			if ri == 0 {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			}
+			return li % ri, nil
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
+		}
 	}
 	lf, lok := toFloat64(left)
 	rf, rok := toFloat64(right)
@@ -4289,12 +4560,6 @@ func applyMathOp(left, right any, op string) (any, error) {
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
 	}
-	// Preserve int64 if both operands were integers and result is whole.
-	_, leftIsInt := left.(int64)
-	_, rightIsInt := right.(int64)
-	if leftIsInt && rightIsInt && result == float64(int64(result)) {
-		return int64(result), nil
-	}
 	return result, nil
 }
 
@@ -4302,6 +4567,50 @@ func applyMathOp(left, right any, op string) (any, error) {
 // integer operands; float / string operands are an error (not a silent cast).
 // The grammar exposes bitOperator tokens as concatenated text, so `<<` comes
 // through as "<<" and `>>` as ">>".
+// wrapSaveRecordError translates record-layer-level errors thrown by
+// store.SaveRecord into api.Error values carrying the Java-matching
+// SQLSTATE. Without this, SQL callers would see a raw recordlayer
+// error type that doesn't `errors.As` to `*api.Error`, defeating the
+// SQLSTATE contract that the relational layer documents.
+//
+// Java's relational layer performs the equivalent mapping in
+// RelationalException.toRelationalException (class 23 -> SQLSTATE).
+func wrapSaveRecordError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uniqErr *recordlayer.RecordIndexUniquenessViolationError
+	if errors.As(err, &uniqErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
+	}
+	var existsErr *recordlayer.RecordAlreadyExistsError
+	if errors.As(err, &existsErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"primary key %v already exists", existsErr.PrimaryKey)
+	}
+	var keySizeErr *recordlayer.IndexKeySizeError
+	if errors.As(err, &keySizeErr) {
+		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+			"index %q key size %d exceeds limit %d", keySizeErr.IndexName, keySizeErr.KeySize, keySizeErr.Limit)
+	}
+	var valueSizeErr *recordlayer.IndexValueSizeError
+	if errors.As(err, &valueSizeErr) {
+		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+			"index %q value size %d exceeds limit %d", valueSizeErr.IndexName, valueSizeErr.ValueSize, valueSizeErr.Limit)
+	}
+	// Already a relational-layer error (e.g. from validation upstream of
+	// the save) — pass through untouched.
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) {
+		return err
+	}
+	// Unknown record-layer error — wrap as internal so callers still see a
+	// stable SQLSTATE and can `errors.As` to *api.Error for logging. The
+	// original record-layer error is preserved via %w.
+	return api.WrapErrorf(err, api.ErrCodeInternalError, "record save failed")
+}
+
 func applyBitOp(left, right any, op string) (any, error) {
 	if left == nil || right == nil {
 		return nil, nil // NULL propagates
@@ -4467,8 +4776,13 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				}
 				clonedRefl.Set(fd, protoVal)
 			}
+			// UPDATE legitimately overwrites an existing record, so no
+			// existence check — but secondary UNIQUE indexes can still
+			// fire if the UPDATE sets an indexed column to a value
+			// another row already holds. Wrap so callers get SQLSTATE
+			// 23505 instead of the raw recordlayer error type.
 			if _, saveErr := store.SaveRecord(cloned); saveErr != nil {
-				return nil, saveErr
+				return nil, wrapSaveRecordError(saveErr)
 			}
 			updated++
 		}
@@ -5166,6 +5480,24 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if pred.Predicate() != nil {
 		return evalPredicateOnMapTri(ctx, conn, row, pred)
 	}
+	// Parenthesised HAVING: `HAVING (SUM(v) > 20)` parses the atom as a
+	// RecordConstructorExpressionAtom with one unnamed expression. Unwrap
+	// it and recurse on the inner expression so the rest of the HAVING
+	// evaluator (comparison + logical ops) applies uniformly.
+	if rc, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
+		rec := rc.RecordConstructor()
+		if rec == nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor in HAVING")
+		}
+		if rec.STAR() != nil || rec.OfTypeClause() != nil {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING does not support record constructor with STAR / OF TYPE")
+		}
+		fields := rec.AllExpressionWithOptionalName()
+		if len(fields) == 1 && fields[0].AS() == nil && fields[0].Uid() == nil {
+			return evalHavingTri(ctx, conn, row, fields[0].Expression())
+		}
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING does not support multi-field / named record constructor")
+	}
 	// HAVING-style: the full comparison is the expression atom (BinaryComparisonPredicateContext).
 	compPred, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
@@ -5330,6 +5662,48 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		// Single-field parenthesised group — unwrap and recurse. For
+		// boolean inners route through the tri-state predicate
+		// evaluator so NULL comparisons encode as nil (UNKNOWN) rather
+		// than collapsing to false — without this, JOIN `WHERE NOT (b
+		// = NULL)` would return TRUE instead of UNKNOWN because
+		// evalExprOnMap's fallback through evalExprAtomOnMap collapses
+		// NULL-compared operands to false at the value-evaluator
+		// boundary.
+		rc := a.RecordConstructor()
+		if rc == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "empty record constructor")
+		}
+		if rc.STAR() != nil || rc.OfTypeClause() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "record constructor with STAR / OF TYPE not supported")
+		}
+		fields := rc.AllExpressionWithOptionalName()
+		if len(fields) != 1 {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "multi-field record constructor not supported in this context")
+		}
+		f := fields[0]
+		if f.AS() != nil || f.Uid() != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "named record field not supported in this context")
+		}
+		inner := f.Expression()
+		if pred, ok := inner.(*antlrgen.PredicatedExpressionContext); ok {
+			if pred.Predicate() != nil || looksBoolean(pred.ExpressionAtom()) {
+				t, err := evalPredicateOnMapExprTri(ctx, conn, row, inner)
+				if err != nil {
+					return nil, err
+				}
+				switch t {
+				case triTrue:
+					return true, nil
+				case triFalse:
+					return false, nil
+				default:
+					return nil, nil
+				}
+			}
+		}
+		return evalExprOnMap(ctx, conn, row, inner)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom type %T in map eval", atom)
 	}
@@ -5808,9 +6182,61 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		return nil, nil
 	case *antlrgen.BooleanConstantContext:
 		return cv.BooleanLiteral().TRUE() != nil, nil
+	case *antlrgen.BytesConstantContext:
+		// Grammar produces either HEXADECIMAL_LITERAL ('x' followed by
+		// hex in single quotes) or BASE64_LITERAL ('b64' followed by
+		// base64 in single quotes).
+		bl := cv.BytesLiteral()
+		if bl == nil {
+			return nil, api.NewError(api.ErrCodeInvalidParameter, "empty bytes literal")
+		}
+		if hexLit := bl.HEXADECIMAL_LITERAL(); hexLit != nil {
+			text := hexLit.GetText()
+			// text looks like: x'deadbeef' or X'deadbeef'
+			body := stripBytesWrapper(text, "x")
+			// encoding/hex.DecodeString handles both odd-length and
+			// non-hex-char failures uniformly.
+			out, err := hex.DecodeString(body)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "invalid hex literal %q: %v", text, err)
+			}
+			return out, nil
+		}
+		if b64 := bl.BASE64_LITERAL(); b64 != nil {
+			text := b64.GetText()
+			body := stripBytesWrapper(text, "b64")
+			out, err := decodeBase64(body)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "invalid base64 in %q: %v", text, err)
+			}
+			return out, nil
+		}
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "bytes literal must be hex or base64")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in WHERE", c)
 	}
+}
+
+// stripBytesWrapper removes the `<prefix>'...'` wrapping from a bytes
+// literal text token. Case-insensitive on the prefix to accept x / X
+// and b64 / B64.
+func stripBytesWrapper(text, prefix string) string {
+	lower := strings.ToLower(text)
+	if strings.HasPrefix(lower, prefix) {
+		text = text[len(prefix):]
+	}
+	text = strings.TrimPrefix(text, "'")
+	text = strings.TrimSuffix(text, "'")
+	return text
+}
+
+// base64StdStrict is the standard Base64 encoding with strict
+// padding (no line breaks, no URL-safe alternative). Mirrors what
+// Java's Base64.getDecoder() accepts for the b64'...' literal form.
+var base64StdStrict = base64.StdEncoding.Strict()
+
+func decodeBase64(s string) ([]byte, error) {
+	return base64StdStrict.DecodeString(s)
 }
 
 // valuesEqual compares two driver values that may have different numeric types.
@@ -5874,11 +6300,10 @@ func valuesEqual(a, b any) bool {
 // by type name, so that `'5' = 5` never matches. Numeric coercion across
 // int64/float64 is preserved because SQL treats them as the same type family.
 func compareValues(a, b driver.Value) int {
-	// NULL ordering: NULL < non-NULL. Callers sort ASC by `cmp<0 wins` so
-	// NULLs surface first, matching Java's default `ASC NULLS FIRST` per
-	// ParseHelpers.isNullsLast (returns isDescending, so ASC → false →
-	// NULLS FIRST). DESC flips the sign at the sort call site so NULLs
-	// land last — also Java-conformant (ASC NULLS FIRST + DESC NULLS LAST).
+	// NULL ordering: NULL < non-NULL. Sort callers go through orderByLess
+	// which handles NULLs before reaching compareValues (to honour
+	// explicit NULLS FIRST/LAST), so this branch only matters for
+	// non-sort callers (WHERE comparisons where -1 == less-than).
 	if a == nil && b == nil {
 		return 0
 	}

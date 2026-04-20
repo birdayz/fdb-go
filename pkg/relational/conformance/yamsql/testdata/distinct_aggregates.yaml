@@ -1,0 +1,29 @@
+# distinct_aggregates.yaml
+#
+# swingshift-35 commit b206e210: SUM/AVG/MIN/MAX with DISTINCT only
+# incremented counts[i] in the dedup-set-miss branch; the per-function
+# accumulators never saw the stream. Regression-guards the symmetry
+# between DISTINCT and non-DISTINCT paths.
+name: distinct_aggregates
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  # Values: 10, 20, 20, null, 30, 10. Distinct non-null: {10, 20, 30}.
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 20), (4, null), (5, 30), (6, 10)
+tests:
+  - query: SELECT COUNT(DISTINCT v) FROM t
+    rows:
+      - [3]
+  - query: SELECT SUM(DISTINCT v) FROM t
+    rows:
+      - [60]
+  - query: SELECT MIN(DISTINCT v) FROM t
+    rows:
+      - [10]
+  - query: SELECT MAX(DISTINCT v) FROM t
+    rows:
+      - [30]
+  # Non-distinct comparison: SUM = 90, COUNT = 5.
+  - query: SELECT SUM(v), COUNT(v) FROM t
+    rows:
+      - [90, 5]

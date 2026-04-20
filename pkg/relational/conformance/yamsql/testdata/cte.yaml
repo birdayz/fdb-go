@@ -1,0 +1,46 @@
+# cte.yaml
+#
+# WITH ... AS (SELECT ...) ... (common table expression). Pins:
+#   - basic WITH projection
+#   - WITH followed by a query that joins the CTE to another source
+#   - multiple CTEs in a single WITH
+name: cte
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)
+tests:
+  # Basic CTE: materialise a filtered view, then query it.
+  - query: |-
+      WITH hi AS (SELECT id, v FROM t WHERE v >= 20)
+      SELECT id FROM hi ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  # CTE used in an aggregate.
+  - query: |-
+      WITH hi AS (SELECT id, v FROM t WHERE v >= 20)
+      SELECT COUNT(*), SUM(v) FROM hi
+    rows:
+      - [3, 90]
+  # Single CTE used as the only source, then filtered further.
+  - query: |-
+      WITH hi AS (SELECT id, v FROM t WHERE v >= 20)
+      SELECT id FROM hi WHERE v >= 30 ORDER BY id
+    rows:
+      - [3]
+      - [4]
+  # Multi-CTE cross-join. Previously the wrapper routed the primary
+  # source to execSelectFromCTE without checking for joins, which
+  # ignored sq.joins entirely. Fixed nightshift-36 by gating that
+  # short-circuit on len(sq.joins) == 0 so multi-source queries flow
+  # through execSelectJoin, whose scanTableToMaps already resolves
+  # CTE names.
+  - query: |-
+      WITH lo AS (SELECT id FROM t WHERE v < 20),
+           hi AS (SELECT id FROM t WHERE v >= 30)
+      SELECT COUNT(*) FROM lo, hi
+    rows:
+      # lo has 1 row (id=1), hi has 2 rows (id=3, id=4). Cross-join = 1*2 = 2.
+      - [2]

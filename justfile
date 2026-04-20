@@ -63,6 +63,13 @@ test:
 run-conformance-server:
     bazelisk run //conformance/java:conformance_server
 
+# Run SQL conformance scenarios against the Go fdbsql driver.
+# Each .yaml file under pkg/relational/conformance/yamsql/testdata/ pins a
+# Java-authoritative correctness property (NULL semantics, CAST rules,
+# integer arithmetic, etc.). Drift between Go and Java surfaces here first.
+conformance-sql:
+    bazelisk test //pkg/relational/conformance/yamsql:yamsql_test --test_output=streamed --test_arg=-test.v
+
 # Regenerate BUILD files after adding/removing Go files or deps
 gazelle:
     bazelisk run //:gazelle

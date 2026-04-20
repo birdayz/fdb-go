@@ -1,0 +1,32 @@
+# outer_join.yaml
+#
+# LEFT OUTER JOIN fills the right side with NULLs when there's no
+# match. RIGHT OUTER JOIN is the mirror.
+# LEFT/RIGHT OUTER JOIN implementation landed in swingshift-33.
+name: outer_join
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO b VALUES (101, 10, 'alpha'), (102, 20, 'beta'), (103, 99, 'gamma')
+tests:
+  # LEFT OUTER JOIN — row a.id=3 has no match in b; right side NULL.
+  # b.id=103 (k=99) has no match in a, which LEFT OUTER drops (only
+  # unmatched left rows are kept).
+  - query: SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [3, ~]
+  # RIGHT OUTER JOIN — b.id=103 (k=99) has no match in a; a.id NULL.
+  # Fixed nightshift-36 (was returning b.id=103 for that row because
+  # the unqualified 'id' column inherited from b; now qualified a.id
+  # keys are explicitly NULLed for unmatched-right rows).
+  - query: SELECT a.id, b.label FROM a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [~, 'gamma']

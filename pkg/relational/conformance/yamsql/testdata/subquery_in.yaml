@@ -1,0 +1,24 @@
+# subquery_in.yaml
+#
+# SQL §8.4 — x IN (subquery) / x NOT IN (subquery) Kleene semantics
+# when the subquery result contains a NULL row. Pre-swingshift-35
+# `matchSubqueryIN` silently skipped NULLs, so `x NOT IN (SELECT ...)`
+# with a NULL row returned TRUE instead of UNKNOWN. Fixed aba441f0.
+name: subquery_in
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 1), (2, 2), (3, 3)
+  - INSERT INTO b VALUES (101, 2), (102, null)
+tests:
+  # x IN (subquery with NULL): id=2 matches concretely; id=1/3 evaluate
+  # UNKNOWN (they might or might not equal the NULL row) and are filtered.
+  - query: SELECT id FROM a WHERE v IN (SELECT v FROM b)
+    rows:
+      - [2]
+  # x NOT IN (subquery with NULL): every row yields UNKNOWN because
+  # NOT IN expands to AND over !=, and != NULL is UNKNOWN → the whole
+  # predicate is UNKNOWN → filtered. Net zero rows.
+  - query: SELECT id FROM a WHERE v NOT IN (SELECT v FROM b)
+    rows: []

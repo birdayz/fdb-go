@@ -55,6 +55,7 @@ const (
 
 	// Class 22 — Data Exception
 	ErrCodeCannotConvertType            ErrorCode = "22000"
+	ErrCodeNumericValueOutOfRange       ErrorCode = "22003"
 	ErrCodeInvalidRowCountInLimitClause ErrorCode = "2201W"
 	ErrCodeInvalidParameter             ErrorCode = "22023"
 	ErrCodeArrayElementError            ErrorCode = "2202E"
@@ -151,7 +152,7 @@ func init() {
 		ErrCodeNoResultSet,
 		ErrCodeUnableToEstablishSQLConnection, ErrCodeConnectionDoesNotExist, ErrCodeInvalidPath, ErrCodeCannotCommitRollbackWithAutocommit,
 		ErrCodeUnsupportedOperation, ErrCodeUnsupportedQuery, ErrCodeUnsupportedSort,
-		ErrCodeCannotConvertType, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
+		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
 		ErrCodeInvalidBinaryRepresentation, ErrCodeInvalidArgumentForFunction, ErrCodeInvalidCast,
 		ErrCodeCopySerializationError, ErrCodeCopyImportValidationError,
 		ErrCodeNotNullViolation, ErrCodeUniqueConstraintViolation,

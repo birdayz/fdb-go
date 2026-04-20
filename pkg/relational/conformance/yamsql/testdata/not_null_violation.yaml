@@ -1,0 +1,20 @@
+# not_null_violation.yaml
+#
+# swingshift-35 commits 1f389611/e9959ba9/38410fec: INSERT/UPDATE NULL
+# into a NOT NULL column raises ErrCodeNotNullViolation (23502). Before
+# the fix this surfaced as a proto missing-required-field error
+# instead of the Java-conformant SQLSTATE.
+name: not_null_violation
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'alice')
+tests:
+  - query: INSERT INTO t VALUES (2, NULL)
+    error_code: "23502"
+  - query: UPDATE t SET name = NULL WHERE id = 1
+    error_code: "23502"
+  # Baseline: a valid INSERT succeeds with no rows returned.
+  - query: SELECT id, name FROM t
+    rows:
+      - [1, 'alice']

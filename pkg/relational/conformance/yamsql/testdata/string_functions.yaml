@@ -1,0 +1,54 @@
+# string_functions.yaml
+#
+# swingshift-35 commit 1707446b: LEFT / RIGHT / SUBSTRING length args
+# use `toIntegerArg` which accepts int64 and whole-valued float64,
+# rejects fractional floats and non-numerics (pre-fix would silently
+# coerce any non-int to 0, truncating to empty string).
+name: string_functions
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'hello world'), (2, ''), (3, null)
+tests:
+  # LEFT basic.
+  - query: SELECT LEFT(s, 5) FROM t WHERE id = 1
+    rows:
+      - ['hello']
+  # LEFT with length longer than string — returns whole string.
+  - query: SELECT LEFT(s, 100) FROM t WHERE id = 1
+    rows:
+      - ['hello world']
+  # LEFT on empty string.
+  - query: SELECT LEFT(s, 5) FROM t WHERE id = 2
+    rows:
+      - ['']
+  # LEFT on NULL propagates.
+  - query: SELECT LEFT(s, 5) FROM t WHERE id = 3
+    rows:
+      - [~]
+  # RIGHT basic.
+  - query: SELECT RIGHT(s, 5) FROM t WHERE id = 1
+    rows:
+      - ['world']
+  # SUBSTRING 1-based index — "hello world"[7:] = "world".
+  - query: SELECT SUBSTRING(s, 7) FROM t WHERE id = 1
+    rows:
+      - ['world']
+  # SUBSTRING with length.
+  - query: SELECT SUBSTRING(s, 1, 5) FROM t WHERE id = 1
+    rows:
+      - ['hello']
+  # Fractional-length arg errors per swingshift-35 (toIntegerArg
+  # rejects fractional floats, not silent truncate-to-0).
+  - query: SELECT LEFT(s, 3.5) FROM t WHERE id = 1
+    error_code: "22023"
+  # UPPER/LOWER — propagate NULL, error on non-string.
+  - query: SELECT UPPER(s) FROM t WHERE id = 1
+    rows:
+      - ['HELLO WORLD']
+  - query: SELECT LOWER('ABCxyz') FROM t WHERE id = 1
+    rows:
+      - ['abcxyz']
+  - query: SELECT UPPER(s) FROM t WHERE id = 3
+    rows:
+      - [~]

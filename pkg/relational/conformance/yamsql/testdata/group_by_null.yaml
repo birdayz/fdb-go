@@ -1,0 +1,25 @@
+# group_by_null.yaml
+#
+# swingshift-35 commit b059485e: groupByKey no longer uses fmt.Sprintf
+# ("%v", nil) which renders as the literal string "<nil>" and collides
+# with an actual string value of "<nil>". Pins one NULL-grouped row and
+# one "<nil>"-literal row → two distinct groups.
+name: group_by_null
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, g STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 1), (2, 'a', 2), (3, '<nil>', 3), (4, null, 4), (5, null, 5)
+tests:
+  # Three groups: 'a' (2 rows), '<nil>' literal (1 row), NULL (2 rows).
+  - query: SELECT g, COUNT(*) FROM t GROUP BY g
+    unordered: true
+    rows:
+      - ['a', 2]
+      - ['<nil>', 1]
+      - [~, 2]
+  - query: SELECT g, SUM(v) FROM t GROUP BY g
+    unordered: true
+    rows:
+      - ['a', 3]
+      - ['<nil>', 3]
+      - [~, 9]
