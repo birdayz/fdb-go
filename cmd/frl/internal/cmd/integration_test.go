@@ -13,6 +13,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -522,6 +523,29 @@ func TestIntegration_TxReadVersion(t *testing.T) {
 	trimmed := strings.TrimSpace(out)
 	if trimmed == "" {
 		t.Errorf("tx read-version produced empty output")
+	}
+}
+
+// TestIntegration_TxReadVersion_JSON locks in the JSON envelope so
+// smoke-check pipelines (`frl tx read-version -o json | jq '.read_version > 0'`)
+// stay stable. Previously only the text path was integration-tested.
+func TestIntegration_TxReadVersion_JSON(t *testing.T) {
+	bindConfig(t)
+	out, err := runCmd(t, "tx", "read-version", "-o", "json")
+	if err != nil {
+		t.Fatalf("tx read-version -o json: %v\nout:\n%s", err, out)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %q", err, out)
+	}
+	// read_version is an int64 — json decodes that as float64.
+	rv, ok := obj["read_version"].(float64)
+	if !ok {
+		t.Fatalf("read_version not a number: %T %v", obj["read_version"], obj["read_version"])
+	}
+	if rv <= 0 {
+		t.Errorf("read_version = %v; want positive", rv)
 	}
 }
 
