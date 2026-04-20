@@ -224,11 +224,12 @@ No. `MetaData` wire format is identical; a `meta.pb` written by Java's
 command that accepts `--meta-file`.
 
 **Q: Can I run `frl` with no config file?**
-Not fully in v1. `--meta-file` is available on most read commands
-(`record get/scan`, `index ls/describe`, `meta get/types`), but there
-are no root-level `--cluster-file` / `--keyspace-path` flags yet —
-those live only in the context. Until the root-level overrides land,
-the minimum ergonomic setup is a one-context `~/.frl/config.yaml`.
+Not fully in v1. `--meta-file` is available on every read command that
+touches metadata (`record get/scan/count`, `index ls/describe/scan`,
+`meta get/types ls/types describe`), but there are no root-level
+`--cluster-file` / `--keyspace-path` flags yet — those live only in
+the context. Until the root-level overrides land, the minimum
+ergonomic setup is a one-context `~/.frl/config.yaml`.
 
 **Q: Do I need to rebuild `frl` when my schema changes?**
 No. `frl` is schema-agnostic — it decodes records using whatever
@@ -241,7 +242,10 @@ fresh. If/when BSR-style remote schema sources return, they'll cache
 under `~/.frl/cache/`.
 
 **Q: Does `frl` write to FDB?**
-Read-only commands (`store info`, `record get`, `record scan`,
-`index ls`, `meta get`) never write. Future `store truncate` / `store
-destroy` / `index build` / `meta apply` commands will — those are
-designed separately and will require explicit confirmation flags.
+No — every v1 command is read-only (`store info/dump`, `record
+get/scan/count`, `index ls/describe/scan`, `meta get/validate/
+evolve-check/diff`, `meta types ls/describe`, `keyspace resolve`,
+`tx read-version`). Future `store truncate` / `store destroy` /
+`index build` / `meta apply` commands will write, and those are
+designed separately with explicit confirmation flags and dry-run
+defaults.
