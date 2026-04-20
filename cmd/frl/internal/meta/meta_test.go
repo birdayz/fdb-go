@@ -168,9 +168,25 @@ func TestFromContext_MetaStoreKeyspaceRequiresDB(t *testing.T) {
 			Source: &configv1.MetadataSource_MetaStoreKeyspace{MetaStoreKeyspace: "/app/_meta"},
 		},
 	}
-	_, err := FromContext(ctx, nil, nil) // nil DB
+	// Both the nil-DB and nil-keyspaceResolver paths must surface as the
+	// same sentinel so callers can handle "FDB-store not available here"
+	// uniformly with errors.Is. Operators otherwise see different
+	// messages for semantically identical failures.
+	_, err := FromContext(ctx, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for nil DB on fdb_store source, got nil")
+	}
+	if !errors.Is(err, ErrFDBStoreNotAvailable) {
+		t.Errorf("nil DB: error = %v; want errors.Is ErrFDBStoreNotAvailable", err)
+	}
+	// Same sentinel when the keyspace resolver is the nil piece.
+	db := &recordlayer.FDBDatabase{}
+	_, err = FromContext(ctx, db, nil)
+	if err == nil {
+		t.Fatal("expected error for nil keyspaceResolver on fdb_store source")
+	}
+	if !errors.Is(err, ErrFDBStoreNotAvailable) {
+		t.Errorf("nil resolver: error = %v; want errors.Is ErrFDBStoreNotAvailable", err)
 	}
 }
 

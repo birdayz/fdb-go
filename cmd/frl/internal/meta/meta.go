@@ -40,6 +40,14 @@ type Source interface {
 // metadata source configured and one is required by the caller.
 var ErrMissingSource = errors.New("context has no metadata source; add metadata.meta_file or metadata.meta_store_keyspace to the context")
 
+// ErrFDBStoreNotAvailable is returned by FromContext when the context
+// is wired for an FDBMetaDataStore source but the caller passed a nil
+// db handle or keyspaceResolver — i.e. the command explicitly opted
+// out of FDB-store support. Callers that want to surface a friendlier
+// "this command doesn't support fdb_store sources" message detect
+// this with errors.Is().
+var ErrFDBStoreNotAvailable = errors.New("fdb_store metadata source is not supported by this command — configure `meta_file` in the context or pass --meta-file")
+
 // FromContext builds a Source from a Context's metadata field. Returns
 // ErrMissingSource if neither meta_file nor meta_store_keyspace is set
 // (commands that can tolerate missing metadata — like `store info` —
@@ -67,11 +75,10 @@ func FromContext(
 		if s.MetaStoreKeyspace == "" {
 			return nil, fmt.Errorf("meta_store_keyspace is empty in context %q", ctx.GetName())
 		}
-		if db == nil {
-			return nil, fmt.Errorf("fdb_store metadata source requires a database handle")
-		}
-		if keyspaceResolver == nil {
-			return nil, fmt.Errorf("fdb_store metadata source requires a keyspace resolver")
+		if db == nil || keyspaceResolver == nil {
+			// Surface as a sentinel so command-level callers can wrap
+			// with `(context %q)` the same way they do for ErrMissingSource.
+			return nil, ErrFDBStoreNotAvailable
 		}
 		ss, err := keyspaceResolver(s.MetaStoreKeyspace)
 		if err != nil {
