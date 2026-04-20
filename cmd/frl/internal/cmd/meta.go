@@ -79,13 +79,26 @@ func newMetaValidateCmd() *cobra.Command {
 // MetaDataEvolutionValidator). Intended for CI pre-merge checks — catch
 // migration bugs before they hit FDBMetaDataStore.saveRecordMetaData().
 func newMetaEvolveCheckCmd() *cobra.Command {
-	var oldPath, newPath, outputFmt string
+	var (
+		oldPath, newPath, outputFmt string
+		allowNoVersionChange        bool
+		allowIndexRebuilds          bool
+		allowUnsplitToSplit         bool
+	)
 	c := &cobra.Command{
 		Use:   "evolve-check",
 		Short: "Verify an evolution from --old to --new metadata is safe",
 		Example: `  frl meta evolve-check --old previous.pb --new current.pb
-  # In CI:
-  #   frl meta evolve-check --old baseline.pb --new $(build-meta.sh) || exit 1`,
+  # CI gate — allow identical-version re-deploys + index rebuilds:
+  #   frl meta evolve-check --allow-no-version-change --allow-index-rebuilds \
+  #       --old baseline.pb --new $(build-meta.sh) || exit 1`,
+		Long: "Runs MetaDataEvolutionValidator on a pair of MetaData.pb " +
+			"files. Default semantics match Java's strict mode: version " +
+			"must advance, indexes can't be rebuilt, split-long-records " +
+			"can't change. Loosen via the --allow-* flags when the strict " +
+			"default rejects a transition you know is safe.\n\n" +
+			"--output / -o: 'text' (default) or 'json' " +
+			"({old, new, valid}).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			switch outputFmt {
@@ -101,7 +114,11 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load --new: %w", err)
 			}
-			validator := recordlayer.NewMetaDataEvolutionValidator().Build()
+			validator := recordlayer.NewMetaDataEvolutionValidator().
+				SetAllowNoVersionChange(allowNoVersionChange).
+				SetAllowIndexRebuilds(allowIndexRebuilds).
+				SetAllowUnsplitToSplit(allowUnsplitToSplit).
+				Build()
 			if err := validator.Validate(oldMeta, newMeta); err != nil {
 				return fmt.Errorf("incompatible evolution: %w", err)
 			}
@@ -121,6 +138,12 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 	c.Flags().StringVar(&oldPath, "old", "", "path to the existing MetaData.pb (required)")
 	c.Flags().StringVar(&newPath, "new", "", "path to the proposed MetaData.pb (required)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
+	c.Flags().BoolVar(&allowNoVersionChange, "allow-no-version-change", false,
+		"accept evolutions where the metadata version hasn't advanced")
+	c.Flags().BoolVar(&allowIndexRebuilds, "allow-index-rebuilds", false,
+		"accept changes that trigger a full index rebuild")
+	c.Flags().BoolVar(&allowUnsplitToSplit, "allow-unsplit-to-split", false,
+		"accept toggling split_long_records from false to true")
 	_ = c.MarkFlagRequired("old")
 	_ = c.MarkFlagRequired("new")
 	return c

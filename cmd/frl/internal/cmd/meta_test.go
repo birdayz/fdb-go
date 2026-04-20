@@ -201,6 +201,36 @@ func TestMetaEvolveCheck_ValidJSON(t *testing.T) {
 	}
 }
 
+func TestMetaEvolveCheck_AllowNoVersionChangeFlag(t *testing.T) {
+	t.Parallel()
+	// Same-version files that would normally be rejected.
+	p1 := writeDemoMetaFile(t, 0)
+	p2 := writeDemoMetaFile(t, 0)
+
+	// Without the flag: rejected.
+	c1 := newMetaEvolveCheckCmd()
+	var out1 bytes.Buffer
+	c1.SetOut(&out1)
+	c1.SetErr(&out1)
+	c1.SetArgs([]string{"--old", p1, "--new", p2})
+	if err := c1.Execute(); err == nil {
+		t.Fatal("expected rejection without --allow-no-version-change")
+	}
+
+	// With the flag: accepted.
+	c2 := newMetaEvolveCheckCmd()
+	var out2 bytes.Buffer
+	c2.SetOut(&out2)
+	c2.SetErr(&out2)
+	c2.SetArgs([]string{"--allow-no-version-change", "--old", p1, "--new", p2})
+	if err := c2.Execute(); err != nil {
+		t.Fatalf("expected acceptance with --allow-no-version-change, got: %v\nout:\n%s", err, out2.String())
+	}
+	if !strings.Contains(out2.String(), "ok:") {
+		t.Errorf("expected 'ok:' in output with flag set:\n%s", out2.String())
+	}
+}
+
 func TestMetaEvolveCheck_ValidEvolution(t *testing.T) {
 	t.Parallel()
 	// Version bumps cleanly from 0 → 1 with identical schema shape,
