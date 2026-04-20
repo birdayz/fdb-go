@@ -1,0 +1,27 @@
+# outer_join.yaml
+#
+# LEFT OUTER JOIN fills the right side with NULLs when there's no
+# match. RIGHT OUTER JOIN is the mirror.
+# LEFT/RIGHT OUTER JOIN implementation landed in swingshift-33.
+name: outer_join
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO b VALUES (101, 10, 'alpha'), (102, 20, 'beta')
+tests:
+  # LEFT OUTER JOIN — row a.id=3 has no match in b; right side NULL.
+  - query: SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [3, ~]
+  # RIGHT OUTER JOIN — in this dataset every b.k has a match, so it's
+  # equivalent to INNER JOIN.
+  - query: SELECT a.id, b.label FROM a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
