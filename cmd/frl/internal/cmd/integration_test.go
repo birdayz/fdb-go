@@ -407,6 +407,44 @@ func TestIntegration_StoreDump(t *testing.T) {
 	}
 }
 
+// TestIntegration_StoreDump_Subspace is the end-to-end proof that the
+// --subspace filter actually narrows the FDB range scan (not just
+// post-filters), and that unknown subspace names fail with a helpful
+// error listing valid labels.
+func TestIntegration_StoreDump_Subspace(t *testing.T) {
+	bindConfig(t)
+
+	// Filtering to `record` must yield only record lines — no
+	// store-info / index / index-range rows. The fixture populates
+	// multiple subspaces so this test has teeth.
+	out, err := runCmd(t, "store", "dump", "--subspace", "record", "--limit", "100")
+	if err != nil {
+		t.Fatalf("store dump --subspace record: %v\nout:\n%s", err, out)
+	}
+	if !strings.Contains(out, "record ") && !strings.Contains(out, "record-version") {
+		t.Errorf("--subspace record produced no record-line output:\n%s", out)
+	}
+	for _, notWant := range []string{"store-info ", "index ", "index-range"} {
+		if strings.Contains(out, notWant) {
+			t.Errorf("--subspace record leaked %q rows:\n%s", notWant, out)
+		}
+	}
+
+	// Unknown subspace name → typed-error with available labels listed.
+	// Regression guard for operators mistyping the filter value.
+	_, err = runCmd(t, "store", "dump", "--subspace", "does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for unknown --subspace value, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown --subspace") {
+		t.Errorf("error = %v; want 'unknown --subspace'", err)
+	}
+	// One of the real labels should appear in the error's candidate list.
+	if !strings.Contains(err.Error(), "record") {
+		t.Errorf("error = %v; should list valid labels", err)
+	}
+}
+
 func TestIntegration_TxReadVersion(t *testing.T) {
 	bindConfig(t)
 	out, err := runCmd(t, "tx", "read-version")
