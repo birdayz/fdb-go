@@ -52,3 +52,20 @@ tests:
   - query: SELECT UPPER(s) FROM t WHERE id = 3
     rows:
       - [~]
+  # LENGTH counts Unicode code points, not bytes — use a multi-byte
+  # string to prove it. "héllo" = 5 code points, 6 UTF-8 bytes.
+  - query: SELECT LENGTH('héllo') FROM t WHERE id = 1
+    rows:
+      - [5]
+  # CHAR_LENGTH is the SQL:2003 spec name for the same function.
+  # LEN is the SQL Server short form. All three route to one impl.
+  - query: SELECT CHAR_LENGTH('héllo') FROM t WHERE id = 1
+    rows:
+      - [5]
+  - query: SELECT CHARACTER_LENGTH('héllo') FROM t WHERE id = 1
+    rows:
+      - [5]
+  # Propagates NULL across the LENGTH family.
+  - query: SELECT CHAR_LENGTH(s) FROM t WHERE id = 3
+    rows:
+      - [~]

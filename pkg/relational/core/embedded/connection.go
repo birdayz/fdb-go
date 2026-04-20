@@ -4453,9 +4453,14 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER: argument must be string, got %T", v)
 		}
 		return strings.ToLower(s), nil
-	case "LENGTH", "LEN":
+	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
+		// LENGTH / CHAR_LENGTH are synonyms in SQL:2003 and across
+		// Postgres / Oracle / SQL Server when applied to a string —
+		// all count logical characters (Unicode code points), not
+		// bytes. CHARACTER_LENGTH is the spec name; LENGTH and LEN
+		// are the common short forms.
 		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
 		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
@@ -4463,7 +4468,7 @@ func evalScalarFunctionCallCore(
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
 		}
 		return int64(utf8.RuneCountInString(s)), nil
 	case "TRIM", "LTRIM", "RTRIM":
