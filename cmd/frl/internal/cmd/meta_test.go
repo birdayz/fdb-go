@@ -107,6 +107,68 @@ func writeDemoMetaFile(t *testing.T, version int32) string {
 	return path
 }
 
+// TestMetaTypesLs_MetaFileFlagWorks drives the command end-to-end via
+// --meta-file so the command constructor (RunE, flag wiring, meta.Source
+// resolution) gets covered without opening FDB. Without this test, a
+// regression in `resolveContextAndOverride` / `meta.FromContext` that
+// drops the override path goes undetected until someone runs integration.
+func TestMetaTypesLs_MetaFileFlagWorks(t *testing.T) {
+	path := writeDemoMetaFile(t, 0)
+	// Empty config → ResolveContext fails, but --meta-file should carry us.
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newMetaTypesLsCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", path})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	got := out.String()
+	// Header + every demo type.
+	for _, want := range []string{"NAME", "Order", "Customer", "TypedRecord"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("text output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestMetaTypesLs_JSONShape verifies `-o json` produces the documented
+// schema. `meta types ls` was shipped with no command-level test —
+// this locks in the JSON contract so downstream `jq -r '.[].name'`
+// scripts stay stable.
+func TestMetaTypesLs_JSONShape(t *testing.T) {
+	path := writeDemoMetaFile(t, 0)
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newMetaTypesLsCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", path, "-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows, got %d:\n%s", len(rows), out.String())
+	}
+	// Every row must have name + primary_key; both emitted in snake_case
+	// to match the rest of the CLI's structured output.
+	for i, r := range rows {
+		if _, ok := r["name"]; !ok {
+			t.Errorf("row %d missing 'name':\n%s", i, out.String())
+		}
+		if _, ok := r["primary_key"]; !ok {
+			t.Errorf("row %d missing 'primary_key':\n%s", i, out.String())
+		}
+	}
+}
+
 func TestMetaValidate_Succeeds(t *testing.T) {
 	t.Parallel()
 	path := writeDemoMetaFile(t, 0)
