@@ -3175,6 +3175,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	var countStar bool
 	var aggCols []aggSelectCol
 	var projQualifier string // non-empty when SELECT list is *only* <qualifier>.*
+	// Snapshots of projAliases / projExprs taken right after the SELECT
+	// element loop, before any reclassification clears them. Downstream
+	// GROUP BY / ORDER BY parsers consult these to resolve alias
+	// references (e.g. `GROUP BY bucket` where bucket is `v/10 AS bucket`).
+	var selectAliasesSnapshot []string
+	var selectExprsSnapshot []antlrgen.IExpressionContext
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -3345,13 +3351,20 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				aggCols = append(aggCols, promoted...)
 			}
 		}
+		// Snapshot the original SELECT-list alias/expr arrays before any
+		// reclassification clears them.
+		selectAliasesSnapshot = append([]string(nil), projAliases...)
+		selectExprsSnapshot = append([]antlrgen.IExpressionContext(nil), projExprs...)
 		// If we found aggregate functions mixed with plain columns, the plain cols
 		// that were added to projCols before the first aggregate need to be re-
 		// classified. Bare columns become group-by references; expressions with
 		// no column refs (literal constants like `SELECT 1, SUM(v)`) become
 		// outExpr slots so they're emitted once per group without requiring
 		// a GROUP BY clause or a field-descriptor lookup. Star slots can't be
-		// demoted either way.
+		// demoted either way. Note: the GROUP BY / HAVING parsers haven't run
+		// yet at this point, so we can't redirect groupCol to match a GROUP
+		// BY expression here — that lookup happens in the HAVING-harvest
+		// reclassification later when sq.groupBy is populated.
 		if len(aggCols) > 0 && len(projCols) > 0 {
 			for _, q := range projStarQualifiers {
 				if q != "" {
@@ -3655,8 +3668,31 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			}
 			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
 			if nameErr == nil {
-				sq.groupBy = append(sq.groupBy, colName)
-				sq.groupByExprs = append(sq.groupByExprs, nil)
+				// Postgres / MySQL: GROUP BY may reference a SELECT-list
+				// alias (e.g. `SELECT v/10 AS bucket FROM t GROUP BY
+				// bucket`). When the bare-column path resolves to a name
+				// that matches a SELECT-list alias whose projExpr is a
+				// non-trivial expression, redirect to the underlying
+				// expression so per-row evaluation derives the group key.
+				// Uses the snapshot taken right after the SELECT loop —
+				// reclassification may have cleared projAliases.
+				redirected := false
+				for i, alias := range selectAliasesSnapshot {
+					if alias != colName {
+						continue
+					}
+					if i >= len(selectExprsSnapshot) || selectExprsSnapshot[i] == nil {
+						break
+					}
+					sq.groupBy = append(sq.groupBy, selectExprsSnapshot[i].GetText())
+					sq.groupByExprs = append(sq.groupByExprs, selectExprsSnapshot[i])
+					redirected = true
+					break
+				}
+				if !redirected {
+					sq.groupBy = append(sq.groupBy, colName)
+					sq.groupByExprs = append(sq.groupByExprs, nil)
+				}
 			} else {
 				// Synthesize a display name from the expression text; the
 				// value used for grouping comes from evaluating the expr.
@@ -3670,6 +3706,42 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	havingCtx := simpleTable.HavingClause()
 	if havingCtx != nil {
 		sq.havingExpr = havingCtx.GetHavingExpr()
+	}
+
+	// Redirect aggCols groupCol entries that came from a SELECT-list
+	// expression (`v/10 AS bucket`) to point at the matching GROUP BY
+	// expression text, so the proto path's groupExprByName check fires
+	// and skips the FD lookup. Walks selectExprsSnapshot to find the
+	// original projExpr for each groupCol entry; matches against
+	// sq.groupBy[] by GetText. Idempotent — runs once after both
+	// SELECT-list reclassification (if any) and GROUP BY parsing.
+	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 && len(selectExprsSnapshot) > 0 {
+		for ai, ac := range sq.aggCols {
+			if ac.groupCol == "" {
+				continue
+			}
+			// Look up the original projExpr by alias / position in the snapshot.
+			var origExpr antlrgen.IExpressionContext
+			for si, alias := range selectAliasesSnapshot {
+				if alias != ac.groupCol {
+					continue
+				}
+				if si < len(selectExprsSnapshot) {
+					origExpr = selectExprsSnapshot[si]
+				}
+				break
+			}
+			if origExpr == nil {
+				continue
+			}
+			projText := origExpr.GetText()
+			for gi, gn := range sq.groupBy {
+				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+					sq.aggCols[ai].groupCol = gn
+					break
+				}
+			}
+		}
 	}
 
 	// countStar fast path assumes a single synthetic row. With GROUP BY
