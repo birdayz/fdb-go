@@ -7273,6 +7273,11 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 				return nil, rErr
 			}
 			return applyBitOp(left, right, a.BitOperator().GetText())
+		case *antlrgen.SubqueryExpressionAtomContext:
+			// HAVING `agg <op> (SELECT ... )` — uncorrelated subquery
+			// pre-evaluated before the outer query started. Look up the
+			// cached scalar.
+			return evalScalarSubquery(ctx, conn, a.Query())
 		default:
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING atom %T", atom)
 		}
