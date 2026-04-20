@@ -179,6 +179,18 @@ tests:
       - [2]
   - query: SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 99
     rows: []
+  # Java alignment: HAVING with group-by column reference (Java's
+  # groupby-tests.yamsql 'HAVING min(id) > 0 AND col1 = 20'). HAVING
+  # can reference both aggregates AND group-by columns.
+  # Groups: 'a'(SUM=30), 'b'(SUM=35), 'c'(SUM=NULL).
+  # HAVING grp = 'b' AND SUM(v) > 30 → only 'b'.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING grp = 'b' AND SUM(v) > 30
+    rows:
+      - ['b', 35]
+  # HAVING with group-by column alone (no aggregate predicate).
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp HAVING grp = 'a'
+    rows:
+      - ['a', 2]
   # HAVING + ORDER BY-on-expression-over-same-aggregate. HAVING SUM(v)>10
   # harvests SUM(v) as hidden; ORDER BY `SUM(v)*2 DESC` adds an outExpr
   # sortOnly entry for the wrapping expression; dedup upgrades the inner
