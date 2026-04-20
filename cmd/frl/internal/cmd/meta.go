@@ -40,21 +40,32 @@ func newMetaCmd() *cobra.Command {
 // passes, the file parses AND passes all structural invariants the
 // record-layer enforces at Build() time. No FDB needed.
 func newMetaValidateCmd() *cobra.Command {
-	var path string
+	var path, outputFmt string
 	c := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate a standalone MetaData.pb file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			src := &meta.FileSource{Path: path}
 			if _, err := src.Load(cmd.Context()); err != nil {
 				return err
+			}
+			if outputFmt == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(map[string]any{"valid": true, "file": path})
 			}
 			_, err := fmt.Fprintf(cmd.OutOrStdout(), "ok: %s parses and validates\n", path)
 			return err
 		},
 	}
 	c.Flags().StringVar(&path, "file", "", "path to MetaData.pb (required)")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	_ = c.MarkFlagRequired("file")
 	return c
 }
@@ -64,7 +75,7 @@ func newMetaValidateCmd() *cobra.Command {
 // MetaDataEvolutionValidator). Intended for CI pre-merge checks — catch
 // migration bugs before they hit FDBMetaDataStore.saveRecordMetaData().
 func newMetaEvolveCheckCmd() *cobra.Command {
-	var oldPath, newPath string
+	var oldPath, newPath, outputFmt string
 	c := &cobra.Command{
 		Use:   "evolve-check",
 		Short: "Verify an evolution from --old to --new metadata is safe",
@@ -73,6 +84,11 @@ func newMetaEvolveCheckCmd() *cobra.Command {
   #   frl meta evolve-check --old baseline.pb --new $(build-meta.sh) || exit 1`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			oldMeta, err := (&meta.FileSource{Path: oldPath}).Load(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("load --old: %w", err)
@@ -85,12 +101,22 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 			if err := validator.Validate(oldMeta, newMeta); err != nil {
 				return fmt.Errorf("incompatible evolution: %w", err)
 			}
+			if outputFmt == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(map[string]any{
+					"valid": true,
+					"old":   oldPath,
+					"new":   newPath,
+				})
+			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "ok: %s -> %s is a valid evolution\n", oldPath, newPath)
 			return err
 		},
 	}
 	c.Flags().StringVar(&oldPath, "old", "", "path to the existing MetaData.pb (required)")
 	c.Flags().StringVar(&newPath, "new", "", "path to the proposed MetaData.pb (required)")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	_ = c.MarkFlagRequired("old")
 	_ = c.MarkFlagRequired("new")
 	return c

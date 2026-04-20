@@ -154,6 +154,53 @@ func TestMetaEvolveCheck_SameVersionRejected(t *testing.T) {
 	}
 }
 
+func TestMetaValidate_JSON(t *testing.T) {
+	t.Parallel()
+	path := writeDemoMetaFile(t, 0)
+	c := newMetaValidateCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--file", path, "-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if obj["valid"] != true {
+		t.Errorf("valid = %v, want true", obj["valid"])
+	}
+	if obj["file"] != path {
+		t.Errorf("file = %v, want %q", obj["file"], path)
+	}
+}
+
+func TestMetaEvolveCheck_ValidJSON(t *testing.T) {
+	t.Parallel()
+	old := writeDemoMetaFile(t, 0)
+	newer := writeDemoMetaFile(t, 1)
+	c := newMetaEvolveCheckCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--old", old, "--new", newer, "-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if obj["valid"] != true {
+		t.Errorf("valid = %v, want true", obj["valid"])
+	}
+	if obj["old"] != old || obj["new"] != newer {
+		t.Errorf("paths mismatch: %v / %v", obj["old"], obj["new"])
+	}
+}
+
 func TestMetaEvolveCheck_ValidEvolution(t *testing.T) {
 	t.Parallel()
 	// Version bumps cleanly from 0 → 1 with identical schema shape,
