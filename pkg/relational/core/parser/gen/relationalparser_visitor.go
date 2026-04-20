@@ -772,6 +772,9 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#isExpression.
 	VisitIsExpression(ctx *IsExpressionContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#subqueryExpressionAtom.
+	VisitSubqueryExpressionAtom(ctx *SubqueryExpressionAtomContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#binaryComparisonPredicate.
 	VisitBinaryComparisonPredicate(ctx *BinaryComparisonPredicateContext) interface{}
 

@@ -772,6 +772,9 @@ type RelationalParserListener interface {
 	// EnterIsExpression is called when entering the isExpression production.
 	EnterIsExpression(c *IsExpressionContext)
 
+	// EnterSubqueryExpressionAtom is called when entering the subqueryExpressionAtom production.
+	EnterSubqueryExpressionAtom(c *SubqueryExpressionAtomContext)
+
 	// EnterBinaryComparisonPredicate is called when entering the binaryComparisonPredicate production.
 	EnterBinaryComparisonPredicate(c *BinaryComparisonPredicateContext)
 
@@ -1602,6 +1605,9 @@ type RelationalParserListener interface {
 
 	// ExitIsExpression is called when exiting the isExpression production.
 	ExitIsExpression(c *IsExpressionContext)
+
+	// ExitSubqueryExpressionAtom is called when exiting the subqueryExpressionAtom production.
+	ExitSubqueryExpressionAtom(c *SubqueryExpressionAtomContext)
 
 	// ExitBinaryComparisonPredicate is called when exiting the binaryComparisonPredicate production.
 	ExitBinaryComparisonPredicate(c *BinaryComparisonPredicateContext)
