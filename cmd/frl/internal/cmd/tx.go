@@ -31,6 +31,13 @@ func newTxReadVersionCmd() *cobra.Command {
 		Short: "Print the current FDB global read version",
 		Example: `  frl tx read-version
   frl tx read-version -o json | jq '.read_version'`,
+		Long: "Starts a read-only transaction and returns its global read " +
+			"version (GRV) — the FDB equivalent of \"what time is it?\". " +
+			"Doubles as a connection smoke-check: if this succeeds, the " +
+			"cluster file + network path + coordinators are all reachable. " +
+			"No records / metadata / keyspace needed.\n\n" +
+			"--output / -o: 'text' (default, bare integer + newline — " +
+			"safe for `$(frl tx read-version)`) or 'json' (`{read_version}`).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
