@@ -100,6 +100,7 @@ func newSQLCmd() *cobra.Command {
 				database: databaseURI,
 				schema:   initSchema,
 			}
+			defer runner.close()
 			switch {
 			case cmdline != "":
 				return runner.runOnce(cmdline)
@@ -142,14 +143,22 @@ func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
 // sqlRunner owns the database handle + I/O. Shared by the REPL loop
 // and the non-interactive -c / -f paths so the three entry points
 // render results identically.
+//
+// `conn` pins the session to one *sql.Conn: transaction state
+// (BEGIN/COMMIT/ROLLBACK sent as raw SQL) is per-connection in
+// fdb-relational, so every statement the REPL runs — including DDL,
+// queries, and tx commands — must flow through the same handle.
+// `db.Conn(ctx)` is grabbed lazily on first execute().
 type sqlRunner struct {
 	db       *sql.DB
+	conn     *sql.Conn
 	out      io.Writer
 	errOut   io.Writer
 	ctx      context.Context
 	cfgCtx   *configv1.Context // cluster_file for catalog lookups
 	database string            // active database URI (from --database)
 	schema   string            // tracked for the prompt; set by \c
+	inTx     bool              // reflects the driver's tx state for prompt styling
 }
 
 // tableInfo is the minimal shape rendered by \d — table name + column
@@ -206,7 +215,7 @@ func (r *sqlRunner) repl() error {
 	defer rl.Close()
 
 	banner := sqlBannerStyle.Render("frl sql") + " — " +
-		sqlMutedStyle.Render("\\? for help, \\q to quit, multi-line ends at ;")
+		sqlMutedStyle.Render("\\? for help, \\q to quit, multi-line ends at ; — BEGIN/COMMIT/ROLLBACK supported")
 	fmt.Fprintln(r.out, banner)
 
 	var buf strings.Builder
@@ -262,18 +271,23 @@ func (r *sqlRunner) repl() error {
 
 // --- execution -----------------------------------------------------------
 
-// execute runs one statement. SELECT-shaped queries go through Query
-// and render a lipgloss table; everything else goes through Exec and
-// reports rows-affected / duration. Statement type is inferred from
-// the leading keyword — same heuristic psql uses.
+// execute runs one statement on the session's pinned *sql.Conn.
+// SELECT-shaped queries go through Query + table render; everything
+// else goes through Exec and reports rows-affected / duration.
+// Statement type is inferred from the leading keyword — same heuristic
+// psql uses. Tx commands (BEGIN / COMMIT / ROLLBACK) flip r.inTx so
+// the prompt and meta-commands reflect the driver's state.
 func (r *sqlRunner) execute(stmt string) error {
 	stmt = strings.TrimSpace(stmt)
 	if stmt == "" {
 		return nil
 	}
+	if err := r.ensureConn(); err != nil {
+		return err
+	}
 	start := time.Now()
 	if isQuery(stmt) {
-		rows, err := r.db.QueryContext(r.ctx, stmt)
+		rows, err := r.conn.QueryContext(r.ctx, stmt)
 		if err != nil {
 			return err
 		}
@@ -286,9 +300,27 @@ func (r *sqlRunner) execute(stmt string) error {
 			fmt.Sprintf("(%d row%s, %s)", n, plural(n), time.Since(start).Round(time.Millisecond))))
 		return nil
 	}
-	res, err := r.db.ExecContext(r.ctx, stmt)
+	// Pre-detect tx kind so we can (a) rewrite `BEGIN` to the spelling
+	// the driver actually parses and (b) update our prompt state on
+	// success. psql accepts both `BEGIN` and `START TRANSACTION`;
+	// fdb-relational only parses the latter — translate transparently
+	// so operators don't hit a parser error on the common spelling.
+	kind := txCommand(stmt)
+	sent := stmt
+	if kind == txBegin {
+		sent = "START TRANSACTION"
+	}
+	res, err := r.conn.ExecContext(r.ctx, sent)
 	if err != nil {
 		return err
+	}
+	// Update the prompt state *after* a successful tx command — the
+	// driver's state is authoritative; we only mirror it for display.
+	switch kind {
+	case txBegin:
+		r.inTx = true
+	case txCommit, txRollback:
+		r.inTx = false
 	}
 	affected := int64(-1)
 	if res != nil {
@@ -305,6 +337,68 @@ func (r *sqlRunner) execute(stmt string) error {
 			"OK ("+time.Since(start).Round(time.Millisecond).String()+")"))
 	}
 	return nil
+}
+
+// ensureConn lazily pins the runner to a single *sql.Conn so raw-SQL
+// transaction commands (`BEGIN` / `COMMIT` / `ROLLBACK`) see a
+// consistent session — they're per-connection in fdb-relational,
+// and *sql.DB doesn't guarantee sticky connections by default.
+func (r *sqlRunner) ensureConn() error {
+	if r.conn != nil {
+		return nil
+	}
+	c, err := r.db.Conn(r.ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	r.conn = c
+	return nil
+}
+
+// close releases the pinned connection. If the REPL is mid-tx, issue
+// a best-effort ROLLBACK first — psql does the same on EOF, and
+// leaking an open tx to a pool would pin the connection forever.
+func (r *sqlRunner) close() error {
+	if r.conn == nil {
+		return nil
+	}
+	if r.inTx {
+		// Best-effort — the whole point is we're closing anyway.
+		_, _ = r.conn.ExecContext(r.ctx, "ROLLBACK")
+		r.inTx = false
+	}
+	err := r.conn.Close()
+	r.conn = nil
+	return err
+}
+
+// txCommandKind identifies the transaction-control statements the REPL
+// recognises. Detecting them lets us flip prompt styling and surface a
+// "mid-tx" warning at EOF without waiting on the driver to tell us.
+type txCommandKind int
+
+const (
+	txNone txCommandKind = iota
+	txBegin
+	txCommit
+	txRollback
+)
+
+// txCommand maps a raw statement to its tx kind. Case-insensitive;
+// matches `BEGIN`, `START TRANSACTION`, `COMMIT`, and `ROLLBACK`
+// optionally followed by whitespace. Anything else is txNone.
+func txCommand(stmt string) txCommandKind {
+	head := strings.ToUpper(strings.TrimSpace(stmt))
+	switch {
+	case head == "BEGIN" || strings.HasPrefix(head, "BEGIN "),
+		head == "START TRANSACTION" || strings.HasPrefix(head, "START TRANSACTION "):
+		return txBegin
+	case head == "COMMIT" || strings.HasPrefix(head, "COMMIT "):
+		return txCommit
+	case head == "ROLLBACK" || strings.HasPrefix(head, "ROLLBACK "):
+		return txRollback
+	}
+	return txNone
 }
 
 // isQuery guesses whether stmt returns rows. Case-insensitive match on
@@ -390,6 +484,14 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 	case `\c`:
 		if len(fields) < 2 {
 			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("usage: \\c <schema>"))
+			return false
+		}
+		if r.inTx {
+			// Schema changes and open transactions don't mix cleanly —
+			// fdb-relational would either leak the tx or refuse the
+			// schema swap. Tell the operator to pick one.
+			fmt.Fprintln(r.errOut, sqlErrorStyle.Render(
+				"cannot switch schema inside a transaction — COMMIT or ROLLBACK first"))
 			return false
 		}
 		r.schema = fields[1]
@@ -707,19 +809,27 @@ var (
 	sqlPromptMuted = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	sqlContStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	sqlSchemaColor = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	_              = sqlPromptMuted // reserved for future schema-in-prompt styling
+	// sqlTxMarker is the `*` that appears before `>` while a
+	// transaction is open — yellow so it's noticeable without being
+	// alarming (errors use red).
+	sqlTxMarker = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 )
 
-// prompt builds the primary prompt. If a schema is active it's included
-// in a muted color so operators can see which namespace they're in at
-// a glance.
+// prompt builds the primary prompt. If a schema is active it's
+// included in a muted color so operators can see which namespace they
+// are in at a glance. When a transaction is open (r.inTx), a `*`
+// is injected before `>` — psql uses the same signal.
 func (r *sqlRunner) prompt() string {
+	marker := sqlPromptStyle.Render("> ")
+	if r.inTx {
+		marker = sqlTxMarker.Render("*") + sqlPromptStyle.Render("> ")
+	}
 	if r.schema != "" {
 		return sqlPromptStyle.Render("frl") + sqlPromptMuted.Render("(") +
 			sqlSchemaColor.Render(r.schema) + sqlPromptMuted.Render(")") +
-			sqlPromptStyle.Render("> ")
+			marker
 	}
-	return sqlPromptStyle.Render("frl> ")
+	return sqlPromptStyle.Render("frl") + marker
 }
 
 // sqlContinuePrompt is the indented continuation prompt shown while a

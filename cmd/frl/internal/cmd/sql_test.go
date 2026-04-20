@@ -175,6 +175,42 @@ func TestRenderCell_TypeDispatch(t *testing.T) {
 	}
 }
 
+func TestTxCommand(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   string
+		want txCommandKind
+	}{
+		{"BEGIN", txBegin},
+		{"begin", txBegin},
+		{"  BEGIN   ", txBegin},
+		{"BEGIN WORK", txBegin},
+		{"START TRANSACTION", txBegin},
+		{"start transaction", txBegin},
+		{"START TRANSACTION READ WRITE", txBegin},
+
+		{"COMMIT", txCommit},
+		{"commit", txCommit},
+		{"COMMIT ", txCommit},
+		{"COMMIT WORK", txCommit},
+
+		{"ROLLBACK", txRollback},
+		{"rollback", txRollback},
+		{"ROLLBACK WORK", txRollback},
+
+		// Not tx commands — watchwords that shouldn't trip the matcher.
+		{"SELECT 1", txNone},
+		{"INSERT INTO begin VALUES (1)", txNone}, // begin as ident, not keyword
+		{"", txNone},
+		{"BEGINNER", txNone}, // prefix-only match must require space
+	}
+	for _, tc := range cases {
+		if got := txCommand(tc.in); got != tc.want {
+			t.Errorf("txCommand(%q) = %v; want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestPadCell(t *testing.T) {
 	t.Parallel()
 	if got := padCell("hi", 5); got != "hi   " {
