@@ -4940,13 +4940,27 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO S (id, region, amount) VALUES (2, 'b', 20)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// ORDER BY SUM(amount) * 2 — arithmetic wrapping an aggregate isn't supported
-	// (aggregation shrinks rows, breaking per-row expression evaluation). Any
-	// error is acceptable; what's NOT acceptable is a silent no-op ORDER BY.
-	_, err = db.QueryContext(ctx, `
+	// ORDER BY SUM(amount) * 2 — swingshift-38 added support for ORDER BY
+	// over aggregate expressions via the sortOnly outExpr aggCols entry.
+	// Verify the sort actually runs: amounts (10, 20) → SUM*2 by region:
+	// 'a'=20, 'b'=40 → DESC order is 'b', 'a'.
+	rows, err := db.QueryContext(ctx, `
 		WITH s AS (SELECT id, region, amount FROM S)
 		SELECT region, SUM(amount) FROM s GROUP BY region ORDER BY SUM(amount) * 2 DESC`)
-	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type row struct {
+		region string
+		sum    int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.region, &r.sum)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{"b", 20}, {"a", 10}}))
 }
 
 func TestFDB_SelfJoin(t *testing.T) {
@@ -5634,14 +5648,17 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeUndefinedColumn,
 		},
 		{
+			// swingshift-38: division / modulo by zero returns SQLSTATE
+			// 22012 (division_by_zero) — the SQL-standard class-22 code.
+			// Previously 22023 (INVALID_PARAMETER); more precise now.
 			name:     "div by zero (SQL standard error)",
 			sql:      "SELECT 1 / 0",
-			wantCode: api.ErrCodeInvalidParameter,
+			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
 			name:     "mod by zero",
 			sql:      "SELECT 5 % 0",
-			wantCode: api.ErrCodeInvalidParameter,
+			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
 			// nightshift-36: ABS(MinInt64) returns 22003

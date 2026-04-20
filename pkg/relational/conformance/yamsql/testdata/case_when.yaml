@@ -43,3 +43,24 @@ tests:
       - [2, ~]
       - [3, ~]
       - [4, ~]
+  # CASE inside a WHERE predicate. Classic "dynamic filter" shape —
+  # rejects rows whose CASE evaluates to 0.
+  - query: |-
+      SELECT id FROM t WHERE CASE WHEN v IS NULL THEN 0
+                                  WHEN v < 10 THEN 0
+                                  ELSE 1 END = 1
+      ORDER BY id
+    rows:
+      - [2]
+      - [4]
+  # CASE in a SELECT column referenced by ORDER BY via alias — ORDER BY
+  # on the alias of a CASE projection, routing through the proto
+  # single-source path's alias redirection.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 1 ELSE 0 END AS is_null
+      FROM t ORDER BY is_null DESC, id
+    rows:
+      - [3, 1]
+      - [1, 0]
+      - [2, 0]
+      - [4, 0]

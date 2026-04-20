@@ -57,3 +57,63 @@ tests:
       - [~, ~]
       - [~, ~]
       - [~, ~]
+
+  # LEFT OUTER JOIN + WHERE filtering on the right-side column. Filters
+  # applied AFTER the join so NULL-padded rows where b.label IS NULL
+  # are excluded by the equality predicate. Only the matched rows
+  # remain.
+  - query: |
+      SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
+      WHERE b.label = 'alpha'
+    rows:
+      - [1, 'alpha']
+
+  # LEFT OUTER JOIN + WHERE IS NULL — filter for unmatched-left rows
+  # only (common idiom for anti-join / "find the missing"). a.id=3
+  # has no match in b, so b.label IS NULL there.
+  - query: |
+      SELECT a.id FROM a LEFT OUTER JOIN b ON a.k = b.k
+      WHERE b.label IS NULL
+    rows:
+      - [3]
+
+  # RIGHT OUTER JOIN + WHERE IS NULL on the left side — the mirror
+  # anti-join. b.id=103 (k=99) has no match in a, so a.id IS NULL
+  # is the only surviving row.
+  - query: |
+      SELECT b.id, b.label FROM a RIGHT OUTER JOIN b ON a.k = b.k
+      WHERE a.id IS NULL
+    rows:
+      - [103, 'gamma']
+
+  # LEFT OUTER JOIN + GROUP BY on the left column, COUNT + SUM on the
+  # right. Unmatched left row contributes COUNT=0 + SUM=NULL (not 0 —
+  # SQL-standard: SUM over empty or all-NULL group is NULL).
+  - query: |
+      SELECT a.id, COUNT(b.label), SUM(b.k) FROM a LEFT OUTER JOIN b ON a.k = b.k
+      GROUP BY a.id ORDER BY a.id
+    rows:
+      - [1, 1, 10]
+      - [2, 1, 20]
+      - [3, 0, ~]
+
+  # LEFT OUTER JOIN + GROUP BY + HAVING. Same groups as above but
+  # keeps only the groups with at least one matched right row.
+  - query: |
+      SELECT a.id, COUNT(b.label) FROM a LEFT OUTER JOIN b ON a.k = b.k
+      GROUP BY a.id HAVING COUNT(b.label) > 0
+      ORDER BY a.id
+    rows:
+      - [1, 1]
+      - [2, 1]
+
+  # RIGHT OUTER JOIN + GROUP BY on the right's grouping column. The
+  # unmatched-right b.id=103 (k=99) contributes a group of its own
+  # with count(a.id) = 0. All three b.k values become distinct groups.
+  - query: |
+      SELECT b.k, COUNT(a.id) FROM a RIGHT OUTER JOIN b ON a.k = b.k
+      GROUP BY b.k ORDER BY b.k
+    rows:
+      - [10, 1]
+      - [20, 1]
+      - [99, 0]

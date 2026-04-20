@@ -1,7 +1,8 @@
 # arithmetic.yaml
 #
 # swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp
-# unified. Div/0 errors (SQL standard, 22023), '%' supported everywhere.
+# unified. Div/0 errors (SQL standard 22012, division_by_zero), '%'
+# supported everywhere.
 #
 # BIGINT / BIGINT does integer division (truncation toward zero) to
 # match Java's ArithmeticValue.PhysicalOperator.DIV_LL which is literal
@@ -30,12 +31,14 @@ tests:
   - query: SELECT a % b FROM t WHERE id = 1
     rows:
       - [0]
-  # Div/0 raises SQLSTATE 22023 per SQL standard (not silent NULL).
+  # Div/0 raises SQLSTATE 22012 (division_by_zero) per SQL standard.
+  # Swingshift-38 tightened from the generic 22023 (INVALID_PARAMETER)
+  # to the precise class-22 code so callers can distinguish division-
+  # by-zero from other data-exception shapes without string-matching.
   - query: SELECT a / b FROM t WHERE id = 2
-    error_code: "22023"
-  # Mod/0 also 22023.
+    error_code: "22012"
   - query: SELECT a % b FROM t WHERE id = 2
-    error_code: "22023"
+    error_code: "22012"
   # Addition.
   - query: SELECT a + b FROM t WHERE id = 1
     rows:

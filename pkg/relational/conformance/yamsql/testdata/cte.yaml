@@ -44,3 +44,27 @@ tests:
     rows:
       # lo has 1 row (id=1), hi has 2 rows (id=3, id=4). Cross-join = 1*2 = 2.
       - [2]
+  # ORDER BY a CTE column not in the projection. The execSelectFromCTE
+  # sort path used colIdx, which only contained the projected column
+  # names — `total` was missing → sort no-op'd → output came back in
+  # insertion order. Now the sort falls back to the materialised CTE
+  # row map for keys not in colIdx (mapRows[i] is in lockstep with
+  # outRows[i] on the non-aggregate CTE path). Aggregate-on-CTE
+  # ordering still uses the colName lookup against projected aggregate
+  # outputs.
+  - query: |-
+      WITH s AS (SELECT id, v * 10 AS scaled FROM t)
+      SELECT id FROM s ORDER BY scaled DESC
+    rows:
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+  # ORDER BY a name that's neither in the projection nor a real CTE
+  # column errors 42703 instead of silently no-op'ing the sort
+  # (round-10 reviewer follow-up). Pre-fix typos would've been
+  # masked as "stable order" output.
+  - query: |-
+      WITH s AS (SELECT id, v FROM t)
+      SELECT id FROM s ORDER BY no_such_col
+    error_code: "42703"

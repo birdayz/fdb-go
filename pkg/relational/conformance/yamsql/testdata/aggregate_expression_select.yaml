@@ -1,0 +1,120 @@
+# aggregate_expression_select.yaml
+#
+# SELECT-list expressions that wrap aggregate function calls —
+# `SUM(a) + SUM(b)`, `COALESCE(SUM(v), 0)`, `CASE WHEN COUNT(*)>5
+# THEN 'many' ELSE 'few' END`, etc. Distinct from aggregate_expr.yaml
+# (which covers aggregates taking expression ARGUMENTS like
+# `SUM(qty*price)`).
+#
+# Pre-swingshift-38 these all errored "unsupported function call
+# type *antlrgen.AggregateFunctionCallContext" because the SELECT
+# evaluator tried to treat the inner aggregate call as a scalar
+# function. Post-fix: SELECT-list expressions containing aggregates
+# are detected at parse time, the inner aggregates are harvested as
+# hidden accumulators, and the wrapping expression is evaluated
+# post-aggregation against a rowMap that already holds every
+# aggregate's computed value.
+name: aggregate_expression_select
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, a BIGINT, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES
+      (1, 'x', 5, 10),
+      (2, 'x', 20, 3),
+      (3, 'y', 7, 2),
+      (4, 'y', null, null)
+tests:
+  # Arithmetic on two aggregates — ungrouped.
+  - query: SELECT SUM(a) + SUM(b) FROM t
+    rows:
+      - [47]
+  # Subtraction — verify ordering of operands.
+  - query: SELECT SUM(a) - SUM(b) FROM t
+    rows:
+      - [17]
+  # COALESCE wrapping an aggregate — empty input → SUM=NULL →
+  # COALESCE returns the fallback 0.
+  - query: SELECT COALESCE(SUM(a), 0) FROM t WHERE id > 99
+    rows:
+      - [0]
+  # COALESCE with populated group.
+  - query: SELECT COALESCE(SUM(a), 0) FROM t
+    rows:
+      - [32]
+  # Aggregate arithmetic per GROUP BY group.
+  - query: SELECT grp, SUM(a) + SUM(b) FROM t GROUP BY grp ORDER BY grp
+    rows:
+      - ['x', 38]
+      - ['y', 9]
+  # Nested: COALESCE on aggregate with GROUP BY. Group 'y' has a=7,
+  # NULL → SUM=7. Group 'x' has 5+20=25. Neither is NULL so COALESCE
+  # fallback doesn't fire, but it pins the path that ran through
+  # the aggregate-aware evalExprOnMap.
+  - query: SELECT grp, COALESCE(SUM(a), 0) FROM t GROUP BY grp ORDER BY grp
+    rows:
+      - ['x', 25]
+      - ['y', 7]
+  # CASE over an aggregate — evaluates post-aggregation against
+  # the emitted COUNT(*) value.
+  - query: |
+      SELECT CASE WHEN COUNT(*) > 3 THEN 'many' ELSE 'few' END FROM t
+    rows:
+      - ['many']
+  # Multiple-aggregate arithmetic mixed with a group-by column in the
+  # SELECT list. Group 'x': SUM(a)=25, SUM(b)=13, diff=12. Group 'y':
+  # SUM(a)=7, SUM(b)=2, diff=5.
+  - query: |
+      SELECT grp, SUM(a) - SUM(b) AS diff FROM t
+      GROUP BY grp ORDER BY grp
+    rows:
+      - ['x', 12]
+      - ['y', 5]
+  # AVG plus a constant — post-aggregation expression over a
+  # floating-point result.
+  - query: SELECT AVG(a) + 1 FROM t
+    rows:
+      - [11.666666666666666]
+  # Same aggregate both standalone and wrapped: `SELECT SUM(a), SUM(a)+1`
+  # must NOT misclassify SUM(a)+1 as a group-by reference (which the
+  # mixed-agg-plain-col path would otherwise do). Dedup via outName
+  # means SUM(a) isn't harvested twice either.
+  - query: SELECT SUM(a), SUM(a) + 1 FROM t WHERE id < 3
+    rows:
+      - [25, 26]
+  # Aggregate expression in SELECT + aggregate in HAVING. HAVING
+  # references the same SUM(a) that the SELECT-list expression uses,
+  # and the harvest dedup keeps a single hidden accumulator.
+  - query: SELECT SUM(a) + 1 FROM t HAVING SUM(a) > 10
+    rows:
+      - [33]
+  # NOVEL aggregate inside a SELECT-list expression (not already in
+  # aggCols): `SELECT SUM(a), SUM(b)+1`. Round-7 reviewer caught
+  # this — the mixed-agg branch's outExpr path was routing the
+  # expression correctly but NOT harvesting SUM(b) as a hidden
+  # accumulator, so the rowMap at emit time was missing SUM(b) and
+  # evalExprOnMap errored "aggregate SUM(b) not available in this
+  # context". Fix harvests novel aggregates as hidden before
+  # appending the outExpr slot.
+  - query: SELECT SUM(a), SUM(b) + 1 FROM t WHERE id < 3
+    rows:
+      - [25, 14]
+  # Two distinct aggregates in the same outExpr, both novel.
+  - query: SELECT SUM(a), SUM(a) + SUM(b) FROM t WHERE id < 3
+    rows:
+      - [25, 38]
+  # Constant literal alongside an aggregate: `SELECT 1, SUM(v)`. The
+  # literal must NOT be misclassified as a group-by reference "1" (which
+  # the pre-fix reclassification did, causing the proto-path aggArgFDs
+  # resolver to fail with "column '1' not found in table"). A
+  # constant-only expression takes the outExpr path and emits once per
+  # group (here, one group).
+  - query: SELECT 1, SUM(a) FROM t
+    rows:
+      - [1, 32]
+  - query: SELECT 'total', COUNT(*) FROM t
+    rows:
+      - ['total', 4]
+  # Multiple constants + aggregate mixed ordering.
+  - query: SELECT 1, 2, MAX(a) FROM t
+    rows:
+      - [1, 2, 20]

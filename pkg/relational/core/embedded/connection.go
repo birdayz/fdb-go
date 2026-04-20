@@ -26,6 +26,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/antlr4-go/antlr/v4"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
@@ -292,15 +293,62 @@ func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrge
 }
 
 // execUnion executes a UNION ALL / UNION DISTINCT query.
+//
+// Trailing ORDER BY / LIMIT / OFFSET on the rightmost simpleTable is lifted
+// to the combined result. SQL-standard semantics (and Postgres, MySQL): a
+// trailing `ORDER BY ... LIMIT N` on a UNION applies to the whole result,
+// not just the last branch. The ANTLR grammar nests the clause inside the
+// right-side simpleTable because the parser greedily attaches it to the
+// last selectElements production, so we pull it back up here.
+//
+// For a three-way union `A UNION B UNION C ORDER BY col`, the grammar
+// produces SetQuery(SetQuery(A, B), C). The outer execUnion lifts C's
+// ORDER BY post-combined — correct. A three-way union with an ORDER BY
+// bound to the middle SELECT (e.g. `A UNION B ORDER BY col UNION C`)
+// would be parsed as SetQuery(SetQuery(A, B_ordered), C) and the inner
+// execUnion would sort A∪B without the outer UNION re-sorting; that
+// form is also a syntax error in Postgres (ORDER BY can only appear at
+// the end without parentheses), so we do not expect valid SQL to hit
+// the degenerate case.
 func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQueryContext) (driver.Rows, error) {
 	leftCols, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
 	if err != nil {
 		return nil, err
 	}
-	rightCols, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
-	if err != nil {
-		return nil, err
+
+	var unionOrder []orderByClause
+	var unionLimit int64 = -1
+	var unionOffset int64 = 0
+	var rightCols []string
+	var rightRows [][]driver.Value
+	if rb, ok := setQ.GetRight().(*antlrgen.QueryTermDefaultContext); ok {
+		// Run the right side with ORDER BY / LIMIT / OFFSET stripped so those
+		// clauses apply post-union. Leaving LIMIT in place on the right side
+		// would truncate before dedup/concat and produce wrong results for
+		// queries like `... UNION ... LIMIT 5`.
+		rsq, parseErr := extractFromQueryTerm(rb)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		unionOrder = rsq.orderBy
+		rsq.orderBy = nil
+		unionLimit = rsq.limit
+		rsq.limit = -1
+		unionOffset = rsq.offset
+		rsq.offset = 0
+		rows, rErr := c.execSelectQuery(ctx, rsq)
+		if rErr != nil {
+			return nil, rErr
+		}
+		sr := rows.(*staticRows)
+		rightCols, rightRows = sr.cols, sr.rows
+	} else {
+		rightCols, rightRows, err = c.execQueryBodyRows(ctx, setQ.GetRight())
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	// SQL standard: UNION sides must have matching column counts; names
 	// are positional (left's names become the result schema). Reject
 	// mismatched arity with SQLSTATE 42601 (syntax_error) — consistent
@@ -329,6 +377,54 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 			}
 		}
 		combined = deduped
+	}
+
+	// Apply union-level ORDER BY against the result schema (leftCols by position).
+	if len(unionOrder) > 0 {
+		colIdx := make(map[string]int, len(leftCols))
+		for i, name := range leftCols {
+			// Case-insensitive lookup to match the standard SELECT-list /
+			// ORDER BY semantics the single-source path uses.
+			colIdx[strings.ToLower(name)] = i
+		}
+		// Resolve each ORDER BY entry to a column index. Expression-based
+		// ORDER BY is not supported at the union level — the combined row
+		// set has no backing map/message to evaluate against.
+		indices := make([]int, len(unionOrder))
+		for i, ob := range unionOrder {
+			if ob.expr != nil {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"ORDER BY expression not supported on UNION result; use a column name from the left SELECT list")
+			}
+			idx, ok := colIdx[strings.ToLower(ob.colName)]
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"ORDER BY column %q not found in UNION result schema", ob.colName)
+			}
+			indices[i] = idx
+		}
+		sort.SliceStable(combined, func(a, b int) bool {
+			for k, idx := range indices {
+				less, equal := orderByLess(combined[a][idx], combined[b][idx], unionOrder[k])
+				if equal {
+					continue
+				}
+				return less
+			}
+			return false
+		})
+	}
+
+	// Apply union-level OFFSET / LIMIT.
+	if unionOffset > 0 {
+		if unionOffset >= int64(len(combined)) {
+			combined = combined[:0]
+		} else {
+			combined = combined[unionOffset:]
+		}
+	}
+	if unionLimit >= 0 && int64(len(combined)) > unionLimit {
+		combined = combined[:unionLimit]
 	}
 
 	return &staticRows{cols: leftCols, rows: combined}, nil
@@ -560,6 +656,123 @@ func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaD
 		"SELECT %s.*: qualifier does not match any FROM-clause source", qualifier)
 }
 
+// resolveSelectListPosition maps a SQL-92 positional reference (e.g.
+// `ORDER BY 2` or `GROUP BY 1`) to the matching output column name from
+// the current SELECT list. `clause` is the SQL keyword used for the
+// out-of-range error message ("ORDER BY" or "GROUP BY"). Accepts a
+// positive integer literal (DecimalConstant wrapped in
+// PredicatedExpression→ConstantExpressionAtom).
+//
+// Returns:
+//   - (name, true, nil): positional reference resolved to an output column.
+//   - ("", false, nil): the expression isn't a positional reference at all
+//     (caller falls through to column / expression paths).
+//   - ("", false, err): expression IS a positive integer literal but N is
+//     out of range. Postgres / MySQL error on this instead of treating the
+//     integer as a constant sort / group key, so we do the same.
+func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool, error) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", false, nil
+	}
+	atom, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return "", false, nil
+	}
+	dec, ok := atom.Constant().(*antlrgen.DecimalConstantContext)
+	if !ok {
+		return "", false, nil
+	}
+	n, err := strconv.ParseInt(dec.DecimalLiteral().GetText(), 10, 64)
+	if err != nil || n < 1 {
+		return "", false, nil
+	}
+	listLen := len(projCols)
+	if listLen == 0 {
+		listLen = len(aggCols)
+	}
+	if int(n) > listLen {
+		return "", false, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"%s position %d is out of range: SELECT list has %d entries", clause, n, listLen)
+	}
+	switch {
+	case len(projCols) > 0:
+		if int(n) <= len(projAliases) && projAliases[n-1] != "" {
+			return projAliases[n-1], true, nil
+		}
+		return projCols[n-1], true, nil
+	case len(aggCols) > 0:
+		return aggCols[n-1].outName, true, nil
+	}
+	return "", false, nil
+}
+
+// expandStarSlots expands mixed SELECT lists of the form
+// `SELECT a.*, b.label FROM a, b` by rewriting each `<qualifier>.*` slot
+// (marked via sq.projStarQualifiers[i]) into its resolved per-source
+// column list. After expansion projStarQualifiers is zeroed out so the
+// downstream execution loop can treat every slot as a plain named column.
+//
+// For each expanded column `col` from source with alias `A`, projCols[k]
+// becomes `A.col` (alias-qualified, matching the keys scanTableToMaps
+// writes and the ORDER BY resolver which expects qualified names to
+// appear in cols[]) and projAliases[k] stays empty — the downstream
+// cols-from-projCols fallback uses projCols verbatim, which keeps
+// ORDER BY a.id resolvable. The runner compares row values, not
+// column names, so the qualified output name is fine. projExprs[k] = nil.
+//
+// No-op when projCols is nil (pure SELECT * / pure qualifier-star take
+// the legacy projQualifier / nil-projCols paths) or when no slot is a
+// star. Safe to call multiple times — subsequent calls see an empty
+// star set and bail.
+func (c *EmbeddedConnection) expandStarSlots(md *recordlayer.RecordMetaData, sq *selectQuery) error {
+	if sq.projCols == nil {
+		return nil
+	}
+	hasStar := false
+	for _, q := range sq.projStarQualifiers {
+		if q != "" {
+			hasStar = true
+			break
+		}
+	}
+	if !hasStar {
+		return nil
+	}
+	newCols := make([]string, 0, len(sq.projCols))
+	newAliases := make([]string, 0, len(sq.projCols))
+	newExprs := make([]antlrgen.IExpressionContext, 0, len(sq.projCols))
+	newStars := make([]string, 0, len(sq.projCols))
+	for i, col := range sq.projCols {
+		qual := ""
+		if i < len(sq.projStarQualifiers) {
+			qual = sq.projStarQualifiers[i]
+		}
+		if qual == "" {
+			newCols = append(newCols, col)
+			newAliases = append(newAliases, sq.projAliases[i])
+			newExprs = append(newExprs, sq.projExprs[i])
+			newStars = append(newStars, "")
+			continue
+		}
+		cols, qAlias, err := c.resolveQualifierColumns(md, sq, qual)
+		if err != nil {
+			return err
+		}
+		for _, cn := range cols {
+			newCols = append(newCols, qAlias+"."+cn)
+			newAliases = append(newAliases, "")
+			newExprs = append(newExprs, nil)
+			newStars = append(newStars, "")
+		}
+	}
+	sq.projCols = newCols
+	sq.projAliases = newAliases
+	sq.projExprs = newExprs
+	sq.projStarQualifiers = newStars
+	return nil
+}
+
 // collectLeftJoinKeys returns the set of row-map keys that describe the
 // left-hand side of a RIGHT JOIN — unqualified column names and
 // alias-qualified variants for every source that has already been
@@ -627,7 +840,17 @@ func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData,
 //     sq.groupBy is empty), optionally filtered by sq.havingExpr.
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
-		return []string{"COUNT(*)"}, [][]driver.Value{{int64(len(filtered))}}, nil
+		count := int64(len(filtered))
+		if sq.havingExpr != nil {
+			keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
+			if hErr != nil {
+				return nil, nil, hErr
+			}
+			if !keep {
+				return []string{"COUNT(*)"}, nil, nil
+			}
+		}
+		return []string{"COUNT(*)"}, [][]driver.Value{{count}}, nil
 	}
 
 	type mapGroupState struct {
@@ -646,6 +869,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	for _, row := range filtered {
 		gVals := make([]driver.Value, len(sq.groupBy))
 		for gi, gcol := range sq.groupBy {
+			if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil {
+				v, evalErr := evalExprOnMap(ctx, c, row, sq.groupByExprs[gi])
+				if evalErr != nil {
+					return nil, nil, evalErr
+				}
+				gVals[gi] = v
+				continue
+			}
 			if v, ok := row[gcol]; ok {
 				gVals[gi] = v
 			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
@@ -681,13 +912,37 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if ac.groupCol != "" {
 				continue
 			}
-			colVal := row[ac.aggArg]
-			if colVal == nil && ac.aggArg != "" {
-				if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+			if ac.outExpr != nil {
+				// Post-aggregation expression — evaluated at emit time
+				// against the rowMap, not during scan accumulation.
+				continue
+			}
+			var colVal driver.Value
+			switch {
+			case ac.aggExpr != nil:
+				v, evalErr := evalExprOnMap(ctx, c, row, ac.aggExpr)
+				if evalErr != nil {
+					return nil, nil, evalErr
+				}
+				colVal = v
+			case ac.aggArg != "":
+				// Prefer the qualified key. OUTER JOINs explicitly set
+				// `alias.col` to NULL for unmatched rows, and falling back
+				// to the bare `col` on a present-but-NULL qualified key
+				// would pick up the other side's column (e.g. row["a.id"]
+				// = NULL on an unmatched-right row, row["id"] = b.id) —
+				// exactly the nightshift-36 bug but for aggregates. Only
+				// fall through to the bare column when the qualified key
+				// is absent from the row.
+				v, ok := row[ac.aggArg]
+				if ok {
+					colVal = v
+				} else if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
 					colVal = row[ac.aggArg[dot+1:]]
 				}
 			}
-			if ac.aggDistinct && ac.aggArg != "" {
+			hasArg := ac.aggArg != "" || ac.aggExpr != nil
+			if ac.aggDistinct && hasArg {
 				if colVal != nil {
 					// Type-tagged key so int 5 and string "5" don't collide
 					// (matches the mixed-type-equality fix in valuesEqual).
@@ -725,9 +980,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				continue
 			}
-			// COUNT(*) (aggArg empty) counts every row, including all-NULL.
-			// COUNT(<expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
-			if ac.aggFunc == "COUNT" && ac.aggArg == "" {
+			// COUNT(*) (no arg) counts every row, including all-NULL.
+			// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
+			if ac.aggFunc == "COUNT" && !hasArg {
 				gs.counts[i]++
 				continue
 			}
@@ -785,24 +1040,49 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	for i, col := range sq.groupBy {
 		groupColIdx[col] = i
 	}
-	cols = make([]string, len(sq.aggCols))
+	// emitIdx lists the aggCols positions that appear in cols/data:
+	// visible columns first, then sortOnly columns (harvested from
+	// ORDER BY) so the sort can find them via colIdx. Hidden entries
+	// (harvested from HAVING) contribute to accumulation and HAVING
+	// evaluation but drop out entirely. Caller strips data rows to
+	// the first `visibleCount` columns after the sort runs.
+	emitIdx := make([]int, 0, len(sq.aggCols))
 	for i, ac := range sq.aggCols {
-		cols[i] = ac.outName
+		if !ac.hidden && !ac.sortOnly {
+			emitIdx = append(emitIdx, i)
+		}
 	}
+	visibleCount := len(emitIdx)
+	for i, ac := range sq.aggCols {
+		if !ac.hidden && ac.sortOnly {
+			emitIdx = append(emitIdx, i)
+		}
+	}
+	cols = make([]string, len(emitIdx))
+	for out, i := range emitIdx {
+		cols[out] = sq.aggCols[i].outName
+	}
+	_ = visibleCount // surfaced via stripAggregateSortOnly()
 	for _, key := range groupOrder {
 		gs := groups[key]
-		rowVals := make([]driver.Value, len(sq.aggCols))
+		fullVals := make([]driver.Value, len(sq.aggCols))
 		rowMap := make(map[string]driver.Value, len(sq.aggCols))
+		// Pass 1: populate fullVals + rowMap for all non-outExpr entries.
+		// outExpr entries need rowMap fully filled before they can evaluate
+		// (they may reference any aggregate or group-by value).
 		for i, ac := range sq.aggCols {
+			if ac.outExpr != nil {
+				continue
+			}
 			if ac.groupCol != "" {
 				idx, ok := groupColIdx[ac.groupCol]
 				if ok {
-					rowVals[i] = gs.groupVals[idx]
+					fullVals[i] = gs.groupVals[idx]
 				}
 			} else {
 				switch ac.aggFunc {
 				case "COUNT":
-					rowVals[i] = gs.counts[i]
+					fullVals[i] = gs.counts[i]
 				case "SUM":
 					// SUM of empty-or-all-NULL input is NULL per SQL standard,
 					// not 0. counts[i]>0 means at least one non-null observed.
@@ -810,19 +1090,34 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					// value in the DISTINCT branch, so this path is correct
 					// for both the DISTINCT and non-DISTINCT cases.
 					if gs.counts[i] > 0 {
-						rowVals[i] = gs.sums[i]
+						fullVals[i] = gs.sums[i]
 					}
 				case "MIN":
-					rowVals[i] = gs.mins[i]
+					fullVals[i] = gs.mins[i]
 				case "MAX":
-					rowVals[i] = gs.maxes[i]
+					fullVals[i] = gs.maxes[i]
 				case "AVG":
 					if gs.avgsN[i] > 0 {
-						rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+						fullVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
 					}
 				}
 			}
-			rowMap[ac.outName] = rowVals[i]
+			rowMap[ac.outName] = fullVals[i]
+		}
+		// Pass 2: evaluate outExpr entries against the now-populated rowMap.
+		// evalExprOnMap resolves AggregateFunctionCall atoms via rowMap lookup
+		// (added alongside this pass) so `SUM(a) + SUM(b)`, `COALESCE(SUM(v), 0)`,
+		// and similar shapes work.
+		for i, ac := range sq.aggCols {
+			if ac.outExpr == nil {
+				continue
+			}
+			v, evalErr := evalExprOnMap(ctx, c, rowMap, ac.outExpr)
+			if evalErr != nil {
+				return nil, nil, evalErr
+			}
+			fullVals[i] = v
+			rowMap[ac.outName] = v
 		}
 		if sq.havingExpr != nil {
 			ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
@@ -833,9 +1128,53 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				continue
 			}
 		}
+		rowVals := make([]driver.Value, len(emitIdx))
+		for out, i := range emitIdx {
+			rowVals[out] = fullVals[i]
+		}
 		data = append(data, rowVals)
 	}
 	return cols, data, nil
+}
+
+// stripAggregateSortOnly removes trailing sort-only columns added by
+// aggregateMapRows / the proto aggregate emit when ORDER BY referenced
+// aggregates not in the SELECT list. Counts visible (non-hidden,
+// non-sortOnly) entries in sq.aggCols; the emit appends sortOnly
+// columns AFTER the visible ones, so truncating each row to that
+// length restores the user's requested output shape.
+//
+// No-op when sq.aggCols has no sortOnly entries (the common case) and
+// when the countStar fast path is in play (sq.aggCols is empty —
+// nothing to strip; cols already correct).
+func stripAggregateSortOnly(sq *selectQuery, cols []string, data [][]driver.Value) ([]string, [][]driver.Value) {
+	if len(sq.aggCols) == 0 {
+		return cols, data
+	}
+	hasSortOnly := false
+	for _, ac := range sq.aggCols {
+		if ac.sortOnly {
+			hasSortOnly = true
+			break
+		}
+	}
+	if !hasSortOnly {
+		return cols, data
+	}
+	visibleCount := 0
+	for _, ac := range sq.aggCols {
+		if !ac.hidden && !ac.sortOnly {
+			visibleCount++
+		}
+	}
+	if visibleCount >= len(cols) {
+		return cols, data
+	}
+	cols = cols[:visibleCount]
+	for i := range data {
+		data[i] = data[i][:visibleCount]
+	}
+	return cols, data
 }
 
 func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
@@ -855,6 +1194,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
 		}
 		md := rlTmpl.Underlying()
+		// Expand any `<qualifier>.*` slots against the FROM sources now
+		// that md is available. No-op when the SELECT list doesn't mix
+		// a qualifier-star with named columns.
+		if expandErr := c.expandStarSlots(md, sq); expandErr != nil {
+			return nil, expandErr
+		}
 		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
 		if ssErr != nil {
 			return nil, ssErr
@@ -926,10 +1271,26 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 				// LEFT JOIN: emit left row with NULLs if no right match.
 				if jc.joinType == "LEFT" && !matched {
-					// Build null right side.
-					nullRight := make(map[string]driver.Value, len(left)+10)
+					// Build null right side. Populate right-side column keys
+					// (both `alias.col` and bare `col`) with NULL, derived
+					// from metadata, so downstream evaluators can find
+					// `b.label` / `label` and see NULL instead of erroring
+					// with 42703. Pre-fix, WHERE / HAVING / aggregate paths
+					// on unmatched-left rows failed because those keys were
+					// simply absent from the map. Skip any key that also
+					// exists on the left (e.g. a shared `id` column) —
+					// leaving the left value intact matches the RIGHT JOIN
+					// mirror logic.
+					rightKeys := c.collectLeftJoinKeys(md, []struct{ tableName, alias string }{{jc.tableName, jc.alias}})
+					nullRight := make(map[string]driver.Value, len(left)+len(rightKeys))
 					for k, v := range left {
 						nullRight[k] = v
+					}
+					for _, k := range rightKeys {
+						if _, exists := left[k]; exists {
+							continue
+						}
+						nullRight[k] = nil
 					}
 					next = append(next, nullRight)
 				}
@@ -1147,18 +1508,60 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			for i := range indexes {
 				indexes[i] = i
 			}
+			// Pre-validate ORDER BY column references for non-aggregate
+			// JOIN queries (where filtered/data are in lockstep): names
+			// not in colIdx must be present in the per-row map; otherwise
+			// they're typos that would silently no-op the sort. Skips
+			// expression-keyed items (handled by keys[]) and aggregate
+			// queries (different lockstep semantics handled below).
+			if !isAggregate && len(filtered) == len(data) && len(filtered) > 0 {
+				for _, ob := range sq.orderBy {
+					if ob.expr != nil {
+						continue
+					}
+					if _, ok := colIdx[ob.colName]; ok {
+						continue
+					}
+					if _, present := filtered[0][ob.colName]; present {
+						continue
+					}
+					// "alias.col" → strip qualifier and re-check (the
+					// JOIN row map populates both forms, but only the
+					// qualified form for sources that aren't the left).
+					if dot := strings.LastIndex(ob.colName, "."); dot >= 0 {
+						if _, present := filtered[0][ob.colName[dot+1:]]; present {
+							continue
+						}
+					}
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"ORDER BY column %q not found", ob.colName)
+				}
+			}
 			sort.SliceStable(indexes, func(ii, jj int) bool {
 				i, j := indexes[ii], indexes[jj]
 				for oi, ob := range sq.orderBy {
 					var a, b driver.Value
 					if ob.expr != nil && keys != nil {
 						a, b = keys[i][oi], keys[j][oi]
-					} else {
-						idx, ok := colIdx[ob.colName]
-						if !ok {
-							continue
-						}
+					} else if idx, ok := colIdx[ob.colName]; ok {
 						a, b = data[i][idx], data[j][idx]
+					} else if !isAggregate && len(filtered) == len(data) {
+						// ORDER BY a JOIN-input column not in the
+						// projection. The combined map row carries both
+						// the bare and alias-qualified forms; pull the
+						// value directly. Only valid on the non-aggregate
+						// path where filtered[i]↔data[i] is in lockstep.
+						a = filtered[i][ob.colName]
+						b = filtered[j][ob.colName]
+						if a == nil && b == nil {
+							if dot := strings.LastIndex(ob.colName, "."); dot >= 0 {
+								bare := ob.colName[dot+1:]
+								a = filtered[i][bare]
+								b = filtered[j][bare]
+							}
+						}
+					} else {
+						continue
 					}
 					less, equal := orderByLess(a, b, ob)
 					if !equal {
@@ -1182,6 +1585,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		}
 		if sq.limit >= 0 && int(sq.limit) < len(data) {
 			data = data[:sq.limit]
+		}
+		// Drop trailing sort-only aggregate columns now that the sort
+		// has consumed them. No-op when the query had no ORDER BY
+		// references to hidden aggregates.
+		if isAggregate {
+			cols, data = stripAggregateSortOnly(sq, cols, data)
 		}
 
 		return nil, nil
@@ -1279,6 +1688,28 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		}
 	}
 
+	// SELECT DISTINCT against a CTE. Pre-fix the CTE path didn't
+	// dedupe at all — `SELECT DISTINCT v FROM cte` returned every
+	// duplicate row through. Same dedup-on-projected-cols semantic
+	// the JOIN and proto paths use.
+	if sq.distinct && !sq.countStar && len(sq.aggCols) == 0 {
+		seen := make(map[string]struct{}, len(outRows))
+		dedupedRows := outRows[:0]
+		dedupedMaps := mapRows[:0]
+		for i, row := range outRows {
+			key := rowKey(row)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				dedupedRows = append(dedupedRows, row)
+				if i < len(mapRows) {
+					dedupedMaps = append(dedupedMaps, mapRows[i])
+				}
+			}
+		}
+		outRows = dedupedRows
+		mapRows = dedupedMaps
+	}
+
 	// ORDER BY. For aggregate CTE results, outRows was built via
 	// aggregateMapRows and mapRows is no longer in lockstep — use colName
 	// path only. For non-aggregate CTE, mapRows[i] matches outRows[i].
@@ -1318,18 +1749,42 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		for i := range indexes {
 			indexes[i] = i
 		}
+		// Pre-validate ORDER BY column references against the CTE: any
+		// name not in colIdx and not present in the materialised CTE row
+		// keys is a typo and must error rather than silently no-op'ing
+		// the sort. Round-10 reviewer note. Skips expression-keyed and
+		// aggregate-path ORDER BY items (they're handled above).
+		if len(mapRows) == len(outRows) && len(mapRows) > 0 {
+			for _, ob := range sq.orderBy {
+				if ob.expr != nil {
+					continue
+				}
+				if _, ok := colIdx[ob.colName]; ok {
+					continue
+				}
+				if _, present := mapRows[0][ob.colName]; !present {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"ORDER BY column %q not found in CTE %q", ob.colName, sq.tableName)
+				}
+			}
+		}
 		sort.SliceStable(indexes, func(ii, jj int) bool {
 			i, j := indexes[ii], indexes[jj]
 			for oi, ob := range sq.orderBy {
 				var a, b driver.Value
 				if ob.expr != nil && keys != nil {
 					a, b = keys[i][oi], keys[j][oi]
-				} else {
-					idx, ok := colIdx[ob.colName]
-					if !ok {
-						continue
-					}
+				} else if idx, ok := colIdx[ob.colName]; ok {
 					a, b = outRows[i][idx], outRows[j][idx]
+				} else if len(mapRows) == len(outRows) {
+					// ORDER BY on a CTE column not in the projection
+					// (`SELECT grp FROM s ORDER BY total`). Materialised
+					// CTE rows still carry the column in their map; pull
+					// the value directly. mapRows[i] is in lockstep with
+					// outRows[i] only on the non-aggregate CTE path.
+					a, b = mapRows[i][ob.colName], mapRows[j][ob.colName]
+				} else {
+					continue
 				}
 				less, equal := orderByLess(a, b, ob)
 				if !equal {
@@ -1356,6 +1811,9 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	if sq.limit >= 0 && int64(len(outRows)) > sq.limit {
 		outRows = outRows[:sq.limit]
 	}
+	if len(sq.aggCols) > 0 {
+		colNames, outRows = stripAggregateSortOnly(sq, colNames, outRows)
+	}
 
 	return &staticRows{cols: colNames, rows: outRows}, nil
 }
@@ -1369,6 +1827,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	type outField struct {
 		name string
 		fd   protoreflect.FieldDescriptor
+		// expr is set when the slot holds a computed expression (used for
+		// extra sort-only fields like `ORDER BY v * 2`). Evaluated against
+		// the current message in the scan loop; fd is nil in that case.
+		expr antlrgen.IExpressionContext
 	}
 	var cols []string
 	var data []row
@@ -1398,6 +1860,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			if _, _, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier); qErr != nil {
 				return nil, qErr
 			}
+		}
+		// Expand mixed qualifier-star + named-column slots. Single-source
+		// FROM only has one alias to match against, but the expansion
+		// still works uniformly — a wrong qualifier errors 42F01 from
+		// resolveQualifierColumns.
+		if expandErr := c.expandStarSlots(md, sq); expandErr != nil {
+			return nil, expandErr
 		}
 
 		rt := md.GetRecordType(sq.tableName)
@@ -1441,15 +1910,33 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					count++
 				}
 			}
+			// HAVING on a bare COUNT(*) query: evaluate against the single
+			// aggregate row and drop it when the predicate fails. Without
+			// this the COUNT(*) fast path emitted one row unconditionally.
+			if sq.havingExpr != nil {
+				keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
+				if hErr != nil {
+					return nil, hErr
+				}
+				if !keep {
+					data = nil
+					return nil, nil
+				}
+			}
 			data = []row{{count}}
 			return nil, nil
 		}
 
 		// GROUP BY aggregate query: scan → group → aggregate.
 		if len(sq.aggCols) > 0 {
-			// Resolve group-by field descriptors.
+			// Resolve group-by field descriptors. Expression group keys
+			// (sq.groupByExprs[i] != nil) skip FD resolution — they are
+			// evaluated per message below via evalExpr.
 			groupFDs := make([]protoreflect.FieldDescriptor, len(sq.groupBy))
 			for i, col := range sq.groupBy {
+				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+					continue
+				}
 				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -1457,10 +1944,28 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				groupFDs[i] = fd
 			}
-			// Resolve aggregate arg field descriptors (nil for COUNT(*)).
+			// Resolve aggregate arg field descriptors (nil for COUNT(*) and for
+			// expression args, which are evaluated per-message via ac.aggExpr).
+			//
+			// groupCol entries are group-by references lifted out of the SELECT
+			// list during extractFromSimpleTable's aggregate re-classification.
+			// Their value comes from gs.groupVals at emit time, not from the
+			// proto scan — so we only validate the FD exists when it's a bare
+			// column name. A groupCol whose name matches an entry in groupBy[]
+			// with a non-nil groupByExprs[] is an expression group (e.g.
+			// GROUP BY CASE ...); skip the FD lookup for those.
+			groupExprByName := make(map[string]bool, len(sq.groupBy))
+			for i, gn := range sq.groupBy {
+				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+					groupExprByName[gn] = true
+				}
+			}
 			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
 				if ac.groupCol != "" {
+					if groupExprByName[ac.groupCol] {
+						continue
+					}
 					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.groupCol))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
@@ -1509,8 +2014,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 
 				// Build group-by key.
-				gVals := make([]driver.Value, len(groupFDs))
-				for i, fd := range groupFDs {
+				gVals := make([]driver.Value, len(sq.groupBy))
+				for i := range sq.groupBy {
+					if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+						v, evalErr := evalExpr(ctx, c, msg, sq.groupByExprs[i])
+						if evalErr != nil {
+							return nil, evalErr
+						}
+						gVals[i] = v
+						continue
+					}
+					fd := groupFDs[i]
 					if fd != nil && msg.ProtoReflect().Has(fd) {
 						gVals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 					}
@@ -1542,56 +2056,73 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if ac.groupCol != "" {
 						continue // group-by reference, no accumulation
 					}
-					if ac.aggDistinct && aggArgFDs[i] != nil {
-						// *(DISTINCT col): accumulate only the first occurrence
+					if ac.outExpr != nil {
+						// Post-aggregation expression — evaluated at emit time.
+						continue
+					}
+					// Fetch the argument value.
+					//   - aggExpr != nil: evaluate expression (e.g. SUM(qty*price)).
+					//   - aggArg  != "": read the bare column via field descriptor.
+					//   - neither:       COUNT(*) — no argument, counted unconditionally below.
+					var v driver.Value
+					hasArg := ac.aggArg != "" || ac.aggExpr != nil
+					if ac.aggExpr != nil {
+						ev, evalErr := evalExpr(ctx, c, msg, ac.aggExpr)
+						if evalErr != nil {
+							return nil, evalErr
+						}
+						v = ev
+					} else if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
+						v = protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
+					}
+					if ac.aggDistinct && hasArg {
+						// *(DISTINCT col|expr): accumulate only the first occurrence
 						// of each distinct non-null value — supports COUNT, SUM,
 						// AVG, MIN, MAX symmetrically.
-						if msg.ProtoReflect().Has(aggArgFDs[i]) {
-							v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
-							// Type-tagged to keep distinct values of different
-							// concrete types apart (matches valuesEqual's
-							// mixed-type-equality semantic).
-							dk := fmt.Sprintf("%T\x00%v", v, v)
-							if _, seen := gs.distinctSets[i][dk]; !seen {
-								gs.distinctSets[i][dk] = struct{}{}
-								gs.counts[i]++
-								switch ac.aggFunc {
-								case "SUM", "AVG":
-									fv, ok := toFloat64(v)
-									if !ok {
-										return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-											"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
-									}
-									if ac.aggFunc == "SUM" {
-										gs.sums[i] += fv
-									} else {
-										gs.avgs[i] += fv
-										gs.avgsN[i]++
-									}
-								case "MIN":
-									if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
-										gs.mins[i] = v
-									}
-								case "MAX":
-									if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
-										gs.maxes[i] = v
-									}
+						if v == nil {
+							continue
+						}
+						// Type-tagged to keep distinct values of different
+						// concrete types apart (matches valuesEqual's
+						// mixed-type-equality semantic).
+						dk := fmt.Sprintf("%T\x00%v", v, v)
+						if _, seen := gs.distinctSets[i][dk]; !seen {
+							gs.distinctSets[i][dk] = struct{}{}
+							gs.counts[i]++
+							switch ac.aggFunc {
+							case "SUM", "AVG":
+								fv, ok := toFloat64(v)
+								if !ok {
+									return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+										"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
+								}
+								if ac.aggFunc == "SUM" {
+									gs.sums[i] += fv
+								} else {
+									gs.avgs[i] += fv
+									gs.avgsN[i]++
+								}
+							case "MIN":
+								if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+									gs.mins[i] = v
+								}
+							case "MAX":
+								if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+									gs.maxes[i] = v
 								}
 							}
 						}
 						continue
 					}
-					// COUNT(*) counts every row including all-NULL. Detected by
-					// empty aggArg (aggArgFDs[i] is nil when argCol is "").
-					if ac.aggFunc == "COUNT" && ac.aggArg == "" {
+					// COUNT(*) counts every row including all-NULL; no argument.
+					if ac.aggFunc == "COUNT" && !hasArg {
 						gs.counts[i]++
 						continue
 					}
-					// COUNT(<expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
-					if aggArgFDs[i] == nil || !msg.ProtoReflect().Has(aggArgFDs[i]) {
+					// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
+					if v == nil {
 						continue
 					}
-					v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
 					gs.counts[i]++
 					switch ac.aggFunc {
 					case "SUM", "AVG":
@@ -1640,49 +2171,80 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				groupOrder = append(groupOrder, "")
 			}
 
-			// Build output cols.
+			// Build output cols — visible (non-hidden, non-sortOnly) entries
+			// first, then sortOnly columns (harvested from ORDER BY) so the
+			// post-aggregation sort can find them via colIdx. Hidden entries
+			// (harvested from HAVING) drop out entirely. Caller strips the
+			// trailing sortOnly columns after the sort.
 			groupColIdx := map[string]int{}
 			for i, col := range sq.groupBy {
 				groupColIdx[col] = i
 			}
-			cols = make([]string, len(sq.aggCols))
+			emitIdx := make([]int, 0, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
-				cols[i] = ac.outName
+				if !ac.hidden && !ac.sortOnly {
+					emitIdx = append(emitIdx, i)
+				}
+			}
+			for i, ac := range sq.aggCols {
+				if !ac.hidden && ac.sortOnly {
+					emitIdx = append(emitIdx, i)
+				}
+			}
+			cols = make([]string, len(emitIdx))
+			for out, i := range emitIdx {
+				cols[out] = sq.aggCols[i].outName
 			}
 
-			// Emit one row per group (with HAVING filter).
+			// Emit one row per group (with HAVING filter). Two passes:
+			// (1) populate fullVals + rowMap for non-outExpr entries;
+			// (2) evaluate outExpr entries against the now-filled rowMap.
 			for _, key := range groupOrder {
 				gs := groups[key]
-				rowVals := make([]driver.Value, len(sq.aggCols))
+				fullVals := make([]driver.Value, len(sq.aggCols))
 				rowMap := make(map[string]driver.Value, len(sq.aggCols))
 				for i, ac := range sq.aggCols {
+					if ac.outExpr != nil {
+						continue
+					}
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
 						if ok {
-							rowVals[i] = gs.groupVals[idx]
+							fullVals[i] = gs.groupVals[idx]
 						}
 					} else {
 						switch ac.aggFunc {
 						case "COUNT":
-							rowVals[i] = gs.counts[i]
+							fullVals[i] = gs.counts[i]
 						case "SUM":
 							// SUM of empty-or-all-NULL group is NULL, not 0.
 							// DISTINCT path accumulates on first-seen so this
 							// is correct for SUM(DISTINCT col) too.
 							if gs.counts[i] > 0 {
-								rowVals[i] = gs.sums[i]
+								fullVals[i] = gs.sums[i]
 							}
 						case "MIN":
-							rowVals[i] = gs.mins[i]
+							fullVals[i] = gs.mins[i]
 						case "MAX":
-							rowVals[i] = gs.maxes[i]
+							fullVals[i] = gs.maxes[i]
 						case "AVG":
 							if gs.avgsN[i] > 0 {
-								rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+								fullVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
 							}
 						}
 					}
-					rowMap[ac.outName] = rowVals[i]
+					rowMap[ac.outName] = fullVals[i]
+				}
+				for i, ac := range sq.aggCols {
+					if ac.outExpr == nil {
+						continue
+					}
+					v, evalErr := evalExprOnMap(ctx, c, rowMap, ac.outExpr)
+					if evalErr != nil {
+						return nil, evalErr
+					}
+					fullVals[i] = v
+					rowMap[ac.outName] = v
 				}
 				if sq.havingExpr != nil {
 					keep, havErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
@@ -1693,6 +2255,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						continue
 					}
 				}
+				rowVals := make([]driver.Value, len(emitIdx))
+				for out, i := range emitIdx {
+					rowVals[out] = fullVals[i]
+				}
 				data = append(data, rowVals)
 			}
 			return nil, nil
@@ -1702,12 +2268,27 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		allFields := msgDesc.Fields()
 		var outFields []outField
 		// extraSortFields (outer variable) are ORDER BY columns not in the projection.
+		//
+		// Expression-based ORDER BY items (`ORDER BY v * 2`) work on both
+		// SELECT * and named projections — carry each expression as a
+		// sentinel-named extra sort field, evaluated per row in the scan
+		// loop. Runs BEFORE the projection branch split so SELECT * paths
+		// don't silently drop expression sort keys.
+		for obIdx, ob := range sq.orderBy {
+			if ob.expr == nil {
+				continue
+			}
+			sentinel := fmt.Sprintf("__orderby_expr_%d__", obIdx)
+			extraSortFields = append(extraSortFields, outField{name: sentinel, expr: ob.expr})
+			sq.orderBy[obIdx].colName = sentinel
+			sq.orderBy[obIdx].expr = nil
+		}
 		if sq.projCols == nil {
 			// SELECT * — all fields in descriptor order.
 			outFields = make([]outField, allFields.Len())
 			for i := 0; i < allFields.Len(); i++ {
 				fd := allFields.Get(i)
-				outFields[i] = outField{string(fd.Name()), fd}
+				outFields[i] = outField{name: string(fd.Name()), fd: fd}
 			}
 		} else {
 			// Named projection — look up each column, apply alias if present.
@@ -1720,7 +2301,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 						outName = sq.projAliases[i]
 					}
-					outFields[i] = outField{outName, nil}
+					outFields[i] = outField{name: outName}
 					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
 					continue
 				}
@@ -1733,12 +2314,37 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 					outName = sq.projAliases[i]
 				}
-				outFields[i] = outField{outName, fd}
+				outFields[i] = outField{name: outName, fd: fd}
 				projByCol[colName] = true
 			}
+			// Alias redirection: if ORDER BY references a SELECT-list alias
+			// (`SELECT id AS n ... ORDER BY n`), it's already projected — no
+			// extra field lookup needed. Build an alias → underlying-col map
+			// so the sort path's colIdx lookup (which keys off the output
+			// name) still matches when cols[] uses the alias.
+			aliasToCol := make(map[string]string, len(sq.projCols))
+			for i, colName := range sq.projCols {
+				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+					aliasToCol[sq.projAliases[i]] = colName
+				}
+			}
 			// Add any ORDER BY columns not already in the projection.
+			// Expression ORDER BY was already converted to sentinel extra
+			// sort fields above; mark those sentinels present in projByCol
+			// so the FD-lookup loop below skips them.
+			for _, f := range extraSortFields {
+				if f.expr != nil {
+					projByCol[f.name] = true
+				}
+			}
 			for _, ob := range sq.orderBy {
 				if projByCol[ob.colName] {
+					continue
+				}
+				if _, isAlias := aliasToCol[ob.colName]; isAlias {
+					// Alias refers to an already-projected column; no extra
+					// sort field. The sort path looks up cols[] which stores
+					// the alias, so no further remapping is needed.
 					continue
 				}
 				fd := allFields.ByName(protoreflect.Name(ob.colName))
@@ -1746,7 +2352,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
 				}
-				extraSortFields = append(extraSortFields, outField{ob.colName, fd})
+				extraSortFields = append(extraSortFields, outField{name: ob.colName, fd: fd})
 				projByCol[ob.colName] = true // avoid duplicates
 			}
 		}
@@ -1776,9 +2382,22 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			vals := make([]driver.Value, len(fullFields))
 			for i, f := range fullFields {
-				// Check for a computed expression at this position.
+				// Check for a computed expression at this position. SELECT-list
+				// expressions come from sq.projExprs (parallel to projCols);
+				// extra sort-field expressions live on outField.expr (set when
+				// the ORDER BY loop built the field for `ORDER BY v * 2`).
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 					v, evalErr := evalExpr(ctx, c, msg, sq.projExprs[i])
+					if evalErr != nil {
+						return nil, evalErr
+					}
+					if v != nil {
+						vals[i] = v.(driver.Value) //nolint:forcetypeassert
+					}
+					continue
+				}
+				if f.expr != nil {
+					v, evalErr := evalExpr(ctx, c, msg, f.expr)
 					if evalErr != nil {
 						return nil, evalErr
 					}
@@ -1800,12 +2419,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		return nil, runErr
 	}
 
-	// Apply DISTINCT deduplication before sort.
+	// Apply DISTINCT deduplication before sort. Key off the PROJECTED
+	// columns only (data may contain trailing extraSortFields used
+	// for ORDER BY-on-non-projected-column; including those in the
+	// dedup key would treat (v=30, id=1) and (v=30, id=3) as
+	// "distinct" and silently re-emit the duplicate v=30 row).
 	if sq.distinct && !sq.countStar {
+		projLen := len(cols)
 		seen := make(map[string]struct{}, len(data))
 		deduped := data[:0]
 		for _, row := range data {
-			key := rowKey(row)
+			key := rowKey(row[:projLen])
 			if _, exists := seen[key]; !exists {
 				seen[key] = struct{}{}
 				deduped = append(deduped, row)
@@ -1829,6 +2453,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		}
 		for i, f := range extraSortFields {
 			colIdx[f.name] = len(cols) + i
+		}
+		// Aggregate-path ORDER BY name validation. The non-aggregate
+		// path validated each name when building extraSortFields; the
+		// aggregate path doesn't, so a typo (`ORDER BY no_such_col` on
+		// `SELECT grp, COUNT(*) ... GROUP BY grp`) silently no-op'd.
+		// Mirror the CTE / JOIN validation added in 82bd4382 / 9500c512.
+		if len(sq.aggCols) > 0 || sq.countStar {
+			for _, ob := range sq.orderBy {
+				if _, ok := colIdx[ob.colName]; !ok {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"ORDER BY column %q not found in aggregate result", ob.colName)
+				}
+			}
 		}
 		sort.SliceStable(data, func(i, j int) bool {
 			for _, ob := range sq.orderBy {
@@ -1864,6 +2501,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	}
 	if sq.limit >= 0 && int64(len(data)) > sq.limit {
 		data = data[:sq.limit]
+	}
+	// Drop trailing sort-only aggregate columns now that the sort
+	// has consumed them. No-op when the query had no ORDER BY
+	// references to hidden aggregates.
+	if len(sq.aggCols) > 0 {
+		cols, data = stripAggregateSortOnly(sq, cols, data)
 	}
 
 	return &staticRows{cols: cols, rows: data}, nil
@@ -2177,17 +2820,30 @@ type selectQuery struct {
 	// table name when no alias) equals projQualifier. Empty = SELECT *
 	// (all sources) or explicit column list.
 	projQualifier string
-	countStar     bool // true when SELECT list is exactly COUNT(*)
-	distinct      bool // true when SELECT DISTINCT
-	whereExpr     antlrgen.IWhereExprContext
+	// projStarQualifiers is parallel to projCols. When
+	// projStarQualifiers[i] != "" that slot is a `<qualifier>.*` to be
+	// expanded at execution time (e.g. `SELECT a.*, b.label FROM a, b`).
+	// When empty, the slot is a regular named column / expression. Always
+	// empty when projCols == nil (SELECT * or pure qualifier-star use the
+	// legacy projQualifier / nil-projCols paths).
+	projStarQualifiers []string
+	countStar          bool // true when SELECT list is exactly COUNT(*)
+	distinct           bool // true when SELECT DISTINCT
+	whereExpr          antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
 	limit int64
 	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
 	offset int64
-	// groupBy holds GROUP BY column names (nil = no GROUP BY).
+	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
+	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
+	// expression text as a synthetic display key and groupByExprs[i] holds
+	// the IExpressionContext evaluated per row to derive the group key value.
 	groupBy []string
+	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
+	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
+	groupByExprs []antlrgen.IExpressionContext
 	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
 	// Non-nil only when groupBy is non-empty.
 	aggCols []aggSelectCol
@@ -2223,6 +2879,12 @@ type orderByClause struct {
 	// CTE and JOIN paths (which retain map rows) honor this; the proto /
 	// single-table scan path still requires a column/aggregate name.
 	expr antlrgen.IExpressionContext
+	// rawExpr always holds the original IExpressionContext for the ORDER BY
+	// item, even when colName is populated. Used by post-parse passes that
+	// need to inspect the expression (e.g. harvesting aggregates from
+	// `ORDER BY SUM(v)` where colName resolved to "SUM(v)" and expr was
+	// left nil because the expression was a bare aggregate).
+	rawExpr antlrgen.IExpressionContext
 }
 
 // orderByLess returns true iff value `a` sorts before value `b` under the
@@ -2257,11 +2919,36 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
-	// Either groupCol or aggFunc is set.
-	groupCol    string // plain group-by column reference
-	aggFunc     string // COUNT/SUM/MIN/MAX/AVG
-	aggArg      string // argument column name (empty for COUNT(*))
-	aggDistinct bool   // true when COUNT(DISTINCT col)
+	// Exactly one of groupCol / aggFunc / outExpr is set (hidden entries
+	// always have aggFunc set).
+	groupCol string // plain group-by column reference
+	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
+	aggArg   string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
+	// aggExpr is the IExpressionContext of the aggregate's argument when it is not a bare
+	// column reference (e.g. SUM(qty*price), AVG(CASE ... END)). Evaluated per input row.
+	// nil for bare-column args and for COUNT(*).
+	aggExpr     antlrgen.IExpressionContext
+	aggDistinct bool // true when COUNT(DISTINCT col)
+	// hidden aggregates contribute to group accumulation and HAVING evaluation
+	// but are excluded from the projected output and the sort. Used for
+	// aggregates harvested from HAVING that aren't also in the SELECT list,
+	// so `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
+	// (grp) while still running the SUM.
+	hidden bool
+	// sortOnly aggregates are harvested from ORDER BY and appended to the
+	// emit data so the sort can find them via colIdx. They're stripped from
+	// the user-visible output after the sort runs. Combined with hidden:
+	//   visible row column = !hidden && !sortOnly.
+	//   sort-accessible column = !hidden.
+	//   accumulated column = always.
+	sortOnly bool
+	// outExpr is a post-aggregation expression that references aggregate
+	// outputs and/or group-by columns. Evaluated at emit time against a
+	// rowMap that already contains all aggCols values. Used for SELECT-list
+	// shapes like `SUM(a) + SUM(b)` or `COALESCE(SUM(v), 0)`. When set,
+	// aggFunc / groupCol are empty and the row's value comes from evaluating
+	// outExpr rather than reading an aggregator slot.
+	outExpr antlrgen.IExpressionContext
 }
 
 // checkCountStar returns true if e is a bare COUNT(*) expression.
@@ -2286,73 +2973,107 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 }
 
 // extractAggFunc attempts to parse an aggregate function (COUNT/SUM/MIN/MAX/AVG)
-// from a SelectExpressionElementContext. Returns (funcName, argColName, distinct, alias, ok).
-// funcName is upper-case. argColName is empty for COUNT(*).
-func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol, alias string, distinct, ok bool) {
+// from a SelectExpressionElementContext. Returns (funcName, argColName, argExpr, alias, distinct, ok).
+// funcName is upper-case.
+// argColName is non-empty when the argument is a bare column reference (enables the
+// proto-path FD fast path). argExpr is non-nil when the argument is an arbitrary
+// expression (e.g. SUM(qty*price)) — mutually exclusive with argColName.
+// Both are empty/nil for COUNT(*).
+//
+// Shares the AggregateWindowedFunction → (funcName, argCol, argExpr, outName)
+// extraction with aggColFromAwf via extractAwfFields; this wrapper adds the
+// SELECT-list element unwrap + the alias-from-AS overlay.
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if !fcok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if !aggok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if !awfok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
-	isDistinct := awf.DISTINCT() != nil
+	fn, arg, aExpr, outName, isDistinct, fieldsOk := extractAwfFields(awf)
+	if !fieldsOk {
+		return "", "", nil, "", false, false
+	}
+	// SELECT-list-only overlay: an explicit `AS alias` on the SELECT element
+	// wins over the reconstructed default ("SUM(v)") as the output column
+	// name.
+	if e.Uid() != nil {
+		outName = stripIdentifierQuotes(e.Uid().GetText())
+	}
+	return fn, arg, aExpr, outName, isDistinct, true
+}
+
+// extractAwfFields classifies an AggregateWindowedFunction into the pieces
+// every caller needs: the function name, the argument (bare column vs
+// arbitrary expression), the DISTINCT flag, and the default output name
+// used by both the SELECT-list alias path and the HAVING resolver's
+// lookup name. Shared by extractAggFunc (SELECT-list aggregates) and
+// aggColFromAwf (HAVING-harvested aggregates). Returns false when the
+// AWF doesn't match any of the five supported aggregates.
+func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, ok bool) {
+	distinct = awf.DISTINCT() != nil
+	resolveArg := func(fa antlrgen.IFunctionArgContext) {
+		if fa == nil {
+			return
+		}
+		expr := fa.Expression()
+		if pred, ok := expr.(*antlrgen.PredicatedExpressionContext); ok {
+			if col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+				argCol = fullIdToName(col.FullColumnName().FullId())
+				return
+			}
+		}
+		argExpr = expr
+	}
 	switch {
 	case awf.COUNT() != nil && awf.STAR() != nil:
 		funcName = "COUNT"
 	case awf.COUNT() != nil:
 		funcName = "COUNT"
 		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
+			resolveArg(awf.FunctionArg())
 		} else if awf.FunctionArgs() != nil && len(awf.FunctionArgs().AllFunctionArg()) > 0 {
-			// COUNT(DISTINCT col) — FunctionArgs variant
-			argCol = awf.FunctionArgs().AllFunctionArg()[0].GetText()
+			// COUNT(DISTINCT col|expr) — FunctionArgs variant
+			resolveArg(awf.FunctionArgs().AllFunctionArg()[0])
 		}
 	case awf.SUM() != nil:
 		funcName = "SUM"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	case awf.MIN() != nil:
 		funcName = "MIN"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	case awf.MAX() != nil:
 		funcName = "MAX"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	case awf.AVG() != nil:
 		funcName = "AVG"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	default:
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
-	if e.Uid() != nil {
-		alias = stripIdentifierQuotes(e.Uid().GetText())
+	display := argCol
+	if display == "" && argExpr != nil {
+		display = argExpr.GetText()
 	}
-	if alias == "" {
-		if isDistinct && argCol != "" {
-			alias = funcName + "(DISTINCT " + argCol + ")"
-		} else if argCol == "" {
-			alias = funcName + "(*)"
-		} else {
-			alias = funcName + "(" + argCol + ")"
-		}
+	switch {
+	case display == "":
+		outName = funcName + "(*)"
+	case distinct:
+		outName = funcName + "(DISTINCT " + display + ")"
+	default:
+		outName = funcName + "(" + display + ")"
 	}
-	return funcName, argCol, alias, isDistinct, true
+	return funcName, argCol, argExpr, outName, distinct, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -2452,9 +3173,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	var projCols []string                       // nil = SELECT * or SELECT <qualifier>.*
 	var projAliases []string                    // parallel to projCols
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
+	var projStarQualifiers []string             // parallel to projCols; non-empty = <qualifier>.* slot
 	var countStar bool
 	var aggCols []aggSelectCol
-	var projQualifier string // non-empty when SELECT list is <qualifier>.*
+	var projQualifier string // non-empty when SELECT list is *only* <qualifier>.*
+	// Snapshots of projAliases / projExprs taken right after the SELECT
+	// element loop, before any reclassification clears them. Downstream
+	// GROUP BY / ORDER BY parsers consult these to resolve alias
+	// references (e.g. `GROUP BY bucket` where bucket is `v/10 AS bucket`).
+	var selectAliasesSnapshot []string
+	var selectExprsSnapshot []antlrgen.IExpressionContext
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -2466,23 +3194,28 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectQualifierStarElementContext:
-				// SELECT <qualifier>.* — restrict output columns to the
-				// aliased source. Resolved at execution time against
-				// tableAlias / joins[i].alias (parser is schema-free).
-				if len(elems) > 1 {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"cannot mix qualifier.* with named columns in SELECT list")
-				}
+				// SELECT <qualifier>.* either alone or mixed with named
+				// columns. Alone: use the legacy projQualifier / nil-projCols
+				// path. Mixed: record as a star slot in projCols to be
+				// expanded at execution time against the FROM sources.
 				if e.Uid() == nil {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"SELECT <qualifier>.* missing qualifier")
 				}
-				projQualifier = stripIdentifierQuotes(e.Uid().GetText())
+				qual := stripIdentifierQuotes(e.Uid().GetText())
+				if len(elems) == 1 {
+					projQualifier = qual
+				} else {
+					projCols = append(projCols, "") // sentinel; actual names resolved at execution
+					projAliases = append(projAliases, "")
+					projExprs = append(projExprs, nil)
+					projStarQualifiers = append(projStarQualifiers, qual)
+				}
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
-				} else if fn, argCol, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggDistinct: isDistinct})
+				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
@@ -2500,17 +3233,53 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						expr = e.Expression()
 					}
 					if len(aggCols) > 0 {
-						// Mixed aggregate query — this column is a group-by reference.
-						aggCols = append(aggCols, aggSelectCol{outName: func() string {
+						// Mixed aggregate query. Three classifications for
+						// the trailing SELECT element based on what the
+						// expression references:
+						//   - wraps aggregates → harvest any novel inner
+						//     aggregates (add as hidden accumulators) and
+						//     route the expression itself to outExpr.
+						//   - constant-only (no columns) → outExpr so it's
+						//     emitted once per group like SUM does.
+						//   - bare column or column-only expression →
+						//     group-by reference.
+						outName := func() string {
 							if alias != "" {
 								return alias
 							}
 							return colName
-						}(), groupCol: colName})
+						}()
+						switch {
+						case expr != nil && len(harvestAggregates(expr)) > 0:
+							// Harvest aggregates that aren't already
+							// accumulated. `SELECT SUM(a), SUM(b)+1`:
+							// SUM(a) is already in aggCols (bare), SUM(b)
+							// is novel — must be added as hidden so the
+							// rowMap at emit time has SUM(b) available for
+							// outExpr evaluation. Dedup by outName.
+							existingNames := make(map[string]struct{}, len(aggCols))
+							for _, ac := range aggCols {
+								existingNames[ac.outName] = struct{}{}
+							}
+							for _, h := range harvestAggregates(expr) {
+								if _, seen := existingNames[h.outName]; seen {
+									continue
+								}
+								h.hidden = true
+								aggCols = append(aggCols, h)
+								existingNames[h.outName] = struct{}{}
+							}
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+						case expr != nil && !exprReferencesColumn(expr):
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+						default:
+							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName})
+						}
 					} else {
 						projCols = append(projCols, colName)
 						projAliases = append(projAliases, alias)
 						projExprs = append(projExprs, expr) // nil when it's a plain column
+						projStarQualifiers = append(projStarQualifiers, "")
 					}
 				}
 			default:
@@ -2518,23 +3287,115 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					"unsupported SELECT element type %T", elem)
 			}
 		}
+		// SELECT-list expressions that wrap aggregate function calls (e.g.
+		// `SUM(a) + SUM(b)`, `COALESCE(SUM(v), 0)`, `CASE WHEN COUNT(*)>0
+		// THEN 'yes' ELSE 'no' END`) don't match extractAggFunc at the
+		// top level, so they land in projExprs with projCols[i] holding
+		// the expression text. Promote each such slot to an aggSelectCol
+		// with an outExpr (evaluated post-aggregation against the rowMap),
+		// harvest the referenced aggregates as hidden accumulators, and
+		// drop the slot from projCols. Has to happen before the plain-col
+		// reclassification below so those slots aren't treated as
+		// group-by references.
+		if len(projCols) > 0 {
+			var newProjCols []string
+			var newProjAliases []string
+			var newProjExprs []antlrgen.IExpressionContext
+			var newStarQualifiers []string
+			var promoted []aggSelectCol
+			existing := make(map[string]struct{}, len(aggCols))
+			for _, ac := range aggCols {
+				existing[ac.outName] = struct{}{}
+			}
+			for i, col := range projCols {
+				if i >= len(projExprs) || projExprs[i] == nil {
+					newProjCols = append(newProjCols, col)
+					newProjAliases = append(newProjAliases, projAliases[i])
+					newProjExprs = append(newProjExprs, projExprs[i])
+					if i < len(projStarQualifiers) {
+						newStarQualifiers = append(newStarQualifiers, projStarQualifiers[i])
+					} else {
+						newStarQualifiers = append(newStarQualifiers, "")
+					}
+					continue
+				}
+				harvested := harvestAggregates(projExprs[i])
+				if len(harvested) == 0 {
+					newProjCols = append(newProjCols, col)
+					newProjAliases = append(newProjAliases, projAliases[i])
+					newProjExprs = append(newProjExprs, projExprs[i])
+					if i < len(projStarQualifiers) {
+						newStarQualifiers = append(newStarQualifiers, projStarQualifiers[i])
+					} else {
+						newStarQualifiers = append(newStarQualifiers, "")
+					}
+					continue
+				}
+				for _, h := range harvested {
+					if _, seen := existing[h.outName]; seen {
+						continue
+					}
+					existing[h.outName] = struct{}{}
+					h.hidden = true
+					promoted = append(promoted, h)
+				}
+				outName := projAliases[i]
+				if outName == "" {
+					outName = col
+				}
+				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i]})
+			}
+			if len(promoted) > 0 {
+				projCols = newProjCols
+				projAliases = newProjAliases
+				projExprs = newProjExprs
+				projStarQualifiers = newStarQualifiers
+				aggCols = append(aggCols, promoted...)
+			}
+		}
+		// Snapshot the original SELECT-list alias/expr arrays before any
+		// reclassification clears them.
+		selectAliasesSnapshot = append([]string(nil), projAliases...)
+		selectExprsSnapshot = append([]antlrgen.IExpressionContext(nil), projExprs...)
 		// If we found aggregate functions mixed with plain columns, the plain cols
 		// that were added to projCols before the first aggregate need to be re-
-		// classified as group-by references.
+		// classified. Bare columns become group-by references; expressions with
+		// no column refs (literal constants like `SELECT 1, SUM(v)`) become
+		// outExpr slots so they're emitted once per group without requiring
+		// a GROUP BY clause or a field-descriptor lookup. Star slots can't be
+		// demoted either way. Note: the GROUP BY / HAVING parsers haven't run
+		// yet at this point, so we can't redirect groupCol to match a GROUP
+		// BY expression here — that lookup happens in the HAVING-harvest
+		// reclassification later when sq.groupBy is populated.
 		if len(aggCols) > 0 && len(projCols) > 0 {
-			// Prepend the already-collected plain cols as group-by cols.
+			for _, q := range projStarQualifiers {
+				if q != "" {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"cannot mix qualifier.* with aggregate functions in SELECT list")
+				}
+			}
 			extra := make([]aggSelectCol, len(projCols))
 			for i, c := range projCols {
 				out := projAliases[i]
 				if out == "" {
 					out = c
 				}
-				extra[i] = aggSelectCol{outName: out, groupCol: c}
+				var slotExpr antlrgen.IExpressionContext
+				if i < len(projExprs) {
+					slotExpr = projExprs[i]
+				}
+				switch {
+				case slotExpr != nil && !exprReferencesColumn(slotExpr):
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+				default:
+					extra[i] = aggSelectCol{outName: out, groupCol: c}
+				}
 			}
 			aggCols = append(extra, aggCols...)
 			projCols = nil
 			projAliases = nil
 			projExprs = nil
+			projStarQualifiers = nil
 		}
 	}
 
@@ -2544,6 +3405,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if projQualifier != "" {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
 				"qualifier %q in SELECT list but query has no FROM clause", projQualifier)
+		}
+		for _, q := range projStarQualifiers {
+			if q != "" {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+					"qualifier %q.* in SELECT list but query has no FROM clause", q)
+			}
 		}
 		return &selectQuery{
 			projCols:    projCols,
@@ -2609,18 +3476,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
 		return &selectQuery{
-			tableName:     alias,
-			tableAlias:    alias,
-			projCols:      projCols,
-			projAliases:   projAliases,
-			projExprs:     projExprs,
-			projQualifier: projQualifier,
-			countStar:     countStar,
-			aggCols:       aggCols,
-			distinct:      simpleTable.DISTINCT() != nil,
-			whereExpr:     fromClause.WhereExpr(),
-			limit:         -1,
-			derivedQuery:  subItem.Query(),
+			tableName:          alias,
+			tableAlias:         alias,
+			projCols:           projCols,
+			projAliases:        projAliases,
+			projExprs:          projExprs,
+			projStarQualifiers: projStarQualifiers,
+			projQualifier:      projQualifier,
+			countStar:          countStar,
+			aggCols:            aggCols,
+			distinct:           simpleTable.DISTINCT() != nil,
+			whereExpr:          fromClause.WhereExpr(),
+			limit:              -1,
+			derivedQuery:       subItem.Query(),
 		}, nil
 	}
 
@@ -2674,18 +3542,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	joins = append(joins, extraCrossJoins...)
 
 	sq := &selectQuery{
-		tableName:     strings.Join(parts, "."),
-		tableAlias:    leftAlias,
-		joins:         joins,
-		projCols:      projCols,
-		projAliases:   projAliases,
-		projExprs:     projExprs,
-		projQualifier: projQualifier,
-		countStar:     countStar,
-		aggCols:       aggCols,
-		distinct:      simpleTable.DISTINCT() != nil,
-		whereExpr:     fromClause.WhereExpr(),
-		limit:         -1,
+		tableName:          strings.Join(parts, "."),
+		tableAlias:         leftAlias,
+		joins:              joins,
+		projCols:           projCols,
+		projAliases:        projAliases,
+		projExprs:          projExprs,
+		projStarQualifiers: projStarQualifiers,
+		projQualifier:      projQualifier,
+		countStar:          countStar,
+		aggCols:            aggCols,
+		distinct:           simpleTable.DISTINCT() != nil,
+		whereExpr:          fromClause.WhereExpr(),
+		limit:              -1,
 	}
 
 	// Parse ORDER BY clause.
@@ -2705,14 +3574,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					nullsFirst = &f
 				}
 			}
+			// Handle positional references `ORDER BY N` (SQL-92): N is a
+			// 1-indexed position into the SELECT list. Resolve to the
+			// matching output column's name so the downstream colIdx
+			// lookup in the sort path works uniformly.
+			posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
+			if posErr != nil {
+				return nil, posErr
+			}
+			if isPos {
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
+				continue
+			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
 			// including the proto single-table path). Fall back to storing the
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst})
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
-				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression()})
+				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}
 		}
 	}
@@ -2769,15 +3650,57 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
-	// Parse GROUP BY clause.
+	// Parse GROUP BY clause. Bare column references go through the
+	// columnNameFromExpr fast path (used by the proto-scan field-descriptor
+	// and the map-row name lookup); positional references `GROUP BY N`
+	// resolve to the Nth SELECT-list output name; anything else is
+	// captured as an IExpressionContext evaluated per row at aggregation
+	// time.
 	groupByCtx := simpleTable.GroupByClause()
 	if groupByCtx != nil {
 		for _, item := range groupByCtx.AllGroupByItem() {
-			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
-			if nameErr != nil {
-				return nil, nameErr
+			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
+			if posErr != nil {
+				return nil, posErr
 			}
-			sq.groupBy = append(sq.groupBy, colName)
+			if isPos {
+				sq.groupBy = append(sq.groupBy, posName)
+				sq.groupByExprs = append(sq.groupByExprs, nil)
+				continue
+			}
+			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
+			if nameErr == nil {
+				// Postgres / MySQL: GROUP BY may reference a SELECT-list
+				// alias (e.g. `SELECT v/10 AS bucket FROM t GROUP BY
+				// bucket`). When the bare-column path resolves to a name
+				// that matches a SELECT-list alias whose projExpr is a
+				// non-trivial expression, redirect to the underlying
+				// expression so per-row evaluation derives the group key.
+				// Uses the snapshot taken right after the SELECT loop —
+				// reclassification may have cleared projAliases.
+				redirected := false
+				for i, alias := range selectAliasesSnapshot {
+					if alias != colName {
+						continue
+					}
+					if i >= len(selectExprsSnapshot) || selectExprsSnapshot[i] == nil {
+						break
+					}
+					sq.groupBy = append(sq.groupBy, selectExprsSnapshot[i].GetText())
+					sq.groupByExprs = append(sq.groupByExprs, selectExprsSnapshot[i])
+					redirected = true
+					break
+				}
+				if !redirected {
+					sq.groupBy = append(sq.groupBy, colName)
+					sq.groupByExprs = append(sq.groupByExprs, nil)
+				}
+			} else {
+				// Synthesize a display name from the expression text; the
+				// value used for grouping comes from evaluating the expr.
+				sq.groupBy = append(sq.groupBy, item.Expression().GetText())
+				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
+			}
 		}
 	}
 
@@ -2787,6 +3710,42 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		sq.havingExpr = havingCtx.GetHavingExpr()
 	}
 
+	// Redirect aggCols groupCol entries that came from a SELECT-list
+	// expression (`v/10 AS bucket`) to point at the matching GROUP BY
+	// expression text, so the proto path's groupExprByName check fires
+	// and skips the FD lookup. Walks selectExprsSnapshot to find the
+	// original projExpr for each groupCol entry; matches against
+	// sq.groupBy[] by GetText. Idempotent — runs once after both
+	// SELECT-list reclassification (if any) and GROUP BY parsing.
+	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 && len(selectExprsSnapshot) > 0 {
+		for ai, ac := range sq.aggCols {
+			if ac.groupCol == "" {
+				continue
+			}
+			// Look up the original projExpr by alias / position in the snapshot.
+			var origExpr antlrgen.IExpressionContext
+			for si, alias := range selectAliasesSnapshot {
+				if alias != ac.groupCol {
+					continue
+				}
+				if si < len(selectExprsSnapshot) {
+					origExpr = selectExprsSnapshot[si]
+				}
+				break
+			}
+			if origExpr == nil {
+				continue
+			}
+			projText := origExpr.GetText()
+			for gi, gn := range sq.groupBy {
+				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+					sq.aggCols[ai].groupCol = gn
+					break
+				}
+			}
+		}
+	}
+
 	// countStar fast path assumes a single synthetic row. With GROUP BY
 	// present we need a per-group COUNT(*), so demote to aggCols.
 	if sq.countStar && len(sq.groupBy) > 0 {
@@ -2794,7 +3753,213 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: "COUNT(*)", aggFunc: "COUNT"})
 	}
 
+	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
+	// already in aggCols. Otherwise queries like
+	//   SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0
+	//   SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) DESC
+	// have aggCols == nil → the executor never runs the aggregate pipeline
+	// → GROUP BY is silently ignored. The HAVING / ORDER BY resolver already
+	// looks up aggregates by their reconstructed output name ("COUNT(*)",
+	// "SUM(v)"), so matching aggCols entries make the evaluation round-trip.
+	// If projCols still holds plain columns at this point, reclassify them
+	// as group-by references in aggCols (mirror of the SELECT-list-aggregate
+	// path's existing reclassification).
+	type harvestSource struct {
+		expr     antlrgen.IExpressionContext
+		sortOnly bool // true when the source is ORDER BY (sort-visible); false for HAVING (hidden)
+	}
+	var harvestSources []harvestSource
+	if sq.havingExpr != nil {
+		harvestSources = append(harvestSources, harvestSource{expr: sq.havingExpr, sortOnly: false})
+	}
+	for _, ob := range sq.orderBy {
+		if ob.rawExpr != nil {
+			harvestSources = append(harvestSources, harvestSource{expr: ob.rawExpr, sortOnly: true})
+		}
+	}
+	if len(harvestSources) > 0 {
+		existing := make(map[string]struct{}, len(sq.aggCols))
+		for _, ac := range sq.aggCols {
+			existing[ac.outName] = struct{}{}
+		}
+		var newAggs []aggSelectCol
+		for _, src := range harvestSources {
+			for _, ac := range harvestAggregates(src.expr) {
+				if _, ok := existing[ac.outName]; ok {
+					// Already accumulated. If we now see this aggregate from
+					// an ORDER BY source and the existing entry is hidden
+					// (HAVING-only), upgrade to sortOnly so the sort can
+					// find it via colIdx. sortOnly subsumes hidden — both
+					// HAVING (via rowMap) and ORDER BY (via colIdx) are
+					// satisfied, and the column gets stripped post-sort.
+					// Walk both already-attached sq.aggCols and the
+					// pending newAggs since HAVING harvest runs first.
+					if src.sortOnly {
+						for k := range sq.aggCols {
+							if sq.aggCols[k].outName == ac.outName && sq.aggCols[k].hidden {
+								sq.aggCols[k].hidden = false
+								sq.aggCols[k].sortOnly = true
+							}
+						}
+						for k := range newAggs {
+							if newAggs[k].outName == ac.outName && newAggs[k].hidden {
+								newAggs[k].hidden = false
+								newAggs[k].sortOnly = true
+							}
+						}
+					}
+					continue
+				}
+				existing[ac.outName] = struct{}{}
+				if src.sortOnly {
+					ac.sortOnly = true
+				} else {
+					ac.hidden = true
+				}
+				newAggs = append(newAggs, ac)
+			}
+		}
+		// ORDER BY items that wrap aggregates in an expression (e.g.
+		// `ORDER BY SUM(v) * 2`) get their own sortOnly outExpr aggCols
+		// entry. The proto sort path can then look up the entry via
+		// colIdx[sentinel] and find a per-group value evaluated from the
+		// wrapping expression. Inner aggregates were harvested as hidden
+		// above so the rowMap at outExpr eval time has them available.
+		for obIdx, ob := range sq.orderBy {
+			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
+				continue
+			}
+			sentinel := fmt.Sprintf("__orderby_aggexpr_%d__", obIdx)
+			newAggs = append(newAggs, aggSelectCol{
+				outName:  sentinel,
+				outExpr:  ob.expr,
+				sortOnly: true,
+			})
+			sq.orderBy[obIdx].colName = sentinel
+			sq.orderBy[obIdx].expr = nil
+		}
+		if len(newAggs) > 0 {
+			if len(sq.aggCols) == 0 && len(projCols) > 0 {
+				// No SELECT-list aggregates yet; demote the plain projCols
+				// to group-by references so the aggregate pipeline knows
+				// how to surface them in each output row. When the projExpr
+				// matches a GROUP BY expression by text (e.g. `SELECT v/10
+				// AS bucket ... GROUP BY v/10`), point groupCol at the
+				// matching groupBy[] string so the proto path's
+				// groupExprByName check fires and skips the FD lookup.
+				prepended := make([]aggSelectCol, 0, len(projCols)+len(sq.aggCols))
+				for i, c := range projCols {
+					out := projAliases[i]
+					if out == "" {
+						out = c
+					}
+					gc := c
+					if i < len(projExprs) && projExprs[i] != nil {
+						projText := projExprs[i].GetText()
+						for gi, gn := range sq.groupBy {
+							if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+								gc = gn
+								break
+							}
+						}
+					}
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc})
+				}
+				sq.aggCols = append(prepended, sq.aggCols...)
+				sq.projCols = nil
+				sq.projAliases = nil
+				sq.projExprs = nil
+				sq.projStarQualifiers = nil
+			}
+			sq.aggCols = append(sq.aggCols, newAggs...)
+		}
+	}
+
 	return sq, nil
+}
+
+// exprReferencesColumn reports whether the expression tree contains any
+// FullColumnName references. Used to distinguish constant expressions
+// (SELECT 1, SUM(v) FROM t) from column-bearing expressions (SELECT grp,
+// SUM(v) FROM t GROUP BY grp) in the mixed-aggregate classification —
+// constants don't need to be group-by references and route through the
+// outExpr path instead.
+func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil || found {
+			return
+		}
+		if _, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			found = true
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return found
+}
+
+// harvestAggregates walks an expression tree looking for aggregate function
+// calls (COUNT/SUM/MIN/MAX/AVG). Returns a synthesized aggSelectCol per
+// distinct aggregate found, with outName matching the HAVING resolver's
+// reconstructed lookup name ("COUNT(*)", "SUM(v)", "AVG(price)", etc.).
+// Used to back HAVING-only aggregates so the aggregate pipeline runs even
+// when the SELECT list contains only plain columns.
+func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
+	if expr == nil {
+		return nil
+	}
+	var out []aggSelectCol
+	seen := make(map[string]struct{})
+	visit := func(antlr.Tree) {}
+	visit = func(n antlr.Tree) {
+		if n == nil {
+			return
+		}
+		if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok {
+			ac, ok := aggColFromAwf(awf)
+			if ok {
+				if _, dup := seen[ac.outName]; !dup {
+					seen[ac.outName] = struct{}{}
+					out = append(out, ac)
+				}
+			}
+			// Do not recurse into the aggregate's argument — nested
+			// aggregates aren't valid SQL and the outer evaluator
+			// will reject them with a clearer error anyway.
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return out
+}
+
+// aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
+// context via the shared extractAwfFields helper. Output name matches the
+// HAVING resolver's lookup name and the SELECT-list default alias
+// ("COUNT(*)", "SUM(v)"). Returns false for unknown aggregate shapes.
+func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
+	fn, argCol, argExpr, outName, isDistinct, ok := extractAwfFields(awf)
+	if !ok {
+		return aggSelectCol{}, false
+	}
+	return aggSelectCol{
+		outName:     outName,
+		aggFunc:     fn,
+		aggArg:      argCol,
+		aggExpr:     argExpr,
+		aggDistinct: isDistinct,
+	}, true
 }
 
 // extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from
@@ -3449,10 +4614,23 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 			return nil, storeErr
 		}
 
-		// Determine target columns: explicit list or use source column names.
-		cols := explicitCols
-		if cols == nil {
-			cols = srcCols
+		// Determine target columns. When the user specifies an explicit
+		// column list (`INSERT INTO t (c1, c2) SELECT ...`), match by
+		// that list. Otherwise fall back to positional mapping against
+		// the table's declared field order — matches Postgres / SQL-92
+		// semantics. Previously we used srcCols (the SELECT output
+		// names), which broke on expression projections like
+		// `SELECT id + 100, v * 2` because the synthetic output name
+		// "id+100" isn't a real table field.
+		var cols []string
+		if explicitCols != nil {
+			cols = explicitCols
+		} else {
+			fds := msgDesc.Fields()
+			cols = make([]string, fds.Len())
+			for i := 0; i < fds.Len(); i++ {
+				cols[i] = string(fds.Get(i).Name())
+			}
 		}
 		if len(cols) != len(srcCols) {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -3544,6 +4722,22 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		if v, ok := val.(int64); ok {
 			return protoreflect.ValueOfInt64(v), nil
+		}
+		// INSERT ... SELECT with an aggregate (SUM/AVG) produces a float64
+		// value even for integer inputs because the accumulator stores
+		// float64 state. Accept a whole-valued float64 and coerce, matching
+		// Postgres/MySQL semantics where `INSERT INTO t(n) SELECT SUM(v)`
+		// is well-defined. Rejects non-integer floats with a clear error.
+		if v, ok := val.(float64); ok {
+			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
+			}
+			if v < math.MinInt64 || v > math.MaxInt64 {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %g out of range for %s column %q", v, fd.Kind(), fd.Name())
+			}
+			return protoreflect.ValueOfInt64(int64(v)), nil
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		if v, ok := val.(int64); ok {
@@ -3876,9 +5070,14 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER: argument must be string, got %T", v)
 		}
 		return strings.ToLower(s), nil
-	case "LENGTH", "LEN":
+	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
+		// LENGTH / CHAR_LENGTH are synonyms in SQL:2003 and across
+		// Postgres / Oracle / SQL Server when applied to a string —
+		// all count logical characters (Unicode code points), not
+		// bytes. CHARACTER_LENGTH is the spec name; LENGTH and LEN
+		// are the common short forms. Byte-length is OCTET_LENGTH.
 		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH requires 1 argument")
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
 		v, err := eval(fArgs[0].Expression())
 		if err != nil || v == nil {
@@ -3886,9 +5085,28 @@ func evalScalarFunctionCallCore(
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LENGTH: argument must be string, got %T", v)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
 		}
 		return int64(utf8.RuneCountInString(s)), nil
+	case "OCTET_LENGTH":
+		// SQL:2003 OCTET_LENGTH — byte count of a string / bytes value,
+		// regardless of encoding. Distinct from CHAR_LENGTH which counts
+		// Unicode code points. Both Postgres and Oracle support it.
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "OCTET_LENGTH requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		switch x := v.(type) {
+		case string:
+			return int64(len(x)), nil
+		case []byte:
+			return int64(len(x)), nil
+		default:
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "OCTET_LENGTH: argument must be STRING or BYTES, got %T", v)
+		}
 	case "TRIM", "LTRIM", "RTRIM":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
@@ -4016,7 +5234,7 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
 		}
 		if bf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "MOD: division by zero")
 		}
 		if _, aIsInt := av.(int64); aIsInt {
 			if _, bIsInt := bv.(int64); bIsInt {
@@ -4800,7 +6018,7 @@ func applyMathOp(left, right any, op string) (any, error) {
 			return r, nil
 		case "/":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 			}
 			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
@@ -4809,7 +6027,7 @@ func applyMathOp(left, right any, op string) (any, error) {
 			return li / ri, nil
 		case "%":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 			}
 			return li % ri, nil
 		default:
@@ -4832,12 +6050,12 @@ func applyMathOp(left, right any, op string) (any, error) {
 		result = lf * rf
 	case "/":
 		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 		}
 		result = lf / rf
 	case "%":
 		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 		}
 		result = math.Mod(lf, rf)
 	default:
@@ -5787,7 +7005,8 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING supports only comparison predicates, got %T", pred.ExpressionAtom())
 	}
 
-	resolveAtom := func(atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
+	var resolveAtom func(atom antlrgen.IExpressionAtomContext) (driver.Value, error)
+	resolveAtom = func(atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
 		switch a := atom.(type) {
 		case *antlrgen.ConstantExpressionAtomContext:
 			return evalConstant(a.Constant())
@@ -5828,6 +7047,34 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING aggregate %q not in SELECT list", lookupName)
 			}
 			return v, nil
+		case *antlrgen.MathExpressionAtomContext:
+			// HAVING on arithmetic over aggregates / constants, e.g.
+			// `HAVING SUM(v) * 2 > 50` or `HAVING COUNT(*) + SUM(v) > 5`.
+			// Recursively resolve both sides, then apply the same math
+			// operator helper that the row-level evaluator uses — NULL
+			// propagation comes from applyMathOp (nil-in / nil-out).
+			left, lErr := resolveAtom(a.GetLeft())
+			if lErr != nil {
+				return nil, lErr
+			}
+			right, rErr := resolveAtom(a.GetRight())
+			if rErr != nil {
+				return nil, rErr
+			}
+			return applyMathOp(left, right, a.MathOperator().GetText())
+		case *antlrgen.BitExpressionAtomContext:
+			// Same shape as MathExpression but with bitwise ops. HAVING on
+			// bitwise expressions (`COUNT(*) & 1`) is unusual but valid and
+			// costs nothing to mirror.
+			left, lErr := resolveAtom(a.GetLeft())
+			if lErr != nil {
+				return nil, lErr
+			}
+			right, rErr := resolveAtom(a.GetRight())
+			if rErr != nil {
+				return nil, rErr
+			}
+			return applyBitOp(left, right, a.BitOperator().GetText())
 		default:
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING atom %T", atom)
 		}
@@ -5944,6 +7191,23 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		}
 		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
+		// Aggregate function calls inside a row-map expression evaluate
+		// by looking up the reconstructed aggregate name in the row map.
+		// This is how post-aggregation SELECT expressions like
+		// `SUM(a) + SUM(b)` or `COALESCE(SUM(v), 0)` get their values:
+		// the emit-time rowMap is populated with {"SUM(a)": n, "SUM(b)": m}
+		// exactly as evalHavingTri's resolver expects.
+		if agg, ok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext); ok {
+			if awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext); awfok {
+				if _, _, _, outName, _, ok := extractAwfFields(awf); ok {
+					if v, present := row[outName]; present {
+						return v, nil
+					}
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"aggregate %q not available in this context", outName)
+				}
+			}
+		}
 		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
 	case *antlrgen.RecordConstructorExpressionAtomContext:
 		// Single-field parenthesised group — unwrap and recurse. For
