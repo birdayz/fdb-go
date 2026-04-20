@@ -3617,6 +3617,25 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				newAggs = append(newAggs, ac)
 			}
 		}
+		// ORDER BY items that wrap aggregates in an expression (e.g.
+		// `ORDER BY SUM(v) * 2`) get their own sortOnly outExpr aggCols
+		// entry. The proto sort path can then look up the entry via
+		// colIdx[sentinel] and find a per-group value evaluated from the
+		// wrapping expression. Inner aggregates were harvested as hidden
+		// above so the rowMap at outExpr eval time has them available.
+		for obIdx, ob := range sq.orderBy {
+			if ob.expr == nil || len(harvestAggregates(ob.expr)) == 0 {
+				continue
+			}
+			sentinel := fmt.Sprintf("__orderby_aggexpr_%d__", obIdx)
+			newAggs = append(newAggs, aggSelectCol{
+				outName:  sentinel,
+				outExpr:  ob.expr,
+				sortOnly: true,
+			})
+			sq.orderBy[obIdx].colName = sentinel
+			sq.orderBy[obIdx].expr = nil
+		}
 		if len(newAggs) > 0 {
 			if len(sq.aggCols) == 0 && len(projCols) > 0 {
 				// No SELECT-list aggregates yet; demote the plain projCols

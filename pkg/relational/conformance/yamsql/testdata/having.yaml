@@ -121,6 +121,26 @@ tests:
       - ['b', 35]
       - ['a', 30]
       - ['c', ~]
+  # ORDER BY on an arithmetic expression wrapping an aggregate. The
+  # harvest registers the inner SUM(v) as sortOnly AND adds a
+  # sortOnly outExpr aggCols entry for `SUM(v) * 2`; the proto sort
+  # path looks up the sentinel name via colIdx and finds the
+  # post-aggregation value. Both columns are stripped after the
+  # sort. v values: a=10+20=30, b=30+5=35, c=NULL → SUM*2: 60, 70, NULL.
+  # ASC NULLS FIRST default → c (NULL), a, b.
+  - query: SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) * 2
+    rows:
+      - ['c']
+      - ['a']
+      - ['b']
+  # COALESCE wrapping aggregate in ORDER BY — same path, with NULL
+  # absorbed by the COALESCE so the sort is total. ASC: a (30), b
+  # (35), c (0 from COALESCE).
+  - query: SELECT grp FROM t GROUP BY grp ORDER BY COALESCE(SUM(v), 0)
+    rows:
+      - ['c']
+      - ['a']
+      - ['b']
   # HAVING on a bare COUNT(*) query with no GROUP BY. The COUNT(*)
   # fast path in both aggregation paths used to skip HAVING entirely
   # — `SELECT COUNT(*) FROM t HAVING COUNT(*) > 100` returned the
