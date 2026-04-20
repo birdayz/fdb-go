@@ -19,10 +19,13 @@ go_deps.module_override(
 )
 use_repo(
     go_deps,
+    "build_buf_go_protoyaml",
     "cc_mvdan_gofumpt",
     "co_honnef_go_tools",
     "com_github_antlr4_go_antlr_v4",
     "com_github_apple_foundationdb_bindings_go",
+    "com_github_birdayz_protobuf_ecosystem",
+    "com_github_chzyer_readline",
     "com_github_docker_docker",
     "com_github_docker_go_connections",
     "com_github_google_uuid",
@@ -30,13 +33,16 @@ use_repo(
     "com_github_onsi_gomega",
     "com_github_planetscale_vtprotobuf",
     "com_github_rivo_uniseg",
+    "com_github_spf13_cobra",
     "com_github_testcontainers_testcontainers_go",
     "com_github_zeebo_xxh3",
     "in_gopkg_yaml_v3",
-    "org_uber_go_mock",
+    "land_charm_fang_v2",
+    "land_charm_lipgloss_v2",
     "org_golang_google_protobuf",
     "org_golang_x_text",
     "org_golang_x_tools",
+    "org_uber_go_mock",
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")

@@ -19,10 +19,17 @@ ensure-buf:
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs
 # `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser
+generate: ensure-buf generate-mocks generate-parser generate-frl
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
+
+# Regenerate protobuf code for the `frl` CLI module (separate go.mod, separate
+# buf.yaml under cmd/frl/). Output goes to cmd/frl/gen/, consumed by the CLI
+# only — never by the library module.
+generate-frl: ensure-buf
+    rm -rf cmd/frl/gen/
+    cd cmd/frl && ../../.tools/buf generate
 
 # Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
 # first so removed interfaces / renamed files don't leave stale
@@ -87,7 +94,7 @@ fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
+    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/frl/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
 
 # Check Go formatting (fails if any file needs formatting)
 # Uses Bazel-managed gofumpt — same version as nogo linter, no drift.
@@ -95,7 +102,7 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
+    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/frl/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"
@@ -289,3 +296,8 @@ install-hooks:
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
     bazelisk test {{target}} --cache_test_results=no {{args}}
+
+# Convenience wrapper for the frl CLI (Phase A skeleton — see cmd/frl/).
+# Example: `just frl version` or `just frl config schema`.
+frl *args:
+    bazelisk run //cmd/frl -- {{args}}

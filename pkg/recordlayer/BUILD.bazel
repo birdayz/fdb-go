@@ -49,6 +49,7 @@ go_library(
         "merge_cursor.go",
         "metadata.go",
         "metadata_evolution_validator.go",
+        "metadata_export.go",
         "metadata_proto.go",
         "metadata_store.go",
         "multidimensional_index_maintainer.go",

@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "config",
+    srcs = ["config.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config",
+    visibility = ["//cmd/frl:__subpackages__"],
+    deps = [
+        "//cmd/frl/gen/frl/config/v1:config",
+        "@build_buf_go_protoyaml//:protoyaml",
+        "@com_github_birdayz_protobuf_ecosystem//protoconfig",
+    ],
+)
+
+go_test(
+    name = "config_test",
+    srcs = ["config_test.go"],
+    embed = [":config"],
+    deps = [
+        "//cmd/frl/gen/frl/config/v1:config",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
