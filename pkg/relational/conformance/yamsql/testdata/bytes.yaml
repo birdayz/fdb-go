@@ -45,3 +45,10 @@ tests:
   # Invalid base64 chars raise 22F03.
   - query: SELECT a FROM lb WHERE b = b64'***'
     error_code: "22F03"
+  # ORDER BY on BYTES column — lexicographic. cafe = 0xca..., deadbeef
+  # = 0xde..., NULL first (ASC default).
+  - query: SELECT a FROM lb ORDER BY b
+    rows:
+      - [3]
+      - [2]
+      - [1]
