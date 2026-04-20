@@ -3306,8 +3306,8 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 }
 
 // aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
-// context. Output name matches the HAVING resolver's lookup name and
-// extractAggFunc's default alias ("COUNT(*)", "SUM(v)"). Returns false for
+// context. Output name matches the HAVING resolver's lookup name and the
+// SELECT-list default alias ("COUNT(*)", "SUM(v)"). Returns false for
 // unknown aggregate shapes.
 func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
 	isDistinct := awf.DISTINCT() != nil
