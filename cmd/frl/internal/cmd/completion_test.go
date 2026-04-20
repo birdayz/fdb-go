@@ -136,6 +136,30 @@ func TestCompletion_TypeFlagSilentOnBadConfig(t *testing.T) {
 	}
 }
 
+// TestCompletion_IndexDescribeSilentOnBadConfig — the index-name
+// completer must return zero candidates silently when metadata can't
+// load (bad config, missing file, etc.). Shells print completion errors
+// as if they were real candidates, so a visible error string here would
+// show up as a weird tab-complete suggestion.
+func TestCompletion_IndexDescribeSilentOnBadConfig(t *testing.T) {
+	t.Setenv("FRL_CONFIG", "/definitely/does/not/exist.yaml")
+	got := runCompletion(t, "index", "describe", "")
+	if len(got) != 0 {
+		t.Errorf("expected silent empty completions on bad config, got: %v", got)
+	}
+}
+
+// TestCompletion_MetaTypesDescribeSilentOnBadConfig — sibling of
+// TestCompletion_IndexDescribeSilentOnBadConfig for recordTypeNameCompletion.
+// Both go through loadMetaForCompletion, and both need to fail silent.
+func TestCompletion_MetaTypesDescribeSilentOnBadConfig(t *testing.T) {
+	t.Setenv("FRL_CONFIG", "/definitely/does/not/exist.yaml")
+	got := runCompletion(t, "meta", "types", "describe", "")
+	if len(got) != 0 {
+		t.Errorf("expected silent empty completions on bad config, got: %v", got)
+	}
+}
+
 func TestCompletion_UseContextPositional(t *testing.T) {
 	writeTestConfig(t, "prod")
 	got := runCompletion(t, "config", "use-context", "")
