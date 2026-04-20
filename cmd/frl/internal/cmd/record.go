@@ -189,12 +189,44 @@ func writeRecordAsJSON(out io.Writer, rec *recordlayer.FDBStoredRecord[proto.Mes
 	return err
 }
 
+// formatPK renders a tuple as a comma-separated string for NDJSON output.
+// Each element is formatted per its runtime type so binary keys, UUIDs,
+// and versionstamps produce meaningful text rather than Go's default
+// "%v" which prints byte slices as `[1 2 3]` (unusable for grep/jq).
+//
+// Elements we care about:
+//   - []byte        → hex (binary PKs are common with UUID / hash PKs)
+//   - tuple.UUID    → canonical 8-4-4-4-12 form
+//   - tuple.Versionstamp → its own String() which is already compact
+//   - string/int64/float/bool → %v (round-trips through parsePrimaryKey)
+//   - tuple.Tuple   → recurse, so nested tuples render somewhat sensibly
+//
+// The output is not intended to round-trip back into a tuple — it's for
+// human inspection and downstream text tools. Operators who need the
+// exact wire bytes should reach for `store dump` instead.
 func formatPK(t tuple.Tuple) string {
 	parts := make([]string, len(t))
 	for i, e := range t {
-		parts[i] = fmt.Sprintf("%v", e)
+		parts[i] = formatTupleElement(e)
 	}
 	return strings.Join(parts, ",")
+}
+
+func formatTupleElement(e any) string {
+	switch v := e.(type) {
+	case []byte:
+		return fmt.Sprintf("%x", v)
+	case tuple.UUID:
+		return v.String()
+	case tuple.Versionstamp:
+		return v.String()
+	case tuple.Tuple:
+		return "(" + formatPK(v) + ")"
+	case nil:
+		return "<nil>"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func scanAndRender(
