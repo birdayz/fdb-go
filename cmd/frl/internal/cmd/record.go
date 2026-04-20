@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -237,6 +238,23 @@ func scanAndRender(
 	limit int,
 	reverse bool,
 ) error {
+	// Up-front type validation: ScanRecordsByType with an unknown name
+	// silently falls through to a full-store filter that matches nothing.
+	// Operators typo'ing `--type Orders` would get empty output instead
+	// of a clear error — expensive too (slow-path full scan). Fail fast.
+	if recordType != "" {
+		if store.GetRecordMetaData().GetRecordType(recordType) == nil {
+			types := store.GetRecordMetaData().RecordTypes()
+			names := make([]string, 0, len(types))
+			for n := range types {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			return fmt.Errorf("record type %q not found — available: %s",
+				recordType, strings.Join(names, ", "))
+		}
+	}
+
 	scanProps := recordlayer.ForwardScan()
 	if reverse {
 		scanProps = recordlayer.ReverseScan()

@@ -323,6 +323,24 @@ func TestIntegration_RecordScan(t *testing.T) {
 	}
 }
 
+// TestIntegration_RecordScan_UnknownTypeLists validates the fail-fast
+// path: `--type` with a bogus name must error with the available types,
+// not silently emit zero records after a full-store scan. The previous
+// code path fell through to ScanRecordsByType's slow-path filter which
+// matched nothing for unknown types.
+func TestIntegration_RecordScan_UnknownTypeLists(t *testing.T) {
+	bindConfig(t)
+	_, err := runCmd(t, "record", "scan", "--type", "Orders" /* typo */)
+	if err == nil {
+		t.Fatal("expected error for unknown --type, got nil (silent empty output?)")
+	}
+	for _, want := range []string{"Orders", "not found", "Order", "Customer"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %v missing expected substring %q", err, want)
+		}
+	}
+}
+
 // TestIntegration_RecordScanReverse verifies --reverse walks the tail first.
 // The fixture seeds Order records with OrderId 1, 2, 3 — forward scan with
 // limit 1 must return order_id=1; reverse with limit 1 must return
