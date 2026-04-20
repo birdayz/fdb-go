@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -202,6 +204,110 @@ func TestDiffJSON_VersionBumpEmitsVersion(t *testing.T) {
 	if v["new"].(float64) != 7 {
 		t.Errorf("version.new = %v; want 7", v["new"])
 	}
+}
+
+// TestMetaDiffCmd_TextEndToEnd drives the full cobra command on two
+// metadata files. Without a command-level test the only coverage comes
+// from writeMetaDiff / writeMetaDiffJSON unit tests — flag wiring,
+// argument parsing, and the file-load path stay unexercised.
+func TestMetaDiffCmd_TextEndToEnd(t *testing.T) {
+	t.Parallel()
+	oldPath := writeDiffMetaFile(t, 0)
+	newPath := writeDiffMetaFile(t, 0, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$added", recordlayer.Field("price")))
+	})
+
+	c := newMetaDiffCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{oldPath, newPath})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"INDEXES:", "+ Order$added"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestMetaDiffCmd_JSONEndToEnd locks in the -o json contract via the
+// command path. Script consumers key off `.indexes.added` etc.
+func TestMetaDiffCmd_JSONEndToEnd(t *testing.T) {
+	t.Parallel()
+	oldPath := writeDiffMetaFile(t, 0)
+	newPath := writeDiffMetaFile(t, 0, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$added", recordlayer.Field("price")))
+	})
+
+	c := newMetaDiffCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{oldPath, newPath, "-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	var d map[string]any
+	if err := json.Unmarshal(out.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	idx, ok := d["indexes"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing indexes section:\n%s", out.String())
+	}
+	added, _ := idx["added"].([]any)
+	if len(added) != 1 || added[0] != "Order$added" {
+		t.Errorf("indexes.added = %v; want [Order$added]", added)
+	}
+}
+
+// TestMetaDiffCmd_RejectsInvalidOutput — output validator is the last
+// line of defence against typo'd flag values; verify the command path
+// uses it rather than falling through to "text" silently.
+func TestMetaDiffCmd_RejectsInvalidOutput(t *testing.T) {
+	t.Parallel()
+	p := writeDiffMetaFile(t, 0)
+	c := newMetaDiffCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{p, p, "-o", "yaml"}) // diff does not support yaml
+	if err := c.Execute(); err == nil {
+		t.Fatal("expected error for -o yaml")
+	}
+}
+
+// writeDiffMetaFile exports a metadata snapshot (with optional tweaks)
+// to a temp file for end-to-end meta diff tests.
+func writeDiffMetaFile(t *testing.T, version int32, opts ...func(*recordlayer.RecordMetaDataBuilder)) string {
+	t.Helper()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	if version != 0 {
+		b.SetVersion(int(version))
+	}
+	for _, o := range opts {
+		o(b)
+	}
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "meta.pb")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer f.Close()
+	if err := recordlayer.WriteRecordMetaData(md, f); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
 }
 
 // TestDiffSection_EntryShape verifies the structured diffEntry output
