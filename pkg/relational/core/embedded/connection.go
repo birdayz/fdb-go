@@ -1683,6 +1683,25 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		for i := range indexes {
 			indexes[i] = i
 		}
+		// Pre-validate ORDER BY column references against the CTE: any
+		// name not in colIdx and not present in the materialised CTE row
+		// keys is a typo and must error rather than silently no-op'ing
+		// the sort. Round-10 reviewer note. Skips expression-keyed and
+		// aggregate-path ORDER BY items (they're handled above).
+		if len(mapRows) == len(outRows) && len(mapRows) > 0 {
+			for _, ob := range sq.orderBy {
+				if ob.expr != nil {
+					continue
+				}
+				if _, ok := colIdx[ob.colName]; ok {
+					continue
+				}
+				if _, present := mapRows[0][ob.colName]; !present {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"ORDER BY column %q not found in CTE %q", ob.colName, sq.tableName)
+				}
+			}
+		}
 		sort.SliceStable(indexes, func(ii, jj int) bool {
 			i, j := indexes[ii], indexes[jj]
 			for oi, ob := range sq.orderBy {

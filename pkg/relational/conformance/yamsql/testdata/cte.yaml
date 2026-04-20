@@ -60,3 +60,11 @@ tests:
       - [3]
       - [2]
       - [1]
+  # ORDER BY a name that's neither in the projection nor a real CTE
+  # column errors 42703 instead of silently no-op'ing the sort
+  # (round-10 reviewer follow-up). Pre-fix typos would've been
+  # masked as "stable order" output.
+  - query: |-
+      WITH s AS (SELECT id, v FROM t)
+      SELECT id FROM s ORDER BY no_such_col
+    error_code: "42703"
