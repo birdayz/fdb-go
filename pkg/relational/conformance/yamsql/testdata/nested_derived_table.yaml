@@ -1,0 +1,33 @@
+# nested_derived_table.yaml
+#
+# Nested derived tables (Java's null-operator-tests.yamsql):
+# `SELECT * FROM (SELECT * FROM (SELECT * FROM T1) AS x) AS y`.
+# Multiple layers of derived-table wrapping verify that alias scoping
+# and column propagation work across nesting levels.
+name: nested_derived_table
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10), (2, 20), (3, null), (4, 40)
+tests:
+  # Java pattern: 3-level nesting, outer filter on outermost alias.
+  - query: |-
+      SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y
+      ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, ~]
+      - [4, 40]
+  # Aggregate over nested derived tables.
+  - query: |-
+      SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE n IS NOT NULL) AS y
+    rows:
+      - [3]
+  # Nested with column renaming at each level.
+  - query: |-
+      SELECT y.a FROM (SELECT x.b AS a FROM (SELECT id AS b FROM t1) AS x WHERE b > 2) AS y
+      ORDER BY y.a
+    rows:
+      - [3]
+      - [4]
