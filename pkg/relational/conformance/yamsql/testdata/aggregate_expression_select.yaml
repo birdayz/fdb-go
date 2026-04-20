@@ -87,3 +87,19 @@ tests:
   - query: SELECT SUM(a) + 1 FROM t HAVING SUM(a) > 10
     rows:
       - [33]
+  # Constant literal alongside an aggregate: `SELECT 1, SUM(v)`. The
+  # literal must NOT be misclassified as a group-by reference "1" (which
+  # the pre-fix reclassification did, causing the proto-path aggArgFDs
+  # resolver to fail with "column '1' not found in table"). A
+  # constant-only expression takes the outExpr path and emits once per
+  # group (here, one group).
+  - query: SELECT 1, SUM(a) FROM t
+    rows:
+      - [1, 32]
+  - query: SELECT 'total', COUNT(*) FROM t
+    rows:
+      - ['total', 4]
+  # Multiple constants + aggregate mixed ordering.
+  - query: SELECT 1, 2, MAX(a) FROM t
+    rows:
+      - [1, 2, 20]

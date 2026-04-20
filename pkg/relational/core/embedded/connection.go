@@ -3034,20 +3034,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						expr = e.Expression()
 					}
 					if len(aggCols) > 0 {
-						// Mixed aggregate query. Computed expressions that wrap
-						// aggregates (SUM(a)+1, COALESCE(SUM(v), 0)) classify as
-						// post-aggregation outExpr slots — evaluated against the
-						// rowMap at emit time. Bare columns / non-aggregate
-						// expressions classify as group-by references.
+						// Mixed aggregate query. Three classifications for
+						// the trailing SELECT element based on what the
+						// expression references:
+						//   - wraps aggregates → outExpr (post-aggregation).
+						//   - constant-only (no columns) → outExpr so it's
+						//     emitted once per group like SUM does.
+						//   - bare column or column-only expression →
+						//     group-by reference.
 						outName := func() string {
 							if alias != "" {
 								return alias
 							}
 							return colName
 						}()
-						if expr != nil && len(harvestAggregates(expr)) > 0 {
+						switch {
+						case expr != nil && len(harvestAggregates(expr)) > 0:
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
-						} else {
+						case expr != nil && !exprReferencesColumn(expr):
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+						default:
 							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName})
 						}
 					} else {
@@ -3130,9 +3136,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 		// If we found aggregate functions mixed with plain columns, the plain cols
 		// that were added to projCols before the first aggregate need to be re-
-		// classified as group-by references. Star slots cannot be demoted to
-		// group-by references (each expands to multiple columns at execution),
-		// so reject that combination cleanly.
+		// classified. Bare columns become group-by references; expressions with
+		// no column refs (literal constants like `SELECT 1, SUM(v)`) become
+		// outExpr slots so they're emitted once per group without requiring
+		// a GROUP BY clause or a field-descriptor lookup. Star slots can't be
+		// demoted either way.
 		if len(aggCols) > 0 && len(projCols) > 0 {
 			for _, q := range projStarQualifiers {
 				if q != "" {
@@ -3140,14 +3148,22 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						"cannot mix qualifier.* with aggregate functions in SELECT list")
 				}
 			}
-			// Prepend the already-collected plain cols as group-by cols.
 			extra := make([]aggSelectCol, len(projCols))
 			for i, c := range projCols {
 				out := projAliases[i]
 				if out == "" {
 					out = c
 				}
-				extra[i] = aggSelectCol{outName: out, groupCol: c}
+				var slotExpr antlrgen.IExpressionContext
+				if i < len(projExprs) {
+					slotExpr = projExprs[i]
+				}
+				switch {
+				case slotExpr != nil && !exprReferencesColumn(slotExpr):
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+				default:
+					extra[i] = aggSelectCol{outName: out, groupCol: c}
+				}
 			}
 			aggCols = append(extra, aggCols...)
 			projCols = nil
@@ -3494,6 +3510,34 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	}
 
 	return sq, nil
+}
+
+// exprReferencesColumn reports whether the expression tree contains any
+// FullColumnName references. Used to distinguish constant expressions
+// (SELECT 1, SUM(v) FROM t) from column-bearing expressions (SELECT grp,
+// SUM(v) FROM t GROUP BY grp) in the mixed-aggregate classification —
+// constants don't need to be group-by references and route through the
+// outExpr path instead.
+func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil || found {
+			return
+		}
+		if _, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			found = true
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return found
 }
 
 // harvestAggregates walks an expression tree looking for aggregate function
