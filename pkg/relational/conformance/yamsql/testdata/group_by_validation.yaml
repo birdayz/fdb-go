@@ -43,3 +43,15 @@ tests:
       - [10, 100]
       - [10, 200]
       - [20, 300]
+  # Java alignment: SELECT count(*) without group-by col in projection
+  # but with GROUP BY (Java's aggregate-index-tests-count.yamsql).
+  # 'SELECT COUNT(*) FROM t GROUP BY col2' → one count row per col2 group.
+  - query: SELECT COUNT(*) FROM t1 GROUP BY col1 ORDER BY COUNT(*)
+    rows:
+      - [1]
+      - [2]
+  # SELECT aggregate-only without grouping col reference, with GROUP BY.
+  - query: SELECT SUM(col2) FROM t1 GROUP BY col1 ORDER BY SUM(col2)
+    rows:
+      - [300]
+      - [300]
