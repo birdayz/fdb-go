@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -60,6 +63,46 @@ func TestCompletion_OutputFlagDefaultsTextJSON(t *testing.T) {
 		if c != want[i] {
 			t.Errorf("candidate[%d] = %q, want %q", i, c, want[i])
 		}
+	}
+}
+
+func TestCompletion_TypeFlagPullsFromMetadata(t *testing.T) {
+	// Build a context pointing at the demo metadata the other tests use.
+	md := buildDemoMetaData(t)
+	metaPath := writeDemoMetaFile(t, 0)
+	_ = md // ensures buildDemoMetaData is called for its side-effect of keeping the fixture fresh
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := fmt.Sprintf(`current_context: local
+contexts:
+  - name: local
+    cluster_file: /tmp/fake.cluster
+    keyspace_path: /test
+    metadata:
+      meta_file: %s
+`, metaPath)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+
+	got := runCompletion(t, "record", "scan", "--type", "")
+	want := map[string]bool{"Order": true, "Customer": true, "TypedRecord": true}
+	if len(got) != 3 {
+		t.Fatalf("got %d candidates, want 3: %v", len(got), got)
+	}
+	for _, c := range got {
+		if !want[c] {
+			t.Errorf("unexpected type candidate %q", c)
+		}
+	}
+}
+
+func TestCompletion_TypeFlagSilentOnBadConfig(t *testing.T) {
+	t.Setenv("FRL_CONFIG", "/definitely/does/not/exist.yaml")
+	got := runCompletion(t, "record", "scan", "--type", "")
+	if len(got) != 0 {
+		t.Errorf("expected silent empty completions on bad config, got: %v", got)
 	}
 }
 

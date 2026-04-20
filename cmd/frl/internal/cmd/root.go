@@ -51,11 +51,12 @@ func NewRoot() *cobra.Command {
 }
 
 // registerCompletions walks the command tree depth-first and wires up
-// context-name / output-format completions for any command that has
-// the matching flag. Commands declaring these flags don't need to
-// touch cobra's completion API themselves.
+// context-name / record-type / output-format completions for any command
+// that has the matching flag. Commands declaring these flags don't need
+// to touch cobra's completion API themselves.
 func registerCompletions(c *cobra.Command) {
 	registerContextCompletion(c)
+	registerRecordTypeCompletion(c)
 	// `meta get -o` accepts {json, yaml}, not {text, json}. It's the only
 	// command with that shape; a simple name check is cheaper than a
 	// separate registration hook.
