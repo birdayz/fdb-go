@@ -297,9 +297,18 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	if err != nil {
 		return nil, err
 	}
-	_, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
+	rightCols, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
 	if err != nil {
 		return nil, err
+	}
+	// SQL standard: UNION sides must have matching column counts; names
+	// are positional (left's names become the result schema). Reject
+	// mismatched arity with SQLSTATE 42601 (syntax_error) — consistent
+	// with the grammar-level rejection for incoherent SELECT lists.
+	if len(leftCols) != len(rightCols) {
+		return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+			"UNION column count mismatch: left has %d columns, right has %d",
+			len(leftCols), len(rightCols))
 	}
 
 	combined := append(leftRows, rightRows...) //nolint:gocritic
