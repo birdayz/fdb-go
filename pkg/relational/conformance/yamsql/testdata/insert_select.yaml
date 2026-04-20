@@ -28,3 +28,27 @@ tests:
   - query: SELECT COUNT(*) FROM dst
     rows:
       - [3]
+  # INSERT...SELECT with expression projections — pre-swingshift-38 this
+  # errored 42703 because the column mapping used the SELECT output
+  # names ("id+100", "v*2"), which aren't real table fields. Now with
+  # no explicit column list the mapping is POSITIONAL to the table's
+  # declared field order (matches Postgres / SQL-92). So src rows
+  # (1,10), (2,20), (3,30) become dst rows (101,20), (102,40), (103,60).
+  - query: INSERT INTO dst SELECT id + 100, v * 2 FROM src
+  - query: SELECT id, v FROM dst WHERE id > 100 ORDER BY id
+    rows:
+      - [101, 20]
+      - [102, 40]
+      - [103, 60]
+  # INSERT...SELECT with constant expression — still positional.
+  - query: INSERT INTO dst SELECT 1000, 42 FROM src WHERE id = 1
+  - query: SELECT id, v FROM dst WHERE id = 1000
+    rows:
+      - [1000, 42]
+  # INSERT with explicit column list + SELECT expression. The explicit
+  # list wins over positional mapping — no regression on pre-existing
+  # by-name semantics when the user named the cols.
+  - query: INSERT INTO dst (id, v) SELECT id + 2000, v FROM src WHERE id = 2
+  - query: SELECT id, v FROM dst WHERE id >= 2000 ORDER BY id
+    rows:
+      - [2002, 20]

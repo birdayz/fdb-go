@@ -4051,10 +4051,23 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 			return nil, storeErr
 		}
 
-		// Determine target columns: explicit list or use source column names.
-		cols := explicitCols
-		if cols == nil {
-			cols = srcCols
+		// Determine target columns. When the user specifies an explicit
+		// column list (`INSERT INTO t (c1, c2) SELECT ...`), match by
+		// that list. Otherwise fall back to positional mapping against
+		// the table's declared field order — matches Postgres / SQL-92
+		// semantics. Previously we used srcCols (the SELECT output
+		// names), which broke on expression projections like
+		// `SELECT id + 100, v * 2` because the synthetic output name
+		// "id+100" isn't a real table field.
+		var cols []string
+		if explicitCols != nil {
+			cols = explicitCols
+		} else {
+			fds := msgDesc.Fields()
+			cols = make([]string, fds.Len())
+			for i := 0; i < fds.Len(); i++ {
+				cols[i] = string(fds.Get(i).Name())
+			}
 		}
 		if len(cols) != len(srcCols) {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
