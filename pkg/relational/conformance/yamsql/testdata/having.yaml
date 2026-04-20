@@ -141,6 +141,18 @@ tests:
       - ['c']
       - ['a']
       - ['b']
+  # SUM(v) referenced by both HAVING (filter) AND ORDER BY (sort), but
+  # NOT in the SELECT list. Pre-fix: HAVING harvest added SUM(v) as
+  # hidden, ORDER BY harvest dedupped against that hidden entry but
+  # didn't upgrade — sort fell through stable. Now the dedup branch
+  # upgrades hidden → sortOnly when ORDER BY references the same
+  # aggregate. HAVING SUM(v)>10 keeps a (30), b (35); ORDER BY SUM(v)
+  # DESC → b first.
+  - query: |
+      SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 10 ORDER BY SUM(v) DESC
+    rows:
+      - ['b']
+      - ['a']
   # HAVING on a bare COUNT(*) query with no GROUP BY. The COUNT(*)
   # fast path in both aggregation paths used to skip HAVING entirely
   # — `SELECT COUNT(*) FROM t HAVING COUNT(*) > 100` returned the

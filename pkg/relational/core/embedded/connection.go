@@ -3606,6 +3606,28 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		for _, src := range harvestSources {
 			for _, ac := range harvestAggregates(src.expr) {
 				if _, ok := existing[ac.outName]; ok {
+					// Already accumulated. If we now see this aggregate from
+					// an ORDER BY source and the existing entry is hidden
+					// (HAVING-only), upgrade to sortOnly so the sort can
+					// find it via colIdx. sortOnly subsumes hidden — both
+					// HAVING (via rowMap) and ORDER BY (via colIdx) are
+					// satisfied, and the column gets stripped post-sort.
+					// Walk both already-attached sq.aggCols and the
+					// pending newAggs since HAVING harvest runs first.
+					if src.sortOnly {
+						for k := range sq.aggCols {
+							if sq.aggCols[k].outName == ac.outName && sq.aggCols[k].hidden {
+								sq.aggCols[k].hidden = false
+								sq.aggCols[k].sortOnly = true
+							}
+						}
+						for k := range newAggs {
+							if newAggs[k].outName == ac.outName && newAggs[k].hidden {
+								newAggs[k].hidden = false
+								newAggs[k].sortOnly = true
+							}
+						}
+					}
 					continue
 				}
 				existing[ac.outName] = struct{}{}
