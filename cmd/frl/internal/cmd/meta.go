@@ -319,7 +319,7 @@ func applyMetaFileOverride(ctx *configv1.Context, path string) *configv1.Context
 // writeTypesList renders one row per record type: name, primary-key
 // fields (comma-joined), "since" version (when the type entered the
 // metadata). Since-version 0 is treated as "never upgraded" — suppress it.
-func writeTypesList(out interface{ Write([]byte) (int, error) }, md *recordlayer.RecordMetaData) error {
+func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 	rts := md.RecordTypes()
 	if len(rts) == 0 {
 		_, err := fmt.Fprintln(out, "(no record types in metadata)")

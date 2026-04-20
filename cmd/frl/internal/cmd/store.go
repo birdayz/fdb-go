@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -80,7 +81,7 @@ func newStoreInfoCmd() *cobra.Command {
 	return c
 }
 
-func runStoreInfo(ctx context.Context, out interface{ Write([]byte) (int, error) }, cfgCtx *configv1.Context, outputFmt string) error {
+func runStoreInfo(ctx context.Context, out io.Writer, cfgCtx *configv1.Context, outputFmt string) error {
 	if cfgCtx.GetKeyspacePath() == "" {
 		return fmt.Errorf("context %q has empty keyspace_path; add it to the config",
 			cfgCtx.GetName())
@@ -112,23 +113,14 @@ func runStoreInfo(ctx context.Context, out interface{ Write([]byte) (int, error)
 // "RECORD_COUNT_STATE_READABLE") rather than integer codes. Context
 // identity is intentionally omitted — the caller already knows which
 // context they asked about; the JSON output is the store's own data.
-func writeStoreInfoJSON(out interface{ Write([]byte) (int, error) }, info *gen.DataStoreInfo) error {
+func writeStoreInfoJSON(out io.Writer, info *gen.DataStoreInfo) error {
 	bytes, err := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(info)
 	if err != nil {
 		return fmt.Errorf("marshal DataStoreInfo: %w", err)
 	}
-	_, err = fmt.Fprintln(&writerAdapter{out}, string(bytes))
+	_, err = fmt.Fprintln(out, string(bytes))
 	return err
 }
-
-// writerAdapter bridges the minimal "io.Writer-ish" interface the store
-// helpers accept to io.Writer so fmt.Fprintln can use it. Cheap enough
-// that defining a whole io.Writer-typed parameter isn't worth the churn.
-type writerAdapter struct {
-	inner interface{ Write([]byte) (int, error) }
-}
-
-func (w *writerAdapter) Write(p []byte) (int, error) { return w.inner.Write(p) }
 
 // fdbAPIVersion is the wire protocol version frl talks to FDB with. Must
 // match what the record-layer library and testcontainers use (730 today;
@@ -195,7 +187,7 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 // subspacePrefix is the packed FDB byte prefix of the store's keyspace;
 // rendered in hex so operators can paste it directly into `fdbcli getrange`.
 // Nil means the caller didn't resolve a prefix (rare — tests only).
-func writeStoreInfo(out interface{ Write([]byte) (int, error) }, cfgCtx *configv1.Context, info *gen.DataStoreInfo, subspacePrefix []byte) error {
+func writeStoreInfo(out io.Writer, cfgCtx *configv1.Context, info *gen.DataStoreInfo, subspacePrefix []byte) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Context:           %s\n", cfgCtx.GetName())
 	fmt.Fprintf(&b, "Cluster file:      %s\n", orDefault(cfgCtx.GetClusterFile(), "(default)"))

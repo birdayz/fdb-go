@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,7 +218,7 @@ type contextRow struct {
 	Active bool   `json:"active"`
 }
 
-func writeContextsJSON(out interface{ Write([]byte) (int, error) }, contexts []*configv1.Context, current string) error {
+func writeContextsJSON(out io.Writer, contexts []*configv1.Context, current string) error {
 	rows := make([]contextRow, 0, len(contexts))
 	for _, ctx := range contexts {
 		rows = append(rows, contextRow{
@@ -225,7 +226,7 @@ func writeContextsJSON(out interface{ Write([]byte) (int, error) }, contexts []*
 			Active: ctx.GetName() == current,
 		})
 	}
-	enc := json.NewEncoder(&writerAdapter{out})
+	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(rows)
 }
