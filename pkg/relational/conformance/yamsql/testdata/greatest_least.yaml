@@ -31,3 +31,23 @@ tests:
   - query: SELECT LEAST(NULL) FROM t
     rows:
       - [~]
+  # Java alignment: int + double promotes to DOUBLE result type.
+  # Java's functions.yamsql: greatest(1, 2, 3.0, 4, 5) → 5.0.
+  - query: SELECT GREATEST(1, 2, 3.0, 4, 5) FROM t
+    rows:
+      - [5.0]
+  # Same for LEAST.
+  - query: SELECT LEAST(1, 2, 3.0, 4, 5) FROM t
+    rows:
+      - [1.0]
+  # All-string: comparison works lexicographically.
+  - query: SELECT GREATEST('apple', 'banana', 'cherry') FROM t
+    rows:
+      - ['cherry']
+  - query: SELECT LEAST('apple', 'banana', 'cherry') FROM t
+    rows:
+      - ['apple']
+  # Java alignment: cross-type (int + string) errors 22000
+  # (CANNOT_CONVERT_TYPE) per Java's CompareTreesMaker.
+  - query: SELECT GREATEST(1, 'a') FROM t
+    error_code: "22000"

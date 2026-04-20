@@ -3113,6 +3113,15 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"%s must be a column name, got %T", context, expr)
 	}
+	// `b IS TRUE`, `x IN (...)`, `s LIKE 'a%'`, `n BETWEEN 1 AND 10` all
+	// parse as PredicatedExpression with both an atom AND a predicate.
+	// These are NOT plain column references — the predicate transforms
+	// the value. Force callers to take the expression-evaluation path
+	// instead of treating it as a bare column lookup.
+	if pred.Predicate() != nil {
+		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"%s contains a predicate, not a plain column", context)
+	}
 	switch a := pred.ExpressionAtom().(type) {
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		return fullIdToName(a.FullColumnName().FullId()), nil
@@ -5686,6 +5695,15 @@ func evalScalarFunctionCallCore(
 			}
 			if v == nil {
 				return nil, nil
+			}
+			// Java alignment: cross-type GREATEST/LEAST errors 22000
+			// (CANNOT_CONVERT_TYPE), matching the comparison-operator
+			// path. Pre-fix Go silently picked one via the type-name
+			// string compare in compareValues, yielding semantically
+			// undefined results.
+			if !valuesComparable(v, best) {
+				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+					"cannot compare %T with %T in %s", v, best, name)
 			}
 			cmp := compareValues(v, best)
 			if (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {
