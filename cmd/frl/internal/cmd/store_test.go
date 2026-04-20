@@ -178,6 +178,41 @@ func TestWriteStoreInfo_OmitsPrefixWhenNil(t *testing.T) {
 	}
 }
 
+// TestWriteStoreInfo_RendersIncarnation verifies the cluster-migration
+// marker is shown when non-zero. Incarnation is the only defense
+// against `version()` indexes colliding across clusters — silently
+// hiding it would leave operators blind to whether a store has been
+// migrated.
+func TestWriteStoreInfo_RendersIncarnation(t *testing.T) {
+	t.Parallel()
+	ctx := &configv1.Context{Name: "migrated", KeyspacePath: "/x"}
+	info := &gen.DataStoreInfo{Incarnation: proto_int32(7)}
+
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Incarnation:       7") {
+		t.Errorf("expected Incarnation: 7 in output:\n%s", buf.String())
+	}
+}
+
+// TestWriteStoreInfo_OmitsZeroIncarnation — stores that were never
+// migrated should not show the Incarnation line (counterpart to
+// RendersIncarnation).
+func TestWriteStoreInfo_OmitsZeroIncarnation(t *testing.T) {
+	t.Parallel()
+	ctx := &configv1.Context{Name: "pristine", KeyspacePath: "/x"}
+	info := &gen.DataStoreInfo{}
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	if strings.Contains(buf.String(), "Incarnation") {
+		t.Errorf("Incarnation should be omitted when zero:\n%s", buf.String())
+	}
+}
+
 func TestWriteStoreInfo_OmitsZeroTimestamp(t *testing.T) {
 	t.Parallel()
 	info := &gen.DataStoreInfo{} // LastUpdateTime unset → 0

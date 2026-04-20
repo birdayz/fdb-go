@@ -202,6 +202,13 @@ func writeStoreInfo(out io.Writer, cfgCtx *configv1.Context, info *gen.DataStore
 	fmt.Fprintf(&b, "Cacheable:         %t\n", info.GetCacheable())
 	fmt.Fprintf(&b, "Record count:      %s\n", recordCountStateName(info.GetRecordCountState()))
 	fmt.Fprintf(&b, "Lock state:        %s\n", lockStateDescription(info.GetStoreLockState()))
+	// Incarnation is only interesting when non-zero — it's bumped on
+	// cross-cluster data migrations so that `version()` values don't
+	// collide with the old cluster's. Hide the default so operators
+	// aren't distracted by it on stores that never migrated.
+	if incarnation := info.GetIncarnation(); incarnation != 0 {
+		fmt.Fprintf(&b, "Incarnation:       %d\n", incarnation)
+	}
 	if ts := info.GetLastUpdateTime(); ts != 0 {
 		// Record-layer writes LastUpdateTime as ms-epoch (int64). Render
 		// both the raw value and an RFC3339 human timestamp so operators
