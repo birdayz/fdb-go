@@ -55,10 +55,9 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rt := md.GetRecordType(args[0])
-			if rt == nil {
-				return fmt.Errorf("record type %q not found — available: %s",
-					args[0], strings.Join(sortedRecordTypeNames(md), ", "))
+			rt, err := lookupRecordType(md, args[0])
+			if err != nil {
+				return err
 			}
 			if outputFmt == "json" {
 				return writeRecordTypeDescriptionJSON(cmd.OutOrStdout(), md, rt)

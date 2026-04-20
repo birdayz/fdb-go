@@ -12,13 +12,13 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
-// validateRecordType returns nil if name is a real record type in md,
-// otherwise a "not found — available: A, B, C" error listing every
-// type in alphabetical order. Shared by record scan / record count so
-// typos produce the same user-facing message everywhere.
-func validateRecordType(md *recordlayer.RecordMetaData, name string) error {
-	if md.GetRecordType(name) != nil {
-		return nil
+// lookupRecordType resolves name against md, returning the RecordType on
+// hit and a "not found — available: A, B, C" error on miss. Shared by
+// meta types describe / record scan / record count so typos always
+// produce the same user-facing message.
+func lookupRecordType(md *recordlayer.RecordMetaData, name string) (*recordlayer.RecordType, error) {
+	if rt := md.GetRecordType(name); rt != nil {
+		return rt, nil
 	}
 	types := md.RecordTypes()
 	names := make([]string, 0, len(types))
@@ -26,8 +26,16 @@ func validateRecordType(md *recordlayer.RecordMetaData, name string) error {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	return fmt.Errorf("record type %q not found — available: %s",
+	return nil, fmt.Errorf("record type %q not found — available: %s",
 		name, strings.Join(names, ", "))
+}
+
+// validateRecordType is the error-only form of lookupRecordType — for
+// callers (record scan / count) that only need the presence check, not
+// the RecordType itself.
+func validateRecordType(md *recordlayer.RecordMetaData, name string) error {
+	_, err := lookupRecordType(md, name)
+	return err
 }
 
 // lookupIndex resolves an index name against md, returning the Index
