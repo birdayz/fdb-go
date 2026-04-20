@@ -66,3 +66,16 @@ tests:
       HAVING COUNT(*) > 1
     rows:
       - [2]
+  # GROUP BY expression that also appears in the SELECT list. The SELECT
+  # list's CASE was demoted to a groupCol aggSelectCol whose name is the
+  # expression text; the proto aggArgFDs resolver used to try to match
+  # that synthetic name against the record-type's field descriptors and
+  # error 42703. Fixed by checking groupExprByName before the FD lookup.
+  # Buckets: amt<200 → {100, 50, 25} (3 rows); amt>=200 → {200, 300, 400} (3 rows).
+  - query: |
+      SELECT CASE WHEN amt < 200 THEN 'low' ELSE 'high' END, COUNT(*) FROM sales
+      GROUP BY CASE WHEN amt < 200 THEN 'low' ELSE 'high' END
+      ORDER BY 1
+    rows:
+      - ['high', 3]
+      - ['low', 3]

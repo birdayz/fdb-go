@@ -1772,9 +1772,26 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			// Resolve aggregate arg field descriptors (nil for COUNT(*) and for
 			// expression args, which are evaluated per-message via ac.aggExpr).
+			//
+			// groupCol entries are group-by references lifted out of the SELECT
+			// list during extractFromSimpleTable's aggregate re-classification.
+			// Their value comes from gs.groupVals at emit time, not from the
+			// proto scan — so we only validate the FD exists when it's a bare
+			// column name. A groupCol whose name matches an entry in groupBy[]
+			// with a non-nil groupByExprs[] is an expression group (e.g.
+			// GROUP BY CASE ...); skip the FD lookup for those.
+			groupExprByName := make(map[string]bool, len(sq.groupBy))
+			for i, gn := range sq.groupBy {
+				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+					groupExprByName[gn] = true
+				}
+			}
 			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
 				if ac.groupCol != "" {
+					if groupExprByName[ac.groupCol] {
+						continue
+					}
 					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.groupCol))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
