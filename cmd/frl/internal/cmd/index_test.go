@@ -179,6 +179,40 @@ contexts:
 	}
 }
 
+// TestRenderIndexList_DispatchesByFormat smokes the tiny format-dispatch
+// wrapper. One test per branch proves the json vs text switch is wired
+// right — without this, the two helpers could be tested individually
+// but still miscalled by the dispatcher (e.g. swapped, both pointing
+// at json).
+func TestRenderIndexList_DispatchesByFormat(t *testing.T) {
+	t.Parallel()
+	md := buildDemoMetaData(t)
+
+	var textBuf bytes.Buffer
+	if err := renderIndexList(&textBuf, md, nil, "text"); err != nil {
+		t.Fatalf("text: %v", err)
+	}
+	// tabwriter output — must contain the header words, not JSON braces.
+	if !strings.Contains(textBuf.String(), "NAME") || !strings.Contains(textBuf.String(), "TYPE") {
+		t.Errorf("text output missing header columns:\n%s", textBuf.String())
+	}
+	if strings.Contains(textBuf.String(), `"name"`) {
+		t.Errorf("text branch emitted JSON keys — dispatcher wired wrong:\n%s", textBuf.String())
+	}
+
+	var jsonBuf bytes.Buffer
+	if err := renderIndexList(&jsonBuf, md, nil, "json"); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	// JSON output — starts with '[' and contains "name" keys.
+	if !strings.HasPrefix(strings.TrimSpace(jsonBuf.String()), "[") {
+		t.Errorf("json branch didn't emit array:\n%s", jsonBuf.String())
+	}
+	if !strings.Contains(jsonBuf.String(), `"name"`) {
+		t.Errorf("json branch missing field keys:\n%s", jsonBuf.String())
+	}
+}
+
 func TestWriteIndexListJSON_EmptyMetadata(t *testing.T) {
 	t.Parallel()
 	// Metadata with no indexes renders an empty array, not a text fallback.
