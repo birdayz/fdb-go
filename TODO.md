@@ -304,20 +304,25 @@ User direction: **"make sure 100% alignment with Java is given"**. Each item bel
 
 - [ ] **Correlated subqueries** — `WHERE EXISTS (SELECT 1 FROM b WHERE b.aid = a.id)`. Inner query must access outer-row columns. Architectural: per-row execution + outer-row binding chain. Java: `LogicalCorrelatedJoinExpression` in cascades. ~3-4h. Highest user-facing impact.
 - [ ] **Cross-type comparison should error 42883** — `WHERE str_col = 1` silently returns empty result set. Postgres errors. Java behavior? Verify in `fdb-relational-core` `ComparatorValue.evaluate`. Real correctness bug — silent semantic answers are dangerous.
-- [ ] **Indexes used by SQL queries** — does `SELECT WHERE id = 1` use the PK index, or scan-and-filter every row? Java cascades planner picks indexes; ours doesn't. Verify behavior, document, then plan.
+- [x] **Verified** (nightshift-39): SQL queries do NOT use PK or secondary indexes. Every SELECT path calls `store.ScanRecordsByType(...)` — full table scan. UPDATE / DELETE same. Even `WHERE pk = literal` reads every row of the type and filters in Go. Java cascades picks indexes; we don't. Implementation requires WHERE-clause analysis, PK constraint detection, optional remaining-filter, and `store.LoadRecord(pk)` fast path. **Major perf gap. Needs full design pass before implementation — not a quick fix.**
 - [ ] **Date arithmetic** — `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `EXTRACT(YEAR FROM d)`. Java `DateAddValue` / `DateSubtractValue` / `ExtractValue`. Common need.
 - [ ] **INTERVAL syntax** — `WHERE created > NOW() - INTERVAL '1 day'`. Grammar slot exists. Java `IntervalValue`. Big usability gap.
 
-**MEDIUM — nice-to-have**
+**MEDIUM — Java has these, we should align**
 
-- [ ] **Window functions** — ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE OVER (PARTITION BY ... ORDER BY ...). Grammar accepts; evaluator errors 0A000 (regression-pinned in `window_function_probes.yaml`). Java has these via `WindowedAggregate*Value`.
-- [ ] **Recursive CTEs** — `WITH RECURSIVE t(n) AS (...)`. Grammar accepts the keyword; CTE evaluator errors 22023 (regression-pinned). Java `RecursiveCommonTableExpression`.
-- [ ] **INTERSECT / EXCEPT** — only UNION works today. Java `LogicalIntersectionExpression` / `LogicalSetOpExpression`.
-- [ ] **ANY / ALL with subquery** — `WHERE x > ALL (SELECT y FROM ...)`.
-- [ ] **CASE WHEN inside aggregates** — `SUM(CASE WHEN x > 0 THEN x ELSE 0 END)`. Probably works since aggregate-over-expression landed swingshift-38, but unverified for CASE specifically.
-- [ ] **GROUPING SETS / ROLLUP / CUBE** — multi-level aggregation. Java `GroupingSet`.
-- [ ] **LATERAL joins** — `JOIN LATERAL (SELECT ... WHERE outer.id = ...) ON true`.
-- [ ] **PIVOT / UNPIVOT** — Oracle/SQL Server idiom; Java may not have it.
+- [ ] **Recursive CTEs** — `WITH RECURSIVE t(n) AS (...)`. Grammar accepts the keyword; our CTE evaluator errors 22023 (regression-pinned). **Java HAS this**: `RecursiveUnionCursor` + `RecordQueryRecursiveLevelUnionPlan` in `fdb-record-layer-core`. Significant: needs iterative execution loop with seed + recursive branches, fixpoint detection. Worth doing.
+- [ ] **CASE WHEN inside aggregates** — `SUM(CASE WHEN x > 0 THEN x ELSE 0 END)`. Probably works since aggregate-over-expression landed swingshift-38, but unverified for CASE specifically. Verify against Java.
+
+**MEDIUM — Java does NOT have, do not add (per 2026-04-21 direction)**
+
+- ❌ **Window functions** — verified: zero `WindowedAggregateValue`/`WindowExpression` in Java's `fdb-record-layer-core`. Grammar accepts them, but evaluator errors 0A000 cleanly (regression-pinned in `window_function_probes.yaml`). Don't add.
+- ❌ **INTERSECT / EXCEPT** — verified: Java grammar only has UNION (same as ours, vendored verbatim). Don't add.
+- ❌ **ANY / ALL with subquery** — verify Java first if revisited.
+- ❌ **GROUPING SETS / ROLLUP / CUBE** — verify Java first.
+- ❌ **LATERAL joins** — verify Java first.
+- ❌ **PIVOT / UNPIVOT** — Oracle/SQL Server idiom; Java unlikely to have.
+- ❌ **Date arithmetic (`DATE_ADD`/`DATE_SUB`/`DATEDIFF`/`EXTRACT`)** — verified: zero implementations in Java fdb-relational-core. Don't add.
+- ❌ **INTERVAL syntax** — Java doesn't have. Don't add.
 
 **Infrastructure / quality**
 

@@ -84,3 +84,34 @@ tests:
   # CASE returning a string: SUM can't fold strings.
   - query: "SELECT SUM(CASE WHEN id = 1 THEN 'hello' ELSE 'world' END) FROM t"
     error_code: "22023"
+  # SUM(CASE WHEN cond THEN val ELSE 0 END) — conditional sum. Common
+  # SQL idiom for filtered aggregation. id=1 contributes 100, id=2
+  # contributes 50, id=3 contributes 0 → 150.
+  - query: "SELECT SUM(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t"
+    rows:
+      - [150]
+  # COUNT(CASE WHEN ...) counts non-NULL — id=1,2 match the predicate
+  # so CASE returns 1, id=3 falls to ELSE NULL so COUNT skips it.
+  - query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t"
+    rows:
+      - [2]
+  # MAX(CASE WHEN ...) — pick the max of conditional values. 1→price=100,
+  # 2→price=50, 3→ELSE 0 → MAX=100.
+  - query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t"
+    rows:
+      - [100]
+  # AVG(CASE WHEN ...) — average over the matching rows when ELSE is
+  # NULL (so non-matching rows are excluded from the denominator too).
+  # id=1 → 100, id=2 → 50, id=3 → NULL (excluded). AVG = (100+50)/2 = 75.
+  - query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t"
+    rows:
+      - [75.0]
+  # SUM(CASE) with GROUP BY: per-group conditional sum. Group by qty
+  # (each row is its own group); CASE picks price for id<3 else 0.
+  - query: |-
+      SELECT qty, SUM(CASE WHEN id < 3 THEN price ELSE 0 END)
+      FROM t GROUP BY qty ORDER BY qty
+    rows:
+      - [2, 100]
+      - [3, 50]
+      - [5, 0]
