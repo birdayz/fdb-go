@@ -114,7 +114,7 @@ func TestWriteStoreInfoRendersAllFields(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info); err != nil {
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	out := buf.String()
@@ -140,7 +140,7 @@ func TestWriteStoreInfo_RendersRFC3339Timestamp(t *testing.T) {
 	info := &gen.DataStoreInfo{LastUpdateTime: proto_uint64(ts)}
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info); err != nil {
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	out := buf.String()
@@ -151,12 +151,39 @@ func TestWriteStoreInfo_RendersRFC3339Timestamp(t *testing.T) {
 	}
 }
 
+func TestWriteStoreInfo_RendersFDBPrefix(t *testing.T) {
+	t.Parallel()
+	info := &gen.DataStoreInfo{}
+	ctx := &configv1.Context{Name: "test", KeyspacePath: "/myapp"}
+	prefix := []byte{0x02, 'a', 'b', 0x00}
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info, prefix); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	if !strings.Contains(buf.String(), "FDB prefix (hex):  0261620") {
+		t.Errorf("expected hex-rendered prefix in output:\n%s", buf.String())
+	}
+}
+
+func TestWriteStoreInfo_OmitsPrefixWhenNil(t *testing.T) {
+	t.Parallel()
+	info := &gen.DataStoreInfo{}
+	ctx := &configv1.Context{Name: "test", KeyspacePath: "/myapp"}
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	if strings.Contains(buf.String(), "FDB prefix") {
+		t.Errorf("FDB prefix should be omitted when nil:\n%s", buf.String())
+	}
+}
+
 func TestWriteStoreInfo_OmitsZeroTimestamp(t *testing.T) {
 	t.Parallel()
 	info := &gen.DataStoreInfo{} // LastUpdateTime unset → 0
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info); err != nil {
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if strings.Contains(buf.String(), "Last updated:") {

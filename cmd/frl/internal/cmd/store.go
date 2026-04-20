@@ -107,7 +107,7 @@ func runStoreInfo(ctx context.Context, out interface{ Write([]byte) (int, error)
 	if outputFmt == "json" {
 		return writeStoreInfoJSON(out, info)
 	}
-	return writeStoreInfo(out, cfgCtx, info)
+	return writeStoreInfo(out, cfgCtx, info, ss.Bytes())
 }
 
 // writeStoreInfoJSON emits the raw DataStoreInfo proto as indented JSON.
@@ -195,11 +195,17 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 
 // writeStoreInfo renders a DataStoreInfo as a compact human-readable text
 // block on out. Not JSON — JSON output is a future -o=json concern.
-func writeStoreInfo(out interface{ Write([]byte) (int, error) }, cfgCtx *configv1.Context, info *gen.DataStoreInfo) error {
+// subspacePrefix is the packed FDB byte prefix of the store's keyspace;
+// rendered in hex so operators can paste it directly into `fdbcli getrange`.
+// Nil means the caller didn't resolve a prefix (rare — tests only).
+func writeStoreInfo(out interface{ Write([]byte) (int, error) }, cfgCtx *configv1.Context, info *gen.DataStoreInfo, subspacePrefix []byte) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Context:           %s\n", cfgCtx.GetName())
 	fmt.Fprintf(&b, "Cluster file:      %s\n", orDefault(cfgCtx.GetClusterFile(), "(default)"))
 	fmt.Fprintf(&b, "Keyspace path:     %s\n", cfgCtx.GetKeyspacePath())
+	if len(subspacePrefix) > 0 {
+		fmt.Fprintf(&b, "FDB prefix (hex):  %x\n", subspacePrefix)
+	}
 	fmt.Fprintln(&b, "")
 	fmt.Fprintf(&b, "Format version:    %d\n", info.GetFormatVersion())
 	fmt.Fprintf(&b, "Metadata version:  %d\n", info.GetMetaDataversion())
