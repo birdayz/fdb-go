@@ -822,16 +822,21 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				// NULL them explicitly — otherwise `SELECT a.id` on an
 				// unmatched right row falls through to the unqualified
 				// 'id' key which is populated from the right side,
-				// returning b.id instead of NULL.
+				// returning b.id instead of NULL. Prefer leftRows (pure
+				// left) and fall back to joined (combined) so we still
+				// cover the mostly-unmatched-right case where INNER
+				// produced nothing.
 				var leftKeys []string
-				if len(joined) > 0 {
-					leftKeys = make([]string, 0, len(joined[0]))
-					for k := range joined[0] {
-						// Skip keys that also exist on the right row so we
-						// don't clobber the real right-side values (e.g.
-						// unqualified 'id' should become the right's id,
-						// not NULL). Qualified keys like 'a.id' still get
-						// NULLed here.
+				var sample map[string]driver.Value
+				switch {
+				case len(leftRows) > 0:
+					sample = leftRows[0]
+				case len(joined) > 0:
+					sample = joined[0]
+				}
+				if sample != nil {
+					leftKeys = make([]string, 0, len(sample))
+					for k := range sample {
 						leftKeys = append(leftKeys, k)
 					}
 				}
