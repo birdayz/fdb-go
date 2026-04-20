@@ -2652,6 +2652,10 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 // proto-path FD fast path). argExpr is non-nil when the argument is an arbitrary
 // expression (e.g. SUM(qty*price)) — mutually exclusive with argColName.
 // Both are empty/nil for COUNT(*).
+//
+// Shares the AggregateWindowedFunction → (funcName, argCol, argExpr, outName)
+// extraction with aggColFromAwf via extractAwfFields; this wrapper adds the
+// SELECT-list element unwrap + the alias-from-AS overlay.
 func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
@@ -2669,11 +2673,28 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	if !awfok {
 		return "", "", nil, "", false, false
 	}
-	isDistinct := awf.DISTINCT() != nil
-	// resolveArg classifies a FunctionArg as either a bare-column ref (→ argCol) or
-	// an arbitrary expression (→ argExpr). Writes into the named return variables
-	// on the enclosing extractAggFunc frame (closures-over-named-returns idiom);
-	// the two are mutually exclusive. Bare columns keep the proto fast path.
+	fn, arg, aExpr, outName, isDistinct, fieldsOk := extractAwfFields(awf)
+	if !fieldsOk {
+		return "", "", nil, "", false, false
+	}
+	// SELECT-list-only overlay: an explicit `AS alias` on the SELECT element
+	// wins over the reconstructed default ("SUM(v)") as the output column
+	// name.
+	if e.Uid() != nil {
+		outName = stripIdentifierQuotes(e.Uid().GetText())
+	}
+	return fn, arg, aExpr, outName, isDistinct, true
+}
+
+// extractAwfFields classifies an AggregateWindowedFunction into the pieces
+// every caller needs: the function name, the argument (bare column vs
+// arbitrary expression), the DISTINCT flag, and the default output name
+// used by both the SELECT-list alias path and the HAVING resolver's
+// lookup name. Shared by extractAggFunc (SELECT-list aggregates) and
+// aggColFromAwf (HAVING-harvested aggregates). Returns false when the
+// AWF doesn't match any of the five supported aggregates.
+func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, ok bool) {
+	distinct = awf.DISTINCT() != nil
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {
 		if fa == nil {
 			return
@@ -2713,24 +2734,19 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	default:
 		return "", "", nil, "", false, false
 	}
-	if e.Uid() != nil {
-		alias = stripIdentifierQuotes(e.Uid().GetText())
+	display := argCol
+	if display == "" && argExpr != nil {
+		display = argExpr.GetText()
 	}
-	if alias == "" {
-		display := argCol
-		if display == "" && argExpr != nil {
-			display = argExpr.GetText()
-		}
-		switch {
-		case display == "":
-			alias = funcName + "(*)"
-		case isDistinct:
-			alias = funcName + "(DISTINCT " + display + ")"
-		default:
-			alias = funcName + "(" + display + ")"
-		}
+	switch {
+	case display == "":
+		outName = funcName + "(*)"
+	case distinct:
+		outName = funcName + "(DISTINCT " + display + ")"
+	default:
+		outName = funcName + "(" + display + ")"
 	}
-	return funcName, argCol, argExpr, alias, isDistinct, true
+	return funcName, argCol, argExpr, outName, distinct, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -3306,68 +3322,17 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 }
 
 // aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
-// context. Output name matches the HAVING resolver's lookup name and the
-// SELECT-list default alias ("COUNT(*)", "SUM(v)"). Returns false for
-// unknown aggregate shapes.
+// context via the shared extractAwfFields helper. Output name matches the
+// HAVING resolver's lookup name and the SELECT-list default alias
+// ("COUNT(*)", "SUM(v)"). Returns false for unknown aggregate shapes.
 func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
-	isDistinct := awf.DISTINCT() != nil
-	var argCol string
-	var argExpr antlrgen.IExpressionContext
-	resolve := func(fa antlrgen.IFunctionArgContext) {
-		if fa == nil {
-			return
-		}
-		e := fa.Expression()
-		if pred, ok := e.(*antlrgen.PredicatedExpressionContext); ok {
-			if col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-				argCol = fullIdToName(col.FullColumnName().FullId())
-				return
-			}
-		}
-		argExpr = e
-	}
-	var funcName string
-	switch {
-	case awf.COUNT() != nil && awf.STAR() != nil:
-		funcName = "COUNT"
-	case awf.COUNT() != nil:
-		funcName = "COUNT"
-		if awf.FunctionArg() != nil {
-			resolve(awf.FunctionArg())
-		} else if awf.FunctionArgs() != nil && len(awf.FunctionArgs().AllFunctionArg()) > 0 {
-			resolve(awf.FunctionArgs().AllFunctionArg()[0])
-		}
-	case awf.SUM() != nil:
-		funcName = "SUM"
-		resolve(awf.FunctionArg())
-	case awf.MIN() != nil:
-		funcName = "MIN"
-		resolve(awf.FunctionArg())
-	case awf.MAX() != nil:
-		funcName = "MAX"
-		resolve(awf.FunctionArg())
-	case awf.AVG() != nil:
-		funcName = "AVG"
-		resolve(awf.FunctionArg())
-	default:
+	fn, argCol, argExpr, outName, isDistinct, ok := extractAwfFields(awf)
+	if !ok {
 		return aggSelectCol{}, false
-	}
-	display := argCol
-	if display == "" && argExpr != nil {
-		display = argExpr.GetText()
-	}
-	var outName string
-	switch {
-	case display == "":
-		outName = funcName + "(*)"
-	case isDistinct:
-		outName = funcName + "(DISTINCT " + display + ")"
-	default:
-		outName = funcName + "(" + display + ")"
 	}
 	return aggSelectCol{
 		outName:     outName,
-		aggFunc:     funcName,
+		aggFunc:     fn,
 		aggArg:      argCol,
 		aggExpr:     argExpr,
 		aggDistinct: isDistinct,
