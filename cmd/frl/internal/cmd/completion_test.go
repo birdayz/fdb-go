@@ -206,6 +206,31 @@ contexts:
 	}
 }
 
+// TestCompletion_StoreDumpSubspace exercises the --subspace value
+// completer wired on `store dump`. It must offer every known subspace
+// label and nothing else — typos at the flag slot silently kill the
+// filter, so the tab-complete list is the operator's guardrail.
+func TestCompletion_StoreDumpSubspace(t *testing.T) {
+	// No config needed — knownSubspaceLabels() is a pure function of the
+	// compiled-in subspaceLabel map. Not using writeTestConfig/t.Setenv
+	// here means the test can stay t.Parallel-able.
+	t.Parallel()
+	got := runCompletion(t, "store", "dump", "--subspace", "")
+	if len(got) != len(subspaceLabel) {
+		t.Fatalf("got %d candidates, want %d (len(subspaceLabel)): %v",
+			len(got), len(subspaceLabel), got)
+	}
+	haveSet := make(map[string]bool, len(got))
+	for _, c := range got {
+		haveSet[c] = true
+	}
+	for _, name := range subspaceLabel {
+		if !haveSet[name] {
+			t.Errorf("completion missing label %q; got %v", name, got)
+		}
+	}
+}
+
 func TestCompletion_MetaGetOutputIsYAMLNotText(t *testing.T) {
 	writeTestConfig(t, "prod")
 	got := runCompletion(t, "meta", "get", "-o", "")
