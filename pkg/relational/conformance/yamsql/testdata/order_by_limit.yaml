@@ -58,8 +58,11 @@ tests:
     rows:
       - ['a', 6]
       - ['b', 5]
-  # Out-of-range positional ORDER BY falls through to the normal column-name
-  # path, which doesn't find a column named "99" in the table and errors.
+  # Out-of-range positional ORDER BY errors cleanly with 22023. Matches
+  # Postgres "ORDER BY position N is out of range". Pre-swingshift-38
+  # refactor the integer literal fell through to expression-ORDER-BY,
+  # silently evaluating to the constant N for every row (stable sort,
+  # no error) — now the resolver catches invalid positions early.
   - query: SELECT id FROM t ORDER BY 99
     error_code: "22023"
   # ORDER BY a SELECT-list alias — proto single-source path previously
@@ -76,3 +79,25 @@ tests:
     rows:
       - [1, 3]
       - [2, 1]
+  # ORDER BY on an arbitrary expression in the proto single-source path.
+  # Pre-swingshift-38 this errored "ORDER BY on an expression is only
+  # supported in CTE / JOIN queries". Now the expression is carried as
+  # an extra sort-only outField evaluated against each scanned message.
+  # `ORDER BY v * 2` sorts by doubled value (same total ordering as by v
+  # for non-negative values, included here to prove the expression
+  # actually runs per-row). Dataset values: 3, 1, 4, 1, 2 → doubled
+  # 6, 2, 8, 2, 4 → sorted rows 2/4 (v=1), 5 (v=2), 1 (v=3), 3 (v=4).
+  - query: SELECT id FROM t ORDER BY v * 2, id
+    rows:
+      - [2]
+      - [4]
+      - [5]
+      - [1]
+      - [3]
+  # ORDER BY on a scalar function call that isn't a bare column ref.
+  # ABS(v-3) per row: 1→0, 2→2, 3→1, 4→2, 5→1. Ties on (ABS, id):
+  # (0,1)→(1,3), (1,3)→(3,4), (1,5)→(5,2), (2,2)→(2,1), (2,4)→(4,1).
+  - query: SELECT id, v FROM t ORDER BY ABS(v - 3), id LIMIT 2
+    rows:
+      - [1, 3]
+      - [3, 4]

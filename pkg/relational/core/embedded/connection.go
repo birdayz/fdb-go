@@ -659,50 +659,50 @@ func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaD
 // resolveSelectListPosition maps a SQL-92 positional reference (e.g.
 // `ORDER BY 2`) to the matching output column name from the current
 // SELECT list. Accepts a positive integer literal (DecimalConstant
-// wrapped in PredicatedExpression→ConstantExpressionAtom); rejects
-// everything else, including negative or non-integer constants.
+// wrapped in PredicatedExpression→ConstantExpressionAtom).
 //
-// Returns the output name matching ORDER BY's downstream colIdx lookup:
-//   - projAliases[N-1] when an alias is set,
-//   - otherwise projCols[N-1],
-//   - otherwise aggCols[N-1].outName (aggregate queries).
-//
-// Returns ("", false) when the expression isn't a positional reference or
-// N is out of range — caller falls back to the regular column/expression
-// paths so existing ORDER BY semantics are unchanged.
-func resolveSelectListPosition(expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool) {
+// Returns:
+//   - (name, true, nil): positional reference resolved to an output column.
+//   - ("", false, nil): the expression isn't a positional reference at all
+//     (caller falls through to column / expression ORDER BY paths).
+//   - ("", false, err): expression IS a positive integer literal but N is
+//     out of range. Postgres / MySQL error on this instead of treating the
+//     integer as a constant sort key, so we do the same.
+func resolveSelectListPosition(expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	atom, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	dec, ok := atom.Constant().(*antlrgen.DecimalConstantContext)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	n, err := strconv.ParseInt(dec.DecimalLiteral().GetText(), 10, 64)
 	if err != nil || n < 1 {
-		return "", false
+		return "", false, nil
+	}
+	listLen := len(projCols)
+	if listLen == 0 {
+		listLen = len(aggCols)
+	}
+	if int(n) > listLen {
+		return "", false, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"ORDER BY position %d is out of range: SELECT list has %d entries", n, listLen)
 	}
 	switch {
 	case len(projCols) > 0:
-		if int(n) > len(projCols) {
-			return "", false
-		}
 		if int(n) <= len(projAliases) && projAliases[n-1] != "" {
-			return projAliases[n-1], true
+			return projAliases[n-1], true, nil
 		}
-		return projCols[n-1], true
+		return projCols[n-1], true, nil
 	case len(aggCols) > 0:
-		if int(n) > len(aggCols) {
-			return "", false
-		}
-		return aggCols[n-1].outName, true
+		return aggCols[n-1].outName, true, nil
 	}
-	return "", false
+	return "", false, nil
 }
 
 // expandStarSlots expands mixed SELECT lists of the form
@@ -1643,6 +1643,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	type outField struct {
 		name string
 		fd   protoreflect.FieldDescriptor
+		// expr is set when the slot holds a computed expression (used for
+		// extra sort-only fields like `ORDER BY v * 2`). Evaluated against
+		// the current message in the scan loop; fd is nil in that case.
+		expr antlrgen.IExpressionContext
 	}
 	var cols []string
 	var data []row
@@ -2027,7 +2031,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			outFields = make([]outField, allFields.Len())
 			for i := 0; i < allFields.Len(); i++ {
 				fd := allFields.Get(i)
-				outFields[i] = outField{string(fd.Name()), fd}
+				outFields[i] = outField{name: string(fd.Name()), fd: fd}
 			}
 		} else {
 			// Named projection — look up each column, apply alias if present.
@@ -2040,7 +2044,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 						outName = sq.projAliases[i]
 					}
-					outFields[i] = outField{outName, nil}
+					outFields[i] = outField{name: outName}
 					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
 					continue
 				}
@@ -2053,7 +2057,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 					outName = sq.projAliases[i]
 				}
-				outFields[i] = outField{outName, fd}
+				outFields[i] = outField{name: outName, fd: fd}
 				projByCol[colName] = true
 			}
 			// Alias redirection: if ORDER BY references a SELECT-list alias
@@ -2068,7 +2072,23 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 			// Add any ORDER BY columns not already in the projection.
-			for _, ob := range sq.orderBy {
+			for obIdx, ob := range sq.orderBy {
+				// Expression-based ORDER BY (`ORDER BY v * 2`) — carry the
+				// expression as an extra sort field evaluated per row.
+				// Each expression gets its own sentinel column name so
+				// the sort path's colIdx lookup matches. `sq.orderBy[i]`
+				// still carries the real expression; the sort-time
+				// evaluator uses that in preference to the stored column
+				// lookup when ob.expr != nil.
+				if ob.expr != nil {
+					sentinel := fmt.Sprintf("__orderby_expr_%d__", obIdx)
+					extraSortFields = append(extraSortFields, outField{name: sentinel, expr: ob.expr})
+					// Update the orderBy entry's colName in place so the
+					// downstream colIdx lookup finds the sentinel.
+					sq.orderBy[obIdx].colName = sentinel
+					sq.orderBy[obIdx].expr = nil
+					continue
+				}
 				if projByCol[ob.colName] {
 					continue
 				}
@@ -2083,7 +2103,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
 				}
-				extraSortFields = append(extraSortFields, outField{ob.colName, fd})
+				extraSortFields = append(extraSortFields, outField{name: ob.colName, fd: fd})
 				projByCol[ob.colName] = true // avoid duplicates
 			}
 		}
@@ -2113,9 +2133,22 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			vals := make([]driver.Value, len(fullFields))
 			for i, f := range fullFields {
-				// Check for a computed expression at this position.
+				// Check for a computed expression at this position. SELECT-list
+				// expressions come from sq.projExprs (parallel to projCols);
+				// extra sort-field expressions live on outField.expr (set when
+				// the ORDER BY loop built the field for `ORDER BY v * 2`).
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 					v, evalErr := evalExpr(ctx, c, msg, sq.projExprs[i])
+					if evalErr != nil {
+						return nil, evalErr
+					}
+					if v != nil {
+						vals[i] = v.(driver.Value) //nolint:forcetypeassert
+					}
+					continue
+				}
+				if f.expr != nil {
+					v, evalErr := evalExpr(ctx, c, msg, f.expr)
 					if evalErr != nil {
 						return nil, evalErr
 					}
@@ -3127,7 +3160,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			if posName, ok := resolveSelectListPosition(obExpr.Expression(), projCols, projAliases, aggCols); ok {
+			posName, isPos, posErr := resolveSelectListPosition(obExpr.Expression(), projCols, projAliases, aggCols)
+			if posErr != nil {
+				return nil, posErr
+			}
+			if isPos {
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst})
 				continue
 			}
