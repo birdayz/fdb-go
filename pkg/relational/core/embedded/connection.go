@@ -2056,9 +2056,26 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				outFields[i] = outField{outName, fd}
 				projByCol[colName] = true
 			}
+			// Alias redirection: if ORDER BY references a SELECT-list alias
+			// (`SELECT id AS n ... ORDER BY n`), it's already projected — no
+			// extra field lookup needed. Build an alias → underlying-col map
+			// so the sort path's colIdx lookup (which keys off the output
+			// name) still matches when cols[] uses the alias.
+			aliasToCol := make(map[string]string, len(sq.projCols))
+			for i, colName := range sq.projCols {
+				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+					aliasToCol[sq.projAliases[i]] = colName
+				}
+			}
 			// Add any ORDER BY columns not already in the projection.
 			for _, ob := range sq.orderBy {
 				if projByCol[ob.colName] {
+					continue
+				}
+				if _, isAlias := aliasToCol[ob.colName]; isAlias {
+					// Alias refers to an already-projected column; no extra
+					// sort field. The sort path looks up cols[] which stores
+					// the alias, so no further remapping is needed.
 					continue
 				}
 				fd := allFields.ByName(protoreflect.Name(ob.colName))
