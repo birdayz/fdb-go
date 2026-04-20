@@ -3300,6 +3300,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
 						case expr != nil && !exprReferencesColumn(expr):
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+						case expr != nil:
+							// Expression references columns but contains no
+							// aggregates. Java permits this when the columns
+							// are all in GROUP BY (the expression value is
+							// constant per group, e.g. `SELECT a+b FROM t
+							// GROUP BY a, b`). Route to outExpr so it's
+							// evaluated post-aggregation against the rowMap
+							// (which holds group-by column values). If the
+							// expression touches a column NOT in GROUP BY,
+							// the rowMap lookup errors at emit time with
+							// "column not in row" — close to SQL standard's
+							// 42803 grouping_error.
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
 						default:
 							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName})
 						}
@@ -3414,6 +3427,14 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				switch {
 				case slotExpr != nil && !exprReferencesColumn(slotExpr):
+					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+				case slotExpr != nil:
+					// Expression on group-by columns (no aggregates, no
+					// constants-only). Java permits this when all referenced
+					// columns are in GROUP BY. Route to outExpr — evaluated
+					// post-aggregation against the rowMap holding group-by
+					// values. Symmetric with the in-SELECT-loop case at the
+					// mixed-agg classification site above.
 					extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
 				default:
 					extra[i] = aggSelectCol{outName: out, groupCol: c}
@@ -3734,6 +3755,48 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
+	// GROUP BY without any aggregate function in the SELECT list (e.g.
+	// `SELECT a, b, a+b FROM t GROUP BY a, b`). Java permits this — the
+	// query is functionally a DISTINCT on (a, b) with optional projected
+	// expressions on the group-by columns. Pre-fix the aggregate path
+	// only fired when len(aggCols) > 0, so GROUP BY was silently ignored
+	// here and every source row was emitted (no dedup). Now we
+	// reclassify projCols into aggCols entries (groupCol for bare
+	// columns, outExpr for expressions) so the aggregate pipeline
+	// activates and emits one row per distinct group.
+	if len(sq.groupBy) > 0 && len(sq.aggCols) == 0 && len(projCols) > 0 {
+		for _, q := range projStarQualifiers {
+			if q != "" {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"cannot mix qualifier.* with GROUP BY in SELECT list")
+			}
+		}
+		extra := make([]aggSelectCol, len(projCols))
+		for i, c := range projCols {
+			out := projAliases[i]
+			if out == "" {
+				out = c
+			}
+			var slotExpr antlrgen.IExpressionContext
+			if i < len(projExprs) {
+				slotExpr = projExprs[i]
+			}
+			switch {
+			case slotExpr != nil && !exprReferencesColumn(slotExpr):
+				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+			case slotExpr != nil:
+				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
+			default:
+				extra[i] = aggSelectCol{outName: out, groupCol: c}
+			}
+		}
+		sq.aggCols = extra
+		projCols = nil
+		projAliases = nil
+		projExprs = nil
+		projStarQualifiers = nil
+	}
+
 	// Parse HAVING clause (only meaningful with GROUP BY).
 	havingCtx := simpleTable.HavingClause()
 	if havingCtx != nil {
@@ -3769,6 +3832,34 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			projText := origExpr.GetText()
 			for gi, gn := range sq.groupBy {
 				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+					sq.aggCols[ai].groupCol = gn
+					break
+				}
+			}
+		}
+	}
+
+	// Post-GROUP-BY: when a SELECT-list outExpr (an expression that
+	// references columns but contains no aggregates) was routed to
+	// outExpr by the SELECT-loop classification but its text matches a
+	// GROUP BY entry exactly, switch back to a groupCol reference so
+	// the groupExprByName mechanism evaluates it once per group from
+	// gs.groupVals. Without this, expression-shaped GROUP BY keys
+	// (e.g. SELECT CASE WHEN amt<200 THEN 'low' ELSE 'high' END FROM t
+	// GROUP BY CASE WHEN amt<200 THEN 'low' ELSE 'high' END) would try
+	// to evaluate the expression against a per-row map at outExpr emit
+	// time — and the underlying column ('amt') is not in the rowMap
+	// because GROUP BY summarized the rows. Symmetric with the alias
+	// redirect just above.
+	if len(sq.aggCols) > 0 && len(sq.groupBy) > 0 {
+		for ai, ac := range sq.aggCols {
+			if ac.outExpr == nil || ac.aggFunc != "" {
+				continue
+			}
+			outExprText := ac.outExpr.GetText()
+			for gi, gn := range sq.groupBy {
+				if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && outExprText == gn {
+					sq.aggCols[ai].outExpr = nil
 					sq.aggCols[ai].groupCol = gn
 					break
 				}
