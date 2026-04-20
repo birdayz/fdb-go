@@ -104,8 +104,38 @@ frl version [--short] [-o json]              # binary + Go toolchain version
 --context <name>        # on all store-touching commands
 --meta-file <path>      # overrides Context.metadata for this call
 --no-fdb                # index ls only — metadata-only render
--o|--output text|json   # store info, index ls, meta types ls, config get-contexts
+-o|--output text|json   # structured-output commands (see below)
 ```
+
+## Structured output (`-o json`)
+
+Thirteen commands emit machine-readable JSON on demand:
+
+| Command | Payload |
+|---|---|
+| `store info` | full `DataStoreInfo` proto |
+| `index ls` | array of `{name, type, state, record_types, last_modified_version}` |
+| `meta types ls` | array of `{name, primary_key, since_version}` |
+| `meta types describe` | `{name, primary_key, record_type_key, proto_message, proto_field_count, indexes, multi_type_indexes, universal_indexes}` |
+| `meta validate` | `{file, valid}` |
+| `meta evolve-check` | `{old, new, valid}` |
+| `meta diff` | `{version?, record_types.{added,removed,changed}, indexes.{…}}` |
+| `config get-contexts` | array of `{name, active}` |
+| `config current-context` | `{name}` |
+| `keyspace resolve` | `{path, prefix_hex, prefix_len}` |
+| `record count` | `{count, record_type}` |
+| `tx read-version` | `{read_version}` |
+| `version` | `{version, go_version, goos, goarch}` |
+
+`record get` / `record scan` / `index scan` always emit newline-delimited
+JSON envelopes — `-o` doesn't apply there (no competing text form).
+
+`meta get` uses `-o json|yaml` (protojson vs protoyaml); both render the
+full `MetaData` message, yaml is easier to scan for large schemas.
+
+Shape contract: success → typed object / array, error → non-zero exit +
+message on stderr (never `{"valid": false}` at exit 0). Scripts branch
+on exit code.
 
 ## Shell completions
 
@@ -125,8 +155,13 @@ frl completion zsh > "${fpath[1]}/_frl"
 frl completion fish > ~/.config/fish/completions/frl.fish
 ```
 
-Tab-complete covers the noun-verb tree, flag names, and context names
-(read from `~/.frl/config.yaml`).
+Tab-complete covers:
+- noun-verb tree (cobra default)
+- `--context` → context names from `~/.frl/config.yaml`
+- `--output` → `text`/`json` (or `json`/`yaml` for `meta get`)
+- `--type` → record type names from loaded metadata
+- positional args on `config use-context`, `index describe`/`scan`,
+  `meta types describe`
 
 ## Testing
 
