@@ -643,6 +643,28 @@ func TestIntegration_RecordCount_Enabled(t *testing.T) {
 	}
 }
 
+// TestIntegration_RecordCount_UnknownTypeLists — fail-fast for --type
+// on record count mirrors the behaviour now in record scan. Before
+// the fix, a typo surfaced as whatever internal error
+// GetSnapshotRecordCountForRecordType returned (e.g. "requires
+// RecordTypeKeyExpression" if the count_key was wrong too) rather
+// than the straightforward "not found — available: …".
+func TestIntegration_RecordCount_UnknownTypeLists(t *testing.T) {
+	f := setupCountFixture(t)
+	t.Setenv("FRL_CONFIG", f.configFilePath)
+
+	_, err := runCmd(t, "record", "count", "--type", "Orders") // typo
+	if err == nil {
+		t.Fatal("expected error for unknown --type, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v; want 'not found' fail-fast message", err)
+	}
+	if !strings.Contains(err.Error(), "Order") {
+		t.Errorf("error = %v; should list the real types", err)
+	}
+}
+
 func TestIntegration_RecordCount_JSON(t *testing.T) {
 	f := setupCountFixture(t)
 	t.Setenv("FRL_CONFIG", f.configFilePath)
