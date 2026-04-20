@@ -154,6 +154,69 @@ func TestMetaEvolveCheck_SameVersionRejected(t *testing.T) {
 	}
 }
 
+func TestMetaGet_DefaultJSONContainsRecords(t *testing.T) {
+	path := writeDemoMetaFile(t, 0)
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml")) // empty → --meta-file mode
+
+	c := newMetaGetCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", path})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+	// Protojson default render — records field and at least one record type
+	// should be present.
+	got := out.String()
+	if !strings.Contains(got, `"records"`) {
+		t.Errorf("JSON output missing records field:\n%s", got)
+	}
+	if !strings.Contains(got, `"Order"`) {
+		t.Errorf("JSON output missing Order record type:\n%s", got)
+	}
+}
+
+func TestMetaGet_YAMLContainsRecords(t *testing.T) {
+	path := writeDemoMetaFile(t, 0)
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newMetaGetCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", path, "-o", "yaml"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	// protoyaml uses camelCase keys (records: … / messageType: …) without
+	// quotes, unlike protojson. Assert on that distinguishing pattern.
+	if strings.Contains(got, `"records"`) {
+		t.Errorf("yaml output shouldn't quote keys (looks like JSON):\n%s", got)
+	}
+	if !strings.Contains(got, "records:") {
+		t.Errorf("yaml output missing records: key:\n%s", got)
+	}
+	if !strings.Contains(got, "name: Order") {
+		t.Errorf("yaml output missing Order type name:\n%s", got)
+	}
+}
+
+func TestMetaGet_InvalidOutputRejected(t *testing.T) {
+	path := writeDemoMetaFile(t, 0)
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newMetaGetCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", path, "-o", "xml"})
+	if err := c.Execute(); err == nil {
+		t.Fatal("expected error for unsupported --output")
+	}
+}
+
 func TestMetaValidate_JSON(t *testing.T) {
 	t.Parallel()
 	path := writeDemoMetaFile(t, 0)
