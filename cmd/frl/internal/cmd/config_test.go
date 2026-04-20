@@ -139,6 +139,46 @@ func TestConfigPath_HonoursEnv(t *testing.T) {
 	}
 }
 
+func TestConfigUseContext_MissingFileHint(t *testing.T) {
+	t.Setenv("FRL_CONFIG", "/tmp/definitely-does-not-exist-"+t.Name()+".yaml")
+	c := newConfigUseContextCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"prod"})
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error for use-context against an empty/missing config")
+	}
+	// Error should name the file + suggest editing it (the "no contexts" hint).
+	if !strings.Contains(err.Error(), "no contexts configured") {
+		t.Errorf("error = %v; want mention of 'no contexts configured'", err)
+	}
+	if !strings.Contains(err.Error(), "definitely-does-not-exist") {
+		t.Errorf("error = %v; want the missing path surfaced", err)
+	}
+}
+
+func TestConfigUseContext_TypoHintListsAvailable(t *testing.T) {
+	writeTestConfig(t, "local")
+	c := newConfigUseContextCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"pord"}) // typo of prod
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error for non-existent context")
+	}
+	if !strings.Contains(err.Error(), "available contexts") {
+		t.Errorf("error = %v; want 'available contexts' suggestion", err)
+	}
+	// Both known names should be listed.
+	if !strings.Contains(err.Error(), "prod") || !strings.Contains(err.Error(), "local") {
+		t.Errorf("error = %v; want both 'prod' and 'local' in suggestion", err)
+	}
+}
+
 func TestConfigGetContexts_Empty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"buf.build/go/protoyaml"
 	"github.com/spf13/cobra"
@@ -232,7 +233,23 @@ func newConfigUseContextCmd() *cobra.Command {
 			// Validate that <name> actually exists before writing; prevents
 			// typos from silently pointing at a nonexistent context.
 			if _, err := config.ResolveContext(cfg, name); err != nil {
-				return err
+				// When the resolve fails we want to distinguish two cases:
+				//   1) config file is empty / missing all contexts → suggest
+				//      editing the file, print its path
+				//   2) some contexts exist but `name` isn't one → suggest a
+				//      `get-contexts` lookup with the list of candidates
+				// Both cases surface a file path so the operator can find it.
+				path, _ := config.Path()
+				if len(cfg.GetContexts()) == 0 {
+					return fmt.Errorf("%w\nno contexts configured in %s — edit the file to add one (see cmd/frl/docs/operator-guide.md)",
+						err, path)
+				}
+				names := make([]string, 0, len(cfg.GetContexts()))
+				for _, ctx := range cfg.GetContexts() {
+					names = append(names, ctx.GetName())
+				}
+				return fmt.Errorf("%w\navailable contexts in %s: %s",
+					err, path, strings.Join(names, ", "))
 			}
 			cfg.CurrentContext = name
 			if err := config.Save(cfg); err != nil {
