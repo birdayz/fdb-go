@@ -16,10 +16,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
 )
 
-// newConfigCmd houses config-file subcommands. v1 surface:
-//   - schema:       dump empty Config as JSON (schema probe)
-//   - view:         print effective current context as YAML
-//   - use-context:  switch current_context
+// newConfigCmd houses every config-file subcommand:
+//   - init:             scaffold a starter ~/.frl/config.yaml
+//   - schema:           dump empty Config as JSON (field discovery)
+//   - view:             print effective current context as YAML
+//   - path:             print the effective config file path
+//   - use-context:      switch current_context
+//   - current-context:  print the active context's name
+//   - get-contexts:     list all contexts, mark active
 func newConfigCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "config",

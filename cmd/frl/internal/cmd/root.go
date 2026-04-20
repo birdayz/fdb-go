@@ -1,6 +1,10 @@
-// Package cmd houses the `frl` cobra command tree. Phase A ships only the
-// root command and a `version` subcommand so the skeleton builds end-to-end
-// before the real NOUN VERB hierarchy is designed.
+// Package cmd houses the `frl` cobra command tree. NewRoot returns the
+// assembled root command with every noun (record, index, store, meta,
+// config, keyspace, tx) attached. All shell-completion plumbing is
+// wired in one pass by registerCompletions() so new commands that
+// declare --context / --meta-file / --output / --type / positional
+// args inherit tab-complete behavior without touching cobra's
+// completion API directly.
 package cmd
 
 import (
