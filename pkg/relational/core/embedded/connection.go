@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -6156,21 +6157,15 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		if bl == nil {
 			return nil, api.NewError(api.ErrCodeInvalidParameter, "empty bytes literal")
 		}
-		if hex := bl.HEXADECIMAL_LITERAL(); hex != nil {
-			text := hex.GetText()
+		if hexLit := bl.HEXADECIMAL_LITERAL(); hexLit != nil {
+			text := hexLit.GetText()
 			// text looks like: x'deadbeef' or X'deadbeef'
 			body := stripBytesWrapper(text, "x")
-			if len(body)%2 != 0 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "odd-length hex literal %q", text)
-			}
-			out := make([]byte, len(body)/2)
-			for i := 0; i < len(body); i += 2 {
-				hi, ok1 := hexNibble(body[i])
-				lo, ok2 := hexNibble(body[i+1])
-				if !ok1 || !ok2 {
-					return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "non-hex character in %q", text)
-				}
-				out[i/2] = hi<<4 | lo
+			// encoding/hex.DecodeString handles both odd-length and
+			// non-hex-char failures uniformly.
+			out, err := hex.DecodeString(body)
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "invalid hex literal %q: %v", text, err)
 			}
 			return out, nil
 		}
@@ -6200,18 +6195,6 @@ func stripBytesWrapper(text, prefix string) string {
 	text = strings.TrimPrefix(text, "'")
 	text = strings.TrimSuffix(text, "'")
 	return text
-}
-
-func hexNibble(b byte) (byte, bool) {
-	switch {
-	case b >= '0' && b <= '9':
-		return b - '0', true
-	case b >= 'a' && b <= 'f':
-		return 10 + b - 'a', true
-	case b >= 'A' && b <= 'F':
-		return 10 + b - 'A', true
-	}
-	return 0, false
 }
 
 // base64StdStrict is the standard Base64 encoding with strict

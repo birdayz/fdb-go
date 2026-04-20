@@ -31,8 +31,10 @@ tests:
       - ['a', 30]
       - ['b', 35]
   # HAVING with parenthesised boolean — pins the nightshift-36
-  # RecordConstructorExpressionAtom unwrap also fires through HAVING's
-  # evaluator (which routes via evalPredicateOnMapExpr → evalExprAtomOnMap).
+  # RecordConstructorExpressionAtom unwrap that fires through
+  # evalHavingTri's own recursion (bf039225). HAVING has its own
+  # custom evaluator so it needed a separate unwrap case (third eval
+  # site alongside WHERE + map-path).
   - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING (SUM(v) > 20)
     unordered: true
     rows:

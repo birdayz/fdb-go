@@ -23,8 +23,8 @@ tests:
       - [2, ~]
       - [3, ~]
       - [4, ~]
-  # NULLIF(a, 'y') — only row 2 has a=null (NULLIF of NULL is NULL),
-  # others have a='x' ≠ 'y' → a.
+  # NULLIF(a, 'y') — rows 2 and 4 have a=NULL (NULLIF of NULL is NULL),
+  # rows 1 and 3 have a='x' ≠ 'y' → a.
   - query: SELECT id, NULLIF(a, 'y') FROM t ORDER BY id
     rows:
       - [1, 'x']
