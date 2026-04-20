@@ -79,3 +79,25 @@ tests:
     rows:
       - ['high', 3]
       - ['low', 3]
+  # GROUP BY N (SQL-92 positional) — resolves to the Nth SELECT-list
+  # output. Pre-swingshift-38 the integer literal fell through to the
+  # expression-based GROUP BY path, evaluating to constant N for every
+  # row → everything in one bucket. Now `GROUP BY 1` = `GROUP BY region`.
+  - query: |
+      SELECT region, COUNT(*) FROM sales GROUP BY 1 ORDER BY region
+    rows:
+      - ['east', 3]
+      - ['west', 3]
+  # Multi-column positional GROUP BY.
+  - query: |
+      SELECT region, category, COUNT(*) FROM sales GROUP BY 1, 2
+      ORDER BY region, category
+    rows:
+      - ['east', 'a', 2]
+      - ['east', 'b', 1]
+      - ['west', 'a', 1]
+      - ['west', 'b', 2]
+  # Out-of-range positional GROUP BY errors cleanly (22023), same
+  # shared resolveSelectListPosition as ORDER BY N.
+  - query: SELECT region FROM sales GROUP BY 99
+    error_code: "22023"

@@ -3426,11 +3426,22 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 
 	// Parse GROUP BY clause. Bare column references go through the
 	// columnNameFromExpr fast path (used by the proto-scan field-descriptor
-	// and the map-row name lookup); anything else is captured as an
-	// IExpressionContext evaluated per row at aggregation time.
+	// and the map-row name lookup); positional references `GROUP BY N`
+	// resolve to the Nth SELECT-list output name; anything else is
+	// captured as an IExpressionContext evaluated per row at aggregation
+	// time.
 	groupByCtx := simpleTable.GroupByClause()
 	if groupByCtx != nil {
 		for _, item := range groupByCtx.AllGroupByItem() {
+			posName, isPos, posErr := resolveSelectListPosition(item.Expression(), projCols, projAliases, sq.aggCols)
+			if posErr != nil {
+				return nil, posErr
+			}
+			if isPos {
+				sq.groupBy = append(sq.groupBy, posName)
+				sq.groupByExprs = append(sq.groupByExprs, nil)
+				continue
+			}
 			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
 			if nameErr == nil {
 				sq.groupBy = append(sq.groupBy, colName)
