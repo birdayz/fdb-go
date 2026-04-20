@@ -4662,7 +4662,9 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
 			exprs := rowCtx.AllExpressionWithOptionalName()
 			if len(exprs) != len(cols) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				// Java alignment: INSERT column-count mismatch errors
+				// 22000 (CANNOT_CONVERT_TYPE), not 22023.
+				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"column count %d does not match value count %d", len(cols), len(exprs))
 			}
 			msg := dynamicpb.NewMessage(msgDesc)
@@ -4788,7 +4790,8 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 			}
 		}
 		if len(cols) != len(srcCols) {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+			// Java alignment: column-count mismatch errors 22000.
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"column count %d does not match SELECT column count %d", len(cols), len(srcCols))
 		}
 

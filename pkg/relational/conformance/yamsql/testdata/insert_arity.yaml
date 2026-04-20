@@ -1,0 +1,31 @@
+# insert_arity.yaml
+#
+# INSERT column count mismatches (Java's inserts-updates-deletes.yamsql):
+# - Too few values for the schema → 22000.
+# - Too many values for an explicit column list → error.
+# - Reordered column list works.
+name: insert_arity
+schema_template: |
+  CREATE TABLE a (a1 BIGINT NOT NULL, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
+setup: []
+tests:
+  # Reordered column list with VALUES — INSERT INTO a (a3, a2, a1) puts
+  # the values in the explicit order.
+  - query: INSERT INTO a (a3, a2, a1) VALUES (33, 22, 1)
+  - query: SELECT a1, a2, a3 FROM a WHERE a1 = 1
+    rows:
+      - [1, 22, 33]
+  # Subset column list — leave a3 unset (NULL).
+  - query: INSERT INTO a (a1, a2) VALUES (2, 20)
+  - query: SELECT a1, a2, a3 FROM a WHERE a1 = 2
+    rows:
+      - [2, 20, ~]
+  # Java: INSERT INTO A VALUES (4) — too few values, no column list →
+  # error 22000. Probe Go.
+  - query: INSERT INTO a VALUES (4)
+    error_code: "22000"
+  # Java: INSERT INTO A (A1, A2, A3) VALUES (5, 6, 7, 8, 9) — too many.
+  # Pre-4.1.5.0 Java silently ignored extras (count=1). Newer Java errors.
+  # Probe Go.
+  - query: INSERT INTO a (a1, a2, a3) VALUES (5, 6, 7, 8, 9)
+    error_code: "22000"
