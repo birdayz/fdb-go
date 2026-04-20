@@ -165,9 +165,9 @@ func (x *Context) GetMetadata() *MetadataSource {
 	return nil
 }
 
-// MetadataSource is a tagged union over the supported ways of loading a
-// `RecordMetaData`. See Phase A.5 of TODO.md for the rationale behind
-// supporting both file and FDBMetaDataStore sources.
+// MetadataSource is a tagged union over the two supported ways of
+// loading a `RecordMetaData`. See cmd/frl/docs/operator-guide.md for
+// the app-side wiring (Go + Java) for each path.
 type MetadataSource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Source:

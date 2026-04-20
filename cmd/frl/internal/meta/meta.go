@@ -1,11 +1,12 @@
-// Package meta loads a RecordMetaData from one of the supported sources
-// declared in a Context's MetadataSource field (see Phase A.5 of TODO.md):
+// Package meta loads a RecordMetaData from one of the two supported
+// sources declared in a Context's MetadataSource field:
 //
 //   - FileSource:     a serialized RecordMetaDataProto.MetaData on disk
 //   - FDBStoreSource: an FDBMetaDataStore at a given keyspace path
 //
 // Both produce the same *recordlayer.RecordMetaData and callers never need
-// to know which source produced it.
+// to know which source produced it. See cmd/frl/docs/operator-guide.md
+// for the app-side wiring (Go + Java) for each path.
 package meta
 
 import (
