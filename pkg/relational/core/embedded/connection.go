@@ -3037,7 +3037,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						// Mixed aggregate query. Three classifications for
 						// the trailing SELECT element based on what the
 						// expression references:
-						//   - wraps aggregates → outExpr (post-aggregation).
+						//   - wraps aggregates → harvest any novel inner
+						//     aggregates (add as hidden accumulators) and
+						//     route the expression itself to outExpr.
 						//   - constant-only (no columns) → outExpr so it's
 						//     emitted once per group like SUM does.
 						//   - bare column or column-only expression →
@@ -3050,6 +3052,24 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						}()
 						switch {
 						case expr != nil && len(harvestAggregates(expr)) > 0:
+							// Harvest aggregates that aren't already
+							// accumulated. `SELECT SUM(a), SUM(b)+1`:
+							// SUM(a) is already in aggCols (bare), SUM(b)
+							// is novel — must be added as hidden so the
+							// rowMap at emit time has SUM(b) available for
+							// outExpr evaluation. Dedup by outName.
+							existingNames := make(map[string]struct{}, len(aggCols))
+							for _, ac := range aggCols {
+								existingNames[ac.outName] = struct{}{}
+							}
+							for _, h := range harvestAggregates(expr) {
+								if _, seen := existingNames[h.outName]; seen {
+									continue
+								}
+								h.hidden = true
+								aggCols = append(aggCols, h)
+								existingNames[h.outName] = struct{}{}
+							}
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
 						case expr != nil && !exprReferencesColumn(expr):
 							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})

@@ -87,6 +87,21 @@ tests:
   - query: SELECT SUM(a) + 1 FROM t HAVING SUM(a) > 10
     rows:
       - [33]
+  # NOVEL aggregate inside a SELECT-list expression (not already in
+  # aggCols): `SELECT SUM(a), SUM(b)+1`. Round-7 reviewer caught
+  # this — the mixed-agg branch's outExpr path was routing the
+  # expression correctly but NOT harvesting SUM(b) as a hidden
+  # accumulator, so the rowMap at emit time was missing SUM(b) and
+  # evalExprOnMap errored "aggregate SUM(b) not available in this
+  # context". Fix harvests novel aggregates as hidden before
+  # appending the outExpr slot.
+  - query: SELECT SUM(a), SUM(b) + 1 FROM t WHERE id < 3
+    rows:
+      - [25, 14]
+  # Two distinct aggregates in the same outExpr, both novel.
+  - query: SELECT SUM(a), SUM(a) + SUM(b) FROM t WHERE id < 3
+    rows:
+      - [25, 38]
   # Constant literal alongside an aggregate: `SELECT 1, SUM(v)`. The
   # literal must NOT be misclassified as a group-by reference "1" (which
   # the pre-fix reclassification did, causing the proto-path aggArgFDs
