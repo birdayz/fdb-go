@@ -822,10 +822,16 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				// NULL them explicitly — otherwise `SELECT a.id` on an
 				// unmatched right row falls through to the unqualified
 				// 'id' key which is populated from the right side,
-				// returning b.id instead of NULL. Prefer leftRows (pure
-				// left) and fall back to joined (combined) so we still
-				// cover the mostly-unmatched-right case where INNER
-				// produced nothing.
+				// returning b.id instead of NULL.
+				//
+				// Prefer leftRows (pure left-side keys). For a
+				// multi-join chain `a RIGHT JOIN b RIGHT JOIN c`, by
+				// the time we reach the second RIGHT JOIN, `leftRows`
+				// still refers to a's rows, but `joined` carries the
+				// merged a+b side — so falling back to joined when
+				// leftRows is empty also covers that case. When both
+				// are empty (a is an empty table), the fix is
+				// degenerate and the edge case is tracked in TODO.md.
 				var leftKeys []string
 				var sample map[string]driver.Value
 				switch {
