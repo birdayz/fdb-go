@@ -125,6 +125,80 @@ func TestConfigGetContexts_JSONArray(t *testing.T) {
 	}
 }
 
+func TestConfigInit_CreatesStarter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("FRL_CONFIG", path)
+
+	c := newConfigInitCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+	// File must exist, contain the header comment, and be non-empty.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("init wrote empty file")
+	}
+	if !strings.Contains(string(data), "frl CLI configuration") {
+		t.Errorf("starter missing expected header comment:\n%s", data)
+	}
+	// Stdout hints the next step.
+	if !strings.Contains(out.String(), "use-context") {
+		t.Errorf("stdout missing next-step hint:\n%s", out.String())
+	}
+}
+
+func TestConfigInit_RefusesToOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("existing: true\n"), 0o600); err != nil {
+		t.Fatalf("seed existing config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+
+	c := newConfigInitCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected refusal on existing file")
+	}
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Errorf("error = %v; want 'refusing to overwrite'", err)
+	}
+	// Existing file untouched.
+	data, _ := os.ReadFile(path)
+	if string(data) != "existing: true\n" {
+		t.Errorf("existing file was modified:\n%s", data)
+	}
+}
+
+func TestConfigInit_ForceOverwrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("existing: true\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+
+	c := newConfigInitCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--force"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute with --force: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "frl CLI configuration") {
+		t.Errorf("--force didn't replace file contents:\n%s", data)
+	}
+}
+
 func TestConfigPath_HonoursEnv(t *testing.T) {
 	t.Setenv("FRL_CONFIG", "/tmp/explicit.yaml")
 	c := newConfigPathCmd()

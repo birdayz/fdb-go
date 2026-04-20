@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"buf.build/go/protoyaml"
@@ -30,9 +32,76 @@ func newConfigCmd() *cobra.Command {
 		newConfigCurrentContextCmd(),
 		newConfigGetContextsCmd(),
 		newConfigPathCmd(),
+		newConfigInitCmd(),
 	)
 	return c
 }
+
+// newConfigInitCmd scaffolds a minimal ~/.frl/config.yaml at the
+// effective config path. Prints the path it wrote so operators can
+// immediately open it for editing. Refuses to overwrite an existing
+// file — operators get `frl config view` for that.
+func newConfigInitCmd() *cobra.Command {
+	var force bool
+	c := &cobra.Command{
+		Use:   "init",
+		Short: "Create a starter config file at the effective path",
+		Example: `  frl config init
+  FRL_CONFIG=/etc/frl.yaml frl config init
+  frl config init --force    # overwrite existing file`,
+		Long: "Creates a starter ~/.frl/config.yaml (or $FRL_CONFIG) with " +
+			"one commented-out example context. Refuses to overwrite " +
+			"existing files unless --force is set.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := config.Path()
+			if err != nil {
+				return err
+			}
+			if !force {
+				if _, statErr := os.Stat(path); statErr == nil {
+					return fmt.Errorf("refusing to overwrite existing %s — "+
+						"use `frl config view` to inspect, or --force to replace", path)
+				}
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+			}
+			if err := os.WriteFile(path, []byte(initTemplate), 0o600); err != nil {
+				return fmt.Errorf("write %s: %w", path, err)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(),
+				"Wrote starter config to %s — edit it then `frl config use-context <name>`\n",
+				path)
+			return err
+		},
+	}
+	c.Flags().BoolVar(&force, "force", false, "overwrite existing config file")
+	return c
+}
+
+// initTemplate is the scaffold written by `frl config init`. Comments
+// guide the operator through the two metadata paths (file vs FDBMetaDataStore)
+// and point at the full operator-guide.
+const initTemplate = `# frl CLI configuration.
+# See cmd/frl/docs/operator-guide.md (in the repo) for wiring walkthroughs.
+#
+# After editing, switch context with:
+#   frl config use-context <name>
+
+current_context: ""
+
+contexts:
+  # Example — uncomment and edit:
+  # - name: local
+  #   cluster_file: /etc/foundationdb/fdb.cluster
+  #   keyspace_path: /myapp/orders
+  #   metadata:
+  #     # Path A: app-exported meta.pb alongside binaries (most common).
+  #     meta_file: /etc/myapp/meta.pb
+  #     # Path B: FDBMetaDataStore persisted in FDB (for schema evolution).
+  #     # meta_store_keyspace: /myapp/_meta
+`
 
 // newConfigPathCmd prints the effective config file path (after
 // env-var overrides). Handy for debugging "why isn't my config
