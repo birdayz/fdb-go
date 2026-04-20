@@ -4458,7 +4458,7 @@ func evalScalarFunctionCallCore(
 		// Postgres / Oracle / SQL Server when applied to a string —
 		// all count logical characters (Unicode code points), not
 		// bytes. CHARACTER_LENGTH is the spec name; LENGTH and LEN
-		// are the common short forms.
+		// are the common short forms. Byte-length is OCTET_LENGTH.
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
 		}
@@ -4471,6 +4471,25 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
 		}
 		return int64(utf8.RuneCountInString(s)), nil
+	case "OCTET_LENGTH":
+		// SQL:2003 OCTET_LENGTH — byte count of a string / bytes value,
+		// regardless of encoding. Distinct from CHAR_LENGTH which counts
+		// Unicode code points. Both Postgres and Oracle support it.
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "OCTET_LENGTH requires 1 argument")
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		switch x := v.(type) {
+		case string:
+			return int64(len(x)), nil
+		case []byte:
+			return int64(len(x)), nil
+		default:
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "OCTET_LENGTH: argument must be STRING or BYTES, got %T", v)
+		}
 	case "TRIM", "LTRIM", "RTRIM":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)

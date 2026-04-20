@@ -69,3 +69,15 @@ tests:
   - query: SELECT CHAR_LENGTH(s) FROM t WHERE id = 3
     rows:
       - [~]
+  # OCTET_LENGTH counts BYTES, not code points — the distinction from
+  # CHAR_LENGTH. "héllo" is 5 chars / 6 bytes (é is UTF-8 2-byte).
+  - query: SELECT OCTET_LENGTH('héllo') FROM t WHERE id = 1
+    rows:
+      - [6]
+  # OCTET_LENGTH on ASCII string matches CHAR_LENGTH.
+  - query: SELECT OCTET_LENGTH(s) FROM t WHERE id = 1
+    rows:
+      - [11]
+  - query: SELECT OCTET_LENGTH(s) FROM t WHERE id = 3
+    rows:
+      - [~]
