@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -116,5 +117,17 @@ func TestFormatPK_BinaryTypes(t *testing.T) {
 	nested := tuple.Tuple{int64(1), tuple.Tuple{int64(2), "x"}}
 	if got := formatPK(nested); got != "1,(2,x)" {
 		t.Errorf("nested tuple formatPK = %q; want 1,(2,x)", got)
+	}
+
+	// Versionstamp — uses its own compact String(). Apps with VERSION
+	// indexes surface these as PK suffixes, so this is the one tuple
+	// type whose default `%v` rendering would have been least useful.
+	vs := tuple.Versionstamp{
+		TransactionVersion: [10]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a},
+		UserVersion:        7,
+	}
+	got := formatPK(tuple.Tuple{vs})
+	if !strings.Contains(got, "Versionstamp(") || !strings.Contains(got, "7") {
+		t.Errorf("Versionstamp PK formatPK = %q; want contains Versionstamp(…) and user version 7", got)
 	}
 }
