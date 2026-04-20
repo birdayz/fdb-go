@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -207,7 +208,11 @@ func writeStoreInfo(out interface{ Write([]byte) (int, error) }, cfgCtx *configv
 	fmt.Fprintf(&b, "Record count:      %s\n", recordCountStateName(info.GetRecordCountState()))
 	fmt.Fprintf(&b, "Lock state:        %s\n", lockStateDescription(info.GetStoreLockState()))
 	if ts := info.GetLastUpdateTime(); ts != 0 {
-		fmt.Fprintf(&b, "Last updated:      %d ms epoch\n", ts)
+		// Record-layer writes LastUpdateTime as ms-epoch (int64). Render
+		// both the raw value and an RFC3339 human timestamp so operators
+		// can spot-check staleness at a glance.
+		fmt.Fprintf(&b, "Last updated:      %s (%d ms epoch)\n",
+			time.UnixMilli(int64(ts)).UTC().Format(time.RFC3339), ts)
 	}
 	if fields := info.GetUserField(); len(fields) > 0 {
 		fmt.Fprintln(&b, "User fields:")

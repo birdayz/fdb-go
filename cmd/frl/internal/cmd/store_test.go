@@ -133,6 +133,39 @@ func TestWriteStoreInfoRendersAllFields(t *testing.T) {
 	}
 }
 
+func TestWriteStoreInfo_RendersRFC3339Timestamp(t *testing.T) {
+	t.Parallel()
+	// 2026-04-19T08:00:00Z as ms-since-epoch (verified via `date -u -d`).
+	const ts = 1776585600000
+	info := &gen.DataStoreInfo{LastUpdateTime: proto_uint64(ts)}
+	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"Last updated:", "2026-04-19T08:00:00Z", "1776585600000 ms epoch"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\nfull output:\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteStoreInfo_OmitsZeroTimestamp(t *testing.T) {
+	t.Parallel()
+	info := &gen.DataStoreInfo{} // LastUpdateTime unset → 0
+	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	if strings.Contains(buf.String(), "Last updated:") {
+		t.Errorf("expected Last updated to be omitted for zero ts, got:\n%s", buf.String())
+	}
+}
+
+func proto_uint64(v uint64) *uint64 { return &v }
+
 func TestWriteStoreInfoJSON_RendersProtoFields(t *testing.T) {
 	t.Parallel()
 	info := &gen.DataStoreInfo{
