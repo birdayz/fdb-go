@@ -2329,12 +2329,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		return nil, runErr
 	}
 
-	// Apply DISTINCT deduplication before sort.
+	// Apply DISTINCT deduplication before sort. Key off the PROJECTED
+	// columns only (data may contain trailing extraSortFields used
+	// for ORDER BY-on-non-projected-column; including those in the
+	// dedup key would treat (v=30, id=1) and (v=30, id=3) as
+	// "distinct" and silently re-emit the duplicate v=30 row).
 	if sq.distinct && !sq.countStar {
+		projLen := len(cols)
 		seen := make(map[string]struct{}, len(data))
 		deduped := data[:0]
 		for _, row := range data {
-			key := rowKey(row)
+			key := rowKey(row[:projLen])
 			if _, exists := seen[key]; !exists {
 				seen[key] = struct{}{}
 				deduped = append(deduped, row)
