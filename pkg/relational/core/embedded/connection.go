@@ -86,6 +86,15 @@ type EmbeddedConnection struct {
 	// Non-nil only during execSelect.
 	scalarSubqueryCache map[antlrgen.IQueryContext]any
 
+	// statementTime is the timestamp captured at the start of the
+	// current top-level statement. SQL standard requires every
+	// reference to CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME /
+	// LOCALTIME within a single statement to return the same value;
+	// caching here gives us that consistency without per-call time.Now().
+	// Zero value (statementTime.IsZero()) means "not in a statement
+	// scope, fall back to time.Now()".
+	statementTime time.Time
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
@@ -206,6 +215,7 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
+	defer c.beginStatement()()
 	var err error
 	if query, err = substituteParams(query, args); err != nil {
 		return nil, err
@@ -235,6 +245,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, arg
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
+	defer c.beginStatement()()
 	var subErr error
 	if query, subErr = substituteParams(query, args); subErr != nil {
 		return nil, subErr
@@ -5193,6 +5204,7 @@ type predicateEvaluator func(expr antlrgen.IExpressionContext) (bool, error)
 // case — proto and map paths use subtly different wording which we preserve
 // verbatim. It must accept exactly one %q for the function name.
 func evalScalarFunctionCallCore(
+	now time.Time,
 	eval exprEvaluator,
 	predicateEval predicateEvaluator,
 	unsupportedFmt string,
@@ -5201,7 +5213,7 @@ func evalScalarFunctionCallCore(
 ) (driver.Value, error) {
 	// Handle CASE expressions routed through SpecificFunctionCall.
 	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return evalSpecificFunctionCore(eval, predicateEval, unsupportedSpecificFmt, sf.SpecificFunction())
+		return evalSpecificFunctionCore(now, eval, predicateEval, unsupportedSpecificFmt, sf.SpecificFunction())
 	}
 
 	var name string
@@ -5872,7 +5884,7 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		return evalExprPredicate(ctx, conn, msg, e)
 	}
-	return evalScalarFunctionCallCore(eval, predEval, "unsupported scalar function %q", "unsupported specific function %T", fc)
+	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "unsupported scalar function %q", "unsupported specific function %T", fc)
 }
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
@@ -5880,7 +5892,29 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		return evalPredicateOnMapExpr(ctx, conn, row, e)
 	}
-	return evalScalarFunctionCallCore(eval, predEval, "unsupported function %q in map eval context", "unsupported specific function %T in map eval", fc)
+	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "unsupported function %q in map eval context", "unsupported specific function %T in map eval", fc)
+}
+
+// statementNow returns the timestamp captured at the start of the current
+// top-level statement, or time.Now().UTC() as a fallback if the field
+// hasn't been set (defensive — every Query/Exec entry sets it). All
+// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME within
+// the same statement see the same value, per SQL standard.
+func (c *EmbeddedConnection) statementNow() time.Time {
+	if c == nil || c.statementTime.IsZero() {
+		return time.Now().UTC()
+	}
+	return c.statementTime
+}
+
+// beginStatement captures the statement-start timestamp. Called at the
+// top of QueryContext / ExecContext / Prepare → Exec to make
+// CURRENT_TIMESTAMP-family calls deterministic within one statement.
+// Returns a cleanup function for use in defer.
+func (c *EmbeddedConnection) beginStatement() func() {
+	prior := c.statementTime
+	c.statementTime = time.Now().UTC()
+	return func() { c.statementTime = prior }
 }
 
 // evalSpecificFunctionCore is the unified implementation shared by
@@ -5893,6 +5927,7 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 //
 // unsupportedFmt must accept exactly one %T for the specific-function type.
 func evalSpecificFunctionCore(
+	now time.Time,
 	eval exprEvaluator,
 	predicateEval predicateEvaluator,
 	unsupportedFmt string,
@@ -5901,22 +5936,20 @@ func evalSpecificFunctionCore(
 	switch c := sf.(type) {
 	case *antlrgen.SimpleFunctionCallContext:
 		// CURRENT_DATE / CURRENT_TIME / CURRENT_TIMESTAMP / LOCALTIME /
-		// CURRENT_USER. SQL standard says CURRENT_TIMESTAMP returns a
-		// TIMESTAMP value with the statement-start time; we approximate
-		// with time.Now() at evaluation time. CURRENT_DATE truncates to
-		// midnight UTC. CURRENT_USER returns the empty string — we don't
-		// have a user concept yet.
+		// CURRENT_USER. SQL standard says all references to these
+		// functions within one statement return the same value (statement
+		// timestamp). `now` is captured by the caller from
+		// conn.statementNow() at the start of statement execution.
 		switch {
 		case c.CURRENT_DATE() != nil:
-			now := time.Now().UTC()
 			return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), nil
 		case c.CURRENT_TIMESTAMP() != nil, c.LOCALTIME() != nil:
-			return time.Now().UTC(), nil
+			return now, nil
 		case c.CURRENT_TIME() != nil:
 			// CURRENT_TIME returns just the time-of-day portion; we
 			// surface the full timestamp because Go has no time-only
 			// type and yamsql doesn't pin time-only values either.
-			return time.Now().UTC(), nil
+			return now, nil
 		case c.CURRENT_USER() != nil:
 			// No user-identity concept yet; return empty string. The
 			// connection tracks dbPath/schema, not a user. Java's
