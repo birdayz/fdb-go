@@ -131,7 +131,15 @@ Fourteen commands emit machine-readable JSON on demand:
 | `version` | `{version, go_version, goos, goarch}` |
 
 `record get` / `record scan` / `index scan` always emit newline-delimited
-JSON envelopes — `-o` doesn't apply there (no competing text form).
+JSON envelopes — `-o` doesn't apply there (no competing text form):
+
+| Command | Envelope |
+|---|---|
+| `record get` / `record scan` | `{"primary_key": "…", "record_type": "…", "record": { … }}` |
+| `index scan` | `{"index": "…", "index_values": "…", "primary_key": "…", "value": "…"}` |
+
+Proto field names are rendered in snake_case (via `UseProtoNames`) so
+operators can grep / jq on keys that match their `.proto` source.
 
 `meta get` uses `-o json|yaml` (protojson vs protoyaml); both render the
 full `MetaData` message, yaml is easier to scan for large schemas.
