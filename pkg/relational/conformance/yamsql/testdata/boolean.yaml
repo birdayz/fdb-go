@@ -67,3 +67,36 @@ tests:
     unordered: true
     rows:
       - [1, true]
+  # Java-aligned: boolean comparison in SELECT list (returns the result).
+  # b=true → true | b=false → false | b=NULL → NULL.
+  - query: SELECT b = true FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: SELECT b = false FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  - query: SELECT b <> TRUE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  # Java-aligned: IS TRUE in SELECT — never returns NULL (always concrete).
+  - query: SELECT b IS TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [false]
+  - query: SELECT b IS NOT TRUE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [true]
+  - query: SELECT b IS NULL FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [false]
+      - [true]

@@ -5070,7 +5070,11 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		// evaluate as a plain value.
 		return evalExpr(ctx, conn, msg, inner)
 	case *antlrgen.BinaryComparisonPredicateContext:
-		// Comparison used as a value (e.g. IF(a > b, ...) or CASE WHEN ... END).
+		// Comparison used as a value (e.g. SELECT b = true, IF(a > b, ...),
+		// CASE WHEN ... END). Java-aligned SQL 3-valued logic: when an
+		// operand is NULL the result is UNKNOWN, encoded as nil for the
+		// value evaluator. Pre-fix returned false which collapsed UNKNOWN
+		// to FALSE — wrong at projection (Java returns NULL).
 		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
 			return nil, err
@@ -5079,9 +5083,12 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		// SQL 3-valued logic: NULL comparison → UNKNOWN → false.
 		if left == nil || right == nil {
-			return false, nil
+			return nil, nil
+		}
+		if !valuesComparable(left, right) {
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"cannot compare %T with %T", left, right)
 		}
 		cmp := compareValues(left, right)
 		switch a.ComparisonOperator().GetText() {
@@ -7589,9 +7596,15 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		// SQL 3-valued logic: NULL comparison → UNKNOWN → false (even NULL = NULL).
+		// Java-aligned SQL 3-valued logic: NULL comparison → UNKNOWN
+		// → nil at the value evaluator (NOT false; that collapsed
+		// UNKNOWN to FALSE which is wrong for SELECT projection).
 		if left == nil || right == nil {
-			return false, nil
+			return nil, nil
+		}
+		if !valuesComparable(left, right) {
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"cannot compare %T with %T", left, right)
 		}
 		cmp := compareValues(left, right)
 		switch a.ComparisonOperator().GetText() {
