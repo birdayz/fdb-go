@@ -197,31 +197,43 @@ Root-level `--cluster-file` / `--keyspace-path` not wired yet (contexts cover th
 
 `frl web` — serves a local web UI for browsing records/indexes/metadata. Not designed. Not scheduled. Revisit after Phase B commands land and we know what the CLI already handles well.
 
-### Phase D — relational catalog discovery (design, not scheduled)
+### Phase D — relational catalog discovery (shipped)
 
 Relational clusters expose their schemas at a fixed subspace `tuple(nil, nil, 0)` (`__SYS/__SYS/CATALOG`), which contains a regular FDB record store with three record types: `SCHEMAS`, `DATABASES`, `TEMPLATES`. The actual user-table `RecordMetaData` proto lives in `TEMPLATES.META_DATA`. Context: [PR #86 comment](https://github.com/birdayz/fdb-record-layer-go/pull/86#issuecomment-4281199904).
 
-Commands this unlocks:
-- [ ] **`frl meta list`** — scan `tuple(nil, nil, 0)` and enumerate every database / schema / template on a relational cluster (no operator config needed).
-- [ ] **`frl meta get --schema <name>`** — pull `META_DATA` blob out of a `TEMPLATES` row, build `RecordMetaData`, render as protojson / protoyaml. Bypasses both `meta_file` and `FDBMetaDataStore`.
-- [ ] Auto-detect path in existing commands: if `meta_file` isn't configured but the catalog subspace has entries, default to the relational source instead of erroring with "no metadata source".
-- [ ] Error clearly when a cluster is plain-core (empty `__SYS/CATALOG` scan) — the current "configure `meta_file`" message still applies there.
+Shipped under `frl meta catalog`:
+- [x] **`frl meta catalog databases`** — enumerate every database URI on a relational cluster.
+- [x] **`frl meta catalog schemas [--database <id>]`** — enumerate schemas with their template + version, optionally narrowed to one database.
+- [x] **`frl meta catalog templates`** — list every `(template_name, version)` tuple.
+- [x] **`frl meta catalog get <template> [--version N]`** — render a template's `RecordMetaData` proto as protojson / protoyaml, matching `meta get`'s shape.
+- [x] Clear "no relational catalog on this cluster" error for plain-core clusters (catalog subspace empty); suggests falling back to `--meta-file`.
 
-**Constraints:**
-- Never write to `__SYS/CATALOG` from `frl` unless the command is explicitly a relational-admin tool.
-- Plain-core apps that want their own metadata directory should carve out a separate subspace — `__SYS` belongs to the relational layer. Document this in operator-guide to prevent accidental collisions.
+Still open:
+- [ ] Auto-detect path in existing commands: if `meta_file` isn't configured but the catalog subspace has entries, fall back to the relational source instead of erroring with "no metadata source". (Low priority — explicit `meta catalog get` is clearer.)
 
-### Phase E — `frl sql` (psql-style REPL, design, not scheduled)
+**Constraints honored:**
+- Never writes to `__SYS/CATALOG` — `meta catalog` is read-only. Documented in the noun's `Long`.
+- Plain-core apps with their own metadata directory should keep carving out a separate subspace; `__SYS` belongs to the relational layer.
 
-Interactive SQL against a relational cluster. `pkg/relational/sqldriver` is registered as `"fdbsql"` (`database/sql` compatible), so the core integration is `sql.Open("fdbsql", dsn)`.
+### Phase E — `frl sql` (psql-style REPL, shipped)
 
-- [ ] **`frl sql [--context <name>]`** — open `fdbsql://` driver against the current context's cluster, prompt-loop statements until a `;`, run via `db.QueryContext`.
-- [ ] Output: tabwriter table by default; `-o json` → NDJSON rows.
-- [ ] Line editor: `chzyer/readline` or `charmbracelet/bubbletea` for history (`~/.frl/sql_history`), multi-line input, tab-complete on `SCHEMAS` / `TEMPLATES` names resolved from the catalog.
-- [ ] psql-style meta-commands: `\d` (describe), `\dt` (list tables), `\c <schema>` (switch), `\q`, `\e` (open `$EDITOR`), `\i file.sql`.
-- [ ] Prerequisite: cluster must have `__SYS/CATALOG` populated (i.e. relational layer deployed). If empty, print "no relational catalog on this cluster" and exit — the detection logic is the same range-scan the `meta list` command uses.
+Interactive SQL against a relational cluster. `pkg/relational/sqldriver` is registered as `"fdbsql"` (`database/sql` compatible); the REPL opens via `sql.Open("fdbsql", dsn)`.
 
-**Ergonomics to design up front:** transaction boundaries (auto-commit per statement vs `BEGIN/COMMIT`), error recovery (continue the REPL after a bad statement), EXPLAIN support if the Cascades planner can expose it.
+Shipped:
+- [x] **`frl sql --database <uri> [--schema <name>] [--context <n>]`** — psql-style REPL. DSN = `fdbsql:///PATH?cluster_file=...&schema=...`. Cluster_file lifted from the context.
+- [x] **Non-interactive alternatives**: `-c "SELECT 1"` and `-f migrations/001.sql` for shell scripts / CI.
+- [x] **Line editor**: `chzyer/readline` — history at `~/.frl/sql_history`, arrow keys, Ctrl-R reverse search, Ctrl-C mid-statement clears the buffer, Ctrl-D exits.
+- [x] **Multi-line input**: accumulates until a line ends with `;`; continuation prompt mirrors psql's `  -> `.
+- [x] **psql-style meta-commands**: `\?`, `\q`, `\d` / `\dt` (via `information_schema.tables`), `\c <schema>`, `\i <file>`, `\e` (opens `$EDITOR` on a temp file, runs the buffer on save).
+- [x] **Styling**: `charm.land/lipgloss/v2` for the prompt (colored `frl>` / `frl(schema)>`), tabled result sets with header + row separator, muted NULL rendering, bold errors.
+- [x] **Statement-type inference**: SELECT/WITH/EXPLAIN/SHOW/VALUES/DESCRIBE go through `QueryContext` + table render; everything else via `ExecContext` + rows-affected footer.
+- [x] **Clear error on plain-core clusters** — first query fails through the driver with an operator-readable message.
+
+Still open:
+- [ ] `-o json` output mode for `-c` / `-f` (NDJSON rows). Current output is the styled table only.
+- [ ] Tab-completion on table / column names resolved from the catalog.
+- [ ] Explicit `BEGIN` / `COMMIT` / `ROLLBACK` handling (currently autocommit per statement).
+- [ ] `EXPLAIN` formatting when the Cascades planner can surface a plan tree.
 
 ---
 

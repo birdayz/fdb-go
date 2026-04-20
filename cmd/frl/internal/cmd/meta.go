@@ -9,9 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"buf.build/go/protoyaml"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
@@ -29,6 +27,7 @@ func newMetaCmd() *cobra.Command {
 	c.AddCommand(
 		newMetaGetCmd(),
 		newMetaTypesCmd(),
+		newMetaCatalogCmd(),
 		newMetaValidateCmd(),
 		newMetaEvolveCheckCmd(),
 		newMetaDiffCmd(),
@@ -365,22 +364,5 @@ func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context, outputFmt string) 
 	if err != nil {
 		return err
 	}
-	mdProto, err := md.ToProto()
-	if err != nil {
-		return fmt.Errorf("render metadata: %w", err)
-	}
-	var bytes []byte
-	if outputFmt == "yaml" {
-		bytes, err = protoyaml.MarshalOptions{Indent: 2}.Marshal(mdProto)
-	} else {
-		bytes, err = protojson.MarshalOptions{
-			Multiline: true,
-			Indent:    "  ",
-		}.Marshal(mdProto)
-	}
-	if err != nil {
-		return fmt.Errorf("marshal metadata: %w", err)
-	}
-	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(bytes))
-	return err
+	return writeMetaDataRendered(cmd.OutOrStdout(), md, outputFmt)
 }

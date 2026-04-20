@@ -5,10 +5,12 @@ go 1.26.1
 require (
 	buf.build/go/protoyaml v0.6.0
 	charm.land/fang/v2 v2.0.1
+	charm.land/lipgloss/v2 v2.0.1
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08
 	github.com/bazelbuild/rules_go v0.60.0
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
+	github.com/chzyer/readline v1.5.1
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.6.0
 	github.com/google/uuid v1.6.0
@@ -32,7 +34,6 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.6-20250425153114-8976f5be98c1.1 // indirect
 	buf.build/go/protovalidate v0.11.0 // indirect
 	cel.dev/expr v0.25.1 // indirect
-	charm.land/lipgloss/v2 v2.0.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
