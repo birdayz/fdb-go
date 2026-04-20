@@ -45,3 +45,15 @@ tests:
       - [~, 'alpha']
       - [~, 'beta']
       - [~, 'gamma']
+  # Intersection of the two dayshift-37 commits: `a.*` qualified-star
+  # on an empty-left RIGHT OUTER JOIN. Both columns from `a` (id, k)
+  # must be NULL on every unmatched right row even though neither
+  # the qualifier resolver nor the NULL-padder has a runtime row to
+  # inspect. Keys come from metadata on both paths.
+  - query: |
+      SELECT a.* FROM a_empty AS a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [~, ~]
+      - [~, ~]
+      - [~, ~]

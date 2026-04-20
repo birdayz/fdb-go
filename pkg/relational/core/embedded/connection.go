@@ -1049,6 +1049,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					// When qualifierKey is set, look up the source-qualified
 					// key first so two sources with overlapping names don't
 					// collide into whichever wrote the unqualified key last.
+					// Invariant: scanTableToMaps always writes both
+					// `alias.col` and `col`, so the qualified lookup
+					// succeeds on real rows — the unqualified fallback is
+					// a safety net for any future map producer that
+					// doesn't populate the qualified form (none today).
 					vals = make([]driver.Value, len(cols))
 					for i, col := range cols {
 						if qualifierKey != "" {
@@ -1179,6 +1184,9 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 
 	// Qualified-star (SELECT <q>.*) must match this CTE's alias or the CTE
 	// name itself. Any other qualifier is undefined in a single-source FROM.
+	// Inline (rather than calling resolveQualifierColumns) because this
+	// path has no RecordMetaData in scope — a CTE-backed query never
+	// consults the schema. The rule is trivially the same either way.
 	if sq.projQualifier != "" &&
 		!strings.EqualFold(sq.projQualifier, alias) &&
 		!strings.EqualFold(sq.projQualifier, sq.tableName) {
@@ -1338,20 +1346,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		return c.execSelectJoin(ctx, sq)
 	}
 
-	// Qualified-star on a single-source FROM must match this source.
-	if sq.projQualifier != "" {
-		alias := sq.tableAlias
-		if alias == "" {
-			alias = sq.tableName
-		}
-		if !strings.EqualFold(sq.projQualifier, alias) &&
-			!strings.EqualFold(sq.projQualifier, sq.tableName) {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-				"SELECT %s.*: qualifier does not match FROM-clause source %q",
-				sq.projQualifier, alias)
-		}
-	}
-
 	type row = []driver.Value
 	type outField struct {
 		name string
@@ -1375,6 +1369,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
 		}
 		md := rlTmpl.Underlying()
+
+		// Qualified-star (SELECT <q>.*) on a single-source FROM must match
+		// this source. Delegate to resolveQualifierColumns so the alias-
+		// matching rule stays in one place; we ignore the returned column
+		// list because for a single-source query `a.*` projects the same
+		// columns as `*`.
+		if sq.projQualifier != "" {
+			if _, _, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier); qErr != nil {
+				return nil, qErr
+			}
+		}
 
 		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {

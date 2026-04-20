@@ -46,6 +46,17 @@ tests:
       - [1, 'alpha']
       - [1, 'alpha']
 
+  # Explicit INNER JOIN (vs comma-join) path through execSelectJoin.
+  # Both routes share the same projection code, but keeping a
+  # dedicated scenario pins the contract against future refactors
+  # that might diverge the two paths. a.id * 10 = b.id matches both
+  # rows (1→10, 2→20).
+  - query: |
+      SELECT a.* FROM a INNER JOIN b ON a.id * 10 = b.id ORDER BY a.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
   # Wrong qualifier on a single-source FROM errors cleanly
   # (42F01 undefined_table). Pre-fix this silently returned all rows.
   - query: SELECT wrong.* FROM a
