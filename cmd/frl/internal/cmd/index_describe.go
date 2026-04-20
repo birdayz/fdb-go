@@ -18,6 +18,8 @@ func newIndexDescribeCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "describe <name>",
 		Short: "Show full definition of one index",
+		Example: `  frl index describe Order$price
+  frl index describe Order$price --meta-file ./meta.pb`,
 		Long: "Prints every field the Record Layer tracks for an index: " +
 			"type, key expression (field names), subspace key, unique / " +
 			"clear-when-zero options, other options, added and last-modified " +

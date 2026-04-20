@@ -44,7 +44,10 @@ func newMetaValidateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate a standalone MetaData.pb file",
-		Args:  cobra.NoArgs,
+		Example: `  frl meta validate --file ./meta.pb
+  # In CI:
+  #   frl meta validate --file artifacts/meta.pb || exit 1`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			switch outputFmt {
 			case "", "text", "json":
@@ -143,6 +146,8 @@ func newMetaTypesLsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "ls",
 		Short: "List record types with primary-key fields",
+		Example: `  frl meta types ls
+  frl meta types ls -o json | jq -r '.[].name'`,
 		Long: "Lists every record type in the metadata with its primary-key " +
 			"fields. Note: FDB-store metadata sources are not yet supported " +
 			"by this command; configure `meta_file` in your context or use " +

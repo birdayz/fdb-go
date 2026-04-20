@@ -20,6 +20,9 @@ func newIndexScanCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "scan <name>",
 		Short: "Scan index entries",
+		Example: `  frl index scan Order$price --limit 10
+  frl index scan Order$price --reverse --limit 5
+  frl index scan Order$price | jq -s 'map(.primary_key)'`,
 		Long: "Cursor-backed scan over an index's entries in the current " +
 			"context's store. Entries are emitted as newline-delimited JSON " +
 			"envelopes with the indexed values, reconstructed primary key, " +

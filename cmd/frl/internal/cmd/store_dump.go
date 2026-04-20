@@ -38,6 +38,9 @@ func newStoreDumpCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "dump",
 		Short: "Dump raw FDB bytes under the store, tuple-decoded + labeled",
+		Example: `  frl store dump --limit 50
+  frl store dump | grep '^index '
+  frl store dump --limit 0 | awk '{print $1}' | sort -u   # which subspaces are populated?`,
 		Long: "Forensic view of a record store: scans the store's keyspace " +
 			"range and prints one line per key, labeled with the subspace " +
 			"name (store-info / record / index / …) and tuple-decoded " +

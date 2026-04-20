@@ -186,6 +186,8 @@ func newConfigViewCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "view",
 		Short: "Print the effective context as YAML",
+		Example: `  frl config view
+  frl config view --context prod`,
 		Long: "Reads ~/.frl/config.yaml (or $FRL_CONFIG) and prints the " +
 			"currently-selected context. Use --context to pick a specific " +
 			"one. Missing config file is reported verbatim so the user " +
@@ -223,7 +225,9 @@ func newConfigUseContextCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use-context <name>",
 		Short: "Set current_context to <name>",
-		Args:  cobra.ExactArgs(1),
+		Example: `  frl config use-context prod
+  frl config use-context local`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := config.Load()
