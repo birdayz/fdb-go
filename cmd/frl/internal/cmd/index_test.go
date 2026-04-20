@@ -3,6 +3,10 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -96,6 +100,82 @@ func TestWriteIndexListJSON_RendersArray(t *testing.T) {
 		if row["state"] != "readable" {
 			t.Errorf("row %d state = %v; want readable", i, row["state"])
 		}
+	}
+}
+
+// TestIndexLs_NoFDB_WorksWithBogusClusterFile proves the --no-fdb
+// contract: the command must render indexes from a meta-file without
+// opening any FDB connection. The config points at a bogus cluster
+// path that would fail to dial — if --no-fdb weren't respected, this
+// test would hang on the FDB connection attempt.
+func TestIndexLs_NoFDB_WorksWithBogusClusterFile(t *testing.T) {
+	// Not parallel: mutates FRL_CONFIG via t.Setenv.
+	metaPath := writeMetaFileWithIndexes(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := fmt.Sprintf(`current_context: local
+contexts:
+  - name: local
+    cluster_file: /definitely/not/a/real/cluster.file
+    keyspace_path: /test
+    metadata:
+      meta_file: %s
+`, metaPath)
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", cfgPath)
+
+	c := NewRoot()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"index", "ls", "--no-fdb"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("index ls --no-fdb: %v\nout:\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"Order$price", "Customer$name"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	// STATE column shows "—" (em dash) when no FDB was contacted — part
+	// of the contract documented in --no-fdb help text.
+	if !strings.Contains(got, "—") {
+		t.Errorf("expected '—' placeholder for STATE; got:\n%s", got)
+	}
+}
+
+// TestIndexLs_NoFDB_RequiresFileSource — --no-fdb only works with a
+// meta_file source; if the context is wired for FDBMetaDataStore (no
+// local file), the command must refuse clearly rather than falling
+// through to an FDB connection attempt.
+func TestIndexLs_NoFDB_RequiresFileSource(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `current_context: local
+contexts:
+  - name: local
+    cluster_file: /definitely/not/a/real/cluster.file
+    keyspace_path: /test
+    metadata:
+      meta_store_keyspace: /some/other/path
+`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", cfgPath)
+
+	c := NewRoot()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"index", "ls", "--no-fdb"})
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error for --no-fdb against FDBMetaDataStore source")
+	}
+	if !strings.Contains(err.Error(), "--no-fdb") || !strings.Contains(err.Error(), "file") {
+		t.Errorf("error = %v; should mention both --no-fdb and the file requirement", err)
 	}
 }
 
