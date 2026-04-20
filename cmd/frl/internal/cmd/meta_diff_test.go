@@ -310,6 +310,40 @@ func writeDiffMetaFile(t *testing.T, version int32, opts ...func(*recordlayer.Re
 	return path
 }
 
+// TestPKFieldsOrUnset covers the three branches of the PK→text helper
+// that diff + evolve-check share. Each branch produces the operator-
+// visible string that shows up in both text and JSON output — a silent
+// regression in the "(unset)" fallback would misreport PK adds /
+// removes as bogus "pk changed (field -> field)" lines.
+func TestPKFieldsOrUnset(t *testing.T) {
+	t.Parallel()
+
+	// nil expression → the sentinel operators look for.
+	if got := pkFieldsOrUnset(nil); got != "(unset)" {
+		t.Errorf("nil → %q; want (unset)", got)
+	}
+
+	// Non-nil but no field names (e.g. empty concat / record-type-key)
+	// still must fall through to "(unset)" — otherwise `meta diff` would
+	// render an empty-string PK in + / - lines and break jq scripts.
+	if got := pkFieldsOrUnset(&recordlayer.EmptyKeyExpression{}); got != "(unset)" {
+		t.Errorf("empty expression → %q; want (unset)", got)
+	}
+
+	// Single field.
+	ke := recordlayer.Field("order_id")
+	if got := pkFieldsOrUnset(ke); got != "order_id" {
+		t.Errorf("Field(order_id) → %q; want order_id", got)
+	}
+
+	// Composite PK — comma-joined, no parens / no spaces (consistent
+	// with how other commands render tuples).
+	ke = recordlayer.Concat(recordlayer.Field("store"), recordlayer.Field("id"))
+	if got := pkFieldsOrUnset(ke); got != "store,id" {
+		t.Errorf("Concat(store,id) → %q; want store,id", got)
+	}
+}
+
 // TestDiffSection_EntryShape verifies the structured diffEntry output
 // replaces the text-parsing that splitDiffLine used to do. Each bucket
 // must contain entries with Name populated; Detail is optional (empty
