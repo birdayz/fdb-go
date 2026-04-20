@@ -90,11 +90,25 @@ tests:
       - [3, 30]
       - [4, 40]
   # Java alignment: WITH c1(x, y) AS (SELECT id, v FROM t) — column
-  # rename in CTE definition. Java supports this; Go's grammar parses
-  # the (x, y) syntax but the CTE materializer doesn't apply the rename
-  # — references to x/y fail 42703 'not found in row'.
-  # Pin current (broken) behavior; TODO: implement CTE column rename.
+  # rename in CTE definition. nightshift-39: now applies the rename
+  # positionally in the materialized CTE; references to x/y resolve.
   - query: |-
       WITH c1(x, y) AS (SELECT id, v FROM t)
       SELECT x FROM c1 WHERE y >= 30 ORDER BY x
-    error_code: "42703"
+    rows:
+      - [3]
+      - [4]
+  # Mismatched rename count errors 22000 (Java alignment).
+  - query: |-
+      WITH c1(only_one) AS (SELECT id, v FROM t)
+      SELECT only_one FROM c1
+    error_code: "22000"
+  # Single-column rename works.
+  - query: |-
+      WITH c1(my_id) AS (SELECT id FROM t)
+      SELECT my_id FROM c1 ORDER BY my_id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]

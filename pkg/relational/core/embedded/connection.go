@@ -550,6 +550,30 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				return nil, api.WrapErrorf(cteErr, api.ErrCodeInvalidParameter,
 					"CTE %q", cteName)
 			}
+			// Java alignment: WITH name(c1, c2, ...) AS (SELECT ...) — the
+			// optional column-list renames the CTE's output columns. The
+			// inner query's column names are replaced positionally. Errors
+			// 22000 if the rename count doesn't match the inner column
+			// count.
+			if aliases := nq.GetColumnAliases(); aliases != nil {
+				renameList := aliases.AllFullId()
+				if len(renameList) != len(cteCols) {
+					return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+						"CTE %q column-rename has %d names but inner query has %d columns",
+						cteName, len(renameList), len(cteCols))
+				}
+				renamed := make([]string, len(renameList))
+				for i, fid := range renameList {
+					renamed[i] = stripIdentifierQuotes(fullIdToName(fid))
+				}
+				// Re-key each row map from the old names to the new names.
+				newRows := make([][]driver.Value, len(cteRows))
+				for ri, r := range cteRows {
+					newRows[ri] = r // values are positional in the row slice
+				}
+				cteCols = renamed
+				cteRows = newRows
+			}
 			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
 		}
 	}
