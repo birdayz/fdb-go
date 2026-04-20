@@ -389,6 +389,41 @@ func TestConfigUseContext_TypoHintListsAvailable(t *testing.T) {
 	}
 }
 
+// TestConfigUseContext_PersistsAndConfirms — happy path for the
+// write side of use-context: switching from "local" to "prod" must
+// persist the change (subsequent ResolveContext returns "prod") AND
+// emit a confirmation line to stdout so shell scripts can log the
+// switch. Before this, only the two error paths had coverage.
+func TestConfigUseContext_PersistsAndConfirms(t *testing.T) {
+	path := writeTestConfig(t, "local")
+
+	c := newConfigUseContextCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"prod"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Switched to context \"prod\"") {
+		t.Errorf("stdout missing confirmation line:\n%s", out.String())
+	}
+
+	// Reload from disk and verify persistence — cleanest way is to run
+	// current-context and expect "prod".
+	cc := newConfigCurrentContextCmd()
+	var ccOut bytes.Buffer
+	cc.SetOut(&ccOut)
+	cc.SetErr(&ccOut)
+	if err := cc.Execute(); err != nil {
+		t.Fatalf("current-context after switch: %v", err)
+	}
+	if strings.TrimSpace(ccOut.String()) != "prod" {
+		t.Errorf("persisted current_context = %q, want prod\nfile: %s",
+			strings.TrimSpace(ccOut.String()), path)
+	}
+}
+
 func TestConfigGetContexts_Empty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
