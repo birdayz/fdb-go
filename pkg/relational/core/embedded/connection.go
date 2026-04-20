@@ -1082,6 +1082,24 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 		}
 
+		// Apply DISTINCT deduplication before sort — the JOIN path
+		// was historically missing this, so `SELECT DISTINCT a.cust_id
+		// FROM a, b WHERE a.cust_id = b.cust_id` silently returned the
+		// cross-join's duplicate rows. Same rowKey encoding as the
+		// non-JOIN path so distinct cross-checking matches.
+		if sq.distinct && !sq.countStar && !isAggregate {
+			seen := make(map[string]struct{}, len(data))
+			deduped := data[:0]
+			for _, row := range data {
+				key := rowKey(row)
+				if _, exists := seen[key]; !exists {
+					seen[key] = struct{}{}
+					deduped = append(deduped, row)
+				}
+			}
+			data = deduped
+		}
+
 		// ORDER BY. For aggregate results, `filtered` and `data` diverge — the
 		// colName path handles that. For non-aggregate rows, data[i] matches
 		// filtered[i] in lockstep, so `ob.expr` can be evaluated against
