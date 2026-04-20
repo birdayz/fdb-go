@@ -3624,14 +3624,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			}
 			n, parseErr := strconv.ParseInt(a.DecimalLiteral().GetText(), 10, 64)
 			if parseErr != nil {
-				return 0, api.NewErrorf(api.ErrCodeInvalidParameter, "invalid %s value %q: %v", label, a.DecimalLiteral().GetText(), parseErr)
+				return 0, api.NewErrorf(api.ErrCodeInvalidRowCountInLimitClause, "invalid %s value %q: %v", label, a.DecimalLiteral().GetText(), parseErr)
 			}
 			// Postgres, MySQL, Oracle, and SQL:2008 all reject negative
 			// LIMIT/OFFSET. Previously Go silently treated negative LIMIT
 			// as "no limit" (the downstream guard uses `sq.limit >= 0`),
 			// hiding user bugs like `LIMIT -1` instead of surfacing them.
+			// SQLSTATE: 2201W (invalid_row_count_in_limit_clause), the
+			// SQL-standard class-22 code for this exact case.
 			if n < 0 {
-				return 0, api.NewErrorf(api.ErrCodeInvalidParameter, "%s cannot be negative: %d", label, n)
+				return 0, api.NewErrorf(api.ErrCodeInvalidRowCountInLimitClause, "%s cannot be negative: %d", label, n)
 			}
 			return n, nil
 		}
@@ -4739,7 +4741,7 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 			// INSERT of 2147483648 into -2147483648 — a value-corrupting
 			// divergence. Reject cleanly.
 			if v < math.MinInt32 || v > math.MaxInt32 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
 			}
 			return protoreflect.ValueOfInt32(int32(v)), nil
@@ -4759,7 +4761,7 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
 			}
 			if v < math.MinInt64 || v > math.MaxInt64 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %g out of range for %s column %q", v, fd.Kind(), fd.Name())
 			}
 			return protoreflect.ValueOfInt64(int64(v)), nil
@@ -4767,7 +4769,7 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		if v, ok := val.(int64); ok {
 			if v < 0 || v > math.MaxUint32 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
 			}
 			return protoreflect.ValueOfUint32(uint32(v)), nil
@@ -4775,7 +4777,7 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		if v, ok := val.(int64); ok {
 			if v < 0 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"negative value %d cannot be stored in unsigned %s column %q", v, fd.Kind(), fd.Name())
 			}
 			return protoreflect.ValueOfUint64(uint64(v)), nil
@@ -4791,7 +4793,7 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 					"cannot store NaN or Infinity in FLOAT column %q", fd.Name())
 			}
 			if v > math.MaxFloat32 || v < -math.MaxFloat32 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %v out of range for FLOAT column %q", v, fd.Name())
 			}
 			return protoreflect.ValueOfFloat32(float32(v)), nil

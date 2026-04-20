@@ -24,7 +24,10 @@ tests:
       - [2]
       - [3]
   # Grammar rejects negative literals in LIMIT at parse time (42601)
-  # — the runtime 22023 check from swingshift-35 is unreachable via
-  # SQL literals, only via parameterised LIMIT ?. Documented here so
-  # future changes that relax the grammar know the downstream check
-  # still exists.
+  # — the runtime 2201W check from nightshift-39 (was 22023 in
+  # swingshift-35) is unreachable via SQL literals, only via
+  # parameterised LIMIT ?. Documented here so future changes that
+  # relax the grammar know the downstream check still exists.
+  # SQLSTATE 2201W (invalid_row_count_in_limit_clause) is the SQL-
+  # standard class-22 code for LIMIT/OFFSET range violations,
+  # tightened from generic 22023 INVALID_PARAMETER.
