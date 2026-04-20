@@ -881,9 +881,16 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				return nil, rightErr
 			}
 			var next []map[string]driver.Value
+			// For RIGHT JOIN, record during the matching pass which right
+			// rows had at least one match so the unmatched-right step
+			// doesn't have to re-evaluate the ON predicate a second time.
+			var matchedRight []bool
+			if jc.joinType == "RIGHT" {
+				matchedRight = make([]bool, len(rightRows))
+			}
 			for _, left := range joined {
 				matched := false
-				for _, right := range rightRows {
+				for ri, right := range rightRows {
 					// Merge rows into combined map.
 					combined := make(map[string]driver.Value, len(left)+len(right))
 					for k, v := range left {
@@ -903,6 +910,9 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 					}
 					matched = true
+					if matchedRight != nil {
+						matchedRight[ri] = true
+					}
 					next = append(next, combined)
 				}
 				// LEFT JOIN: emit left row with NULLs if no right match.
@@ -917,29 +927,6 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 			// RIGHT JOIN: also emit right rows that had no left match (null left side).
 			if jc.joinType == "RIGHT" {
-				matchedRight := make([]bool, len(rightRows))
-				for _, left := range joined {
-					for ri, right := range rightRows {
-						combined := make(map[string]driver.Value, len(left)+len(right))
-						for k, v := range left {
-							combined[k] = v
-						}
-						for k, v := range right {
-							combined[k] = v
-						}
-						if jc.onExpr != nil {
-							ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
-							if onErr != nil {
-								return nil, onErr
-							}
-							if ok {
-								matchedRight[ri] = true
-							}
-						} else {
-							matchedRight[ri] = true
-						}
-					}
-				}
 				// Derive left-side column keys from metadata (record
 				// type descriptor, or CTE column list) for each source
 				// that has been merged into `joined` so far. Using
