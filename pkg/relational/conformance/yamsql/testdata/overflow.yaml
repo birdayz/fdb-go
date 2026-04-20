@@ -39,3 +39,8 @@ tests:
   - query: SELECT a + -1 FROM t WHERE id = 1
     rows:
       - [9223372036854775806]
+  # MinInt64 % -1 is 0 (Go runtime handles this specially — the
+  # modulus is defined as 0 even though the quotient overflows).
+  - query: SELECT a % b FROM t WHERE id = 4
+    rows:
+      - [0]
