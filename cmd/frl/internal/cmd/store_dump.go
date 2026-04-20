@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -91,7 +92,7 @@ func newStoreDumpCmd() *cobra.Command {
 				}
 				scanSS = ss.Sub(id)
 			}
-			return runStoreDump(cmd.OutOrStdout(), db, ss, scanSS, limit)
+			return runStoreDump(cmd.Context(), cmd.OutOrStdout(), db, ss, scanSS, limit)
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
@@ -137,7 +138,7 @@ func knownSubspaceLabels() []string {
 //
 // Uses snapshot reads so we don't create conflict ranges during operator
 // inspection — matches fdbcli's default behavior.
-func runStoreDump(out io.Writer, db fdb.Database, ss, scanSS subspace.Subspace, limit int) error {
+func runStoreDump(ctx context.Context, out io.Writer, db fdb.Database, ss, scanSS subspace.Subspace, limit int) error {
 	begin, end := scanSS.FDBRangeKeys()
 	ropts := fdb.RangeOptions{Mode: fdb.StreamingModeIterator}
 	if limit > 0 {
@@ -151,6 +152,13 @@ func runStoreDump(out io.Writer, db fdb.Database, ss, scanSS subspace.Subspace, 
 		// stops after the requested number of entries, so the previous local
 		// counter was dead code (same pattern already cleaned up in record.go).
 		for iter.Advance() {
+			// Observe SIGINT/SIGTERM mid-iteration so long dumps terminate
+			// promptly. iter.Advance() itself blocks on FDB network traffic
+			// and doesn't know about Go contexts, so this is the only place
+			// cancellation can surface between batches.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			kv, err := iter.Get()
 			if err != nil {
 				return nil, fmt.Errorf("iterate: %w", err)
