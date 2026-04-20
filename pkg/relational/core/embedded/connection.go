@@ -2430,6 +2430,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		for i, f := range extraSortFields {
 			colIdx[f.name] = len(cols) + i
 		}
+		// Aggregate-path ORDER BY name validation. The non-aggregate
+		// path validated each name when building extraSortFields; the
+		// aggregate path doesn't, so a typo (`ORDER BY no_such_col` on
+		// `SELECT grp, COUNT(*) ... GROUP BY grp`) silently no-op'd.
+		// Mirror the CTE / JOIN validation added in 82bd4382 / 9500c512.
+		if len(sq.aggCols) > 0 || sq.countStar {
+			for _, ob := range sq.orderBy {
+				if _, ok := colIdx[ob.colName]; !ok {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"ORDER BY column %q not found in aggregate result", ob.colName)
+				}
+			}
+		}
 		sort.SliceStable(data, func(i, j int) bool {
 			for _, ob := range sq.orderBy {
 				idx, ok := colIdx[ob.colName]

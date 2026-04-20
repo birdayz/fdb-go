@@ -153,6 +153,11 @@ tests:
     rows:
       - ['b']
       - ['a']
+  # Aggregate-path ORDER BY on a typo'd column errors 42703 instead of
+  # silently no-op'ing. Mirror of the CTE / JOIN-path validation
+  # (82bd4382, 9500c512).
+  - query: SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY no_such_col
+    error_code: "42703"
   # HAVING on a bare COUNT(*) query with no GROUP BY. The COUNT(*)
   # fast path in both aggregation paths used to skip HAVING entirely
   # — `SELECT COUNT(*) FROM t HAVING COUNT(*) > 100` returned the
