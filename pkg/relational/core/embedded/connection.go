@@ -6099,7 +6099,8 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "HAVING supports only comparison predicates, got %T", pred.ExpressionAtom())
 	}
 
-	resolveAtom := func(atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
+	var resolveAtom func(atom antlrgen.IExpressionAtomContext) (driver.Value, error)
+	resolveAtom = func(atom antlrgen.IExpressionAtomContext) (driver.Value, error) {
 		switch a := atom.(type) {
 		case *antlrgen.ConstantExpressionAtomContext:
 			return evalConstant(a.Constant())
@@ -6140,6 +6141,34 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING aggregate %q not in SELECT list", lookupName)
 			}
 			return v, nil
+		case *antlrgen.MathExpressionAtomContext:
+			// HAVING on arithmetic over aggregates / constants, e.g.
+			// `HAVING SUM(v) * 2 > 50` or `HAVING COUNT(*) + SUM(v) > 5`.
+			// Recursively resolve both sides, then apply the same math
+			// operator helper that the row-level evaluator uses — NULL
+			// propagation comes from applyMathOp (nil-in / nil-out).
+			left, lErr := resolveAtom(a.GetLeft())
+			if lErr != nil {
+				return nil, lErr
+			}
+			right, rErr := resolveAtom(a.GetRight())
+			if rErr != nil {
+				return nil, rErr
+			}
+			return applyMathOp(left, right, a.MathOperator().GetText())
+		case *antlrgen.BitExpressionAtomContext:
+			// Same shape as MathExpression but with bitwise ops. HAVING on
+			// bitwise expressions (`COUNT(*) & 1`) is unusual but valid and
+			// costs nothing to mirror.
+			left, lErr := resolveAtom(a.GetLeft())
+			if lErr != nil {
+				return nil, lErr
+			}
+			right, rErr := resolveAtom(a.GetRight())
+			if rErr != nil {
+				return nil, rErr
+			}
+			return applyBitOp(left, right, a.BitOperator().GetText())
 		default:
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING atom %T", atom)
 		}

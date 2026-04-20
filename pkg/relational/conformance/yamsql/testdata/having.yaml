@@ -49,3 +49,30 @@ tests:
       - ['c', ~]
       - ['a', 30]
       - ['b', 35]
+  # HAVING on arithmetic over an aggregate. SUM(v) * 2 > 50 means
+  # SUM(v) > 25. Group 'a' has SUM=30 (30*2=60>50), 'b' has SUM=35
+  # (35*2=70>50). Pre-swingshift-38 this errored 0A000 because the
+  # HAVING resolver rejected MathExpressionAtom as an unsupported
+  # atom shape; now recurses into the math op's operands.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) * 2 > 50 ORDER BY grp
+    rows:
+      - ['a', 30]
+      - ['b', 35]
+  # HAVING on arithmetic between two aggregates. COUNT(*) + SUM(v)
+  # for group 'a' = 2+30=32, 'b' = 2+35=37, 'c' = 1+NULL=NULL (any
+  # arithmetic with NULL → NULL → UNKNOWN → filtered). Aggregates
+  # must also appear in the SELECT list today — HAVING-only aggregates
+  # (not projected) are a separate follow-up.
+  - query: |
+      SELECT grp, COUNT(*), SUM(v) FROM t GROUP BY grp
+      HAVING COUNT(*) + SUM(v) > 34
+      ORDER BY grp
+    rows:
+      - ['b', 2, 35]
+  # HAVING on a constant comparison uses the same atom resolver path —
+  # verify the shared resolveAtom keeps working for the pre-existing
+  # bare-aggregate case after the MathExpressionAtom / BitExpressionAtom
+  # extension.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) = 30
+    rows:
+      - ['a', 30]
