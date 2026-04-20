@@ -145,15 +145,18 @@ func openDatabase(clusterFile string) (fdb.Database, error) {
 // which covers the common case of directory-style keyspaces. Apps with
 // typed keyspaces (int/UUID components) need more than this; left for v2.
 func parseKeyspacePath(path string) (subspace.Subspace, error) {
+	// The error messages quote `keyspace_path` (the config key name) so
+	// fang's capitalized banner doesn't turn the prose into "Keyspace_path
+	// …" — which looks like a typo.
 	trimmed := strings.Trim(path, "/")
 	if trimmed == "" {
-		return nil, fmt.Errorf("keyspace_path %q resolves to an empty tuple", path)
+		return nil, fmt.Errorf("empty `keyspace_path` — %q resolves to an empty tuple", path)
 	}
 	parts := strings.Split(trimmed, "/")
 	elems := make([]tuple.TupleElement, len(parts))
 	for i, p := range parts {
 		if p == "" {
-			return nil, fmt.Errorf("keyspace_path %q has an empty segment", path)
+			return nil, fmt.Errorf("bad `keyspace_path` — %q has an empty segment", path)
 		}
 		elems[i] = p
 	}

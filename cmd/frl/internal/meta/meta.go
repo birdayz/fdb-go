@@ -72,12 +72,14 @@ func FromContext(
 	switch s := ms.GetSource().(type) {
 	case *configv1.MetadataSource_MetaFile:
 		if s.MetaFile == "" {
-			return nil, fmt.Errorf("meta_file is empty in context %q", ctx.GetName())
+			// Quote the YAML key so fang's banner capitalization doesn't
+			// turn it into "Meta_file is empty …".
+			return nil, fmt.Errorf("empty `meta_file` in context %q", ctx.GetName())
 		}
 		return &FileSource{Path: s.MetaFile}, nil
 	case *configv1.MetadataSource_MetaStoreKeyspace:
 		if s.MetaStoreKeyspace == "" {
-			return nil, fmt.Errorf("meta_store_keyspace is empty in context %q", ctx.GetName())
+			return nil, fmt.Errorf("empty `meta_store_keyspace` in context %q", ctx.GetName())
 		}
 		if db == nil || keyspaceResolver == nil {
 			// Surface as a sentinel so command-level callers can wrap

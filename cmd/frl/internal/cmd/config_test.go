@@ -74,8 +74,8 @@ func TestConfigCurrentContext_ErrorsWhenEmpty(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when current_context is empty")
 	}
-	if !strings.Contains(err.Error(), "current_context is empty") {
-		t.Errorf("error = %v; want mention of 'current_context is empty'", err)
+	if !strings.Contains(err.Error(), "no current context set") {
+		t.Errorf("error = %v; want mention of 'no current context set'", err)
 	}
 }
 

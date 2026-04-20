@@ -159,7 +159,10 @@ func newConfigCurrentContextCmd() *cobra.Command {
 			name := cfg.GetCurrentContext()
 			if name == "" {
 				path, _ := config.Path()
-				return fmt.Errorf("current_context is empty in %s — run `frl config use-context <name>`", path)
+				// Quote the YAML key so fang's capitalized banner reads
+				// as "No current context set in …" rather than the
+				// awkward "Current_context is empty in …".
+				return fmt.Errorf("no current context set in %s — run `frl config use-context <name>`", path)
 			}
 			if outputFmt == "json" {
 				enc := json.NewEncoder(cmd.OutOrStdout())
