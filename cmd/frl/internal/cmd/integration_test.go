@@ -372,6 +372,28 @@ func TestIntegration_RecordGet(t *testing.T) {
 	}
 }
 
+// TestIntegration_RecordGet_NotFound locks in the not-found error
+// shape. Operators scripting `frl record get | jq` branch on exit code,
+// and the message has to name both the PK and the keyspace — otherwise
+// logs reading "record not found" across dozens of stores are useless.
+func TestIntegration_RecordGet_NotFound(t *testing.T) {
+	bindConfig(t)
+	_, err := runCmd(t, "record", "get", "999999")
+	if err == nil {
+		t.Fatal("expected error for missing PK")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v; want 'not found'", err)
+	}
+	if !strings.Contains(err.Error(), "999999") {
+		t.Errorf("error = %v; should echo the PK argument", err)
+	}
+	if !strings.Contains(err.Error(), fixture.keyspacePath) {
+		t.Errorf("error = %v; should name the keyspace_path (%s)",
+			err, fixture.keyspacePath)
+	}
+}
+
 func TestIntegration_IndexLs(t *testing.T) {
 	bindConfig(t)
 	out, err := runCmd(t, "index", "ls")
