@@ -310,6 +310,39 @@ func writeDiffMetaFile(t *testing.T, version int32, opts ...func(*recordlayer.Re
 	return path
 }
 
+// TestDiff_RecordTypePKChange exercises the RECORD TYPES section of
+// the text renderer — previously only index changes were exercised,
+// so the entire record-types branch in writeMetaDiff (roughly
+// 6 statements) was uncovered. PK change on an existing type produces
+// a `~ Name: pk changed (old -> new)` line.
+func TestDiff_RecordTypePKChange(t *testing.T) {
+	t.Parallel()
+	m1 := buildMetaWith(t) // Order has pk=order_id by default
+	m2 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		// Compose with a real field on the Order proto so the builder
+		// validates. Quantity is a plain int32 on Order.
+		b.GetRecordType("Order").SetPrimaryKey(
+			recordlayer.Concat(recordlayer.Field("order_id"),
+				recordlayer.Field("quantity")))
+	})
+
+	var buf bytes.Buffer
+	if err := writeMetaDiff(&buf, m1, m2); err != nil {
+		t.Fatalf("writeMetaDiff: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "RECORD TYPES:") {
+		t.Errorf("output missing RECORD TYPES section:\n%s", got)
+	}
+	// The change line must include the old and new PKs so reviewers
+	// can spot compatibility breaks at a glance.
+	if !strings.Contains(got, "~ Order") ||
+		!strings.Contains(got, "order_id") ||
+		!strings.Contains(got, "quantity") {
+		t.Errorf("expected ~ Order line with both PK fields, got:\n%s", got)
+	}
+}
+
 // TestDiffIndexes_MultipleSortedAlphabetically proves the name-sort
 // comparators inside sortSection actually run. Prior tests diffed
 // one-entry buckets, so Go's sort.Slice short-circuited without
