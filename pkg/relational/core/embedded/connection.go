@@ -1506,18 +1506,60 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			for i := range indexes {
 				indexes[i] = i
 			}
+			// Pre-validate ORDER BY column references for non-aggregate
+			// JOIN queries (where filtered/data are in lockstep): names
+			// not in colIdx must be present in the per-row map; otherwise
+			// they're typos that would silently no-op the sort. Skips
+			// expression-keyed items (handled by keys[]) and aggregate
+			// queries (different lockstep semantics handled below).
+			if !isAggregate && len(filtered) == len(data) && len(filtered) > 0 {
+				for _, ob := range sq.orderBy {
+					if ob.expr != nil {
+						continue
+					}
+					if _, ok := colIdx[ob.colName]; ok {
+						continue
+					}
+					if _, present := filtered[0][ob.colName]; present {
+						continue
+					}
+					// "alias.col" → strip qualifier and re-check (the
+					// JOIN row map populates both forms, but only the
+					// qualified form for sources that aren't the left).
+					if dot := strings.LastIndex(ob.colName, "."); dot >= 0 {
+						if _, present := filtered[0][ob.colName[dot+1:]]; present {
+							continue
+						}
+					}
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"ORDER BY column %q not found", ob.colName)
+				}
+			}
 			sort.SliceStable(indexes, func(ii, jj int) bool {
 				i, j := indexes[ii], indexes[jj]
 				for oi, ob := range sq.orderBy {
 					var a, b driver.Value
 					if ob.expr != nil && keys != nil {
 						a, b = keys[i][oi], keys[j][oi]
-					} else {
-						idx, ok := colIdx[ob.colName]
-						if !ok {
-							continue
-						}
+					} else if idx, ok := colIdx[ob.colName]; ok {
 						a, b = data[i][idx], data[j][idx]
+					} else if !isAggregate && len(filtered) == len(data) {
+						// ORDER BY a JOIN-input column not in the
+						// projection. The combined map row carries both
+						// the bare and alias-qualified forms; pull the
+						// value directly. Only valid on the non-aggregate
+						// path where filtered[i]↔data[i] is in lockstep.
+						a = filtered[i][ob.colName]
+						b = filtered[j][ob.colName]
+						if a == nil && b == nil {
+							if dot := strings.LastIndex(ob.colName, "."); dot >= 0 {
+								bare := ob.colName[dot+1:]
+								a = filtered[i][bare]
+								b = filtered[j][bare]
+							}
+						}
+					} else {
+						continue
 					}
 					less, equal := orderByLess(a, b, ob)
 					if !equal {

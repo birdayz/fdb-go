@@ -57,3 +57,22 @@ tests:
       - [2, 10]
       - [3, 10]
       - [4, 20]
+  # ORDER BY a JOIN-input column not in the projection. Pre-fix the
+  # JOIN sort silently no-op'd when colIdx[ob.colName] missed (because
+  # the column wasn't projected). Now falls back to the per-row JOIN
+  # map. Same-shape fix as 9d177ac3 for the CTE path. Joined parent
+  # values: c=2→p.v=10, c=3→p.v=10, c=4→p.v=20. DESC: 4 (20), then
+  # ties 2/3 in stable insertion order.
+  - query: |
+      SELECT c.id FROM t AS c JOIN t AS p ON c.parent = p.id
+      ORDER BY p.v DESC, c.id
+    rows:
+      - [4]
+      - [2]
+      - [3]
+  # Typo in the ORDER BY column name on a JOIN errors 42703 instead of
+  # silently no-op'ing.
+  - query: |
+      SELECT c.id FROM t AS c JOIN t AS p ON c.parent = p.id
+      ORDER BY no_such_col
+    error_code: "42703"
