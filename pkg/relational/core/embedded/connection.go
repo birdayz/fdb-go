@@ -547,6 +547,57 @@ func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaD
 		"SELECT %s.*: qualifier does not match any FROM-clause source", qualifier)
 }
 
+// collectLeftJoinKeys returns the set of row-map keys that describe the
+// left-hand side of a RIGHT JOIN — unqualified column names and
+// alias-qualified variants for every source that has already been
+// merged into the nested-loop `joined` accumulator. Used for NULL-
+// padding unmatched right rows; deriving the keys from metadata
+// (record type or CTE) instead of sampling a runtime row means the
+// NULL-padding works even when the left side is entirely empty.
+//
+// `sources` must list the sources in the order they were merged in,
+// with the same tableName / alias that scanTableToMaps was given (so
+// the alias-qualified keys match the ones stored on real rows).
+func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData, sources []struct{ tableName, alias string }) []string {
+	seen := make(map[string]struct{})
+	var keys []string
+	addKey := func(k string) {
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+
+	for _, s := range sources {
+		alias := s.alias
+		if alias == "" {
+			alias = s.tableName
+		}
+		var cols []string
+		if c.ctes != nil {
+			if cte, ok := c.ctes[strings.ToUpper(s.tableName)]; ok {
+				cols = cte.cols
+			}
+		}
+		if cols == nil {
+			rt := md.GetRecordType(s.tableName)
+			if rt != nil {
+				fields := rt.Descriptor.Fields()
+				cols = make([]string, 0, fields.Len())
+				for i := 0; i < fields.Len(); i++ {
+					cols = append(cols, string(fields.Get(i).Name()))
+				}
+			}
+		}
+		for _, col := range cols {
+			addKey(col)
+			addKey(alias + "." + col)
+		}
+	}
+	return keys
+}
+
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
 // Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
 // aggregateMapRows applies GROUP BY + aggregate computation to a slice of map rows
@@ -810,6 +861,14 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			return nil, leftErr
 		}
 
+		// Track the sources (tableName + alias) merged into `joined` so
+		// far. RIGHT JOIN NULL-padding uses this to derive left-side
+		// column keys from metadata rather than sampling a runtime row
+		// — necessary when the left table is empty (no runtime row
+		// exists, so the qualified `a.id` key wouldn't be known without
+		// metadata).
+		leftSources := []struct{ tableName, alias string }{{sq.tableName, sq.tableAlias}}
+
 		// Scan each joined table; apply nested-loop join.
 		joined := leftRows
 		for _, jc := range sq.joins {
@@ -877,34 +936,15 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 					}
 				}
-				// Sample a left row to learn its column keys so we can
-				// NULL them explicitly — otherwise `SELECT a.id` on an
-				// unmatched right row falls through to the unqualified
-				// 'id' key which is populated from the right side,
-				// returning b.id instead of NULL.
-				//
-				// Prefer leftRows (pure left-side keys). For a
-				// multi-join chain `a RIGHT JOIN b RIGHT JOIN c`, by
-				// the time we reach the second RIGHT JOIN, `leftRows`
-				// still refers to a's rows, but `joined` carries the
-				// merged a+b side — so falling back to joined when
-				// leftRows is empty also covers that case. When both
-				// are empty (a is an empty table), the fix is
-				// degenerate and the edge case is tracked in TODO.md.
-				var leftKeys []string
-				var sample map[string]driver.Value
-				switch {
-				case len(leftRows) > 0:
-					sample = leftRows[0]
-				case len(joined) > 0:
-					sample = joined[0]
-				}
-				if sample != nil {
-					leftKeys = make([]string, 0, len(sample))
-					for k := range sample {
-						leftKeys = append(leftKeys, k)
-					}
-				}
+				// Derive left-side column keys from metadata (record
+				// type descriptor, or CTE column list) for each source
+				// that has been merged into `joined` so far. Using
+				// metadata rather than sampling a runtime row means the
+				// NULL-padding works even when the left side is empty
+				// — an unmatched right row still has `a.id` explicitly
+				// set to NULL, so `SELECT a.id` doesn't fall through
+				// to the unqualified `id` populated from the right.
+				leftKeys := c.collectLeftJoinKeys(md, leftSources)
 				for ri, right := range rightRows {
 					if !matchedRight[ri] {
 						combined := make(map[string]driver.Value, len(right)+len(leftKeys))
@@ -921,6 +961,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 			}
 			joined = next
+			leftSources = append(leftSources, struct{ tableName, alias string }{jc.tableName, jc.alias})
 		}
 
 		// Apply WHERE filter using map-based evaluation.

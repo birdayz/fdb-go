@@ -6,6 +6,7 @@
 name: outer_join
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a_empty (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
   CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
@@ -29,4 +30,18 @@ tests:
     rows:
       - [1, 'alpha']
       - [2, 'beta']
+      - [~, 'gamma']
+  # RIGHT OUTER JOIN with an empty left table — every right row is
+  # unmatched and must be NULL-padded for `a.*` keys. Pre-dayshift-37
+  # the NULL-padding sampled column keys from a runtime left row,
+  # which does not exist when the left is empty; qualified `a.id`
+  # would fall through to the unqualified `id` populated from b and
+  # return b.id instead of NULL. Fixed by deriving left-side keys
+  # from the record type descriptor.
+  - query: |
+      SELECT a.id, b.label FROM a_empty AS a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [~, 'alpha']
+      - [~, 'beta']
       - [~, 'gamma']
