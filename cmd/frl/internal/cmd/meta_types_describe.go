@@ -21,6 +21,7 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 		Short: "Show full definition of one record type",
 		Example: `  frl meta types describe Order
   frl meta types describe Order --meta-file ./meta.pb -o json`,
+		ValidArgsFunction: recordTypeNameCompletion,
 		Long: "Prints the record type's primary key, record-type key (for " +
 			"multi-type stores that use RecordTypeKeyExpression), since-" +
 			"version, proto field count, and every index that touches this " +

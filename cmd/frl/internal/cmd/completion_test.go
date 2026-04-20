@@ -7,7 +7,37 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
+
+// writeMetaFileWithIndexes builds a fixture with two VALUE indexes
+// (Order$price, Customer$name) so index-name completion has something
+// to return. Companion to writeDemoMetaFile (no indexes) / buildDemoMetaData.
+func writeMetaFileWithIndexes(t *testing.T) string {
+	t.Helper()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+	b.AddIndex("Customer", recordlayer.NewIndex("Customer$name", recordlayer.Field("name")))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "meta.pb")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer f.Close()
+	if err := recordlayer.WriteRecordMetaData(md, f); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
 
 // runCompletion drives cobra's built-in `__complete` subcommand on a
 // freshly-constructed root tree. Returns the tab-completion candidates
@@ -103,6 +133,76 @@ func TestCompletion_TypeFlagSilentOnBadConfig(t *testing.T) {
 	got := runCompletion(t, "record", "scan", "--type", "")
 	if len(got) != 0 {
 		t.Errorf("expected silent empty completions on bad config, got: %v", got)
+	}
+}
+
+func TestCompletion_UseContextPositional(t *testing.T) {
+	writeTestConfig(t, "prod")
+	got := runCompletion(t, "config", "use-context", "")
+	want := map[string]bool{"local": true, "prod": true}
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2: %v", len(got), got)
+	}
+	for _, c := range got {
+		if !want[c] {
+			t.Errorf("unexpected context candidate %q", c)
+		}
+	}
+}
+
+func TestCompletion_IndexDescribePositional(t *testing.T) {
+	metaPath := writeMetaFileWithIndexes(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := fmt.Sprintf(`current_context: local
+contexts:
+  - name: local
+    cluster_file: /tmp/fake
+    keyspace_path: /test
+    metadata:
+      meta_file: %s
+`, metaPath)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+
+	got := runCompletion(t, "index", "describe", "")
+	want := map[string]bool{"Customer$name": true, "Order$price": true}
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want 2: %v", len(got), got)
+	}
+	for _, c := range got {
+		if !want[c] {
+			t.Errorf("unexpected index candidate %q", c)
+		}
+	}
+}
+
+func TestCompletion_MetaTypesDescribePositional(t *testing.T) {
+	metaPath := writeDemoMetaFile(t, 0)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := fmt.Sprintf(`current_context: local
+contexts:
+  - name: local
+    cluster_file: /tmp/fake
+    keyspace_path: /test
+    metadata:
+      meta_file: %s
+`, metaPath)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+
+	got := runCompletion(t, "meta", "types", "describe", "")
+	want := map[string]bool{"Order": true, "Customer": true, "TypedRecord": true}
+	if len(got) != 3 {
+		t.Fatalf("got %d candidates, want 3: %v", len(got), got)
+	}
+	for _, c := range got {
+		if !want[c] {
+			t.Errorf("unexpected type candidate %q", c)
+		}
 	}
 }
 

@@ -297,6 +297,12 @@ func newConfigUseContextCmd() *cobra.Command {
 		Example: `  frl config use-context prod
   frl config use-context local`,
 		Args: cobra.ExactArgs(1),
+		ValidArgsFunction: func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+			if len(args) > 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			return contextNamesForCompletion(), cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			cfg, err := config.Load()

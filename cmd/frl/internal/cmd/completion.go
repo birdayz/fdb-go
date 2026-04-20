@@ -5,6 +5,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
 // registerContextCompletion wires a ValidArgsFunction to the `--context`
@@ -75,6 +76,88 @@ func registerRecordTypeCompletion(c *cobra.Command) {
 			}
 			return names, cobra.ShellCompDirectiveNoFileComp
 		})
+}
+
+// contextNamesForCompletion returns the configured context names, or
+// nil on any error. Shared helper for the use-context positional
+// completion below.
+func contextNamesForCompletion() []string {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.GetContexts()))
+	for _, ctx := range cfg.GetContexts() {
+		names = append(names, ctx.GetName())
+	}
+	return names
+}
+
+// loadMetaForCompletion loads the current metadata the same way the
+// --type completer does — context-aware with --meta-file override.
+// Returns nil silently on any error.
+func loadMetaForCompletion(cmd *cobra.Command) *recordlayer.RecordMetaData {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	ctxName, _ := cmd.Flags().GetString("context")
+	cfgCtx, err := config.ResolveContext(cfg, ctxName)
+	if err != nil {
+		return nil
+	}
+	metaFile, _ := cmd.Flags().GetString("meta-file")
+	var src meta.Source
+	if metaFile != "" {
+		src = &meta.FileSource{Path: metaFile}
+	} else {
+		src, err = meta.FromContext(cfgCtx, nil, nil)
+		if err != nil {
+			return nil
+		}
+	}
+	md, err := src.Load(cmd.Context())
+	if err != nil {
+		return nil
+	}
+	return md
+}
+
+// indexNameCompletion is a ValidArgsFunction for positional <index name>
+// arguments. Wired on `index describe` / `index scan`. Returns all
+// known index names from the loaded metadata; silent on error.
+func indexNameCompletion(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	md := loadMetaForCompletion(cmd)
+	if md == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	all := md.GetAllIndexes()
+	names := make([]string, 0, len(all))
+	for n := range all {
+		names = append(names, n)
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+// recordTypeNameCompletion is a ValidArgsFunction for positional
+// <record type> arguments on `meta types describe`.
+func recordTypeNameCompletion(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	md := loadMetaForCompletion(cmd)
+	if md == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	rts := md.RecordTypes()
+	names := make([]string, 0, len(rts))
+	for n := range rts {
+		names = append(names, n)
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
 // registerFormatCompletion wires a value-completer on -o/--output so
