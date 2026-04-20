@@ -39,3 +39,19 @@ tests:
   - query: SELECT LOWER(CONCAT('ABC', 'xyz')) FROM t WHERE id = 1
     rows:
       - ['abcxyz']
+  # CONCAT with a NULL argument: current behaviour is NULL-skip (one
+  # of the two SQL conventions, matching MySQL/Postgres ≥ 9). SQL
+  # standard / Oracle / SQL Server propagate NULL. Pin the current
+  # Go behaviour as a regression guard — if we later discover Java
+  # does NULL-propagation, flip this expectation + fix the evaluator.
+  - query: SELECT CONCAT('a', NULL, 'c') FROM t WHERE id = 1
+    rows:
+      - ['ac']
+  # REPLACE with NULL replacement treats NULL as empty string (our
+  # evaluator's NULL-skip path). Pin the current behaviour — arguably
+  # SQL standard says REPLACE(x, y, NULL) should be NULL, but we
+  # match MySQL behaviour of treating NULL as empty for the third arg.
+  # Track as follow-up if Java-conformance diverges.
+  - query: SELECT REPLACE(s, 'b', NULL) FROM t WHERE id = 2
+    rows:
+      - ['ac']

@@ -18,8 +18,15 @@ tests:
       - [1, 'alpha']
       - [2, 'beta']
       - [3, ~]
-  # RIGHT OUTER JOIN — in this dataset every b.k has a match, so it's
+  # RIGHT OUTER JOIN — in this dataset every b.k matches an a.k, so
   # equivalent to INNER JOIN.
+  #
+  # KNOWN BUG (surfaced round-10): when a right-side row has no
+  # matching left, the unqualified column 'id' in the combined map
+  # gets b.id instead of being NULL. So 'SELECT a.id' returns b.id
+  # rather than NULL for unmatched right rows. Not exercised here
+  # because both `b.k` values match `a.k`; tracked in TODO.md for
+  # next shift.
   - query: SELECT a.id, b.label FROM a RIGHT OUTER JOIN b ON a.k = b.k
     unordered: true
     rows:
