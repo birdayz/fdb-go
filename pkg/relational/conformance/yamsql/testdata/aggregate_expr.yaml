@@ -1,18 +1,18 @@
 # aggregate_expr.yaml
 #
-# Aggregate functions only accept bare column references today —
-# `SUM(qty * price)` errors because `extractAggFunc` resolves the
-# argument via `selectExprToColumnName` which requires a single
-# column. Java and Postgres both accept arbitrary expressions
-# inside aggregates, so this is a known Go-side limitation worth
-# pinning while it exists. Track as a follow-up in TODO.md.
+# Aggregate functions accept arbitrary expressions as their argument
+# (e.g. SUM(qty*price), AVG(col/2), MIN(CASE ... END)). Bare-column
+# arguments go through a field-descriptor fast path on the proto-
+# backed evaluator; expression arguments are evaluated per-row via
+# evalExpr / evalExprOnMap. NULL propagation and empty-group
+# semantics match SQL standard on both paths.
 name: aggregate_expr
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, qty BIGINT, price BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 2, 100), (2, 3, 50), (3, 5, 20)
 tests:
-  # SUM over plain column — the supported shape, baseline.
+  # SUM over plain column — baseline, bare-column fast path.
   - query: SELECT SUM(qty) FROM t
     rows:
       - [10]
@@ -22,17 +22,65 @@ tests:
     rows:
       - [20, 100]
 
-  # AVG over plain column — 10/3 of (100, 50, 20) = 56.67.
+  # AVG over plain column — 170/3 of (100, 50, 20) = 56.67.
   - query: SELECT AVG(price) FROM t
     rows:
       - [56.666666666666664]
 
-  # Aggregate over arithmetic expression — NOT supported.
-  # SQLSTATE 42703 (undefined_column) because the parser treats the
-  # expression as a single column name and then fails to resolve it.
+  # SUM over arithmetic expression: 2*100 + 3*50 + 5*20 = 200 + 150 + 100 = 450.
   - query: SELECT SUM(qty * price) FROM t
-    error_code: "42703"
+    rows:
+      - [450]
 
-  # Same limitation for AVG / MIN / MAX over expressions.
+  # AVG over arithmetic expression: (100/2 + 50/2 + 20/2) / 3 = 85/3 ≈ 28.33.
+  # Integer division in the expression: price/2 = 50, 25, 10 → avg = 85/3.
   - query: SELECT AVG(price / 2) FROM t
-    error_code: "42703"
+    rows:
+      - [28.333333333333332]
+
+  # MIN/MAX over expression.
+  - query: SELECT MIN(qty * price), MAX(qty * price) FROM t
+    rows:
+      - [100, 200]
+
+  # Aggregate over expression with alias.
+  - query: SELECT SUM(qty * price) AS revenue FROM t
+    rows:
+      - [450]
+
+  # Multiple aggregates mixing plain column and expression.
+  - query: SELECT SUM(qty), SUM(qty * price) FROM t
+    rows:
+      - [10, 450]
+
+  # COUNT over expression — NULLs propagate through arithmetic, so
+  # rows where any operand is NULL are skipped by COUNT(expr).
+  # All three rows have non-NULL qty and price, so COUNT = 3.
+  - query: SELECT COUNT(qty * price) FROM t
+    rows:
+      - [3]
+
+  # SUM(DISTINCT expr) — the three products (200, 150, 100) are all distinct,
+  # so SUM(DISTINCT) equals SUM.
+  - query: SELECT SUM(DISTINCT qty * price) FROM t
+    rows:
+      - [450]
+
+  # Empty-group / all-NULL argument: SUM returns NULL (not 0), COUNT returns 0.
+  # Filter rejects all rows, so the aggregate runs over an empty input.
+  - query: SELECT SUM(qty * price), COUNT(qty * price) FROM t WHERE id < 0
+    rows:
+      - [~, 0]
+
+  # Aggregate over expression with GROUP BY: sum the product per qty bucket.
+  # (2,100) → 200, (3,50) → 150, (5,20) → 100 — each row is its own group.
+  - query: SELECT qty, SUM(qty * price) FROM t GROUP BY qty ORDER BY qty
+    rows:
+      - [2, 200]
+      - [3, 150]
+      - [5, 100]
+
+  # Non-numeric expression into SUM/AVG — rejects with 22023 (invalid parameter).
+  # CASE returning a string: SUM can't fold strings.
+  - query: "SELECT SUM(CASE WHEN id = 1 THEN 'hello' ELSE 'world' END) FROM t"
+    error_code: "22023"

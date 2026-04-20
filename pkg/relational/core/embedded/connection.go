@@ -681,13 +681,24 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if ac.groupCol != "" {
 				continue
 			}
-			colVal := row[ac.aggArg]
-			if colVal == nil && ac.aggArg != "" {
-				if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-					colVal = row[ac.aggArg[dot+1:]]
+			var colVal driver.Value
+			switch {
+			case ac.aggExpr != nil:
+				v, evalErr := evalExprOnMap(ctx, c, row, ac.aggExpr)
+				if evalErr != nil {
+					return nil, nil, evalErr
+				}
+				colVal = v
+			case ac.aggArg != "":
+				colVal = row[ac.aggArg]
+				if colVal == nil {
+					if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+						colVal = row[ac.aggArg[dot+1:]]
+					}
 				}
 			}
-			if ac.aggDistinct && ac.aggArg != "" {
+			hasArg := ac.aggArg != "" || ac.aggExpr != nil
+			if ac.aggDistinct && hasArg {
 				if colVal != nil {
 					// Type-tagged key so int 5 and string "5" don't collide
 					// (matches the mixed-type-equality fix in valuesEqual).
@@ -725,9 +736,9 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				continue
 			}
-			// COUNT(*) (aggArg empty) counts every row, including all-NULL.
-			// COUNT(<expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
-			if ac.aggFunc == "COUNT" && ac.aggArg == "" {
+			// COUNT(*) (no arg) counts every row, including all-NULL.
+			// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
+			if ac.aggFunc == "COUNT" && !hasArg {
 				gs.counts[i]++
 				continue
 			}
@@ -1457,7 +1468,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				groupFDs[i] = fd
 			}
-			// Resolve aggregate arg field descriptors (nil for COUNT(*)).
+			// Resolve aggregate arg field descriptors (nil for COUNT(*) and for
+			// expression args, which are evaluated per-message via ac.aggExpr).
 			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
 				if ac.groupCol != "" {
@@ -1542,56 +1554,69 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if ac.groupCol != "" {
 						continue // group-by reference, no accumulation
 					}
-					if ac.aggDistinct && aggArgFDs[i] != nil {
-						// *(DISTINCT col): accumulate only the first occurrence
+					// Fetch the argument value.
+					//   - aggExpr != nil: evaluate expression (e.g. SUM(qty*price)).
+					//   - aggArg  != "": read the bare column via field descriptor.
+					//   - neither:       COUNT(*) — no argument, counted unconditionally below.
+					var v driver.Value
+					hasArg := ac.aggArg != "" || ac.aggExpr != nil
+					if ac.aggExpr != nil {
+						ev, evalErr := evalExpr(ctx, c, msg, ac.aggExpr)
+						if evalErr != nil {
+							return nil, evalErr
+						}
+						v = ev
+					} else if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
+						v = protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
+					}
+					if ac.aggDistinct && hasArg {
+						// *(DISTINCT col|expr): accumulate only the first occurrence
 						// of each distinct non-null value — supports COUNT, SUM,
 						// AVG, MIN, MAX symmetrically.
-						if msg.ProtoReflect().Has(aggArgFDs[i]) {
-							v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
-							// Type-tagged to keep distinct values of different
-							// concrete types apart (matches valuesEqual's
-							// mixed-type-equality semantic).
-							dk := fmt.Sprintf("%T\x00%v", v, v)
-							if _, seen := gs.distinctSets[i][dk]; !seen {
-								gs.distinctSets[i][dk] = struct{}{}
-								gs.counts[i]++
-								switch ac.aggFunc {
-								case "SUM", "AVG":
-									fv, ok := toFloat64(v)
-									if !ok {
-										return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-											"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
-									}
-									if ac.aggFunc == "SUM" {
-										gs.sums[i] += fv
-									} else {
-										gs.avgs[i] += fv
-										gs.avgsN[i]++
-									}
-								case "MIN":
-									if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
-										gs.mins[i] = v
-									}
-								case "MAX":
-									if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
-										gs.maxes[i] = v
-									}
+						if v == nil {
+							continue
+						}
+						// Type-tagged to keep distinct values of different
+						// concrete types apart (matches valuesEqual's
+						// mixed-type-equality semantic).
+						dk := fmt.Sprintf("%T\x00%v", v, v)
+						if _, seen := gs.distinctSets[i][dk]; !seen {
+							gs.distinctSets[i][dk] = struct{}{}
+							gs.counts[i]++
+							switch ac.aggFunc {
+							case "SUM", "AVG":
+								fv, ok := toFloat64(v)
+								if !ok {
+									return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+										"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
+								}
+								if ac.aggFunc == "SUM" {
+									gs.sums[i] += fv
+								} else {
+									gs.avgs[i] += fv
+									gs.avgsN[i]++
+								}
+							case "MIN":
+								if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+									gs.mins[i] = v
+								}
+							case "MAX":
+								if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+									gs.maxes[i] = v
 								}
 							}
 						}
 						continue
 					}
-					// COUNT(*) counts every row including all-NULL. Detected by
-					// empty aggArg (aggArgFDs[i] is nil when argCol is "").
-					if ac.aggFunc == "COUNT" && ac.aggArg == "" {
+					// COUNT(*) counts every row including all-NULL; no argument.
+					if ac.aggFunc == "COUNT" && !hasArg {
 						gs.counts[i]++
 						continue
 					}
-					// COUNT(<expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
-					if aggArgFDs[i] == nil || !msg.ProtoReflect().Has(aggArgFDs[i]) {
+					// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
+					if v == nil {
 						continue
 					}
-					v := protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
 					gs.counts[i]++
 					switch ac.aggFunc {
 					case "SUM", "AVG":
@@ -2258,10 +2283,14 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 type aggSelectCol struct {
 	outName string // output column name
 	// Either groupCol or aggFunc is set.
-	groupCol    string // plain group-by column reference
-	aggFunc     string // COUNT/SUM/MIN/MAX/AVG
-	aggArg      string // argument column name (empty for COUNT(*))
-	aggDistinct bool   // true when COUNT(DISTINCT col)
+	groupCol string // plain group-by column reference
+	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
+	aggArg   string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
+	// aggExpr is the IExpressionContext of the aggregate's argument when it is not a bare
+	// column reference (e.g. SUM(qty*price), AVG(CASE ... END)). Evaluated per input row.
+	// nil for bare-column args and for COUNT(*).
+	aggExpr     antlrgen.IExpressionContext
+	aggDistinct bool // true when COUNT(DISTINCT col)
 }
 
 // checkCountStar returns true if e is a bare COUNT(*) expression.
@@ -2286,73 +2315,89 @@ func checkCountStar(e *antlrgen.SelectExpressionElementContext) bool {
 }
 
 // extractAggFunc attempts to parse an aggregate function (COUNT/SUM/MIN/MAX/AVG)
-// from a SelectExpressionElementContext. Returns (funcName, argColName, distinct, alias, ok).
-// funcName is upper-case. argColName is empty for COUNT(*).
-func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol, alias string, distinct, ok bool) {
+// from a SelectExpressionElementContext. Returns (funcName, argColName, argExpr, alias, distinct, ok).
+// funcName is upper-case.
+// argColName is non-empty when the argument is a bare column reference (enables the
+// proto-path FD fast path). argExpr is non-nil when the argument is an arbitrary
+// expression (e.g. SUM(qty*price)) — mutually exclusive with argColName.
+// Both are empty/nil for COUNT(*).
+func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, alias string, distinct, ok bool) {
 	pred, pok := e.Expression().(*antlrgen.PredicatedExpressionContext)
 	if !pok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	fc, fcok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
 	if !fcok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	agg, aggok := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 	if !aggok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
 	if !awfok {
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	isDistinct := awf.DISTINCT() != nil
+	// resolveArg classifies a FunctionArg as either a bare-column ref (→ argCol) or
+	// an arbitrary expression (→ argExpr). Bare columns keep the proto fast path.
+	resolveArg := func(fa antlrgen.IFunctionArgContext) {
+		if fa == nil {
+			return
+		}
+		expr := fa.Expression()
+		if pred, ok := expr.(*antlrgen.PredicatedExpressionContext); ok {
+			if col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+				argCol = fullIdToName(col.FullColumnName().FullId())
+				return
+			}
+		}
+		argExpr = expr
+	}
 	switch {
 	case awf.COUNT() != nil && awf.STAR() != nil:
 		funcName = "COUNT"
 	case awf.COUNT() != nil:
 		funcName = "COUNT"
 		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
+			resolveArg(awf.FunctionArg())
 		} else if awf.FunctionArgs() != nil && len(awf.FunctionArgs().AllFunctionArg()) > 0 {
-			// COUNT(DISTINCT col) — FunctionArgs variant
-			argCol = awf.FunctionArgs().AllFunctionArg()[0].GetText()
+			// COUNT(DISTINCT col|expr) — FunctionArgs variant
+			resolveArg(awf.FunctionArgs().AllFunctionArg()[0])
 		}
 	case awf.SUM() != nil:
 		funcName = "SUM"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	case awf.MIN() != nil:
 		funcName = "MIN"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	case awf.MAX() != nil:
 		funcName = "MAX"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	case awf.AVG() != nil:
 		funcName = "AVG"
-		if awf.FunctionArg() != nil {
-			argCol = awf.FunctionArg().GetText()
-		}
+		resolveArg(awf.FunctionArg())
 	default:
-		return "", "", "", false, false
+		return "", "", nil, "", false, false
 	}
 	if e.Uid() != nil {
 		alias = stripIdentifierQuotes(e.Uid().GetText())
 	}
 	if alias == "" {
-		if isDistinct && argCol != "" {
-			alias = funcName + "(DISTINCT " + argCol + ")"
-		} else if argCol == "" {
+		display := argCol
+		if display == "" && argExpr != nil {
+			display = argExpr.GetText()
+		}
+		switch {
+		case display == "":
 			alias = funcName + "(*)"
-		} else {
-			alias = funcName + "(" + argCol + ")"
+		case isDistinct:
+			alias = funcName + "(DISTINCT " + display + ")"
+		default:
+			alias = funcName + "(" + display + ")"
 		}
 	}
-	return funcName, argCol, alias, isDistinct, true
+	return funcName, argCol, argExpr, alias, isDistinct, true
 }
 
 // columnNameFromExpr extracts a plain column name (or aggregate output name like
@@ -2481,8 +2526,8 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
-				} else if fn, argCol, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
-					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggDistinct: isDistinct})
+				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
+					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
 				} else {
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
