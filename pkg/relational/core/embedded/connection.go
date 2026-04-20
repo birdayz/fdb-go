@@ -1686,6 +1686,28 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		}
 	}
 
+	// SELECT DISTINCT against a CTE. Pre-fix the CTE path didn't
+	// dedupe at all — `SELECT DISTINCT v FROM cte` returned every
+	// duplicate row through. Same dedup-on-projected-cols semantic
+	// the JOIN and proto paths use.
+	if sq.distinct && !sq.countStar && len(sq.aggCols) == 0 {
+		seen := make(map[string]struct{}, len(outRows))
+		dedupedRows := outRows[:0]
+		dedupedMaps := mapRows[:0]
+		for i, row := range outRows {
+			key := rowKey(row)
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				dedupedRows = append(dedupedRows, row)
+				if i < len(mapRows) {
+					dedupedMaps = append(dedupedMaps, mapRows[i])
+				}
+			}
+		}
+		outRows = dedupedRows
+		mapRows = dedupedMaps
+	}
+
 	// ORDER BY. For aggregate CTE results, outRows was built via
 	// aggregateMapRows and mapRows is no longer in lockstep — use colName
 	// path only. For non-aggregate CTE, mapRows[i] matches outRows[i].

@@ -47,3 +47,15 @@ tests:
       - [1]
       - [2]
       - [3]
+  # SELECT DISTINCT against a CTE. Pre-fix the CTE path didn't
+  # dedupe at all (no DISTINCT branch in execSelectFromCTE) — every
+  # input row passed through. Now matches the proto / JOIN paths'
+  # rowKey-on-projected-cols semantic.
+  - query: |-
+      WITH s AS (SELECT v FROM t)
+      SELECT DISTINCT v FROM s ORDER BY v
+    rows:
+      - [~]
+      - [1]
+      - [2]
+      - [3]
