@@ -197,6 +197,32 @@ Root-level `--cluster-file` / `--keyspace-path` not wired yet (contexts cover th
 
 `frl web` — serves a local web UI for browsing records/indexes/metadata. Not designed. Not scheduled. Revisit after Phase B commands land and we know what the CLI already handles well.
 
+### Phase D — relational catalog discovery (design, not scheduled)
+
+Relational clusters expose their schemas at a fixed subspace `tuple(nil, nil, 0)` (`__SYS/__SYS/CATALOG`), which contains a regular FDB record store with three record types: `SCHEMAS`, `DATABASES`, `TEMPLATES`. The actual user-table `RecordMetaData` proto lives in `TEMPLATES.META_DATA`. Context: [PR #86 comment](https://github.com/birdayz/fdb-record-layer-go/pull/86#issuecomment-4281199904).
+
+Commands this unlocks:
+- [ ] **`frl meta list`** — scan `tuple(nil, nil, 0)` and enumerate every database / schema / template on a relational cluster (no operator config needed).
+- [ ] **`frl meta get --schema <name>`** — pull `META_DATA` blob out of a `TEMPLATES` row, build `RecordMetaData`, render as protojson / protoyaml. Bypasses both `meta_file` and `FDBMetaDataStore`.
+- [ ] Auto-detect path in existing commands: if `meta_file` isn't configured but the catalog subspace has entries, default to the relational source instead of erroring with "no metadata source".
+- [ ] Error clearly when a cluster is plain-core (empty `__SYS/CATALOG` scan) — the current "configure `meta_file`" message still applies there.
+
+**Constraints:**
+- Never write to `__SYS/CATALOG` from `frl` unless the command is explicitly a relational-admin tool.
+- Plain-core apps that want their own metadata directory should carve out a separate subspace — `__SYS` belongs to the relational layer. Document this in operator-guide to prevent accidental collisions.
+
+### Phase E — `frl sql` (psql-style REPL, design, not scheduled)
+
+Interactive SQL against a relational cluster. `pkg/relational/sqldriver` is registered as `"fdbsql"` (`database/sql` compatible), so the core integration is `sql.Open("fdbsql", dsn)`.
+
+- [ ] **`frl sql [--context <name>]`** — open `fdbsql://` driver against the current context's cluster, prompt-loop statements until a `;`, run via `db.QueryContext`.
+- [ ] Output: tabwriter table by default; `-o json` → NDJSON rows.
+- [ ] Line editor: `chzyer/readline` or `charmbracelet/bubbletea` for history (`~/.frl/sql_history`), multi-line input, tab-complete on `SCHEMAS` / `TEMPLATES` names resolved from the catalog.
+- [ ] psql-style meta-commands: `\d` (describe), `\dt` (list tables), `\c <schema>` (switch), `\q`, `\e` (open `$EDITOR`), `\i file.sql`.
+- [ ] Prerequisite: cluster must have `__SYS/CATALOG` populated (i.e. relational layer deployed). If empty, print "no relational catalog on this cluster" and exit — the detection logic is the same range-scan the `meta list` command uses.
+
+**Ergonomics to design up front:** transaction boundaries (auto-commit per statement vs `BEGIN/COMMIT`), error recovery (continue the REPL after a bad statement), EXPLAIN support if the Cascades planner can expose it.
+
 ---
 
 ## Pure Go FDB Client (`pkg/fdbgo/`)
