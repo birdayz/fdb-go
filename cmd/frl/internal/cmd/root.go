@@ -15,6 +15,12 @@ import (
 // attached here (or onto a child command) so a single call to fang.Execute
 // in main covers the entire tree.
 func NewRoot() *cobra.Command {
+	// Resolve version once so `frl --version` / `frl -v` render the same
+	// string `frl version` emits — cobra otherwise falls back to
+	// "unknown (built from source)" because it doesn't know about our
+	// runtime/debug-driven version discovery.
+	v := readVersion()
+
 	root := &cobra.Command{
 		Use:   "frl",
 		Short: "Operator CLI for the Go FoundationDB Record Layer",
@@ -33,7 +39,14 @@ func NewRoot() *cobra.Command {
   frl meta evolve-check --old previous.pb --new current.pb`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       v.Version,
 	}
+	// Template matches `frl version` (unqualified + build metadata).
+	// Without this, cobra's default `frl version <V>` format drops the
+	// Go toolchain / goos / goarch suffix and operators lose the cross-
+	// check against `go version -m`.
+	root.SetVersionTemplate("frl " + v.Version +
+		" (" + v.GoVersion + " " + v.GOOS + "/" + v.GOARCH + ")\n")
 
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newConfigCmd())

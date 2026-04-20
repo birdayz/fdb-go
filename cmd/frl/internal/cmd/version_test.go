@@ -64,6 +64,34 @@ func TestVersionCmd_JSON(t *testing.T) {
 	}
 }
 
+// TestRootVersionFlagMatchesSubcommand verifies `frl --version` and
+// `frl version` render the same string. Before the fix they diverged:
+// the flag path used cobra's default template ("unknown (built from
+// source)") while the subcommand used runtime/debug.ReadBuildInfo().
+// Two versions of the truth — this test keeps them one.
+func TestRootVersionFlagMatchesSubcommand(t *testing.T) {
+	t.Parallel()
+
+	runRoot := func(args ...string) string {
+		r := NewRoot()
+		var buf bytes.Buffer
+		r.SetOut(&buf)
+		r.SetErr(&buf)
+		r.SetArgs(args)
+		if err := r.Execute(); err != nil {
+			t.Fatalf("root %v: %v\n%s", args, err, buf.String())
+		}
+		return strings.TrimSpace(buf.String())
+	}
+
+	flag := runRoot("--version")
+	sub := runRoot("version")
+	if flag != sub {
+		t.Errorf("flag vs subcommand drift:\n --version → %q\n version   → %q",
+			flag, sub)
+	}
+}
+
 func TestVersionCmd_InvalidOutput(t *testing.T) {
 	t.Parallel()
 	c := newVersionCmd()
