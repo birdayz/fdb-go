@@ -818,9 +818,31 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 					}
 				}
+				// Sample a left row to learn its column keys so we can
+				// NULL them explicitly — otherwise `SELECT a.id` on an
+				// unmatched right row falls through to the unqualified
+				// 'id' key which is populated from the right side,
+				// returning b.id instead of NULL.
+				var leftKeys []string
+				if len(joined) > 0 {
+					leftKeys = make([]string, 0, len(joined[0]))
+					for k := range joined[0] {
+						// Skip keys that also exist on the right row so we
+						// don't clobber the real right-side values (e.g.
+						// unqualified 'id' should become the right's id,
+						// not NULL). Qualified keys like 'a.id' still get
+						// NULLed here.
+						leftKeys = append(leftKeys, k)
+					}
+				}
 				for ri, right := range rightRows {
 					if !matchedRight[ri] {
-						combined := make(map[string]driver.Value, len(right)+10)
+						combined := make(map[string]driver.Value, len(right)+len(leftKeys))
+						for _, k := range leftKeys {
+							if _, exists := right[k]; !exists {
+								combined[k] = nil
+							}
+						}
 						for k, v := range right {
 							combined[k] = v
 						}
