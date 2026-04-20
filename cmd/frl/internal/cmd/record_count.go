@@ -3,8 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -50,16 +48,8 @@ func newRecordCountCmd() *cobra.Command {
 						// (which varies between "unknown record type" and
 						// "requires RecordTypeKeyExpression" depending on
 						// whether the count_key shape is wrong too).
-						md := store.GetRecordMetaData()
-						if md.GetRecordType(recordType) == nil {
-							types := md.RecordTypes()
-							names := make([]string, 0, len(types))
-							for n := range types {
-								names = append(names, n)
-							}
-							sort.Strings(names)
-							return 0, fmt.Errorf("record type %q not found — available: %s",
-								recordType, strings.Join(names, ", "))
+						if err := validateRecordType(store.GetRecordMetaData(), recordType); err != nil {
+							return 0, err
 						}
 						return store.GetSnapshotRecordCountForRecordType(recordType)
 					}

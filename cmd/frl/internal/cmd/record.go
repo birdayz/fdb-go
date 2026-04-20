@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -243,15 +242,8 @@ func scanAndRender(
 	// Operators typo'ing `--type Orders` would get empty output instead
 	// of a clear error — expensive too (slow-path full scan). Fail fast.
 	if recordType != "" {
-		if store.GetRecordMetaData().GetRecordType(recordType) == nil {
-			types := store.GetRecordMetaData().RecordTypes()
-			names := make([]string, 0, len(types))
-			for n := range types {
-				names = append(names, n)
-			}
-			sort.Strings(names)
-			return fmt.Errorf("record type %q not found — available: %s",
-				recordType, strings.Join(names, ", "))
+		if err := validateRecordType(store.GetRecordMetaData(), recordType); err != nil {
+			return err
 		}
 	}
 

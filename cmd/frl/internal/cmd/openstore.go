@@ -4,11 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
+
+// validateRecordType returns nil if name is a real record type in md,
+// otherwise a "not found — available: A, B, C" error listing every
+// type in alphabetical order. Shared by record scan / record count so
+// typos produce the same user-facing message everywhere.
+func validateRecordType(md *recordlayer.RecordMetaData, name string) error {
+	if md.GetRecordType(name) != nil {
+		return nil
+	}
+	types := md.RecordTypes()
+	names := make([]string, 0, len(types))
+	for n := range types {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("record type %q not found — available: %s",
+		name, strings.Join(names, ", "))
+}
 
 // withStoreE is the ergonomic twin of withStore for commands whose store
 // closure doesn't need a return value. Most `record scan` / `index ls` /
