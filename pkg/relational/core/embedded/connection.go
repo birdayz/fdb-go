@@ -2066,6 +2066,21 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		allFields := msgDesc.Fields()
 		var outFields []outField
 		// extraSortFields (outer variable) are ORDER BY columns not in the projection.
+		//
+		// Expression-based ORDER BY items (`ORDER BY v * 2`) work on both
+		// SELECT * and named projections — carry each expression as a
+		// sentinel-named extra sort field, evaluated per row in the scan
+		// loop. Runs BEFORE the projection branch split so SELECT * paths
+		// don't silently drop expression sort keys.
+		for obIdx, ob := range sq.orderBy {
+			if ob.expr == nil {
+				continue
+			}
+			sentinel := fmt.Sprintf("__orderby_expr_%d__", obIdx)
+			extraSortFields = append(extraSortFields, outField{name: sentinel, expr: ob.expr})
+			sq.orderBy[obIdx].colName = sentinel
+			sq.orderBy[obIdx].expr = nil
+		}
 		if sq.projCols == nil {
 			// SELECT * — all fields in descriptor order.
 			outFields = make([]outField, allFields.Len())
@@ -2112,23 +2127,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 			// Add any ORDER BY columns not already in the projection.
-			for obIdx, ob := range sq.orderBy {
-				// Expression-based ORDER BY (`ORDER BY v * 2`) — carry the
-				// expression as an extra sort field evaluated per row.
-				// Each expression gets its own sentinel column name so
-				// the sort path's colIdx lookup matches. `sq.orderBy[i]`
-				// still carries the real expression; the sort-time
-				// evaluator uses that in preference to the stored column
-				// lookup when ob.expr != nil.
-				if ob.expr != nil {
-					sentinel := fmt.Sprintf("__orderby_expr_%d__", obIdx)
-					extraSortFields = append(extraSortFields, outField{name: sentinel, expr: ob.expr})
-					// Update the orderBy entry's colName in place so the
-					// downstream colIdx lookup finds the sentinel.
-					sq.orderBy[obIdx].colName = sentinel
-					sq.orderBy[obIdx].expr = nil
-					continue
+			// Expression ORDER BY was already converted to sentinel extra
+			// sort fields above; mark those sentinels present in projByCol
+			// so the FD-lookup loop below skips them.
+			for _, f := range extraSortFields {
+				if f.expr != nil {
+					projByCol[f.name] = true
 				}
+			}
+			for _, ob := range sq.orderBy {
 				if projByCol[ob.colName] {
 					continue
 				}

@@ -101,3 +101,17 @@ tests:
     rows:
       - [1, 3]
       - [3, 4]
+  # SELECT * + ORDER BY expression. Round-4 reviewer noted the
+  # expression-ORDER-BY fix lived inside the named-projection branch
+  # of execSelectQueryFull, so `SELECT *` bypassed it. Expression
+  # conversion now happens BEFORE the SELECT * vs named-projection
+  # split. Dataset v values: 3, 1, 4, 1, 2. Sort by v*2 (same order
+  # as by v), with id as tiebreaker: ids 2 then 4 (v=1), then 5
+  # (v=2), then 1 (v=3), then 3 (v=4).
+  - query: SELECT * FROM t ORDER BY v * 2, id
+    rows:
+      - [2, 'a', 1]
+      - [4, 'b', 1]
+      - [5, 'a', 2]
+      - [1, 'a', 3]
+      - [3, 'b', 4]
