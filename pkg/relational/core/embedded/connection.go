@@ -3767,15 +3767,29 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if len(newAggs) > 0 {
 			if len(sq.aggCols) == 0 && len(projCols) > 0 {
 				// No SELECT-list aggregates yet; demote the plain projCols
-				// to group-by references so the aggregate pipeline knows how
-				// to surface them in each output row.
+				// to group-by references so the aggregate pipeline knows
+				// how to surface them in each output row. When the projExpr
+				// matches a GROUP BY expression by text (e.g. `SELECT v/10
+				// AS bucket ... GROUP BY v/10`), point groupCol at the
+				// matching groupBy[] string so the proto path's
+				// groupExprByName check fires and skips the FD lookup.
 				prepended := make([]aggSelectCol, 0, len(projCols)+len(sq.aggCols))
 				for i, c := range projCols {
 					out := projAliases[i]
 					if out == "" {
 						out = c
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, groupCol: c})
+					gc := c
+					if i < len(projExprs) && projExprs[i] != nil {
+						projText := projExprs[i].GetText()
+						for gi, gn := range sq.groupBy {
+							if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil && projText == gn {
+								gc = gn
+								break
+							}
+						}
+					}
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: gc})
 				}
 				sq.aggCols = append(prepended, sq.aggCols...)
 				sq.projCols = nil

@@ -101,3 +101,24 @@ tests:
   # shared resolveSelectListPosition as ORDER BY N.
   - query: SELECT region FROM sales GROUP BY 99
     error_code: "22023"
+  # SELECT-list expression aliased that matches a GROUP BY expression
+  # by text. Pre-fix the HAVING-harvest reclassification used the
+  # alias as the groupCol name, which the proto path then tried to
+  # resolve as a field descriptor and errored 42703. Now the
+  # reclassification matches projExpr.GetText() against groupBy[]
+  # and points groupCol at the matching GROUP BY entry's text so
+  # the proto path's groupExprByName check skips the FD lookup.
+  # amt buckets via amt/100: 100→1, 50→0, 200→2, 300→3, 400→4, 25→0.
+  # MAX per bucket: bucket 0 → 50 (max of 50, 25); 1→100; 2→200; 3→300; 4→400.
+  # ORDER BY MAX(amt) DESC: 4(400), 3(300), 2(200), 1(100), 0(50).
+  - query: |
+      SELECT amt / 100 AS bucket FROM sales
+      GROUP BY amt / 100
+      HAVING COUNT(*) >= 1
+      ORDER BY MAX(amt) DESC
+    rows:
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+      - [0]
