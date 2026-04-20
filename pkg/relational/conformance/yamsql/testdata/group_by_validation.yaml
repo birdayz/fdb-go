@@ -11,19 +11,15 @@ schema_template: |
 setup:
   - INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
 tests:
-  # Java: SELECT * with GROUP BY errors 42803 (* expands to non-grouped cols).
-  # Go currently allows this, returning ALL rows ignoring GROUP BY.
-  # Pin current (wrong) behavior; TODO: enforce 42803 to match Java.
-  - query: SELECT * FROM t1 GROUP BY col1 ORDER BY id
-    rows:
-      - [1, 10, 100]
-      - [2, 10, 200]
-      - [3, 20, 300]
-  # Java: SELECT id with GROUP BY col1 errors 42803.
-  # Go silently returns NULL for ungrouped columns (one row per group,
-  # but the column value is unset because the rowMap only carries the
-  # group-by columns). Pin current (broken) behavior; TODO: enforce
-  # 42803 to match Java.
+  # Java alignment: SELECT * with GROUP BY errors 42803 (* expands to
+  # non-grouped cols). nightshift-39: now matches Java.
+  - query: SELECT * FROM t1 GROUP BY col1
+    error_code: "42803"
+  # Java: SELECT id with GROUP BY col1 errors 42803 (id not grouped).
+  # Go currently returns NULL for ungrouped columns (one row per group,
+  # value missing). Pin current behavior; full per-column 42803
+  # enforcement is a runtime concern (need schema to distinguish from
+  # 42703 'undefined column'). TODO: enforce at proto-path eval.
   - query: SELECT id FROM t1 GROUP BY col1 ORDER BY id
     rows:
       - [~]
@@ -36,3 +32,14 @@ tests:
     rows:
       - [10]
       - [20]
+  # Valid: SELECT aggregate alongside grouped column.
+  - query: SELECT col1, COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1
+    rows:
+      - [10, 2]
+      - [20, 1]
+  # Valid: GROUP BY two cols, SELECT both.
+  - query: SELECT col1, col2 FROM t1 GROUP BY col1, col2 ORDER BY col1, col2
+    rows:
+      - [10, 100]
+      - [10, 200]
+      - [20, 300]

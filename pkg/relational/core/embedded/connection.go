@@ -3764,6 +3764,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
+	// SQL §7.10 General Rule 1 / Java alignment: when GROUP BY is present,
+	// every SELECT-list column reference must be in GROUP BY or wrapped in
+	// an aggregate. SELECT * with GROUP BY errors 42803 because * expands
+	// to all table columns, which generally aren't all in GROUP BY. Same
+	// for plain column refs that don't appear in GROUP BY.
+	if len(sq.groupBy) > 0 && projQualifier == "" && len(projCols) == 0 && !countStar && len(sq.aggCols) == 0 {
+		// SELECT * FROM t GROUP BY ... — projCols nil because of star;
+		// no aggregates either. Java errors 42803.
+		return nil, api.NewError(api.ErrCodeGroupingError,
+			"SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)")
+	}
+
 	// GROUP BY without any aggregate function in the SELECT list (e.g.
 	// `SELECT a, b, a+b FROM t GROUP BY a, b`). Java permits this — the
 	// query is functionally a DISTINCT on (a, b) with optional projected
@@ -3780,6 +3792,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					"cannot mix qualifier.* with GROUP BY in SELECT list")
 			}
 		}
+		// Java 42803 validation per column: defer to runtime so that
+		// undefined columns surface as 42703 first (Java's order). The
+		// proto path's group-eval already handles unrecognized column
+		// names; we don't reject at parse time without schema access.
 		extra := make([]aggSelectCol, len(projCols))
 		for i, c := range projCols {
 			out := projAliases[i]
