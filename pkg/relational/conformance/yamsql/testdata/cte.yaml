@@ -112,3 +112,21 @@ tests:
       - [2]
       - [3]
       - [4]
+  # Java alignment: chained CTE renames — second CTE references the first
+  # via its renamed columns.
+  - query: |-
+      WITH base(d, val) AS (SELECT id, v FROM t),
+           filtered(x, y) AS (SELECT d, val FROM base WHERE val > 15)
+      SELECT x, y FROM filtered ORDER BY x
+    rows:
+      - [2, 20]
+      - [3, 30]
+      - [4, 40]
+  # Renamed CTE in CROSS JOIN (multi-CTE).
+  - query: |-
+      WITH lo(li) AS (SELECT id FROM t WHERE v < 20),
+           hi(hi_id) AS (SELECT id FROM t WHERE v >= 30)
+      SELECT li, hi_id FROM lo, hi ORDER BY li, hi_id
+    rows:
+      - [1, 3]
+      - [1, 4]
