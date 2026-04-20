@@ -68,3 +68,33 @@ tests:
       WITH s AS (SELECT id, v FROM t)
       SELECT id FROM s ORDER BY no_such_col
     error_code: "42703"
+  # Java alignment: WITH ... AS (...) SELECT * FROM same-table without
+  # using the CTE — the CTE is just defined, not referenced. Should
+  # work, returning the t1 results.
+  - query: |-
+      WITH ignored AS (SELECT id FROM t WHERE id > 100)
+      SELECT id FROM t ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+  # Java alignment: WITH c1 AS (SELECT * FROM t) SELECT * FROM c1.
+  # CTE that selects everything, projection also selects everything.
+  - query: |-
+      WITH c1 AS (SELECT * FROM t)
+      SELECT * FROM c1 ORDER BY id
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [4, 40]
+  # Java alignment: WITH c1(x, y) AS (SELECT id, v FROM t) — column
+  # rename in CTE definition. Java supports this; Go's grammar parses
+  # the (x, y) syntax but the CTE materializer doesn't apply the rename
+  # — references to x/y fail 42703 'not found in row'.
+  # Pin current (broken) behavior; TODO: implement CTE column rename.
+  - query: |-
+      WITH c1(x, y) AS (SELECT id, v FROM t)
+      SELECT x FROM c1 WHERE y >= 30 ORDER BY x
+    error_code: "42703"
