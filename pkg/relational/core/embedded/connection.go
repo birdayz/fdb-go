@@ -1038,20 +1038,29 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	for i, col := range sq.groupBy {
 		groupColIdx[col] = i
 	}
-	// visibleIdx lists the aggCols positions that should appear in the
-	// projected output. Hidden entries (aggregates harvested from HAVING
-	// that weren't in the SELECT list) contribute to accumulation and
-	// HAVING evaluation but drop out of the emitted row.
-	visibleIdx := make([]int, 0, len(sq.aggCols))
+	// emitIdx lists the aggCols positions that appear in cols/data:
+	// visible columns first, then sortOnly columns (harvested from
+	// ORDER BY) so the sort can find them via colIdx. Hidden entries
+	// (harvested from HAVING) contribute to accumulation and HAVING
+	// evaluation but drop out entirely. Caller strips data rows to
+	// the first `visibleCount` columns after the sort runs.
+	emitIdx := make([]int, 0, len(sq.aggCols))
 	for i, ac := range sq.aggCols {
-		if !ac.hidden {
-			visibleIdx = append(visibleIdx, i)
+		if !ac.hidden && !ac.sortOnly {
+			emitIdx = append(emitIdx, i)
 		}
 	}
-	cols = make([]string, len(visibleIdx))
-	for out, i := range visibleIdx {
+	visibleCount := len(emitIdx)
+	for i, ac := range sq.aggCols {
+		if !ac.hidden && ac.sortOnly {
+			emitIdx = append(emitIdx, i)
+		}
+	}
+	cols = make([]string, len(emitIdx))
+	for out, i := range emitIdx {
 		cols[out] = sq.aggCols[i].outName
 	}
+	_ = visibleCount // surfaced via stripAggregateSortOnly()
 	for _, key := range groupOrder {
 		gs := groups[key]
 		fullVals := make([]driver.Value, len(sq.aggCols))
@@ -1117,13 +1126,53 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				continue
 			}
 		}
-		rowVals := make([]driver.Value, len(visibleIdx))
-		for out, i := range visibleIdx {
+		rowVals := make([]driver.Value, len(emitIdx))
+		for out, i := range emitIdx {
 			rowVals[out] = fullVals[i]
 		}
 		data = append(data, rowVals)
 	}
 	return cols, data, nil
+}
+
+// stripAggregateSortOnly removes trailing sort-only columns added by
+// aggregateMapRows / the proto aggregate emit when ORDER BY referenced
+// aggregates not in the SELECT list. Counts visible (non-hidden,
+// non-sortOnly) entries in sq.aggCols; the emit appends sortOnly
+// columns AFTER the visible ones, so truncating each row to that
+// length restores the user's requested output shape.
+//
+// No-op when sq.aggCols has no sortOnly entries (the common case) and
+// when the countStar fast path is in play (sq.aggCols is empty —
+// nothing to strip; cols already correct).
+func stripAggregateSortOnly(sq *selectQuery, cols []string, data [][]driver.Value) ([]string, [][]driver.Value) {
+	if len(sq.aggCols) == 0 {
+		return cols, data
+	}
+	hasSortOnly := false
+	for _, ac := range sq.aggCols {
+		if ac.sortOnly {
+			hasSortOnly = true
+			break
+		}
+	}
+	if !hasSortOnly {
+		return cols, data
+	}
+	visibleCount := 0
+	for _, ac := range sq.aggCols {
+		if !ac.hidden && !ac.sortOnly {
+			visibleCount++
+		}
+	}
+	if visibleCount >= len(cols) {
+		return cols, data
+	}
+	cols = cols[:visibleCount]
+	for i := range data {
+		data[i] = data[i][:visibleCount]
+	}
+	return cols, data
 }
 
 func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
@@ -1493,6 +1542,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		if sq.limit >= 0 && int(sq.limit) < len(data) {
 			data = data[:sq.limit]
 		}
+		// Drop trailing sort-only aggregate columns now that the sort
+		// has consumed them. No-op when the query had no ORDER BY
+		// references to hidden aggregates.
+		if isAggregate {
+			cols, data = stripAggregateSortOnly(sq, cols, data)
+		}
 
 		return nil, nil
 	})
@@ -1665,6 +1720,9 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	}
 	if sq.limit >= 0 && int64(len(outRows)) > sq.limit {
 		outRows = outRows[:sq.limit]
+	}
+	if len(sq.aggCols) > 0 {
+		colNames, outRows = stripAggregateSortOnly(sq, colNames, outRows)
 	}
 
 	return &staticRows{cols: colNames, rows: outRows}, nil
@@ -2023,20 +2081,28 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				groupOrder = append(groupOrder, "")
 			}
 
-			// Build output cols — skip hidden aggregates (harvested from
-			// HAVING, should not appear in projected output).
+			// Build output cols — visible (non-hidden, non-sortOnly) entries
+			// first, then sortOnly columns (harvested from ORDER BY) so the
+			// post-aggregation sort can find them via colIdx. Hidden entries
+			// (harvested from HAVING) drop out entirely. Caller strips the
+			// trailing sortOnly columns after the sort.
 			groupColIdx := map[string]int{}
 			for i, col := range sq.groupBy {
 				groupColIdx[col] = i
 			}
-			visibleIdx := make([]int, 0, len(sq.aggCols))
+			emitIdx := make([]int, 0, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
-				if !ac.hidden {
-					visibleIdx = append(visibleIdx, i)
+				if !ac.hidden && !ac.sortOnly {
+					emitIdx = append(emitIdx, i)
 				}
 			}
-			cols = make([]string, len(visibleIdx))
-			for out, i := range visibleIdx {
+			for i, ac := range sq.aggCols {
+				if !ac.hidden && ac.sortOnly {
+					emitIdx = append(emitIdx, i)
+				}
+			}
+			cols = make([]string, len(emitIdx))
+			for out, i := range emitIdx {
 				cols[out] = sq.aggCols[i].outName
 			}
 
@@ -2099,8 +2165,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						continue
 					}
 				}
-				rowVals := make([]driver.Value, len(visibleIdx))
-				for out, i := range visibleIdx {
+				rowVals := make([]driver.Value, len(emitIdx))
+				for out, i := range emitIdx {
 					rowVals[out] = fullVals[i]
 				}
 				data = append(data, rowVals)
@@ -2327,6 +2393,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	}
 	if sq.limit >= 0 && int64(len(data)) > sq.limit {
 		data = data[:sq.limit]
+	}
+	// Drop trailing sort-only aggregate columns now that the sort
+	// has consumed them. No-op when the query had no ORDER BY
+	// references to hidden aggregates.
+	if len(sq.aggCols) > 0 {
+		cols, data = stripAggregateSortOnly(sq, cols, data)
 	}
 
 	return &staticRows{cols: cols, rows: data}, nil
@@ -2699,6 +2771,12 @@ type orderByClause struct {
 	// CTE and JOIN paths (which retain map rows) honor this; the proto /
 	// single-table scan path still requires a column/aggregate name.
 	expr antlrgen.IExpressionContext
+	// rawExpr always holds the original IExpressionContext for the ORDER BY
+	// item, even when colName is populated. Used by post-parse passes that
+	// need to inspect the expression (e.g. harvesting aggregates from
+	// `ORDER BY SUM(v)` where colName resolved to "SUM(v)" and expr was
+	// left nil because the expression was a bare aggregate).
+	rawExpr antlrgen.IExpressionContext
 }
 
 // orderByLess returns true iff value `a` sorts before value `b` under the
@@ -2744,11 +2822,18 @@ type aggSelectCol struct {
 	aggExpr     antlrgen.IExpressionContext
 	aggDistinct bool // true when COUNT(DISTINCT col)
 	// hidden aggregates contribute to group accumulation and HAVING evaluation
-	// but are excluded from the projected output. Used for aggregates harvested
-	// from HAVING that aren't also in the SELECT list, so
-	// `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
+	// but are excluded from the projected output and the sort. Used for
+	// aggregates harvested from HAVING that aren't also in the SELECT list,
+	// so `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
 	// (grp) while still running the SUM.
 	hidden bool
+	// sortOnly aggregates are harvested from ORDER BY and appended to the
+	// emit data so the sort can find them via colIdx. They're stripped from
+	// the user-visible output after the sort runs. Combined with hidden:
+	//   visible row column = !hidden && !sortOnly.
+	//   sort-accessible column = !hidden.
+	//   accumulated column = always.
+	sortOnly bool
 	// outExpr is a post-aggregation expression that references aggregate
 	// outputs and/or group-by columns. Evaluated at emit time against a
 	// rowMap that already contains all aggCols values. Used for SELECT-list
@@ -3377,7 +3462,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				return nil, posErr
 			}
 			if isPos {
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst})
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
@@ -3385,9 +3470,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
-				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst})
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
-				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression()})
+				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
 			}
 		}
 	}
@@ -3488,27 +3573,49 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: "COUNT(*)", aggFunc: "COUNT"})
 	}
 
-	// Harvest aggregates referenced in HAVING that aren't already in
-	// aggCols. Otherwise `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0`
-	// has aggCols == nil → executor never runs the aggregate pipeline →
-	// GROUP BY is silently ignored and every input row falls through.
-	// The HAVING resolver already looks up aggregates by their reconstructed
-	// output name ("COUNT(*)", "SUM(v)"), so matching aggCols entries make
-	// the evaluation round-trip. If projCols still holds plain columns at
-	// this point, reclassify them as group-by references in aggCols (mirror
-	// of the SELECT-list-aggregate path's existing reclassification).
+	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
+	// already in aggCols. Otherwise queries like
+	//   SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0
+	//   SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) DESC
+	// have aggCols == nil → the executor never runs the aggregate pipeline
+	// → GROUP BY is silently ignored. The HAVING / ORDER BY resolver already
+	// looks up aggregates by their reconstructed output name ("COUNT(*)",
+	// "SUM(v)"), so matching aggCols entries make the evaluation round-trip.
+	// If projCols still holds plain columns at this point, reclassify them
+	// as group-by references in aggCols (mirror of the SELECT-list-aggregate
+	// path's existing reclassification).
+	type harvestSource struct {
+		expr     antlrgen.IExpressionContext
+		sortOnly bool // true when the source is ORDER BY (sort-visible); false for HAVING (hidden)
+	}
+	var harvestSources []harvestSource
 	if sq.havingExpr != nil {
-		harvested := harvestAggregates(sq.havingExpr)
+		harvestSources = append(harvestSources, harvestSource{expr: sq.havingExpr, sortOnly: false})
+	}
+	for _, ob := range sq.orderBy {
+		if ob.rawExpr != nil {
+			harvestSources = append(harvestSources, harvestSource{expr: ob.rawExpr, sortOnly: true})
+		}
+	}
+	if len(harvestSources) > 0 {
 		existing := make(map[string]struct{}, len(sq.aggCols))
 		for _, ac := range sq.aggCols {
 			existing[ac.outName] = struct{}{}
 		}
-		newAggs := harvested[:0]
-		for _, ac := range harvested {
-			if _, ok := existing[ac.outName]; ok {
-				continue
+		var newAggs []aggSelectCol
+		for _, src := range harvestSources {
+			for _, ac := range harvestAggregates(src.expr) {
+				if _, ok := existing[ac.outName]; ok {
+					continue
+				}
+				existing[ac.outName] = struct{}{}
+				if src.sortOnly {
+					ac.sortOnly = true
+				} else {
+					ac.hidden = true
+				}
+				newAggs = append(newAggs, ac)
 			}
-			newAggs = append(newAggs, ac)
 		}
 		if len(newAggs) > 0 {
 			if len(sq.aggCols) == 0 && len(projCols) > 0 {
@@ -3528,13 +3635,6 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				sq.projAliases = nil
 				sq.projExprs = nil
 				sq.projStarQualifiers = nil
-			}
-			// Mark harvested aggregates hidden so they don't leak into the
-			// projected output — they only need to be visible to HAVING's
-			// rowMap, which contains every aggCols entry regardless of
-			// hidden status.
-			for i := range newAggs {
-				newAggs[i].hidden = true
 			}
 			sq.aggCols = append(sq.aggCols, newAggs...)
 		}

@@ -99,6 +99,28 @@ tests:
       ORDER BY grp
     rows:
       - ['b']
+  # ORDER BY references an aggregate not in the SELECT list. Pre-fix the
+  # extraSortField FD lookup tried `allFields.ByName("SUM(v)")` and errored
+  # 22023 "ORDER BY column 'SUM(v)' not found in table". Now the harvest
+  # adds SUM(v) to aggCols as sortOnly: emitted into the row for the sort
+  # to find via colIdx, then stripped after sort. Output is one column
+  # (grp) sorted DESC by the underlying SUM(v) of each group. 'c' has
+  # all-NULL v → SUM=NULL → NULLs LAST per the DESC default.
+  - query: SELECT grp FROM t GROUP BY grp ORDER BY SUM(v) DESC
+    rows:
+      - ['b']
+      - ['a']
+      - ['c']
+  # Sort on a SELECT-projected aggregate (no harvest needed — the
+  # aggregate is already visible). Pin as a regression guard for
+  # the sortOnly path: hidden-vs-sortOnly classification doesn't
+  # leak into the projected output.
+  - query: |
+      SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY SUM(v) DESC
+    rows:
+      - ['b', 35]
+      - ['a', 30]
+      - ['c', ~]
   # HAVING on a bare COUNT(*) query with no GROUP BY. The COUNT(*)
   # fast path in both aggregation paths used to skip HAVING entirely
   # — `SELECT COUNT(*) FROM t HAVING COUNT(*) > 100` returned the
