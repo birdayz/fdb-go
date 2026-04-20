@@ -23,7 +23,16 @@ go run ./cmd/frl version         # from the root of the repo
 
 ## First use
 
-Create `~/.frl/config.yaml`:
+Scaffold a config file, edit it, select a context:
+
+```sh
+frl config init                    # writes ~/.frl/config.yaml with a template
+$EDITOR ~/.frl/config.yaml         # fill in cluster_file, keyspace_path, metadata
+frl config use-context local       # name the active context
+frl store info                     # sanity check: cluster + keyspace reachable
+```
+
+The scaffold carries both metadata paths commented out:
 
 ```yaml
 current_context: local
@@ -32,8 +41,8 @@ contexts:
     cluster_file: /etc/foundationdb/fdb.cluster
     keyspace_path: /myapp/orders
     metadata:
-      meta_file: /etc/myapp/meta.pb   # Path A — programmatic meta dumped to disk
-      # meta_store_keyspace: /myapp/_meta  # Path B — FDBMetaDataStore
+      meta_file: /etc/myapp/meta.pb         # Path A — meta.pb shipped alongside binaries
+      # meta_store_keyspace: /myapp/_meta   # Path B — FDBMetaDataStore in FDB itself
 ```
 
 See `docs/operator-guide.md` for how to produce `meta.pb` (Go: one-liner
@@ -46,7 +55,7 @@ via `recordlayer.WriteRecordMetaData`; Java: `meta.toProto().writeTo(out)`).
 ```
 frl record get <pk>                          # single record by PK
 frl record scan [--type T] [--limit N]       # newline-delimited JSON envelopes
-frl record count [--type T]                  # via atomic count index
+frl record count [--type T] [-o json]        # via atomic count index
 
 frl index ls [--no-fdb] [-o json]            # name, type, state, record types
 frl index describe <name>                    # full definition from metadata
@@ -67,24 +76,26 @@ frl meta get                                 # RecordMetaData as JSON
 frl meta types ls [-o json]                  # record types + PK fields
 frl meta types describe <name>               # PK, type key, proto msg, indexes
 
-frl meta validate --file <f>                 # standalone .pb validation
-frl meta evolve-check --old <f> --new <f>    # MetaDataEvolutionValidator (CI-friendly)
-frl meta diff <old> <new>                    # human-readable diff
+frl meta validate --file <f> [-o json]       # standalone .pb validation
+frl meta evolve-check --old <f> --new <f> [-o json]  # MetaDataEvolutionValidator (CI-friendly)
+frl meta diff <old> <new> [-o json]          # diff (text: +/-/~, json: sections.added/removed/changed)
 ```
 
 ### Context + navigation + escape
 
 ```
+frl config init [--force]                    # scaffold a starter config.yaml
+frl config path                              # print the effective config path
 frl config use-context <name>
-frl config current-context
+frl config current-context [-o json]
 frl config get-contexts [-o json]
 frl config view [--context <name>]
 frl config schema                            # empty Config as JSON (field discovery)
 
-frl keyspace resolve <path>                  # logical path → FDB byte prefix
-frl tx read-version                          # current GRV (cluster smoke check)
+frl keyspace resolve <path> [-o json]        # logical path → FDB byte prefix
+frl tx read-version [-o json]                # current GRV (cluster smoke check)
 
-frl version                                  # binary + Go toolchain version
+frl version [--short] [-o json]              # binary + Go toolchain version
 ```
 
 ## Flags (current v1 surface)
