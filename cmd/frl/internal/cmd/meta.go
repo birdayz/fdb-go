@@ -48,6 +48,14 @@ func newMetaValidateCmd() *cobra.Command {
 		Example: `  frl meta validate --file ./meta.pb
   # In CI:
   #   frl meta validate --file artifacts/meta.pb || exit 1`,
+		Long: "Parses the given .pb file as a RecordMetaDataProto.MetaData " +
+			"and runs the same structural invariants the record layer " +
+			"enforces at Build() time. No FDB connection needed — intended " +
+			"for CI pipelines that build metadata.pb as a deploy artifact.\n\n" +
+			"Exit 0 on success; any parse / build error exits non-zero with " +
+			"the error on stderr (never `{\"valid\": false}` at exit 0).\n\n" +
+			"--output / -o: 'text' (default, single \"ok:\" line) or 'json' " +
+			"(`{valid: true, file: <path>}`).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
