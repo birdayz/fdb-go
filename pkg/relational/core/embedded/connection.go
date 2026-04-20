@@ -1689,12 +1689,17 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 				var a, b driver.Value
 				if ob.expr != nil && keys != nil {
 					a, b = keys[i][oi], keys[j][oi]
-				} else {
-					idx, ok := colIdx[ob.colName]
-					if !ok {
-						continue
-					}
+				} else if idx, ok := colIdx[ob.colName]; ok {
 					a, b = outRows[i][idx], outRows[j][idx]
+				} else if len(mapRows) == len(outRows) {
+					// ORDER BY on a CTE column not in the projection
+					// (`SELECT grp FROM s ORDER BY total`). Materialised
+					// CTE rows still carry the column in their map; pull
+					// the value directly. mapRows[i] is in lockstep with
+					// outRows[i] only on the non-aggregate CTE path.
+					a, b = mapRows[i][ob.colName], mapRows[j][ob.colName]
+				} else {
+					continue
 				}
 				less, equal := orderByLess(a, b, ob)
 				if !equal {
