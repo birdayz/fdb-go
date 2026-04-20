@@ -4357,6 +4357,22 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		if v, ok := val.(int64); ok {
 			return protoreflect.ValueOfInt64(v), nil
 		}
+		// INSERT ... SELECT with an aggregate (SUM/AVG) produces a float64
+		// value even for integer inputs because the accumulator stores
+		// float64 state. Accept a whole-valued float64 and coerce, matching
+		// Postgres/MySQL semantics where `INSERT INTO t(n) SELECT SUM(v)`
+		// is well-defined. Rejects non-integer floats with a clear error.
+		if v, ok := val.(float64); ok {
+			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
+			}
+			if v < math.MinInt64 || v > math.MaxInt64 {
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"value %g out of range for %s column %q", v, fd.Kind(), fd.Name())
+			}
+			return protoreflect.ValueOfInt64(int64(v)), nil
+		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		if v, ok := val.(int64); ok {
 			if v < 0 || v > math.MaxUint32 {
