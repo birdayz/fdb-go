@@ -8,6 +8,10 @@ See **[docs/operator-guide.md](docs/operator-guide.md)** for the full
 wiring guide (Go + Java apps, both metadata paths). This README is a
 terse command-surface reference.
 
+Want to try it end-to-end against a live cluster in 5 steps? See
+**[demo/README.md](demo/README.md)** — Docker FDB + schema bootstrap +
+1 000-row seed + sample queries, copy-paste.
+
 ## Install
 
 ```sh
