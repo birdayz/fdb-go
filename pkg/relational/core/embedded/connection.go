@@ -910,6 +910,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if ac.groupCol != "" {
 				continue
 			}
+			if ac.outExpr != nil {
+				// Post-aggregation expression — evaluated at emit time
+				// against the rowMap, not during scan accumulation.
+				continue
+			}
 			var colVal driver.Value
 			switch {
 			case ac.aggExpr != nil:
@@ -1051,7 +1056,13 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		gs := groups[key]
 		fullVals := make([]driver.Value, len(sq.aggCols))
 		rowMap := make(map[string]driver.Value, len(sq.aggCols))
+		// Pass 1: populate fullVals + rowMap for all non-outExpr entries.
+		// outExpr entries need rowMap fully filled before they can evaluate
+		// (they may reference any aggregate or group-by value).
 		for i, ac := range sq.aggCols {
+			if ac.outExpr != nil {
+				continue
+			}
 			if ac.groupCol != "" {
 				idx, ok := groupColIdx[ac.groupCol]
 				if ok {
@@ -1081,6 +1092,21 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			rowMap[ac.outName] = fullVals[i]
+		}
+		// Pass 2: evaluate outExpr entries against the now-populated rowMap.
+		// evalExprOnMap resolves AggregateFunctionCall atoms via rowMap lookup
+		// (added alongside this pass) so `SUM(a) + SUM(b)`, `COALESCE(SUM(v), 0)`,
+		// and similar shapes work.
+		for i, ac := range sq.aggCols {
+			if ac.outExpr == nil {
+				continue
+			}
+			v, evalErr := evalExprOnMap(ctx, c, rowMap, ac.outExpr)
+			if evalErr != nil {
+				return nil, nil, evalErr
+			}
+			fullVals[i] = v
+			rowMap[ac.outName] = v
 		}
 		if sq.havingExpr != nil {
 			ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
@@ -1882,6 +1908,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if ac.groupCol != "" {
 						continue // group-by reference, no accumulation
 					}
+					if ac.outExpr != nil {
+						// Post-aggregation expression — evaluated at emit time.
+						continue
+					}
 					// Fetch the argument value.
 					//   - aggExpr != nil: evaluate expression (e.g. SUM(qty*price)).
 					//   - aggArg  != "": read the bare column via field descriptor.
@@ -2010,12 +2040,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cols[out] = sq.aggCols[i].outName
 			}
 
-			// Emit one row per group (with HAVING filter).
+			// Emit one row per group (with HAVING filter). Two passes:
+			// (1) populate fullVals + rowMap for non-outExpr entries;
+			// (2) evaluate outExpr entries against the now-filled rowMap.
 			for _, key := range groupOrder {
 				gs := groups[key]
 				fullVals := make([]driver.Value, len(sq.aggCols))
 				rowMap := make(map[string]driver.Value, len(sq.aggCols))
 				for i, ac := range sq.aggCols {
+					if ac.outExpr != nil {
+						continue
+					}
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
 						if ok {
@@ -2043,6 +2078,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						}
 					}
 					rowMap[ac.outName] = fullVals[i]
+				}
+				for i, ac := range sq.aggCols {
+					if ac.outExpr == nil {
+						continue
+					}
+					v, evalErr := evalExprOnMap(ctx, c, rowMap, ac.outExpr)
+					if evalErr != nil {
+						return nil, evalErr
+					}
+					fullVals[i] = v
+					rowMap[ac.outName] = v
 				}
 				if sq.havingExpr != nil {
 					keep, havErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
@@ -2687,7 +2733,8 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 // aggSelectCol describes one column in a GROUP BY aggregate SELECT list.
 type aggSelectCol struct {
 	outName string // output column name
-	// Either groupCol or aggFunc is set.
+	// Exactly one of groupCol / aggFunc / outExpr is set (hidden entries
+	// always have aggFunc set).
 	groupCol string // plain group-by column reference
 	aggFunc  string // COUNT/SUM/MIN/MAX/AVG
 	aggArg   string // argument column name — set only when arg is a bare column; used for the proto-path FD fast path. Empty for COUNT(*) and for expression args.
@@ -2702,6 +2749,13 @@ type aggSelectCol struct {
 	// `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
 	// (grp) while still running the SUM.
 	hidden bool
+	// outExpr is a post-aggregation expression that references aggregate
+	// outputs and/or group-by columns. Evaluated at emit time against a
+	// rowMap that already contains all aggCols values. Used for SELECT-list
+	// shapes like `SUM(a) + SUM(b)` or `COALESCE(SUM(v), 0)`. When set,
+	// aggFunc / groupCol are empty and the row's value comes from evaluating
+	// outExpr rather than reading an aggregator slot.
+	outExpr antlrgen.IExpressionContext
 }
 
 // checkCountStar returns true if e is a bare COUNT(*) expression.
@@ -2997,6 +3051,72 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			default:
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"unsupported SELECT element type %T", elem)
+			}
+		}
+		// SELECT-list expressions that wrap aggregate function calls (e.g.
+		// `SUM(a) + SUM(b)`, `COALESCE(SUM(v), 0)`, `CASE WHEN COUNT(*)>0
+		// THEN 'yes' ELSE 'no' END`) don't match extractAggFunc at the
+		// top level, so they land in projExprs with projCols[i] holding
+		// the expression text. Promote each such slot to an aggSelectCol
+		// with an outExpr (evaluated post-aggregation against the rowMap),
+		// harvest the referenced aggregates as hidden accumulators, and
+		// drop the slot from projCols. Has to happen before the plain-col
+		// reclassification below so those slots aren't treated as
+		// group-by references.
+		if len(projCols) > 0 {
+			var newProjCols []string
+			var newProjAliases []string
+			var newProjExprs []antlrgen.IExpressionContext
+			var newStarQualifiers []string
+			var promoted []aggSelectCol
+			existing := make(map[string]struct{}, len(aggCols))
+			for _, ac := range aggCols {
+				existing[ac.outName] = struct{}{}
+			}
+			for i, col := range projCols {
+				if i >= len(projExprs) || projExprs[i] == nil {
+					newProjCols = append(newProjCols, col)
+					newProjAliases = append(newProjAliases, projAliases[i])
+					newProjExprs = append(newProjExprs, projExprs[i])
+					if i < len(projStarQualifiers) {
+						newStarQualifiers = append(newStarQualifiers, projStarQualifiers[i])
+					} else {
+						newStarQualifiers = append(newStarQualifiers, "")
+					}
+					continue
+				}
+				harvested := harvestAggregates(projExprs[i])
+				if len(harvested) == 0 {
+					newProjCols = append(newProjCols, col)
+					newProjAliases = append(newProjAliases, projAliases[i])
+					newProjExprs = append(newProjExprs, projExprs[i])
+					if i < len(projStarQualifiers) {
+						newStarQualifiers = append(newStarQualifiers, projStarQualifiers[i])
+					} else {
+						newStarQualifiers = append(newStarQualifiers, "")
+					}
+					continue
+				}
+				for _, h := range harvested {
+					if _, seen := existing[h.outName]; seen {
+						continue
+					}
+					existing[h.outName] = struct{}{}
+					h.hidden = true
+					promoted = append(promoted, h)
+				}
+				outName := projAliases[i]
+				if outName == "" {
+					outName = col
+				}
+				promoted = append(promoted, aggSelectCol{outName: outName, outExpr: projExprs[i]})
+			}
+			if len(promoted) > 0 {
+				projCols = newProjCols
+				projAliases = newProjAliases
+				projExprs = newProjExprs
+				projStarQualifiers = newStarQualifiers
+				aggCols = append(aggCols, promoted...)
 			}
 		}
 		// If we found aggregate functions mixed with plain columns, the plain cols
@@ -6636,6 +6756,23 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		}
 		return applyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
+		// Aggregate function calls inside a row-map expression evaluate
+		// by looking up the reconstructed aggregate name in the row map.
+		// This is how post-aggregation SELECT expressions like
+		// `SUM(a) + SUM(b)` or `COALESCE(SUM(v), 0)` get their values:
+		// the emit-time rowMap is populated with {"SUM(a)": n, "SUM(b)": m}
+		// exactly as evalHavingTri's resolver expects.
+		if agg, ok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext); ok {
+			if awf, awfok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext); awfok {
+				if _, _, _, outName, _, ok := extractAwfFields(awf); ok {
+					if v, present := row[outName]; present {
+						return v, nil
+					}
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"aggregate %q not available in this context", outName)
+				}
+			}
+		}
 		return evalScalarFunctionCallOnMap(ctx, conn, row, a.FunctionCall())
 	case *antlrgen.RecordConstructorExpressionAtomContext:
 		// Single-field parenthesised group — unwrap and recurse. For
