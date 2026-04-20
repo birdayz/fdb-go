@@ -69,6 +69,45 @@ func TestRenderKV_LabelsKnownSubspaces(t *testing.T) {
 	}
 }
 
+// TestToInt64_Coercions covers every numeric path toInt64 accepts.
+// The FDB tuple layer can surface small ints in any of these concrete
+// types depending on API version, so all four must round-trip for
+// the subspace-label lookup in renderKV to be stable.
+func TestToInt64_Coercions(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   any
+		want int64
+		ok   bool
+	}{
+		{"int64", int64(42), 42, true},
+		{"int", int(42), 42, true},
+		{"int32", int32(42), 42, true},
+		{"uint64 within int64 range", uint64(42), 42, true},
+		// Negative int64 — subspace IDs are ≥ 0 but the coercion itself
+		// must still succeed; filtering happens above.
+		{"negative int64", int64(-7), -7, true},
+		// Types we explicitly don't support.
+		{"string", "42", 0, false},
+		{"float64", float64(42), 0, false},
+		{"nil", nil, 0, false},
+		{"bool", true, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := toInt64(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("toInt64(%v) ok = %v, want %v", tc.in, ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Errorf("toInt64(%v) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSubspaceIDByLabel_RoundTrip(t *testing.T) {
 	t.Parallel()
 	// Every label in subspaceLabel must round-trip back to the same ID.
