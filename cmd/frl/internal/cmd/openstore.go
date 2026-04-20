@@ -8,9 +8,37 @@ import (
 	"strings"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
 	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
+
+// resolveContextAndOverride is the shared prelude for record/index
+// commands: load the config, pick the context (by --context or current),
+// and build the meta-file override Source if --meta-file was supplied.
+// Returns the context, an optional meta.Source override, or an error.
+func resolveContextAndOverride(contextName, metaFile string) (*configv1.Context, meta.Source, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+	cfgCtx, err := config.ResolveContext(cfg, contextName)
+	if err != nil {
+		if errors.Is(err, config.ErrNoContext) && metaFile == "" {
+			path, _ := config.Path()
+			return nil, nil, fmt.Errorf("%w (config: %s)", err, path)
+		}
+		if metaFile == "" {
+			return nil, nil, err
+		}
+		cfgCtx = &configv1.Context{Name: "(cli-flag)"}
+	}
+	var override meta.Source
+	if metaFile != "" {
+		override = &meta.FileSource{Path: metaFile}
+	}
+	return cfgCtx, override, nil
+}
 
 // lookupRecordType resolves name against md, returning the RecordType on
 // hit and a "not found — available: A, B, C" error on miss. Shared by
