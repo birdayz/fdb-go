@@ -657,18 +657,20 @@ func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaD
 }
 
 // resolveSelectListPosition maps a SQL-92 positional reference (e.g.
-// `ORDER BY 2`) to the matching output column name from the current
-// SELECT list. Accepts a positive integer literal (DecimalConstant
-// wrapped in PredicatedExpression→ConstantExpressionAtom).
+// `ORDER BY 2` or `GROUP BY 1`) to the matching output column name from
+// the current SELECT list. `clause` is the SQL keyword used for the
+// out-of-range error message ("ORDER BY" or "GROUP BY"). Accepts a
+// positive integer literal (DecimalConstant wrapped in
+// PredicatedExpression→ConstantExpressionAtom).
 //
 // Returns:
 //   - (name, true, nil): positional reference resolved to an output column.
 //   - ("", false, nil): the expression isn't a positional reference at all
-//     (caller falls through to column / expression ORDER BY paths).
+//     (caller falls through to column / expression paths).
 //   - ("", false, err): expression IS a positive integer literal but N is
 //     out of range. Postgres / MySQL error on this instead of treating the
-//     integer as a constant sort key, so we do the same.
-func resolveSelectListPosition(expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool, error) {
+//     integer as a constant sort / group key, so we do the same.
+func resolveSelectListPosition(clause string, expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
 		return "", false, nil
@@ -691,7 +693,7 @@ func resolveSelectListPosition(expr antlrgen.IExpressionContext, projCols, projA
 	}
 	if int(n) > listLen {
 		return "", false, api.NewErrorf(api.ErrCodeInvalidParameter,
-			"ORDER BY position %d is out of range: SELECT list has %d entries", n, listLen)
+			"%s position %d is out of range: SELECT list has %d entries", clause, n, listLen)
 	}
 	switch {
 	case len(projCols) > 0:
@@ -3576,7 +3578,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, isPos, posErr := resolveSelectListPosition(obExpr.Expression(), projCols, projAliases, aggCols)
+			posName, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projCols, projAliases, aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}
@@ -3657,7 +3659,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	groupByCtx := simpleTable.GroupByClause()
 	if groupByCtx != nil {
 		for _, item := range groupByCtx.AllGroupByItem() {
-			posName, isPos, posErr := resolveSelectListPosition(item.Expression(), projCols, projAliases, sq.aggCols)
+			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
 			if posErr != nil {
 				return nil, posErr
 			}

@@ -35,9 +35,10 @@ tests:
   - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 2
     rows:
       - [-4.0, -3.0]
-  # ROUND half-away-from-zero on positives, half-toward-zero-from-below
-  # on negatives (Go's math.Round / banker's variant — pin the current
-  # behaviour so the next refactor doesn't silently flip it).
+  # ROUND ties away from zero (Go's math.Round): 1.5 → 2, 2.5 → 3,
+  # -1.5 → -2, -2.5 → -3. NOT banker's rounding (round-half-to-even)
+  # and NOT half-toward-zero — pin the current behaviour so the next
+  # refactor doesn't silently flip it.
   - query: SELECT ROUND(v) FROM t WHERE id = 1
     rows:
       - [3.0]

@@ -137,3 +137,16 @@ tests:
       - [2, 1]
       - [3, 1]
       - [4, 1]
+  # GROUP BY alias combined with HAVING on an aggregate over the same
+  # grouping. Round-15 reviewer follow-up on dd654102: verifies that the
+  # post-GROUP-BY redirect pass rewrites aggCols[*].groupCol to the GROUP
+  # BY expression text *before* HAVING is evaluated, so the HAVING
+  # predicate sees the group-by key under its expression name not its
+  # alias. Only bucket 0 (50, 25) has COUNT>=2; others are singletons.
+  - query: |
+      SELECT amt / 100 AS bucket, COUNT(*) FROM sales
+      GROUP BY bucket
+      HAVING COUNT(*) >= 2
+      ORDER BY bucket
+    rows:
+      - [0, 2]

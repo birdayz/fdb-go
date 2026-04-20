@@ -179,3 +179,15 @@ tests:
       - [2]
   - query: SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 99
     rows: []
+  # HAVING + ORDER BY-on-expression-over-same-aggregate. HAVING SUM(v)>10
+  # harvests SUM(v) as hidden; ORDER BY `SUM(v)*2 DESC` adds an outExpr
+  # sortOnly entry for the wrapping expression; dedup upgrades the inner
+  # SUM(v) hidden → sortOnly. HAVING keeps a (SUM=30), b (SUM=35); sort
+  # DESC on SUM*2 → b (70) then a (60). Neither aggregate column appears
+  # in the output. Round-15 reviewer follow-up on the interaction between
+  # 3670cfac (hidden→sortOnly upgrade) and b290bfa6 (wrapping-expr sort).
+  - query: |
+      SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 10 ORDER BY SUM(v) * 2 DESC
+    rows:
+      - ['b']
+      - ['a']
