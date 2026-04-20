@@ -40,5 +40,27 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newKeyspaceCmd())
 	root.AddCommand(newTxCmd())
 
+	// Wire shell-completion helpers across the whole tree in one pass.
+	// Every subcommand carrying --context gets its completion function
+	// pointed at config.Load(); every --output gets the {text,json[,yaml]}
+	// hint.  Doing this centrally keeps new commands completion-aware
+	// for free — they just need to declare the flag.
+	registerCompletions(root)
+
 	return root
+}
+
+// registerCompletions walks the command tree depth-first and wires up
+// context-name / output-format completions for any command that has
+// the matching flag. Commands declaring these flags don't need to
+// touch cobra's completion API themselves.
+func registerCompletions(c *cobra.Command) {
+	registerContextCompletion(c)
+	// `meta get -o` accepts {json, yaml}, not {text, json}. It's the only
+	// command with that shape; a simple name check is cheaper than a
+	// separate registration hook.
+	registerFormatCompletion(c, c.Use == "get" && c.Parent() != nil && c.Parent().Use == "meta")
+	for _, child := range c.Commands() {
+		registerCompletions(child)
+	}
 }

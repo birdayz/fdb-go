@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cmd",
     srcs = [
+        "completion.go",
         "config.go",
         "index.go",
         "index_describe.go",
@@ -41,6 +42,7 @@ go_library(
 go_test(
     name = "cmd_test",
     srcs = [
+        "completion_test.go",
         "config_test.go",
         "index_describe_test.go",
         "index_test.go",

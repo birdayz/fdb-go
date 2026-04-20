@@ -107,6 +107,27 @@ frl version [--short] [-o json]              # binary + Go toolchain version
 -o|--output text|json   # store info, index ls, meta types ls, config get-contexts
 ```
 
+## Shell completions
+
+cobra generates completion scripts on demand:
+
+```sh
+# bash (system-wide):
+frl completion bash | sudo tee /etc/bash_completion.d/frl
+
+# bash (per-user, lazy-loaded):
+frl completion bash > ~/.local/share/bash-completion/completions/frl
+
+# zsh:
+frl completion zsh > "${fpath[1]}/_frl"
+
+# fish:
+frl completion fish > ~/.config/fish/completions/frl.fish
+```
+
+Tab-complete covers the noun-verb tree, flag names, and context names
+(read from `~/.frl/config.yaml`).
+
 ## Testing
 
 - `go test ./internal/...` — unit tests (no FDB needed)
