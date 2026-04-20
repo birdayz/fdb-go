@@ -14,9 +14,11 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	relapi "github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
+	relkeyspace "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
 )
 
 // newMetaCatalogCmd is the `meta catalog` noun — a read-only view of
@@ -310,7 +312,14 @@ func runCatalogQuery[T any](
 	}
 	rec := recordlayer.NewFDBDatabase(db)
 
-	cat, err := catalog.OpenRecordLayerStoreCatalog()
+	// The sqldriver writes its catalog at
+	// keyspace.New(subspace.Sub()).CatalogSubspace() =
+	// ("__SYS", "__SYS", "CATALOG") — three strings, not the two-string
+	// DefaultCatalogSubspace() catalog.OpenRecordLayerStoreCatalog uses.
+	// Read from the same place the driver writes so `meta catalog` sees
+	// what `frl sql` just created.
+	ks := relkeyspace.New(subspace.Sub())
+	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
 	if err != nil {
 		return zero, fmt.Errorf("open relational catalog: %w", err)
 	}

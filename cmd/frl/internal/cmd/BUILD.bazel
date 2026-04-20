@@ -37,6 +37,7 @@ go_library(
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "@build_buf_go_protoyaml//:protoyaml",
         "@com_github_chzyer_readline//:readline",
