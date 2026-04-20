@@ -46,7 +46,11 @@ var ErrMissingSource = errors.New("context has no metadata source; add metadata.
 // out of FDB-store support. Callers that want to surface a friendlier
 // "this command doesn't support fdb_store sources" message detect
 // this with errors.Is().
-var ErrFDBStoreNotAvailable = errors.New("fdb_store metadata source is not supported by this command — configure `meta_file` in the context or pass --meta-file")
+//
+// The message starts with "this command" (rather than "fdb_store …")
+// so fang's auto-capitalized error banner reads as a sentence —
+// "fdb_store" gets up-cased to "Fdb_store" which looks like a typo.
+var ErrFDBStoreNotAvailable = errors.New("this command does not support fdb_store metadata sources — configure `meta_file` in the context or pass --meta-file")
 
 // FromContext builds a Source from a Context's metadata field. Returns
 // ErrMissingSource if neither meta_file nor meta_store_keyspace is set
