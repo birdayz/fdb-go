@@ -160,7 +160,7 @@ func TestWriteStoreInfo_RendersFDBPrefix(t *testing.T) {
 	if err := writeStoreInfo(&buf, ctx, info, prefix); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
-	if !strings.Contains(buf.String(), "FDB prefix (hex):  0261620") {
+	if !strings.Contains(buf.String(), "FDB prefix (hex):  02616200") {
 		t.Errorf("expected hex-rendered prefix in output:\n%s", buf.String())
 	}
 }
