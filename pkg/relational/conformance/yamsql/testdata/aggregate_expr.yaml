@@ -1,0 +1,38 @@
+# aggregate_expr.yaml
+#
+# Aggregate functions only accept bare column references today —
+# `SUM(qty * price)` errors because `extractAggFunc` resolves the
+# argument via `selectExprToColumnName` which requires a single
+# column. Java and Postgres both accept arbitrary expressions
+# inside aggregates, so this is a known Go-side limitation worth
+# pinning while it exists. Track as a follow-up in TODO.md.
+name: aggregate_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, qty BIGINT, price BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 2, 100), (2, 3, 50), (3, 5, 20)
+tests:
+  # SUM over plain column — the supported shape, baseline.
+  - query: SELECT SUM(qty) FROM t
+    rows:
+      - [10]
+
+  # MIN/MAX over plain column.
+  - query: SELECT MIN(price), MAX(price) FROM t
+    rows:
+      - [20, 100]
+
+  # AVG over plain column — 10/3 of (100, 50, 20) = 56.67.
+  - query: SELECT AVG(price) FROM t
+    rows:
+      - [56.666666666666664]
+
+  # Aggregate over arithmetic expression — NOT supported.
+  # SQLSTATE 42703 (undefined_column) because the parser treats the
+  # expression as a single column name and then fails to resolve it.
+  - query: SELECT SUM(qty * price) FROM t
+    error_code: "42703"
+
+  # Same limitation for AVG / MIN / MAX over expressions.
+  - query: SELECT AVG(price / 2) FROM t
+    error_code: "42703"

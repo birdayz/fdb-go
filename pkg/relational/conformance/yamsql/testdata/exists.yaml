@@ -1,0 +1,67 @@
+# exists.yaml
+#
+# EXISTS / NOT EXISTS subquery predicates. Only uncorrelated
+# subqueries are supported (the inner query cannot reference outer-
+# row columns). Both forms short-circuit on the first inner row —
+# the subquery is materialised once per outer row and tested for
+# emptiness.
+#
+# Supported in both proto-backed WHERE (single-source FROM) and
+# map-backed WHERE (JOINs / CTEs / HAVING).
+name: exists
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, cust_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE flags (k BIGINT NOT NULL, PRIMARY KEY (k))
+setup:
+  - INSERT INTO orders VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Flags table is empty → EXISTS yields FALSE, WHERE filters everything.
+  - query: SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id
+    rows: []
+
+  # Flags table is empty → NOT EXISTS yields TRUE, every row passes.
+  - query: SELECT id FROM orders WHERE NOT EXISTS (SELECT k FROM flags) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # Populate flags and re-check — EXISTS flips to TRUE.
+  - query: INSERT INTO flags VALUES (1)
+    rows: []
+  - query: SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: SELECT id FROM orders WHERE NOT EXISTS (SELECT k FROM flags)
+    rows: []
+
+  # EXISTS with a self-referential subquery (uncorrelated — the
+  # inner FROM is the same table but doesn't reference the outer
+  # row). Detects "any rows in orders" → TRUE.
+  - query: SELECT id FROM orders WHERE EXISTS (SELECT id FROM orders WHERE id > 100) ORDER BY id
+    rows: []
+
+  # HAVING + EXISTS: aggregate, then filter the group by EXISTS.
+  # The inner subquery returns rows iff flags is non-empty (we
+  # just inserted one). HAVING keeps the group.
+  - query: |
+      SELECT COUNT(*) FROM orders
+      HAVING EXISTS (SELECT k FROM flags)
+    rows:
+      - [3]
+
+  # JOIN path (map-backed evaluator) + EXISTS. Exercises the
+  # evalPredicateOnMapExpr → ExistsExpressionAtomContext branch.
+  # Cross-join orders + flags (1 row each), keep only where EXISTS
+  # (SELECT k FROM flags) is TRUE — which it is, so all cross-
+  # product rows survive.
+  - query: |
+      SELECT o.id FROM orders AS o, flags AS f
+      WHERE EXISTS (SELECT k FROM flags)
+      ORDER BY o.id
+    rows:
+      - [1]
+      - [2]
+      - [3]

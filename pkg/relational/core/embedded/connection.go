@@ -297,9 +297,18 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	if err != nil {
 		return nil, err
 	}
-	_, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
+	rightCols, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
 	if err != nil {
 		return nil, err
+	}
+	// SQL standard: UNION sides must have matching column counts; names
+	// are positional (left's names become the result schema). Reject
+	// mismatched arity with SQLSTATE 42601 (syntax_error) — consistent
+	// with the grammar-level rejection for incoherent SELECT lists.
+	if len(leftCols) != len(rightCols) {
+		return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+			"UNION column count mismatch: left has %d columns, right has %d",
+			len(leftCols), len(rightCols))
 	}
 
 	combined := append(leftRows, rightRows...) //nolint:gocritic
@@ -378,7 +387,11 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 	upper := strings.ToUpper(sq.tableName)
 	if strings.HasPrefix(upper, "INFORMATION_SCHEMA.") {
 		sysTable := upper[len("INFORMATION_SCHEMA."):]
-		return c.execSystemTable(ctx, sysTable, sq.whereExpr)
+		sysRows, sysErr := c.execSystemTable(ctx, sysTable, sq.whereExpr)
+		if sysErr != nil {
+			return nil, sysErr
+		}
+		return projectSystemRows(sysRows, sq)
 	}
 
 	if c.schema == "" {
@@ -486,6 +499,116 @@ func (c *EmbeddedConnection) scanTableToMaps(
 		rows = append(rows, m)
 	}
 	return rows, nil
+}
+
+// resolveQualifierColumns resolves a `<qualifier>.*` SELECT list against
+// the FROM-clause sources. Returns the ordered column list from the matching
+// source and the effective alias (useful for row-key lookups of the form
+// "alias.col"). Returns ErrCodeUndefinedTable when the qualifier does not
+// match any source.
+//
+// Matching rules (first match wins):
+//  1. tableAlias (or tableName when no explicit alias was given).
+//  2. Any joins[i].alias (or joins[i].tableName when no alias).
+//
+// Columns come from: the CTE definition when the source names a CTE; the
+// record type descriptor otherwise.
+func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaData, sq *selectQuery, qualifier string) ([]string, string, error) {
+	type source struct {
+		tableName string
+		alias     string // falls back to tableName when not explicitly aliased
+	}
+	sources := make([]source, 0, 1+len(sq.joins))
+	leftAlias := sq.tableAlias
+	if leftAlias == "" {
+		leftAlias = sq.tableName
+	}
+	sources = append(sources, source{tableName: sq.tableName, alias: leftAlias})
+	for _, jc := range sq.joins {
+		a := jc.alias
+		if a == "" {
+			a = jc.tableName
+		}
+		sources = append(sources, source{tableName: jc.tableName, alias: a})
+	}
+
+	for _, s := range sources {
+		if !strings.EqualFold(s.alias, qualifier) {
+			continue
+		}
+		if c.ctes != nil {
+			if cte, ok := c.ctes[strings.ToUpper(s.tableName)]; ok {
+				cols := make([]string, len(cte.cols))
+				copy(cols, cte.cols)
+				return cols, s.alias, nil
+			}
+		}
+		rt := md.GetRecordType(s.tableName)
+		if rt == nil {
+			return nil, "", api.NewErrorf(api.ErrCodeUndefinedTable,
+				"qualifier %q resolves to table %q which has no record type", qualifier, s.tableName)
+		}
+		fields := rt.Descriptor.Fields()
+		cols := make([]string, 0, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols = append(cols, string(fields.Get(i).Name()))
+		}
+		return cols, s.alias, nil
+	}
+
+	return nil, "", api.NewErrorf(api.ErrCodeUndefinedTable,
+		"SELECT %s.*: qualifier does not match any FROM-clause source", qualifier)
+}
+
+// collectLeftJoinKeys returns the set of row-map keys that describe the
+// left-hand side of a RIGHT JOIN — unqualified column names and
+// alias-qualified variants for every source that has already been
+// merged into the nested-loop `joined` accumulator. Used for NULL-
+// padding unmatched right rows; deriving the keys from metadata
+// (record type or CTE) instead of sampling a runtime row means the
+// NULL-padding works even when the left side is entirely empty.
+//
+// `sources` must list the sources in the order they were merged in,
+// with the same tableName / alias that scanTableToMaps was given (so
+// the alias-qualified keys match the ones stored on real rows).
+func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData, sources []struct{ tableName, alias string }) []string {
+	seen := make(map[string]struct{})
+	var keys []string
+	addKey := func(k string) {
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+
+	for _, s := range sources {
+		alias := s.alias
+		if alias == "" {
+			alias = s.tableName
+		}
+		var cols []string
+		if c.ctes != nil {
+			if cte, ok := c.ctes[strings.ToUpper(s.tableName)]; ok {
+				cols = cte.cols
+			}
+		}
+		if cols == nil {
+			rt := md.GetRecordType(s.tableName)
+			if rt != nil {
+				fields := rt.Descriptor.Fields()
+				cols = make([]string, 0, fields.Len())
+				for i := 0; i < fields.Len(); i++ {
+					cols = append(cols, string(fields.Get(i).Name()))
+				}
+			}
+		}
+		for _, col := range cols {
+			addKey(col)
+			addKey(alias + "." + col)
+		}
+	}
+	return keys
 }
 
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
@@ -751,6 +874,14 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			return nil, leftErr
 		}
 
+		// Track the sources (tableName + alias) merged into `joined` so
+		// far. RIGHT JOIN NULL-padding uses this to derive left-side
+		// column keys from metadata rather than sampling a runtime row
+		// — necessary when the left table is empty (no runtime row
+		// exists, so the qualified `a.id` key wouldn't be known without
+		// metadata).
+		leftSources := []struct{ tableName, alias string }{{sq.tableName, sq.tableAlias}}
+
 		// Scan each joined table; apply nested-loop join.
 		joined := leftRows
 		for _, jc := range sq.joins {
@@ -759,9 +890,16 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				return nil, rightErr
 			}
 			var next []map[string]driver.Value
+			// For RIGHT JOIN, record during the matching pass which right
+			// rows had at least one match so the unmatched-right step
+			// doesn't have to re-evaluate the ON predicate a second time.
+			var matchedRight []bool
+			if jc.joinType == "RIGHT" {
+				matchedRight = make([]bool, len(rightRows))
+			}
 			for _, left := range joined {
 				matched := false
-				for _, right := range rightRows {
+				for ri, right := range rightRows {
 					// Merge rows into combined map.
 					combined := make(map[string]driver.Value, len(left)+len(right))
 					for k, v := range left {
@@ -781,6 +919,9 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 					}
 					matched = true
+					if matchedRight != nil {
+						matchedRight[ri] = true
+					}
 					next = append(next, combined)
 				}
 				// LEFT JOIN: emit left row with NULLs if no right match.
@@ -795,57 +936,15 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 			// RIGHT JOIN: also emit right rows that had no left match (null left side).
 			if jc.joinType == "RIGHT" {
-				matchedRight := make([]bool, len(rightRows))
-				for _, left := range joined {
-					for ri, right := range rightRows {
-						combined := make(map[string]driver.Value, len(left)+len(right))
-						for k, v := range left {
-							combined[k] = v
-						}
-						for k, v := range right {
-							combined[k] = v
-						}
-						if jc.onExpr != nil {
-							ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
-							if onErr != nil {
-								return nil, onErr
-							}
-							if ok {
-								matchedRight[ri] = true
-							}
-						} else {
-							matchedRight[ri] = true
-						}
-					}
-				}
-				// Sample a left row to learn its column keys so we can
-				// NULL them explicitly — otherwise `SELECT a.id` on an
-				// unmatched right row falls through to the unqualified
-				// 'id' key which is populated from the right side,
-				// returning b.id instead of NULL.
-				//
-				// Prefer leftRows (pure left-side keys). For a
-				// multi-join chain `a RIGHT JOIN b RIGHT JOIN c`, by
-				// the time we reach the second RIGHT JOIN, `leftRows`
-				// still refers to a's rows, but `joined` carries the
-				// merged a+b side — so falling back to joined when
-				// leftRows is empty also covers that case. When both
-				// are empty (a is an empty table), the fix is
-				// degenerate and the edge case is tracked in TODO.md.
-				var leftKeys []string
-				var sample map[string]driver.Value
-				switch {
-				case len(leftRows) > 0:
-					sample = leftRows[0]
-				case len(joined) > 0:
-					sample = joined[0]
-				}
-				if sample != nil {
-					leftKeys = make([]string, 0, len(sample))
-					for k := range sample {
-						leftKeys = append(leftKeys, k)
-					}
-				}
+				// Derive left-side column keys from metadata (record
+				// type descriptor, or CTE column list) for each source
+				// that has been merged into `joined` so far. Using
+				// metadata rather than sampling a runtime row means the
+				// NULL-padding works even when the left side is empty
+				// — an unmatched right row still has `a.id` explicitly
+				// set to NULL, so `SELECT a.id` doesn't fall through
+				// to the unqualified `id` populated from the right.
+				leftKeys := c.collectLeftJoinKeys(md, leftSources)
 				for ri, right := range rightRows {
 					if !matchedRight[ri] {
 						combined := make(map[string]driver.Value, len(right)+len(leftKeys))
@@ -862,6 +961,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 			}
 			joined = next
+			leftSources = append(leftSources, struct{ tableName, alias string }{jc.tableName, jc.alias})
 		}
 
 		// Apply WHERE filter using map-based evaluation.
@@ -894,27 +994,38 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		} else {
 			// Determine output columns.
 			// For SELECT *, collect all unique unqualified column names in order.
+			// For SELECT <qualifier>.*, restrict to the aliased source's columns.
+			var qualifierKey string // non-empty when qualified-star; row lookups use "qualifier.col"
 			if sq.projCols == nil {
-				seen := make(map[string]bool)
-				// Order: left table columns first, then join table columns.
-				leftRt := md.GetRecordType(sq.tableName)
-				if leftRt != nil {
-					for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
-						name := string(leftRt.Descriptor.Fields().Get(i).Name())
-						if !seen[name] {
-							cols = append(cols, name)
-							seen[name] = true
-						}
+				if sq.projQualifier != "" {
+					qCols, qAlias, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier)
+					if qErr != nil {
+						return nil, qErr
 					}
-				}
-				for _, jc := range sq.joins {
-					jRt := md.GetRecordType(jc.tableName)
-					if jRt != nil {
-						for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
-							name := string(jRt.Descriptor.Fields().Get(i).Name())
+					cols = qCols
+					qualifierKey = qAlias
+				} else {
+					seen := make(map[string]bool)
+					// Order: left table columns first, then join table columns.
+					leftRt := md.GetRecordType(sq.tableName)
+					if leftRt != nil {
+						for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
+							name := string(leftRt.Descriptor.Fields().Get(i).Name())
 							if !seen[name] {
 								cols = append(cols, name)
 								seen[name] = true
+							}
+						}
+					}
+					for _, jc := range sq.joins {
+						jRt := md.GetRecordType(jc.tableName)
+						if jRt != nil {
+							for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
+								name := string(jRt.Descriptor.Fields().Get(i).Name())
+								if !seen[name] {
+									cols = append(cols, name)
+									seen[name] = true
+								}
 							}
 						}
 					}
@@ -934,9 +1045,23 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			for _, row := range filtered {
 				var vals []driver.Value
 				if sq.projCols == nil {
-					// SELECT * — use cols order.
+					// SELECT * or SELECT <qualifier>.* — use cols order.
+					// When qualifierKey is set, look up the source-qualified
+					// key first so two sources with overlapping names don't
+					// collide into whichever wrote the unqualified key last.
+					// Invariant: scanTableToMaps always writes both
+					// `alias.col` and `col`, so the qualified lookup
+					// succeeds on real rows — the unqualified fallback is
+					// a safety net for any future map producer that
+					// doesn't populate the qualified form (none today).
 					vals = make([]driver.Value, len(cols))
 					for i, col := range cols {
+						if qualifierKey != "" {
+							if v, ok := row[qualifierKey+"."+col]; ok {
+								vals[i] = v
+								continue
+							}
+						}
 						vals[i] = row[col]
 					}
 				} else {
@@ -955,6 +1080,24 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 				data = append(data, vals)
 			}
+		}
+
+		// Apply DISTINCT deduplication before sort — the JOIN path
+		// was historically missing this, so `SELECT DISTINCT a.cust_id
+		// FROM a, b WHERE a.cust_id = b.cust_id` silently returned the
+		// cross-join's duplicate rows. Same rowKey encoding as the
+		// non-JOIN path so distinct cross-checking matches.
+		if sq.distinct && !sq.countStar && !isAggregate {
+			seen := make(map[string]struct{}, len(data))
+			deduped := data[:0]
+			for _, row := range data {
+				key := rowKey(row)
+				if _, exists := seen[key]; !exists {
+					seen[key] = struct{}{}
+					deduped = append(deduped, row)
+				}
+			}
+			data = deduped
 		}
 
 		// ORDER BY. For aggregate results, `filtered` and `data` diverge — the
@@ -977,13 +1120,14 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 			var keys [][]driver.Value
 			if hasExpr {
-				// Aggregation shrinks rows, breaking the filtered[i]↔data[i]
-				// lockstep needed to evaluate ORDER BY expressions. Plain
-				// ORDER BY col / ORDER BY SUM(col) still works via the
-				// colName path (columnNameFromExpr recognises aggregates).
+				// Aggregation or SELECT DISTINCT shrinks rows, breaking the
+				// filtered[i]↔data[i] lockstep needed to evaluate ORDER BY
+				// expressions. Plain ORDER BY col / ORDER BY SUM(col) still
+				// works via the colName path (columnNameFromExpr recognises
+				// aggregates) — only expression-based ORDER BY is gated.
 				if len(filtered) != len(data) {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"ORDER BY on an arithmetic / function expression is not supported when the query also aggregates; use a column or a plain aggregate (e.g. ORDER BY SUM(col))")
+						"ORDER BY on an arithmetic / function expression is not supported when the query also aggregates or uses SELECT DISTINCT; use a column reference or a plain aggregate (e.g. ORDER BY SUM(col))")
 				}
 				keys = make([][]driver.Value, len(data))
 				for i := range data {
@@ -1055,6 +1199,19 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	alias := sq.tableAlias
 	if alias == "" {
 		alias = sq.tableName
+	}
+
+	// Qualified-star (SELECT <q>.*) must match this CTE's alias or the CTE
+	// name itself. Any other qualifier is undefined in a single-source FROM.
+	// Inline (rather than calling resolveQualifierColumns) because this
+	// path has no RecordMetaData in scope — a CTE-backed query never
+	// consults the schema. The rule is trivially the same either way.
+	if sq.projQualifier != "" &&
+		!strings.EqualFold(sq.projQualifier, alias) &&
+		!strings.EqualFold(sq.projQualifier, sq.tableName) {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+			"SELECT %s.*: qualifier does not match FROM-clause source %q",
+			sq.projQualifier, alias)
 	}
 
 	// Build map rows.
@@ -1231,6 +1388,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
 		}
 		md := rlTmpl.Underlying()
+
+		// Qualified-star (SELECT <q>.*) on a single-source FROM must match
+		// this source. Delegate to resolveQualifierColumns so the alias-
+		// matching rule stays in one place; we ignore the returned column
+		// list because for a single-source query `a.*` projects the same
+		// columns as `*`.
+		if sq.projQualifier != "" {
+			if _, _, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier); qErr != nil {
+				return nil, qErr
+			}
+		}
 
 		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
@@ -1999,14 +2167,19 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 type selectQuery struct {
 	tableName   string
 	tableAlias  string   // alias or tableName if no alias given
-	projCols    []string // nil = SELECT *; ignored when countStar or aggCols non-empty
+	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
 	projAliases []string // parallel to projCols; empty string = no alias (use column name)
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs []antlrgen.IExpressionContext
-	countStar bool // true when SELECT list is exactly COUNT(*)
-	distinct  bool // true when SELECT DISTINCT
-	whereExpr antlrgen.IWhereExprContext
+	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
+	// Projection restricts to columns from the source whose alias (or
+	// table name when no alias) equals projQualifier. Empty = SELECT *
+	// (all sources) or explicit column list.
+	projQualifier string
+	countStar     bool // true when SELECT list is exactly COUNT(*)
+	distinct      bool // true when SELECT DISTINCT
+	whereExpr     antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
@@ -2276,11 +2449,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
-	var projCols []string                       // nil = SELECT *
+	var projCols []string                       // nil = SELECT * or SELECT <qualifier>.*
 	var projAliases []string                    // parallel to projCols
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
 	var countStar bool
 	var aggCols []aggSelectCol
+	var projQualifier string // non-empty when SELECT list is <qualifier>.*
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -2292,22 +2466,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectQualifierStarElementContext:
-				// SELECT <qualifier>.* — for a single-source FROM this is
-				// semantically SELECT * (treated as such here). For
-				// multi-source FROM (JOINs, comma-joins) the qualifier
-				// should restrict to the aliased source's columns, which
-				// requires plumbing a per-source column list through the
-				// projector — not done yet (tracked in TODO.md as a
-				// single-table approximation). Until then we accept the
-				// syntax and project all columns, which is correct when
-				// FROM has one source and a close-enough approximation
-				// for tests of that shape.
+				// SELECT <qualifier>.* — restrict output columns to the
+				// aliased source. Resolved at execution time against
+				// tableAlias / joins[i].alias (parser is schema-free).
 				if len(elems) > 1 {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"cannot mix qualifier.* with named columns in SELECT list")
 				}
-				// projCols stays nil — SELECT *.
-				_ = e
+				if e.Uid() == nil {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"SELECT <qualifier>.* missing qualifier")
+				}
+				projQualifier = stripIdentifierQuotes(e.Uid().GetText())
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
@@ -2371,6 +2541,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
 		// SELECT without FROM: evaluate expressions as constants (single-row result).
+		if projQualifier != "" {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+				"qualifier %q in SELECT list but query has no FROM clause", projQualifier)
+		}
 		return &selectQuery{
 			projCols:    projCols,
 			projAliases: projAliases,
@@ -2435,17 +2609,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
 		return &selectQuery{
-			tableName:    alias,
-			tableAlias:   alias,
-			projCols:     projCols,
-			projAliases:  projAliases,
-			projExprs:    projExprs,
-			countStar:    countStar,
-			aggCols:      aggCols,
-			distinct:     simpleTable.DISTINCT() != nil,
-			whereExpr:    fromClause.WhereExpr(),
-			limit:        -1,
-			derivedQuery: subItem.Query(),
+			tableName:     alias,
+			tableAlias:    alias,
+			projCols:      projCols,
+			projAliases:   projAliases,
+			projExprs:     projExprs,
+			projQualifier: projQualifier,
+			countStar:     countStar,
+			aggCols:       aggCols,
+			distinct:      simpleTable.DISTINCT() != nil,
+			whereExpr:     fromClause.WhereExpr(),
+			limit:         -1,
+			derivedQuery:  subItem.Query(),
 		}, nil
 	}
 
@@ -2499,17 +2674,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	joins = append(joins, extraCrossJoins...)
 
 	sq := &selectQuery{
-		tableName:   strings.Join(parts, "."),
-		tableAlias:  leftAlias,
-		joins:       joins,
-		projCols:    projCols,
-		projAliases: projAliases,
-		projExprs:   projExprs,
-		countStar:   countStar,
-		aggCols:     aggCols,
-		distinct:    simpleTable.DISTINCT() != nil,
-		whereExpr:   fromClause.WhereExpr(),
-		limit:       -1,
+		tableName:     strings.Join(parts, "."),
+		tableAlias:    leftAlias,
+		joins:         joins,
+		projCols:      projCols,
+		projAliases:   projAliases,
+		projExprs:     projExprs,
+		projQualifier: projQualifier,
+		countStar:     countStar,
+		aggCols:       aggCols,
+		distinct:      simpleTable.DISTINCT() != nil,
+		whereExpr:     fromClause.WhereExpr(),
+		limit:         -1,
 	}
 
 	// Parse ORDER BY clause.
@@ -2797,6 +2973,108 @@ type staticRows struct {
 	cols    []string
 	rows    [][]driver.Value
 	current int
+}
+
+// projectSystemRows applies the SELECT-list projection, ORDER BY, and
+// LIMIT/OFFSET of `sq` to the rows returned by an INFORMATION_SCHEMA
+// handler. System-table handlers always emit every column; without a
+// projection step `SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"`
+// returns all 10 TABLES columns. Column name matching is case-
+// insensitive — CREATE TABLE preserves identifier case, but an
+// INFORMATION_SCHEMA filter typically uses the canonical upper-cased
+// column names regardless.
+//
+// Computed expressions (SELECT UPPER(TABLE_NAME) ...) are not
+// supported — system-table SELECT lists are limited to plain column
+// references and SELECT *. Projection aliases override the column
+// name in the returned row set.
+func projectSystemRows(in driver.Rows, sq *selectQuery) (driver.Rows, error) {
+	sr, ok := in.(*staticRows)
+	if !ok {
+		// Handler returned a non-staticRows implementation; pass through.
+		return in, nil
+	}
+	rows := sr
+	if sq.projCols != nil {
+		idxByCol := make(map[string]int, len(rows.cols))
+		for i, c := range rows.cols {
+			idxByCol[strings.ToUpper(c)] = i
+		}
+		projIdx := make([]int, len(sq.projCols))
+		projNames := make([]string, len(sq.projCols))
+		for i, col := range sq.projCols {
+			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"computed expressions in INFORMATION_SCHEMA SELECT are not supported (%s)", col)
+			}
+			idx, found := idxByCol[strings.ToUpper(col)]
+			if !found {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in INFORMATION_SCHEMA.%s", col, sq.tableName)
+			}
+			projIdx[i] = idx
+			name := col
+			if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+				name = sq.projAliases[i]
+			}
+			projNames[i] = name
+		}
+		projected := make([][]driver.Value, len(rows.rows))
+		for i, row := range rows.rows {
+			out := make([]driver.Value, len(projIdx))
+			for j, idx := range projIdx {
+				out[j] = row[idx]
+			}
+			projected[i] = out
+		}
+		rows = &staticRows{cols: projNames, rows: projected}
+	}
+
+	// ORDER BY — column-name based. Expression-based ORDER BY
+	// (`ORDER BY LENGTH(TABLE_NAME)`) is silently ignored on system
+	// tables — `ob.expr != nil` falls through the `continue` below.
+	// Consistent with the "plain column references only" policy the
+	// SELECT list also enforces; users can alias the expression in
+	// a derived table if they need it. `ob.colName` is matched case-
+	// insensitively against the projected column names so aliased
+	// columns in the SELECT list sort under their alias.
+	if len(sq.orderBy) > 0 {
+		colIdx := make(map[string]int, len(rows.cols))
+		for i, c := range rows.cols {
+			colIdx[strings.ToUpper(c)] = i
+		}
+		sort.SliceStable(rows.rows, func(ii, jj int) bool {
+			for _, ob := range sq.orderBy {
+				if ob.expr != nil {
+					continue // not supported here
+				}
+				idx, found := colIdx[strings.ToUpper(ob.colName)]
+				if !found {
+					continue
+				}
+				a, b := rows.rows[ii][idx], rows.rows[jj][idx]
+				less, equal := orderByLess(a, b, ob)
+				if !equal {
+					return less
+				}
+			}
+			return false
+		})
+	}
+
+	// OFFSET then LIMIT.
+	if sq.offset > 0 {
+		if sq.offset >= int64(len(rows.rows)) {
+			rows.rows = nil
+		} else {
+			rows.rows = rows.rows[sq.offset:]
+		}
+	}
+	if sq.limit >= 0 && int64(len(rows.rows)) > sq.limit {
+		rows.rows = rows.rows[:sq.limit]
+	}
+
+	return rows, nil
 }
 
 func (r *staticRows) Columns() []string { return r.cols }
@@ -3829,7 +4107,12 @@ func evalScalarFunctionCallCore(
 				return nil, err
 			}
 			if v == nil {
-				continue // NULL args skipped per SQL standard
+				// NULL-skip behaviour, matching MySQL and Postgres's
+				// CONCAT(). SQL standard / Oracle / SQL Server
+				// propagate NULL through concatenation instead —
+				// pinned as-is by trim_concat.yaml until a Java
+				// reference settles the question.
+				continue
 			}
 			parts = append(parts, fmt.Sprintf("%v", v))
 		}
