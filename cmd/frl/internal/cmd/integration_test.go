@@ -322,6 +322,45 @@ func TestIntegration_RecordScan(t *testing.T) {
 	}
 }
 
+// TestIntegration_RecordScanReverse verifies --reverse walks the tail first.
+// The fixture seeds Order records with OrderId 1, 2, 3 — forward scan with
+// limit 1 must return order_id=1; reverse with limit 1 must return
+// order_id=3. This is the "tail-style inspection" promise in --help.
+func TestIntegration_RecordScanReverse(t *testing.T) {
+	bindConfig(t)
+
+	forward, err := runCmd(t, "record", "scan", "--type", "Order", "--limit", "1")
+	if err != nil {
+		t.Fatalf("forward scan: %v\nout:\n%s", err, forward)
+	}
+	reverse, err := runCmd(t, "record", "scan", "--type", "Order", "--reverse", "--limit", "1")
+	if err != nil {
+		t.Fatalf("reverse scan: %v\nout:\n%s", err, reverse)
+	}
+
+	// Happy-path assertions — each scan returns exactly one record whose
+	// order_id matches its end of the [1..3] range.
+	if strings.Count(forward, "\n") != 1 {
+		t.Errorf("forward --limit 1 returned %d lines, want 1:\n%s",
+			strings.Count(forward, "\n"), forward)
+	}
+	if strings.Count(reverse, "\n") != 1 {
+		t.Errorf("reverse --limit 1 returned %d lines, want 1:\n%s",
+			strings.Count(reverse, "\n"), reverse)
+	}
+	if !strings.Contains(forward, `"order_id":"1"`) {
+		t.Errorf("forward --limit 1 did not land on order_id=1:\n%s", forward)
+	}
+	if !strings.Contains(reverse, `"order_id":"3"`) {
+		t.Errorf("reverse --limit 1 did not land on order_id=3:\n%s", reverse)
+	}
+	// Guard against a regression where forward/reverse produce identical
+	// output (i.e. --reverse silently ignored — easy mistake).
+	if forward == reverse {
+		t.Errorf("forward and reverse returned identical output — --reverse ignored?\n%s", forward)
+	}
+}
+
 func TestIntegration_RecordGet(t *testing.T) {
 	bindConfig(t)
 	out, err := runCmd(t, "record", "get", "1")

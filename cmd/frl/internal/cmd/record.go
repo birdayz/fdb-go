@@ -84,16 +84,20 @@ func newRecordScanCmd() *cobra.Command {
 		metaFile    string
 		recordType  string
 		limit       int
+		reverse     bool
 	)
 	c := &cobra.Command{
 		Use:   "scan",
 		Short: "Scan records from the current context's store",
 		Example: `  frl record scan --limit 10
   frl record scan --type Order --limit 100 | jq -s .
+  frl record scan --reverse --limit 5         # last 5 by PK order
   frl record scan --type Order | wc -l`,
-		Long: "Forward scan over the whole store (or a single --type). " +
-			"Output is one JSON-encoded record per line (newline-delimited " +
-			"JSON) so it can be piped into `jq -s .` or tools like `mlr`.",
+		Long: "Scan over the whole store (or a single --type) in primary-key " +
+			"order. Use --reverse to walk the tail first — useful for tail-style " +
+			"inspection of the most recently-keyed records. Output is one " +
+			"JSON-encoded record per line (newline-delimited JSON) so it can " +
+			"be piped into `jq -s .` or tools like `mlr`.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
@@ -102,7 +106,7 @@ func newRecordScanCmd() *cobra.Command {
 			}
 			return withStoreE(cmd.Context(), cfgCtx, override,
 				func(store *recordlayer.FDBRecordStore) error {
-					return scanAndRender(cmd.Context(), cmd.OutOrStdout(), store, recordType, limit)
+					return scanAndRender(cmd.Context(), cmd.OutOrStdout(), store, recordType, limit, reverse)
 				})
 		},
 	}
@@ -110,6 +114,7 @@ func newRecordScanCmd() *cobra.Command {
 	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
 	c.Flags().StringVar(&recordType, "type", "", "filter by record type name; empty means all types")
 	c.Flags().IntVar(&limit, "limit", defaultScanLimit, "max records to return; 0 means unlimited")
+	c.Flags().BoolVar(&reverse, "reverse", false, "scan in reverse primary-key order")
 	return c
 }
 
@@ -162,7 +167,11 @@ func resolveContextAndOverride(contextName, metaFile string) (*configv1.Context,
 // If a PK ever contains a byte that needs \uXXXX encoding, the envelope
 // must still parse as JSON — otherwise `jq` breaks mid-pipeline.
 func writeRecordAsJSON(out io.Writer, rec *recordlayer.FDBStoredRecord[proto.Message]) error {
-	payload, err := protojson.MarshalOptions{}.Marshal(rec.Record)
+	// UseProtoNames: operators wrote their .proto files with snake_case —
+	// render field names the same way they declared them, so grep / jq on
+	// scan output matches their schema. protojson defaults to lowerCamel
+	// which forces a mental translation.
+	payload, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(rec.Record)
 	if err != nil {
 		return fmt.Errorf("marshal record: %w", err)
 	}
@@ -194,8 +203,12 @@ func scanAndRender(
 	store *recordlayer.FDBRecordStore,
 	recordType string,
 	limit int,
+	reverse bool,
 ) error {
-	scanProps := recordlayer.ScanProperties{}
+	scanProps := recordlayer.ForwardScan()
+	if reverse {
+		scanProps = recordlayer.ReverseScan()
+	}
 	if limit > 0 {
 		scanProps.ExecuteProperties.ReturnedRowLimit = limit
 	}

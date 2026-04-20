@@ -237,10 +237,15 @@ func newConfigSchemaCmd() *cobra.Command {
 		Short: "Print an empty Config message as JSON (schema probe)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// UseProtoNames so the JSON key names match the snake_case keys
+			// the operator writes in config.yaml (protoyaml also uses proto
+			// names) — otherwise `schema` shows `currentContext` but the
+			// file wants `current_context`, and that mismatch is a footgun.
 			out, err := protojson.MarshalOptions{
 				Multiline:       true,
 				Indent:          "  ",
 				EmitUnpopulated: true,
+				UseProtoNames:   true,
 			}.Marshal(&configv1.Config{})
 			if err != nil {
 				return err
