@@ -76,3 +76,26 @@ tests:
   - query: SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) = 30
     rows:
       - ['a', 30]
+  # HAVING-only aggregate — the HAVING predicate references SUM(v) but
+  # the SELECT list has only the grouping column. Pre-swingshift-38 the
+  # parser only harvested aggregates from the SELECT list, so aggCols
+  # stayed empty, the aggregate pipeline never ran, and GROUP BY was
+  # silently ignored (every row fell through). Now extractFromSimpleTable
+  # walks the HAVING expression via harvestAggregates, synthesizes
+  # aggSelectCol entries with .hidden=true for each referenced aggregate,
+  # and reclassifies the projCols as group-by references. Hidden entries
+  # participate in accumulation and HAVING evaluation but are stripped
+  # from the projected output so the query still returns one column.
+  - query: SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0 ORDER BY grp
+    rows:
+      - ['a']
+      - ['b']
+  # HAVING-only with arithmetic on multiple aggregates (none projected).
+  # Group 'a': COUNT(*)=2 + SUM(v)=30 = 32; 'b': 2+35=37; 'c': 1+NULL=NULL.
+  # Only 'b' passes > 34.
+  - query: |
+      SELECT grp FROM t GROUP BY grp
+      HAVING COUNT(*) + SUM(v) > 34
+      ORDER BY grp
+    rows:
+      - ['b']

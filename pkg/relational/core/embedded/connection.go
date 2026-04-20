@@ -26,6 +26,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/antlr4-go/antlr/v4"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
@@ -973,24 +974,34 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	for i, col := range sq.groupBy {
 		groupColIdx[col] = i
 	}
-	cols = make([]string, len(sq.aggCols))
+	// visibleIdx lists the aggCols positions that should appear in the
+	// projected output. Hidden entries (aggregates harvested from HAVING
+	// that weren't in the SELECT list) contribute to accumulation and
+	// HAVING evaluation but drop out of the emitted row.
+	visibleIdx := make([]int, 0, len(sq.aggCols))
 	for i, ac := range sq.aggCols {
-		cols[i] = ac.outName
+		if !ac.hidden {
+			visibleIdx = append(visibleIdx, i)
+		}
+	}
+	cols = make([]string, len(visibleIdx))
+	for out, i := range visibleIdx {
+		cols[out] = sq.aggCols[i].outName
 	}
 	for _, key := range groupOrder {
 		gs := groups[key]
-		rowVals := make([]driver.Value, len(sq.aggCols))
+		fullVals := make([]driver.Value, len(sq.aggCols))
 		rowMap := make(map[string]driver.Value, len(sq.aggCols))
 		for i, ac := range sq.aggCols {
 			if ac.groupCol != "" {
 				idx, ok := groupColIdx[ac.groupCol]
 				if ok {
-					rowVals[i] = gs.groupVals[idx]
+					fullVals[i] = gs.groupVals[idx]
 				}
 			} else {
 				switch ac.aggFunc {
 				case "COUNT":
-					rowVals[i] = gs.counts[i]
+					fullVals[i] = gs.counts[i]
 				case "SUM":
 					// SUM of empty-or-all-NULL input is NULL per SQL standard,
 					// not 0. counts[i]>0 means at least one non-null observed.
@@ -998,19 +1009,19 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					// value in the DISTINCT branch, so this path is correct
 					// for both the DISTINCT and non-DISTINCT cases.
 					if gs.counts[i] > 0 {
-						rowVals[i] = gs.sums[i]
+						fullVals[i] = gs.sums[i]
 					}
 				case "MIN":
-					rowVals[i] = gs.mins[i]
+					fullVals[i] = gs.mins[i]
 				case "MAX":
-					rowVals[i] = gs.maxes[i]
+					fullVals[i] = gs.maxes[i]
 				case "AVG":
 					if gs.avgsN[i] > 0 {
-						rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+						fullVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
 					}
 				}
 			}
-			rowMap[ac.outName] = rowVals[i]
+			rowMap[ac.outName] = fullVals[i]
 		}
 		if sq.havingExpr != nil {
 			ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
@@ -1020,6 +1031,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if !ok {
 				continue
 			}
+		}
+		rowVals := make([]driver.Value, len(visibleIdx))
+		for out, i := range visibleIdx {
+			rowVals[out] = fullVals[i]
 		}
 		data = append(data, rowVals)
 	}
@@ -1885,49 +1900,56 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				groupOrder = append(groupOrder, "")
 			}
 
-			// Build output cols.
+			// Build output cols — skip hidden aggregates (harvested from
+			// HAVING, should not appear in projected output).
 			groupColIdx := map[string]int{}
 			for i, col := range sq.groupBy {
 				groupColIdx[col] = i
 			}
-			cols = make([]string, len(sq.aggCols))
+			visibleIdx := make([]int, 0, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
-				cols[i] = ac.outName
+				if !ac.hidden {
+					visibleIdx = append(visibleIdx, i)
+				}
+			}
+			cols = make([]string, len(visibleIdx))
+			for out, i := range visibleIdx {
+				cols[out] = sq.aggCols[i].outName
 			}
 
 			// Emit one row per group (with HAVING filter).
 			for _, key := range groupOrder {
 				gs := groups[key]
-				rowVals := make([]driver.Value, len(sq.aggCols))
+				fullVals := make([]driver.Value, len(sq.aggCols))
 				rowMap := make(map[string]driver.Value, len(sq.aggCols))
 				for i, ac := range sq.aggCols {
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
 						if ok {
-							rowVals[i] = gs.groupVals[idx]
+							fullVals[i] = gs.groupVals[idx]
 						}
 					} else {
 						switch ac.aggFunc {
 						case "COUNT":
-							rowVals[i] = gs.counts[i]
+							fullVals[i] = gs.counts[i]
 						case "SUM":
 							// SUM of empty-or-all-NULL group is NULL, not 0.
 							// DISTINCT path accumulates on first-seen so this
 							// is correct for SUM(DISTINCT col) too.
 							if gs.counts[i] > 0 {
-								rowVals[i] = gs.sums[i]
+								fullVals[i] = gs.sums[i]
 							}
 						case "MIN":
-							rowVals[i] = gs.mins[i]
+							fullVals[i] = gs.mins[i]
 						case "MAX":
-							rowVals[i] = gs.maxes[i]
+							fullVals[i] = gs.maxes[i]
 						case "AVG":
 							if gs.avgsN[i] > 0 {
-								rowVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
+								fullVals[i] = gs.avgs[i] / float64(gs.avgsN[i])
 							}
 						}
 					}
-					rowMap[ac.outName] = rowVals[i]
+					rowMap[ac.outName] = fullVals[i]
 				}
 				if sq.havingExpr != nil {
 					keep, havErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
@@ -1937,6 +1959,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if !keep {
 						continue
 					}
+				}
+				rowVals := make([]driver.Value, len(visibleIdx))
+				for out, i := range visibleIdx {
+					rowVals[out] = fullVals[i]
 				}
 				data = append(data, rowVals)
 			}
@@ -2524,6 +2550,12 @@ type aggSelectCol struct {
 	// nil for bare-column args and for COUNT(*).
 	aggExpr     antlrgen.IExpressionContext
 	aggDistinct bool // true when COUNT(DISTINCT col)
+	// hidden aggregates contribute to group accumulation and HAVING evaluation
+	// but are excluded from the projected output. Used for aggregates harvested
+	// from HAVING that aren't also in the SELECT list, so
+	// `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0` returns one column
+	// (grp) while still running the SUM.
+	hidden bool
 }
 
 // checkCountStar returns true if e is a bare COUNT(*) expression.
@@ -3106,7 +3138,166 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: "COUNT(*)", aggFunc: "COUNT"})
 	}
 
+	// Harvest aggregates referenced in HAVING that aren't already in
+	// aggCols. Otherwise `SELECT grp FROM t GROUP BY grp HAVING SUM(v) > 0`
+	// has aggCols == nil → executor never runs the aggregate pipeline →
+	// GROUP BY is silently ignored and every input row falls through.
+	// The HAVING resolver already looks up aggregates by their reconstructed
+	// output name ("COUNT(*)", "SUM(v)"), so matching aggCols entries make
+	// the evaluation round-trip. If projCols still holds plain columns at
+	// this point, reclassify them as group-by references in aggCols (mirror
+	// of the SELECT-list-aggregate path's existing reclassification).
+	if sq.havingExpr != nil {
+		harvested := harvestAggregates(sq.havingExpr)
+		existing := make(map[string]struct{}, len(sq.aggCols))
+		for _, ac := range sq.aggCols {
+			existing[ac.outName] = struct{}{}
+		}
+		newAggs := harvested[:0]
+		for _, ac := range harvested {
+			if _, ok := existing[ac.outName]; ok {
+				continue
+			}
+			newAggs = append(newAggs, ac)
+		}
+		if len(newAggs) > 0 {
+			if len(sq.aggCols) == 0 && len(projCols) > 0 {
+				// No SELECT-list aggregates yet; demote the plain projCols
+				// to group-by references so the aggregate pipeline knows how
+				// to surface them in each output row.
+				prepended := make([]aggSelectCol, 0, len(projCols)+len(sq.aggCols))
+				for i, c := range projCols {
+					out := projAliases[i]
+					if out == "" {
+						out = c
+					}
+					prepended = append(prepended, aggSelectCol{outName: out, groupCol: c})
+				}
+				sq.aggCols = append(prepended, sq.aggCols...)
+				sq.projCols = nil
+				sq.projAliases = nil
+				sq.projExprs = nil
+				sq.projStarQualifiers = nil
+			}
+			// Mark harvested aggregates hidden so they don't leak into the
+			// projected output — they only need to be visible to HAVING's
+			// rowMap, which contains every aggCols entry regardless of
+			// hidden status.
+			for i := range newAggs {
+				newAggs[i].hidden = true
+			}
+			sq.aggCols = append(sq.aggCols, newAggs...)
+		}
+	}
+
 	return sq, nil
+}
+
+// harvestAggregates walks an expression tree looking for aggregate function
+// calls (COUNT/SUM/MIN/MAX/AVG). Returns a synthesized aggSelectCol per
+// distinct aggregate found, with outName matching the HAVING resolver's
+// reconstructed lookup name ("COUNT(*)", "SUM(v)", "AVG(price)", etc.).
+// Used to back HAVING-only aggregates so the aggregate pipeline runs even
+// when the SELECT list contains only plain columns.
+func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
+	if expr == nil {
+		return nil
+	}
+	var out []aggSelectCol
+	seen := make(map[string]struct{})
+	visit := func(antlr.Tree) {}
+	visit = func(n antlr.Tree) {
+		if n == nil {
+			return
+		}
+		if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok {
+			ac, ok := aggColFromAwf(awf)
+			if ok {
+				if _, dup := seen[ac.outName]; !dup {
+					seen[ac.outName] = struct{}{}
+					out = append(out, ac)
+				}
+			}
+			// Do not recurse into the aggregate's argument — nested
+			// aggregates aren't valid SQL and the outer evaluator
+			// will reject them with a clearer error anyway.
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return out
+}
+
+// aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
+// context. Output name matches the HAVING resolver's lookup name and
+// extractAggFunc's default alias ("COUNT(*)", "SUM(v)"). Returns false for
+// unknown aggregate shapes.
+func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol, bool) {
+	isDistinct := awf.DISTINCT() != nil
+	var argCol string
+	var argExpr antlrgen.IExpressionContext
+	resolve := func(fa antlrgen.IFunctionArgContext) {
+		if fa == nil {
+			return
+		}
+		e := fa.Expression()
+		if pred, ok := e.(*antlrgen.PredicatedExpressionContext); ok {
+			if col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+				argCol = fullIdToName(col.FullColumnName().FullId())
+				return
+			}
+		}
+		argExpr = e
+	}
+	var funcName string
+	switch {
+	case awf.COUNT() != nil && awf.STAR() != nil:
+		funcName = "COUNT"
+	case awf.COUNT() != nil:
+		funcName = "COUNT"
+		if awf.FunctionArg() != nil {
+			resolve(awf.FunctionArg())
+		} else if awf.FunctionArgs() != nil && len(awf.FunctionArgs().AllFunctionArg()) > 0 {
+			resolve(awf.FunctionArgs().AllFunctionArg()[0])
+		}
+	case awf.SUM() != nil:
+		funcName = "SUM"
+		resolve(awf.FunctionArg())
+	case awf.MIN() != nil:
+		funcName = "MIN"
+		resolve(awf.FunctionArg())
+	case awf.MAX() != nil:
+		funcName = "MAX"
+		resolve(awf.FunctionArg())
+	case awf.AVG() != nil:
+		funcName = "AVG"
+		resolve(awf.FunctionArg())
+	default:
+		return aggSelectCol{}, false
+	}
+	display := argCol
+	if display == "" && argExpr != nil {
+		display = argExpr.GetText()
+	}
+	var outName string
+	switch {
+	case display == "":
+		outName = funcName + "(*)"
+	case isDistinct:
+		outName = funcName + "(DISTINCT " + display + ")"
+	default:
+		outName = funcName + "(" + display + ")"
+	}
+	return aggSelectCol{
+		outName:     outName,
+		aggFunc:     funcName,
+		aggArg:      argCol,
+		aggExpr:     argExpr,
+		aggDistinct: isDistinct,
+	}, true
 }
 
 // extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from
