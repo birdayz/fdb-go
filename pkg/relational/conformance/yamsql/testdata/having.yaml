@@ -40,3 +40,12 @@ tests:
     rows:
       - ['a', 30]
       - ['b', 35]
+  # ORDER BY the aggregate result — we need the aggregate projection
+  # available in the sort key. Previously covered implicitly; explicit
+  # pin ensures the column-index lookup works when the sort key is
+  # the aggregate output column name.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY SUM(v)
+    rows:
+      - ['c', ~]
+      - ['a', 30]
+      - ['b', 35]
