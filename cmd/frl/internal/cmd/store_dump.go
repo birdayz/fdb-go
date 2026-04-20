@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -33,23 +35,29 @@ var subspaceLabel = map[int64]string{
 func newStoreDumpCmd() *cobra.Command {
 	var (
 		contextName string
+		subspaceSel string
 		limit       int
 	)
 	c := &cobra.Command{
 		Use:   "dump",
 		Short: "Dump raw FDB bytes under the store, tuple-decoded + labeled",
 		Example: `  frl store dump --limit 50
+  frl store dump --subspace index --limit 0    # just index entries
   frl store dump | grep '^index '
-  frl store dump --limit 0 | awk '{print $1}' | sort -u   # which subspaces are populated?`,
+  frl store dump --limit 0 | awk '{print $1}' | sort -u   # populated subspaces`,
 		Long: "Forensic view of a record store: scans the store's keyspace " +
 			"range and prints one line per key, labeled with the subspace " +
 			"name (store-info / record / index / …) and tuple-decoded " +
 			"suffix. Unlike `fdbcli getrange`, keys are decoded into their " +
 			"logical tuple structure so you can see which record, which " +
 			"index, or which header field a byte belongs to.\n\n" +
+			"--subspace: narrow the scan to a single subspace (e.g. record, " +
+			"index, record-version). Scans only that FDB range rather than " +
+			"the whole store, so it's cheap to use on large stores.\n\n" +
 			"Read-only. No metadata required — works on any store at the " +
 			"configured keyspace path. --limit defaults to 100; 0 = unlimited.",
-		Args: cobra.NoArgs,
+		ValidArgsFunction: cobra.NoFileCompletions,
+		Args:              cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -74,20 +82,63 @@ func newStoreDumpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runStoreDump(cmd.OutOrStdout(), db, ss, limit)
+			scanSS := ss
+			if subspaceSel != "" {
+				id, ok := subspaceIDByLabel(subspaceSel)
+				if !ok {
+					return fmt.Errorf("unknown --subspace %q: want one of %s",
+						subspaceSel, strings.Join(knownSubspaceLabels(), ", "))
+				}
+				scanSS = ss.Sub(id)
+			}
+			return runStoreDump(cmd.OutOrStdout(), db, ss, scanSS, limit)
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&subspaceSel, "subspace", "",
+		"limit dump to one subspace (record / index / record-version / …)")
 	c.Flags().IntVar(&limit, "limit", defaultScanLimit, "max keys to dump; 0 means unlimited")
+	_ = c.RegisterFlagCompletionFunc("subspace",
+		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return knownSubspaceLabels(), cobra.ShellCompDirectiveNoFileComp
+		})
 	return c
 }
 
-// runStoreDump opens a read-only snapshot range read over the store's
-// subspace and renders one human-friendly line per key-value pair.
-// Uses snapshot reads so we don't create conflict ranges during
-// operator inspection — matches fdbcli's default behavior.
-func runStoreDump(out io.Writer, db fdb.Database, ss subspace.Subspace, limit int) error {
-	begin, end := ss.FDBRangeKeys()
+// subspaceIDByLabel reverses the subspaceLabel map. Returns (id, true)
+// when the label is known. Called only from --subspace flag parsing, so
+// the linear scan is fine — map size is fixed and tiny.
+func subspaceIDByLabel(label string) (int64, bool) {
+	for id, name := range subspaceLabel {
+		if name == label {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// knownSubspaceLabels returns every label in deterministic order for
+// error messages and shell completion. Sorted so `frl store dump --help`
+// and tab-completion produce stable output across invocations.
+func knownSubspaceLabels() []string {
+	labels := make([]string, 0, len(subspaceLabel))
+	for _, name := range subspaceLabel {
+		labels = append(labels, name)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// runStoreDump opens a read-only snapshot range read over scanSS (a subset
+// of store ss when --subspace is used) and renders one human-friendly line
+// per key-value pair. renderKV decodes keys relative to `ss` (the full
+// store prefix) so subspace labels render correctly regardless of whether
+// the caller narrowed the scan.
+//
+// Uses snapshot reads so we don't create conflict ranges during operator
+// inspection — matches fdbcli's default behavior.
+func runStoreDump(out io.Writer, db fdb.Database, ss, scanSS subspace.Subspace, limit int) error {
+	begin, end := scanSS.FDBRangeKeys()
 	ropts := fdb.RangeOptions{Mode: fdb.StreamingModeIterator}
 	if limit > 0 {
 		ropts.Limit = limit

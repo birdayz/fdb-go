@@ -69,6 +69,55 @@ func TestRenderKV_LabelsKnownSubspaces(t *testing.T) {
 	}
 }
 
+func TestSubspaceIDByLabel_RoundTrip(t *testing.T) {
+	t.Parallel()
+	// Every label in subspaceLabel must round-trip back to the same ID.
+	// The --subspace flag relies on this, so a typo in either direction
+	// silently breaks the filter.
+	for id, label := range subspaceLabel {
+		got, ok := subspaceIDByLabel(label)
+		if !ok {
+			t.Errorf("subspaceIDByLabel(%q) = _, false; label not found", label)
+			continue
+		}
+		if got != id {
+			t.Errorf("subspaceIDByLabel(%q) = %d; want %d", label, got, id)
+		}
+	}
+}
+
+func TestSubspaceIDByLabel_Unknown(t *testing.T) {
+	t.Parallel()
+	if _, ok := subspaceIDByLabel("not-a-real-subspace"); ok {
+		t.Error("subspaceIDByLabel returned true for unknown label")
+	}
+	// Empty string should also be rejected (the flag handler pre-filters
+	// empties, but be defensive in the helper itself).
+	if _, ok := subspaceIDByLabel(""); ok {
+		t.Error("subspaceIDByLabel returned true for empty label")
+	}
+}
+
+func TestKnownSubspaceLabels_Stable(t *testing.T) {
+	t.Parallel()
+	// The error message + shell completion both rely on this list being
+	// deterministic across invocations. Call it twice and compare.
+	a := knownSubspaceLabels()
+	b := knownSubspaceLabels()
+	if len(a) != len(b) {
+		t.Fatalf("lengths differ: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Errorf("call[%d] = %q vs %q — not deterministic", i, a[i], b[i])
+		}
+	}
+	if len(a) != len(subspaceLabel) {
+		t.Errorf("got %d labels; want %d (every subspaceLabel entry)",
+			len(a), len(subspaceLabel))
+	}
+}
+
 func TestRenderKV_UnparseableKey(t *testing.T) {
 	t.Parallel()
 	ss := subspace.Sub("myapp")
