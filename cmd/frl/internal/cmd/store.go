@@ -131,8 +131,11 @@ const fdbAPIVersion = 730
 // version is idempotently set on every call — the pure-Go client accepts
 // re-setting to the same version.
 func openDatabase(clusterFile string) (fdb.Database, error) {
+	// Sentence-leading "FDB API" capitalises naturally under fang's
+	// banner, unlike "fdb.APIVersion(…)" which would render as
+	// "Fdb.APIVersion …" (ugly).
 	if err := fdb.APIVersion(fdbAPIVersion); err != nil {
-		return fdb.Database{}, fmt.Errorf("fdb.APIVersion(%d): %w", fdbAPIVersion, err)
+		return fdb.Database{}, fmt.Errorf("FDB API version %d: %w", fdbAPIVersion, err)
 	}
 	if clusterFile == "" {
 		return fdb.OpenDefault()

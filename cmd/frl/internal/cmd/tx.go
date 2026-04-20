@@ -64,7 +64,7 @@ func newTxReadVersionCmd() *cobra.Command {
 				return rtx.Transaction().GetReadVersion().Get()
 			})
 			if err != nil {
-				return fmt.Errorf("GetReadVersion: %w", err)
+				return fmt.Errorf("read global version: %w", err)
 			}
 			v, _ := result.(int64)
 			if outputFmt == "json" {
