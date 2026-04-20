@@ -1,0 +1,34 @@
+# trim_concat.yaml
+#
+# String functions: TRIM / LTRIM / RTRIM / CONCAT / REPLACE.
+name: trim_concat
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, '  hello  '), (2, 'abc'), (3, null)
+tests:
+  - query: SELECT TRIM(s) FROM t WHERE id = 1
+    rows:
+      - ['hello']
+  - query: SELECT LTRIM(s) FROM t WHERE id = 1
+    rows:
+      - ['hello  ']
+  - query: SELECT RTRIM(s) FROM t WHERE id = 1
+    rows:
+      - ['  hello']
+  # NULL propagates through all three.
+  - query: SELECT TRIM(s) FROM t WHERE id = 3
+    rows:
+      - [~]
+  # CONCAT of string literals.
+  - query: SELECT CONCAT('a', 'b', 'c') FROM t WHERE id = 1
+    rows:
+      - ['abc']
+  # CONCAT with column.
+  - query: SELECT CONCAT('>> ', s, ' <<') FROM t WHERE id = 2
+    rows:
+      - ['>> abc <<']
+  # REPLACE: replace substring.
+  - query: SELECT REPLACE(s, 'b', 'X') FROM t WHERE id = 2
+    rows:
+      - ['aXc']
