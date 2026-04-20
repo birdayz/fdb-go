@@ -213,6 +213,43 @@ func TestWriteStoreInfo_OmitsZeroIncarnation(t *testing.T) {
 	}
 }
 
+// TestWriteStoreInfo_LegacyUnsplitSuffix: legacy stores with
+// omit_unsplit_record_suffix=true can't enable split-long-records —
+// operators debugging "why is my large record failing to save" need
+// to see this flag. Shown with the constraint explanation baked in.
+func TestWriteStoreInfo_LegacyUnsplitSuffix(t *testing.T) {
+	t.Parallel()
+	ctx := &configv1.Context{Name: "legacy", KeyspacePath: "/x"}
+	info := &gen.DataStoreInfo{OmitUnsplitRecordSuffix: proto_bool(true)}
+
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Unsplit suffix:") {
+		t.Errorf("expected Unsplit suffix line when omit_unsplit_record_suffix=true:\n%s", out)
+	}
+	if !strings.Contains(out, "legacy store") {
+		t.Errorf("expected 'legacy store' hint in the unsplit line:\n%s", out)
+	}
+}
+
+// TestWriteStoreInfo_ModernNoUnsplitLine — fresh stores (the default,
+// where the flag is unset / false) should NOT get the legacy line.
+func TestWriteStoreInfo_ModernNoUnsplitLine(t *testing.T) {
+	t.Parallel()
+	ctx := &configv1.Context{Name: "modern", KeyspacePath: "/x"}
+	info := &gen.DataStoreInfo{}
+	var buf bytes.Buffer
+	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+		t.Fatalf("writeStoreInfo: %v", err)
+	}
+	if strings.Contains(buf.String(), "Unsplit suffix") {
+		t.Errorf("Unsplit suffix line should be omitted on modern stores:\n%s", buf.String())
+	}
+}
+
 func TestWriteStoreInfo_OmitsZeroTimestamp(t *testing.T) {
 	t.Parallel()
 	info := &gen.DataStoreInfo{} // LastUpdateTime unset → 0

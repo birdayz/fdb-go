@@ -209,6 +209,14 @@ func writeStoreInfo(out io.Writer, cfgCtx *configv1.Context, info *gen.DataStore
 	if incarnation := info.GetIncarnation(); incarnation != 0 {
 		fmt.Fprintf(&b, "Incarnation:       %d\n", incarnation)
 	}
+	// omit_unsplit_record_suffix gates whether unsplit records carry a
+	// trailing split suffix byte. Legacy stores created before
+	// FormatVersion.SAVE_UNSPLIT_WITH_SUFFIX set this to true and can
+	// never upgrade to split-long-records. Shown only when set, because
+	// the overwhelming majority of new stores leave it false.
+	if info.GetOmitUnsplitRecordSuffix() {
+		fmt.Fprintf(&b, "Unsplit suffix:    omitted (legacy store, can't enable split-long-records)\n")
+	}
 	if ts := info.GetLastUpdateTime(); ts != 0 {
 		// Record-layer writes LastUpdateTime as ms-epoch (int64). Render
 		// both the raw value and an RFC3339 human timestamp so operators
