@@ -1,0 +1,45 @@
+# group_by_multi.yaml
+#
+# Multi-column GROUP BY and the current limitation that GROUP BY
+# only accepts plain column names, not expressions. Java and Postgres
+# both accept `GROUP BY col + 1`; the Go parser uses
+# `columnNameFromExpr` so anything that doesn't resolve to a single
+# column reference is rejected. Pin the working shape and the
+# current rejection so the constraint is explicit.
+name: group_by_multi
+schema_template: |
+  CREATE TABLE sales (id BIGINT NOT NULL, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO sales VALUES
+      (1, 'east', 'a', 100),
+      (2, 'east', 'a', 50),
+      (3, 'east', 'b', 200),
+      (4, 'west', 'a', 300),
+      (5, 'west', 'b', 400),
+      (6, 'west', 'b', 25)
+tests:
+  # GROUP BY on two columns, COUNT + SUM per pair.
+  - query: |
+      SELECT region, category, COUNT(*), SUM(amt)
+      FROM sales GROUP BY region, category
+      ORDER BY region, category
+    rows:
+      - ['east', 'a', 2, 150]
+      - ['east', 'b', 1, 200]
+      - ['west', 'a', 1, 300]
+      - ['west', 'b', 2, 425]
+
+  # GROUP BY one column + aggregate, HAVING on the aggregate.
+  - query: |
+      SELECT region, SUM(amt)
+      FROM sales GROUP BY region
+      HAVING SUM(amt) > 500
+    rows:
+      - ['west', 725]
+
+  # GROUP BY on an expression is not supported — the parser's
+  # columnNameFromExpr rejects anything that isn't a bare column
+  # reference. 0A000 (unsupported_operation) today. Java/Postgres
+  # both accept `GROUP BY amt / 100` — this is a known gap.
+  - query: SELECT COUNT(*) FROM sales GROUP BY amt + 1
+    error_code: "0A000"
