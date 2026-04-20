@@ -122,10 +122,13 @@ func writeStoreInfoJSON(out io.Writer, info *gen.DataStoreInfo) error {
 	return err
 }
 
-// fdbAPIVersion is the wire protocol version frl talks to FDB with. Must
-// match what the record-layer library and testcontainers use (730 today;
-// the lib tests pin this value — see pkg/fdbgo/fdb/testmain_test.go).
-const fdbAPIVersion = 730
+// fdbAPIVersion is the wire protocol version frl talks to FDB with.
+// Pinned to 720 to match pkg/relational/sqldriver (which calls
+// purefdb.MustAPIVersion(720) unconditionally). When `frl sql` and
+// `frl meta catalog` share a process, the second call to
+// fdb.APIVersion() errors if the version differs — so both paths must
+// agree. 720 is fine for every read-only operation the CLI performs.
+const fdbAPIVersion = 720
 
 // openDatabase opens an FDB connection via the pure-Go client. The API
 // version is idempotently set on every call — the pure-Go client accepts

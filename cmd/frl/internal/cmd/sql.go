@@ -32,6 +32,8 @@ import (
 	"github.com/spf13/cobra"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	relapi "github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 
 	// Register the "fdbsql" driver via blank import.
 	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
@@ -90,11 +92,13 @@ func newSQLCmd() *cobra.Command {
 			defer db.Close()
 
 			runner := &sqlRunner{
-				db:     db,
-				out:    cmd.OutOrStdout(),
-				errOut: cmd.ErrOrStderr(),
-				ctx:    cmd.Context(),
-				schema: initSchema,
+				db:       db,
+				out:      cmd.OutOrStdout(),
+				errOut:   cmd.ErrOrStderr(),
+				ctx:      cmd.Context(),
+				cfgCtx:   cfgCtx,
+				database: databaseURI,
+				schema:   initSchema,
 			}
 			switch {
 			case cmdline != "":
@@ -139,11 +143,22 @@ func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
 // and the non-interactive -c / -f paths so the three entry points
 // render results identically.
 type sqlRunner struct {
-	db     *sql.DB
-	out    io.Writer
-	errOut io.Writer
-	ctx    context.Context
-	schema string // tracked for the prompt; set by \c
+	db       *sql.DB
+	out      io.Writer
+	errOut   io.Writer
+	ctx      context.Context
+	cfgCtx   *configv1.Context // cluster_file for catalog lookups
+	database string            // active database URI (from --database)
+	schema   string            // tracked for the prompt; set by \c
+}
+
+// tableInfo is the minimal shape rendered by \d — table name + column
+// count. Sourced from the current schema's template via the relational
+// catalog. PK columns aren't on api.Table; `meta catalog get <tpl>`
+// is the right place for the full proto breakdown.
+type tableInfo struct {
+	name    string
+	columns int
 }
 
 // --- entry points ---------------------------------------------------------
@@ -364,8 +379,12 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 		return true
 	case `\?`, `\help`:
 		r.printMetaHelp()
-	case `\d`, `\dt`:
+	case `\d`:
 		if err := r.listTables(); err != nil {
+			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+		}
+	case `\dt`:
+		if err := r.listTemplates(); err != nil {
 			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
 		}
 	case `\c`:
@@ -405,18 +424,41 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 	return false
 }
 
-// listTables powers `\d` / `\dt`. SQL standard-ish information_schema
-// query works against fdb-relational; no need to reach into the catalog
-// directly from this command (that's what `meta catalog` is for).
+// listTables powers `\d` — tables in the current database+schema.
+// fdb-relational doesn't expose information_schema, so we route through
+// the same catalog API `meta catalog` uses: load the Schema record,
+// then enumerate its template's tables.
 func (r *sqlRunner) listTables() error {
-	// The fdb-relational layer exposes tables through its own catalog,
-	// not information_schema. Fall back to a driver-aware query shape
-	// when information_schema isn't available.
-	q := `SELECT table_name FROM information_schema.tables ORDER BY table_name`
-	rows, err := r.db.QueryContext(r.ctx, q)
+	if r.database == "" || r.schema == "" {
+		return fmt.Errorf("no active schema — use --database and --schema (or \\c <schema>)")
+	}
+	tables, err := r.loadSchemaTables(r.database, r.schema)
 	if err != nil {
-		// Soft-fail with a hint — the REPL keeps running.
-		return fmt.Errorf("%w (this cluster may not expose information_schema; try `frl meta catalog schemas`)", err)
+		return err
+	}
+	if len(tables) == 0 {
+		_, err := fmt.Fprintln(r.out, sqlMutedStyle.Render(
+			fmt.Sprintf("(no tables in %s/%s)", r.database, r.schema)))
+		return err
+	}
+	// Render a small two-column table. Detailed per-table shape lives in
+	// `meta catalog get <template>` — that renders the full proto.
+	headers := []string{"TABLE", "COLUMNS"}
+	rows := make([][]string, 0, len(tables))
+	for _, tbl := range tables {
+		rows = append(rows, []string{tbl.name, fmt.Sprintf("%d", tbl.columns)})
+	}
+	return renderStaticTable(r.out, headers, rows)
+}
+
+// listTemplates powers `\dt` — every template visible on the cluster.
+// Equivalent to `SHOW SCHEMA TEMPLATES` at SQL level; we use the
+// catalog directly so the output shape matches `\d` (table render with
+// headers, not raw SQL rows).
+func (r *sqlRunner) listTemplates() error {
+	rows, err := r.db.QueryContext(r.ctx, "SHOW SCHEMA TEMPLATES")
+	if err != nil {
+		return fmt.Errorf("%w (also available: `frl meta catalog templates`)", err)
 	}
 	defer rows.Close()
 	_, err = renderTable(r.out, rows)
@@ -550,6 +592,73 @@ func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 		fmt.Fprintln(out, strings.Join(cells, sqlMutedStyle.Render(" │ ")))
 	}
 	return len(table), nil
+}
+
+// renderStaticTable writes a table given precomputed header + rows.
+// The sibling of renderTable for places where we have the data in a
+// slice already (catalog queries, \d output) rather than behind a
+// *sql.Rows cursor.
+func renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = lipgloss.Width(h)
+	}
+	for _, row := range rows {
+		for i, c := range row {
+			if i >= len(widths) {
+				continue
+			}
+			if w := lipgloss.Width(c); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	header := make([]string, len(headers))
+	for i, h := range headers {
+		header[i] = sqlHeaderStyle.Render(padCell(h, widths[i]))
+	}
+	sep := make([]string, len(headers))
+	for i := range headers {
+		sep[i] = sqlMutedStyle.Render(strings.Repeat("─", widths[i]))
+	}
+	fmt.Fprintln(out, strings.Join(header, sqlMutedStyle.Render(" │ ")))
+	fmt.Fprintln(out, strings.Join(sep, sqlMutedStyle.Render("─┼─")))
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, c := range row {
+			cells[i] = padCell(c, widths[i])
+		}
+		fmt.Fprintln(out, strings.Join(cells, sqlMutedStyle.Render(" │ ")))
+	}
+	return nil
+}
+
+// loadSchemaTables loads the schema at (dbURI, schemaName) from the
+// relational catalog and returns its template's tables + PK columns.
+// Runs in its own read-only FDB tx — short enough to not contend
+// with a long-running REPL statement.
+func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, error) {
+	tables, err := runCatalogQuery(r.ctx, r.cfgCtx,
+		func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) ([]tableInfo, error) {
+			sch, err := cat.LoadSchema(txn, dbURI, schemaName)
+			if err != nil {
+				return nil, err
+			}
+			tbls, err := sch.Tables()
+			if err != nil {
+				return nil, err
+			}
+			out := make([]tableInfo, 0, len(tbls))
+			for _, tbl := range tbls {
+				out = append(out, tableInfo{
+					name:    tbl.MetadataName(),
+					columns: len(tbl.Columns()),
+				})
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+			return out, nil
+		})
+	return tables, err
 }
 
 // renderCell turns a database/sql value into its display string. NULL
