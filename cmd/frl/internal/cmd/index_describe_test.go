@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -70,6 +71,50 @@ func TestWriteIndexDescription_UniqueIndex(t *testing.T) {
 	writeIndexDescription(&buf, md, md.GetIndex("Order$price_unique"))
 	if !strings.Contains(buf.String(), "Unique:                 true") {
 		t.Errorf("expected Unique: true in output:\n%s", buf.String())
+	}
+}
+
+// TestWriteIndexDescriptionJSON_HappyPath locks in the JSON contract —
+// jq consumers will key off these field names. Options must be an empty
+// object (not null) when no options are set, so `.options.foo` doesn't
+// null-ref mid-pipeline.
+func TestWriteIndexDescriptionJSON_HappyPath(t *testing.T) {
+	t.Parallel()
+	md := describeBuilder(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		idx := recordlayer.NewIndex("Order$price", recordlayer.Field("price")).SetUnique()
+		b.AddIndex("Order", idx)
+	})
+	idx := md.GetIndex("Order$price")
+
+	var buf bytes.Buffer
+	if err := writeIndexDescriptionJSON(&buf, md, idx); err != nil {
+		t.Fatalf("writeIndexDescriptionJSON: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, buf.String())
+	}
+
+	if got["name"] != "Order$price" {
+		t.Errorf("name = %v; want Order$price", got["name"])
+	}
+	if got["type"] != "value" {
+		t.Errorf("type = %v; want value", got["type"])
+	}
+	if got["unique"] != true {
+		t.Errorf("unique = %v; want true", got["unique"])
+	}
+	fields, _ := got["expression_fields"].([]any)
+	if len(fields) != 1 || fields[0] != "price" {
+		t.Errorf("expression_fields = %v; want [price]", fields)
+	}
+	rts, _ := got["record_types"].([]any)
+	if len(rts) != 1 || rts[0] != "Order" {
+		t.Errorf("record_types = %v; want [Order]", rts)
+	}
+	// Options MUST be a map, never null — jq scripts rely on it.
+	if _, ok := got["options"].(map[string]any); !ok {
+		t.Errorf("options is %T; want object (possibly empty)", got["options"])
 	}
 }
 
