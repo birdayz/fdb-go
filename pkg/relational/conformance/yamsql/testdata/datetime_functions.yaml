@@ -100,3 +100,23 @@ tests:
   - query: SELECT YEAR(CAST(NULL AS BIGINT)) IS NULL FROM t WHERE id = 1
     rows:
       - [true]
+  # MySQL alias NOW() → CURRENT_TIMESTAMP — same value within statement.
+  - query: SELECT NOW() = CURRENT_TIMESTAMP FROM t WHERE id = 1
+    rows:
+      - [true]
+  # SYSDATE() and UTC_TIMESTAMP() also alias to CURRENT_TIMESTAMP.
+  - query: SELECT SYSDATE() = NOW() AND UTC_TIMESTAMP() = NOW() FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURDATE() / UTC_DATE() → CURRENT_DATE.
+  - query: SELECT CURDATE() = CURRENT_DATE AND UTC_DATE() = CURRENT_DATE FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURTIME() / UTC_TIME() → CURRENT_TIME (a timestamp in our impl).
+  - query: SELECT CURTIME() = CURRENT_TIME AND UTC_TIME() = CURRENT_TIME FROM t WHERE id = 1
+    rows:
+      - [true]
+  # YEAR(NOW()) — date-part on alias result.
+  - query: SELECT YEAR(NOW()) >= 2026 FROM t WHERE id = 1
+    rows:
+      - [true]

@@ -5851,6 +5851,18 @@ func evalScalarFunctionCallCore(
 			return eval(fArgs[1].Expression())
 		}
 		return eval(fArgs[2].Expression())
+	case "NOW", "CURDATE", "CURTIME", "SYSDATE", "UTC_TIMESTAMP", "UTC_DATE", "UTC_TIME":
+		// MySQL-style datetime aliases. NOW/SYSDATE/UTC_TIMESTAMP →
+		// CURRENT_TIMESTAMP; CURDATE/UTC_DATE → CURRENT_DATE;
+		// CURTIME/UTC_TIME → CURRENT_TIME. All take 0 args (a fractional
+		// seconds precision arg is ignored if present). Use the
+		// statement timestamp for within-statement consistency.
+		switch name {
+		case "CURDATE", "UTC_DATE":
+			return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), nil
+		default:
+			return now, nil
+		}
 	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
 		"DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR":
 		// Date-part functions taking a single time.Time argument.
