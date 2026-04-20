@@ -349,11 +349,8 @@ func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context, outputFmt string) 
 	// Build a Source using only the file-source path (no DB). Any
 	// fdb_store context would require a keyspace resolver and DB handle;
 	// for now `meta get` only supports file sources without opening FDB.
-	src, err := meta.FromContext(cfgCtx, nil, nil)
+	src, err := resolveMetaSourceFile(cfgCtx, nil)
 	if err != nil {
-		if errors.Is(err, meta.ErrMissingSource) {
-			return fmt.Errorf("%w (context %q)", err, cfgCtx.GetName())
-		}
 		return err
 	}
 	md, err := src.Load(cmd.Context())
