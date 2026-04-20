@@ -52,6 +52,7 @@ go_test(
         "meta_test.go",
         "meta_types_describe_test.go",
         "output_test.go",
+        "record_render_test.go",
         "record_test.go",
         "store_dump_test.go",
         "store_test.go",
@@ -65,5 +66,6 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
     ],
 )

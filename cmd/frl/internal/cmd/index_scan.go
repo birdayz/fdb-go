@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -100,11 +101,16 @@ func writeIndexEntryAsJSON(out io.Writer, e *recordlayer.IndexEntry) error {
 	// comma-separated form. Suitable for machine consumption (grep,
 	// awk, cut); structured json-of-tuples would add type ambiguity
 	// without adding information.
+	//
+	// json.Marshal on the strings (not fmt.Sprintf %q) because %q emits
+	// Go's escape syntax (\x00 for NULs) which isn't valid JSON. See
+	// record.go:writeRecordAsJSON for the same fix.
+	name, _ := json.Marshal(e.Index.Name)
+	values, _ := json.Marshal(formatPK(e.IndexValues()))
+	pk, _ := json.Marshal(formatPK(e.PrimaryKey()))
+	value, _ := json.Marshal(formatPK(e.Value))
 	_, err := fmt.Fprintf(out,
-		`{"index":%q,"index_values":%q,"primary_key":%q,"value":%q}`+"\n",
-		e.Index.Name,
-		formatPK(e.IndexValues()),
-		formatPK(e.PrimaryKey()),
-		formatPK(e.Value))
+		`{"index":%s,"index_values":%s,"primary_key":%s,"value":%s}`+"\n",
+		name, values, pk, value)
 	return err
 }

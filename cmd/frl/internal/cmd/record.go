@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -155,21 +156,27 @@ func resolveContextAndOverride(contextName, metaFile string) (*configv1.Context,
 // fields: primary_key, record_type, and record (the proto-encoded message
 // marshalled via protojson so nested messages, enums, and oneofs show up
 // with their canonical JSON names).
+//
+// Uses json.Marshal for the string fields instead of fmt.Sprintf("%q", …):
+// %q produces Go-quoted strings which escape NULs as `\x00` (invalid JSON).
+// If a PK ever contains a byte that needs \uXXXX encoding, the envelope
+// must still parse as JSON — otherwise `jq` breaks mid-pipeline.
 func writeRecordAsJSON(out io.Writer, rec *recordlayer.FDBStoredRecord[proto.Message]) error {
 	payload, err := protojson.MarshalOptions{}.Marshal(rec.Record)
 	if err != nil {
 		return fmt.Errorf("marshal record: %w", err)
 	}
-	// We emit an envelope rather than the raw record so downstream tools
-	// can tell which type a row is and what its PK was — useful when the
-	// scan spans multiple record types.
 	rt := ""
 	if rec.RecordType != nil {
 		rt = rec.RecordType.Name
 	}
+	// Envelope rather than raw record — downstream tools need the type and
+	// PK when a scan spans multiple record types.
+	pk, _ := json.Marshal(formatPK(rec.PrimaryKey))
+	rtJSON, _ := json.Marshal(rt)
 	_, err = fmt.Fprintf(out,
-		`{"primary_key":%q,"record_type":%q,"record":%s}`+"\n",
-		formatPK(rec.PrimaryKey), rt, string(payload))
+		`{"primary_key":%s,"record_type":%s,"record":%s}`+"\n",
+		pk, rtJSON, payload)
 	return err
 }
 
