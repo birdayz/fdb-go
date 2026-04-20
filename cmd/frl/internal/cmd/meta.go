@@ -50,10 +50,8 @@ func newMetaValidateCmd() *cobra.Command {
   #   frl meta validate --file artifacts/meta.pb || exit 1`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			src := &meta.FileSource{Path: path}
 			if _, err := src.Load(cmd.Context()); err != nil {
@@ -101,10 +99,8 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 			"({old, new, valid}).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			oldMeta, err := (&meta.FileSource{Path: oldPath}).Load(cmd.Context())
 			if err != nil {
@@ -180,11 +176,8 @@ func newMetaTypesLsCmd() *cobra.Command {
 			"{name, primary_key, since_version}).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-				// ok
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
@@ -275,10 +268,8 @@ func newMetaGetCmd() *cobra.Command {
 			"--meta-file.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "json", "yaml":
-			default:
-				return fmt.Errorf("invalid --output %q: want json or yaml", outputFmt)
+			if err := validateOutputFormat(outputFmt, "json", "yaml"); err != nil {
+				return err
 			}
 			cfg, err := config.Load()
 			if err != nil {

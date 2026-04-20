@@ -34,10 +34,8 @@ func newVersionCmd() *cobra.Command {
 			"({version, go_version, goos, goarch}). Ignored with --short.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			v := readVersion()
 			if shortOnly {

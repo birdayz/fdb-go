@@ -29,10 +29,8 @@ func newMetaDiffCmd() *cobra.Command {
 			"indexes.{added,removed,changed}).",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			oldMeta, err := (&meta.FileSource{Path: args[0]}).Load(cmd.Context())
 			if err != nil {

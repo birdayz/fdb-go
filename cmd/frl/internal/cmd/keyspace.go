@@ -36,10 +36,8 @@ func newKeyspaceResolveCmd() *cobra.Command {
 			"({path, prefix_hex, prefix_len}).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			ss, err := parseKeyspacePath(args[0])
 			if err != nil {

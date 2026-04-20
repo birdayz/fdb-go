@@ -55,11 +55,8 @@ func newStoreInfoCmd() *cobra.Command {
 			"monitoring systems).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-				// ok
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			cfg, err := config.Load()
 			if err != nil {

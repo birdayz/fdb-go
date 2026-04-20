@@ -46,11 +46,8 @@ func newIndexLsCmd() *cobra.Command {
 			"(array of {name, type, state, record_types, last_modified_version}).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			switch outputFmt {
-			case "", "text", "json":
-				// ok
-			default:
-				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
 			}
 			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
 			if err != nil {
