@@ -3981,7 +3981,12 @@ func evalScalarFunctionCallCore(
 				return nil, err
 			}
 			if v == nil {
-				continue // NULL args skipped per SQL standard
+				// NULL-skip behaviour, matching MySQL and Postgres's
+				// CONCAT(). SQL standard / Oracle / SQL Server
+				// propagate NULL through concatenation instead —
+				// pinned as-is by trim_concat.yaml until a Java
+				// reference settles the question.
+				continue
 			}
 			parts = append(parts, fmt.Sprintf("%v", v))
 		}
