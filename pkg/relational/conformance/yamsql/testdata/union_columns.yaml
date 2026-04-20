@@ -45,9 +45,10 @@ tests:
       - [1, 100]
 
   # ORDER BY on a column name that exists on the right but not the left
-  # fails with 42703: the result schema is the LEFT's column names only.
+  # fails with 42703 (undefined_column): the result schema is the LEFT's
+  # column names only.
   - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w
-    error_code: "22023"
+    error_code: "42703"
 
   # OFFSET combined with LIMIT on a UNION — applies to the combined result.
   - query: SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1

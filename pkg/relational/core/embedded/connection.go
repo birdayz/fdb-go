@@ -299,6 +299,16 @@ func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrge
 // not just the last branch. The ANTLR grammar nests the clause inside the
 // right-side simpleTable because the parser greedily attaches it to the
 // last selectElements production, so we pull it back up here.
+//
+// For a three-way union `A UNION B UNION C ORDER BY col`, the grammar
+// produces SetQuery(SetQuery(A, B), C). The outer execUnion lifts C's
+// ORDER BY post-combined — correct. A three-way union with an ORDER BY
+// bound to the middle SELECT (e.g. `A UNION B ORDER BY col UNION C`)
+// would be parsed as SetQuery(SetQuery(A, B_ordered), C) and the inner
+// execUnion would sort A∪B without the outer UNION re-sorting; that
+// form is also a syntax error in Postgres (ORDER BY can only appear at
+// the end without parentheses), so we do not expect valid SQL to hit
+// the degenerate case.
 func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQueryContext) (driver.Rows, error) {
 	leftCols, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
 	if err != nil {
@@ -382,12 +392,12 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 		indices := make([]int, len(unionOrder))
 		for i, ob := range unionOrder {
 			if ob.expr != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 					"ORDER BY expression not supported on UNION result; use a column name from the left SELECT list")
 			}
 			idx, ok := colIdx[strings.ToLower(ob.colName)]
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"ORDER BY column %q not found in UNION result schema", ob.colName)
 			}
 			indices[i] = idx
@@ -2563,7 +2573,9 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	}
 	isDistinct := awf.DISTINCT() != nil
 	// resolveArg classifies a FunctionArg as either a bare-column ref (→ argCol) or
-	// an arbitrary expression (→ argExpr). Bare columns keep the proto fast path.
+	// an arbitrary expression (→ argExpr). Writes into the named return variables
+	// on the enclosing extractAggFunc frame (closures-over-named-returns idiom);
+	// the two are mutually exclusive. Bare columns keep the proto fast path.
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {
 		if fa == nil {
 			return
