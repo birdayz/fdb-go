@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -115,6 +116,83 @@ func TestWriteIndexDescriptionJSON_HappyPath(t *testing.T) {
 	// Options MUST be a map, never null — jq scripts rely on it.
 	if _, ok := got["options"].(map[string]any); !ok {
 		t.Errorf("options is %T; want object (possibly empty)", got["options"])
+	}
+}
+
+// TestIndexDescribeCmd_MetaFile exercises the cobra command directly
+// via --meta-file (no FDB, no config). Covers RunE + flag wiring +
+// resolveContextAndOverride + meta.FromContext fallback. Without
+// this, newIndexDescribeCmd stayed at 22% (only helpers were
+// exercised).
+func TestIndexDescribeCmd_MetaFile(t *testing.T) {
+	metaPath := writeMetaFileWithIndexes(t) // Order$price + Customer$name
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newIndexDescribeCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", metaPath, "Order$price"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"Name:", "Order$price", "Type:", "value", "Expression fields:", "price"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("text output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestIndexDescribeCmd_UnknownName lists available names when the
+// requested index is absent — guardrail for the operator-facing typo
+// experience.
+func TestIndexDescribeCmd_UnknownName(t *testing.T) {
+	metaPath := writeMetaFileWithIndexes(t)
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newIndexDescribeCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", metaPath, "not-an-index"})
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error for unknown index")
+	}
+	// Available names must both appear in the error suggestion list
+	// (alphabetical order → Customer$name first, Order$price second).
+	for _, want := range []string{"Customer$name", "Order$price"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing suggestion for %q", err, want)
+		}
+	}
+}
+
+// TestIndexDescribeCmd_JSON end-to-end coverage of the -o json path
+// via the cobra command (not just the helper).
+func TestIndexDescribeCmd_JSON(t *testing.T) {
+	metaPath := writeMetaFileWithIndexes(t)
+	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml"))
+
+	c := newIndexDescribeCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--meta-file", metaPath, "-o", "json", "Order$price"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nout:\n%s", err, out.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if obj["name"] != "Order$price" {
+		t.Errorf("name = %v; want Order$price", obj["name"])
+	}
+	// Options is always an object per the contract, even when empty.
+	if _, ok := obj["options"].(map[string]any); !ok {
+		t.Errorf("options is %T; want object", obj["options"])
 	}
 }
 
