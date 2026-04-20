@@ -4879,7 +4879,7 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
 		}
 		if bf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "MOD: division by zero")
 		}
 		if _, aIsInt := av.(int64); aIsInt {
 			if _, bIsInt := bv.(int64); bIsInt {
@@ -5663,7 +5663,7 @@ func applyMathOp(left, right any, op string) (any, error) {
 			return r, nil
 		case "/":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 			}
 			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
@@ -5672,7 +5672,7 @@ func applyMathOp(left, right any, op string) (any, error) {
 			return li / ri, nil
 		case "%":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 			}
 			return li % ri, nil
 		default:
@@ -5695,12 +5695,12 @@ func applyMathOp(left, right any, op string) (any, error) {
 		result = lf * rf
 	case "/":
 		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 		}
 		result = lf / rf
 	case "%":
 		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
 		}
 		result = math.Mod(lf, rf)
 	default:

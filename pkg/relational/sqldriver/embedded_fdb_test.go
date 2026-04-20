@@ -5634,14 +5634,17 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeUndefinedColumn,
 		},
 		{
+			// swingshift-38: division / modulo by zero returns SQLSTATE
+			// 22012 (division_by_zero) — the SQL-standard class-22 code.
+			// Previously 22023 (INVALID_PARAMETER); more precise now.
 			name:     "div by zero (SQL standard error)",
 			sql:      "SELECT 1 / 0",
-			wantCode: api.ErrCodeInvalidParameter,
+			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
 			name:     "mod by zero",
 			sql:      "SELECT 5 % 0",
-			wantCode: api.ErrCodeInvalidParameter,
+			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
 			// nightshift-36: ABS(MinInt64) returns 22003
