@@ -264,6 +264,28 @@ func TestMetaEvolveCheck_ValidJSON(t *testing.T) {
 	}
 }
 
+func TestMetaEvolveCheck_DefaultStrict_NoFlagsAllowNothingExtra(t *testing.T) {
+	t.Parallel()
+	// Smoke the default-strict assertion: the three loosener flags, when
+	// NONE are set, still produce the standard strict behavior. Prevents
+	// a refactor accidentally flipping a default to true.
+	p1 := writeDemoMetaFile(t, 0)
+	p2 := writeDemoMetaFile(t, 0)
+
+	c := newMetaEvolveCheckCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--old", p1, "--new", p2}) // no --allow-*
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("strict mode should reject same-version evolution")
+	}
+	if !strings.Contains(err.Error(), "newer version") {
+		t.Errorf("strict error = %v; want 'newer version'", err)
+	}
+}
+
 func TestMetaEvolveCheck_AllowNoVersionChangeFlag(t *testing.T) {
 	t.Parallel()
 	// Same-version files that would normally be rejected.
