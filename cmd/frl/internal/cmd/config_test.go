@@ -153,6 +153,33 @@ func TestConfigInit_CreatesStarter(t *testing.T) {
 	}
 }
 
+// TestConfigInit_OutputIsParseable is the regression guard for the
+// "init writes a template that view then can't parse" bug. protoyaml
+// is strict about sequence fields — a bare `contexts:` reads as a null
+// scalar, which triggers `expected sequence, got scalar` from the very
+// next `frl config view`. The template must include `contexts: []` so
+// a fresh install survives any subsequent read.
+func TestConfigInit_OutputIsParseable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("FRL_CONFIG", path)
+
+	if err := newConfigInitCmd().Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	// get-contexts triggers a full Load() of the written file and is thus
+	// the minimal smoke test that the template parses at all.
+	c := newConfigGetContextsCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	if err := c.Execute(); err != nil {
+		t.Fatalf("post-init get-contexts: %v\nout:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "no contexts configured") {
+		t.Errorf("post-init get-contexts should report empty:\n%s", out.String())
+	}
+}
+
 func TestConfigInit_RefusesToOverwrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("existing: true\n"), 0o600); err != nil {

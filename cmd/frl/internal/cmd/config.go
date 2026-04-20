@@ -88,6 +88,13 @@ func newConfigInitCmd() *cobra.Command {
 // initTemplate is the scaffold written by `frl config init`. Comments
 // guide the operator through the two metadata paths (file vs FDBMetaDataStore)
 // and point at the full operator-guide.
+//
+// The `contexts` field MUST be the empty list `[]` rather than a bare
+// `contexts:` (which protoyaml reads as a null scalar and refuses,
+// because it expects a sequence). That's why the example is written
+// inside a YAML comment above an empty-list literal — the file parses
+// cleanly before any editing, so `frl config view` / `get-contexts`
+// don't error on a fresh init.
 const initTemplate = `# frl CLI configuration.
 # See cmd/frl/docs/operator-guide.md (in the repo) for wiring walkthroughs.
 #
@@ -96,16 +103,17 @@ const initTemplate = `# frl CLI configuration.
 
 current_context: ""
 
-contexts:
-  # Example — uncomment and edit:
-  # - name: local
-  #   cluster_file: /etc/foundationdb/fdb.cluster
-  #   keyspace_path: /myapp/orders
-  #   metadata:
-  #     # Path A: app-exported meta.pb alongside binaries (most common).
-  #     meta_file: /etc/myapp/meta.pb
-  #     # Path B: FDBMetaDataStore persisted in FDB (for schema evolution).
-  #     # meta_store_keyspace: /myapp/_meta
+# Example — copy, uncomment, and edit into the list below:
+# contexts:
+#   - name: local
+#     cluster_file: /etc/foundationdb/fdb.cluster
+#     keyspace_path: /myapp/orders
+#     metadata:
+#       # Path A: app-exported meta.pb alongside binaries (most common).
+#       meta_file: /etc/myapp/meta.pb
+#       # Path B: FDBMetaDataStore persisted in FDB (for schema evolution).
+#       # meta_store_keyspace: /myapp/_meta
+contexts: []
 `
 
 // newConfigPathCmd prints the effective config file path (after
