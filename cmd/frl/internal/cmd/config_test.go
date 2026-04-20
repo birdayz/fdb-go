@@ -180,6 +180,74 @@ func TestConfigInit_OutputIsParseable(t *testing.T) {
 	}
 }
 
+// TestConfigView_YAMLRoundTripsSnakeCase verifies `config view` emits
+// snake_case keys matching the on-disk YAML format. Without
+// UseProtoNames, protoyaml renders `clusterFile` / `keyspacePath` /
+// `metaFile` — if an operator pipes `view` output back into
+// config.yaml, the loader rejects it with "unknown field". This test
+// locks in the round-trippable contract.
+func TestConfigView_YAMLRoundTripsSnakeCase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `current_context: prod
+contexts:
+  - name: prod
+    cluster_file: /etc/fdb/prod.cluster
+    keyspace_path: /myapp/prod
+    metadata:
+      meta_file: /etc/myapp/meta.pb
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+
+	c := newConfigViewCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"cluster_file:", "keyspace_path:", "meta_file:"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("YAML output missing snake_case key %q (got camelCase?):\n%s",
+				want, got)
+		}
+	}
+	for _, avoid := range []string{"clusterFile:", "keyspacePath:", "metaFile:"} {
+		if strings.Contains(got, avoid) {
+			t.Errorf("YAML output contains camelCase key %q — round-trip broken:\n%s",
+				avoid, got)
+		}
+	}
+}
+
+// TestConfigView_JSONUsesProtoNames ensures -o json also emits snake_case
+// keys so jq / yq pipelines can be swapped 1:1. Regression guard against
+// one format drifting from the other.
+func TestConfigView_JSONUsesProtoNames(t *testing.T) {
+	writeTestConfig(t, "prod")
+	c := newConfigViewCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if _, ok := obj["cluster_file"]; !ok {
+		t.Errorf("expected cluster_file key; got: %v", obj)
+	}
+	if _, ok := obj["clusterFile"]; ok {
+		t.Errorf("got camelCase clusterFile — drift from yaml output: %v", obj)
+	}
+}
+
 func TestConfigInit_RefusesToOverwrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("existing: true\n"), 0o600); err != nil {

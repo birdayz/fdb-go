@@ -265,18 +265,30 @@ func newConfigSchemaCmd() *cobra.Command {
 }
 
 func newConfigViewCmd() *cobra.Command {
-	var contextName string
+	var contextName, outputFmt string
 	c := &cobra.Command{
 		Use:   "view",
-		Short: "Print the effective context as YAML",
+		Short: "Print the effective context as YAML or JSON",
+		// Opt into the yaml completion set — `view` defaults to yaml
+		// (matches config.yaml on disk) with json as the alternative.
+		Annotations: map[string]string{
+			AnnotationOutputYAML: "true",
+		},
 		Example: `  frl config view
-  frl config view --context prod`,
+  frl config view --context prod
+  frl config view -o json | jq .keyspace_path`,
 		Long: "Reads ~/.frl/config.yaml (or $FRL_CONFIG) and prints the " +
 			"currently-selected context. Use --context to pick a specific " +
 			"one. Missing config file is reported verbatim so the user " +
-			"knows they need to run `frl config use-context` first.",
+			"knows they need to run `frl config use-context` first.\n\n" +
+			"--output / -o: 'yaml' (default, matches the on-disk file) or " +
+			"'json' (protojson with snake_case keys — matches the YAML key " +
+			"set so `jq` and `yq` pipelines can be swapped 1:1).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateOutputFormat(outputFmt, "yaml", "json"); err != nil {
+				return err
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -291,16 +303,39 @@ func newConfigViewCmd() *cobra.Command {
 				}
 				return err
 			}
-			out, err := protoyaml.MarshalOptions{Indent: 2}.Marshal(ctx)
+			var bytes []byte
+			switch outputFmt {
+			case "json":
+				// UseProtoNames to stay consistent with `config schema` and
+				// the on-disk YAML key set (snake_case).
+				bytes, err = protojson.MarshalOptions{
+					Multiline:     true,
+					Indent:        "  ",
+					UseProtoNames: true,
+				}.Marshal(ctx)
+			default: // "" or "yaml"
+				// UseProtoNames so `view` output round-trips through the
+				// file format — without it, protoyaml emits
+				// `clusterFile`/`keyspacePath` while the on-disk YAML
+				// uses `cluster_file`/`keyspace_path`. Operators copying
+				// `view` output back into config.yaml would otherwise
+				// trip the "unknown field" loader error.
+				bytes, err = protoyaml.MarshalOptions{
+					Indent:        2,
+					UseProtoNames: true,
+				}.Marshal(ctx)
+			}
 			if err != nil {
 				return fmt.Errorf("marshal context: %w", err)
 			}
-			_, err = cmd.OutOrStdout().Write(out)
+			_, err = cmd.OutOrStdout().Write(bytes)
 			return err
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "",
 		"context name to show (default: Config.current_context)")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "yaml",
+		"output format: yaml or json")
 	return c
 }
 
