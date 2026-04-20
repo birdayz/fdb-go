@@ -20,15 +20,19 @@ func TestParseKeyspacePath(t *testing.T) {
 		// bytes themselves aren't asserted — that's the tuple package's
 		// contract; here we only verify segmentation.
 		wantLen int
+		// wantErrMsg, if non-empty, is a substring the error message must
+		// contain — guards both the error branch (by case) and that the
+		// message stays operator-friendly after banner capitalization.
+		wantErrMsg string
 	}{
-		{"/myapp/prod/orders", false, 3},
-		{"myapp/prod/orders", false, 3}, // no leading slash
-		{"/myapp/", false, 1},           // trailing slash stripped
-		{"/single", false, 1},
-		{"", true, 0},      // empty → error
-		{"/", true, 0},     // slash-only → empty tuple
-		{"/a//b", true, 0}, // double slash → empty segment error
-		{"//", true, 0},
+		{"/myapp/prod/orders", false, 3, ""},
+		{"myapp/prod/orders", false, 3, ""}, // no leading slash
+		{"/myapp/", false, 1, ""},           // trailing slash stripped
+		{"/single", false, 1, ""},
+		{"", true, 0, "empty"},              // empty → empty-tuple branch
+		{"/", true, 0, "empty"},             // slash-only → empty tuple
+		{"/a//b", true, 0, "empty segment"}, // double slash → empty segment branch
+		{"//", true, 0, "empty"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
@@ -37,6 +41,16 @@ func TestParseKeyspacePath(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("parseKeyspacePath(%q) succeeded, want error", tc.in)
+				}
+				if tc.wantErrMsg != "" && !strings.Contains(err.Error(), tc.wantErrMsg) {
+					t.Errorf("parseKeyspacePath(%q) err = %v; want substring %q",
+						tc.in, err, tc.wantErrMsg)
+				}
+				// Both error branches name the config key so operators can
+				// fix the YAML without digging into the source.
+				if !strings.Contains(err.Error(), "keyspace_path") {
+					t.Errorf("parseKeyspacePath(%q) err = %v; should name keyspace_path",
+						tc.in, err)
 				}
 				return
 			}
