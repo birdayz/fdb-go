@@ -303,9 +303,10 @@ User direction: **"make sure 100% alignment with Java is given"**. Each item bel
 **HIGH — must-have for non-trivial SQL, ranked by impact**
 
 - [ ] **Correlated subqueries** — `WHERE EXISTS (SELECT 1 FROM b WHERE b.aid = a.id)`. Inner query must access outer-row columns. Architectural: per-row execution + outer-row binding chain. Java: `LogicalCorrelatedJoinExpression` in cascades. ~3-4h. Highest user-facing impact.
-- [ ] **Cross-type comparison should error 42883** — `WHERE str_col = 1` silently returns empty result set. Postgres errors. Java behavior? Verify in `fdb-relational-core` `ComparatorValue.evaluate`. Real correctness bug — silent semantic answers are dangerous.
+- [x] **Cross-type comparison errors 22000** (nightshift-39 commit `9b55d469`): Java's PromoteValue.isPromotionNeeded → SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE (22000). Go now matches — both = / !=/ </> and IN-list paths.
 - [x] **Verified** (nightshift-39): SQL queries do NOT use PK or secondary indexes. Every SELECT path calls `store.ScanRecordsByType(...)` — full table scan. UPDATE / DELETE same. Even `WHERE pk = literal` reads every row of the type and filters in Go. Java cascades picks indexes; we don't. Implementation requires WHERE-clause analysis, PK constraint detection, optional remaining-filter, and `store.LoadRecord(pk)` fast path. **Major perf gap. Needs full design pass before implementation — not a quick fix.**
-- [ ] **Date arithmetic** — `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `EXTRACT(YEAR FROM d)`. Java `DateAddValue` / `DateSubtractValue` / `ExtractValue`. Common need.
+- [~] **Date scalar functions** (nightshift-39): CURRENT_TIMESTAMP / CURRENT_DATE / NOW / SYSDATE / CURDATE / CURTIME / UTC_TIMESTAMP / UTC_DATE / UTC_TIME + YEAR / MONTH / DAY / HOUR / MINUTE / SECOND / DAYOFWEEK / DAYOFYEAR all added. Within-statement timestamp consistency per SQL §6.32. Note: these are Go-only extensions — Java's fdb-relational-core doesn't have them; kept as they're harmless Postgres-style extensions useful to users.
+- [ ] **Date arithmetic** — `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `EXTRACT(YEAR FROM d)`. Java `DateAddValue` / `DateSubtractValue` / `ExtractValue` exist only as stubs; effectively absent from fdb-relational-core. Not on the Java alignment path.
 - [ ] **INTERVAL syntax** — `WHERE created > NOW() - INTERVAL '1 day'`. Grammar slot exists. Java `IntervalValue`. Big usability gap.
 
 **MEDIUM — Java has these, we should align**
