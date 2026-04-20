@@ -34,3 +34,14 @@ tests:
       ORDER BY SUM(total) DESC LIMIT 1
     rows:
       - [100, 125]
+  # Column-to-column comparison in WHERE — pins that the predicate
+  # evaluator handles both sides via the same path (not literal-only).
+  # id=3 has total=NULL → 100 > NULL is UNKNOWN → filtered.
+  - query: SELECT id FROM orders WHERE customer_id > total
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [4]
+      - [5]
+      - [6]
