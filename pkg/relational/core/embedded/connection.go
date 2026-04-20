@@ -645,6 +645,72 @@ func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaD
 		"SELECT %s.*: qualifier does not match any FROM-clause source", qualifier)
 }
 
+// expandStarSlots expands mixed SELECT lists of the form
+// `SELECT a.*, b.label FROM a, b` by rewriting each `<qualifier>.*` slot
+// (marked via sq.projStarQualifiers[i]) into its resolved per-source
+// column list. After expansion projStarQualifiers is zeroed out so the
+// downstream execution loop can treat every slot as a plain named column.
+//
+// For each expanded column `col` from source with alias `A`, projCols[k]
+// becomes `A.col` (alias-qualified, matching the keys scanTableToMaps
+// writes and the ORDER BY resolver which expects qualified names to
+// appear in cols[]) and projAliases[k] stays empty — the downstream
+// cols-from-projCols fallback uses projCols verbatim, which keeps
+// ORDER BY a.id resolvable. The runner compares row values, not
+// column names, so the qualified output name is fine. projExprs[k] = nil.
+//
+// No-op when projCols is nil (pure SELECT * / pure qualifier-star take
+// the legacy projQualifier / nil-projCols paths) or when no slot is a
+// star. Safe to call multiple times — subsequent calls see an empty
+// star set and bail.
+func (c *EmbeddedConnection) expandStarSlots(md *recordlayer.RecordMetaData, sq *selectQuery) error {
+	if sq.projCols == nil {
+		return nil
+	}
+	hasStar := false
+	for _, q := range sq.projStarQualifiers {
+		if q != "" {
+			hasStar = true
+			break
+		}
+	}
+	if !hasStar {
+		return nil
+	}
+	newCols := make([]string, 0, len(sq.projCols))
+	newAliases := make([]string, 0, len(sq.projCols))
+	newExprs := make([]antlrgen.IExpressionContext, 0, len(sq.projCols))
+	newStars := make([]string, 0, len(sq.projCols))
+	for i, col := range sq.projCols {
+		qual := ""
+		if i < len(sq.projStarQualifiers) {
+			qual = sq.projStarQualifiers[i]
+		}
+		if qual == "" {
+			newCols = append(newCols, col)
+			newAliases = append(newAliases, sq.projAliases[i])
+			newExprs = append(newExprs, sq.projExprs[i])
+			newStars = append(newStars, "")
+			continue
+		}
+		cols, qAlias, err := c.resolveQualifierColumns(md, sq, qual)
+		if err != nil {
+			return err
+		}
+		for _, cn := range cols {
+			newCols = append(newCols, qAlias+"."+cn)
+			newAliases = append(newAliases, "")
+			newExprs = append(newExprs, nil)
+			newStars = append(newStars, "")
+		}
+	}
+	sq.projCols = newCols
+	sq.projAliases = newAliases
+	sq.projExprs = newExprs
+	sq.projStarQualifiers = newStars
+	return nil
+}
+
 // collectLeftJoinKeys returns the set of row-map keys that describe the
 // left-hand side of a RIGHT JOIN — unqualified column names and
 // alias-qualified variants for every source that has already been
@@ -959,6 +1025,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "schema template is not a RecordLayerSchemaTemplate")
 		}
 		md := rlTmpl.Underlying()
+		// Expand any `<qualifier>.*` slots against the FROM sources now
+		// that md is available. No-op when the SELECT list doesn't mix
+		// a qualifier-star with named columns.
+		if expandErr := c.expandStarSlots(md, sq); expandErr != nil {
+			return nil, expandErr
+		}
 		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
 		if ssErr != nil {
 			return nil, ssErr
@@ -1502,6 +1574,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			if _, _, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier); qErr != nil {
 				return nil, qErr
 			}
+		}
+		// Expand mixed qualifier-star + named-column slots. Single-source
+		// FROM only has one alias to match against, but the expansion
+		// still works uniformly — a wrong qualifier errors 42F01 from
+		// resolveQualifierColumns.
+		if expandErr := c.expandStarSlots(md, sq); expandErr != nil {
+			return nil, expandErr
 		}
 
 		rt := md.GetRecordType(sq.tableName)
@@ -2309,9 +2388,16 @@ type selectQuery struct {
 	// table name when no alias) equals projQualifier. Empty = SELECT *
 	// (all sources) or explicit column list.
 	projQualifier string
-	countStar     bool // true when SELECT list is exactly COUNT(*)
-	distinct      bool // true when SELECT DISTINCT
-	whereExpr     antlrgen.IWhereExprContext
+	// projStarQualifiers is parallel to projCols. When
+	// projStarQualifiers[i] != "" that slot is a `<qualifier>.*` to be
+	// expanded at execution time (e.g. `SELECT a.*, b.label FROM a, b`).
+	// When empty, the slot is a regular named column / expression. Always
+	// empty when projCols == nil (SELECT * or pure qualifier-star use the
+	// legacy projQualifier / nil-projCols paths).
+	projStarQualifiers []string
+	countStar          bool // true when SELECT list is exactly COUNT(*)
+	distinct           bool // true when SELECT DISTINCT
+	whereExpr          antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
@@ -2610,9 +2696,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	var projCols []string                       // nil = SELECT * or SELECT <qualifier>.*
 	var projAliases []string                    // parallel to projCols
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
+	var projStarQualifiers []string             // parallel to projCols; non-empty = <qualifier>.* slot
 	var countStar bool
 	var aggCols []aggSelectCol
-	var projQualifier string // non-empty when SELECT list is <qualifier>.*
+	var projQualifier string // non-empty when SELECT list is *only* <qualifier>.*
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -2624,18 +2711,23 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectQualifierStarElementContext:
-				// SELECT <qualifier>.* — restrict output columns to the
-				// aliased source. Resolved at execution time against
-				// tableAlias / joins[i].alias (parser is schema-free).
-				if len(elems) > 1 {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"cannot mix qualifier.* with named columns in SELECT list")
-				}
+				// SELECT <qualifier>.* either alone or mixed with named
+				// columns. Alone: use the legacy projQualifier / nil-projCols
+				// path. Mixed: record as a star slot in projCols to be
+				// expanded at execution time against the FROM sources.
 				if e.Uid() == nil {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"SELECT <qualifier>.* missing qualifier")
 				}
-				projQualifier = stripIdentifierQuotes(e.Uid().GetText())
+				qual := stripIdentifierQuotes(e.Uid().GetText())
+				if len(elems) == 1 {
+					projQualifier = qual
+				} else {
+					projCols = append(projCols, "") // sentinel; actual names resolved at execution
+					projAliases = append(projAliases, "")
+					projExprs = append(projExprs, nil)
+					projStarQualifiers = append(projStarQualifiers, qual)
+				}
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
@@ -2669,6 +2761,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						projCols = append(projCols, colName)
 						projAliases = append(projAliases, alias)
 						projExprs = append(projExprs, expr) // nil when it's a plain column
+						projStarQualifiers = append(projStarQualifiers, "")
 					}
 				}
 			default:
@@ -2678,8 +2771,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 		// If we found aggregate functions mixed with plain columns, the plain cols
 		// that were added to projCols before the first aggregate need to be re-
-		// classified as group-by references.
+		// classified as group-by references. Star slots cannot be demoted to
+		// group-by references (each expands to multiple columns at execution),
+		// so reject that combination cleanly.
 		if len(aggCols) > 0 && len(projCols) > 0 {
+			for _, q := range projStarQualifiers {
+				if q != "" {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"cannot mix qualifier.* with aggregate functions in SELECT list")
+				}
+			}
 			// Prepend the already-collected plain cols as group-by cols.
 			extra := make([]aggSelectCol, len(projCols))
 			for i, c := range projCols {
@@ -2693,6 +2794,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			projCols = nil
 			projAliases = nil
 			projExprs = nil
+			projStarQualifiers = nil
 		}
 	}
 
@@ -2702,6 +2804,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if projQualifier != "" {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
 				"qualifier %q in SELECT list but query has no FROM clause", projQualifier)
+		}
+		for _, q := range projStarQualifiers {
+			if q != "" {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+					"qualifier %q.* in SELECT list but query has no FROM clause", q)
+			}
 		}
 		return &selectQuery{
 			projCols:    projCols,
@@ -2767,18 +2875,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
 		return &selectQuery{
-			tableName:     alias,
-			tableAlias:    alias,
-			projCols:      projCols,
-			projAliases:   projAliases,
-			projExprs:     projExprs,
-			projQualifier: projQualifier,
-			countStar:     countStar,
-			aggCols:       aggCols,
-			distinct:      simpleTable.DISTINCT() != nil,
-			whereExpr:     fromClause.WhereExpr(),
-			limit:         -1,
-			derivedQuery:  subItem.Query(),
+			tableName:          alias,
+			tableAlias:         alias,
+			projCols:           projCols,
+			projAliases:        projAliases,
+			projExprs:          projExprs,
+			projStarQualifiers: projStarQualifiers,
+			projQualifier:      projQualifier,
+			countStar:          countStar,
+			aggCols:            aggCols,
+			distinct:           simpleTable.DISTINCT() != nil,
+			whereExpr:          fromClause.WhereExpr(),
+			limit:              -1,
+			derivedQuery:       subItem.Query(),
 		}, nil
 	}
 
@@ -2832,18 +2941,19 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	joins = append(joins, extraCrossJoins...)
 
 	sq := &selectQuery{
-		tableName:     strings.Join(parts, "."),
-		tableAlias:    leftAlias,
-		joins:         joins,
-		projCols:      projCols,
-		projAliases:   projAliases,
-		projExprs:     projExprs,
-		projQualifier: projQualifier,
-		countStar:     countStar,
-		aggCols:       aggCols,
-		distinct:      simpleTable.DISTINCT() != nil,
-		whereExpr:     fromClause.WhereExpr(),
-		limit:         -1,
+		tableName:          strings.Join(parts, "."),
+		tableAlias:         leftAlias,
+		joins:              joins,
+		projCols:           projCols,
+		projAliases:        projAliases,
+		projExprs:          projExprs,
+		projStarQualifiers: projStarQualifiers,
+		projQualifier:      projQualifier,
+		countStar:          countStar,
+		aggCols:            aggCols,
+		distinct:           simpleTable.DISTINCT() != nil,
+		whereExpr:          fromClause.WhereExpr(),
+		limit:              -1,
 	}
 
 	// Parse ORDER BY clause.
