@@ -46,15 +46,33 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 	return c, nil
 }
 
-// DefaultCatalogSubspace returns the standard __SYS/CATALOG subspace.
-// Mirrors Java's RelationalKeyspaceProvider layout for cross-language
-// compatibility.
+// DefaultCatalogSubspace returns the two-element ("__SYS", "CATALOG")
+// subspace.
+//
+// Deprecated: this is NOT the subspace the sqldriver and the embedded
+// connection write to — they use the three-element
+// ("__SYS", "__SYS", "CATALOG") path via
+// [keyspace.RelationalKeyspace.CatalogSubspace]. Opening a catalog at
+// DefaultCatalogSubspace() returns an empty result set with no error,
+// silently missing every schema/database/template on the cluster.
+//
+// Use keyspace.New(root).CatalogSubspace() instead. The frl CLI's
+// `meta catalog` subcommands switched to that path in commit 7d31573;
+// `DefaultCatalogSubspace()` and [OpenRecordLayerStoreCatalog] have
+// no non-test callers and are retained only to keep the test fixtures
+// compiling.
 func DefaultCatalogSubspace() subspace.Subspace {
 	return subspace.Sub(SysConstant, CatalogConstant)
 }
 
-// OpenRecordLayerStoreCatalog is the standard entry point — opens the
-// catalog at the canonical __SYS/CATALOG subspace.
+// OpenRecordLayerStoreCatalog opens the catalog at the two-element
+// ("__SYS", "CATALOG") subspace.
+//
+// Deprecated: returns a catalog rooted at a subspace the sqldriver
+// does not write to — see [DefaultCatalogSubspace] for the full
+// rationale. Construct a catalog with
+// NewRecordLayerStoreCatalog(keyspace.New(root).CatalogSubspace())
+// instead.
 func OpenRecordLayerStoreCatalog() (*RecordLayerStoreCatalog, error) {
 	return NewRecordLayerStoreCatalog(DefaultCatalogSubspace())
 }

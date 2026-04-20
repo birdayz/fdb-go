@@ -128,6 +128,12 @@ func writeStoreInfoJSON(out io.Writer, info *gen.DataStoreInfo) error {
 // `frl meta catalog` share a process, the second call to
 // fdb.APIVersion() errors if the version differs — so both paths must
 // agree. 720 is fine for every read-only operation the CLI performs.
+//
+// TODO(frl): lift both the CLI and the sqldriver to 730 together.
+// FDB 7.3 recommends 730, the recordlayer tests use 730. This is a
+// paired change across pkg/relational/sqldriver/driver.go (line 123,
+// MustAPIVersion) and this constant; external sqldriver callers
+// should be audited before the bump.
 const fdbAPIVersion = 720
 
 // openDatabase opens an FDB connection via the pure-Go client. The API

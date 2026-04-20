@@ -23,10 +23,13 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			want:   "fdbsql:///myapp",
 		},
 		{
+			// url.Values.Encode percent-encodes `/` as `%2F`. The
+			// driver's url.Parse unpacks it, so the on-wire form stays
+			// correct even though it's uglier to read.
 			name:   "with cluster file",
 			ctx:    &configv1.Context{ClusterFile: "/etc/fdb/prod.cluster"},
 			dbPath: "/myapp",
-			want:   "fdbsql:///myapp?cluster_file=/etc/fdb/prod.cluster",
+			want:   "fdbsql:///myapp?cluster_file=%2Fetc%2Ffdb%2Fprod.cluster",
 		},
 		{
 			name:   "with schema",
@@ -40,13 +43,23 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			ctx:    &configv1.Context{ClusterFile: "/c"},
 			dbPath: "/myapp",
 			schema: "main",
-			want:   "fdbsql:///myapp?cluster_file=/c&schema=main",
+			want:   "fdbsql:///myapp?cluster_file=%2Fc&schema=main",
 		},
 		{
 			name:   "strips leading slash on path",
 			ctx:    &configv1.Context{},
 			dbPath: "myapp",
 			want:   "fdbsql:///myapp",
+		},
+		{
+			// Cluster file paths with spaces / special chars would corrupt
+			// the DSN under naive string concatenation. url.Values
+			// percent-encodes them so the driver's URL parser recovers
+			// the original value. Caught by reviewer round 7.
+			name:   "cluster file with space percent-encoded",
+			ctx:    &configv1.Context{ClusterFile: "/home/user/my project/fdb.cluster"},
+			dbPath: "/myapp",
+			want:   "fdbsql:///myapp?cluster_file=%2Fhome%2Fuser%2Fmy+project%2Ffdb.cluster",
 		},
 	}
 	for _, tc := range cases {
@@ -66,6 +79,11 @@ func TestIsQuery(t *testing.T) {
 		"SELECT 1",
 		"select 1",
 		"  SELECT * FROM foo",
+		// Multi-line — leading keyword followed by newline must still
+		// match. Earlier HasPrefix("SELECT ") version broke here and
+		// routed the statement to ExecContext (reported by reviewer).
+		"SELECT\n  *\nFROM orders",
+		"select\n  count(*)\nfrom orders",
 		"WITH cte AS (SELECT 1) SELECT * FROM cte",
 		"EXPLAIN SELECT 1",
 		"SHOW TABLES",

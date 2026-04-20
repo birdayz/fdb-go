@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,20 +123,24 @@ func newSQLCmd() *cobra.Command {
 // buildFDBSQLDSN constructs the `fdbsql:///PATH?cluster_file=…&schema=…`
 // DSN the driver accepts. Keeps the DSN-shape knowledge local to one
 // place so the REPL + non-interactive paths agree.
+//
+// Query params go through url.Values so paths with `&`, `=`, `?`, or
+// spaces (e.g. "/home/user/my project/fdb.cluster") round-trip through
+// the driver's URL parser without corrupting the DSN.
 func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
 	var b strings.Builder
 	b.WriteString("fdbsql:///")
 	b.WriteString(strings.TrimPrefix(dbPath, "/"))
-	var q []string
+	params := url.Values{}
 	if cf := cfgCtx.GetClusterFile(); cf != "" {
-		q = append(q, "cluster_file="+cf)
+		params.Set("cluster_file", cf)
 	}
 	if schema != "" {
-		q = append(q, "schema="+schema)
+		params.Set("schema", schema)
 	}
-	if len(q) > 0 {
+	if len(params) > 0 {
 		b.WriteString("?")
-		b.WriteString(strings.Join(q, "&"))
+		b.WriteString(params.Encode())
 	}
 	return b.String()
 }
@@ -402,15 +407,18 @@ func txCommand(stmt string) txCommandKind {
 }
 
 // isQuery guesses whether stmt returns rows. Case-insensitive match on
-// the leading keyword. Close enough for the REPL; wrong guesses still
-// work (QueryContext on DDL just returns zero rows + an error we
-// surface).
+// the leading keyword. Uses strings.Fields so newlines after the
+// keyword still match — earlier HasPrefix("SELECT ") version missed
+// multi-line statements like `SELECT\n  foo\nFROM bar;` and routed
+// them to ExecContext.
 func isQuery(stmt string) bool {
-	head := strings.ToUpper(strings.TrimSpace(stmt))
-	for _, kw := range []string{"SELECT ", "WITH ", "EXPLAIN ", "SHOW ", "VALUES ", "DESCRIBE "} {
-		if strings.HasPrefix(head, kw) {
-			return true
-		}
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(stmt)))
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "SELECT", "WITH", "EXPLAIN", "SHOW", "VALUES", "DESCRIBE":
+		return true
 	}
 	return false
 }
@@ -574,7 +582,7 @@ func (r *sqlRunner) printMetaHelp() {
 		{`\?`, "show this help"},
 		{`\q`, "quit the REPL (also Ctrl-D)"},
 		{`\d`, "list tables in the current schema"},
-		{`\dt`, "list tables (alias for \\d)"},
+		{`\dt`, "list schema templates (SHOW SCHEMA TEMPLATES)"},
 		{`\c <name>`, "switch to schema <name>"},
 		{`\i <file>`, "execute statements from file"},
 		{`\e`, "open $EDITOR — run the buffer on save+exit"},
@@ -588,6 +596,15 @@ func (r *sqlRunner) printMetaHelp() {
 		b.WriteString(h.desc)
 		b.WriteString("\n")
 	}
+	// Inside BEGIN/COMMIT, SELECT sees the transaction's own
+	// uncommitted writes — that's FDB's Read-Your-Writes semantics,
+	// not an autocommit leak. ROLLBACK still discards the writes
+	// correctly. Worth calling out because the behaviour surprises
+	// operators coming from Postgres's default READ COMMITTED.
+	b.WriteString("\n")
+	b.WriteString(sqlMutedStyle.Render(
+		"note: within BEGIN/COMMIT, SELECT returns rows including uncommitted\n" +
+			"      writes (FDB Read-Your-Writes). ROLLBACK discards them correctly.\n"))
 	fmt.Fprint(r.out, b.String())
 }
 
