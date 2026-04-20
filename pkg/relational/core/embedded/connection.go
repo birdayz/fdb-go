@@ -5851,6 +5851,44 @@ func evalScalarFunctionCallCore(
 			return eval(fArgs[1].Expression())
 		}
 		return eval(fArgs[2].Expression())
+	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
+		"DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR":
+		// Date-part functions taking a single time.Time argument.
+		// SQL standard returns an integer (1-based for month/day/dow,
+		// 0-based for hour/minute/second). Mostly aligns with Go's
+		// time accessors; DAYOFWEEK returns 1=Sunday..7=Saturday per
+		// MySQL/Oracle (Go's Weekday is 0=Sunday..6=Saturday → +1).
+		if len(fArgs) < 1 {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
+		}
+		v, err := eval(fArgs[0].Expression())
+		if err != nil || v == nil {
+			return nil, err
+		}
+		t, ok := v.(time.Time)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be a date/time, got %T", name, v)
+		}
+		switch name {
+		case "YEAR":
+			return int64(t.Year()), nil
+		case "MONTH":
+			return int64(t.Month()), nil
+		case "DAY", "DAYOFMONTH":
+			return int64(t.Day()), nil
+		case "HOUR":
+			return int64(t.Hour()), nil
+		case "MINUTE":
+			return int64(t.Minute()), nil
+		case "SECOND":
+			return int64(t.Second()), nil
+		case "DAYOFWEEK":
+			// MySQL convention: Sunday=1, Saturday=7.
+			return int64(t.Weekday()) + 1, nil
+		case "DAYOFYEAR":
+			return int64(t.YearDay()), nil
+		}
+		return nil, nil // unreachable
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, name)
 	}

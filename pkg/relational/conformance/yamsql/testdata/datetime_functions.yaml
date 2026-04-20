@@ -62,3 +62,41 @@ tests:
   - query: SELECT CURRENT_TIMESTAMP = LOCALTIME FROM t WHERE id = 1
     rows:
       - [true]
+  # Date-part functions: YEAR(CURRENT_DATE) is the current year — must
+  # be >= 2026 (when this code was written) and <= 9999. Using boolean
+  # checks since the actual year is non-deterministic.
+  - query: SELECT YEAR(CURRENT_DATE) >= 2026 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # MONTH() is 1..12; pin the range.
+  - query: SELECT MONTH(CURRENT_DATE) >= 1 AND MONTH(CURRENT_DATE) <= 12 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # DAY() is 1..31; pin the range.
+  - query: SELECT DAY(CURRENT_DATE) >= 1 AND DAY(CURRENT_DATE) <= 31 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # HOUR/MINUTE/SECOND are 0..N; CURRENT_DATE is midnight UTC so
+  # all three should be 0.
+  - query: SELECT HOUR(CURRENT_DATE) FROM t WHERE id = 1
+    rows:
+      - [0]
+  - query: SELECT MINUTE(CURRENT_DATE) FROM t WHERE id = 1
+    rows:
+      - [0]
+  - query: SELECT SECOND(CURRENT_DATE) FROM t WHERE id = 1
+    rows:
+      - [0]
+  # DAYOFWEEK returns 1=Sunday..7=Saturday (MySQL/Oracle convention,
+  # not Go's 0..6). Range pin.
+  - query: SELECT DAYOFWEEK(CURRENT_DATE) >= 1 AND DAYOFWEEK(CURRENT_DATE) <= 7 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # DAYOFYEAR is 1..366.
+  - query: SELECT DAYOFYEAR(CURRENT_DATE) >= 1 AND DAYOFYEAR(CURRENT_DATE) <= 366 FROM t WHERE id = 1
+    rows:
+      - [true]
+  # YEAR(NULL) → NULL (NULL propagates through datetime functions).
+  - query: SELECT YEAR(CAST(NULL AS BIGINT)) IS NULL FROM t WHERE id = 1
+    rows:
+      - [true]
