@@ -216,6 +216,32 @@ func TestMetaEvolveCheck_SameVersionRejected(t *testing.T) {
 	}
 }
 
+// TestMetaEvolveCheck_InvalidJSON_NoValidFalse locks in the CLI's
+// shape contract (documented in README): failures exit non-zero with
+// the error on stderr — they must NOT emit `{"valid": false}` on
+// stdout. CI gates that branch on exit code would otherwise accept a
+// rejected evolution because stdout looks successful.
+func TestMetaEvolveCheck_InvalidJSON_NoValidFalse(t *testing.T) {
+	t.Parallel()
+	old := writeDemoMetaFile(t, 0)
+	newer := writeDemoMetaFile(t, 0)
+	c := newMetaEvolveCheckCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"--old", old, "--new", newer, "-o", "json"})
+	if err := c.Execute(); err == nil {
+		t.Fatal("expected error for rejected evolution, got nil")
+	}
+	// stdout must stay empty (or at least contain no JSON object with
+	// "valid": anything). fang/cobra writes the error banner to the
+	// configured writer; we only care that no misleading JSON leaked.
+	if strings.Contains(out.String(), `"valid"`) {
+		t.Errorf("rejected evolution leaked a JSON envelope onto stdout:\n%s",
+			out.String())
+	}
+}
+
 func TestMetaGet_DefaultJSONContainsRecords(t *testing.T) {
 	path := writeDemoMetaFile(t, 0)
 	t.Setenv("FRL_CONFIG", filepath.Join(t.TempDir(), "config.yaml")) // empty → --meta-file mode
