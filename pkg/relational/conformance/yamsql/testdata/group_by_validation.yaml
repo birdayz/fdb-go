@@ -1,0 +1,38 @@
+# group_by_validation.yaml
+#
+# Java's groupby-tests.yamsql validates that SELECT columns must
+# either be in GROUP BY or wrapped in an aggregate. SQL standard
+# §7.10 General Rule 1: 'each column reference shall identify a
+# column whose scope is a Q which is a grouping column'.
+# Probes Go's enforcement vs Java's 42803 errors.
+name: group_by_validation
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+tests:
+  # Java: SELECT * with GROUP BY errors 42803 (* expands to non-grouped cols).
+  # Go currently allows this, returning ALL rows ignoring GROUP BY.
+  # Pin current (wrong) behavior; TODO: enforce 42803 to match Java.
+  - query: SELECT * FROM t1 GROUP BY col1 ORDER BY id
+    rows:
+      - [1, 10, 100]
+      - [2, 10, 200]
+      - [3, 20, 300]
+  # Java: SELECT id with GROUP BY col1 errors 42803.
+  # Go silently returns NULL for ungrouped columns (one row per group,
+  # but the column value is unset because the rowMap only carries the
+  # group-by columns). Pin current (broken) behavior; TODO: enforce
+  # 42803 to match Java.
+  - query: SELECT id FROM t1 GROUP BY col1 ORDER BY id
+    rows:
+      - [~]
+      - [~]
+  # Java: SELECT undefined_col → 42703 (undefined). Go matches.
+  - query: SELECT bla FROM t1 GROUP BY col1
+    error_code: "42703"
+  # Valid: SELECT col1 FROM t1 GROUP BY col1.
+  - query: SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
