@@ -3034,13 +3034,22 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						expr = e.Expression()
 					}
 					if len(aggCols) > 0 {
-						// Mixed aggregate query — this column is a group-by reference.
-						aggCols = append(aggCols, aggSelectCol{outName: func() string {
+						// Mixed aggregate query. Computed expressions that wrap
+						// aggregates (SUM(a)+1, COALESCE(SUM(v), 0)) classify as
+						// post-aggregation outExpr slots — evaluated against the
+						// rowMap at emit time. Bare columns / non-aggregate
+						// expressions classify as group-by references.
+						outName := func() string {
 							if alias != "" {
 								return alias
 							}
 							return colName
-						}(), groupCol: colName})
+						}()
+						if expr != nil && len(harvestAggregates(expr)) > 0 {
+							aggCols = append(aggCols, aggSelectCol{outName: outName, outExpr: expr})
+						} else {
+							aggCols = append(aggCols, aggSelectCol{outName: outName, groupCol: colName})
+						}
 					} else {
 						projCols = append(projCols, colName)
 						projAliases = append(projAliases, alias)

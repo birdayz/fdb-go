@@ -74,3 +74,16 @@ tests:
   - query: SELECT AVG(a) + 1 FROM t
     rows:
       - [11.666666666666666]
+  # Same aggregate both standalone and wrapped: `SELECT SUM(a), SUM(a)+1`
+  # must NOT misclassify SUM(a)+1 as a group-by reference (which the
+  # mixed-agg-plain-col path would otherwise do). Dedup via outName
+  # means SUM(a) isn't harvested twice either.
+  - query: SELECT SUM(a), SUM(a) + 1 FROM t WHERE id < 3
+    rows:
+      - [25, 26]
+  # Aggregate expression in SELECT + aggregate in HAVING. HAVING
+  # references the same SUM(a) that the SELECT-list expression uses,
+  # and the harvest dedup keeps a single hidden accumulator.
+  - query: SELECT SUM(a) + 1 FROM t HAVING SUM(a) > 10
+    rows:
+      - [33]
