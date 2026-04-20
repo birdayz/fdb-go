@@ -39,3 +39,24 @@ tests:
     # Short-circuit on AND-FALSE gives FALSE for id=100, UNKNOWN for the
     # rest — all filtered out.
     rows: []
+  # BETWEEN with low > high → empty result. SQL spec: x BETWEEN a AND b
+  # means a <= x <= b, so a > b → impossible → empty.
+  # (Java's between.yamsql pins this exact case.)
+  - query: SELECT id FROM t WHERE v BETWEEN 15 AND 5
+    rows: []
+  # NOT BETWEEN with low > high → ALL non-NULL rows, since x NOT BETWEEN
+  # a AND b means x < a OR x > b. With a=15, b=5: x<15 OR x>5 covers
+  # everything except a narrow range (5 <= x <= 15) — but x<15 and x>5
+  # together cover all reals, so the OR is true for all x. (Java pins
+  # this too.)
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 15 AND 5 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # BETWEEN low = high → exact match (if v equals that value).
+  - query: SELECT id FROM t WHERE v BETWEEN 10 AND 10
+    rows:
+      - [3]
