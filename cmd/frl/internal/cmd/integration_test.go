@@ -461,6 +461,23 @@ func TestIntegration_IndexScan(t *testing.T) {
 	}
 }
 
+// TestIntegration_IndexScan_UnknownLists — guardrail for the operator
+// typo experience. Unknown index names must exit with the available
+// list in the error, matching `index describe`'s behaviour.
+func TestIntegration_IndexScan_UnknownLists(t *testing.T) {
+	bindConfig(t)
+	_, err := runCmd(t, "index", "scan", "Order$bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown index, got nil")
+	}
+	if !strings.Contains(err.Error(), "Order$price") {
+		t.Errorf("error = %v; must list available index names", err)
+	}
+	if !strings.Contains(err.Error(), "Order$bogus") {
+		t.Errorf("error = %v; must echo the argument the operator typed", err)
+	}
+}
+
 func TestIntegration_StoreDump(t *testing.T) {
 	bindConfig(t)
 	out, err := runCmd(t, "store", "dump", "--limit", "100")
