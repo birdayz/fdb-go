@@ -383,6 +383,50 @@ func TestIntegration_IndexLs(t *testing.T) {
 	}
 }
 
+// TestIntegration_IndexDescribe covers both the text and JSON renderers
+// on an actual loaded metadata file. Text mode must show the familiar
+// key:value lines; JSON mode must produce an object keyed off the
+// documented field names (subset checked — the renderer's contract is
+// locked in by unit tests).
+func TestIntegration_IndexDescribe(t *testing.T) {
+	bindConfig(t)
+
+	text, err := runCmd(t, "index", "describe", "Order$price")
+	if err != nil {
+		t.Fatalf("index describe: %v\nout:\n%s", err, text)
+	}
+	for _, want := range []string{"Name:", "Order$price", "Type:", "value", "Expression fields:", "price"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("index describe text missing %q:\n%s", want, text)
+		}
+	}
+
+	jsonOut, err := runCmd(t, "index", "describe", "Order$price", "-o", "json")
+	if err != nil {
+		t.Fatalf("index describe -o json: %v\nout:\n%s", err, jsonOut)
+	}
+	for _, want := range []string{
+		`"name":`, `"Order$price"`,
+		`"type":`, `"value"`,
+		`"expression_fields":`, `"price"`,
+		`"options":`, // must be present even when empty
+	} {
+		if !strings.Contains(jsonOut, want) {
+			t.Errorf("index describe JSON missing %q:\n%s", want, jsonOut)
+		}
+	}
+
+	// Unknown index name must produce a helpful list of available names,
+	// not a stack trace.
+	_, err = runCmd(t, "index", "describe", "nope")
+	if err == nil {
+		t.Fatal("expected error for unknown index name")
+	}
+	if !strings.Contains(err.Error(), "Order$price") {
+		t.Errorf("error %v did not list available index name", err)
+	}
+}
+
 func TestIntegration_IndexScan(t *testing.T) {
 	bindConfig(t)
 	out, err := runCmd(t, "index", "scan", "Order$price", "--limit", "10")
