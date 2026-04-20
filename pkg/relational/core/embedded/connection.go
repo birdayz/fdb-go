@@ -731,6 +731,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	for _, row := range filtered {
 		gVals := make([]driver.Value, len(sq.groupBy))
 		for gi, gcol := range sq.groupBy {
+			if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil {
+				v, evalErr := evalExprOnMap(ctx, c, row, sq.groupByExprs[gi])
+				if evalErr != nil {
+					return nil, nil, evalErr
+				}
+				gVals[gi] = v
+				continue
+			}
 			if v, ok := row[gcol]; ok {
 				gVals[gi] = v
 			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
@@ -1543,9 +1551,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		// GROUP BY aggregate query: scan → group → aggregate.
 		if len(sq.aggCols) > 0 {
-			// Resolve group-by field descriptors.
+			// Resolve group-by field descriptors. Expression group keys
+			// (sq.groupByExprs[i] != nil) skip FD resolution — they are
+			// evaluated per message below via evalExpr.
 			groupFDs := make([]protoreflect.FieldDescriptor, len(sq.groupBy))
 			for i, col := range sq.groupBy {
+				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+					continue
+				}
 				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -1606,8 +1619,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 
 				// Build group-by key.
-				gVals := make([]driver.Value, len(groupFDs))
-				for i, fd := range groupFDs {
+				gVals := make([]driver.Value, len(sq.groupBy))
+				for i := range sq.groupBy {
+					if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+						v, evalErr := evalExpr(ctx, c, msg, sq.groupByExprs[i])
+						if evalErr != nil {
+							return nil, evalErr
+						}
+						gVals[i] = v
+						continue
+					}
+					fd := groupFDs[i]
 					if fd != nil && msg.ProtoReflect().Has(fd) {
 						gVals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 					}
@@ -2296,8 +2318,14 @@ type selectQuery struct {
 	limit int64
 	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
 	offset int64
-	// groupBy holds GROUP BY column names (nil = no GROUP BY).
+	// groupBy holds GROUP BY column names (nil = no GROUP BY). When an entry
+	// is an expression (e.g. `GROUP BY amt + 1`), groupBy[i] holds the raw
+	// expression text as a synthetic display key and groupByExprs[i] holds
+	// the IExpressionContext evaluated per row to derive the group key value.
 	groupBy []string
+	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
+	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
+	groupByExprs []antlrgen.IExpressionContext
 	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
 	// Non-nil only when groupBy is non-empty.
 	aggCols []aggSelectCol
@@ -2899,15 +2927,23 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
-	// Parse GROUP BY clause.
+	// Parse GROUP BY clause. Bare column references go through the
+	// columnNameFromExpr fast path (used by the proto-scan field-descriptor
+	// and the map-row name lookup); anything else is captured as an
+	// IExpressionContext evaluated per row at aggregation time.
 	groupByCtx := simpleTable.GroupByClause()
 	if groupByCtx != nil {
 		for _, item := range groupByCtx.AllGroupByItem() {
 			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
-			if nameErr != nil {
-				return nil, nameErr
+			if nameErr == nil {
+				sq.groupBy = append(sq.groupBy, colName)
+				sq.groupByExprs = append(sq.groupByExprs, nil)
+			} else {
+				// Synthesize a display name from the expression text; the
+				// value used for grouping comes from evaluating the expr.
+				sq.groupBy = append(sq.groupBy, item.Expression().GetText())
+				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
 			}
-			sq.groupBy = append(sq.groupBy, colName)
 		}
 	}
 

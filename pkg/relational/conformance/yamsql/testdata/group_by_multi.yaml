@@ -1,11 +1,10 @@
 # group_by_multi.yaml
 #
-# Multi-column GROUP BY and the current limitation that GROUP BY
-# only accepts plain column names, not expressions. Java and Postgres
-# both accept `GROUP BY col + 1`; the Go parser uses
-# `columnNameFromExpr` so anything that doesn't resolve to a single
-# column reference is rejected. Pin the working shape and the
-# current rejection so the constraint is explicit.
+# Multi-column GROUP BY plus GROUP BY on arbitrary expressions.
+# Bare column references take a field-descriptor fast path; expressions
+# are evaluated per row/message to derive the group key, matching
+# Postgres / MySQL / Oracle semantics. NULL groups into its own bucket
+# on both paths (preserved through the NULL-safe groupByKey encoding).
 name: group_by_multi
 schema_template: |
   CREATE TABLE sales (id BIGINT NOT NULL, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))
@@ -37,9 +36,33 @@ tests:
     rows:
       - ['west', 725]
 
-  # GROUP BY on an expression is not supported — the parser's
-  # columnNameFromExpr rejects anything that isn't a bare column
-  # reference. 0A000 (unsupported_operation) today. Java/Postgres
-  # both accept `GROUP BY amt / 100` — this is a known gap.
-  - query: SELECT COUNT(*) FROM sales GROUP BY amt + 1
-    error_code: "0A000"
+  # GROUP BY on an arithmetic expression. amt buckets (amt/100 with integer
+  # division): 100→1, 50→0, 200→2, 300→3, 400→4, 25→0. Bucket 0 → 2 rows,
+  # buckets 1/2/3/4 → 1 row each. Count-per-bucket, order unstable so
+  # the rowset is compared unordered.
+  - query: SELECT COUNT(*) FROM sales GROUP BY amt / 100
+    unordered: true
+    rows:
+      - [2]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+
+  # GROUP BY expression combined with aggregate-over-expression in the SELECT.
+  # Group by amt > 200 (boolean): true for 300 and 400 (sum=700, count=2);
+  # false for 100, 50, 200, 25 (sum=375, count=4). ORDER BY on a plain
+  # aggregate (COUNT(*)) works even when the group key is an expression.
+  - query: |
+      SELECT COUNT(*), SUM(amt) FROM sales GROUP BY amt > 200
+      ORDER BY COUNT(*) DESC
+    rows:
+      - [4, 375]
+      - [2, 700]
+
+  # GROUP BY expression + HAVING on aggregate.
+  - query: |
+      SELECT COUNT(*) FROM sales GROUP BY amt / 100
+      HAVING COUNT(*) > 1
+    rows:
+      - [2]
