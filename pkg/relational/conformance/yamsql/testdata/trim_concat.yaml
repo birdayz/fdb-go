@@ -32,3 +32,10 @@ tests:
   - query: SELECT REPLACE(s, 'b', 'X') FROM t WHERE id = 2
     rows:
       - ['aXc']
+  # Nested function calls — common pattern.
+  - query: SELECT UPPER(TRIM(s)) FROM t WHERE id = 1
+    rows:
+      - ['HELLO']
+  - query: SELECT LOWER(CONCAT('ABC', 'xyz')) FROM t WHERE id = 1
+    rows:
+      - ['abcxyz']
