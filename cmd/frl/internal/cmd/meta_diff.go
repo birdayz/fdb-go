@@ -52,6 +52,29 @@ func newMetaDiffCmd() *cobra.Command {
 	return c
 }
 
+// diffEntry is the structured unit of change — shared by both text and
+// JSON renderers so categories can't drift between the two outputs.
+// Name is the entity (record type, index); Detail is a human-readable
+// explanation (e.g. "pk: order_id" for additions, "pk changed (old -> new)"
+// for modifications). Text-only renderers can render Name + Detail; JSON
+// keeps a stable name-only contract on each bucket.
+type diffEntry struct {
+	Name   string
+	Detail string // empty for bare removals
+}
+
+// diffSection buckets changes of a given kind (record_types / indexes).
+type diffSection struct {
+	Added   []diffEntry
+	Removed []diffEntry
+	Changed []diffEntry
+}
+
+// nonEmpty returns true iff the section has any entries across buckets.
+func (s diffSection) nonEmpty() bool {
+	return len(s.Added) > 0 || len(s.Removed) > 0 || len(s.Changed) > 0
+}
+
 // writeMetaDiff renders a compact diff of two RecordMetaData snapshots.
 // Output shape (stable, scriptable):
 //
@@ -76,21 +99,27 @@ func writeMetaDiff(out io.Writer, oldMeta, newMeta *recordlayer.RecordMetaData) 
 		anyChange = true
 	}
 
-	typeLines := diffRecordTypes(oldMeta, newMeta)
-	if len(typeLines) > 0 {
+	types := diffRecordTypes(oldMeta, newMeta)
+	if types.nonEmpty() {
 		b.WriteString("RECORD TYPES:\n")
-		for _, line := range typeLines {
-			fmt.Fprintf(&b, "  %s\n", line)
-		}
+		writeSectionText(&b, types, func(e diffEntry) string {
+			if e.Detail == "" {
+				return e.Name
+			}
+			return e.Name + " (" + e.Detail + ")"
+		})
 		anyChange = true
 	}
 
-	indexLines := diffIndexes(oldMeta, newMeta)
-	if len(indexLines) > 0 {
+	indexes := diffIndexes(oldMeta, newMeta)
+	if indexes.nonEmpty() {
 		b.WriteString("INDEXES:\n")
-		for _, line := range indexLines {
-			fmt.Fprintf(&b, "  %s\n", line)
-		}
+		writeSectionText(&b, indexes, func(e diffEntry) string {
+			if e.Detail == "" {
+				return e.Name
+			}
+			return e.Name + " (" + e.Detail + ")"
+		})
 		anyChange = true
 	}
 
@@ -101,22 +130,44 @@ func writeMetaDiff(out io.Writer, oldMeta, newMeta *recordlayer.RecordMetaData) 
 	return err
 }
 
-// diffRecordTypes returns sorted +/-/~ lines for record type differences.
-// Changes tracked: addition, removal, PK expression change.
-func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) []string {
+// writeSectionText emits the +/-/~ lines for a single diff section.
+// addedFmt wraps "name (detail)"; changed entries always render as
+// "name: detail" (detail carries the "x changed (a -> b)" description).
+func writeSectionText(b *strings.Builder, s diffSection, addedFmt func(diffEntry) string) {
+	for _, e := range s.Added {
+		fmt.Fprintf(b, "  + %s\n", addedFmt(e))
+	}
+	for _, e := range s.Removed {
+		fmt.Fprintf(b, "  - %s\n", e.Name)
+	}
+	for _, e := range s.Changed {
+		if e.Detail == "" {
+			fmt.Fprintf(b, "  ~ %s\n", e.Name)
+		} else {
+			fmt.Fprintf(b, "  ~ %s: %s\n", e.Name, e.Detail)
+		}
+	}
+}
+
+// diffRecordTypes buckets record-type differences into added / removed /
+// changed (PK expression). Each bucket is sorted by name so diffs across
+// invocations stay stable. Shared by both text and JSON renderers.
+func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	oldTypes := oldMeta.RecordTypes()
 	newTypes := newMeta.RecordTypes()
-	var lines []string
+	var s diffSection
 
 	for name := range newTypes {
 		if _, ok := oldTypes[name]; !ok {
-			pk := pkFieldsOrUnset(newTypes[name].PrimaryKey)
-			lines = append(lines, fmt.Sprintf("+ %s (pk: %s)", name, pk))
+			s.Added = append(s.Added, diffEntry{
+				Name:   name,
+				Detail: "pk: " + pkFieldsOrUnset(newTypes[name].PrimaryKey),
+			})
 		}
 	}
 	for name := range oldTypes {
 		if _, ok := newTypes[name]; !ok {
-			lines = append(lines, fmt.Sprintf("- %s", name))
+			s.Removed = append(s.Removed, diffEntry{Name: name})
 		}
 	}
 	for name, oldT := range oldTypes {
@@ -127,29 +178,35 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) []string {
 		oldPK := pkFieldsOrUnset(oldT.PrimaryKey)
 		newPK := pkFieldsOrUnset(newT.PrimaryKey)
 		if oldPK != newPK {
-			lines = append(lines, fmt.Sprintf("~ %s: pk changed (%s -> %s)", name, oldPK, newPK))
+			s.Changed = append(s.Changed, diffEntry{
+				Name:   name,
+				Detail: fmt.Sprintf("pk changed (%s -> %s)", oldPK, newPK),
+			})
 		}
 	}
-	sort.Strings(lines)
-	return lines
+	sortSection(&s)
+	return s
 }
 
-// diffIndexes returns sorted +/-/~ lines. Changes tracked: addition,
-// removal, type change, expression-fields change.
-func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) []string {
+// diffIndexes buckets index differences. Tracks addition, removal, and
+// modifications to index type or expression fields.
+func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	oldIdx := oldMeta.GetAllIndexes()
 	newIdx := newMeta.GetAllIndexes()
-	var lines []string
+	var s diffSection
 
 	for name, idx := range newIdx {
 		if _, ok := oldIdx[name]; !ok {
-			lines = append(lines, fmt.Sprintf("+ %s (%s on %s)",
-				name, idx.Type, strings.Join(idx.RootExpression.FieldNames(), ",")))
+			s.Added = append(s.Added, diffEntry{
+				Name: name,
+				Detail: fmt.Sprintf("%s on %s",
+					idx.Type, strings.Join(idx.RootExpression.FieldNames(), ",")),
+			})
 		}
 	}
 	for name := range oldIdx {
 		if _, ok := newIdx[name]; !ok {
-			lines = append(lines, fmt.Sprintf("- %s", name))
+			s.Removed = append(s.Removed, diffEntry{Name: name})
 		}
 	}
 	for name, oldI := range oldIdx {
@@ -167,19 +224,27 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) []string {
 			deltas = append(deltas, fmt.Sprintf("fields %s -> %s", oldFields, newFields))
 		}
 		if len(deltas) > 0 {
-			lines = append(lines, fmt.Sprintf("~ %s: %s", name, strings.Join(deltas, "; ")))
+			s.Changed = append(s.Changed, diffEntry{
+				Name:   name,
+				Detail: strings.Join(deltas, "; "),
+			})
 		}
 	}
-	sort.Strings(lines)
-	return lines
+	sortSection(&s)
+	return s
+}
+
+func sortSection(s *diffSection) {
+	sort.Slice(s.Added, func(i, j int) bool { return s.Added[i].Name < s.Added[j].Name })
+	sort.Slice(s.Removed, func(i, j int) bool { return s.Removed[i].Name < s.Removed[j].Name })
+	sort.Slice(s.Changed, func(i, j int) bool { return s.Changed[i].Name < s.Changed[j].Name })
 }
 
 // --- JSON diff ---
 
 // metaDiffJSON is the structured-output shape for `meta diff -o json`.
-// Three buckets (added / removed / changed) per section mirror the +/-/~
-// categories in the text output but give CI systems cleanly separable
-// lists — e.g. `jq '.indexes.changed | length'`.
+// Contract: every section is present with empty arrays (not nil) so
+// `jq '.indexes.added | length'` is null-safe.
 type metaDiffJSON struct {
 	Version     *versionChangeJSON `json:"version,omitempty"`
 	RecordTypes sectionJSON        `json:"record_types"`
@@ -199,77 +264,33 @@ type sectionJSON struct {
 
 func writeMetaDiffJSON(out io.Writer, oldMeta, newMeta *recordlayer.RecordMetaData) error {
 	d := metaDiffJSON{
-		RecordTypes: sectionJSON{Added: []string{}, Removed: []string{}, Changed: []string{}},
-		Indexes:     sectionJSON{Added: []string{}, Removed: []string{}, Changed: []string{}},
+		RecordTypes: toSectionJSON(diffRecordTypes(oldMeta, newMeta)),
+		Indexes:     toSectionJSON(diffIndexes(oldMeta, newMeta)),
 	}
 	if oldMeta.Version() != newMeta.Version() {
 		d.Version = &versionChangeJSON{Old: oldMeta.Version(), New: newMeta.Version()}
-	}
-	// Split the existing diff helpers' `+ / - / ~` lines into buckets.
-	// Keeps the JSON shape in sync with the text output by construction —
-	// if a future text change adds a category, this function gets a
-	// matching parse branch or the test catches the drift.
-	for _, line := range diffRecordTypes(oldMeta, newMeta) {
-		category, name := splitDiffLine(line)
-		switch category {
-		case "+":
-			d.RecordTypes.Added = append(d.RecordTypes.Added, name)
-		case "-":
-			d.RecordTypes.Removed = append(d.RecordTypes.Removed, name)
-		case "~":
-			d.RecordTypes.Changed = append(d.RecordTypes.Changed, name)
-		}
-	}
-	for _, line := range diffIndexes(oldMeta, newMeta) {
-		category, name := splitDiffLine(line)
-		switch category {
-		case "+":
-			d.Indexes.Added = append(d.Indexes.Added, name)
-		case "-":
-			d.Indexes.Removed = append(d.Indexes.Removed, name)
-		case "~":
-			d.Indexes.Changed = append(d.Indexes.Changed, name)
-		}
 	}
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(d)
 }
 
-// splitDiffLine extracts the category marker (+ / - / ~) and the bare
-// name out of a diff-line produced by diffRecordTypes/diffIndexes:
-//
-//	"+ Order$new_idx (value on price)" → "+", "Order$new_idx"
-//	"- Order$old_idx"                  → "-", "Order$old_idx"
-//	"~ Order: pk changed (…)"          → "~", "Order"
-//
-// Anything else returns ("", "") and gets dropped by the caller.
-func splitDiffLine(line string) (category, name string) {
-	if len(line) < 3 || line[1] != ' ' {
-		return "", ""
+// toSectionJSON extracts just the names out of a diffSection — the JSON
+// contract is name-only per bucket; `jq` consumers read names then
+// correlate back via their own data. Details are text-only (the text
+// renderer shows them inline).
+func toSectionJSON(s diffSection) sectionJSON {
+	out := sectionJSON{Added: []string{}, Removed: []string{}, Changed: []string{}}
+	for _, e := range s.Added {
+		out.Added = append(out.Added, e.Name)
 	}
-	category = line[:1]
-	rest := line[2:]
-	// Name runs up to the first ' ' (for + lines with trailing details)
-	// or ':' (for ~ lines with "pk changed" / "type value -> count" etc.).
-	// Either separator wins — whichever comes first.
-	spaceIdx := strings.IndexByte(rest, ' ')
-	colonIdx := strings.IndexByte(rest, ':')
-	cut := -1
-	switch {
-	case spaceIdx == -1 && colonIdx == -1:
-		cut = len(rest)
-	case spaceIdx == -1:
-		cut = colonIdx
-	case colonIdx == -1:
-		cut = spaceIdx
-	default:
-		cut = spaceIdx
-		if colonIdx < spaceIdx {
-			cut = colonIdx
-		}
+	for _, e := range s.Removed {
+		out.Removed = append(out.Removed, e.Name)
 	}
-	return category, rest[:cut]
+	for _, e := range s.Changed {
+		out.Changed = append(out.Changed, e.Name)
+	}
+	return out
 }
 
 // pkFieldsOrUnset returns a human-readable PK representation: comma-joined

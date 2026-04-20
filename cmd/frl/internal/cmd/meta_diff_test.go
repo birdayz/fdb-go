@@ -204,27 +204,35 @@ func TestDiffJSON_VersionBumpEmitsVersion(t *testing.T) {
 	}
 }
 
-func TestSplitDiffLine(t *testing.T) {
+// TestDiffSection_EntryShape verifies the structured diffEntry output
+// replaces the text-parsing that splitDiffLine used to do. Each bucket
+// must contain entries with Name populated; Detail is optional (empty
+// for bare removals).
+func TestDiffSection_EntryShape(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		in           string
-		wantCategory string
-		wantName     string
-	}{
-		{"+ Order$new_idx (value on price)", "+", "Order$new_idx"},
-		{"- Order$old_idx", "-", "Order$old_idx"},
-		{"~ Order: pk changed (x -> y)", "~", "Order"},
-		{"~ Order$price: type value -> count", "~", "Order$price"},
-		{"invalid", "", ""},
+	m1 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+	})
+	m2 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.AddIndex("Order", recordlayer.NewIndex("Order$quantity", recordlayer.Field("quantity")))
+	})
+
+	idx := diffIndexes(m1, m2)
+	// Expect 1 added (Order$quantity), 1 removed (Order$price), 0 changed.
+	if len(idx.Added) != 1 || idx.Added[0].Name != "Order$quantity" {
+		t.Errorf("Added = %v; want [Order$quantity]", idx.Added)
 	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			t.Parallel()
-			cat, name := splitDiffLine(tc.in)
-			if cat != tc.wantCategory || name != tc.wantName {
-				t.Errorf("splitDiffLine(%q) = (%q, %q); want (%q, %q)",
-					tc.in, cat, name, tc.wantCategory, tc.wantName)
-			}
-		})
+	if idx.Added[0].Detail == "" {
+		t.Errorf("Added entry missing Detail — was expected to carry type/fields summary")
+	}
+	if len(idx.Removed) != 1 || idx.Removed[0].Name != "Order$price" {
+		t.Errorf("Removed = %v; want [Order$price]", idx.Removed)
+	}
+	// Removed entries have empty Detail by contract.
+	if idx.Removed[0].Detail != "" {
+		t.Errorf("Removed entry Detail = %q; want empty", idx.Removed[0].Detail)
+	}
+	if len(idx.Changed) != 0 {
+		t.Errorf("Changed = %v; want empty", idx.Changed)
 	}
 }
