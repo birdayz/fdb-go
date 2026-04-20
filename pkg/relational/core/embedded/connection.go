@@ -3766,12 +3766,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 
 	// SQL §7.10 General Rule 1 / Java alignment: when GROUP BY is present,
 	// every SELECT-list column reference must be in GROUP BY or wrapped in
-	// an aggregate. SELECT * with GROUP BY errors 42803 because * expands
-	// to all table columns, which generally aren't all in GROUP BY. Same
-	// for plain column refs that don't appear in GROUP BY.
-	if len(sq.groupBy) > 0 && projQualifier == "" && len(projCols) == 0 && !countStar && len(sq.aggCols) == 0 {
-		// SELECT * FROM t GROUP BY ... — projCols nil because of star;
-		// no aggregates either. Java errors 42803.
+	// an aggregate. Both SELECT * and SELECT qualifier.* with GROUP BY
+	// error 42803 because the star expansion includes all source columns,
+	// which generally aren't all in GROUP BY.
+	if len(sq.groupBy) > 0 && len(projCols) == 0 && !countStar && len(sq.aggCols) == 0 {
+		// projCols == nil + projQualifier == "" → SELECT *
+		// projCols == nil + projQualifier != "" → SELECT qualifier.*
+		// Either way, the star expands to ungrouped columns. Java 42803.
 		return nil, api.NewError(api.ErrCodeGroupingError,
 			"SELECT * cannot be used with GROUP BY (every column must be in GROUP BY or aggregated)")
 	}
