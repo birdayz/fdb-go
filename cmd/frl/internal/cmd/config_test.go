@@ -389,6 +389,49 @@ func TestConfigUseContext_TypoHintListsAvailable(t *testing.T) {
 	}
 }
 
+// TestConfigView_MissingContextHint locks in the error shape when
+// config.yaml is empty / absent. The message must:
+//   - name the effective config path so the operator can see where
+//     they need to write
+//   - suggest `--context <name>` as the escape hatch for CI scripts
+//     that don't want to touch the on-disk config
+func TestConfigView_MissingContextHint(t *testing.T) {
+	t.Setenv("FRL_CONFIG", "/tmp/definitely-not-real-"+t.Name()+".yaml")
+
+	c := newConfigViewCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error on missing config, got nil")
+	}
+	for _, want := range []string{"definitely-not-real", "--context"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v; missing %q", err, want)
+		}
+	}
+}
+
+// TestConfigView_InvalidOutputRejected smokes the output validator on
+// the view command — view accepts yaml|json, anything else should bail
+// before touching the config file.
+func TestConfigView_InvalidOutputRejected(t *testing.T) {
+	writeTestConfig(t, "prod")
+	c := newConfigViewCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"-o", "text"}) // view doesn't support text
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error for -o text")
+	}
+	if !strings.Contains(err.Error(), "invalid --output") {
+		t.Errorf("error = %v; want 'invalid --output'", err)
+	}
+}
+
 // TestConfigUseContext_PersistsAndConfirms — happy path for the
 // write side of use-context: switching from "local" to "prod" must
 // persist the change (subsequent ResolveContext returns "prod") AND
