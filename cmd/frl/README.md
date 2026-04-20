@@ -54,11 +54,11 @@ via `recordlayer.WriteRecordMetaData`; Java: `meta.toProto().writeTo(out)`).
 
 ```
 frl record get <pk>                          # single record by PK
-frl record scan [--type T] [--limit N]       # newline-delimited JSON envelopes
+frl record scan [--type T] [--reverse] [--limit N]  # newline-delimited JSON envelopes
 frl record count [--type T] [-o json]        # via atomic count index
 
 frl index ls [--no-fdb] [-o json]            # name, type, state, record types
-frl index describe <name>                    # full definition from metadata
+frl index describe <name> [-o json]          # full definition from metadata
 frl index scan <name> [--reverse] [--limit N] # index entries as JSON envelopes
 ```
 
@@ -66,7 +66,7 @@ frl index scan <name> [--reverse] [--limit N] # index entries as JSON envelopes
 
 ```
 frl store info [-o json]                     # DataStoreInfo header, no metadata needed
-frl store dump [--limit N]                   # tuple-decoded forensic view with subspace labels
+frl store dump [--subspace L] [--limit N]    # tuple-decoded forensic view; filter by subspace label
 ```
 
 ### Metadata
@@ -104,17 +104,20 @@ frl version [--short] [-o json]              # binary + Go toolchain version
 --context <name>        # on all store-touching commands
 --meta-file <path>      # overrides Context.metadata for this call
 --no-fdb                # index ls only — metadata-only render
+--reverse               # record scan, index scan — walk in reverse PK / key order
+--subspace <label>      # store dump only — limit to one subspace
 -o|--output text|json   # structured-output commands (see below)
 ```
 
 ## Structured output (`-o json`)
 
-Thirteen commands emit machine-readable JSON on demand:
+Fourteen commands emit machine-readable JSON on demand:
 
 | Command | Payload |
 |---|---|
 | `store info` | full `DataStoreInfo` proto |
 | `index ls` | array of `{name, type, state, record_types, last_modified_version}` |
+| `index describe` | `{name, type, expression_fields, column_size, subspace_key, record_types, unique, clear_when_zero, added_version, last_modified_version, has_predicate, options}` |
 | `meta types ls` | array of `{name, primary_key, since_version}` |
 | `meta types describe` | `{name, primary_key, record_type_key, proto_message, proto_field_count, indexes, multi_type_indexes, universal_indexes}` |
 | `meta validate` | `{file, valid}` |
@@ -160,6 +163,7 @@ Tab-complete covers:
 - `--context` → context names from `~/.frl/config.yaml`
 - `--output` → `text`/`json` (or `json`/`yaml` for `meta get`)
 - `--type` → record type names from loaded metadata
+- `--subspace` (store dump) → known subspace labels
 - positional args on `config use-context`, `index describe`/`scan`,
   `meta types describe`
 
