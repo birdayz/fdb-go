@@ -5884,8 +5884,10 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 // evalSpecificFunctionCore is the unified implementation shared by
 // evalSpecificFunction (proto path) and evalSpecificFunctionOnMap (map path).
 // Handles grammar-level SpecificFunction nodes: CASE WHEN ... END, simple CASE,
-// and CAST(expr AS type). The searched CASE branch needs a boolean predicate
-// evaluator, hence predicateEval in addition to eval.
+// CAST(expr AS type), and the no-argument datetime / user functions
+// (CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, LOCALTIME, CURRENT_USER).
+// The searched CASE branch needs a boolean predicate evaluator, hence
+// predicateEval in addition to eval.
 //
 // unsupportedFmt must accept exactly one %T for the specific-function type.
 func evalSpecificFunctionCore(
@@ -5895,6 +5897,31 @@ func evalSpecificFunctionCore(
 	sf antlrgen.ISpecificFunctionContext,
 ) (driver.Value, error) {
 	switch c := sf.(type) {
+	case *antlrgen.SimpleFunctionCallContext:
+		// CURRENT_DATE / CURRENT_TIME / CURRENT_TIMESTAMP / LOCALTIME /
+		// CURRENT_USER. SQL standard says CURRENT_TIMESTAMP returns a
+		// TIMESTAMP value with the statement-start time; we approximate
+		// with time.Now() at evaluation time. CURRENT_DATE truncates to
+		// midnight UTC. CURRENT_USER returns the empty string — we don't
+		// have a user concept yet.
+		switch {
+		case c.CURRENT_DATE() != nil:
+			now := time.Now().UTC()
+			return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), nil
+		case c.CURRENT_TIMESTAMP() != nil, c.LOCALTIME() != nil:
+			return time.Now().UTC(), nil
+		case c.CURRENT_TIME() != nil:
+			// CURRENT_TIME returns just the time-of-day portion; we
+			// surface the full timestamp because Go has no time-only
+			// type and yamsql doesn't pin time-only values either.
+			return time.Now().UTC(), nil
+		case c.CURRENT_USER() != nil:
+			// No user-identity concept yet; return empty string. The
+			// connection tracks dbPath/schema, not a user. Java's
+			// fdb-relational returns empty too.
+			return "", nil
+		}
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported simple function call")
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: CASE WHEN cond THEN val ... [ELSE val] END
 		// WHEN conditions are full boolean expressions (comparisons, AND/OR, etc.).

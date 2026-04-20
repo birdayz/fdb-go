@@ -1,0 +1,48 @@
+# datetime_functions.yaml
+#
+# CURRENT_DATE / CURRENT_TIMESTAMP / CURRENT_TIME / LOCALTIME /
+# CURRENT_USER. Values are non-deterministic (time changes between
+# runs) so the scenarios verify presence + structural shape via
+# IS NOT NULL / IS NULL rather than literal value equality.
+#
+# Returns:
+#   - CURRENT_DATE       → time.Time at midnight UTC of today
+#   - CURRENT_TIMESTAMP  → time.Now() UTC
+#   - CURRENT_TIME       → time.Now() UTC (no time-only type in Go;
+#                          surfaces same as CURRENT_TIMESTAMP)
+#   - LOCALTIME          → time.Now() UTC
+#   - CURRENT_USER       → empty string (no user-identity concept yet)
+name: datetime_functions
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+tests:
+  # CURRENT_TIMESTAMP IS NOT NULL — function evaluates without error.
+  - query: SELECT CURRENT_TIMESTAMP IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_DATE IS NOT NULL.
+  - query: SELECT CURRENT_DATE IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_TIME IS NOT NULL.
+  - query: SELECT CURRENT_TIME IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # LOCALTIME IS NOT NULL.
+  - query: SELECT LOCALTIME IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_USER returns empty string ('' is a known value, deterministic).
+  - query: SELECT CURRENT_USER FROM t WHERE id = 1
+    rows:
+      - ['']
+  # CURRENT_USER IS NOT NULL — empty string is not NULL per SQL rules.
+  - query: SELECT CURRENT_USER IS NOT NULL FROM t WHERE id = 1
+    rows:
+      - [true]
+  # CURRENT_USER = '' — empty string equality is deterministic.
+  - query: SELECT id FROM t WHERE CURRENT_USER = ''
+    rows:
+      - [1]
