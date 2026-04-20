@@ -488,6 +488,65 @@ func (c *EmbeddedConnection) scanTableToMaps(
 	return rows, nil
 }
 
+// resolveQualifierColumns resolves a `<qualifier>.*` SELECT list against
+// the FROM-clause sources. Returns the ordered column list from the matching
+// source and the effective alias (useful for row-key lookups of the form
+// "alias.col"). Returns ErrCodeUndefinedTable when the qualifier does not
+// match any source.
+//
+// Matching rules (first match wins):
+//  1. tableAlias (or tableName when no explicit alias was given).
+//  2. Any joins[i].alias (or joins[i].tableName when no alias).
+//
+// Columns come from: the CTE definition when the source names a CTE; the
+// record type descriptor otherwise.
+func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaData, sq *selectQuery, qualifier string) ([]string, string, error) {
+	type source struct {
+		tableName string
+		alias     string // falls back to tableName when not explicitly aliased
+	}
+	sources := make([]source, 0, 1+len(sq.joins))
+	leftAlias := sq.tableAlias
+	if leftAlias == "" {
+		leftAlias = sq.tableName
+	}
+	sources = append(sources, source{tableName: sq.tableName, alias: leftAlias})
+	for _, jc := range sq.joins {
+		a := jc.alias
+		if a == "" {
+			a = jc.tableName
+		}
+		sources = append(sources, source{tableName: jc.tableName, alias: a})
+	}
+
+	for _, s := range sources {
+		if !strings.EqualFold(s.alias, qualifier) {
+			continue
+		}
+		if c.ctes != nil {
+			if cte, ok := c.ctes[strings.ToUpper(s.tableName)]; ok {
+				cols := make([]string, len(cte.cols))
+				copy(cols, cte.cols)
+				return cols, s.alias, nil
+			}
+		}
+		rt := md.GetRecordType(s.tableName)
+		if rt == nil {
+			return nil, "", api.NewErrorf(api.ErrCodeUndefinedTable,
+				"qualifier %q resolves to table %q which has no record type", qualifier, s.tableName)
+		}
+		fields := rt.Descriptor.Fields()
+		cols := make([]string, 0, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			cols = append(cols, string(fields.Get(i).Name()))
+		}
+		return cols, s.alias, nil
+	}
+
+	return nil, "", api.NewErrorf(api.ErrCodeUndefinedTable,
+		"SELECT %s.*: qualifier does not match any FROM-clause source", qualifier)
+}
+
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
 // Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
 // aggregateMapRows applies GROUP BY + aggregate computation to a slice of map rows
@@ -894,27 +953,38 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		} else {
 			// Determine output columns.
 			// For SELECT *, collect all unique unqualified column names in order.
+			// For SELECT <qualifier>.*, restrict to the aliased source's columns.
+			var qualifierKey string // non-empty when qualified-star; row lookups use "qualifier.col"
 			if sq.projCols == nil {
-				seen := make(map[string]bool)
-				// Order: left table columns first, then join table columns.
-				leftRt := md.GetRecordType(sq.tableName)
-				if leftRt != nil {
-					for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
-						name := string(leftRt.Descriptor.Fields().Get(i).Name())
-						if !seen[name] {
-							cols = append(cols, name)
-							seen[name] = true
-						}
+				if sq.projQualifier != "" {
+					qCols, qAlias, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier)
+					if qErr != nil {
+						return nil, qErr
 					}
-				}
-				for _, jc := range sq.joins {
-					jRt := md.GetRecordType(jc.tableName)
-					if jRt != nil {
-						for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
-							name := string(jRt.Descriptor.Fields().Get(i).Name())
+					cols = qCols
+					qualifierKey = qAlias
+				} else {
+					seen := make(map[string]bool)
+					// Order: left table columns first, then join table columns.
+					leftRt := md.GetRecordType(sq.tableName)
+					if leftRt != nil {
+						for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
+							name := string(leftRt.Descriptor.Fields().Get(i).Name())
 							if !seen[name] {
 								cols = append(cols, name)
 								seen[name] = true
+							}
+						}
+					}
+					for _, jc := range sq.joins {
+						jRt := md.GetRecordType(jc.tableName)
+						if jRt != nil {
+							for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
+								name := string(jRt.Descriptor.Fields().Get(i).Name())
+								if !seen[name] {
+									cols = append(cols, name)
+									seen[name] = true
+								}
 							}
 						}
 					}
@@ -934,9 +1004,18 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			for _, row := range filtered {
 				var vals []driver.Value
 				if sq.projCols == nil {
-					// SELECT * — use cols order.
+					// SELECT * or SELECT <qualifier>.* — use cols order.
+					// When qualifierKey is set, look up the source-qualified
+					// key first so two sources with overlapping names don't
+					// collide into whichever wrote the unqualified key last.
 					vals = make([]driver.Value, len(cols))
 					for i, col := range cols {
+						if qualifierKey != "" {
+							if v, ok := row[qualifierKey+"."+col]; ok {
+								vals[i] = v
+								continue
+							}
+						}
 						vals[i] = row[col]
 					}
 				} else {
@@ -1055,6 +1134,16 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	alias := sq.tableAlias
 	if alias == "" {
 		alias = sq.tableName
+	}
+
+	// Qualified-star (SELECT <q>.*) must match this CTE's alias or the CTE
+	// name itself. Any other qualifier is undefined in a single-source FROM.
+	if sq.projQualifier != "" &&
+		!strings.EqualFold(sq.projQualifier, alias) &&
+		!strings.EqualFold(sq.projQualifier, sq.tableName) {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+			"SELECT %s.*: qualifier does not match FROM-clause source %q",
+			sq.projQualifier, alias)
 	}
 
 	// Build map rows.
@@ -1206,6 +1295,20 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	if len(sq.joins) > 0 {
 		return c.execSelectJoin(ctx, sq)
+	}
+
+	// Qualified-star on a single-source FROM must match this source.
+	if sq.projQualifier != "" {
+		alias := sq.tableAlias
+		if alias == "" {
+			alias = sq.tableName
+		}
+		if !strings.EqualFold(sq.projQualifier, alias) &&
+			!strings.EqualFold(sq.projQualifier, sq.tableName) {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+				"SELECT %s.*: qualifier does not match FROM-clause source %q",
+				sq.projQualifier, alias)
+		}
 	}
 
 	type row = []driver.Value
@@ -1999,14 +2102,19 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 type selectQuery struct {
 	tableName   string
 	tableAlias  string   // alias or tableName if no alias given
-	projCols    []string // nil = SELECT *; ignored when countStar or aggCols non-empty
+	projCols    []string // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
 	projAliases []string // parallel to projCols; empty string = no alias (use column name)
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs []antlrgen.IExpressionContext
-	countStar bool // true when SELECT list is exactly COUNT(*)
-	distinct  bool // true when SELECT DISTINCT
-	whereExpr antlrgen.IWhereExprContext
+	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
+	// Projection restricts to columns from the source whose alias (or
+	// table name when no alias) equals projQualifier. Empty = SELECT *
+	// (all sources) or explicit column list.
+	projQualifier string
+	countStar     bool // true when SELECT list is exactly COUNT(*)
+	distinct      bool // true when SELECT DISTINCT
+	whereExpr     antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
@@ -2276,11 +2384,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
-	var projCols []string                       // nil = SELECT *
+	var projCols []string                       // nil = SELECT * or SELECT <qualifier>.*
 	var projAliases []string                    // parallel to projCols
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
 	var countStar bool
 	var aggCols []aggSelectCol
+	var projQualifier string // non-empty when SELECT list is <qualifier>.*
 	if selElems != nil {
 		elems := selElems.AllSelectElement()
 		for _, elem := range elems {
@@ -2292,22 +2401,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 				// SELECT * — projCols stays nil
 			case *antlrgen.SelectQualifierStarElementContext:
-				// SELECT <qualifier>.* — for a single-source FROM this is
-				// semantically SELECT * (treated as such here). For
-				// multi-source FROM (JOINs, comma-joins) the qualifier
-				// should restrict to the aliased source's columns, which
-				// requires plumbing a per-source column list through the
-				// projector — not done yet (tracked in TODO.md as a
-				// single-table approximation). Until then we accept the
-				// syntax and project all columns, which is correct when
-				// FROM has one source and a close-enough approximation
-				// for tests of that shape.
+				// SELECT <qualifier>.* — restrict output columns to the
+				// aliased source. Resolved at execution time against
+				// tableAlias / joins[i].alias (parser is schema-free).
 				if len(elems) > 1 {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"cannot mix qualifier.* with named columns in SELECT list")
 				}
-				// projCols stays nil — SELECT *.
-				_ = e
+				if e.Uid() == nil {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"SELECT <qualifier>.* missing qualifier")
+				}
+				projQualifier = stripIdentifierQuotes(e.Uid().GetText())
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
@@ -2371,6 +2476,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
 		// SELECT without FROM: evaluate expressions as constants (single-row result).
+		if projQualifier != "" {
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+				"qualifier %q in SELECT list but query has no FROM clause", projQualifier)
+		}
 		return &selectQuery{
 			projCols:    projCols,
 			projAliases: projAliases,
@@ -2435,17 +2544,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
 		return &selectQuery{
-			tableName:    alias,
-			tableAlias:   alias,
-			projCols:     projCols,
-			projAliases:  projAliases,
-			projExprs:    projExprs,
-			countStar:    countStar,
-			aggCols:      aggCols,
-			distinct:     simpleTable.DISTINCT() != nil,
-			whereExpr:    fromClause.WhereExpr(),
-			limit:        -1,
-			derivedQuery: subItem.Query(),
+			tableName:     alias,
+			tableAlias:    alias,
+			projCols:      projCols,
+			projAliases:   projAliases,
+			projExprs:     projExprs,
+			projQualifier: projQualifier,
+			countStar:     countStar,
+			aggCols:       aggCols,
+			distinct:      simpleTable.DISTINCT() != nil,
+			whereExpr:     fromClause.WhereExpr(),
+			limit:         -1,
+			derivedQuery:  subItem.Query(),
 		}, nil
 	}
 
@@ -2499,17 +2609,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	joins = append(joins, extraCrossJoins...)
 
 	sq := &selectQuery{
-		tableName:   strings.Join(parts, "."),
-		tableAlias:  leftAlias,
-		joins:       joins,
-		projCols:    projCols,
-		projAliases: projAliases,
-		projExprs:   projExprs,
-		countStar:   countStar,
-		aggCols:     aggCols,
-		distinct:    simpleTable.DISTINCT() != nil,
-		whereExpr:   fromClause.WhereExpr(),
-		limit:       -1,
+		tableName:     strings.Join(parts, "."),
+		tableAlias:    leftAlias,
+		joins:         joins,
+		projCols:      projCols,
+		projAliases:   projAliases,
+		projExprs:     projExprs,
+		projQualifier: projQualifier,
+		countStar:     countStar,
+		aggCols:       aggCols,
+		distinct:      simpleTable.DISTINCT() != nil,
+		whereExpr:     fromClause.WhereExpr(),
+		limit:         -1,
 	}
 
 	// Parse ORDER BY clause.
