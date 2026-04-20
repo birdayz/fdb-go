@@ -3002,8 +3002,14 @@ func projectSystemRows(in driver.Rows, sq *selectQuery) (driver.Rows, error) {
 		rows = &staticRows{cols: projNames, rows: projected}
 	}
 
-	// ORDER BY — column-name based, same semantics as the non-system
-	// paths. Expressions are rejected above so `ob.expr` never fires.
+	// ORDER BY — column-name based. Expression-based ORDER BY
+	// (`ORDER BY LENGTH(TABLE_NAME)`) is silently ignored on system
+	// tables — `ob.expr != nil` falls through the `continue` below.
+	// Consistent with the "plain column references only" policy the
+	// SELECT list also enforces; users can alias the expression in
+	// a derived table if they need it. `ob.colName` is matched case-
+	// insensitively against the projected column names so aliased
+	// columns in the SELECT list sort under their alias.
 	if len(sq.orderBy) > 0 {
 		colIdx := make(map[string]int, len(rows.cols))
 		for i, c := range rows.cols {

@@ -51,3 +51,17 @@ tests:
       HAVING EXISTS (SELECT k FROM flags)
     rows:
       - [3]
+
+  # JOIN path (map-backed evaluator) + EXISTS. Exercises the
+  # evalPredicateOnMapExpr → ExistsExpressionAtomContext branch.
+  # Cross-join orders + flags (1 row each), keep only where EXISTS
+  # (SELECT k FROM flags) is TRUE — which it is, so all cross-
+  # product rows survive.
+  - query: |
+      SELECT o.id FROM orders AS o, flags AS f
+      WHERE EXISTS (SELECT k FROM flags)
+      ORDER BY o.id
+    rows:
+      - [1]
+      - [2]
+      - [3]
