@@ -45,6 +45,25 @@ func TestConfigCurrentContext_PrintsName(t *testing.T) {
 	}
 }
 
+func TestConfigCurrentContext_JSON(t *testing.T) {
+	writeTestConfig(t, "prod")
+	c := newConfigCurrentContextCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{"-o", "json"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var obj map[string]string
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
+	}
+	if obj["name"] != "prod" {
+		t.Errorf("name = %q, want prod", obj["name"])
+	}
+}
+
 func TestConfigCurrentContext_ErrorsWhenEmpty(t *testing.T) {
 	writeTestConfig(t, "")
 	c := newConfigCurrentContextCmd()

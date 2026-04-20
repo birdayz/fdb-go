@@ -60,11 +60,17 @@ func newConfigPathCmd() *cobra.Command {
 // newConfigCurrentContextCmd prints the active context's name (or nothing
 // + an error if none is set). Matches kubectl / kaf convention.
 func newConfigCurrentContextCmd() *cobra.Command {
-	return &cobra.Command{
+	var outputFmt string
+	c := &cobra.Command{
 		Use:   "current-context",
 		Short: "Print the active context's name",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -74,10 +80,17 @@ func newConfigCurrentContextCmd() *cobra.Command {
 				path, _ := config.Path()
 				return fmt.Errorf("current_context is empty in %s — run `frl config use-context <name>`", path)
 			}
+			if outputFmt == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(map[string]string{"name": name})
+			}
 			_, err = fmt.Fprintln(cmd.OutOrStdout(), name)
 			return err
 		},
 	}
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
+	return c
 }
 
 // newConfigGetContextsCmd lists every context, marking the active one

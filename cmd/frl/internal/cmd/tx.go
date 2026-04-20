@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -24,12 +25,19 @@ func newTxCmd() *cobra.Command {
 // the cluster file + network path are working. Read-only — never
 // commits anything.
 func newTxReadVersionCmd() *cobra.Command {
-	var contextName string
+	var contextName, outputFmt string
 	c := &cobra.Command{
 		Use:   "read-version",
 		Short: "Print the current FDB global read version",
-		Args:  cobra.NoArgs,
+		Example: `  frl tx read-version
+  frl tx read-version -o json | jq '.read_version'`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -54,10 +62,16 @@ func newTxReadVersionCmd() *cobra.Command {
 				return fmt.Errorf("GetReadVersion: %w", err)
 			}
 			v, _ := result.(int64)
+			if outputFmt == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(map[string]any{"read_version": v})
+			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%d\n", v)
 			return err
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
