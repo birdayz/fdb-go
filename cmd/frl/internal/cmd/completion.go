@@ -160,16 +160,25 @@ func recordTypeNameCompletion(cmd *cobra.Command, args []string, _ string) ([]st
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
-// registerFormatCompletion wires a value-completer on -o/--output so
-// the shell suggests 'text' / 'json' (and 'yaml' where supported).
-// yamlToo=true for commands that accept yaml as a third option.
-func registerFormatCompletion(c *cobra.Command, yamlToo bool) {
+// AnnotationOutputYAML is the cobra annotation key that flags a command
+// as accepting --output=yaml (instead of the default text|json pair).
+// Set via `c.Annotations[AnnotationOutputYAML] = "true"` at command-
+// construction time; registerFormatCompletion reads it to pick the
+// right completion set. Using an annotation avoids the tree-walker
+// needing to know command-name → output-set mappings.
+const AnnotationOutputYAML = "frl.completion.output_accepts_yaml"
+
+// registerFormatCompletion wires a value-completer on -o/--output.
+// By default the completer suggests `text` / `json`; commands whose
+// `--output` accepts YAML instead (currently only `meta get`) mark
+// themselves via AnnotationOutputYAML and get `json` / `yaml`.
+func registerFormatCompletion(c *cobra.Command) {
 	if c.Flag("output") == nil {
 		return
 	}
 	values := []string{"text", "json"}
-	if yamlToo {
-		values = []string{"json", "yaml"} // `meta get` has no text mode
+	if c.Annotations[AnnotationOutputYAML] == "true" {
+		values = []string{"json", "yaml"}
 	}
 	_ = c.RegisterFlagCompletionFunc("output",
 		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {

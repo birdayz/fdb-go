@@ -259,6 +259,11 @@ func newMetaGetCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "get",
 		Short: "Dump the loaded RecordMetaData",
+		Annotations: map[string]string{
+			// Tells registerFormatCompletion to suggest json/yaml (this
+			// command has no text form — protojson is the "default").
+			AnnotationOutputYAML: "true",
+		},
 		Long: "Loads the current context's MetaData and prints it. " +
 			"--meta-file overrides the context's metadata source with a " +
 			"file on disk (useful for ad-hoc inspection without editing " +

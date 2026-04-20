@@ -57,14 +57,12 @@ func NewRoot() *cobra.Command {
 // registerCompletions walks the command tree depth-first and wires up
 // context-name / record-type / output-format completions for any command
 // that has the matching flag. Commands declaring these flags don't need
-// to touch cobra's completion API themselves.
+// to touch cobra's completion API themselves; commands whose --output
+// accepts YAML instead of text flag themselves via AnnotationOutputYAML.
 func registerCompletions(c *cobra.Command) {
 	registerContextCompletion(c)
 	registerRecordTypeCompletion(c)
-	// `meta get -o` accepts {json, yaml}, not {text, json}. It's the only
-	// command with that shape; a simple name check is cheaper than a
-	// separate registration hook.
-	registerFormatCompletion(c, c.Use == "get" && c.Parent() != nil && c.Parent().Use == "meta")
+	registerFormatCompletion(c)
 	for _, child := range c.Commands() {
 		registerCompletions(child)
 	}
