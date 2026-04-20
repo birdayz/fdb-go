@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
@@ -48,14 +47,8 @@ func lookupRecordType(md *recordlayer.RecordMetaData, name string) (*recordlayer
 	if rt := md.GetRecordType(name); rt != nil {
 		return rt, nil
 	}
-	types := md.RecordTypes()
-	names := make([]string, 0, len(types))
-	for n := range types {
-		names = append(names, n)
-	}
-	sort.Strings(names)
 	return nil, fmt.Errorf("record type %q not found — available: %s",
-		name, strings.Join(names, ", "))
+		name, strings.Join(sortedRecordTypeNames(md), ", "))
 }
 
 // validateRecordType is the error-only form of lookupRecordType — for
