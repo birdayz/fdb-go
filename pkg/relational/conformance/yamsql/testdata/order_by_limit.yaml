@@ -1,0 +1,117 @@
+# order_by_limit.yaml
+#
+# ORDER BY with LIMIT — common query pattern. Pins ORDER BY multi-column
+# with mixed ASC/DESC and LIMIT truncation.
+name: order_by_limit
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, grp STRING, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 'a', 3), (2, 'a', 1), (3, 'b', 4), (4, 'b', 1), (5, 'a', 2)
+tests:
+  # Multi-column ORDER BY: grp ASC, v DESC.
+  - query: SELECT id, grp, v FROM t ORDER BY grp, v DESC
+    rows:
+      - [1, 'a', 3]
+      - [5, 'a', 2]
+      - [2, 'a', 1]
+      - [3, 'b', 4]
+      - [4, 'b', 1]
+  # LIMIT caps rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 3
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # LIMIT larger than result set returns all.
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # LIMIT 0 returns nothing.
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    rows: []
+  # SQL-92 positional ORDER BY: `ORDER BY N` refers to the Nth SELECT
+  # column (1-indexed). Resolved at parse time to the matching output
+  # name and then runs through the regular sort path. Pre-swingshift-38
+  # `ORDER BY 2` errored "ORDER BY column \"\" not found" because the
+  # integer literal wasn't detected as a position reference.
+  - query: SELECT id, v FROM t ORDER BY 2 DESC
+    rows:
+      - [3, 4]
+      - [1, 3]
+      - [5, 2]
+      - [2, 1]
+      - [4, 1]
+  # ORDER BY 1 on a two-column SELECT where the positional reference
+  # picks out the first projected column (id).
+  - query: SELECT id, grp FROM t ORDER BY 1 LIMIT 3
+    rows:
+      - [1, 'a']
+      - [2, 'a']
+      - [3, 'b']
+  # ORDER BY on an aggregate query — position 2 refers to SUM(v).
+  # Groups: a → 3+1+2=6, b → 4+1=5. DESC puts a first.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC
+    rows:
+      - ['a', 6]
+      - ['b', 5]
+  # Out-of-range positional ORDER BY errors cleanly with 22023. Matches
+  # Postgres "ORDER BY position N is out of range". Pre-swingshift-38
+  # refactor the integer literal fell through to expression-ORDER-BY,
+  # silently evaluating to the constant N for every row (stable sort,
+  # no error) — now the resolver catches invalid positions early.
+  - query: SELECT id FROM t ORDER BY 99
+    error_code: "22023"
+  # ORDER BY a SELECT-list alias — proto single-source path previously
+  # rejected the alias because it looked up field descriptors only.
+  # swingshift-38: aliasToCol map routes alias-referenced sort keys
+  # back to the already-projected column without an extra scan field.
+  - query: SELECT id AS n FROM t ORDER BY n DESC LIMIT 2
+    rows:
+      - [5]
+      - [4]
+  # ORDER BY alias with a second column following — the second column
+  # must still resolve normally (as a field descriptor).
+  - query: SELECT id AS n, v FROM t ORDER BY n LIMIT 2
+    rows:
+      - [1, 3]
+      - [2, 1]
+  # ORDER BY on an arbitrary expression in the proto single-source path.
+  # Pre-swingshift-38 this errored "ORDER BY on an expression is only
+  # supported in CTE / JOIN queries". Now the expression is carried as
+  # an extra sort-only outField evaluated against each scanned message.
+  # `ORDER BY v * 2` sorts by doubled value (same total ordering as by v
+  # for non-negative values, included here to prove the expression
+  # actually runs per-row). Dataset values: 3, 1, 4, 1, 2 → doubled
+  # 6, 2, 8, 2, 4 → sorted rows 2/4 (v=1), 5 (v=2), 1 (v=3), 3 (v=4).
+  - query: SELECT id FROM t ORDER BY v * 2, id
+    rows:
+      - [2]
+      - [4]
+      - [5]
+      - [1]
+      - [3]
+  # ORDER BY on a scalar function call that isn't a bare column ref.
+  # ABS(v-3) per row: 1→0, 2→2, 3→1, 4→2, 5→1. Ties on (ABS, id):
+  # (0,1)→(1,3), (1,3)→(3,4), (1,5)→(5,2), (2,2)→(2,1), (2,4)→(4,1).
+  - query: SELECT id, v FROM t ORDER BY ABS(v - 3), id LIMIT 2
+    rows:
+      - [1, 3]
+      - [3, 4]
+  # SELECT * + ORDER BY expression. Round-4 reviewer noted the
+  # expression-ORDER-BY fix lived inside the named-projection branch
+  # of execSelectQueryFull, so `SELECT *` bypassed it. Expression
+  # conversion now happens BEFORE the SELECT * vs named-projection
+  # split. Dataset v values: 3, 1, 4, 1, 2. Sort by v*2 (same order
+  # as by v), with id as tiebreaker: ids 2 then 4 (v=1), then 5
+  # (v=2), then 1 (v=3), then 3 (v=4).
+  - query: SELECT * FROM t ORDER BY v * 2, id
+    rows:
+      - [2, 'a', 1]
+      - [4, 'b', 1]
+      - [5, 'a', 2]
+      - [1, 'a', 3]
+      - [3, 'b', 4]

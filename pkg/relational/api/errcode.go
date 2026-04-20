@@ -55,6 +55,8 @@ const (
 
 	// Class 22 — Data Exception
 	ErrCodeCannotConvertType            ErrorCode = "22000"
+	ErrCodeNumericValueOutOfRange       ErrorCode = "22003"
+	ErrCodeDivisionByZero               ErrorCode = "22012"
 	ErrCodeInvalidRowCountInLimitClause ErrorCode = "2201W"
 	ErrCodeInvalidParameter             ErrorCode = "22023"
 	ErrCodeArrayElementError            ErrorCode = "2202E"
@@ -80,47 +82,47 @@ const (
 	ErrCodeSerializationFailure ErrorCode = "40001"
 
 	// Class 42 — Syntax Error or Access Rule Violation
-	ErrCodeSyntaxOrAccessViolation        ErrorCode = "42000"
-	ErrCodeInsufficientPrivilege          ErrorCode = "42501"
-	ErrCodeSyntaxError                    ErrorCode = "42601"
-	ErrCodeInvalidName                    ErrorCode = "42602"
-	ErrCodeColumnAlreadyExists            ErrorCode = "42701"
-	ErrCodeAmbiguousColumn                ErrorCode = "42702"
-	ErrCodeUndefinedColumn                ErrorCode = "42703"
-	ErrCodeDuplicateAlias                 ErrorCode = "42712"
-	ErrCodeDuplicateFunction              ErrorCode = "42723"
-	ErrCodeGroupingError                  ErrorCode = "42803"
-	ErrCodeDatatypeMismatch               ErrorCode = "42804"
-	ErrCodeWrongObjectType                ErrorCode = "42809"
-	ErrCodeUndefinedFunction              ErrorCode = "42883"
-	ErrCodeUndefinedDatabase              ErrorCode = "42F00"
-	ErrCodeUndefinedTable                 ErrorCode = "42F01"
-	ErrCodeUndefinedParameter             ErrorCode = "42F02"
-	ErrCodeDatabaseAlreadyExists          ErrorCode = "42F04"
-	ErrCodeSchemaAlreadyExists            ErrorCode = "42F06"
-	ErrCodeTableAlreadyExists             ErrorCode = "42F07"
-	ErrCodeInvalidColumnReference         ErrorCode = "42F10"
-	ErrCodeInvalidFunctionDefinition      ErrorCode = "42F13"
-	ErrCodeInvalidTableDefinition         ErrorCode = "42F16"
-	ErrCodeUnknownType                    ErrorCode = "42F18"
-	ErrCodeInvalidRecursion               ErrorCode = "42F19"
-	ErrCodeIncompatibleTableAlias         ErrorCode = "42F20"
-	ErrCodeWindowingError                 ErrorCode = "42F21"
-	ErrCodeSchemaMappingAlreadyExists     ErrorCode = "42F50"
-	ErrCodeUndefinedSchema                ErrorCode = "42F51"
-	ErrCodeUndefinedIndex                 ErrorCode = "42F54"
-	ErrCodeUnknownSchemaTemplate          ErrorCode = "42F55"
-	ErrCodeAnnotationAlreadyExists        ErrorCode = "42F56"
-	ErrCodeIndexAlreadyExists             ErrorCode = "42F57"
-	ErrCodeIncorrectMetadataTableVersion  ErrorCode = "42F58"
-	ErrCodeInvalidSchemaTemplate          ErrorCode = "42F59"
-	ErrCodeInvalidPreparedStatementParam  ErrorCode = "42F60"
-	ErrCodeExecuteUpdateReturnedResultSet ErrorCode = "42F61"
-	ErrCodeDuplicateSchemaTemplate        ErrorCode = "42F62"
-	ErrCodeUnknownDatabase                ErrorCode = "42F63"
-	ErrCodeUnionIncorrectColumnCount      ErrorCode = "42F64"
-	ErrCodeUnionIncompatibleColumns       ErrorCode = "42F65"
-	ErrCodeInvalidDatabase                ErrorCode = "42F66"
+	ErrCodeSyntaxOrAccessViolation           ErrorCode = "42000"
+	ErrCodeInsufficientPrivilege             ErrorCode = "42501"
+	ErrCodeSyntaxError                       ErrorCode = "42601"
+	ErrCodeInvalidName                       ErrorCode = "42602"
+	ErrCodeColumnAlreadyExists               ErrorCode = "42701"
+	ErrCodeAmbiguousColumn                   ErrorCode = "42702"
+	ErrCodeUndefinedColumn                   ErrorCode = "42703"
+	ErrCodeDuplicateAlias                    ErrorCode = "42712"
+	ErrCodeDuplicateFunction                 ErrorCode = "42723"
+	ErrCodeGroupingError                     ErrorCode = "42803"
+	ErrCodeDatatypeMismatch                  ErrorCode = "42804"
+	ErrCodeWrongObjectType                   ErrorCode = "42809"
+	ErrCodeUndefinedFunction                 ErrorCode = "42883"
+	ErrCodeUndefinedDatabase                 ErrorCode = "42F00"
+	ErrCodeUndefinedTable                    ErrorCode = "42F01"
+	ErrCodeUndefinedParameter                ErrorCode = "42F02"
+	ErrCodeDatabaseAlreadyExists             ErrorCode = "42F04"
+	ErrCodeSchemaAlreadyExists               ErrorCode = "42F06"
+	ErrCodeTableAlreadyExists                ErrorCode = "42F07"
+	ErrCodeInvalidColumnReference            ErrorCode = "42F10"
+	ErrCodeInvalidFunctionDefinition         ErrorCode = "42F13"
+	ErrCodeInvalidTableDefinition            ErrorCode = "42F16"
+	ErrCodeUnknownType                       ErrorCode = "42F18"
+	ErrCodeInvalidRecursion                  ErrorCode = "42F19"
+	ErrCodeIncompatibleTableAlias            ErrorCode = "42F20"
+	ErrCodeWindowingError                    ErrorCode = "42F21"
+	ErrCodeSchemaMappingAlreadyExists        ErrorCode = "42F50"
+	ErrCodeUndefinedSchema                   ErrorCode = "42F51"
+	ErrCodeUndefinedIndex                    ErrorCode = "42F54"
+	ErrCodeUnknownSchemaTemplate             ErrorCode = "42F55"
+	ErrCodeAnnotationAlreadyExists           ErrorCode = "42F56"
+	ErrCodeIndexAlreadyExists                ErrorCode = "42F57"
+	ErrCodeIncorrectMetadataTableVersion     ErrorCode = "42F58"
+	ErrCodeInvalidSchemaTemplate             ErrorCode = "42F59"
+	ErrCodeInvalidPreparedStatementParameter ErrorCode = "42F60"
+	ErrCodeExecuteUpdateReturnedResultSet    ErrorCode = "42F61"
+	ErrCodeDuplicateSchemaTemplate           ErrorCode = "42F62"
+	ErrCodeUnknownDatabase                   ErrorCode = "42F63"
+	ErrCodeUnionIncorrectColumnCount         ErrorCode = "42F64"
+	ErrCodeUnionIncompatibleColumns          ErrorCode = "42F65"
+	ErrCodeInvalidDatabase                   ErrorCode = "42F66"
 
 	// Class 53 — Insufficient Resources
 	ErrCodeTransactionTimeout ErrorCode = "53F00"
@@ -151,7 +153,7 @@ func init() {
 		ErrCodeNoResultSet,
 		ErrCodeUnableToEstablishSQLConnection, ErrCodeConnectionDoesNotExist, ErrCodeInvalidPath, ErrCodeCannotCommitRollbackWithAutocommit,
 		ErrCodeUnsupportedOperation, ErrCodeUnsupportedQuery, ErrCodeUnsupportedSort,
-		ErrCodeCannotConvertType, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
+		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeDivisionByZero, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
 		ErrCodeInvalidBinaryRepresentation, ErrCodeInvalidArgumentForFunction, ErrCodeInvalidCast,
 		ErrCodeCopySerializationError, ErrCodeCopyImportValidationError,
 		ErrCodeNotNullViolation, ErrCodeUniqueConstraintViolation,
@@ -167,7 +169,7 @@ func init() {
 		ErrCodeUnknownType, ErrCodeInvalidRecursion, ErrCodeIncompatibleTableAlias, ErrCodeWindowingError,
 		ErrCodeSchemaMappingAlreadyExists, ErrCodeUndefinedSchema, ErrCodeUndefinedIndex,
 		ErrCodeUnknownSchemaTemplate, ErrCodeAnnotationAlreadyExists, ErrCodeIndexAlreadyExists,
-		ErrCodeIncorrectMetadataTableVersion, ErrCodeInvalidSchemaTemplate, ErrCodeInvalidPreparedStatementParam,
+		ErrCodeIncorrectMetadataTableVersion, ErrCodeInvalidSchemaTemplate, ErrCodeInvalidPreparedStatementParameter,
 		ErrCodeExecuteUpdateReturnedResultSet, ErrCodeDuplicateSchemaTemplate, ErrCodeUnknownDatabase,
 		ErrCodeUnionIncorrectColumnCount, ErrCodeUnionIncompatibleColumns, ErrCodeInvalidDatabase,
 		ErrCodeTransactionTimeout, ErrCodeTooManyColumns, ErrCodeExecutionLimitReached,

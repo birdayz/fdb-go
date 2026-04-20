@@ -11,6 +11,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // ---------------------------------------------------------------------------
@@ -561,4 +562,134 @@ func fuzzTupleElemEqual(a, b any) bool {
 		}
 	}
 	return false
+}
+
+// FuzzKeyExpressionFromProto stresses the proto → KeyExpression parser with
+// arbitrary byte sequences. The recursive descent over Then/Nesting/Grouping
+// etc. is a DoS candidate: a crafted proto with deep or self-referential
+// nesting could blow the stack. This fuzz ensures parsing always terminates
+// either with a concrete (non-nil) expression or an error (not a panic).
+//
+// Seeds: a handful of simple KeyExpressions (field, empty, record type key,
+// nested then) plus a random few bytes to get mutation started.
+func FuzzKeyExpressionFromProto(f *testing.F) {
+	// Seed with a few valid KeyExpressions serialised to bytes.
+	seeds := []*gen.KeyExpression{
+		{Empty: &gen.Empty{}},
+		{RecordTypeKey: &gen.RecordTypeKey{}},
+		{Field: &gen.Field{FieldName: proto.String("x"), FanType: gen.Field_SCALAR.Enum()}},
+		{
+			Then: &gen.Then{Child: []*gen.KeyExpression{
+				{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
+				{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+			}},
+		},
+	}
+	for _, s := range seeds {
+		if b, err := proto.Marshal(s); err == nil {
+			f.Add(b)
+		}
+	}
+	// Pathological seeds.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(bytes.Repeat([]byte{0xff}, 64))
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		expr := &gen.KeyExpression{}
+		if err := proto.Unmarshal(blob, expr); err != nil {
+			// Bad proto bytes: parser rejects upstream, no work for us.
+			return
+		}
+		// Must not panic, must not return (nil, nil) — either a valid
+		// KeyExpression or a non-nil error.
+		ke, err := KeyExpressionFromProto(expr)
+		if err != nil {
+			return
+		}
+		if ke == nil {
+			t.Fatalf("KeyExpressionFromProto returned (nil, nil) for bytes %x", blob)
+		}
+	})
+}
+
+// FuzzRecordMetaDataFromProto stresses the MetaData proto loader. The
+// file-descriptor rebuild phase walks an arbitrary dependency graph that
+// attackers can shape (each dep names its own deps), so a self-referential
+// A→B→A proto would recurse until the goroutine stack overflows without
+// the in-progress cycle guard added in swingshift-35. This fuzz pins that
+// guard and the upstream proto-unmarshal / FileDescriptor build path.
+//
+// Seeds include real serialised metadata (via builder + build + ToProto),
+// the swingshift-35 4-byte regression bytes, and a handful of proto shapes
+// known to confuse descriptor resolvers.
+func FuzzRecordMetaDataFromProto(f *testing.F) {
+	// Seed 1: a minimal real MetaData proto.
+	md := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("empty.proto"),
+			Syntax:  proto.String("proto2"),
+			Package: proto.String("test"),
+		},
+	}
+	if b, err := proto.Marshal(md); err == nil {
+		f.Add(b)
+	}
+	// Seed 2: a proto with a dependency that references itself.
+	self := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("root.proto"),
+			Syntax:     proto.String("proto2"),
+			Package:    proto.String("test"),
+			Dependency: []string{"cycle.proto"},
+		},
+		Dependencies: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:       proto.String("cycle.proto"),
+				Syntax:     proto.String("proto2"),
+				Package:    proto.String("test"),
+				Dependency: []string{"cycle.proto"}, // self-reference
+			},
+		},
+	}
+	if b, err := proto.Marshal(self); err == nil {
+		f.Add(b)
+	}
+	// Seed 3: A→B→A cycle.
+	ab := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("a.proto"),
+			Syntax:     proto.String("proto2"),
+			Package:    proto.String("test"),
+			Dependency: []string{"b.proto"},
+		},
+		Dependencies: []*descriptorpb.FileDescriptorProto{
+			{Name: proto.String("a.proto"), Syntax: proto.String("proto2"), Dependency: []string{"b.proto"}},
+			{Name: proto.String("b.proto"), Syntax: proto.String("proto2"), Dependency: []string{"a.proto"}},
+		},
+	}
+	if b, err := proto.Marshal(ab); err == nil {
+		f.Add(b)
+	}
+	// Pathological raw bytes.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0x0a, 0x00})
+	f.Add(bytes.Repeat([]byte{0xff}, 32))
+
+	f.Fuzz(func(t *testing.T, blob []byte) {
+		msg := &gen.MetaData{}
+		if err := proto.Unmarshal(blob, msg); err != nil {
+			return
+		}
+		// Must not panic or stack-overflow; must return either (non-nil, nil)
+		// or (nil, non-nil error). (nil, nil) is the forbidden state.
+		rmd, err := RecordMetaDataFromProto(msg)
+		if err != nil {
+			return
+		}
+		if rmd == nil {
+			t.Fatalf("RecordMetaDataFromProto returned (nil, nil) for bytes %x", blob)
+		}
+	})
 }

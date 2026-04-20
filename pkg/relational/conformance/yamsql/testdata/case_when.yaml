@@ -1,0 +1,66 @@
+# case_when.yaml
+#
+# CASE WHEN ... THEN ... ELSE ... END expressions. Covers:
+#   - searched-CASE (WHEN <predicate>) form
+#   - ELSE branch vs absent ELSE (evaluates to NULL)
+#   - NULL-tolerant predicate: WHEN x IS NULL handled distinctly
+name: case_when
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 5), (2, 15), (3, null), (4, 30)
+tests:
+  # Searched CASE with explicit ELSE.
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 'low'
+                      WHEN v < 20 THEN 'mid'
+                      ELSE 'high' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, 'mid']
+      # v IS NULL → WHEN v < 10 is UNKNOWN, WHEN v < 20 is UNKNOWN, falls
+      # through to ELSE.
+      - [3, 'high']
+      - [4, 'high']
+  # IS NULL branch matches the NULL row first.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 'missing'
+                      WHEN v < 10 THEN 'low'
+                      ELSE 'other' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, 'other']
+      - [3, 'missing']
+      - [4, 'other']
+  # No ELSE — unmatched rows evaluate to NULL.
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 'low' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'low']
+      - [2, ~]
+      - [3, ~]
+      - [4, ~]
+  # CASE inside a WHERE predicate. Classic "dynamic filter" shape —
+  # rejects rows whose CASE evaluates to 0.
+  - query: |-
+      SELECT id FROM t WHERE CASE WHEN v IS NULL THEN 0
+                                  WHEN v < 10 THEN 0
+                                  ELSE 1 END = 1
+      ORDER BY id
+    rows:
+      - [2]
+      - [4]
+  # CASE in a SELECT column referenced by ORDER BY via alias — ORDER BY
+  # on the alias of a CASE projection, routing through the proto
+  # single-source path's alias redirection.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 1 ELSE 0 END AS is_null
+      FROM t ORDER BY is_null DESC, id
+    rows:
+      - [3, 1]
+      - [1, 0]
+      - [2, 0]
+      - [4, 0]

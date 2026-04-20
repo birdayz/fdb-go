@@ -1,0 +1,78 @@
+# self_join.yaml
+#
+# Self-joins — same table referenced twice in the FROM with distinct
+# aliases. The JOIN path's scanTableToMaps must cope with the same
+# tableName appearing under two aliases; row-key lookups go through
+# alias.col to keep the two copies distinct in the combined map.
+name: self_join
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, parent BIGINT, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES
+      (1, 0, 10),
+      (2, 1, 20),
+      (3, 1, 30),
+      (4, 2, 40)
+tests:
+  # Parent-child self-join: each row joined to its parent's row.
+  # (2,1)→parent row 1 (v=10); (3,1)→parent 1; (4,2)→parent 2 (v=20).
+  - query: |
+      SELECT c.id, p.v
+      FROM t AS c INNER JOIN t AS p ON c.parent = p.id
+      ORDER BY c.id
+    rows:
+      - [2, 10]
+      - [3, 10]
+      - [4, 20]
+  # Non-equi self-join: pair every row with every strictly-larger row
+  # on v. N(N-1)/2 pairs for distinct v's.
+  - query: |
+      SELECT x.id, y.id
+      FROM t AS x JOIN t AS y ON x.v < y.v
+      ORDER BY x.id, y.id
+    rows:
+      - [1, 2]
+      - [1, 3]
+      - [1, 4]
+      - [2, 3]
+      - [2, 4]
+      - [3, 4]
+  # Self-join with WHERE filtering on both aliases.
+  - query: |
+      SELECT c.id AS child, p.id AS parent_id
+      FROM t AS c JOIN t AS p ON c.parent = p.id
+      WHERE c.v > 20 AND p.v <= 20
+      ORDER BY c.id
+    rows:
+      - [3, 1]
+      - [4, 2]
+  # LEFT OUTER self-join: row with parent=0 has no match (id=0 doesn't
+  # exist); NULL-pad the right side.
+  - query: |
+      SELECT c.id, p.v
+      FROM t AS c LEFT OUTER JOIN t AS p ON c.parent = p.id
+      ORDER BY c.id
+    rows:
+      - [1, ~]
+      - [2, 10]
+      - [3, 10]
+      - [4, 20]
+  # ORDER BY a JOIN-input column not in the projection. Pre-fix the
+  # JOIN sort silently no-op'd when colIdx[ob.colName] missed (because
+  # the column wasn't projected). Now falls back to the per-row JOIN
+  # map. Same-shape fix as 9d177ac3 for the CTE path. Joined parent
+  # values: c=2→p.v=10, c=3→p.v=10, c=4→p.v=20. DESC: 4 (20), then
+  # ties 2/3 in stable insertion order.
+  - query: |
+      SELECT c.id FROM t AS c JOIN t AS p ON c.parent = p.id
+      ORDER BY p.v DESC, c.id
+    rows:
+      - [4]
+      - [2]
+      - [3]
+  # Typo in the ORDER BY column name on a JOIN errors 42703 instead of
+  # silently no-op'ing.
+  - query: |
+      SELECT c.id FROM t AS c JOIN t AS p ON c.parent = p.id
+      ORDER BY no_such_col
+    error_code: "42703"

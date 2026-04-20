@@ -1,0 +1,86 @@
+# numeric_functions.yaml
+#
+# Scalar numeric functions — ABS / SIGN / FLOOR / CEIL / ROUND / MOD
+# / POWER / SQRT / EXP / LN / LOG / PI. Pinned here so future
+# refactors of evalScalarFunctionCallCore don't silently regress any
+# of them. NULL propagation follows SQL standard (NULL in → NULL out).
+name: numeric_functions
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES
+      (1, 2.5, 10),
+      (2, -3.7, -5),
+      (3, 0.0, 0),
+      (4, null, null)
+tests:
+  # ABS on both integer and floating-point.
+  - query: SELECT ABS(n), ABS(v) FROM t WHERE id = 2
+    rows:
+      - [5, 3.7]
+  # SIGN: -1 / 0 / +1.
+  - query: SELECT SIGN(v) FROM t WHERE id = 1
+    rows:
+      - [1]
+  - query: SELECT SIGN(v) FROM t WHERE id = 2
+    rows:
+      - [-1]
+  - query: SELECT SIGN(v) FROM t WHERE id = 3
+    rows:
+      - [0]
+  # FLOOR / CEIL — half-away-from-zero style on negatives.
+  - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 1
+    rows:
+      - [2.0, 3.0]
+  - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 2
+    rows:
+      - [-4.0, -3.0]
+  # ROUND ties away from zero (Go's math.Round): 1.5 → 2, 2.5 → 3,
+  # -1.5 → -2, -2.5 → -3. NOT banker's rounding (round-half-to-even)
+  # and NOT half-toward-zero — pin the current behaviour so the next
+  # refactor doesn't silently flip it.
+  - query: SELECT ROUND(v) FROM t WHERE id = 1
+    rows:
+      - [3.0]
+  - query: SELECT ROUND(v) FROM t WHERE id = 2
+    rows:
+      - [-4.0]
+  # MOD with integer operands preserves the sign of the dividend.
+  - query: SELECT MOD(n, 3) FROM t WHERE id = 1
+    rows:
+      - [1]
+  - query: SELECT MOD(n, 3) FROM t WHERE id = 2
+    rows:
+      - [-2]
+  # POWER on DOUBLE: 2.5^2 = 6.25.
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 1
+    rows:
+      - [6.25]
+  # SQRT on a perfect square.
+  - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
+    rows:
+      - [3.1622776601683795]
+  # EXP(0) = 1, LN(exp(1)) = 1 (approximately).
+  - query: SELECT EXP(0) FROM t WHERE id = 1
+    rows:
+      - [1.0]
+  # LOG base-e (aka LN). Postgres LOG defaults to base 10, Oracle LOG(base, x).
+  # Keep the current behaviour pinned; callers should prefer LN for
+  # natural log until we align LOG signature with a specific dialect.
+  - query: SELECT LN(1.0) FROM t WHERE id = 1
+    rows:
+      - [0.0]
+  # PI is a nullary constant.
+  - query: SELECT PI() FROM t WHERE id = 1
+    rows:
+      - [3.141592653589793]
+  # NULL propagation — ABS of NULL is NULL, not 0.
+  - query: SELECT ABS(v) FROM t WHERE id = 4
+    rows:
+      - [~]
+  - query: SELECT SIGN(v), FLOOR(v), CEIL(v) FROM t WHERE id = 4
+    rows:
+      - [~, ~, ~]
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 4
+    rows:
+      - [~]

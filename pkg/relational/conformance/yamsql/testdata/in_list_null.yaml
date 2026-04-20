@@ -1,0 +1,26 @@
+# in_list_null.yaml
+#
+# SQL §8.4 (swingshift-35 commit 4570981c): x IN (..., NULL, ...) and
+# x NOT IN (..., NULL, ...) yield UNKNOWN when no element matches,
+# because the IN list expansion is an AND/OR chain with x = NULL
+# contributing UNKNOWN.
+name: in_list_null
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 1), (2, 2), (3, 3)
+tests:
+  # v IN (2, NULL): matches id 2 (TRUE), other rows UNKNOWN → filtered out.
+  - query: SELECT id FROM t WHERE v IN (2, NULL)
+    rows:
+      - [2]
+  # v NOT IN (2, NULL): id 2 → FALSE filtered, others → UNKNOWN filtered.
+  # Net result: empty.
+  - query: SELECT id FROM t WHERE v NOT IN (2, NULL)
+    rows: []
+  # Concrete-only list still works.
+  - query: SELECT id FROM t WHERE v IN (1, 3)
+    unordered: true
+    rows:
+      - [1]
+      - [3]

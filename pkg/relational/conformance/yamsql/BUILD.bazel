@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "yamsql",
+    srcs = [
+        "diff.go",
+        "runner.go",
+        "yamsql.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_test(
+    name = "yamsql_test",
+    srcs = [
+        "runner_test.go",
+        "yamsql_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":yamsql"],
+    # Opt-in: this starts its own FDB container; without the manual tag
+    # `bazelisk test //...` would run it alongside the other FDB-based
+    # test targets, compounding the container-parallelism risk flagged
+    # in CLAUDE.md. Use `just conformance-sql` to run it explicitly.
+    tags = ["manual"],
+    deps = [
+        "//pkg/relational/sqldriver",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

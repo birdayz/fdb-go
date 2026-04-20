@@ -102,9 +102,26 @@ func (r *RecordTypeKeyExpression) ToKeyExpression() *gen.KeyExpression {
 	}
 }
 
+// maxKeyExpressionDepth caps recursion through nested Then/Nesting/Grouping
+// etc. so a crafted proto with pathological deep nesting cannot blow the
+// goroutine stack. 128 is well above any real schema (typical depth ≤ 10)
+// but small enough that exceeding it signals an adversarial input rather
+// than a legitimate schema. Reviewer-flagged hardening in swingshift-35.
+const maxKeyExpressionDepth = 128
+
 // KeyExpressionFromProto deserializes a protobuf KeyExpression to a Go KeyExpression.
 // Exactly one field must be set. Matches Java's KeyExpression.fromProto().
 func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
+	return keyExpressionFromProtoDepth(expr, 0)
+}
+
+// keyExpressionFromProtoDepth is the recursive worker. Helpers that
+// recurse pass depth+1 so a pathological proto hits the depth cap
+// before the goroutine stack.
+func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpression, error) {
+	if depth > maxKeyExpressionDepth {
+		return nil, fmt.Errorf("key expression nested deeper than %d levels", maxKeyExpressionDepth)
+	}
 	if expr == nil {
 		return nil, fmt.Errorf("nil key expression proto")
 	}
@@ -118,7 +135,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.Nesting != nil {
 		found++
-		child, err := nestingFromProto(expr.Nesting)
+		child, err := nestingFromProto(expr.Nesting, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +143,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.Then != nil {
 		found++
-		then, err := thenFromProto(expr.Then)
+		then, err := thenFromProto(expr.Then, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +159,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.Grouping != nil {
 		found++
-		g, err := groupingFromProto(expr.Grouping)
+		g, err := groupingFromProto(expr.Grouping, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +171,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.KeyWithValue != nil {
 		found++
-		kwv, err := keyWithValueFromProto(expr.KeyWithValue)
+		kwv, err := keyWithValueFromProto(expr.KeyWithValue, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +183,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.Function != nil {
 		found++
-		fn, err := functionFromProto(expr.Function)
+		fn, err := functionFromProto(expr.Function, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -174,7 +191,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.Split != nil {
 		found++
-		sp, err := splitFromProto(expr.Split)
+		sp, err := splitFromProto(expr.Split, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +199,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 	}
 	if expr.List != nil {
 		found++
-		l, err := listFromProto(expr.List)
+		l, err := listFromProto(expr.List, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -191,7 +208,7 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 
 	if expr.Dimensions != nil {
 		found++
-		d, err := dimensionsFromProto(expr.Dimensions)
+		d, err := dimensionsFromProto(expr.Dimensions, depth+1)
 		if err != nil {
 			return nil, err
 		}
@@ -205,11 +222,11 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 }
 
 // dimensionsFromProto reconstructs a DimensionsKeyExpression from a proto Dimensions.
-func dimensionsFromProto(d *gen.Dimensions) (*DimensionsKeyExpression, error) {
+func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression, error) {
 	if d.WholeKey == nil {
 		return nil, fmt.Errorf("dimensions expression missing whole_key")
 	}
-	wholeKey, err := KeyExpressionFromProto(d.WholeKey)
+	wholeKey, err := keyExpressionFromProtoDepth(d.WholeKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("dimensions whole_key: %w", err)
 	}
@@ -225,11 +242,11 @@ func fieldFromProto(f *gen.Field) *FieldKeyExpression {
 }
 
 // nestingFromProto reconstructs a NestingKeyExpression from a proto Nesting.
-func nestingFromProto(n *gen.Nesting) (KeyExpression, error) {
+func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
 	if n.Parent == nil {
 		return nil, fmt.Errorf("nesting expression missing parent field")
 	}
-	child, err := KeyExpressionFromProto(n.Child)
+	child, err := keyExpressionFromProtoDepth(n.Child, depth)
 	if err != nil {
 		return nil, fmt.Errorf("nesting child: %w", err)
 	}
@@ -243,13 +260,13 @@ func nestingFromProto(n *gen.Nesting) (KeyExpression, error) {
 // thenFromProto reconstructs a CompositeKeyExpression from a proto Then.
 // Java flattens nested Then children; Go's CompositeKeyExpression naturally
 // handles this since Concat doesn't nest.
-func thenFromProto(t *gen.Then) (KeyExpression, error) {
+func thenFromProto(t *gen.Then, depth int) (KeyExpression, error) {
 	if len(t.Child) < 2 {
 		return nil, fmt.Errorf("then expression requires at least 2 children, got %d", len(t.Child))
 	}
 	exprs := make([]KeyExpression, len(t.Child))
 	for i, child := range t.Child {
-		expr, err := KeyExpressionFromProto(child)
+		expr, err := keyExpressionFromProtoDepth(child, depth)
 		if err != nil {
 			return nil, fmt.Errorf("then child %d: %w", i, err)
 		}
@@ -259,8 +276,8 @@ func thenFromProto(t *gen.Then) (KeyExpression, error) {
 }
 
 // groupingFromProto reconstructs a GroupingKeyExpression from a proto Grouping.
-func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
-	wholeKey, err := KeyExpressionFromProto(g.WholeKey)
+func groupingFromProto(g *gen.Grouping, depth int) (*GroupingKeyExpression, error) {
+	wholeKey, err := keyExpressionFromProtoDepth(g.WholeKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("grouping whole key: %w", err)
 	}
@@ -276,12 +293,20 @@ func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
 }
 
 // keyWithValueFromProto reconstructs a KeyWithValueExpression from a proto KeyWithValue.
-func keyWithValueFromProto(kwv *gen.KeyWithValue) (*KeyWithValueExpression, error) {
-	inner, err := KeyExpressionFromProto(kwv.InnerKey)
+// Validates split_point against inner.ColumnSize — a negative or out-of-range
+// value from crafted proto would otherwise propagate into index-maintainer
+// slicing and cause an OOB panic.
+func keyWithValueFromProto(kwv *gen.KeyWithValue, depth int) (*KeyWithValueExpression, error) {
+	inner, err := keyExpressionFromProtoDepth(kwv.InnerKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("key_with_value inner key: %w", err)
 	}
-	return KeyWithValue(inner, int(kwv.GetSplitPoint())), nil
+	splitPoint := int(kwv.GetSplitPoint())
+	columnSize := inner.ColumnSize()
+	if splitPoint < 0 || splitPoint > columnSize {
+		return nil, fmt.Errorf("key_with_value split_point %d out of range [0, %d]", splitPoint, columnSize)
+	}
+	return KeyWithValue(inner, splitPoint), nil
 }
 
 // ToKeyExpression serializes GroupingKeyExpression to proto.
@@ -337,8 +362,8 @@ func (f *FunctionKeyExpression) ToKeyExpression() *gen.KeyExpression {
 }
 
 // functionFromProto reconstructs a FunctionKeyExpression from a proto Function.
-func functionFromProto(fn *gen.Function) (*FunctionKeyExpression, error) {
-	args, err := KeyExpressionFromProto(fn.Arguments)
+func functionFromProto(fn *gen.Function, depth int) (*FunctionKeyExpression, error) {
+	args, err := keyExpressionFromProtoDepth(fn.Arguments, depth)
 	if err != nil {
 		return nil, fmt.Errorf("function arguments: %w", err)
 	}
@@ -346,21 +371,27 @@ func functionFromProto(fn *gen.Function) (*FunctionKeyExpression, error) {
 }
 
 // splitFromProto reconstructs a SplitKeyExpression from a proto Split.
-func splitFromProto(s *gen.Split) (*SplitKeyExpression, error) {
-	joined, err := KeyExpressionFromProto(s.Joined)
+// Rejects splitSize <= 0 with a typed error instead of letting Split() panic
+// — proto bytes from an untrusted catalog can trigger this path.
+func splitFromProto(s *gen.Split, depth int) (*SplitKeyExpression, error) {
+	size := int(s.GetSplitSize())
+	if size <= 0 {
+		return nil, fmt.Errorf("split size must be positive, got %d", size)
+	}
+	joined, err := keyExpressionFromProtoDepth(s.Joined, depth)
 	if err != nil {
 		return nil, fmt.Errorf("split joined: %w", err)
 	}
-	return Split(joined, int(s.GetSplitSize())), nil
+	return Split(joined, size), nil
 }
 
 // listFromProto reconstructs a ListKeyExpression from a proto List.
-func listFromProto(l *gen.List) (*ListKeyExpression, error) {
+func listFromProto(l *gen.List, depth int) (*ListKeyExpression, error) {
 	// Java's ListKeyExpression(RecordKeyExpressionProto.List) accepts empty children lists.
 	// Match Java: allow zero children for proto round-trip compatibility.
 	children := make([]KeyExpression, len(l.Child))
 	for i, child := range l.Child {
-		expr, err := KeyExpressionFromProto(child)
+		expr, err := keyExpressionFromProtoDepth(child, depth)
 		if err != nil {
 			return nil, fmt.Errorf("list child %d: %w", i, err)
 		}

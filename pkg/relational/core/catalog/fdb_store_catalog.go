@@ -1,8 +1,6 @@
 package catalog
 
 import (
-	"fmt"
-
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -36,7 +34,7 @@ type RecordLayerStoreCatalog struct {
 func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayerStoreCatalog, error) {
 	md, err := BuildCatalogMetaData()
 	if err != nil {
-		return nil, fmt.Errorf("build catalog metadata: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "build catalog metadata")
 	}
 	c := &RecordLayerStoreCatalog{
 		catalogSubspace: catalogSubspace,
@@ -46,33 +44,35 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 	return c, nil
 }
 
-// DefaultCatalogSubspace returns the two-element ("__SYS", "CATALOG")
-// subspace.
+// DefaultCatalogSubspace returns the standard __SYS/CATALOG subspace in the
+// exact byte layout Java writes. Java's RelationalKeyspaceProvider defines:
 //
-// Deprecated: this is NOT the subspace the sqldriver and the embedded
-// connection write to — they use the three-element
-// ("__SYS", "__SYS", "CATALOG") path via
-// [keyspace.RelationalKeyspace.CatalogSubspace]. Opening a catalog at
-// DefaultCatalogSubspace() returns an empty result set with no error,
-// silently missing every schema/database/template on the cluster.
+//	KeySpaceDirectory(SYS,     KeyType.NULL)                            // __SYS domain
+//	  KeySpaceDirectory(SYS,   KeyType.NULL)                            // __SYS database
+//	    KeySpaceDirectory(CATALOG, KeyType.LONG, 0L)                    // CATALOG schema
 //
-// Use keyspace.New(root).CatalogSubspace() instead. The frl CLI's
-// `meta catalog` subcommands switched to that path in commit 7d31573;
-// `DefaultCatalogSubspace()` and [OpenRecordLayerStoreCatalog] have
-// no non-test callers and are retained only to keep the test fixtures
-// compiling.
+// The directory *names* (__SYS, __SYS, CATALOG) are path labels; the on-wire
+// tuple element for each level is the KeyType constant. So the catalog's
+// actual subspace prefix is the tuple (NULL, NULL, int64(0)) — NOT three
+// strings. Go previously used subspace.Sub("__SYS", "CATALOG") which encodes
+// two string tuple elements and is incompatible with Java-written catalogs.
+// See fdb-record-layer/.../RelationalKeyspaceProvider.java#getSystemDirectory.
+//
+// NOTE: this is the Java-wire-compat subspace, which the Go sqldriver does
+// NOT yet use — pkg/relational/sqldriver/driver.go opens the catalog via
+// keyspace.RelationalKeyspace.CatalogSubspace() (three strings). Migration
+// to this function from the driver is tracked in TODO.md. Callers reading
+// a Go-written catalog today (incl. frl's `meta catalog`) should use the
+// keyspace helper; readers of a Java-written catalog (or a future Go
+// driver) should use DefaultCatalogSubspace.
 func DefaultCatalogSubspace() subspace.Subspace {
-	return subspace.Sub(SysConstant, CatalogConstant)
+	return subspace.Sub(nil, nil, int64(0))
 }
 
-// OpenRecordLayerStoreCatalog opens the catalog at the two-element
-// ("__SYS", "CATALOG") subspace.
-//
-// Deprecated: returns a catalog rooted at a subspace the sqldriver
-// does not write to — see [DefaultCatalogSubspace] for the full
-// rationale. Construct a catalog with
-// NewRecordLayerStoreCatalog(keyspace.New(root).CatalogSubspace())
-// instead.
+// OpenRecordLayerStoreCatalog opens the catalog at the Java-compatible
+// (NULL, NULL, int64(0)) subspace. See [DefaultCatalogSubspace] for the
+// full byte-layout rationale — and for the caveat that the Go sqldriver
+// currently writes to a different (three-string) subspace.
 func OpenRecordLayerStoreCatalog() (*RecordLayerStoreCatalog, error) {
 	return NewRecordLayerStoreCatalog(DefaultCatalogSubspace())
 }
@@ -104,26 +104,26 @@ func (c *RecordLayerStoreCatalog) Initialize(txn api.Transaction) error {
 	// 1. Create/ensure the catalog's own schema template.
 	exists, err := tc.DoesSchemaTemplateExistAtVersion(txn, CatalogTemplateName, CatalogTemplateVersion)
 	if err != nil {
-		return fmt.Errorf("initialize catalog: check template: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: check template")
 	}
 	if !exists {
 		catalogTmpl, buildErr := buildCatalogTemplate()
 		if buildErr != nil {
-			return fmt.Errorf("initialize catalog: build template: %w", buildErr)
+			return api.WrapErrorf(buildErr, api.ErrCodeInternalError, "initialize catalog: build template")
 		}
 		if createErr := tc.CreateTemplate(txn, catalogTmpl); createErr != nil {
-			return fmt.Errorf("initialize catalog: create template: %w", createErr)
+			return api.WrapErrorf(createErr, api.ErrCodeInternalError, "initialize catalog: create template")
 		}
 	}
 
 	// 2. Ensure the /__SYS database row exists.
 	dbExists, err := c.DoesDatabaseExist(txn, SysDatabaseID)
 	if err != nil {
-		return fmt.Errorf("initialize catalog: check sys database: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: check sys database")
 	}
 	if !dbExists {
 		if err := c.CreateDatabase(txn, SysDatabaseID); err != nil {
-			return fmt.Errorf("initialize catalog: create sys database: %w", err)
+			return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: create sys database")
 		}
 	}
 
@@ -131,11 +131,11 @@ func (c *RecordLayerStoreCatalog) Initialize(txn api.Transaction) error {
 	// saveSchema(txn, this.catalogSchema, true) which silently overwrites.
 	catalogTmpl, err := tc.LoadSchemaTemplateAtVersion(txn, CatalogTemplateName, CatalogTemplateVersion)
 	if err != nil {
-		return fmt.Errorf("initialize catalog: load template: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: load template")
 	}
 	catalogSchema := catalogTmpl.GenerateSchema(SysDatabaseID, CatalogConstant)
 	if err := c.SaveSchema(txn, catalogSchema, false); err != nil {
-		return fmt.Errorf("initialize catalog: save catalog schema: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "initialize catalog: save catalog schema")
 	}
 	return nil
 }
@@ -171,7 +171,7 @@ func (c *RecordLayerStoreCatalog) openStore(txn api.Transaction) (*recordlayer.F
 		SetMetaDataProvider(c.catalogMD).
 		CreateOrOpen()
 	if err != nil {
-		return nil, fmt.Errorf("open catalog store: %w", err)
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "open catalog store")
 	}
 	return store, nil
 }
@@ -276,7 +276,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 		TEMPLATE_VERSION: proto.Int32(int32(tmpl.Version())),
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return fmt.Errorf("save schema: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema")
 	}
 	return nil
 }
@@ -326,7 +326,7 @@ func (c *RecordLayerStoreCatalog) CreateDatabase(txn api.Transaction, dbURI stri
 func createDatabaseOnStore(store *recordlayer.FDBRecordStore, dbURI string) error {
 	rec := &gen.Databases{DATABASE_ID: proto.String(dbURI)}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return fmt.Errorf("save database: %w", err)
+		return api.WrapErrorf(err, api.ErrCodeInternalError, "save database")
 	}
 	return nil
 }

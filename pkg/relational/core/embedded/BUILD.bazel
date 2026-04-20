@@ -14,6 +14,7 @@ go_library(
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",
@@ -24,4 +25,9 @@ go_test(
     name = "embedded_test",
     srcs = ["embedded_test.go"],
     embed = [":embedded"],
+    deps = [
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+    ],
 )

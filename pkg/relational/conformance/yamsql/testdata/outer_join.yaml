@@ -1,0 +1,119 @@
+# outer_join.yaml
+#
+# LEFT OUTER JOIN fills the right side with NULLs when there's no
+# match. RIGHT OUTER JOIN is the mirror.
+# LEFT/RIGHT OUTER JOIN implementation landed in swingshift-33.
+name: outer_join
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a_empty (id BIGINT NOT NULL, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, k BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO b VALUES (101, 10, 'alpha'), (102, 20, 'beta'), (103, 99, 'gamma')
+tests:
+  # LEFT OUTER JOIN — row a.id=3 has no match in b; right side NULL.
+  # b.id=103 (k=99) has no match in a, which LEFT OUTER drops (only
+  # unmatched left rows are kept).
+  - query: SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [3, ~]
+  # RIGHT OUTER JOIN — b.id=103 (k=99) has no match in a; a.id NULL.
+  # Fixed nightshift-36 (was returning b.id=103 for that row because
+  # the unqualified 'id' column inherited from b; now qualified a.id
+  # keys are explicitly NULLed for unmatched-right rows).
+  - query: SELECT a.id, b.label FROM a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [~, 'gamma']
+  # RIGHT OUTER JOIN with an empty left table — every right row is
+  # unmatched and must be NULL-padded for `a.*` keys. Pre-dayshift-37
+  # the NULL-padding sampled column keys from a runtime left row,
+  # which does not exist when the left is empty; qualified `a.id`
+  # would fall through to the unqualified `id` populated from b and
+  # return b.id instead of NULL. Fixed by deriving left-side keys
+  # from the record type descriptor.
+  - query: |
+      SELECT a.id, b.label FROM a_empty AS a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [~, 'alpha']
+      - [~, 'beta']
+      - [~, 'gamma']
+  # Intersection of the two dayshift-37 commits: `a.*` qualified-star
+  # on an empty-left RIGHT OUTER JOIN. Both columns from `a` (id, k)
+  # must be NULL on every unmatched right row even though neither
+  # the qualifier resolver nor the NULL-padder has a runtime row to
+  # inspect. Keys come from metadata on both paths.
+  - query: |
+      SELECT a.* FROM a_empty AS a RIGHT OUTER JOIN b ON a.k = b.k
+    unordered: true
+    rows:
+      - [~, ~]
+      - [~, ~]
+      - [~, ~]
+
+  # LEFT OUTER JOIN + WHERE filtering on the right-side column. Filters
+  # applied AFTER the join so NULL-padded rows where b.label IS NULL
+  # are excluded by the equality predicate. Only the matched rows
+  # remain.
+  - query: |
+      SELECT a.id, b.label FROM a LEFT OUTER JOIN b ON a.k = b.k
+      WHERE b.label = 'alpha'
+    rows:
+      - [1, 'alpha']
+
+  # LEFT OUTER JOIN + WHERE IS NULL — filter for unmatched-left rows
+  # only (common idiom for anti-join / "find the missing"). a.id=3
+  # has no match in b, so b.label IS NULL there.
+  - query: |
+      SELECT a.id FROM a LEFT OUTER JOIN b ON a.k = b.k
+      WHERE b.label IS NULL
+    rows:
+      - [3]
+
+  # RIGHT OUTER JOIN + WHERE IS NULL on the left side — the mirror
+  # anti-join. b.id=103 (k=99) has no match in a, so a.id IS NULL
+  # is the only surviving row.
+  - query: |
+      SELECT b.id, b.label FROM a RIGHT OUTER JOIN b ON a.k = b.k
+      WHERE a.id IS NULL
+    rows:
+      - [103, 'gamma']
+
+  # LEFT OUTER JOIN + GROUP BY on the left column, COUNT + SUM on the
+  # right. Unmatched left row contributes COUNT=0 + SUM=NULL (not 0 —
+  # SQL-standard: SUM over empty or all-NULL group is NULL).
+  - query: |
+      SELECT a.id, COUNT(b.label), SUM(b.k) FROM a LEFT OUTER JOIN b ON a.k = b.k
+      GROUP BY a.id ORDER BY a.id
+    rows:
+      - [1, 1, 10]
+      - [2, 1, 20]
+      - [3, 0, ~]
+
+  # LEFT OUTER JOIN + GROUP BY + HAVING. Same groups as above but
+  # keeps only the groups with at least one matched right row.
+  - query: |
+      SELECT a.id, COUNT(b.label) FROM a LEFT OUTER JOIN b ON a.k = b.k
+      GROUP BY a.id HAVING COUNT(b.label) > 0
+      ORDER BY a.id
+    rows:
+      - [1, 1]
+      - [2, 1]
+
+  # RIGHT OUTER JOIN + GROUP BY on the right's grouping column. The
+  # unmatched-right b.id=103 (k=99) contributes a group of its own
+  # with count(a.id) = 0. All three b.k values become distinct groups.
+  - query: |
+      SELECT b.k, COUNT(a.id) FROM a RIGHT OUTER JOIN b ON a.k = b.k
+      GROUP BY b.k ORDER BY b.k
+    rows:
+      - [10, 1]
+      - [20, 1]
+      - [99, 0]

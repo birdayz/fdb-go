@@ -14,11 +14,11 @@
 package keyspace
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 const (
@@ -49,10 +49,10 @@ func (k *RelationalKeyspace) CatalogSubspace() subspace.Subspace {
 // Returns an error if dbPath or schemaName is empty.
 func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace.Subspace, error) {
 	if dbPath == "" {
-		return nil, fmt.Errorf("dbPath must not be empty")
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "dbPath must not be empty")
 	}
 	if schemaName == "" {
-		return nil, fmt.Errorf("schemaName must not be empty")
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "schemaName must not be empty")
 	}
 	return k.root.Sub(tuple.Tuple{dbPath, schemaName}), nil
 }
@@ -62,12 +62,14 @@ func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace
 // path is invalid.
 func ParseDBPath(dbPath string) ([]string, error) {
 	if dbPath == "" || dbPath[0] != '/' {
-		return nil, fmt.Errorf("database path must start with '/': %q", dbPath)
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"database path must start with '/': %q", dbPath)
 	}
 	parts := strings.Split(dbPath[1:], "/")
 	for _, p := range parts {
 		if p == "" {
-			return nil, fmt.Errorf("database path has empty segment: %q", dbPath)
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+				"database path has empty segment: %q", dbPath)
 		}
 	}
 	return parts, nil

@@ -119,17 +119,31 @@ func (t *FDBTransaction) UnsetBoundSchemaTemplate() {
 	t.boundTemplate = nil
 }
 
+// Unwrap returns the underlying *recordlayer.FDBRecordContext. Satisfies
+// api.Transaction.Unwrap — callers that need the FDB handle should go
+// through unwrapFDB rather than asserting *FDBTransaction directly so a
+// future decorator Transaction that forwards Unwrap continues to work.
+func (t *FDBTransaction) Unwrap() any {
+	return t.Context()
+}
+
 // unwrapFDB extracts the *FDBRecordContext from an api.Transaction or
-// returns an *api.Error. Catalog impls go through this helper so the
-// error path (wrong impl type, closed tx) is consistent.
+// returns an *api.Error. Uses Unwrap() instead of a concrete assertion so
+// any Transaction impl that forwards Unwrap (e.g. a middleware wrapping
+// *FDBTransaction) also passes.
 func unwrapFDB(txn api.Transaction) (*recordlayer.FDBRecordContext, error) {
-	ft, ok := txn.(*FDBTransaction)
+	if txn == nil {
+		return nil, api.NewError(api.ErrCodeTransactionInactive, "transaction is nil")
+	}
+	raw := txn.Unwrap()
+	rctx, ok := raw.(*recordlayer.FDBRecordContext)
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
-			"FDB catalog requires *catalog.FDBTransaction, got %T", txn)
+			"FDB catalog requires a transaction whose Unwrap() returns *recordlayer.FDBRecordContext, got %T from %T",
+			raw, txn)
 	}
-	if ft.IsClosed() {
+	if txn.IsClosed() {
 		return nil, api.NewError(api.ErrCodeTransactionInactive, "transaction is closed")
 	}
-	return ft.Context(), nil
+	return rctx, nil
 }

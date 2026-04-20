@@ -1,0 +1,33 @@
+# greatest_least.yaml
+#
+# swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL
+# (Java semantics: first NULL -> result NULL). Pre-fix Go skipped NULL
+# args (Postgres semantics), diverging from Java's VariadicFunctionValue
+# PhysicalOperator which short-circuits `if (i == null) return null`.
+name: greatest_least
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+tests:
+  # All non-null.
+  - query: SELECT GREATEST(1, 5, 3) FROM t
+    rows:
+      - [5]
+  - query: SELECT LEAST(1, 5, 3) FROM t
+    rows:
+      - [1]
+  # Any-NULL propagates to NULL.
+  - query: SELECT GREATEST(1, NULL, 3) FROM t
+    rows:
+      - [~]
+  - query: SELECT LEAST(1, NULL, 3) FROM t
+    rows:
+      - [~]
+  # Single NULL arg.
+  - query: SELECT GREATEST(NULL) FROM t
+    rows:
+      - [~]
+  - query: SELECT LEAST(NULL) FROM t
+    rows:
+      - [~]

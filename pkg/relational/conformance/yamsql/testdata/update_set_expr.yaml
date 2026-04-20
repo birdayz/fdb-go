@@ -1,0 +1,34 @@
+# update_set_expr.yaml
+#
+# UPDATE ... SET col = <expression>. The RHS can reference other
+# columns (arithmetic, CASE, function calls). Pins that:
+#   - SET col = col + const works (uses current value)
+#   - SET col = CASE ... END routes through the tri-state evaluator
+#   - multiple columns in a single SET (comma-separated)
+name: update_set_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, label STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c')
+tests:
+  # Arithmetic in SET.
+  - query: UPDATE t SET v = v + 5 WHERE id = 1
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [15]
+  # CASE in SET.
+  - query: |-
+      UPDATE t SET label = CASE WHEN v >= 20 THEN 'big'
+                                WHEN v IS NULL THEN 'unknown'
+                                ELSE 'small' END
+      WHERE id IN (2, 3)
+  - query: SELECT id, label FROM t ORDER BY id
+    rows:
+      - [1, 'a']
+      - [2, 'big']
+      - [3, 'unknown']
+  # Multiple assignments.
+  - query: UPDATE t SET v = 100, label = 'z' WHERE id = 1
+  - query: SELECT v, label FROM t WHERE id = 1
+    rows:
+      - [100, 'z']
