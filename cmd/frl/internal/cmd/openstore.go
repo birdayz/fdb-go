@@ -50,6 +50,27 @@ func lookupIndex(md *recordlayer.RecordMetaData, name string) (*recordlayer.Inde
 		name, strings.Join(sortedIndexNames(md), ", "))
 }
 
+// resolveMetaSourceFile returns `override` when non-nil, otherwise
+// invokes meta.FromContext(cfgCtx, nil, nil) — i.e. the FDB-store-
+// unsupported resolution used by every metadata-reading command in v1.
+// Wraps the two well-known sentinels (ErrMissingSource,
+// ErrFDBStoreNotAvailable) with the context name so operators can tell
+// which context the message is about when they have several.
+func resolveMetaSourceFile(cfgCtx *configv1.Context, override meta.Source) (meta.Source, error) {
+	if override != nil {
+		return override, nil
+	}
+	src, err := meta.FromContext(cfgCtx, nil, nil)
+	if err != nil {
+		if errors.Is(err, meta.ErrMissingSource) ||
+			errors.Is(err, meta.ErrFDBStoreNotAvailable) {
+			return nil, fmt.Errorf("%w (context %q)", err, cfgCtx.GetName())
+		}
+		return nil, err
+	}
+	return src, nil
+}
+
 // withStoreE is the ergonomic twin of withStore for commands whose store
 // closure doesn't need a return value. Most `record scan` / `index ls` /
 // `index scan` style commands stream output directly to the writer and

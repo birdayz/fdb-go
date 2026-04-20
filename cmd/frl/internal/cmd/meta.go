@@ -183,17 +183,11 @@ func newMetaTypesLsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if override == nil {
-				src, err := meta.FromContext(cfgCtx, nil, nil)
-				if err != nil {
-					if errors.Is(err, meta.ErrMissingSource) {
-						return fmt.Errorf("%w (context %q)", err, cfgCtx.GetName())
-					}
-					return err
-				}
-				override = src
+			src, err := resolveMetaSourceFile(cfgCtx, override)
+			if err != nil {
+				return err
 			}
-			md, err := override.Load(cmd.Context())
+			md, err := src.Load(cmd.Context())
 			if err != nil {
 				return err
 			}

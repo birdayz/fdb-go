@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -41,17 +39,11 @@ func newMetaTypesDescribeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if override == nil {
-				src, ferr := meta.FromContext(cfgCtx, nil, nil)
-				if ferr != nil {
-					if errors.Is(ferr, meta.ErrMissingSource) {
-						return fmt.Errorf("%w (context %q)", ferr, cfgCtx.GetName())
-					}
-					return ferr
-				}
-				override = src
+			src, err := resolveMetaSourceFile(cfgCtx, override)
+			if err != nil {
+				return err
 			}
-			md, err := override.Load(cmd.Context())
+			md, err := src.Load(cmd.Context())
 			if err != nil {
 				return err
 			}
