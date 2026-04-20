@@ -4947,21 +4947,42 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (any, error) {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok {
-		// Boolean expressions (AND/OR/NOT, comparisons) return bool as a value.
-		b, err := evalExprPredicate(ctx, conn, msg, expr)
+		// Boolean expressions (AND/OR/NOT, comparisons) return bool or
+		// nil-for-UNKNOWN when used as a value. Java-aligned: SELECT
+		// projection of a boolean expression preserves UNKNOWN as NULL,
+		// not collapses to FALSE. Use the tri-state evaluator and map
+		// triNull → nil.
+		t, err := evalExprPredicateTri(ctx, conn, msg, expr)
 		if err != nil {
 			return nil, err
 		}
-		return b, nil
+		switch t {
+		case triTrue:
+			return true, nil
+		case triFalse:
+			return false, nil
+		default:
+			return nil, nil
+		}
 	}
-	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate via
-	// evalExprPredicate which handles the full predicate tree.
+	// If a predicate modifier is present (IN, IS, LIKE, BETWEEN), evaluate
+	// via evalExprPredicateTri so UNKNOWN propagates to NULL at projection.
+	// Note: IS predicates (IS TRUE / IS FALSE / IS NULL) are 2-valued by
+	// definition — the tri-state evaluator already returns triFromBool for
+	// them, so their projection collapses cleanly to true/false.
 	if pred.Predicate() != nil {
-		b, err := evalExprPredicate(ctx, conn, msg, expr)
+		t, err := evalExprPredicateTri(ctx, conn, msg, expr)
 		if err != nil {
 			return nil, err
 		}
-		return b, nil
+		switch t {
+		case triTrue:
+			return true, nil
+		case triFalse:
+			return false, nil
+		default:
+			return nil, nil
+		}
 	}
 	return evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 }

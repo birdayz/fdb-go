@@ -100,3 +100,35 @@ tests:
       - [false]
       - [false]
       - [true]
+  # Java alignment: boolean-op in SELECT projection. Kleene 3VL.
+  # b=true: t AND t=t, t AND f=f, t AND NULL=NULL
+  # b=false: f AND t=f, f AND f=f, f AND NULL=f
+  # b=NULL: NULL AND t=NULL, NULL AND f=f, NULL AND NULL=NULL
+  - query: SELECT b AND TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: SELECT b AND FALSE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [false]
+      - [false]
+  # b OR TRUE always TRUE.
+  - query: SELECT b OR TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [true]
+      - [true]
+  # b OR FALSE: t/f/NULL.
+  - query: SELECT b OR FALSE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  # NOT b: NOT t=f, NOT f=t, NOT NULL=NULL.
+  - query: SELECT NOT b FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
