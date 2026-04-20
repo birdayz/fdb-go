@@ -296,6 +296,36 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 - [x] **INSERT with duplicate PRIMARY KEY silently REPLACES.** ✅ nightshift-36: INSERT paths (execInsert + execInsertSelect) now call `store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)`; the resulting `*recordlayer.RecordAlreadyExistsError` flows through `wrapSaveRecordError` to SQLSTATE 23505. UPDATE continues to use plain `SaveRecord` since it legitimately overwrites. Pinned by `unique_violation.yaml` (now asserts that a failed-duplicate INSERT leaves the original row untouched).
 - [x] **Integer overflow silent wrap (`+` / `-` / `*`).** Java uses `Math.addExact / subtractExact / multiplyExact` which throw `ArithmeticException`; our `applyMathOp` integer fast-path used Go's native operators which silently wrap on overflow (e.g. `MAX_INT + 1 → MIN_INT`). ✅ nightshift-36: added `addInt64Checked`/`subInt64Checked`/`mulInt64Checked` helpers with Hacker's-Delight overflow tests (sign-bit XOR for +/-, divide-back for *). MinInt64/-1 for `/` also caught (abs value doesn't fit). SQLSTATE `22003` NUMERIC_VALUE_OUT_OF_RANGE (added in this shift) — SQL-standard class-22 code for this exception class. `ABS(MinInt64)` and `CAST(float_overflow AS BIGINT)` also switched to 22003 for consistency. Pinned by `overflow.yaml` + updated `cast.yaml` + updated `ABS(MinInt64)` sqldriver test.
 
+### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
+
+User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.
+
+**HIGH — must-have for non-trivial SQL, ranked by impact**
+
+- [ ] **Correlated subqueries** — `WHERE EXISTS (SELECT 1 FROM b WHERE b.aid = a.id)`. Inner query must access outer-row columns. Architectural: per-row execution + outer-row binding chain. Java: `LogicalCorrelatedJoinExpression` in cascades. ~3-4h. Highest user-facing impact.
+- [ ] **Cross-type comparison should error 42883** — `WHERE str_col = 1` silently returns empty result set. Postgres errors. Java behavior? Verify in `fdb-relational-core` `ComparatorValue.evaluate`. Real correctness bug — silent semantic answers are dangerous.
+- [ ] **Indexes used by SQL queries** — does `SELECT WHERE id = 1` use the PK index, or scan-and-filter every row? Java cascades planner picks indexes; ours doesn't. Verify behavior, document, then plan.
+- [ ] **Date arithmetic** — `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `EXTRACT(YEAR FROM d)`. Java `DateAddValue` / `DateSubtractValue` / `ExtractValue`. Common need.
+- [ ] **INTERVAL syntax** — `WHERE created > NOW() - INTERVAL '1 day'`. Grammar slot exists. Java `IntervalValue`. Big usability gap.
+
+**MEDIUM — nice-to-have**
+
+- [ ] **Window functions** — ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE OVER (PARTITION BY ... ORDER BY ...). Grammar accepts; evaluator errors 0A000 (regression-pinned in `window_function_probes.yaml`). Java has these via `WindowedAggregate*Value`.
+- [ ] **Recursive CTEs** — `WITH RECURSIVE t(n) AS (...)`. Grammar accepts the keyword; CTE evaluator errors 22023 (regression-pinned). Java `RecursiveCommonTableExpression`.
+- [ ] **INTERSECT / EXCEPT** — only UNION works today. Java `LogicalIntersectionExpression` / `LogicalSetOpExpression`.
+- [ ] **ANY / ALL with subquery** — `WHERE x > ALL (SELECT y FROM ...)`.
+- [ ] **CASE WHEN inside aggregates** — `SUM(CASE WHEN x > 0 THEN x ELSE 0 END)`. Probably works since aggregate-over-expression landed swingshift-38, but unverified for CASE specifically.
+- [ ] **GROUPING SETS / ROLLUP / CUBE** — multi-level aggregation. Java `GroupingSet`.
+- [ ] **LATERAL joins** — `JOIN LATERAL (SELECT ... WHERE outer.id = ...) ON true`.
+- [ ] **PIVOT / UNPIVOT** — Oracle/SQL Server idiom; Java may not have it.
+
+**Infrastructure / quality**
+
+- [ ] **Java↔Go conformance harness Phase B** — wire fdb-relational maven deps into Bazel; extend conformance_server.java with `SqlSteps` to drive the same SQL through both engines and diff result sets. Single biggest test-coverage improvement; yamsql currently is the only oracle and we KNOW it's incomplete because every probe finds bugs. ~4-6h.
+- [ ] **Query planner** — no cost-based optimization. Joins are O(n·m) memory-resident map merge. Java cascades. Need `Planner` / `Plan` seam (already in TODO above) and a `NaivePlanner` wrapping today's code, then a real one.
+- [ ] **DDL types** — DATE / TIMESTAMP / ARRAY / JSON column types. Today's CREATE TABLE accepts only BIGINT / INTEGER / DOUBLE / FLOAT / STRING / BYTES / BOOLEAN. Java has all of these.
+- [ ] **EXPLAIN / ANALYZE** — no plan introspection. Useful for users.
+
 **Architecture / design**
 
 - [ ] **Split `connection.go`** (5498 lines, 120 functions) into ~12 files (`exec_select.go`, `exec_join.go`, `exec_dml.go`, `exec_ddl.go`, `exec_sys.go`, `select_parts.go`, `aggregate.go`, `eval_expr.go`, `eval_predicate.go`, `functions.go`, …). Mechanical, no behavioral risk.

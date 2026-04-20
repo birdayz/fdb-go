@@ -6836,6 +6836,17 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 		return triNull, nil
 	}
 
+	// Java alignment: Java's PromoteValue.isPromotionNeeded errors with
+	// SemanticException(INCOMPATIBLE_TYPE) → SQLSTATE 22000
+	// (CANNOT_CONVERT_TYPE) when the two operands have non-promotable
+	// types (e.g. STRING vs BIGINT). Pre-fix Go silently returned
+	// FALSE for these comparisons → empty result set, the dangerous
+	// kind of bug. Now we error to match Java.
+	if !valuesComparable(left, right) {
+		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"cannot compare %T with %T", left, right)
+	}
+
 	cmp := compareValues(left, right)
 	switch opText {
 	case "=":
@@ -6853,6 +6864,22 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	default:
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 	}
+}
+
+// valuesComparable reports whether two non-NULL driver values can be
+// compared by SQL `=`/`<`/`>`/etc. without an explicit CAST. Mirrors
+// Java's PromoteValue.isPromotionNeeded outcome: numeric↔numeric is
+// always OK (auto-promote int→float); same concrete type is OK;
+// everything else is incompatible. Both args must be non-nil.
+func valuesComparable(a, b driver.Value) bool {
+	_, aInt := a.(int64)
+	_, aFloat := a.(float64)
+	_, bInt := b.(int64)
+	_, bFloat := b.(float64)
+	if (aInt || aFloat) && (bInt || bFloat) {
+		return true
+	}
+	return reflect.TypeOf(a) == reflect.TypeOf(b)
 }
 
 // nullSafeEqual is the underpinning of SQL's `IS NOT DISTINCT FROM`: two
@@ -6967,6 +6994,12 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			// SQL §8.4: `x IN (..., NULL)` = UNKNOWN, `x NOT IN (..., NULL)` = UNKNOWN.
 			hadNullElement = true
 			continue
+		}
+		// Java alignment: cross-type IN element errors 22000
+		// (CANNOT_CONVERT_TYPE), matching the comparison-operator path.
+		if !valuesComparable(fieldVal, litVal) {
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"cannot compare %T with %T in IN list", fieldVal, litVal)
 		}
 		if valuesEqual(fieldVal, litVal) {
 			if in.NOT() != nil {

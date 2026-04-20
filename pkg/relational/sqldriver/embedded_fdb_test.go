@@ -1142,8 +1142,11 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 }
 
 // TestFDB_SelectWhereTypeMismatch verifies that comparing a BIGINT column
-// against a string constant returns no rows (valuesEqual returns false)
-// rather than panicking or erroring.
+// against a string constant errors with SQLSTATE 22000
+// (CANNOT_CONVERT_TYPE), matching Java's PromoteValue.isPromotionNeeded
+// → SemanticException(INCOMPATIBLE_TYPE) → ErrorCode.CANNOT_CONVERT_TYPE.
+// Pre-nightshift-39 Go silently returned no rows — the dangerous kind
+// of bug. Now errors at execution.
 func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -1167,23 +1170,23 @@ func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Obj (obj_id, name) VALUES (1, 'a'), (2, 'b')")).Error().NotTo(gomega.HaveOccurred())
 
-	// Compare BIGINT column against a string — should return no rows (type mismatch → false predicate).
+	// Compare BIGINT column against a string — must error 22000.
+	// Java aligns: SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE.
 	rows, err := db.QueryContext(ctx, "SELECT * FROM Obj WHERE obj_id = 'notanumber'")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var count int
-	cols, _ := rows.Columns()
-	for rows.Next() {
-		count++
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
+	if err == nil {
+		// Some paths surface the error during row iteration (executor
+		// runs per-row); drain the cursor to provoke it.
+		for rows.Next() {
+			vals := make([]any, 2)
+			ptrs := []any{&vals[0], &vals[1]}
+			_ = rows.Scan(ptrs...)
 		}
-		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		err = rows.Err()
+		rows.Close()
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(count).To(gomega.Equal(0))
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("22000"))
 }
 
 func TestFDB_SelectOrderBy(t *testing.T) {
@@ -6596,8 +6599,10 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 }
 
 // TestFDB_MixedTypeEqualityNoStringCoerce proves that mixed-type equality
-// does NOT fall through to string coercion: an int column `= '5'` must not
-// match the integer 5, and similarly for IN-lists.
+// errors with SQLSTATE 22000 (matching Java's
+// SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE) instead of
+// silently falling through to string coercion. Same-type equality still
+// works, and IN-lists with all-compatible types still match.
 func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -6620,19 +6625,24 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n, s) VALUES (1, 5, '5'), (2, 6, '6')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Proto path (single-table WHERE): int column = string literal must NOT match.
-	var cnt int64
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n = '5'`).Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(0)), "int n=5 must not equal string '5'")
+	expectIncompatibleType := func(query string) {
+		t.Helper()
+		var cnt int64
+		err := db.QueryRowContext(ctx, query).Scan(&cnt)
+		g.Expect(err).To(gomega.HaveOccurred(), "expected error from %q", query)
+		var apiErr *api.Error
+		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "expected *api.Error, got %T: %v", err, err)
+		g.Expect(string(apiErr.Code)).To(gomega.Equal("22000"))
+	}
 
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = 5`).Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(0)), "string s='5' must not equal int 5")
-
-	// IN-list with mixed types: only matches on the same-type element.
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n IN ('5', 6)`).Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(1)), "only int 6 should match; string '5' must not match int 5")
+	// Proto path: int column = string literal must error 22000.
+	expectIncompatibleType(`SELECT COUNT(*) FROM T WHERE n = '5'`)
+	expectIncompatibleType(`SELECT COUNT(*) FROM T WHERE s = 5`)
+	// IN-list with mixed types: any incompatible element errors.
+	expectIncompatibleType(`SELECT COUNT(*) FROM T WHERE n IN ('5', 6)`)
 
 	// Sanity: same-type equality still works.
+	var cnt int64
 	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n = 5`).Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE s = '5'`).Scan(&cnt)).To(gomega.Succeed())

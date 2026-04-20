@@ -21,13 +21,11 @@ tests:
   # Reset.
   - query: UPDATE t SET n = id * 10 WHERE id IN (1, 2, 3)
   # Implicit type conversion: STRING column compared to integer literal.
-  # Postgres errors 42883 (no operator '=' for text and integer);
-  # Go silently treats the comparison as FALSE for non-equal strings
-  # and INT, returning no rows. Documented as a known divergence;
-  # ideally we'd error, but pinning current behaviour as a regression
-  # guard against accidental change.
+  # nightshift-39: Java-aligned, errors 22000 (CANNOT_CONVERT_TYPE)
+  # matching Java's PromoteValue.isPromotionNeeded → SemanticException
+  # (INCOMPATIBLE_TYPE).
   - query: SELECT id FROM t WHERE s = 1
-    rows: []
+    error_code: "22000"
   # NULL in IN list — `WHERE x IN (1, NULL, 3)` returns rows where
   # x = 1 OR x = 3 OR x IS NULL ... actually no, SQL spec: NULL in IN
   # list with no match → UNKNOWN, not FALSE. Row dropped.
