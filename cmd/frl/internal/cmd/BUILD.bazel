@@ -51,6 +51,7 @@ go_test(
         "record_test.go",
         "store_dump_test.go",
         "store_test.go",
+        "version_test.go",
     ],
     embed = [":cmd"],
     deps = [

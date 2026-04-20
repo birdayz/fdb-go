@@ -1,48 +1,88 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
-
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
+// versionInfo is the data shape shared by the text and JSON renderers.
+type versionInfo struct {
+	Version   string `json:"version"`
+	GoVersion string `json:"go_version"`
+	GOOS      string `json:"goos"`
+	GOARCH    string `json:"goarch"`
+}
+
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var (
+		shortOnly bool
+		outputFmt string
+	)
+	c := &cobra.Command{
 		Use:   "version",
 		Short: "Print frl version and build info",
-		Args:  cobra.NoArgs,
+		Example: `  frl version
+  frl version --short                # just the version string
+  frl version -o json | jq -r .version`,
+		Long: "Prints the frl version and build info (Go toolchain + GOOS/GOARCH). " +
+			"--short collapses the output to just the version string, " +
+			"suitable for scripting.\n\n" +
+			"--output / -o: 'text' (default) or 'json' " +
+			"({version, go_version, goos, goarch}). Ignored with --short.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			info, ok := debug.ReadBuildInfo()
-			if !ok {
-				_, err := fmt.Fprintln(cmd.OutOrStdout(), "frl (build info unavailable)")
+			switch outputFmt {
+			case "", "text", "json":
+			default:
+				return fmt.Errorf("invalid --output %q: want text or json", outputFmt)
+			}
+			v := readVersion()
+			if shortOnly {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), v.Version)
 				return err
 			}
-			ver := info.Main.Version
-			if ver == "" || ver == "(devel)" {
-				ver = "dev"
+			if outputFmt == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(v)
 			}
-			// Pack a sample tuple through the root-module library to prove
-			// cmd/frl's go.work/replace wiring actually reaches the library
-			// code. This is a skeleton-phase sanity check; it will be
-			// replaced with real store introspection in Phase B.
-			sample := tuple.Tuple{"frl", int64(1)}.Pack()
 			_, err := fmt.Fprintf(cmd.OutOrStdout(),
-				"frl %s (%s %s/%s)\nrecord-layer tuple probe: %x\n",
-				ver, info.GoVersion, goos(info), goarch(info), sample)
+				"frl %s (%s %s/%s)\n",
+				v.Version, v.GoVersion, v.GOOS, v.GOARCH)
 			return err
 		},
 	}
+	c.Flags().BoolVar(&shortOnly, "short", false, "print only the version string")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
+	return c
 }
 
-func goos(info *debug.BuildInfo) string {
-	return settingValue(info, "GOOS")
-}
-
-func goarch(info *debug.BuildInfo) string {
-	return settingValue(info, "GOARCH")
+// readVersion pulls build info from runtime/debug. Returns "dev" /
+// "unknown" sentinels when Bazel-built binaries surface no build info
+// (rules_go strips this by default — documented known limitation).
+func readVersion() versionInfo {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return versionInfo{
+			Version:   "unknown",
+			GoVersion: "unknown",
+			GOOS:      "unknown",
+			GOARCH:    "unknown",
+		}
+	}
+	ver := info.Main.Version
+	if ver == "" || ver == "(devel)" {
+		ver = "dev"
+	}
+	return versionInfo{
+		Version:   ver,
+		GoVersion: info.GoVersion,
+		GOOS:      settingValue(info, "GOOS"),
+		GOARCH:    settingValue(info, "GOARCH"),
+	}
 }
 
 func settingValue(info *debug.BuildInfo, key string) string {
