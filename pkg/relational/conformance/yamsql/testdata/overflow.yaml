@@ -44,3 +44,12 @@ tests:
   - query: SELECT a % b FROM t WHERE id = 4
     rows:
       - [0]
+  # Decimal literal that overflows float64 (≈1.8e308 is DBL_MAX, so
+  # 1e400 is +Inf after strconv.ParseFloat). Pre-nightshift-39 this
+  # errored 22023 (generic INVALID_PARAMETER); now 22003
+  # (NUMERIC_VALUE_OUT_OF_RANGE) matching other numeric overflow sites.
+  - query: SELECT 1e400 FROM t WHERE id = 1
+    error_code: "22003"
+  # Negative counterpart — -1e400 overflows to -Inf.
+  - query: SELECT -1e400 FROM t WHERE id = 1
+    error_code: "22003"

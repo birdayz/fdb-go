@@ -5851,7 +5851,7 @@ func castValue(v any, typeName string) (any, error) {
 			case "false", "0":
 				return false, nil
 			}
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot CAST %q to boolean", n)
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to boolean", n)
 		}
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)
@@ -7694,14 +7694,13 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		}
 		fv, err := strconv.ParseFloat(text, 64)
 		if err != nil {
+			// strconv.ParseFloat returns (±Inf, ErrRange) on magnitude
+			// overflow — treat as 22003 NUMERIC_VALUE_OUT_OF_RANGE. Any
+			// other parse error is a malformed literal → 22023.
+			if errors.Is(err, strconv.ErrRange) {
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "decimal literal %q overflows float64", text)
+			}
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-		}
-		// strconv.ParseFloat returns ±Inf on overflow without setting err.
-		// Reject here — otherwise a literal like `1e400` would leak +Inf
-		// into evaluators that downstream turn `+Inf - +Inf` into NaN
-		// and poison comparisons / aggregates.
-		if math.IsInf(fv, 0) {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "decimal literal %q overflows float64", text)
 		}
 		return fv, nil
 	case *antlrgen.NegativeDecimalConstantContext:
@@ -7711,10 +7710,10 @@ func evalConstant(c antlrgen.IConstantContext) (any, error) {
 		}
 		fv, err := strconv.ParseFloat(text, 64)
 		if err != nil {
+			if errors.Is(err, strconv.ErrRange) {
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "decimal literal %q overflows float64", text)
+			}
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-		}
-		if math.IsInf(fv, 0) {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "decimal literal %q overflows float64", text)
 		}
 		return fv, nil
 	case *antlrgen.StringConstantContext:
