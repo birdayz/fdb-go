@@ -33,3 +33,10 @@ tests:
   - query: SELECT COUNT(*) FROM t
     rows:
       - [0]
+  # Re-seed + DELETE with complex predicate including AND/OR.
+  - query: INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, null)
+  - query: DELETE FROM t WHERE v < 15 OR v > 25
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [2, 20]
+      - [4, ~]
