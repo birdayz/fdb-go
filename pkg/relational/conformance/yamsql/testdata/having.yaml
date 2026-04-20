@@ -99,3 +99,24 @@ tests:
       ORDER BY grp
     rows:
       - ['b']
+  # HAVING on a bare COUNT(*) query with no GROUP BY. The COUNT(*)
+  # fast path in both aggregation paths used to skip HAVING entirely
+  # — `SELECT COUNT(*) FROM t HAVING COUNT(*) > 100` returned the
+  # count unconditionally instead of filtering the single aggregate
+  # row. Both map-path (aggregateMapRows) and proto-path (inside the
+  # runInTx closure) now call evalHaving against `{"COUNT(*)": count}`
+  # and drop the row when the predicate fails. Table has 5 rows:
+  #   HAVING COUNT(*) > 1   → passes, returns 5
+  #   HAVING COUNT(*) > 100 → fails, empty result
+  - query: SELECT COUNT(*) FROM t HAVING COUNT(*) > 1
+    rows:
+      - [5]
+  - query: SELECT COUNT(*) FROM t HAVING COUNT(*) > 100
+    rows: []
+  # COUNT(*) fast path with WHERE + HAVING: filter rows, then gate
+  # the final aggregate row through HAVING.
+  - query: SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 2
+    rows:
+      - [2]
+  - query: SELECT COUNT(*) FROM t WHERE grp = 'a' HAVING COUNT(*) = 99
+    rows: []

@@ -838,7 +838,17 @@ func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData,
 //     sq.groupBy is empty), optionally filtered by sq.havingExpr.
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
-		return []string{"COUNT(*)"}, [][]driver.Value{{int64(len(filtered))}}, nil
+		count := int64(len(filtered))
+		if sq.havingExpr != nil {
+			keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
+			if hErr != nil {
+				return nil, nil, hErr
+			}
+			if !keep {
+				return []string{"COUNT(*)"}, nil, nil
+			}
+		}
+		return []string{"COUNT(*)"}, [][]driver.Value{{count}}, nil
 	}
 
 	type mapGroupState struct {
@@ -1724,6 +1734,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				if match {
 					count++
+				}
+			}
+			// HAVING on a bare COUNT(*) query: evaluate against the single
+			// aggregate row and drop it when the predicate fails. Without
+			// this the COUNT(*) fast path emitted one row unconditionally.
+			if sq.havingExpr != nil {
+				keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
+				if hErr != nil {
+					return nil, hErr
+				}
+				if !keep {
+					data = nil
+					return nil, nil
 				}
 			}
 			data = []row{{count}}
