@@ -30,6 +30,18 @@ func validateRecordType(md *recordlayer.RecordMetaData, name string) error {
 		name, strings.Join(names, ", "))
 }
 
+// lookupIndex resolves an index name against md, returning the Index
+// on hit and a "not found — available: A, B, C" error on miss. Shared
+// by index describe / index scan so typos always produce the same
+// user-facing message.
+func lookupIndex(md *recordlayer.RecordMetaData, name string) (*recordlayer.Index, error) {
+	if idx := md.GetIndex(name); idx != nil {
+		return idx, nil
+	}
+	return nil, fmt.Errorf("index %q not found — available: %s",
+		name, strings.Join(sortedIndexNames(md), ", "))
+}
+
 // withStoreE is the ergonomic twin of withStore for commands whose store
 // closure doesn't need a return value. Most `record scan` / `index ls` /
 // `index scan` style commands stream output directly to the writer and

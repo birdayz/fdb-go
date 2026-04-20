@@ -56,10 +56,9 @@ func newIndexDescribeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			idx := md.GetIndex(args[0])
-			if idx == nil {
-				return fmt.Errorf("index %q not found — available: %s",
-					args[0], strings.Join(sortedIndexNames(md), ", "))
+			idx, err := lookupIndex(md, args[0])
+			if err != nil {
+				return err
 			}
 			if outputFmt == "json" {
 				return writeIndexDescriptionJSON(cmd.OutOrStdout(), md, idx)

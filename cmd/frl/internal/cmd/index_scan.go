@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -42,14 +41,9 @@ func newIndexScanCmd() *cobra.Command {
 			name := args[0]
 			return withStoreE(cmd.Context(), cfgCtx, override,
 				func(store *recordlayer.FDBRecordStore) error {
-					md := store.GetRecordMetaData()
-					idx := md.GetIndex(name)
-					if idx == nil {
-						// List available indexes like `index describe` does —
-						// operators typo index names often enough that a bare
-						// "not found" is user-hostile.
-						return fmt.Errorf("index %q not found — available: %s",
-							name, strings.Join(sortedIndexNames(md), ", "))
+					idx, err := lookupIndex(store.GetRecordMetaData(), name)
+					if err != nil {
+						return err
 					}
 					return scanIndexAndRender(cmd.Context(), cmd.OutOrStdout(), store, idx, limit, reverse)
 				})
