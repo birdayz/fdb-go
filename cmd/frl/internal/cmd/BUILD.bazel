@@ -52,6 +52,7 @@ go_test(
         "meta_diff_test.go",
         "meta_test.go",
         "meta_types_describe_test.go",
+        "openstore_test.go",
         "output_test.go",
         "record_render_test.go",
         "record_test.go",
@@ -62,6 +63,7 @@ go_test(
     embed = [":cmd"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",
+        "//cmd/frl/internal/meta",
         "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
