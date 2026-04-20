@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,32 @@ func TestRootVersionFlagMatchesSubcommand(t *testing.T) {
 	if flag != sub {
 		t.Errorf("flag vs subcommand drift:\n --version → %q\n version   → %q",
 			flag, sub)
+	}
+}
+
+// TestSettingValue_FoundAndMissing exercises both branches of the
+// debug.BuildSetting scan helper. The "unknown" fallback is what turns
+// into "unknown" in `frl version` when a build-info key the CLI expects
+// (GOOS/GOARCH) is absent — important for Bazel-built binaries where
+// rules_go strips most settings.
+func TestSettingValue_FoundAndMissing(t *testing.T) {
+	t.Parallel()
+	info := &debug.BuildInfo{
+		Settings: []debug.BuildSetting{
+			{Key: "GOOS", Value: "linux"},
+			{Key: "GOARCH", Value: "amd64"},
+		},
+	}
+	if got := settingValue(info, "GOOS"); got != "linux" {
+		t.Errorf("GOOS = %q; want linux", got)
+	}
+	if got := settingValue(info, "GOARCH"); got != "amd64" {
+		t.Errorf("GOARCH = %q; want amd64", got)
+	}
+	// Missing key → the "unknown" fallback that drives the "unknown"
+	// banner text in Bazel-built binaries.
+	if got := settingValue(info, "vcs.revision"); got != "unknown" {
+		t.Errorf("missing key = %q; want unknown", got)
 	}
 }
 
