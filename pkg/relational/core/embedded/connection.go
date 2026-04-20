@@ -7074,15 +7074,12 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 	exprs := in.InList().Expressions().AllExpression()
 	var hadNullElement bool
 	for _, expr := range exprs {
-		ep, ok := expr.(*antlrgen.PredicatedExpressionContext)
-		if !ok {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got %T", expr)
-		}
-		cAtom, ok := ep.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
-		if !ok {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "IN list value must be a constant, got atom %T", ep.ExpressionAtom())
-		}
-		litVal, err := evalConstant(cAtom.Constant())
+		// Java-aligned: IN list elements are arbitrary expressions, not
+		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL that
+		// Java's in-predicate.yamsql tests directly. Use evalExpr to
+		// evaluate each element against the same proto message, allowing
+		// arithmetic, function calls, even subqueries.
+		litVal, err := evalExpr(ctx, conn, msg, expr)
 		if err != nil {
 			return triFalse, err
 		}
@@ -7874,6 +7871,10 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				// See evalInPredicateTri: NULL list element contributes UNKNOWN.
 				hadNullElement = true
 				continue
+			}
+			if !valuesComparable(fieldVal, litVal) {
+				return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+					"cannot compare %T with %T in IN list", fieldVal, litVal)
 			}
 			if valuesEqual(fieldVal, litVal) {
 				if p.NOT() != nil {
