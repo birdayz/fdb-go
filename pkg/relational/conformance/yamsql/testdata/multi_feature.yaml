@@ -1,0 +1,36 @@
+# multi_feature.yaml
+#
+# End-to-end scenario chaining several features at once: CTE + WHERE +
+# GROUP BY + aggregate + HAVING + ORDER BY + LIMIT. This is the kind of
+# query a real user might write, and exercises the whole execution
+# pipeline including the tri-state NULL handling the harness has spent
+# the shift hardening.
+name: multi_feature
+schema_template: |
+  CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO orders VALUES (1, 100, 50), (2, 100, 75), (3, 100, null), (4, 200, 30), (5, 200, 30), (6, 300, 10)
+tests:
+  # CTE filters out low-value orders, then aggregate by customer,
+  # keep only customers whose total value exceeds 50, sort descending.
+  - query: |-
+      WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
+      SELECT customer_id, SUM(total) FROM hv
+      GROUP BY customer_id
+      HAVING SUM(total) > 50
+      ORDER BY customer_id DESC
+    rows:
+      # customer 100: 50+75 = 125 (id 3 excluded: total is NULL, < 30 UNKNOWN filtered).
+      # customer 200: 30+30 = 60.
+      # customer 300: 10 — excluded from CTE.
+      - [200, 60]
+      - [100, 125]
+  # Same query but LIMIT 1 — keeps only the top customer.
+  - query: |-
+      WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
+      SELECT customer_id, SUM(total) FROM hv
+      GROUP BY customer_id
+      HAVING SUM(total) > 50
+      ORDER BY SUM(total) DESC LIMIT 1
+    rows:
+      - [100, 125]
