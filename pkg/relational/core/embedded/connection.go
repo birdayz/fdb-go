@@ -656,6 +656,55 @@ func (c *EmbeddedConnection) resolveQualifierColumns(md *recordlayer.RecordMetaD
 		"SELECT %s.*: qualifier does not match any FROM-clause source", qualifier)
 }
 
+// resolveSelectListPosition maps a SQL-92 positional reference (e.g.
+// `ORDER BY 2`) to the matching output column name from the current
+// SELECT list. Accepts a positive integer literal (DecimalConstant
+// wrapped in PredicatedExpression→ConstantExpressionAtom); rejects
+// everything else, including negative or non-integer constants.
+//
+// Returns the output name matching ORDER BY's downstream colIdx lookup:
+//   - projAliases[N-1] when an alias is set,
+//   - otherwise projCols[N-1],
+//   - otherwise aggCols[N-1].outName (aggregate queries).
+//
+// Returns ("", false) when the expression isn't a positional reference or
+// N is out of range — caller falls back to the regular column/expression
+// paths so existing ORDER BY semantics are unchanged.
+func resolveSelectListPosition(expr antlrgen.IExpressionContext, projCols, projAliases []string, aggCols []aggSelectCol) (string, bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", false
+	}
+	atom, ok := pred.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext)
+	if !ok {
+		return "", false
+	}
+	dec, ok := atom.Constant().(*antlrgen.DecimalConstantContext)
+	if !ok {
+		return "", false
+	}
+	n, err := strconv.ParseInt(dec.DecimalLiteral().GetText(), 10, 64)
+	if err != nil || n < 1 {
+		return "", false
+	}
+	switch {
+	case len(projCols) > 0:
+		if int(n) > len(projCols) {
+			return "", false
+		}
+		if int(n) <= len(projAliases) && projAliases[n-1] != "" {
+			return projAliases[n-1], true
+		}
+		return projCols[n-1], true
+	case len(aggCols) > 0:
+		if int(n) > len(aggCols) {
+			return "", false
+		}
+		return aggCols[n-1].outName, true
+	}
+	return "", false
+}
+
 // expandStarSlots expands mixed SELECT lists of the form
 // `SELECT a.*, b.label FROM a, b` by rewriting each `<qualifier>.*` slot
 // (marked via sq.projStarQualifiers[i]) into its resolved per-source
@@ -3040,6 +3089,14 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					f := oc.FIRST() != nil
 					nullsFirst = &f
 				}
+			}
+			// Handle positional references `ORDER BY N` (SQL-92): N is a
+			// 1-indexed position into the SELECT list. Resolve to the
+			// matching output column's name so the downstream colIdx
+			// lookup in the sort path works uniformly.
+			if posName, ok := resolveSelectListPosition(obExpr.Expression(), projCols, projAliases, aggCols); ok {
+				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst})
+				continue
 			}
 			// Prefer plain column / aggregate lookup (works in all sort paths,
 			// including the proto single-table path). Fall back to storing the

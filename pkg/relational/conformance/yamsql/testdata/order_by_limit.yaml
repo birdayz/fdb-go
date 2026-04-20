@@ -33,3 +33,32 @@ tests:
   # LIMIT 0 returns nothing.
   - query: SELECT id FROM t ORDER BY id LIMIT 0
     rows: []
+  # SQL-92 positional ORDER BY: `ORDER BY N` refers to the Nth SELECT
+  # column (1-indexed). Resolved at parse time to the matching output
+  # name and then runs through the regular sort path. Pre-swingshift-38
+  # `ORDER BY 2` errored "ORDER BY column \"\" not found" because the
+  # integer literal wasn't detected as a position reference.
+  - query: SELECT id, v FROM t ORDER BY 2 DESC
+    rows:
+      - [3, 4]
+      - [1, 3]
+      - [5, 2]
+      - [2, 1]
+      - [4, 1]
+  # ORDER BY 1 on a two-column SELECT where the positional reference
+  # picks out the first projected column (id).
+  - query: SELECT id, grp FROM t ORDER BY 1 LIMIT 3
+    rows:
+      - [1, 'a']
+      - [2, 'a']
+      - [3, 'b']
+  # ORDER BY on an aggregate query — position 2 refers to SUM(v).
+  # Groups: a → 3+1+2=6, b → 4+1=5. DESC puts a first.
+  - query: SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC
+    rows:
+      - ['a', 6]
+      - ['b', 5]
+  # Out-of-range positional ORDER BY falls through to the normal column-name
+  # path, which doesn't find a column named "99" in the table and errors.
+  - query: SELECT id FROM t ORDER BY 99
+    error_code: "22023"
