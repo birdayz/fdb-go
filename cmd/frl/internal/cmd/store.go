@@ -28,7 +28,7 @@ import (
 func newStoreCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "store",
-		Short: "Inspect a record store (header, lifecycle)",
+		Short: "Inspect a record store's header and raw contents",
 	}
 	c.AddCommand(
 		newStoreInfoCmd(),

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"buf.build/go/protoyaml"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -231,18 +232,26 @@ func writeTypesListJSON(out io.Writer, md *recordlayer.RecordMetaData) error {
 }
 
 func newMetaGetCmd() *cobra.Command {
-	var contextName, metaFile string
+	var contextName, metaFile, outputFmt string
 	c := &cobra.Command{
 		Use:   "get",
-		Short: "Dump the loaded RecordMetaData as JSON",
-		Long: "Loads the current context's MetaData and prints it as JSON. " +
+		Short: "Dump the loaded RecordMetaData",
+		Long: "Loads the current context's MetaData and prints it. " +
 			"--meta-file overrides the context's metadata source with a " +
 			"file on disk (useful for ad-hoc inspection without editing " +
-			"the config file). Note: FDB-store metadata sources are not " +
-			"yet supported by this command; configure `meta_file` in your " +
-			"context or pass --meta-file.",
+			"the config file).\n\n" +
+			"--output / -o: 'json' (default — protojson, multiline) or " +
+			"'yaml' (protoyaml, more compact for large schemas).\n\n" +
+			"Note: FDB-store metadata sources are not yet supported by " +
+			"this command; configure `meta_file` in your context or pass " +
+			"--meta-file.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			switch outputFmt {
+			case "", "json", "yaml":
+			default:
+				return fmt.Errorf("invalid --output %q: want json or yaml", outputFmt)
+			}
 			cfg, err := config.Load()
 			if err != nil {
 				return err
@@ -263,13 +272,15 @@ func newMetaGetCmd() *cobra.Command {
 			if metaFile != "" {
 				ctx = applyMetaFileOverride(ctx, metaFile)
 			}
-			return runMetaGet(cmd, ctx)
+			return runMetaGet(cmd, ctx, outputFmt)
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "",
 		"context name to use (default: Config.current_context)")
 	c.Flags().StringVar(&metaFile, "meta-file", "",
 		"path to a serialized MetaData.pb file; overrides context.metadata")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "json",
+		"output format: json or yaml")
 	return c
 }
 
@@ -321,12 +332,10 @@ func writeTypesList(out interface{ Write([]byte) (int, error) }, md *recordlayer
 	return tw.Flush()
 }
 
-func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context) error {
+func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context, outputFmt string) error {
 	// Build a Source using only the file-source path (no DB). Any
 	// fdb_store context would require a keyspace resolver and DB handle;
 	// for now `meta get` only supports file sources without opening FDB.
-	// FDB-backed metadata reads are wired when the store-opening plumbing
-	// is shared with `store info` / `record *` in a later step.
 	src, err := meta.FromContext(cfgCtx, nil, nil)
 	if err != nil {
 		if errors.Is(err, meta.ErrMissingSource) {
@@ -342,13 +351,18 @@ func runMetaGet(cmd *cobra.Command, cfgCtx *configv1.Context) error {
 	if err != nil {
 		return fmt.Errorf("render metadata: %w", err)
 	}
-	out, err := protojson.MarshalOptions{
-		Multiline: true,
-		Indent:    "  ",
-	}.Marshal(mdProto)
+	var bytes []byte
+	if outputFmt == "yaml" {
+		bytes, err = protoyaml.MarshalOptions{Indent: 2}.Marshal(mdProto)
+	} else {
+		bytes, err = protojson.MarshalOptions{
+			Multiline: true,
+			Indent:    "  ",
+		}.Marshal(mdProto)
+	}
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
-	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	_, err = fmt.Fprintln(cmd.OutOrStdout(), string(bytes))
 	return err
 }
