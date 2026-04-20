@@ -41,3 +41,23 @@ tests:
     rows:
       - [1]
       - [2]
+  # Java alignment: literal-on-left form (Java's distinct-from.yamsql).
+  # 'WHERE null IS DISTINCT FROM col' should be equivalent to col IS DISTINCT FROM null.
+  - query: SELECT id FROM t WHERE null IS DISTINCT FROM label ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # Constant-on-both-sides edge case: 'null IS DISTINCT FROM null' is
+  # FALSE per SQL:1999 (NULLs are not distinct from each other).
+  - query: SELECT id FROM t WHERE null IS DISTINCT FROM null
+    rows: []
+  # 10 IS DISTINCT FROM 10 is FALSE (same value).
+  - query: SELECT id FROM t WHERE 10 IS DISTINCT FROM 10
+    rows: []
+  # 10 IS NOT DISTINCT FROM 10 is TRUE.
+  - query: SELECT id FROM t WHERE 10 IS NOT DISTINCT FROM 10 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
