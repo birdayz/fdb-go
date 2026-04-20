@@ -26,12 +26,40 @@ tests:
 
   # Two columns per side, different names per side — positional
   # matching lines them up. id(a)↔id(b), v↔w. ORDER BY on the UNION
-  # result is NOT yet supported when the sides use different column
-  # names (the parser plumbs ORDER BY through to each side's SELECT,
-  # and `v` doesn't exist in b). Pinned as 22023 so the limitation
-  # is explicit; proper fix would apply ORDER BY post-union.
+  # result references the LEFT branch's column names (SQL standard:
+  # result schema = leftmost SELECT). The grammar parses trailing
+  # ORDER BY as attached to the right simpleTable, but execUnion lifts
+  # it back up to the combined result.
   - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY id, v
+    rows:
+      - [1, 10]
+      - [1, 100]
+      - [2, 20]
+      - [2, 200]
+
+  # ORDER BY DESC on union, with LIMIT applied to the combined result.
+  # Top-2 by v DESC across both sides.
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC LIMIT 2
+    rows:
+      - [2, 200]
+      - [1, 100]
+
+  # ORDER BY on a column name that exists on the right but not the left
+  # fails with 42703: the result schema is the LEFT's column names only.
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w
     error_code: "22023"
+
+  # OFFSET combined with LIMIT on a UNION — applies to the combined result.
+  - query: SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1
+    rows:
+      - [20]
+      - [100]
+
+  # UNION (implicit DISTINCT) + ORDER BY — dedup happens before the sort.
+  - query: SELECT v FROM a UNION SELECT v FROM a ORDER BY v
+    rows:
+      - [10]
+      - [20]
 
   # Column-count mismatch must error (SQL-standard cross-side check).
   - query: SELECT id, v FROM a UNION SELECT id FROM b

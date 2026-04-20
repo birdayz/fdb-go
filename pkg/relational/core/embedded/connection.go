@@ -292,15 +292,52 @@ func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrge
 }
 
 // execUnion executes a UNION ALL / UNION DISTINCT query.
+//
+// Trailing ORDER BY / LIMIT / OFFSET on the rightmost simpleTable is lifted
+// to the combined result. SQL-standard semantics (and Postgres, MySQL): a
+// trailing `ORDER BY ... LIMIT N` on a UNION applies to the whole result,
+// not just the last branch. The ANTLR grammar nests the clause inside the
+// right-side simpleTable because the parser greedily attaches it to the
+// last selectElements production, so we pull it back up here.
 func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQueryContext) (driver.Rows, error) {
 	leftCols, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
 	if err != nil {
 		return nil, err
 	}
-	rightCols, rightRows, err := c.execQueryBodyRows(ctx, setQ.GetRight())
-	if err != nil {
-		return nil, err
+
+	var unionOrder []orderByClause
+	var unionLimit int64 = -1
+	var unionOffset int64 = 0
+	var rightCols []string
+	var rightRows [][]driver.Value
+	if rb, ok := setQ.GetRight().(*antlrgen.QueryTermDefaultContext); ok {
+		// Run the right side with ORDER BY / LIMIT / OFFSET stripped so those
+		// clauses apply post-union. Leaving LIMIT in place on the right side
+		// would truncate before dedup/concat and produce wrong results for
+		// queries like `... UNION ... LIMIT 5`.
+		rsq, parseErr := extractFromQueryTerm(rb)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		unionOrder = rsq.orderBy
+		rsq.orderBy = nil
+		unionLimit = rsq.limit
+		rsq.limit = -1
+		unionOffset = rsq.offset
+		rsq.offset = 0
+		rows, rErr := c.execSelectQuery(ctx, rsq)
+		if rErr != nil {
+			return nil, rErr
+		}
+		sr := rows.(*staticRows)
+		rightCols, rightRows = sr.cols, sr.rows
+	} else {
+		rightCols, rightRows, err = c.execQueryBodyRows(ctx, setQ.GetRight())
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	// SQL standard: UNION sides must have matching column counts; names
 	// are positional (left's names become the result schema). Reject
 	// mismatched arity with SQLSTATE 42601 (syntax_error) — consistent
@@ -329,6 +366,54 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 			}
 		}
 		combined = deduped
+	}
+
+	// Apply union-level ORDER BY against the result schema (leftCols by position).
+	if len(unionOrder) > 0 {
+		colIdx := make(map[string]int, len(leftCols))
+		for i, name := range leftCols {
+			// Case-insensitive lookup to match the standard SELECT-list /
+			// ORDER BY semantics the single-source path uses.
+			colIdx[strings.ToLower(name)] = i
+		}
+		// Resolve each ORDER BY entry to a column index. Expression-based
+		// ORDER BY is not supported at the union level — the combined row
+		// set has no backing map/message to evaluate against.
+		indices := make([]int, len(unionOrder))
+		for i, ob := range unionOrder {
+			if ob.expr != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"ORDER BY expression not supported on UNION result; use a column name from the left SELECT list")
+			}
+			idx, ok := colIdx[strings.ToLower(ob.colName)]
+			if !ok {
+				return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					"ORDER BY column %q not found in UNION result schema", ob.colName)
+			}
+			indices[i] = idx
+		}
+		sort.SliceStable(combined, func(a, b int) bool {
+			for k, idx := range indices {
+				less, equal := orderByLess(combined[a][idx], combined[b][idx], unionOrder[k])
+				if equal {
+					continue
+				}
+				return less
+			}
+			return false
+		})
+	}
+
+	// Apply union-level OFFSET / LIMIT.
+	if unionOffset > 0 {
+		if unionOffset >= int64(len(combined)) {
+			combined = combined[:0]
+		} else {
+			combined = combined[unionOffset:]
+		}
+	}
+	if unionLimit >= 0 && int64(len(combined)) > unionLimit {
+		combined = combined[:unionLimit]
 	}
 
 	return &staticRows{cols: leftCols, rows: combined}, nil
