@@ -382,6 +382,37 @@ func TestIntegration_TxReadVersion(t *testing.T) {
 	}
 }
 
+func TestIntegration_StoreInfo_EmptyKeyspace(t *testing.T) {
+	// Point at a keyspace that has no store at it yet. store info should
+	// return a clear "no store header" error rather than panic or hang.
+	// Reuses the primary fixture's cluster + meta.pb but overrides the
+	// keyspace_path to somewhere we never wrote.
+	tmp := t.TempDir()
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: empty
+contexts:
+  - name: empty
+    cluster_file: %s
+    keyspace_path: /frl/never-written
+    metadata:
+      meta_file: %s
+`, fixture.clusterFilePath, fixture.metaFilePath)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	_, err := runCmd(t, "store", "info")
+	if err == nil {
+		t.Fatal("expected error for empty keyspace, got nil")
+	}
+	// Error should explicitly mention "store does not exist" so operators
+	// know it's a provisioning question, not a permissions / network issue.
+	if !strings.Contains(err.Error(), "store does not exist") {
+		t.Errorf("error = %v; want 'store does not exist'", err)
+	}
+}
+
 func TestIntegration_RecordCount_NotEnabled(t *testing.T) {
 	bindConfig(t)
 	// Metadata has no record_count_key, so this must error with the
