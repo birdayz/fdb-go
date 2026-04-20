@@ -310,6 +310,33 @@ func writeDiffMetaFile(t *testing.T, version int32, opts ...func(*recordlayer.Re
 	return path
 }
 
+// TestDiffIndexes_MultipleSortedAlphabetically proves the name-sort
+// comparators inside sortSection actually run. Prior tests diffed
+// one-entry buckets, so Go's sort.Slice short-circuited without
+// invoking the lambda. If the comparator is ever flipped or removed,
+// the assertion on alphabetical ordering across three additions fires.
+func TestDiffIndexes_MultipleSortedAlphabetically(t *testing.T) {
+	t.Parallel()
+	m1 := buildMetaWith(t)
+	m2 := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		// Added in non-alphabetical order so the test fails if sortSection
+		// accidentally preserves insertion order.
+		b.AddIndex("Order", recordlayer.NewIndex("Order$zeta", recordlayer.Field("price")))
+		b.AddIndex("Order", recordlayer.NewIndex("Order$alpha", recordlayer.Field("price")))
+		b.AddIndex("Order", recordlayer.NewIndex("Order$mu", recordlayer.Field("price")))
+	})
+	s := diffIndexes(m1, m2)
+	if len(s.Added) != 3 {
+		t.Fatalf("Added len = %d; want 3", len(s.Added))
+	}
+	want := []string{"Order$alpha", "Order$mu", "Order$zeta"}
+	for i, w := range want {
+		if s.Added[i].Name != w {
+			t.Errorf("Added[%d] = %q; want %q (sort broken?)", i, s.Added[i].Name, w)
+		}
+	}
+}
+
 // TestPKFieldsOrUnset covers the three branches of the PK→text helper
 // that diff + evolve-check share. Each branch produces the operator-
 // visible string that shows up in both text and JSON output — a silent
