@@ -849,11 +849,19 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				colVal = v
 			case ac.aggArg != "":
-				colVal = row[ac.aggArg]
-				if colVal == nil {
-					if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
-						colVal = row[ac.aggArg[dot+1:]]
-					}
+				// Prefer the qualified key. OUTER JOINs explicitly set
+				// `alias.col` to NULL for unmatched rows, and falling back
+				// to the bare `col` on a present-but-NULL qualified key
+				// would pick up the other side's column (e.g. row["a.id"]
+				// = NULL on an unmatched-right row, row["id"] = b.id) —
+				// exactly the nightshift-36 bug but for aggregates. Only
+				// fall through to the bare column when the qualified key
+				// is absent from the row.
+				v, ok := row[ac.aggArg]
+				if ok {
+					colVal = v
+				} else if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+					colVal = row[ac.aggArg[dot+1:]]
 				}
 			}
 			hasArg := ac.aggArg != "" || ac.aggExpr != nil
@@ -1102,10 +1110,26 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 				// LEFT JOIN: emit left row with NULLs if no right match.
 				if jc.joinType == "LEFT" && !matched {
-					// Build null right side.
-					nullRight := make(map[string]driver.Value, len(left)+10)
+					// Build null right side. Populate right-side column keys
+					// (both `alias.col` and bare `col`) with NULL, derived
+					// from metadata, so downstream evaluators can find
+					// `b.label` / `label` and see NULL instead of erroring
+					// with 42703. Pre-fix, WHERE / HAVING / aggregate paths
+					// on unmatched-left rows failed because those keys were
+					// simply absent from the map. Skip any key that also
+					// exists on the left (e.g. a shared `id` column) —
+					// leaving the left value intact matches the RIGHT JOIN
+					// mirror logic.
+					rightKeys := c.collectLeftJoinKeys(md, []struct{ tableName, alias string }{{jc.tableName, jc.alias}})
+					nullRight := make(map[string]driver.Value, len(left)+len(rightKeys))
 					for k, v := range left {
 						nullRight[k] = v
+					}
+					for _, k := range rightKeys {
+						if _, exists := left[k]; exists {
+							continue
+						}
+						nullRight[k] = nil
 					}
 					next = append(next, nullRight)
 				}
