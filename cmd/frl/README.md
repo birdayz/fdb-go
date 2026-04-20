@@ -111,7 +111,7 @@ frl version [--short] [-o json]              # binary + Go toolchain version
 
 ## Structured output (`-o json`)
 
-Fourteen commands emit machine-readable JSON on demand:
+Fifteen commands emit machine-readable JSON on demand:
 
 | Command | Payload |
 |---|---|
@@ -123,6 +123,7 @@ Fourteen commands emit machine-readable JSON on demand:
 | `meta validate` | `{file, valid}` |
 | `meta evolve-check` | `{old, new, valid}` |
 | `meta diff` | `{version?, record_types.{added,removed,changed}, indexes.{…}}` |
+| `config view` | selected `Context` as protojson (snake_case; `-o yaml` is the default) |
 | `config get-contexts` | array of `{name, active}` |
 | `config current-context` | `{name}` |
 | `keyspace resolve` | `{path, prefix_hex, prefix_len}` |
