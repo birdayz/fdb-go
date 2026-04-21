@@ -987,13 +987,30 @@ func (c *EmbeddedConnection) tryPKEqualityPushdown(
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
 ) ([]any, bool) {
-	// Gate on query shape. Aggregate / GROUP BY / COUNT(*) paths
-	// all run through their own code below the cursor; leave them to
-	// the full scan. Same for empty WHERE.
+	// Gate on SELECT-specific shape. Aggregate / GROUP BY / COUNT(*)
+	// paths all run through their own code below the cursor; leave
+	// them to the full scan. HAVING similarly evaluates post-aggregate.
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		return nil, false
 	}
-	if sq.havingExpr != nil || sq.whereExpr == nil {
+	if sq.havingExpr != nil {
+		return nil, false
+	}
+	return c.tryPKEqualityFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// tryPKEqualityFromWhere is the shared core of PK equality pushdown:
+// given a WHERE expression and a record type, it reports whether the
+// WHERE resolves to an AND-chain of equalities covering every PK
+// column with literals of the right type. Used by SELECT, UPDATE,
+// and DELETE call sites; each caller layers its own shape gates on
+// top (e.g. SELECT bails on aggregates).
+func (c *EmbeddedConnection) tryPKEqualityFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) ([]any, bool) {
+	if whereExpr == nil {
 		return nil, false
 	}
 
@@ -1009,7 +1026,7 @@ func (c *EmbeddedConnection) tryPKEqualityPushdown(
 
 	// Walk the WHERE into a flat list of AND-joined leaf predicates.
 	// Any non-AND operator (OR, XOR, NOT) bails — conservative for MVP.
-	leaves, ok := flattenAndPredicates(sq.whereExpr.Expression())
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
 	if !ok {
 		return nil, false
 	}
@@ -1056,6 +1073,49 @@ func (c *EmbeddedConnection) tryPKEqualityPushdown(
 		return nil, false
 	}
 	return pkVals, true
+}
+
+// pkPushdownCursor returns a cursor narrowed to the primary-key
+// range dictated by WHERE, or a full type scan when pushdown doesn't
+// apply. Shared by UPDATE / DELETE (SELECT uses the more-specific
+// gated variant tryPKEqualityPushdown that also filters on aggregates
+// / GROUP BY / HAVING / COUNT(*)).
+func pkPushdownCursor(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	whereExpr antlrgen.IWhereExprContext,
+	tableName string,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownScanCursor(store, rt, pkVals)
+	}
+	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+}
+
+// pkPushdownScanCursor builds a single-key range scan for a fully
+// determined primary key. Tuple key includes the RecordTypeKey prefix
+// when the PK expression starts with one (the default for SQL CREATE
+// TABLE); for the bare Field-only case (intermingled tables) the
+// prefix is absent.
+func pkPushdownScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	pkVals []any,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	low := make(tuple.Tuple, 0, 1+len(pkVals))
+	if _, ok := rt.PrimaryKey.(*recordlayer.CompositeKeyExpression); ok {
+		low = append(low, rt.GetRecordTypeKey())
+	}
+	for _, v := range pkVals {
+		low = append(low, v)
+	}
+	return store.ScanRecordsInRange(
+		low, low,
+		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
+		nil, recordlayer.ForwardScan(),
+	)
 }
 
 // extractPKUserFields returns the ordered list of user field names
@@ -3129,22 +3189,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// behavioural change besides avoiding the full-type iteration.
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
-			// Tuple key includes the RecordTypeKey prefix when the PK
-			// expression starts with one (the default for SQL CREATE
-			// TABLE). For the bare Field-only case (intermingled
-			// tables) the prefix is absent.
-			low := make(tuple.Tuple, 0, 1+len(pkVals))
-			if _, ok := rt.PrimaryKey.(*recordlayer.CompositeKeyExpression); ok {
-				low = append(low, rt.GetRecordTypeKey())
-			}
-			for _, v := range pkVals {
-				low = append(low, v)
-			}
-			cursor = store.ScanRecordsInRange(
-				low, low,
-				recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
-				nil, recordlayer.ForwardScan(),
-			)
+			cursor = pkPushdownScanCursor(store, rt, pkVals)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}
@@ -8206,7 +8251,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		cursor := pkPushdownCursor(ctx, c, store, rt, whereExpr, tableName)
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the source alias so correlated EXISTS / IN inside WHERE
@@ -8321,7 +8366,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		cursor := pkPushdownCursor(ctx, c, store, rt, whereExpr, tableName)
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the source alias so correlated EXISTS / IN inside WHERE

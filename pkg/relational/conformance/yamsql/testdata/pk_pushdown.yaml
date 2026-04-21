@@ -149,3 +149,54 @@ tests:
     rows:
       - [100]
       - [400]
+
+  # UPDATE pushdown: same detection, same range scan, but applied to
+  # the UPDATE scan site. Update exactly the row with the matching PK.
+  # (The scenario runner doesn't expose rows-affected; we verify state
+  # via subsequent SELECT instead.)
+  - query: UPDATE t SET v = 999 WHERE id = 2
+  - query: SELECT v FROM t WHERE id = 2
+    rows:
+      - [999]
+  # Other rows untouched.
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # UPDATE on a composite PK, both columns equated.
+  - query: UPDATE kv SET v = 555 WHERE k = 'a' AND g = 1
+  - query: SELECT v FROM kv WHERE k = 'a' AND g = 1
+    rows:
+      - [555]
+
+  # UPDATE with no matching PK — no rows updated, no error.
+  - query: UPDATE t SET v = 0 WHERE id = 99
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # UPDATE without pushdown (non-PK WHERE) still works — scan path.
+  - query: UPDATE t SET v = 1 WHERE name = 'delta'
+  - query: SELECT v FROM t WHERE id = 4
+    rows:
+      - [1]
+
+  # DELETE pushdown: same pattern applied to the DELETE scan site.
+  - query: DELETE FROM t WHERE id = 3
+  - query: SELECT id FROM t WHERE id = 3
+    rows: []
+  # The rest survive.
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # DELETE on composite PK.
+  - query: DELETE FROM kv WHERE k = 'b' AND g = 2
+  - query: SELECT v FROM kv WHERE k = 'b' AND g = 2
+    rows: []
+
+  # DELETE with no matching PK — no-op, no error.
+  - query: DELETE FROM t WHERE id = 99
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
