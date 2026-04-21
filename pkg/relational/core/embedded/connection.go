@@ -7565,6 +7565,11 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
 
+		// Record the source alias so correlated EXISTS / IN inside WHERE
+		// can resolve outer-row refs. UPDATE/DELETE don't expose a user
+		// alias in the grammar today; descriptor name + tableName match.
+		defer c.pushSourceAliases(tableName)()
+
 		for {
 			result, nextErr := cursor.OnNext(ctx)
 			if nextErr != nil {

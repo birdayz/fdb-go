@@ -131,3 +131,21 @@ tests:
     rows:
       - ['Bob']
       - ['Carol']
+
+  # UPDATE with a correlated EXISTS predicate — only employees with a
+  # project get dept_id nulled out. The execUpdate scan loop pushes the
+  # source alias just like the SELECT path.
+  - query: UPDATE emp SET dept_id = 99 WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+  - query: SELECT fname, dept_id FROM emp ORDER BY id
+    rows:
+      - ['Alice', 99]
+      - ['Bob', 99]
+      - ['Carol', 10]
+
+  # DELETE with a correlated NOT EXISTS: remove employees without any
+  # project. Carol is the only one without a project.
+  - query: DELETE FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+  - query: SELECT fname FROM emp ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
