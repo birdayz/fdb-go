@@ -6250,10 +6250,20 @@ func castValue(v any, typeName string) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
+	// Split INTEGER (32-bit) from BIGINT (64-bit) so CAST range-checks
+	// match Java: `CAST(9223372036854775807 AS INTEGER)` errors 22F3H
+	// because the value exceeds Integer.MAX_VALUE. Java's CastValue
+	// applies LONG_TO_INT validation even though our runtime value
+	// type stays int64 (Go doesn't need a narrower representation).
+	is32BitInteger := typeName == "INTEGER" || typeName == "INT"
 	switch {
-	case strings.HasPrefix(typeName, "BIGINT"), strings.HasPrefix(typeName, "INT"), typeName == "INTEGER", typeName == "LONG":
+	case is32BitInteger, strings.HasPrefix(typeName, "BIGINT"), strings.HasPrefix(typeName, "INT"), typeName == "LONG":
 		switch n := v.(type) {
 		case int64:
+			if is32BitInteger && (n < math.MinInt32 || n > math.MaxInt32) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"value %d out of range for INTEGER", n)
+			}
 			return n, nil
 		case float64:
 			// Java CastValue.DOUBLE_TO_LONG: reject NaN/Inf, round to nearest
@@ -6279,13 +6289,22 @@ func castValue(v any, typeName string) (any, error) {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 					"value out of range for integer: %v", n)
 			}
-			return int64(rounded), nil
+			r := int64(rounded)
+			if is32BitInteger && (r < math.MinInt32 || r > math.MaxInt32) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"value %d out of range for INTEGER", r)
+			}
+			return r, nil
 		case string:
 			// Java CastValue.STRING_TO_LONG: Integer.parseInt(in.trim()) —
 			// trims whitespace before parsing.
 			i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
 			if err != nil {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to integer: %v", n, err)
+			}
+			if is32BitInteger && (i < math.MinInt32 || i > math.MaxInt32) {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"value %d out of range for INTEGER", i)
 			}
 			return i, nil
 		case bool:
