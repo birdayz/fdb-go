@@ -60,3 +60,26 @@ tests:
   - query: SELECT id FROM t WHERE v BETWEEN 10 AND 10
     rows:
       - [3]
+  # BETWEEN with arithmetic expressions in bounds.
+  # v BETWEEN (2+3) AND (10*2) → v BETWEEN 5 AND 20.
+  - query: SELECT id FROM t WHERE v BETWEEN (2+3) AND (10*2) ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+  # BETWEEN with column-derived bounds — non-correlated subquery.
+  # MIN(v)=0, MAX(v)=100. Every non-NULL v is in [0, 100].
+  - query: SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # BETWEEN with function-call bounds. v values: 0, 5, 10, 15, 100.
+  # ABS(-5)=5, ABS(-15)=15. In [5, 15]: v=5 (id=2), v=10 (id=3), v=15 (id=4).
+  - query: SELECT id FROM t WHERE v BETWEEN ABS(-5) AND ABS(-15) ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
