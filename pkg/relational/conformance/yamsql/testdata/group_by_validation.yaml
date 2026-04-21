@@ -80,10 +80,22 @@ tests:
   # groupby-tests.yamsql).
   - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS x ORDER BY col1
     error_code: "42702"
-  # Java: `SELECT x FROM T1 GROUP BY col1 AS x` — the alias becomes
-  # a SELECT-list output column reference. We don't support this
-  # (the alias is tracked for dedup but not as a resolvable name).
-  # Pin: Go errors 42703 (column not found) since `x` isn't in
-  # projCols or the schema. Tracked for future alignment.
+  # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
+  # col1 AS x` — the alias becomes a usable SELECT-list reference;
+  # the output column is named `x` and its values are col1's distinct
+  # values. nightshift-42: implemented via post-parse rewrite of
+  # matching projCols to the underlying group-by column, preserving
+  # the alias as projAlias.
   - query: SELECT x FROM t1 GROUP BY col1 AS x ORDER BY x
-    error_code: "42703"
+    rows:
+      - [10]
+      - [20]
+
+  # Same pattern with an aggregate in the SELECT list — alias `x`
+  # resolves to col1, COUNT(*) aggregates per group. t1 has rows
+  # (1,10,100), (2,10,200), (3,20,300): col1=10 → 2 rows, col1=20
+  # → 1 row.
+  - query: SELECT x, COUNT(*) FROM t1 GROUP BY col1 AS x ORDER BY x
+    rows:
+      - [10, 2]
+      - [20, 1]

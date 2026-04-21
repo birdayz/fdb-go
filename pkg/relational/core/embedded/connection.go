@@ -4623,6 +4623,13 @@ type selectQuery struct {
 	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
 	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
 	groupByExprs []antlrgen.IExpressionContext
+	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
+	// their index in groupBy. Used at parse time to resolve SELECT-list
+	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
+	// — the SELECT-list column gets rewritten to the underlying group-by
+	// name with the alias preserved as the output column name. Nil = no
+	// aliased GROUP BY entries.
+	groupByAliases map[string]int
 	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
 	// Non-nil only when groupBy is non-empty.
 	aggCols []aggSelectCol
@@ -5512,13 +5519,14 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// group key comes from the expression.
 		seenAliases := make(map[string]bool)
 		for _, item := range groupByCtx.AllGroupByItem() {
+			aliasName := ""
 			if item.Uid() != nil {
-				alias := stripIdentifierQuotes(item.Uid().GetText())
-				if seenAliases[alias] {
+				aliasName = stripIdentifierQuotes(item.Uid().GetText())
+				if seenAliases[aliasName] {
 					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-						"duplicate alias %q in GROUP BY", alias)
+						"duplicate alias %q in GROUP BY", aliasName)
 				}
-				seenAliases[alias] = true
+				seenAliases[aliasName] = true
 			}
 			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
 			if posErr != nil {
@@ -5527,6 +5535,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if isPos {
 				sq.groupBy = append(sq.groupBy, posName)
 				sq.groupByExprs = append(sq.groupByExprs, nil)
+				if aliasName != "" {
+					if sq.groupByAliases == nil {
+						sq.groupByAliases = make(map[string]int)
+					}
+					sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+				}
 				continue
 			}
 			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
@@ -5561,6 +5575,72 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				// value used for grouping comes from evaluating the expr.
 				sq.groupBy = append(sq.groupBy, item.Expression().GetText())
 				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
+			}
+			if aliasName != "" {
+				if sq.groupByAliases == nil {
+					sq.groupByAliases = make(map[string]int)
+				}
+				sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+			}
+		}
+
+		// Java alignment (groupby-tests.yamsql): `SELECT x FROM t GROUP
+		// BY col1 AS x` — the alias becomes a usable SELECT-list
+		// reference. Rewrite any bare projection whose name matches a
+		// GROUP BY alias to the underlying group-by column, preserving
+		// the alias itself as the output column name. Only bare column
+		// group-by items (groupByExprs[i] == nil) are handled;
+		// expression group keys keep their synthetic display name.
+		aliasResolves := func(name string) (underlying string, outName string, ok bool) {
+			idx, aliased := sq.groupByAliases[strings.ToUpper(name)]
+			if !aliased {
+				return "", "", false
+			}
+			if idx < len(sq.groupByExprs) && sq.groupByExprs[idx] != nil {
+				return "", "", false
+			}
+			return sq.groupBy[idx], name, true
+		}
+		for i := range sq.projCols {
+			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				continue
+			}
+			col := sq.projCols[i]
+			if col == "" {
+				continue
+			}
+			underlying, outName, ok := aliasResolves(col)
+			if !ok {
+				continue
+			}
+			if i >= len(sq.projAliases) {
+				padded := make([]string, i+1)
+				copy(padded, sq.projAliases)
+				sq.projAliases = padded
+			}
+			if sq.projAliases[i] == "" {
+				sq.projAliases[i] = outName
+			}
+			sq.projCols[i] = underlying
+		}
+		// Also rewrite aggCols entries: when the SELECT list mixes
+		// plain-col refs with aggregates, bare columns are classified
+		// into aggCols with groupCol set rather than into projCols.
+		for i := range sq.aggCols {
+			ac := &sq.aggCols[i]
+			if ac.aggFunc != "" || ac.outExpr != nil {
+				continue
+			}
+			if ac.groupCol == "" {
+				continue
+			}
+			underlying, outName, ok := aliasResolves(ac.groupCol)
+			if !ok {
+				continue
+			}
+			ac.groupCol = underlying
+			if ac.outName == "" {
+				ac.outName = outName
 			}
 		}
 	}
