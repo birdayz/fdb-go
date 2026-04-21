@@ -8080,11 +8080,20 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			if err != nil {
 				return triFalse, err
 			}
+			opText := bcp.ComparisonOperator().GetText()
+			// IS [NOT] DISTINCT FROM is null-safe — always 2-valued;
+			// branch before the any-NULL → UNKNOWN fallback.
+			switch opText {
+			case "ISDISTINCTFROM":
+				return triFromBool(!nullSafeEqual(left, right)), nil
+			case "ISNOTDISTINCTFROM":
+				return triFromBool(nullSafeEqual(left, right)), nil
+			}
 			if left == nil || right == nil {
 				return triNull, nil
 			}
 			cmp := compareValues(left, right)
-			switch bcp.ComparisonOperator().GetText() {
+			switch opText {
 			case "=":
 				return triFromBool(cmp == 0), nil
 			case "!=", "<>":
