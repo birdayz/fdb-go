@@ -7548,20 +7548,16 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if !awfok {
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING aggregate %T", agg.AggregateWindowedFunction())
 			}
-			var lookupName string
-			switch {
-			case awf.COUNT() != nil && awf.STAR() != nil:
-				lookupName = "COUNT(*)"
-			case awf.COUNT() != nil && awf.FunctionArg() != nil:
-				lookupName = "COUNT(" + awf.FunctionArg().GetText() + ")"
-			case awf.SUM() != nil && awf.FunctionArg() != nil:
-				lookupName = "SUM(" + awf.FunctionArg().GetText() + ")"
-			case awf.MIN() != nil && awf.FunctionArg() != nil:
-				lookupName = "MIN(" + awf.FunctionArg().GetText() + ")"
-			case awf.MAX() != nil && awf.FunctionArg() != nil:
-				lookupName = "MAX(" + awf.FunctionArg().GetText() + ")"
-			case awf.AVG() != nil && awf.FunctionArg() != nil:
-				lookupName = "AVG(" + awf.FunctionArg().GetText() + ")"
+			// Reuse extractAwfFields which already handles both plain and
+			// DISTINCT forms (COUNT(*), COUNT(col), COUNT(DISTINCT col),
+			// SUM/MIN/MAX/AVG with or without ALL/DISTINCT). This keeps
+			// the HAVING lookup-name in sync with the SELECT-list alias
+			// computed by extractAggFunc — so SELECT COUNT(DISTINCT v)
+			// HAVING COUNT(DISTINCT v) > 0 finds the same aggregate.
+			_, _, _, lookupName, _, fieldsOk := extractAwfFields(awf)
+			if !fieldsOk {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"unsupported HAVING aggregate shape")
 			}
 			v, found := row[lookupName]
 			if !found {
