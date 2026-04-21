@@ -60,14 +60,17 @@ tests:
       - [2]
       - [3]
   # Java alignment: SELECT DISTINCT on an expression with alias
-  # (Java's alias-tests.yamsql). 'SELECT DISTINCT v / 2 AS half FROM t'
-  # errors 42601 in our grammar — grammar parses DISTINCT + expression
-  # + AS differently than Java. Pin current error.
-  - query: SELECT DISTINCT v / 2 AS half FROM t ORDER BY half
-    error_code: "42601"
-  # DISTINCT on expression without alias — works.
+  # (Java's alias-tests.yamsql 'SELECT DISTINCT v.c / 100 AS category').
+  # 'half' is a reserved keyword (HALF in our lexer), so needs quoting;
+  # use non-keyword alias 'bucket' to exercise the same path cleanly.
   # v values: 1, 1, 2, 3, 3, NULL, NULL → v/2: 0, 0, 1, 1, 1, NULL, NULL
   # distinct → 0, 1, NULL.
+  - query: SELECT DISTINCT v / 2 AS bucket FROM t ORDER BY bucket
+    rows:
+      - [~]
+      - [0]
+      - [1]
+  # DISTINCT on expression without alias — works.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
     rows:
       - [~]
