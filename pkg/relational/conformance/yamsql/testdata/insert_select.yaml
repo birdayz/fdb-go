@@ -75,6 +75,10 @@ tests:
   # evenly divide. src has 3 rows; AVG of 4 constants across 3 rows
   # is not an integer: SUM(4)/3 = 4/3 for single-value, but we need
   # a cleaner pathological. Use a 2-row source and an odd sum.
+  #
+  # dayshift-40: SQLSTATE tightened from 22023 (INVALID_PARAMETER) to
+  # 22000 (CANNOT_CONVERT_TYPE) to match Java's case-when.yamsql
+  # treatment of fractional float → integer assignment.
   - query: INSERT INTO src VALUES (10, 5)
   - query: INSERT INTO dst (id, v) SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)
-    error_code: "22023"
+    error_code: "22000"

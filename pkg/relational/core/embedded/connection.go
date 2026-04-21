@@ -5338,7 +5338,14 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		// is well-defined. Rejects non-integer floats with a clear error.
 		if v, ok := val.(float64); ok {
 			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				// Java aligns a fractional float → integer column at
+				// assignment-time with 22000 (cannot_convert_type) —
+				// see case-when.yamsql. Pre-dayshift-40 Go used 22023
+				// (INVALID_PARAMETER), same class but wrong specific
+				// code. Whole-valued floats still coerce (supports
+				// INSERT ... SELECT SUM(v) and CASE branches where
+				// the double result is a whole integer).
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
 			}
 			if v < math.MinInt64 || v > math.MaxInt64 {
