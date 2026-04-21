@@ -100,10 +100,10 @@ tests:
   - query: SELECT id FROM t WHERE id > 10 AND id < 5
     rows: []
 
-  # Contradictory equality + range — the equality establishes the
-  # point range; the contradicting range overwrites bounds
-  # last-write-wins. Scan's evalPredicate then re-applies the full
-  # WHERE, which filters to empty. Either way, empty result.
+  # Contradictory equality + range — `tryPKEqualityFromWhere` fires
+  # first, sees `id = 2`, and builds a point scan at id=2. The
+  # loaded row is then filtered out by evalPredicate because
+  # `id > 5` is false for id=2. Result: empty.
   - query: SELECT id FROM t WHERE id = 2 AND id > 5
     rows: []
 

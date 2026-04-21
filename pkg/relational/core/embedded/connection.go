@@ -1416,14 +1416,13 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 		if !literalMatchesPKKind(val, fd.Kind()) {
 			return pkRangeBounds{}, false
 		}
+		// `=` intentionally not handled here — the caller tries
+		// tryPKEqualityFromWhere first, which succeeds for any valid
+		// equality on a single-col PK. Reaching this function with
+		// an equality leaf means equality pushdown already rejected
+		// the query for some other reason; we skip equalities here
+		// and let any range predicates determine the bounds.
 		switch op {
-		case "=":
-			bounds.hasLow = true
-			bounds.low = val
-			bounds.lowInclusive = true
-			bounds.hasHigh = true
-			bounds.high = val
-			bounds.highInclusive = true
 		case ">":
 			bounds.hasLow = true
 			bounds.low = val
