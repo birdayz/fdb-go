@@ -7676,6 +7676,15 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
+		opText := a.ComparisonOperator().GetText()
+		// IS [NOT] DISTINCT FROM is null-safe equality — always 2-valued.
+		// Must branch BEFORE the any-NULL → nil fallback below.
+		switch opText {
+		case "ISDISTINCTFROM":
+			return !nullSafeEqual(left, right), nil
+		case "ISNOTDISTINCTFROM":
+			return nullSafeEqual(left, right), nil
+		}
 		// Java-aligned SQL 3-valued logic: NULL comparison → UNKNOWN
 		// → nil at the value evaluator (NOT false; that collapsed
 		// UNKNOWN to FALSE which is wrong for SELECT projection).
@@ -7687,7 +7696,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 				"cannot compare %T with %T", left, right)
 		}
 		cmp := compareValues(left, right)
-		switch a.ComparisonOperator().GetText() {
+		switch opText {
 		case "=":
 			return cmp == 0, nil
 		case "!=", "<>":
@@ -7701,7 +7710,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		case ">=":
 			return cmp >= 0, nil
 		}
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator")
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", opText)
 	case *antlrgen.MathExpressionAtomContext:
 		left, err := evalExprAtomOnMap(ctx, conn, row, a.GetLeft())
 		if err != nil {

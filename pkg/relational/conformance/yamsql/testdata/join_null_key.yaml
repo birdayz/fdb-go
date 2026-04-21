@@ -25,3 +25,12 @@ tests:
   # flip to TRUE and every (a,b) pair would survive.
   - query: SELECT a.id FROM a, b WHERE NOT (a.k = null) AND a.id = 1
     rows: []
+  # NULL-safe equality via IS NOT DISTINCT FROM: treats NULL=NULL as
+  # TRUE, so the NULL-keyed rows (a.id=2, b.id=102) now match each
+  # other. Commonly used for NULL-preserving join semantics.
+  - query: SELECT a.id, b.label FROM a, b WHERE a.k IS NOT DISTINCT FROM b.k
+    unordered: true
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [3, 'gamma']
