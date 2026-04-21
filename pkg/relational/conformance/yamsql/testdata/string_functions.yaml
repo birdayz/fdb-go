@@ -81,3 +81,27 @@ tests:
   - query: SELECT OCTET_LENGTH(s) FROM t WHERE id = 3
     rows:
       - [~]
+  # POSITION — 1-based index of substring.
+  - query: SELECT POSITION('world', s) FROM t WHERE id = 1
+    rows:
+      - [7]
+  # POSITION with no match returns 0.
+  - query: SELECT POSITION('xyz', s) FROM t WHERE id = 1
+    rows:
+      - [0]
+  # POSITION NULL propagation.
+  - query: SELECT POSITION('a', s) FROM t WHERE id = 3
+    rows:
+      - [~]
+  # REVERSE.
+  - query: SELECT REVERSE(s) FROM t WHERE id = 1
+    rows:
+      - ['dlrow olleh']
+  # REVERSE on NULL.
+  - query: SELECT REVERSE(s) FROM t WHERE id = 3
+    rows:
+      - [~]
+  # Nested string function calls.
+  - query: SELECT UPPER(REVERSE(s)) FROM t WHERE id = 1
+    rows:
+      - ['DLROW OLLEH']
