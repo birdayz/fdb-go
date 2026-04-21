@@ -369,9 +369,7 @@ tests:
   # Nested WITH RECURSIVE — a recursive CTE followed by a
   # non-recursive CTE that builds on it, all in one WITH list. The
   # second CTE is non-recursive so doesn't need its own loop; it just
-  # reads from the first one. Qualified projection (`d.id`) avoided
-  # because non-recursive CTEs in the SQL layer surface qualified
-  # projections with the dotted name; use `id` directly instead.
+  # reads from the first one.
   - query: |-
       WITH RECURSIVE descendants AS (
         SELECT id, parent FROM t WHERE parent = -1

@@ -787,7 +787,9 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 	// Apply column rename (`WITH RECURSIVE t(c1, c2, ...) AS ...`) to
 	// the seed schema so the recursive branch — which scans this CTE
 	// via its name — sees the renamed columns, not the seed's original
-	// projection names.
+	// projection names. When no rename is present, strip projection
+	// qualifiers so `SELECT d.id FROM t AS d` produces a CTE column
+	// named `id` rather than `d.id` (matches the non-recursive path).
 	if renameList != nil {
 		if len(renameList) != len(seedCols) {
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
@@ -795,6 +797,8 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 				cteName, len(renameList), len(seedCols))
 		}
 		seedCols = renameList
+	} else {
+		seedCols = stripCTEColumnQualifiers(seedCols)
 	}
 
 	switch traversal {
@@ -1257,6 +1261,28 @@ func literalMatchesPKKind(val any, kind protoreflect.Kind) bool {
 	return false
 }
 
+// stripCTEColumnQualifiers returns the column list with any leading
+// `alias.` qualifier removed from each name (taking the text after
+// the LAST dot). CTE output schemas expose bare column names —
+// `WITH x AS (SELECT d.id FROM t AS d)` yields a CTE with column
+// `id`, not `d.id`, matching Postgres / SQL standard. If the inner
+// query has two qualified projections that collapse to the same
+// bare name (`SELECT a.v, b.v FROM …`) both columns keep their
+// suffix form and downstream queries must use aliases to
+// disambiguate — consistent with how regular SQL handles ambiguous
+// projection names.
+func stripCTEColumnQualifiers(cols []string) []string {
+	out := make([]string, len(cols))
+	for i, col := range cols {
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			out[i] = col[dot+1:]
+		} else {
+			out[i] = col
+		}
+	}
+	return out
+}
+
 // containsTableRef reports whether the parse subtree references a
 // table with the given uppercase name. Used by the recursive CTE
 // evaluator to decide whether a CTE body actually self-references —
@@ -1434,6 +1460,15 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 							cteName, len(renameList), len(cteCols))
 					}
 					cteCols = renameList
+				} else if cteErr == nil {
+					// Strip projection qualifiers from CTE output column
+					// names: `SELECT d.id FROM t AS d` materialises a CTE
+					// whose column is `id`, not `d.id`. Matches Postgres /
+					// SQL standard where the CTE's output schema exposes
+					// the bare column name (the inner alias is an internal
+					// detail). Without this, `WITH x AS (SELECT d.id FROM
+					// t AS d) SELECT id FROM x` errored 42703.
+					cteCols = stripCTEColumnQualifiers(cteCols)
 				}
 			}
 			if cteErr != nil {
