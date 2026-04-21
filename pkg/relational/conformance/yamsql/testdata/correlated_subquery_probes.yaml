@@ -145,6 +145,24 @@ tests:
       - ['Alice']
       - ['Bob']
 
+  # Multi-source outer (JOIN), inner refers to one of the joined rows.
+  # Outer row is a map; outerScopeFromMapRow derives qualifiers from
+  # its keys. Inner's `emp.id` resolves via the row's emp.id entry.
+  # Cross-join emp and project (no ON), filter outer by EXISTS-inner.
+  # The EXISTS is always true when there is at least one project, so
+  # every (emp, project) cross-product row survives → 3 emp * 2
+  # projects = 6 rows; project emp_id in (1,2), both have matching
+  # emp.id projects so no filtering. GROUP BY emp name → 2 distinct
+  # emp names (Alice, Bob have projects; Carol doesn't but the outer
+  # filter is emp-correlated too via emp.id).
+  - query: |
+      SELECT DISTINCT e.fname FROM emp AS e, project AS p
+      WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = e.id)
+      ORDER BY e.fname
+    rows:
+      - ['Alice']
+      - ['Bob']
+
   # UPDATE with a correlated EXISTS predicate — only employees with a
   # project get dept_id nulled out. The execUpdate scan loop pushes the
   # source alias just like the SELECT path.
