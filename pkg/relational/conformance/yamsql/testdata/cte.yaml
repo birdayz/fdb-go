@@ -174,3 +174,18 @@ tests:
     rows:
       - [1, 10]
       - [2, 20]
+  # Nested WITH (Java cte.yamsql line 89): outer c1 renames (w, z);
+  # inner c3 selects id from c1. Java 4.10.1.0+ errors 42703 (c1 is
+  # visible but id is not in its renamed cols). Go errors 42F01
+  # because the inner SELECT can't resolve `c1` as a table — the CTE
+  # scope inheritance across nested WITH isn't propagating to the
+  # inner query's execSelectQuery. Divergence pinned; fix would
+  # require CTE scoping work beyond swingshift-41.
+  - query: |-
+      WITH c1(w, z) AS (SELECT id, v FROM t),
+           c2(a, b) AS (
+             WITH c3(aa, bb) AS (SELECT id, v FROM c1 WHERE id <= 2)
+             SELECT * FROM c3
+           )
+      SELECT * FROM c1, c2
+    error_code: "42F01"

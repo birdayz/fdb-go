@@ -823,8 +823,15 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
 			if cteErr != nil {
-				return nil, api.WrapErrorf(cteErr, api.ErrCodeInvalidParameter,
-					"CTE %q", cteName)
+				// Preserve the inner SQLSTATE (e.g. 42703 from a missing
+				// column reference in a renamed outer CTE); otherwise
+				// well-typed inner errors get masked as generic 22023.
+				innerCode := api.ErrCodeInvalidParameter
+				var apiErr *api.Error
+				if errors.As(cteErr, &apiErr) {
+					innerCode = apiErr.Code
+				}
+				return nil, api.WrapErrorf(cteErr, innerCode, "CTE %q", cteName)
 			}
 			// Java alignment: WITH name(c1, c2, ...) AS (SELECT ...) — the
 			// optional column-list renames the CTE's output columns. The
