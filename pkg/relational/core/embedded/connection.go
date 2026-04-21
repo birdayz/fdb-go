@@ -717,6 +717,159 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	return &staticRows{cols: leftCols, rows: combined}, nil
 }
 
+// recursiveCTEIterationLimit caps the number of semi-naive iterations
+// for a WITH RECURSIVE body. Protects against unbounded recursion on
+// cyclic graphs with UNION ALL (UNION DISTINCT converges naturally by
+// filtering rows already seen). A well-formed ancestor/descendant query
+// over an acyclic hierarchy terminates far below this cap.
+const recursiveCTEIterationLimit = 10000
+
+// materializeRecursiveCTE evaluates a WITH RECURSIVE CTE body using
+// semi-naive (level-order) evaluation. The body must be a UNION [ALL]
+// where the left (seed) does not self-reference and the right
+// (recursive) references the CTE name. Each iteration binds
+// c.ctes[cteName] to the previous iteration's new rows (the "working
+// set") and re-evaluates the recursive branch; iteration terminates
+// when the branch produces no new rows.
+//
+// For UNION ALL, every row from the recursive branch is considered new
+// — the working set naturally shrinks over an acyclic graph until the
+// branch produces nothing. For UNION DISTINCT, rows already present in
+// the cumulative result are filtered out, which also guarantees
+// termination on cyclic graphs.
+func (c *EmbeddedConnection) materializeRecursiveCTE(
+	ctx context.Context,
+	body antlrgen.IQueryExpressionBodyContext,
+	cteName string,
+	renameList []string,
+) ([]string, [][]driver.Value, error) {
+	setQ, ok := body.(*antlrgen.SetQueryContext)
+	if !ok {
+		return nil, nil, api.NewErrorf(api.ErrCodeInvalidRecursion,
+			"recursive CTE %q body must be a UNION between a non-recursive seed and a recursive branch", cteName)
+	}
+	if setQ.UNION() == nil {
+		return nil, nil, api.NewErrorf(api.ErrCodeInvalidRecursion,
+			"recursive CTE %q requires UNION in the body", cteName)
+	}
+	quantifier := ""
+	if q := setQ.GetQuantifier(); q != nil {
+		quantifier = strings.ToUpper(q.GetText())
+	}
+
+	// Evaluate the seed with cteName unbound. A stray self-reference in
+	// the seed surfaces as a normal table-not-found error — standard SQL
+	// forbids seed self-reference, and we get that enforcement for free.
+	seedCols, seedRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Apply column rename (`WITH RECURSIVE t(c1, c2, ...) AS ...`) to
+	// the seed schema so the recursive branch — which scans this CTE
+	// via its name — sees the renamed columns, not the seed's original
+	// projection names.
+	if renameList != nil {
+		if len(renameList) != len(seedCols) {
+			return nil, nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+				"CTE %q column-rename has %d names but seed has %d columns",
+				cteName, len(renameList), len(seedCols))
+		}
+		seedCols = renameList
+	}
+
+	// For UNION DISTINCT, every row emitted (seed included) must be
+	// tracked so later iterations can filter duplicates — and the seed
+	// itself must be deduplicated. For UNION ALL, the seed passes
+	// through verbatim and no tracking is needed.
+	var cumulative [][]driver.Value
+	var working [][]driver.Value
+	var seen map[string]struct{}
+	if quantifier == "ALL" {
+		cumulative = append([][]driver.Value(nil), seedRows...)
+		working = seedRows
+	} else {
+		seen = make(map[string]struct{}, len(seedRows))
+		dedup := make([][]driver.Value, 0, len(seedRows))
+		for _, r := range seedRows {
+			k := rowKey(r)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			dedup = append(dedup, r)
+		}
+		cumulative = dedup
+		working = dedup
+	}
+
+	// Binding cleanup: whatever happens below, leave c.ctes[cteName] in
+	// the state the caller expects (unset — it will set the final
+	// result itself).
+	defer delete(c.ctes, cteName)
+
+	for iter := 0; len(working) > 0; iter++ {
+		if iter >= recursiveCTEIterationLimit {
+			return nil, nil, api.NewErrorf(api.ErrCodeExecutionLimitReached,
+				"recursive CTE %q exceeded iteration limit of %d — possible cycle; use UNION (DISTINCT) or a depth predicate",
+				cteName, recursiveCTEIterationLimit)
+		}
+		c.ctes[cteName] = &cteData{cols: seedCols, rows: working}
+		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
+		if iErr != nil {
+			return nil, nil, iErr
+		}
+		if len(iterCols) != len(seedCols) {
+			return nil, nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+				"recursive CTE %q: seed has %d columns, recursive branch produced %d",
+				cteName, len(seedCols), len(iterCols))
+		}
+		var newRows [][]driver.Value
+		if quantifier == "ALL" {
+			newRows = iterRows
+		} else {
+			newRows = make([][]driver.Value, 0, len(iterRows))
+			for _, r := range iterRows {
+				k := rowKey(r)
+				if _, dup := seen[k]; dup {
+					continue
+				}
+				seen[k] = struct{}{}
+				newRows = append(newRows, r)
+			}
+		}
+		if len(newRows) == 0 {
+			break
+		}
+		cumulative = append(cumulative, newRows...)
+		working = newRows
+	}
+
+	return seedCols, cumulative, nil
+}
+
+// containsTableRef reports whether the parse subtree references a
+// table with the given uppercase name. Used by the recursive CTE
+// evaluator to decide whether a CTE body actually self-references —
+// the RECURSIVE keyword is a scope enabler (matches Postgres), so a
+// non-self-referencing body is evaluated on the non-recursive path.
+func containsTableRef(tree antlr.Tree, upperName string) bool {
+	if tree == nil {
+		return false
+	}
+	if tn, ok := tree.(antlrgen.ITableNameContext); ok {
+		if strings.ToUpper(fullIdToName(tn.FullId())) == upperName {
+			return true
+		}
+	}
+	for i := 0; i < tree.GetChildCount(); i++ {
+		if containsTableRef(tree.GetChild(i), upperName) {
+			return true
+		}
+	}
+	return false
+}
+
 // execSelectQuery executes a parsed selectQuery and returns a driver.Rows.
 // Extracted so execQueryBodyRows can call it without an ISelectStatementContext.
 func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
@@ -812,6 +965,20 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	// nested query returns.
 	if ctesCtx := query.Ctes(); ctesCtx != nil {
 		defer c.pushCTEScope()()
+		// Java's recursive-cte.yamsql accepts a trailing `TRAVERSAL ORDER
+		// {pre_order | level_order | post_order}` clause. Semi-naive /
+		// level-order is the default (and matches Java pre-4.7.1.0 behavior).
+		// DFS pre/post ordering would require per-row recursion and is not
+		// in MVP scope — reject explicitly instead of silently giving the
+		// wrong traversal order.
+		if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+			if toc.PRE_ORDER() != nil || toc.POST_ORDER() != nil {
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"TRAVERSAL ORDER %s not yet supported (only level_order / default)",
+					strings.ToUpper(toc.GetOrder().GetText()))
+			}
+		}
+		recursiveKeyword := ctesCtx.RECURSIVE() != nil
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
 			// Java alignment: duplicate CTE names in the same WITH list
@@ -821,7 +988,43 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"duplicate CTE name %q in WITH clause", cteName)
 			}
-			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
+			// Column-rename list (`WITH name(c1, c2, ...) AS ...`) is
+			// resolved once up-front so both the recursive and
+			// non-recursive paths can apply it consistently. Recursive
+			// CTEs need the renamed names INSIDE the iteration so the
+			// recursive branch can reference the renamed columns
+			// (e.g. `WITH RECURSIVE t(node, up) ... SELECT b.id, b.parent
+			// FROM t AS a ... WHERE b.id = a.up`).
+			var renameList []string
+			if aliases := nq.GetColumnAliases(); aliases != nil {
+				list := aliases.AllFullId()
+				renameList = make([]string, len(list))
+				for i, fid := range list {
+					renameList[i] = stripIdentifierQuotes(fullIdToName(fid))
+				}
+			}
+			var cteCols []string
+			var cteRows [][]driver.Value
+			var cteErr error
+			body := nq.Query().QueryExpressionBody()
+			// RECURSIVE is a scope enabler, not a requirement: a CTE
+			// marked RECURSIVE that does not actually self-reference is
+			// evaluated non-recursively (matches Postgres / SQL spec).
+			if recursiveKeyword && containsTableRef(body, cteName) {
+				cteCols, cteRows, cteErr = c.materializeRecursiveCTE(ctx, body, cteName, renameList)
+			} else {
+				cteCols, cteRows, cteErr = c.execQueryBodyRows(ctx, body)
+				// Apply non-recursive rename here; the recursive path
+				// handled it internally.
+				if cteErr == nil && renameList != nil {
+					if len(renameList) != len(cteCols) {
+						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+							"CTE %q column-rename has %d names but inner query has %d columns",
+							cteName, len(renameList), len(cteCols))
+					}
+					cteCols = renameList
+				}
+			}
 			if cteErr != nil {
 				// Preserve the inner SQLSTATE (e.g. 42703 from a missing
 				// column reference in a renamed outer CTE); otherwise
@@ -832,27 +1035,6 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 					innerCode = apiErr.Code
 				}
 				return nil, api.WrapErrorf(cteErr, innerCode, "CTE %q", cteName)
-			}
-			// Java alignment: WITH name(c1, c2, ...) AS (SELECT ...) — the
-			// optional column-list renames the CTE's output columns. The
-			// inner query's column names are replaced positionally. Errors
-			// 42F10 (INVALID_COLUMN_REFERENCE, Java class-42) when the rename
-			// count doesn't match the inner column count — matches Java's
-			// cte.yamsql pin.
-			if aliases := nq.GetColumnAliases(); aliases != nil {
-				renameList := aliases.AllFullId()
-				if len(renameList) != len(cteCols) {
-					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-						"CTE %q column-rename has %d names but inner query has %d columns",
-						cteName, len(renameList), len(cteCols))
-				}
-				renamed := make([]string, len(renameList))
-				for i, fid := range renameList {
-					renamed[i] = stripIdentifierQuotes(fullIdToName(fid))
-				}
-				// Values are stored positionally in each row slice, so
-				// renaming cols[] is enough — no per-row rewrite needed.
-				cteCols = renamed
 			}
 			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
 		}
