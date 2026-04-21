@@ -2600,8 +2600,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		groupColIdx[col] = i
 		// Register the bare last-segment too so that a SELECT-list
 		// `col1` resolves a GROUP BY written as `x.col1`, and vice
-		// versa. Qualifier-vs-bare asymmetry otherwise emits NULL for
-		// the projection when the two forms don't match.
+		// versa. First-wins on collision: if two GROUP BY keys share
+		// the same bare name (`GROUP BY x.col1, y.col1`), the first
+		// takes the bare slot; queries like `SELECT col1` over such a
+		// group are ambiguous to begin with.
 		if dot := strings.LastIndex(col, "."); dot >= 0 {
 			bare := col[dot+1:]
 			if _, exists := groupColIdx[bare]; !exists {
@@ -3969,6 +3971,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// Bare last-segment alias (symmetric with
 				// aggregateMapRows) so qualified GROUP BY keys resolve
 				// against unqualified SELECT-list references.
+				// First-wins on bare collision; see aggregateMapRows.
 				if dot := strings.LastIndex(col, "."); dot >= 0 {
 					bare := col[dot+1:]
 					if _, exists := groupColIdx[bare]; !exists {

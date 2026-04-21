@@ -102,6 +102,14 @@ tests:
     rows:
       - [10]
       - [20]
+
+  # Aggregate alongside a qualified GROUP BY on a derived table —
+  # exercises the GR1 pre-check (`groupByNames` bare-form registration)
+  # as well as the emit-path lookup. col1=10 has 2 rows, col1=20 has 1.
+  - query: SELECT x.col1, COUNT(*) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1
+    rows:
+      - [10, 2]
+      - [20, 1]
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct
