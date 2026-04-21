@@ -3791,9 +3791,17 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
+		// Pre-dayshift-40: extraCrossJoins built from `FROM (sub) AS sq, b, c`
+		// were silently dropped here because the return bailed before
+		// plumbing them. Thread them through so comma-joined real tables
+		// on the right of a derived-table left source actually execute.
+		// Derived-table-on-the-right + comma-joined remains a separate
+		// gap (the extra-source parser still rejects SubqueryTableItem at
+		// line ~3757; see derived_table_renamed.yaml's 0A000 pin).
 		return &selectQuery{
 			tableName:          alias,
 			tableAlias:         alias,
+			joins:              extraCrossJoins,
 			projCols:           projCols,
 			projAliases:        projAliases,
 			projExprs:          projExprs,

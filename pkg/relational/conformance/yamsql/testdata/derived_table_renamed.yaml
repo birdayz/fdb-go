@@ -24,14 +24,16 @@ tests:
         (SELECT ida AS x FROM a) AS sq1,
         (SELECT idb AS y FROM b) AS sq2
     error_code: "0A000"
-  # Java has this too; we silently drop the extras. Derived table as
-  # first source returns from the SubqueryTableItem branch before
-  # processing comma-joined extras → the join with `b` is lost. The
-  # actual result is [1, NULL] (idb missing) instead of [1, 4].
-  # Pin as a regression guard documenting the current wrong behavior.
-  # (The result rows [1, ~] reflect Go's silent drop; ideally [1, 4].)
+  # dayshift-40: derived-table-as-left-source + comma-joined real
+  # table now executes correctly. The pre-fix SubqueryTableItem
+  # branch returned early and dropped extraCrossJoins; now they're
+  # threaded into the returned selectQuery so `b` participates in
+  # the JOIN. Result: [1, 4].
+  # Note: derived-table on the RIGHT of a comma-join (the reverse
+  # shape) is still rejected at parse time (extra-source parser
+  # only accepts AtomTableItem) — pinned above at error_code 0A000.
   - query: |-
       SELECT sq.x, b.idb FROM
         (SELECT ida AS x FROM a) AS sq, b
     rows:
-      - [1, ~]
+      - [1, 4]
