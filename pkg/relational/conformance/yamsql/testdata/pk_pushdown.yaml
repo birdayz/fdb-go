@@ -144,11 +144,24 @@ tests:
   - query: SELECT v FROM kv WHERE k = 'a' AND g = 'notanumber'
     error_code: "22000"
 
-  # AND with an extra non-PK predicate — scan path, not pushdown.
-  # All PK columns are equated but `v` is also constrained.
+  # AND with an extra non-PK predicate — pushdown still fires,
+  # narrowing the scan to the exact PK, and the scan's evalPredicate
+  # applies the non-PK predicate (`v = 400`) to the one loaded row.
   - query: SELECT v FROM kv WHERE k = 'b' AND g = 2 AND v = 400
     rows:
       - [400]
+
+  # AND with an extra non-PK predicate that REJECTS the matched row
+  # — scan's WHERE filter drops the row, empty result. Confirms the
+  # extra predicate isn't discarded by the pushdown.
+  - query: SELECT v FROM kv WHERE k = 'b' AND g = 2 AND v = 999
+    rows: []
+
+  # Extra non-equality predicate on a non-PK column — also post-
+  # filtered correctly.
+  - query: SELECT v FROM kv WHERE k = 'a' AND g = 2 AND v > 100
+    rows:
+      - [200]
 
   # OR in the WHERE clause: pushdown bails (flattenAndPredicates
   # only handles AND), falls through to scan which applies the OR

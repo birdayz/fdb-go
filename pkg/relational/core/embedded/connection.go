@@ -1031,14 +1031,18 @@ func (c *EmbeddedConnection) tryPKEqualityFromWhere(
 		return nil, false
 	}
 
-	// Each leaf must be a `col = literal` equality. Collect into a
-	// map keyed by the bare column name. Duplicates are allowed (same
-	// col equated twice — rare but harmless; last wins).
+	// Collect `col = literal` equalities from the leaves. Non-equality
+	// leaves (e.g. `other_col > 10`, `SIN(x) > 0`, `IS NULL`) are kept
+	// in the AND chain: they'll be re-evaluated by the scan loop's
+	// evalPredicate after the narrowed cursor yields at most one row.
+	// This is safe because the range scan is a SUPERSET of the
+	// matching rows and the existing WHERE filter still runs on the
+	// loaded record.
 	equalities := make(map[string]any, len(leaves))
 	for _, leaf := range leaves {
 		col, val, ok := extractColEqualsLiteral(ctx, c, leaf)
 		if !ok {
-			return nil, false
+			continue
 		}
 		equalities[strings.ToUpper(col)] = val
 	}
@@ -1064,13 +1068,6 @@ func (c *EmbeddedConnection) tryPKEqualityFromWhere(
 			return nil, false
 		}
 		pkVals[i] = val
-	}
-	// If WHERE had non-PK equalities in the AND chain, we can't
-	// push the whole predicate down — the scan path would still need
-	// to filter. MVP keeps it simple: only pushdown when WHERE is
-	// EXACTLY the PK equalities, no extras.
-	if len(equalities) != len(pkCols) {
-		return nil, false
 	}
 	return pkVals, true
 }
