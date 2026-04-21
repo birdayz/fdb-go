@@ -45,3 +45,16 @@ tests:
     rows:
       - [1, 'alpha']
       - [2, 'beta']
+  # dayshift-40 follow-up: the map-path WHERE evaluator now also
+  # rejects wrong qualifiers via the per-JOIN validQualifiers scope
+  # (installed by execSelectJoin before evaluating expressions).
+  - query: SELECT a.id FROM a, b WHERE c.label = 'one'
+    error_code: "42F01"
+  # And in an INNER JOIN ON clause.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON c.id = b.id
+    error_code: "42F01"
+  # Valid qualifiers in WHERE still resolve.
+  - query: SELECT a.id FROM a, b WHERE a.id = b.id AND b.label = 'one'
+    rows:
+      - [1]

@@ -107,6 +107,16 @@ type EmbeddedConnection struct {
 	// scope, fall back to time.Now()".
 	statementTime time.Time
 
+	// validQualifiers holds the uppercased set of valid qualifier aliases
+	// for the JOIN query currently executing (left source + every join
+	// source). Used by evalExprAtomOnMap to reject WHERE/ON references
+	// like `c.name` when no source `c` is in scope (42F01). Set via
+	// pushValidQualifiersScope at the top of execSelectJoin and cleared
+	// on return. nil outside of that scope — the map-path evaluator
+	// silently falls back to bare-column lookup when nil, matching the
+	// pre-dayshift-40 behavior for non-JOIN code paths.
+	validQualifiers map[string]bool
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
@@ -162,6 +172,19 @@ func (c *EmbeddedConnection) pushCTEScope() func() {
 	}
 	c.ctes = next
 	return func() { c.ctes = prior }
+}
+
+// pushValidQualifiersScope installs a per-query set of valid qualifier
+// aliases (uppercased) and returns a pop function restoring the prior
+// scope. Called from execSelectJoin so the map-path evaluator can
+// reject WHERE/ON references like `c.name` when no source matches
+// `c`. Outside the JOIN scope c.validQualifiers is nil and the
+// evaluator preserves the pre-fix silent bare-column fallback — the
+// map-path evaluator is JOIN-only so that scope is sufficient.
+func (c *EmbeddedConnection) pushValidQualifiersScope(set map[string]bool) func() {
+	prior := c.validQualifiers
+	c.validQualifiers = set
+	return func() { c.validQualifiers = prior }
 }
 
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
@@ -1399,6 +1422,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		// reference names a qualifier that doesn't match any FROM-clause
 		// source — the pre-fix behavior silently fell back to the bare
 		// column lookup, picking whichever side of the JOIN wrote it last.
+		// Also installed on EmbeddedConnection for the lifetime of this
+		// execSelectJoin call so evalExprAtomOnMap (WHERE/ON/SELECT
+		// expressions) applies the same check — symmetric with the
+		// projection path.
 		validQualifiers := make(map[string]bool)
 		leftQual := sq.tableAlias
 		if leftQual == "" {
@@ -1412,6 +1439,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 			validQualifiers[strings.ToUpper(a)] = true
 		}
+		defer c.pushValidQualifiersScope(validQualifiers)()
 		// (leftRows itself is not poisoned here: execSelectJoin only
 		// runs when sq.joins is non-empty — see the guard in
 		// execSelectQueryFull — so every emitted row flows through a
@@ -8054,6 +8082,19 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if !found {
 			// Try unqualified: "Order.amount" → "amount".
 			if dot := strings.LastIndex(name, "."); dot >= 0 {
+				// When a JOIN scope is active, reject a qualified
+				// reference whose qualifier isn't a valid FROM source
+				// alias — symmetric with the SELECT projection check.
+				// Fires before the bare-column fallback so wrong
+				// qualifiers error 42F01 instead of silently picking
+				// whichever source populated the bare key.
+				if conn.validQualifiers != nil {
+					qual := name[:dot]
+					if !conn.validQualifiers[strings.ToUpper(qual)] {
+						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+							"column reference %q names unknown table/alias %q", name, qual)
+					}
+				}
 				v, found = row[name[dot+1:]]
 			}
 		}

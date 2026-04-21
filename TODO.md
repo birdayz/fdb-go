@@ -564,7 +564,7 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 
 **Next-shift follow-ups (surfaced by dayshift-40 code review)**:
 - [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.
-- [ ] **WHERE/ON with wrong qualifier**: `evalExprAtomOnMap`'s FullColumnName lookup falls back to bare column on a qualifier miss. Scope-scoped fix would pass `validQualifiers` through the evaluator; cleanest option is a context field on EmbeddedConnection.
+- [x] **WHERE/ON with wrong qualifier**: addressed at the end of dayshift-40 — added `validQualifiers` as a query-scoped field on `EmbeddedConnection`, installed by `execSelectJoin` via `pushValidQualifiersScope`, consulted by `evalExprAtomOnMap` to reject qualified references whose qualifier isn't in scope (42F01). Pinned in `wrong_qualifier.yaml` for WHERE and INNER JOIN ON clauses.
 - [ ] **Map-path 42803 for ungrouped projection**: `aggregateMapRows` silently NULL-fills. Requires either a schema-aware 42703 vs 42803 probe or deferring to the row keys.
 
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
