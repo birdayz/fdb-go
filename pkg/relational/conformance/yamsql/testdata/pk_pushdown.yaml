@@ -317,3 +317,24 @@ tests:
   - query: SELECT id FROM t
     rows:
       - [1]
+
+  # UPDATE on composite PK with range on last column. State before:
+  # kv has {(a,1,100), (a,2,200), (b,1,300)}. Update all rows where
+  # k='a' and g >= 1 → {(a,1), (a,2)} both get v=42. Rows under
+  # k='b' untouched.
+  - query: UPDATE kv SET v = 42 WHERE k = 'a' AND g >= 1
+  - query: SELECT k, g, v FROM kv ORDER BY k, g
+    rows:
+      - ['a', 1, 42]
+      - ['a', 2, 42]
+      - ['b', 1, 300]
+
+  # DELETE on composite PK with range on last column. Deletes all
+  # remaining rows under k='a'.
+  - query: DELETE FROM kv WHERE k = 'a' AND g > 0
+  - query: SELECT COUNT(*) FROM kv
+    rows:
+      - [1]
+  - query: SELECT k, g FROM kv
+    rows:
+      - ['b', 1]
