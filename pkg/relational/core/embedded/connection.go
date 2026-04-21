@@ -1227,12 +1227,18 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	// (sentinel in row[gcol]) also surfaces 42702 via the emission
 	// loop below — consistent.
 	if len(sq.groupBy) > 0 && len(filtered) > 0 {
-		groupByNames := make(map[string]bool, len(sq.groupBy))
+		groupByNames := make(map[string]bool, len(sq.groupBy)*2)
 		for i, gn := range sq.groupBy {
 			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
 				continue
 			}
 			groupByNames[gn] = true
+			// Also store the bare form so `GROUP BY x.col1` matches
+			// a `col1` reference in SELECT-list expressions, and vice
+			// versa. scanTableToMaps / cteRowsToMaps populate both.
+			if dot := strings.LastIndex(gn, "."); dot >= 0 {
+				groupByNames[gn[dot+1:]] = true
+			}
 		}
 		for _, ac := range sq.aggCols {
 			if ac.groupCol == "" || ac.outExpr != nil {
@@ -1245,6 +1251,55 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 					ac.groupCol)
+			}
+		}
+		// Aggregate function argument: MAX(x.col) etc. must reference a
+		// column defined by the source. Java errors 42703 when it isn't.
+		// Pre-fix Go silently treated nil as a NULL and the MIN/MAX slot
+		// was left at zero-value. Probe the first filtered row's keys.
+		for _, ac := range sq.aggCols {
+			if ac.aggArg == "" || ac.aggExpr != nil {
+				continue
+			}
+			if _, defined := filtered[0][ac.aggArg]; defined {
+				continue
+			}
+			if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+				if _, defined := filtered[0][ac.aggArg[dot+1:]]; defined {
+					continue
+				}
+			}
+			return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q not found", ac.aggArg)
+		}
+		// outExpr entries (post-aggregation projection expressions like
+		// `x.col1 + x.col2`): each referenced column must either be in
+		// GROUP BY or wrapped in an aggregate. Java errors 42803 for
+		// ungrouped; pre-swingshift-41 Go let the reference through then
+		// failed at emit time with 42703 ("not found in row"). Walk the
+		// expression tree collecting bare column refs; any ref not in
+		// GROUP BY that IS defined in the source → 42803. Refs inside
+		// aggregate calls are fine (the aggregate computes them).
+		for _, ac := range sq.aggCols {
+			if ac.outExpr == nil {
+				continue
+			}
+			for _, ref := range harvestColumnRefs(ac.outExpr) {
+				bare := ref
+				if dot := strings.LastIndex(ref, "."); dot >= 0 {
+					bare = ref[dot+1:]
+				}
+				if groupByNames[ref] || groupByNames[bare] {
+					continue
+				}
+				// Not grouped — check if the column is defined in source.
+				_, definedQual := filtered[0][ref]
+				_, definedBare := filtered[0][bare]
+				if definedQual || definedBare {
+					return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
+						"column %q must appear in the GROUP BY clause or be used in an aggregate function",
+						ref)
+				}
 			}
 		}
 	}
@@ -1517,6 +1572,26 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			rowMap[ac.outName] = fullVals[i]
+		}
+		// Seed the group-by column values into rowMap so Pass 2 outExpr
+		// entries can reference them (`SELECT x.col1 + 10 FROM ... GROUP
+		// BY x.col1`). Pre-fix, only aggCols-outName entries were in
+		// rowMap so any reference to a bare group key errored 42703.
+		// Populate both the GROUP BY name (qualified or bare as written)
+		// and the stripped bare form so the evaluator finds it either way.
+		for i, gname := range sq.groupBy {
+			if i >= len(gs.groupVals) {
+				break
+			}
+			if _, seen := rowMap[gname]; !seen {
+				rowMap[gname] = gs.groupVals[i]
+			}
+			if dot := strings.LastIndex(gname, "."); dot >= 0 {
+				bare := gname[dot+1:]
+				if _, seen := rowMap[bare]; !seen {
+					rowMap[bare] = gs.groupVals[i]
+				}
+			}
 		}
 		// Pass 2: evaluate outExpr entries against the now-populated rowMap.
 		// evalExprOnMap resolves AggregateFunctionCall atoms via rowMap lookup
@@ -4060,7 +4135,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				"JOIN clauses on comma-separated FROM sources are not supported")
 		}
 	}
-	// Check for derived table: FROM (SELECT ...) AS alias
+	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
+	// a plain atom table. Build a common `sq` in either case so the
+	// post-construction pipeline (ORDER BY / LIMIT / GROUP BY / HAVING /
+	// GR1 validation) applies uniformly — pre-swingshift-41 the derived
+	// branch returned early, dropping all of those.
+	var sq *selectQuery
 	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
 		alias := ""
 		if subItem.GetAlias() != nil {
@@ -4069,14 +4149,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
-		// Pre-dayshift-40: extraCrossJoins built from `FROM (sub) AS sq, b, c`
-		// were silently dropped here because the return bailed before
-		// plumbing them. Thread them through so comma-joined real tables
-		// on the right of a derived-table left source actually execute.
 		// Derived-table-on-the-right + comma-joined remains a separate
 		// gap (the extra-source parser still rejects SubqueryTableItem at
-		// line ~3757; see derived_table_renamed.yaml's 0A000 pin).
-		return &selectQuery{
+		// line ~3757; see derived_table_renamed.yaml's 0A000 pin). For the
+		// left-derived case, thread extraCrossJoins so `(sub) AS x, b, c`
+		// runs the comma-joined real tables on the right.
+		sq = &selectQuery{
 			tableName:          alias,
 			tableAlias:         alias,
 			joins:              extraCrossJoins,
@@ -4092,73 +4170,73 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			whereExpr:          fromClause.WhereExpr(),
 			limit:              -1,
 			derivedQuery:       subItem.Query(),
-		}, nil
-	}
-
-	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported table source item %T; only plain table names are supported",
-			srcBase.TableSourceItem())
-	}
-	// Build table name from uid segments, stripping identifier quotes.
-	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
-	uids := atomItem.TableName().FullId().AllUid()
-	parts := make([]string, len(uids))
-	for i, u := range uids {
-		parts[i] = stripIdentifierQuotes(u.GetText())
-	}
-	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
-	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
-	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
-	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
-	// InnerJoinContext to a LEFT/RIGHT join.
-	leftAlias := ""
-	promotedJoinType := ""
-	if atomItem.AS() != nil && atomItem.Uid() != nil {
-		leftAlias = stripIdentifierQuotes(atomItem.Uid().GetText())
-	} else if atomItem.Uid() != nil {
-		misAlias := strings.ToUpper(atomItem.Uid().GetText())
-		if misAlias == "LEFT" || misAlias == "RIGHT" {
-			promotedJoinType = misAlias
 		}
-	}
-	if leftAlias == "" {
-		leftAlias = strings.Join(parts, ".")
-	}
-
-	// Parse JOIN clauses.
-	var joins []joinClause
-	for _, jp := range srcBase.AllJoinPart() {
-		jc, jErr := extractJoinClause(jp)
-		if jErr != nil {
-			return nil, jErr
+	} else {
+		atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported table source item %T; only plain table names are supported",
+				srcBase.TableSourceItem())
 		}
-		joins = append(joins, jc)
-	}
-	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
-		joins[0].joinType = promotedJoinType
-	}
-	// Implicit cross joins from comma-separated FROM sources run last; the
-	// WHERE predicate decides which combinations survive.
-	joins = append(joins, extraCrossJoins...)
+		// Build table name from uid segments, stripping identifier quotes.
+		// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
+		uids := atomItem.TableName().FullId().AllUid()
+		parts := make([]string, len(uids))
+		for i, u := range uids {
+			parts[i] = stripIdentifierQuotes(u.GetText())
+		}
+		// Only use Uid() as alias when AS is explicit. Without AS, the parser may
+		// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
+		// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
+		// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
+		// InnerJoinContext to a LEFT/RIGHT join.
+		leftAlias := ""
+		promotedJoinType := ""
+		if atomItem.AS() != nil && atomItem.Uid() != nil {
+			leftAlias = stripIdentifierQuotes(atomItem.Uid().GetText())
+		} else if atomItem.Uid() != nil {
+			misAlias := strings.ToUpper(atomItem.Uid().GetText())
+			if misAlias == "LEFT" || misAlias == "RIGHT" {
+				promotedJoinType = misAlias
+			}
+		}
+		if leftAlias == "" {
+			leftAlias = strings.Join(parts, ".")
+		}
 
-	sq := &selectQuery{
-		tableName:          strings.Join(parts, "."),
-		tableAlias:         leftAlias,
-		joins:              joins,
-		projCols:           projCols,
-		projAliases:        projAliases,
-		projExprs:          projExprs,
-		projStarQualifiers: projStarQualifiers,
-		projQualifier:      projQualifier,
-		countStar:          countStar,
-		countStarAlias:     countStarAlias,
-		aggCols:            aggCols,
-		distinct:           simpleTable.DISTINCT() != nil,
-		whereExpr:          fromClause.WhereExpr(),
-		limit:              -1,
+		// Parse JOIN clauses.
+		var joins []joinClause
+		for _, jp := range srcBase.AllJoinPart() {
+			jc, jErr := extractJoinClause(jp)
+			if jErr != nil {
+				return nil, jErr
+			}
+			joins = append(joins, jc)
+		}
+		// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
+		if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
+			joins[0].joinType = promotedJoinType
+		}
+		// Implicit cross joins from comma-separated FROM sources run last; the
+		// WHERE predicate decides which combinations survive.
+		joins = append(joins, extraCrossJoins...)
+
+		sq = &selectQuery{
+			tableName:          strings.Join(parts, "."),
+			tableAlias:         leftAlias,
+			joins:              joins,
+			projCols:           projCols,
+			projAliases:        projAliases,
+			projExprs:          projExprs,
+			projStarQualifiers: projStarQualifiers,
+			projQualifier:      projQualifier,
+			countStar:          countStar,
+			countStarAlias:     countStarAlias,
+			aggCols:            aggCols,
+			distinct:           simpleTable.DISTINCT() != nil,
+			whereExpr:          fromClause.WhereExpr(),
+			limit:              -1,
+		}
 	}
 
 	// Parse ORDER BY clause.
@@ -4673,6 +4751,46 @@ func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
 	}
 	visit(expr)
 	return found
+}
+
+// harvestColumnRefs walks an expression tree and returns the set of column
+// names (dot-separated) referenced outside of aggregate function calls.
+// Used by aggregateMapRows's pre-check to detect ungrouped column
+// references in outExpr projection entries (42803 vs 42703 distinction).
+// Refs inside aggregate calls are correctly computed by the aggregate
+// itself — walking into them would flag false positives.
+func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
+	if expr == nil {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil {
+			return
+		}
+		// Don't recurse into aggregate function calls — the aggregate
+		// resolves its own argument from the group's accumulator.
+		if fc, ok := n.(*antlrgen.FunctionCallExpressionAtomContext); ok {
+			if _, isAgg := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext); isAgg {
+				return
+			}
+		}
+		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			name := fullIdToName(c.FullColumnName().FullId())
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return names
 }
 
 // harvestAggregates walks an expression tree looking for aggregate function
