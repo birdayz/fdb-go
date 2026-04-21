@@ -75,3 +75,11 @@ tests:
       SELECT * FROM a WHERE id = 1 ORDER BY id
     rows:
       - [1, 'alpha']
+  # Java alignment probe (select-a-star.yamsql line 100): `SELECT A.*,
+  # A.* FROM A` duplicates every column. Java errors 42702 at the
+  # outer `SELECT A1 FROM (derived)` because both sources of `A1` are
+  # equally valid. Go surfaces 22023 instead — the derived-table
+  # materializer rejects duplicate column names (it builds a cte.cols
+  # list that can't hold two entries named `id`). Divergence pinned.
+  - query: SELECT id FROM (SELECT a.*, a.* FROM a) AS nested
+    error_code: "22023"
