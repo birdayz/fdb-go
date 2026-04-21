@@ -45,6 +45,18 @@ tests:
   - query: SELECT ROUND(v) FROM t WHERE id = 2
     rows:
       - [-4.0]
+  # ROUND with decimals: ROUND(pi, 2) = 3.14.
+  - query: SELECT ROUND(3.14159, 2) FROM t WHERE id = 1
+    rows:
+      - [3.14]
+  # ROUND with 0 decimals: same as ROUND(x).
+  - query: SELECT ROUND(3.7, 0) FROM t WHERE id = 1
+    rows:
+      - [4.0]
+  # ROUND with negative decimals: round to nearest 10.
+  - query: SELECT ROUND(1234.5, -2) FROM t WHERE id = 1
+    rows:
+      - [1200.0]
   # MOD with integer operands preserves the sign of the dividend.
   - query: SELECT MOD(n, 3) FROM t WHERE id = 1
     rows:
