@@ -37,3 +37,6 @@ tests:
       - [6, 3]
       - [7, 2]
       - [8, 1]
+  # Empty IN list errors 42601 (Java alignment, grammar rejection).
+  - query: SELECT a FROM ta WHERE b IN ()
+    error_code: "42601"
