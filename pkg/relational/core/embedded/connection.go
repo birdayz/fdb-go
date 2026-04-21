@@ -772,7 +772,7 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 	if renameList != nil {
 		if len(renameList) != len(seedCols) {
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-				"CTE %q column-rename has %d names but seed has %d columns",
+				"CTE %q column-rename has %d names but inner query has %d columns",
 				cteName, len(renameList), len(seedCols))
 		}
 		seedCols = renameList
@@ -803,15 +803,17 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 		working = dedup
 	}
 
-	// Binding cleanup: whatever happens below, leave c.ctes[cteName] in
-	// the state the caller expects (unset — it will set the final
-	// result itself).
-	defer delete(c.ctes, cteName)
+	// The per-iteration binding c.ctes[cteName] is left in place when
+	// the loop exits — the caller (the WITH clause loop in execSelect)
+	// overwrites it with the cumulative result immediately after this
+	// function returns. On error, execSelect returns early and the
+	// enclosing pushCTEScope defer pops the whole scope, so a stale
+	// intermediate binding is unreachable either way.
 
 	for iter := 0; len(working) > 0; iter++ {
 		if iter >= recursiveCTEIterationLimit {
 			return nil, nil, api.NewErrorf(api.ErrCodeExecutionLimitReached,
-				"recursive CTE %q exceeded iteration limit of %d — possible cycle; use UNION (DISTINCT) or a depth predicate",
+				"recursive CTE %q exceeded iteration limit of %d — possible cycle or an unbounded result set; use UNION (DISTINCT) or a depth predicate",
 				cteName, recursiveCTEIterationLimit)
 		}
 		c.ctes[cteName] = &cteData{cols: seedCols, rows: working}

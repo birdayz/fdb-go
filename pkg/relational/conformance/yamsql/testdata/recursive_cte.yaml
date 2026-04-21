@@ -85,8 +85,8 @@ tests:
       - [50]
       - [250]
 
-  # Seed with no matches → recursive brancestorsh never fires → noseed result.
-  # Pins that an noseed seed terminates cleanly without looping.
+  # Seed with no matches → recursive branch never fires → empty result.
+  # Pins that an empty seed terminates cleanly without looping.
   - query: |-
       WITH RECURSIVE noseed AS (
         SELECT id, parent FROM t WHERE id = 99999
@@ -122,9 +122,9 @@ tests:
       - [10]
       - [1]
 
-  # Arity mismatch between seed and recursive brancestorsh → 42F64
+  # Arity mismatch between seed and recursive branch → 42F64
   # (UNION_INCORRECT_COLUMN_COUNT). Seed projects one column, recursive
-  # brancestorsh projects two.
+  # branch projects two.
   - query: |-
       WITH RECURSIVE ancestors AS (
         SELECT id FROM t WHERE id = 250
@@ -173,12 +173,12 @@ tests:
       - [10]
       - [1]
 
-  # Counter (1..5) via a depth predicate. Seed: SELECT 1 — but to work
-  # around "SELECT without FROM" needing a row, seed from the single
-  # root row. Recursive WHERE n < 5 bounds the recursion.
+  # Counter (1..5) via a depth predicate. Recursive WHERE n < 5 bounds
+  # the recursion. Seed is a no-FROM SELECT literal — exercises the
+  # (sq.tableName == "") single-row path inside the seed.
   - query: |-
       WITH RECURSIVE counter(n) AS (
-        SELECT 1 FROM t WHERE parent = -1
+        SELECT 1 AS n
         UNION ALL
         SELECT n + 1 FROM counter WHERE n < 5
       )
@@ -230,3 +230,81 @@ tests:
       - [50]
       - [70]
       - [250]
+
+  # Multi-CTE WITH RECURSIVE list: first CTE is plain, second is
+  # recursive and references the first in its seed. Exercises that
+  # `recursiveKeyword && containsTableRef(body, cteName)` correctly
+  # routes the first (non-self-referencing) CTE through the regular
+  # path while the second takes the recursive path — and the recursive
+  # CTE's seed sees the already-materialised first CTE.
+  - query: |-
+      WITH RECURSIVE
+        roots AS (SELECT id FROM t WHERE parent = -1),
+        descendants(id, parent) AS (
+          SELECT id, parent FROM t WHERE id IN (SELECT id FROM roots)
+          UNION ALL
+          SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+        )
+      SELECT id FROM descendants ORDER BY id
+    rows:
+      - [1]
+      - [10]
+      - [20]
+      - [40]
+      - [50]
+      - [70]
+      - [100]
+      - [210]
+      - [250]
+
+  # Nested WITH RECURSIVE — a recursive CTE followed by a
+  # non-recursive CTE that builds on it, all in one WITH list. The
+  # second CTE is non-recursive so doesn't need its own loop; it just
+  # reads from the first one. Qualified projection (`d.id`) avoided
+  # because non-recursive CTEs in the SQL layer surface qualified
+  # projections with the dotted name; use `id` directly instead.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      ),
+      leaves AS (
+        SELECT id FROM descendants
+        WHERE id NOT IN (SELECT parent FROM t WHERE parent IS NOT NULL)
+      )
+      SELECT id FROM leaves ORDER BY id
+    rows:
+      # Leaf nodes of the tree — ids that are never anybody's parent.
+      - [40]
+      - [70]
+      - [100]
+      - [210]
+      - [250]
+
+  # Aggregate over the recursive CTE: sum of all node ids reachable
+  # from root. Exercises downstream aggregation on materialised
+  # recursive rows.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT SUM(id) FROM descendants
+    rows:
+      # 1 + 10 + 20 + 40 + 50 + 70 + 100 + 210 + 250 = 751
+      - [751]
+
+  # ORDER BY + LIMIT on top of the recursive CTE: take first 3 ids.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      SELECT id FROM descendants ORDER BY id LIMIT 3
+    rows:
+      - [1]
+      - [10]
+      - [20]
