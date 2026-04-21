@@ -4744,9 +4744,17 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 
 		for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
 			exprs := rowCtx.AllExpressionWithOptionalName()
-			if len(exprs) != len(cols) {
-				// Java alignment: INSERT column-count mismatch errors
-				// 22000 (CANNOT_CONVERT_TYPE), not 22023.
+			// Java alignment (inserts-updates-deletes.yamsql):
+			//   - Too MANY values for an explicit column list → 42601
+			//     SYNTAX_ERROR (Java's post-4.1.5.0 behavior).
+			//   - Too FEW values → 22000 CANNOT_CONVERT_TYPE (Java's
+			//     behavior when the column list is implicit from the
+			//     schema and VALUES is shorter).
+			if len(exprs) > len(cols) {
+				return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+					"INSERT has %d values but only %d columns", len(exprs), len(cols))
+			}
+			if len(exprs) < len(cols) {
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"column count %d does not match value count %d", len(cols), len(exprs))
 			}
