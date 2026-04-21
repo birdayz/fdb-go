@@ -1402,16 +1402,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			}
 			validQualifiers[strings.ToUpper(a)] = true
 		}
-		// Post-scan: leftRows' bare slots contain left's real values.
-		// If a bare col is ambiguous across any pair of sources, poison
-		// it now so single-table queries in `execSelectJoin`'s tail
-		// (e.g. degenerate `joined` where no join rows match) don't
-		// leak the pre-merge value.
-		if len(ambiguousBare) > 0 {
-			for _, r := range leftRows {
-				poisonAmbiguousBareCols(r, ambiguousBare)
-			}
-		}
+		// (leftRows itself is not poisoned here: execSelectJoin only
+		// runs when sq.joins is non-empty — see the guard in
+		// execSelectQueryFull — so every emitted row flows through a
+		// combined/null-pad merge below and gets poisoned there. The
+		// no-joins degenerate case goes through the single-table path,
+		// which has its own scope and no merging ambiguity.)
 
 		// Track the sources (tableName + alias) merged into `joined` so
 		// far. RIGHT JOIN NULL-padding uses this to derive left-side
@@ -3116,10 +3112,14 @@ type selectQuery struct {
 	// empty when projCols == nil (SELECT * or pure qualifier-star use the
 	// legacy projQualifier / nil-projCols paths).
 	projStarQualifiers []string
-	countStar          bool   // true when SELECT list is exactly COUNT(*)
-	countStarAlias     string // non-empty when countStar is true AND the SELECT element has an `AS alias`. Emitted as the column name so outer scopes (derived-table materializer, UNION arity, etc.) see the aliased name instead of the canonical "COUNT(*)".
-	distinct           bool   // true when SELECT DISTINCT
-	whereExpr          antlrgen.IWhereExprContext
+	countStar          bool // true when SELECT list is exactly COUNT(*)
+	// countStarAlias holds the optional `AS alias` on a bare COUNT(*)
+	// SELECT. Emitted as the output column name so the derived-table
+	// materializer / UNION arity / etc. see the aliased name instead of
+	// the canonical "COUNT(*)".
+	countStarAlias string
+	distinct       bool // true when SELECT DISTINCT
+	whereExpr      antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
