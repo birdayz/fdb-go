@@ -132,6 +132,20 @@ tests:
       - [false]
       - [true]
       - [~]
+  # Java-aligned: AND NULL. Kleene 3VL. b=true AND NULL=NULL,
+  # b=false AND NULL=false (shortcuts to f), b=NULL AND NULL=NULL.
+  - query: SELECT b AND NULL FROM lb ORDER BY a
+    rows:
+      - [~]
+      - [false]
+      - [~]
+  # Java-aligned: OR NULL. b=true OR NULL=true (shortcuts to t),
+  # b=false OR NULL=NULL, b=NULL OR NULL=NULL.
+  - query: SELECT b OR NULL FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [~]
+      - [~]
   # Same tri-state projection through a CTE — exercises evalExprOnMap
   # (map-path), not the proto-path evalExprPredicateTri. Pre-fix the
   # Logical/Not cases in evalExprOnMap used the 2-valued bool wrapper,

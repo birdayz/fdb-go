@@ -552,6 +552,31 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] **Duplicate CTE name in WITH** (c82cbd03): `WITH c1 AS (...), c1 AS (...)` now errors 42712 (DUPLICATE_ALIAS). Go previously silently overwrote the first definition.
 - [x] **INSERT arity with explicit column list** (83951668, supersedes b742b250): explicit column list + arity mismatch (either direction) → 42601 SYNTAX_ERROR. Implicit list + too-few → 22000 CANNOT_CONVERT_TYPE. Matches Java's inserts-updates-deletes.yamsql.
 
+### Remaining SQL gaps — prioritized list (dayshift-40, 2026-04-21)
+
+**dayshift-40 landings**:
+- [x] Ambiguous unqualified column in JOIN errors 42702 (SELECT/WHERE/ON/ORDER BY). Sentinel `ambiguousColumnMarker` poisoned at JOIN merge time; detected at every lookup site. `ambiguous_column.yaml` flipped from divergence pin to assertion across 9 assertions.
+- [x] Wrong JOIN qualifier errors 42F01 (JOIN SELECT projection). Previously silently fell back to the bare-column lookup. `wrong_qualifier.yaml` pins 6 scenarios. Scope: projection only; WHERE/ON expr paths still silently resolve bare column — tracked as next-shift gap.
+- [x] `SELECT COUNT(*) AS alias FROM …` propagates through derived tables. countStarAlias captured at parse time; `countStarOutName()` helper emits the alias at all three countStar fast-path sites + the countStar→aggCols GROUP BY demotion preserves it. `nested_derived_table.yaml` covers fast-path / grouped / HAVING / SUM-alias regression guard.
+- [x] `SELECT id GROUP BY col1` errors 42803 in the proto path (previously silent NULL). `groupByNames` check fires after the fd-exists 42703 check so Java's error order is preserved. Scope: proto path only; JOIN map path still silent — tracked as next-shift gap.
+- [x] `overflow_mixed.yaml` probe confirmed no divergence on mixed int+float arithmetic (stale `feedback_next_shift_arithmetic_overflow` memory removed; nightshift-36 already fixed the int64+int64 path).
+- [x] Boolean Kleene `b AND NULL` / `b OR NULL` added to boolean.yaml.
+- [x] Duplicate column in ORDER BY errors 42701 (was silently accepted, Postgres-style). Aligned with Java's orderby.yamsql.
+- [x] Fractional float → integer column assignment errors 22000 (was 22023). Aligned with Java's case-when.yamsql.
+- [x] UNION (implicit DISTINCT) with arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED), distinct from UNION ALL's 42F64. Aligned with Java's union.yamsql.
+- [x] UNION with incompatible column types errors 42F65. Runtime probe samples the first non-NULL value from each side per column and requires `valuesComparable` (same shape as the mixed-type-equality fix). All-NULL columns skip — can't infer a type without a schema-typed plan. Narrower than Java's plan-time check but catches the common case.
+
+**Next-shift follow-ups (surfaced by dayshift-40 code review)**:
+- [ ] ORDER BY dedup edge cases (niche, pre-existing): `ORDER BY b, B` (case-folded identifiers — we don't normalize, Java does) and `ORDER BY a.b, b` (qualified-vs-bare resolving to the same column). Neither is deduped today. Fix would ride on a future identifier-folding pass.
+- [ ] Derived-table + GROUP BY Java alignment gaps (Java's groupby-tests.yamsql, not yet probed in our yaml):
+  - `SELECT MAX(x.col2) FROM (SELECT col1 FROM t) AS x GROUP BY x.col1` → 42703 (col2 not in derived-table output).
+  - `SELECT x.col2 FROM (SELECT col1, col2 FROM t) AS x GROUP BY x.col1` → 42803 (col2 not grouped, same shape as our existing proto-path fix but needs derived-table plumbing).
+  - `SELECT x.col1 + x.col2 FROM (SELECT col1, col2 FROM t) AS x GROUP BY x.col1` → 42803 (expression references ungrouped column).
+  - `SELECT x FROM t1 GROUP BY col1 AS x, col2 AS x` → 42702 (duplicate alias in GROUP BY — our grammar may not even accept `AS` in GROUP BY, check first).
+- [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.
+- [x] **WHERE/ON with wrong qualifier**: addressed at the end of dayshift-40 — added `validQualifiers` as a query-scoped field on `EmbeddedConnection`, installed by `execSelectJoin` via `pushValidQualifiersScope`, consulted by `evalExprAtomOnMap` to reject qualified references whose qualifier isn't in scope (42F01). Pinned in `wrong_qualifier.yaml` for WHERE and INNER JOIN ON clauses.
+- [x] **Map-path 42803 for ungrouped projection**: addressed at end of dayshift-40 — `aggregateMapRows` now runs a pre-check that probes the first filtered row's keys to distinguish defined-but-ungrouped (→ 42803) from undefined (left for a future schema-threaded check). Skips on empty filtered (can't distinguish; preserves silent-NULL). JOIN+GROUP BY cases pinned in `group_by_validation.yaml`.
+
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
 User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.

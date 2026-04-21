@@ -9,9 +9,11 @@ name: union_columns
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
   CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT NOT NULL, id_str STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, 20)
   - INSERT INTO b VALUES (1, 100), (2, 200)
+  - INSERT INTO c VALUES (1, 'x'), (2, 'y')
 tests:
   # UNION ALL with differently-named columns across sides.
   # Position-based: left's `v` / right's `w` combine into a single
@@ -62,12 +64,16 @@ tests:
       - [10]
       - [20]
 
-  # Column-count mismatch must error — Java uses SQLSTATE 42F64
-  # (UNION_INCORRECT_COLUMN_COUNT, class-42 Java-specific). nightshift-
-  # 39: Go aligned from generic 42601 SYNTAX_ERROR to Java's 42F64 so
-  # callers can distinguish arity mismatch from parse errors.
-  - query: SELECT id, v FROM a UNION SELECT id FROM b
+  # Column-count mismatch splits by quantifier per Java's union.yamsql.
+  # UNION ALL arity mismatch errors 42F64 (UNION_INCORRECT_COLUMN_COUNT,
+  # a class-42 Java-specific code aligned at nightshift-39).
+  - query: SELECT id, v FROM a UNION ALL SELECT id FROM b
     error_code: "42F64"
+  # UNION (implicit DISTINCT) with arity mismatch errors 0AF00
+  # (FEATURE_NOT_SUPPORTED) — set-membership is undefined with
+  # different row arities. Aligned with Java at dayshift-40.
+  - query: SELECT id, v FROM a UNION SELECT id FROM b
+    error_code: "0AF00"
 
   # UNION with constant literals on one side.
   - query: SELECT v FROM a UNION ALL SELECT 99 FROM b
@@ -77,3 +83,20 @@ tests:
       - [20]
       - [99]
       - [99]
+  # UNION with incompatible types across sides. Java's union.yamsql
+  # errors 42F65 (UNION_INCOMPATIBLE_COLUMNS) when the corresponding
+  # columns have non-unifiable types (e.g. BIGINT vs STRING).
+  # dayshift-40 adds a runtime type probe — sample the first non-NULL
+  # value from each side per column and require `valuesComparable`.
+  # Narrower than Java's plan-time check (all-NULL columns skip) but
+  # catches the common case without a semantic analyzer pass.
+  - query: SELECT v FROM a UNION ALL SELECT id_str FROM c
+    error_code: "42F65"
+  # Same types pair cleanly — sanity regression guard.
+  - query: SELECT v FROM a UNION ALL SELECT w FROM b
+    unordered: true
+    rows:
+      - [10]
+      - [20]
+      - [100]
+      - [200]

@@ -1,0 +1,42 @@
+# overflow_mixed.yaml
+#
+# Follow-up probe for `feedback_next_shift_arithmetic_overflow` (which
+# predated the nightshift-36 checked-arithmetic landing). Java's
+# ArithmeticValue.PhysicalOperator uses Math.addExact/subtractExact/
+# multiplyExact only for int+int and long+long (the II/IL/LI/LL variants).
+# Mixed int-with-float or long-with-float/double variants
+# (ADD_LF / ADD_LD / SUB_LF / MUL_LF / DIV_LD / MOD_LD) use plain
+# `(long)l + (float)r` / `(long)l + (double)r` with no overflow check —
+# Java relies on IEEE-754 Inf/precision semantics for the mixed path.
+#
+# Our applyMathOp matches that: both operands int64 → checked
+# arithmetic; one operand float → go through float64 arithmetic (Inf
+# propagation, no throw). This file pins that mixed-path match so a
+# future refactor doesn't regress either direction.
+name: overflow_mixed
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 9223372036854775807, 1.0), (2, 9223372036854775807, 1e200)
+tests:
+  # long + double: Java ADD_LD promotes long to double, adds, returns
+  # double. MAX_LONG+1.0 at double precision is MAX_LONG (round-to-nearest
+  # loses the +1 because MAX_LONG isn't representable in 53-bit mantissa).
+  # No throw; result is a double approximation.
+  - query: SELECT a + b FROM t WHERE id = 1
+    rows:
+      - [9.223372036854776e18]
+  # long + very-large-double: Java returns the large double (long is
+  # negligible at that magnitude). No throw.
+  - query: SELECT a + b FROM t WHERE id = 2
+    rows:
+      - [1e200]
+  # (Sanity coverage for double*double overflow to +Inf is in
+  # overflow.yaml via `1e400` literals — both Java and Go produce +Inf
+  # without throwing. Not re-pinned here since the yamsql runner has
+  # no canonical rendering for infinity values.)
+  # Pure int overflow — checked (SQLSTATE 22003). Sanity regression
+  # to confirm the int path wasn't accidentally collapsed into the
+  # float path during a refactor.
+  - query: SELECT a + a FROM t WHERE id = 1
+    error_code: "22003"

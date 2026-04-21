@@ -47,6 +47,18 @@ type cteData struct {
 	rows [][]driver.Value
 }
 
+// ambiguousColumnMarker is the sentinel stored in a JOIN row map's bare
+// column slot when the same column name is defined on more than one
+// FROM-clause source. The map keeps qualified `alias.col` slots intact;
+// the bare slot is poisoned so any unqualified reference surfaces the
+// ambiguity as SQLSTATE 42702 at lookup time instead of silently
+// returning last-write-wins data. Matches Java's
+// AmbiguousColumnReferenceException (plan-time) behavior at the runtime
+// map-eval boundary we have today.
+type ambiguousColumnMarker struct {
+	Col string
+}
+
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
 //
 // Implements driver.Conn and driver.ExecerContext so DDL statements can
@@ -94,6 +106,16 @@ type EmbeddedConnection struct {
 	// Zero value (statementTime.IsZero()) means "not in a statement
 	// scope, fall back to time.Now()".
 	statementTime time.Time
+
+	// validQualifiers holds the uppercased set of valid qualifier aliases
+	// for the JOIN query currently executing (left source + every join
+	// source). Used by evalExprAtomOnMap to reject WHERE/ON references
+	// like `c.name` when no source `c` is in scope (42F01). Set via
+	// pushValidQualifiersScope at the top of execSelectJoin and cleared
+	// on return. nil outside of that scope — the map-path evaluator
+	// silently falls back to bare-column lookup when nil, matching the
+	// pre-dayshift-40 behavior for non-JOIN code paths.
+	validQualifiers map[string]bool
 
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
@@ -150,6 +172,19 @@ func (c *EmbeddedConnection) pushCTEScope() func() {
 	}
 	c.ctes = next
 	return func() { c.ctes = prior }
+}
+
+// pushValidQualifiersScope installs a per-query set of valid qualifier
+// aliases (uppercased) and returns a pop function restoring the prior
+// scope. Called from execSelectJoin so the map-path evaluator can
+// reject WHERE/ON references like `c.name` when no source matches
+// `c`. Outside the JOIN scope c.validQualifiers is nil and the
+// evaluator preserves the pre-fix silent bare-column fallback — the
+// map-path evaluator is JOIN-only so that scope is sufficient.
+func (c *EmbeddedConnection) pushValidQualifiersScope(set map[string]bool) func() {
+	prior := c.validQualifiers
+	c.validQualifiers = set
+	return func() { c.validQualifiers = prior }
 }
 
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
@@ -367,24 +402,62 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 		}
 	}
 
-	// SQL standard: UNION sides must have matching column counts; names
-	// are positional (left's names become the result schema). Java's
-	// union.yamsql pins SQLSTATE 42F64 (UNION_INCORRECT_COLUMN_COUNT) —
-	// a Java-specific class-42 code distinct from generic 42601 syntax_
-	// error. Align with Java so callers can tell arity mismatch apart
-	// from a parse error.
-	if len(leftCols) != len(rightCols) {
-		return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
-			"UNION column count mismatch: left has %d columns, right has %d",
-			len(leftCols), len(rightCols))
-	}
-
-	combined := append(leftRows, rightRows...) //nolint:gocritic
-
 	quantifier := ""
 	if q := setQ.GetQuantifier(); q != nil {
 		quantifier = strings.ToUpper(q.GetText())
 	}
+
+	// SQL standard: UNION sides must have matching column counts; names
+	// are positional (left's names become the result schema). Java's
+	// union.yamsql asymmetrically splits the SQLSTATE on the quantifier:
+	// UNION ALL arity mismatch errors 42F64 (UNION_INCORRECT_COLUMN_COUNT
+	// — class-22-style data error), while UNION (implicit DISTINCT) with
+	// arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED). The DISTINCT
+	// variant can't even be expressed when rows have different arities
+	// because set-membership has no meaning.
+	if len(leftCols) != len(rightCols) {
+		if quantifier != "ALL" {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"UNION DISTINCT column count mismatch: left has %d columns, right has %d",
+				len(leftCols), len(rightCols))
+		}
+		return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+			"UNION ALL column count mismatch: left has %d columns, right has %d",
+			len(leftCols), len(rightCols))
+	}
+
+	// Java's union.yamsql errors 42F65 UNION_INCOMPATIBLE_COLUMNS when a
+	// positional column pair has non-unifiable types. Best-effort runtime
+	// check: sample the first non-NULL value from each side per column
+	// and require them to be comparable (numeric pairs are fine, same
+	// concrete type is fine; anything else errors). When one side has
+	// all NULLs for a column we skip that column — can't infer a type
+	// without schema-typed columns.
+	for ci := 0; ci < len(leftCols); ci++ {
+		var lSample, rSample driver.Value
+		for _, row := range leftRows {
+			if ci < len(row) && row[ci] != nil {
+				lSample = row[ci]
+				break
+			}
+		}
+		for _, row := range rightRows {
+			if ci < len(row) && row[ci] != nil {
+				rSample = row[ci]
+				break
+			}
+		}
+		if lSample == nil || rSample == nil {
+			continue
+		}
+		if !valuesComparable(lSample, rSample) {
+			return nil, api.NewErrorf(api.ErrCodeUnionIncompatibleColumns,
+				"UNION column %d has incompatible types: left is %T, right is %T",
+				ci+1, lSample, rSample)
+		}
+	}
+
+	combined := append(leftRows, rightRows...) //nolint:gocritic
 	if quantifier != "ALL" {
 		// UNION (implicit DISTINCT) — deduplicate.
 		seen := make(map[string]struct{}, len(combined))
@@ -882,6 +955,69 @@ func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData,
 	return keys
 }
 
+// computeAmbiguousBareColumns returns the set of bare column names that
+// appear in the schema of more than one FROM-clause source (including
+// comma-cross-joins and explicit JOINs). Unqualified references to such
+// columns are ambiguous per SQL §6.4 and must error 42702 at lookup
+// time. Column sources come from the CTE column list when the source
+// names a CTE, and from the record type descriptor otherwise.
+func (c *EmbeddedConnection) computeAmbiguousBareColumns(md *recordlayer.RecordMetaData, sq *selectQuery) map[string]bool {
+	sources := make([]struct{ tableName string }, 0, 1+len(sq.joins))
+	sources = append(sources, struct{ tableName string }{sq.tableName})
+	for _, jc := range sq.joins {
+		sources = append(sources, struct{ tableName string }{jc.tableName})
+	}
+	counts := make(map[string]int)
+	for _, s := range sources {
+		var cols []string
+		if c.ctes != nil {
+			if cte, ok := c.ctes[strings.ToUpper(s.tableName)]; ok {
+				cols = cte.cols
+			}
+		}
+		if cols == nil {
+			rt := md.GetRecordType(s.tableName)
+			if rt != nil {
+				fields := rt.Descriptor.Fields()
+				cols = make([]string, 0, fields.Len())
+				for i := 0; i < fields.Len(); i++ {
+					cols = append(cols, string(fields.Get(i).Name()))
+				}
+			}
+		}
+		// A single source listing the same column twice (descriptors
+		// shouldn't, CTEs also shouldn't) must not self-bump the count.
+		seen := make(map[string]bool, len(cols))
+		for _, col := range cols {
+			if !seen[col] {
+				counts[col]++
+				seen[col] = true
+			}
+		}
+	}
+	result := make(map[string]bool)
+	for col, count := range counts {
+		if count > 1 {
+			result[col] = true
+		}
+	}
+	return result
+}
+
+// poisonAmbiguousBareCols overwrites any bare key in row that matches an
+// entry in ambiguous with the ambiguousColumnMarker sentinel. Qualified
+// (alias.col) entries are left untouched, so callers that qualify their
+// reference still resolve normally. Call after every row merge/build
+// path in execSelectJoin so no emitted row exposes the last-write-wins
+// bare value.
+func poisonAmbiguousBareCols(row map[string]driver.Value, ambiguous map[string]bool) {
+	for col := range ambiguous {
+		if _, has := row[col]; has {
+			row[col] = ambiguousColumnMarker{Col: col}
+		}
+	}
+}
+
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
 // Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
 // aggregateMapRows applies GROUP BY + aggregate computation to a slice of map rows
@@ -896,19 +1032,73 @@ func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData,
 //   - Otherwise: computes per-group aggregates (COUNT, COUNT(DISTINCT col), SUM,
 //     MIN, MAX, AVG), emits one row per group (or a single synthetic group when
 //     sq.groupBy is empty), optionally filtered by sq.havingExpr.
+//
+// countStarOutName returns the output column name for a COUNT(*)-only
+// SELECT: the SELECT-list `AS alias` when present, otherwise the
+// canonical reconstruction "COUNT(*)". Used at every emission site so
+// derived tables, UNION arity, and caller projections see the aliased
+// name instead of the canonical form.
+func countStarOutName(sq *selectQuery) string {
+	if sq.countStarAlias != "" {
+		return sq.countStarAlias
+	}
+	return "COUNT(*)"
+}
+
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
 		count := int64(len(filtered))
+		// HAVING refers to the aggregate function, not the SELECT-list
+		// alias (SQL §7.12: HAVING is evaluated against the group, not
+		// the output columns). Always use canonical "COUNT(*)" for the
+		// HAVING rowMap key. The output column name does honor the
+		// alias so the outer scope (derived tables, etc.) sees it.
 		if sq.havingExpr != nil {
 			keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
 			if hErr != nil {
 				return nil, nil, hErr
 			}
 			if !keep {
-				return []string{"COUNT(*)"}, nil, nil
+				return []string{countStarOutName(sq)}, nil, nil
 			}
 		}
-		return []string{"COUNT(*)"}, [][]driver.Value{{count}}, nil
+		return []string{countStarOutName(sq)}, [][]driver.Value{{count}}, nil
+	}
+
+	// Map-path SQL §7.10 GR1 pre-check: every `groupCol` in sq.aggCols
+	// that's a bare column reference (not an expression) must either
+	// be in sq.groupBy or be a defined-but-ungrouped projection (→
+	// 42803). We can tell "defined" vs "undefined" here by probing
+	// the first filtered row's keys — the map-path invariant is that
+	// scanTableToMaps / cteRowsToMaps populate bare + qualified forms
+	// for every defined column. Empty filtered result is ambiguous
+	// (we can't tell defined vs undefined) so we skip the check and
+	// preserve the silent-NULL-fill behavior there; correctness under
+	// Java's plan-time ordering isn't achievable without threading
+	// the source schema through this function. Ambiguous pre-probe
+	// (sentinel in row[gcol]) also surfaces 42702 via the emission
+	// loop below — consistent.
+	if len(sq.groupBy) > 0 && len(filtered) > 0 {
+		groupByNames := make(map[string]bool, len(sq.groupBy))
+		for i, gn := range sq.groupBy {
+			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+				continue
+			}
+			groupByNames[gn] = true
+		}
+		for _, ac := range sq.aggCols {
+			if ac.groupCol == "" || ac.outExpr != nil {
+				continue
+			}
+			if groupByNames[ac.groupCol] {
+				continue
+			}
+			if _, defined := filtered[0][ac.groupCol]; defined {
+				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
+					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
+					ac.groupCol)
+			}
+		}
 	}
 
 	type mapGroupState struct {
@@ -936,9 +1126,23 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				continue
 			}
 			if v, ok := row[gcol]; ok {
+				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"GROUP BY column reference %q is ambiguous", m.Col)
+				}
 				gVals[gi] = v
 			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
-				gVals[gi] = row[gcol[dot+1:]]
+				// Fallback: strip table prefix and retry bare. If the
+				// qualified form wasn't populated (e.g. qualifier doesn't
+				// match any source) and the bare key is ambiguous, still
+				// trip 42702 instead of silently using the sentinel as a
+				// group-key value.
+				v := row[gcol[dot+1:]]
+				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"GROUP BY column reference %q is ambiguous", m.Col)
+				}
+				gVals[gi] = v
 			}
 		}
 		key := groupByKey(gVals)
@@ -994,6 +1198,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				// is absent from the row.
 				v, ok := row[ac.aggArg]
 				if ok {
+					if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+						return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+							"aggregate argument %q is ambiguous", m.Col)
+					}
 					colVal = v
 				} else if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
 					colVal = row[ac.aggArg[dot+1:]]
@@ -1277,6 +1485,42 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			return nil, leftErr
 		}
 
+		// Bare column names present in more than one FROM-clause source.
+		// After every row merge below we poison these bare slots with
+		// the ambiguousColumnMarker sentinel so unqualified references
+		// surface 42702. Qualified (alias.col) slots remain usable.
+		ambiguousBare := c.computeAmbiguousBareColumns(md, sq)
+
+		// Set of valid qualifier aliases (left source + every join source).
+		// Used by the SELECT projection to surface 42F01 when a qualified
+		// reference names a qualifier that doesn't match any FROM-clause
+		// source — the pre-fix behavior silently fell back to the bare
+		// column lookup, picking whichever side of the JOIN wrote it last.
+		// Also installed on EmbeddedConnection for the lifetime of this
+		// execSelectJoin call so evalExprAtomOnMap (WHERE/ON/SELECT
+		// expressions) applies the same check — symmetric with the
+		// projection path.
+		validQualifiers := make(map[string]bool)
+		leftQual := sq.tableAlias
+		if leftQual == "" {
+			leftQual = sq.tableName
+		}
+		validQualifiers[strings.ToUpper(leftQual)] = true
+		for _, jc := range sq.joins {
+			a := jc.alias
+			if a == "" {
+				a = jc.tableName
+			}
+			validQualifiers[strings.ToUpper(a)] = true
+		}
+		defer c.pushValidQualifiersScope(validQualifiers)()
+		// (leftRows itself is not poisoned here: execSelectJoin only
+		// runs when sq.joins is non-empty — see the guard in
+		// execSelectQueryFull — so every emitted row flows through a
+		// combined/null-pad merge below and gets poisoned there. The
+		// no-joins degenerate case goes through the single-table path,
+		// which has its own scope and no merging ambiguity.)
+
 		// Track the sources (tableName + alias) merged into `joined` so
 		// far. RIGHT JOIN NULL-padding uses this to derive left-side
 		// column keys from metadata rather than sampling a runtime row
@@ -1311,6 +1555,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					for k, v := range right {
 						combined[k] = v
 					}
+					// Poison bare columns defined on >1 source so
+					// unqualified refs error 42702 instead of silently
+					// picking the right-hand side (last-write-wins).
+					poisonAmbiguousBareCols(combined, ambiguousBare)
 					// Evaluate ON condition.
 					if jc.onExpr != nil {
 						ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
@@ -1350,6 +1598,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 						nullRight[k] = nil
 					}
+					// LEFT JOIN unmatched row inherits ambiguous bare
+					// slots from `left`; re-poison so the unqualified
+					// ref still errors at WHERE/SELECT evaluation.
+					poisonAmbiguousBareCols(nullRight, ambiguousBare)
 					next = append(next, nullRight)
 				}
 			}
@@ -1375,6 +1627,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						for k, v := range right {
 							combined[k] = v
 						}
+						// RIGHT JOIN unmatched row: bare slot carries
+						// right's value; poison to keep ambiguous refs
+						// erroring symmetrically with LEFT JOIN.
+						poisonAmbiguousBareCols(combined, ambiguousBare)
 						next = append(next, combined)
 					}
 				}
@@ -1415,6 +1671,14 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			// For SELECT *, collect all unique unqualified column names in order.
 			// For SELECT <qualifier>.*, restrict to the aliased source's columns.
 			var qualifierKey string // non-empty when qualified-star; row lookups use "qualifier.col"
+			// colSourceAlias maps the column name (index-parallel with `cols`
+			// via a parallel slice below) to the source alias that provided
+			// it. Used by the SELECT * projection to look up via
+			// `alias.col` when the bare key is poisoned by ambiguity —
+			// keeping the current SELECT * behavior (first source wins)
+			// instead of erroring 42702 for a SELECT that isn't actually
+			// referencing the bare name.
+			var starColAliases []string
 			if sq.projCols == nil {
 				if sq.projQualifier != "" {
 					qCols, qAlias, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier)
@@ -1426,27 +1690,47 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				} else {
 					seen := make(map[string]bool)
 					// Order: left table columns first, then join table columns.
-					leftRt := md.GetRecordType(sq.tableName)
-					if leftRt != nil {
-						for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
-							name := string(leftRt.Descriptor.Fields().Get(i).Name())
+					leftAliasForStar := sq.tableAlias
+					if leftAliasForStar == "" {
+						leftAliasForStar = sq.tableName
+					}
+					// collectCols walks a source's column list (record type
+					// descriptor or CTE) and appends unseen names + their
+					// qualifier to cols/starColAliases. Consolidating the
+					// two loops so CTE sources (md.GetRecordType nil) don't
+					// silently drop out of SELECT * — the reviewer-flagged
+					// CTE starColAliases gap from dayshift-40.
+					collectCols := func(tableName, alias string) {
+						var names []string
+						if c.ctes != nil {
+							if cte, ok := c.ctes[strings.ToUpper(tableName)]; ok {
+								names = cte.cols
+							}
+						}
+						if names == nil {
+							if rt := md.GetRecordType(tableName); rt != nil {
+								fields := rt.Descriptor.Fields()
+								names = make([]string, 0, fields.Len())
+								for i := 0; i < fields.Len(); i++ {
+									names = append(names, string(fields.Get(i).Name()))
+								}
+							}
+						}
+						for _, name := range names {
 							if !seen[name] {
 								cols = append(cols, name)
+								starColAliases = append(starColAliases, alias)
 								seen[name] = true
 							}
 						}
 					}
+					collectCols(sq.tableName, leftAliasForStar)
 					for _, jc := range sq.joins {
-						jRt := md.GetRecordType(jc.tableName)
-						if jRt != nil {
-							for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
-								name := string(jRt.Descriptor.Fields().Get(i).Name())
-								if !seen[name] {
-									cols = append(cols, name)
-									seen[name] = true
-								}
-							}
+						jAlias := jc.alias
+						if jAlias == "" {
+							jAlias = jc.tableName
 						}
+						collectCols(jc.tableName, jAlias)
 					}
 				}
 			} else {
@@ -1481,19 +1765,56 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 								continue
 							}
 						}
-						vals[i] = row[col]
+						v := row[col]
+						// SELECT * dedupes ambiguous bare names by first
+						// source (see cols build above). Fall through the
+						// ambiguous-bare sentinel to the qualified lookup
+						// so SELECT * on a.(id,name) + b.(id,label) still
+						// returns three columns instead of erroring.
+						// Referencing the bare name explicitly
+						// (`SELECT id FROM a,b`) goes through the projCols
+						// branch below and keeps the 42702 behavior.
+						if _, isAmb := v.(ambiguousColumnMarker); isAmb && i < len(starColAliases) && starColAliases[i] != "" {
+							if qv, ok := row[starColAliases[i]+"."+col]; ok {
+								v = qv
+							}
+						}
+						vals[i] = v
 					}
 				} else {
 					vals = make([]driver.Value, len(sq.projCols))
 					for i, col := range sq.projCols {
 						// Try qualified first, then unqualified.
 						if v, ok := row[col]; ok {
-							vals[i] = v
-						} else {
-							// Strip table prefix: "a.id" → try "id" in map.
-							if dot := strings.LastIndex(col, "."); dot >= 0 {
-								vals[i] = row[col[dot+1:]]
+							if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+								return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+									"column reference %q is ambiguous", m.Col)
 							}
+							vals[i] = v
+						} else if dot := strings.LastIndex(col, "."); dot >= 0 {
+							// Qualified reference whose qualified key is NOT
+							// in the row. Before falling back to the bare
+							// column (which silently returned whichever source
+							// wrote it last), check that the qualifier names a
+							// valid FROM-clause source. If not → 42F01.
+							qual := col[:dot]
+							if !validQualifiers[strings.ToUpper(qual)] {
+								return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+									"column reference %q names unknown table/alias %q", col, qual)
+							}
+							// Valid qualifier but the column isn't there —
+							// fall through to the bare-name lookup (matches
+							// pre-fix behavior for the "safety net" case
+							// documented at scanTableToMaps; both keys exist
+							// on real rows so this path only fires when a
+							// future map producer doesn't populate the
+							// qualified form).
+							v := row[col[dot+1:]]
+							if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+								return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+									"column reference %q is ambiguous", m.Col)
+							}
+							vals[i] = v
 						}
 					}
 				}
@@ -1580,7 +1901,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					if _, ok := colIdx[ob.colName]; ok {
 						continue
 					}
-					if _, present := filtered[0][ob.colName]; present {
+					if v, present := filtered[0][ob.colName]; present {
+						if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+							return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+								"column reference %q is ambiguous", m.Col)
+						}
 						continue
 					}
 					// "alias.col" → strip qualifier and re-check (the
@@ -1950,7 +2275,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		defer cursor.Close() //nolint:errcheck
 
 		if sq.countStar {
-			cols = []string{"COUNT(*)"}
+			cols = []string{countStarOutName(sq)}
 			var count int64
 			for {
 				result, nextErr := cursor.OnNext(ctx)
@@ -1971,6 +2296,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// HAVING on a bare COUNT(*) query: evaluate against the single
 			// aggregate row and drop it when the predicate fails. Without
 			// this the COUNT(*) fast path emitted one row unconditionally.
+			// HAVING references the aggregate function (canonical name),
+			// not the SELECT-list alias — see aggregateMapRows comment.
 			if sq.havingExpr != nil {
 				keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
 				if hErr != nil {
@@ -2018,6 +2345,20 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					groupExprByName[gn] = true
 				}
 			}
+			// groupByNames holds the declared GROUP BY bare-column list so we
+			// can enforce SQL §7.10 GR1 — a projected bare column that isn't
+			// in GROUP BY (and isn't an aggregate argument) is 42803. Pre-
+			// dayshift-40 the emission loop silently NULL-filled instead.
+			groupByNames := make(map[string]bool, len(sq.groupBy))
+			for i, gn := range sq.groupBy {
+				// Expression-based GROUP BY (e.g. `GROUP BY a + b`) is keyed
+				// by the raw expression text as a synthetic display name —
+				// handled via groupExprByName below. Skip here.
+				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+					continue
+				}
+				groupByNames[gn] = true
+			}
 			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
 				if ac.groupCol != "" {
@@ -2028,6 +2369,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q not found in table %q", ac.groupCol, sq.tableName)
+					}
+					// Java-aligned 42803. The fd-exists check above fired
+					// first so undefined columns still surface as 42703,
+					// matching Java's error order.
+					if !groupByNames[ac.groupCol] {
+						return nil, api.NewErrorf(api.ErrCodeGroupingError,
+							"column %q must appear in the GROUP BY clause or be used in an aggregate function",
+							ac.groupCol)
 					}
 					aggArgFDs[i] = fd
 				} else if ac.aggArg != "" {
@@ -2886,8 +3235,13 @@ type selectQuery struct {
 	// legacy projQualifier / nil-projCols paths).
 	projStarQualifiers []string
 	countStar          bool // true when SELECT list is exactly COUNT(*)
-	distinct           bool // true when SELECT DISTINCT
-	whereExpr          antlrgen.IWhereExprContext
+	// countStarAlias holds the optional `AS alias` on a bare COUNT(*)
+	// SELECT. Emitted as the output column name so the derived-table
+	// materializer / UNION arity / etc. see the aliased name instead of
+	// the canonical "COUNT(*)".
+	countStarAlias string
+	distinct       bool // true when SELECT DISTINCT
+	whereExpr      antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
 	// limit < 0 means no limit.
@@ -3242,6 +3596,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
 	var projStarQualifiers []string             // parallel to projCols; non-empty = <qualifier>.* slot
 	var countStar bool
+	var countStarAlias string
 	var aggCols []aggSelectCol
 	var projQualifier string // non-empty when SELECT list is *only* <qualifier>.*
 	// Snapshots of projAliases / projExprs taken right after the SELECT
@@ -3281,6 +3636,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
+					if e.Uid() != nil {
+						countStarAlias = stripIdentifierQuotes(e.Uid().GetText())
+					}
 				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
 					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
 				} else {
@@ -3563,15 +3921,24 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
+		// Pre-dayshift-40: extraCrossJoins built from `FROM (sub) AS sq, b, c`
+		// were silently dropped here because the return bailed before
+		// plumbing them. Thread them through so comma-joined real tables
+		// on the right of a derived-table left source actually execute.
+		// Derived-table-on-the-right + comma-joined remains a separate
+		// gap (the extra-source parser still rejects SubqueryTableItem at
+		// line ~3757; see derived_table_renamed.yaml's 0A000 pin).
 		return &selectQuery{
 			tableName:          alias,
 			tableAlias:         alias,
+			joins:              extraCrossJoins,
 			projCols:           projCols,
 			projAliases:        projAliases,
 			projExprs:          projExprs,
 			projStarQualifiers: projStarQualifiers,
 			projQualifier:      projQualifier,
 			countStar:          countStar,
+			countStarAlias:     countStarAlias,
 			aggCols:            aggCols,
 			distinct:           simpleTable.DISTINCT() != nil,
 			whereExpr:          fromClause.WhereExpr(),
@@ -3639,6 +4006,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		projStarQualifiers: projStarQualifiers,
 		projQualifier:      projQualifier,
 		countStar:          countStar,
+		countStarAlias:     countStarAlias,
 		aggCols:            aggCols,
 		distinct:           simpleTable.DISTINCT() != nil,
 		whereExpr:          fromClause.WhereExpr(),
@@ -3648,6 +4016,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Parse ORDER BY clause.
 	orderByClauseCtx := simpleTable.OrderByClause()
 	if orderByClauseCtx != nil {
+		// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
+		// with the same column repeated. Stricter than Postgres, but
+		// per dayshift-40's 100% Java-alignment direction we match.
+		// Expression entries (without a resolved colName) are not
+		// deduped because two identical expressions are syntactically
+		// distinct sort keys (e.g. `ORDER BY a+b, a+b` — Java accepts).
+		seenOrderCols := make(map[string]bool)
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
 			ascending := true
 			var nullsFirst *bool
@@ -3671,6 +4046,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				return nil, posErr
 			}
 			if isPos {
+				if seenOrderCols[posName] {
+					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+						"duplicate column %q in ORDER BY", posName)
+				}
+				seenOrderCols[posName] = true
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
@@ -3679,6 +4059,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
+				if seenOrderCols[colName] {
+					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+						"duplicate column %q in ORDER BY", colName)
+				}
+				seenOrderCols[colName] = true
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
 				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
@@ -3819,8 +4204,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if len(sq.groupBy) > 0 && len(sq.aggCols) == 0 && len(projCols) > 0 {
 		for _, q := range projStarQualifiers {
 			if q != "" {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					"cannot mix qualifier.* with GROUP BY in SELECT list")
+				// Java errors 42803 (grouping error) for `SELECT a.* ...
+				// GROUP BY a1` because the star expands to cols not in
+				// GROUP BY. Pre-dayshift-40 Go emitted 0A000 (unsupported).
+				return nil, api.NewError(api.ErrCodeGroupingError,
+					"SELECT qualifier.* expands to columns not in GROUP BY")
 			}
 		}
 		// Java 42803 validation per column: defer to runtime so that
@@ -3974,10 +4362,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	}
 
 	// countStar fast path assumes a single synthetic row. With GROUP BY
-	// present we need a per-group COUNT(*), so demote to aggCols.
+	// present we need a per-group COUNT(*), so demote to aggCols. The
+	// alias (if any) propagates so `SELECT COUNT(*) AS n FROM t GROUP BY g`
+	// emits the column as `n`.
 	if sq.countStar && len(sq.groupBy) > 0 {
 		sq.countStar = false
-		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: "COUNT(*)", aggFunc: "COUNT"})
+		outName := "COUNT(*)"
+		if sq.countStarAlias != "" {
+			outName = sq.countStarAlias
+		}
+		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT"})
 	}
 
 	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
@@ -4985,7 +5379,14 @@ func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		// is well-defined. Rejects non-integer floats with a clear error.
 		if v, ok := val.(float64); ok {
 			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
+				// Java aligns a fractional float → integer column at
+				// assignment-time with 22000 (cannot_convert_type) —
+				// see case-when.yamsql. Pre-dayshift-40 Go used 22023
+				// (INVALID_PARAMETER), same class but wrong specific
+				// code. Whole-valued floats still coerce (supports
+				// INSERT ... SELECT SUM(v) and CASE branches where
+				// the double result is a whole integer).
+				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
 			}
 			if v < math.MinInt64 || v > math.MaxInt64 {
@@ -7782,11 +8183,28 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if !found {
 			// Try unqualified: "Order.amount" → "amount".
 			if dot := strings.LastIndex(name, "."); dot >= 0 {
+				// When a JOIN scope is active, reject a qualified
+				// reference whose qualifier isn't a valid FROM source
+				// alias — symmetric with the SELECT projection check.
+				// Fires before the bare-column fallback so wrong
+				// qualifiers error 42F01 instead of silently picking
+				// whichever source populated the bare key.
+				if conn.validQualifiers != nil {
+					qual := name[:dot]
+					if !conn.validQualifiers[strings.ToUpper(qual)] {
+						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+							"column reference %q names unknown table/alias %q", name, qual)
+					}
+				}
 				v, found = row[name[dot+1:]]
 			}
 		}
 		if !found {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
+		}
+		if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+			return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"column reference %q is ambiguous", m.Col)
 		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:

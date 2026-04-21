@@ -37,16 +37,51 @@ tests:
     rows:
       - [20]
       - [40]
-  # Derived table with aggregate + alias inside: 'SELECT COUNT(*) AS a FROM t1 ...'
-  # The outer SELECT a returns NULL instead of the aggregate value.
-  # The CTE materializer stores the aggregate under the canonical name
-  # 'COUNT(*)' but the outer alias 'a' can't resolve it. Pin current
-  # (broken) behavior; TODO: propagate aliased aggregate columns
-  # correctly through derived-table materialization.
+  # Derived table with aggregate + alias inside: `SELECT COUNT(*) AS a`
+  # propagates the alias through the materializer so the outer `SELECT a`
+  # resolves to the aggregate value. Pre-dayshift-40 the COUNT(*) fast
+  # path hardcoded "COUNT(*)" as the column name, dropping the alias.
   - query: SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub
     rows:
-      - [~]
-  # Workaround: reference by canonical name works.
+      - [3]
+  # Still works without the alias — canonical name carries through.
   - query: SELECT "COUNT(*)" FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
     rows:
       - [3]
+  # COUNT(*) AS alias with GROUP BY + derived table: the alias rides
+  # through the fast-path-demote (countStar → aggCols) into the grouped
+  # aggregation path. Groups: n=10, n=20, n=40 after filter — each has
+  # one row, so every cnt is 1.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL GROUP BY n) AS sub
+      ORDER BY cnt
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  # COUNT(*) AS alias composed through HAVING + derived table. HAVING
+  # references the canonical "COUNT(*)" (aggregate function, not alias)
+  # per SQL §7.12; outer projection reads the alias.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL HAVING COUNT(*) > 0) AS sub
+    rows:
+      - [3]
+  # COUNT(*) AS alias + GROUP BY + HAVING: reviewer-flagged edge case.
+  # When countStar demotes to aggCols with outName=alias, the group
+  # row map is keyed by the alias and HAVING lookups under canonical
+  # name "COUNT(*)" must still resolve. Each of n=10/20/40 has 1 row
+  # → HAVING COUNT(*) > 0 keeps them all. Pre-fix this would either
+  # panic or silently no-op depending on the HAVING path.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL GROUP BY n HAVING COUNT(*) > 0) AS sub
+      ORDER BY cnt
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  # SUM AS alias (exercising the aggCols path which was already correct;
+  # regression guard so the countStarAlias work doesn't accidentally
+  # shadow it). 10 + 20 + 40 = 70 (null n is excluded from SUM).
+  - query: SELECT s FROM (SELECT SUM(n) AS s FROM t1) AS sub
+    rows:
+      - [70]
