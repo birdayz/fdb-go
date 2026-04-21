@@ -68,3 +68,14 @@ tests:
   - query: |-
       SELECT t1.col2 FROM t1, t2 WHERE t1.col1 = t2.x GROUP BY t1.col1 ORDER BY t1.col2
     error_code: "42803"
+  # Probe: GROUP BY with AS alias syntax. Java's groupby-tests.yamsql
+  # treats `GROUP BY col1 AS x` as a syntactic extension (and flags
+  # `GROUP BY col1 AS x, col2 AS x` as duplicate-alias 42702). Our
+  # grammar silently accepts the AS clause and appears to discard it
+  # — behaves as a plain `GROUP BY col1`. Pin the divergence; TODO:
+  # either reject the syntax (we don't use the alias anywhere) or
+  # enforce Java's 42702 for duplicate aliases.
+  - query: SELECT col1 FROM t1 GROUP BY col1 AS x ORDER BY col1
+    rows:
+      - [10]
+      - [20]
