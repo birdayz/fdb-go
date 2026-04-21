@@ -72,3 +72,28 @@ tests:
       ) AS Y WHERE G > 5
     rows:
       - [10]
+
+  # ORDER BY applied on the outer wrapper of a derived table. Pre-
+  # swingshift-41 the derived-table branch discarded ORDER BY along
+  # with GROUP BY. Verify sort now applies.
+  - query: |-
+      SELECT col1 FROM (SELECT col1 FROM t1) AS x ORDER BY col1 DESC LIMIT 2
+    rows:
+      - [20]
+      - [20]
+
+  # LIMIT on derived-table outer also applies (was being dropped).
+  - query: |-
+      SELECT col1 FROM (SELECT col1 FROM t1) AS x ORDER BY col1 LIMIT 3
+    rows:
+      - [10]
+      - [10]
+      - [10]
+
+  # HAVING on derived-table outer now fires. Groups by col1, keeps
+  # only groups with COUNT(*) >= 8 → col1=20 (8 rows).
+  - query: |-
+      SELECT col1, COUNT(*) FROM (SELECT col1 FROM t1) AS x
+      GROUP BY col1 HAVING COUNT(*) >= 8
+    rows:
+      - [20, 8]
