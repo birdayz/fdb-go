@@ -1092,6 +1092,9 @@ func pkPushdownCursor(
 	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownScanCursor(store, rt, pkVals)
 	}
+	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownRangeScanCursor(store, rt, bounds)
+	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 
@@ -1116,6 +1119,211 @@ func pkPushdownScanCursor(
 		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
 		nil, recordlayer.ForwardScan(),
 	)
+}
+
+// pkRangeBounds describes an open or half-open range constraint on a
+// single-column primary key derived from WHERE. Either bound may be
+// absent (represented by the `has…` flag), in which case the scan
+// runs to the corresponding end of the record-type range.
+type pkRangeBounds struct {
+	hasLow, hasHigh             bool
+	low, high                   any
+	lowInclusive, highInclusive bool
+}
+
+// pkPushdownRangeScanCursor builds a range scan bounded by `bounds`.
+// When only one side is set, the other falls back to the end of the
+// record-type range (`{rtk}` with RangeInclusive, matching
+// ScanRecordsByType's prefix semantics).
+func pkPushdownRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	bounds pkRangeBounds,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	rtk := rt.GetRecordTypeKey()
+	var low, high tuple.Tuple
+	lowEp := recordlayer.EndpointTypeRangeInclusive
+	highEp := recordlayer.EndpointTypeRangeInclusive
+	if bounds.hasLow {
+		low = tuple.Tuple{rtk, bounds.low}
+		if bounds.lowInclusive {
+			lowEp = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			lowEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		low = tuple.Tuple{rtk}
+	}
+	if bounds.hasHigh {
+		high = tuple.Tuple{rtk, bounds.high}
+		if bounds.highInclusive {
+			highEp = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			highEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		high = tuple.Tuple{rtk}
+	}
+	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
+}
+
+// tryPKRangePushdown is the SELECT-gated variant of
+// tryPKRangeFromWhere. Same shape gates as tryPKEqualityPushdown.
+func (c *EmbeddedConnection) tryPKRangePushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) (pkRangeBounds, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return pkRangeBounds{}, false
+	}
+	if sq.havingExpr != nil {
+		return pkRangeBounds{}, false
+	}
+	return c.tryPKRangeFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// tryPKRangeFromWhere recognises single-column PK range predicates
+// (`>`, `>=`, `<`, `<=`, plus `=` as a point range). Returns the
+// low/high bounds when viable, or (_, false) otherwise. Composite
+// PKs stay on equality-only (tryPKEqualityFromWhere) because range
+// semantics over composite keys are more constrained (range is only
+// valid on the last equated component).
+//
+// Multiple bounds on the same side are collected with last-write-wins;
+// the scan loop's existing WHERE evaluator re-applies the full
+// predicate to each loaded row, so correctness holds even when the
+// bounds we chose are looser than necessary.
+func (c *EmbeddedConnection) tryPKRangeFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) (pkRangeBounds, bool) {
+	if whereExpr == nil {
+		return pkRangeBounds{}, false
+	}
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) != 1 {
+		return pkRangeBounds{}, false
+	}
+	pkCol := pkCols[0]
+
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return pkRangeBounds{}, false
+	}
+
+	fd := rt.Descriptor.Fields().ByName(protoreflect.Name(pkCol))
+	if fd == nil {
+		return pkRangeBounds{}, false
+	}
+
+	var bounds pkRangeBounds
+	pkColUpper := strings.ToUpper(pkCol)
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		if strings.ToUpper(col) != pkColUpper {
+			continue
+		}
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			return pkRangeBounds{}, false
+		}
+		switch op {
+		case "=":
+			bounds.hasLow = true
+			bounds.low = val
+			bounds.lowInclusive = true
+			bounds.hasHigh = true
+			bounds.high = val
+			bounds.highInclusive = true
+		case ">":
+			bounds.hasLow = true
+			bounds.low = val
+			bounds.lowInclusive = false
+		case ">=":
+			bounds.hasLow = true
+			bounds.low = val
+			bounds.lowInclusive = true
+		case "<":
+			bounds.hasHigh = true
+			bounds.high = val
+			bounds.highInclusive = false
+		case "<=":
+			bounds.hasHigh = true
+			bounds.high = val
+			bounds.highInclusive = true
+		}
+	}
+	if !bounds.hasLow && !bounds.hasHigh {
+		return pkRangeBounds{}, false
+	}
+	return bounds, true
+}
+
+// extractColOpLiteral generalises extractColEqualsLiteral to any
+// comparison operator among `=`, `>`, `>=`, `<`, `<=`. Returns the
+// operator text (one of the above), the bare column name, and the
+// literal value. When the RHS side is the column and the LHS is the
+// literal, the operator is flipped to preserve col-on-left semantics
+// (so `5 < id` becomes `id > 5`).
+func extractColOpLiteral(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (op, col string, val any, ok bool) {
+	pred, good := expr.(*antlrgen.PredicatedExpressionContext)
+	if !good {
+		return "", "", nil, false
+	}
+	if pred.Predicate() != nil {
+		return "", "", nil, false
+	}
+	bcp, good := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if !good {
+		return "", "", nil, false
+	}
+	opC := bcp.ComparisonOperator()
+	if opC == nil {
+		return "", "", nil, false
+	}
+	opText := strings.ReplaceAll(opC.GetText(), " ", "")
+	switch opText {
+	case "=", ">", ">=", "<", "<=":
+	default:
+		return "", "", nil, false
+	}
+	// Column-on-left, literal-on-right.
+	if name, isCol := extractColumnRef(bcp.GetLeft()); isCol {
+		if v, isLit := evalConstantAtom(ctx, c, bcp.GetRight()); isLit {
+			return opText, name, v, true
+		}
+	}
+	// Column-on-right, literal-on-left — flip the operator.
+	if name, isCol := extractColumnRef(bcp.GetRight()); isCol {
+		if v, isLit := evalConstantAtom(ctx, c, bcp.GetLeft()); isLit {
+			return flipComparisonOp(opText), name, v, true
+		}
+	}
+	return "", "", nil, false
+}
+
+// flipComparisonOp flips a comparison operator for the case where
+// the column ref appears on the right (`5 < id` → treat as `id > 5`).
+func flipComparisonOp(op string) string {
+	switch op {
+	case ">":
+		return "<"
+	case ">=":
+		return "<="
+	case "<":
+		return ">"
+	case "<=":
+		return ">="
+	}
+	return op // `=` is symmetric
 }
 
 // extractPKUserFields returns the ordered list of user field names
@@ -3226,6 +3434,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
+		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}
