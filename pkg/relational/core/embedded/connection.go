@@ -1375,6 +1375,25 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		// the ambiguousColumnMarker sentinel so unqualified references
 		// surface 42702. Qualified (alias.col) slots remain usable.
 		ambiguousBare := c.computeAmbiguousBareColumns(md, sq)
+
+		// Set of valid qualifier aliases (left source + every join source).
+		// Used by the SELECT projection to surface 42F01 when a qualified
+		// reference names a qualifier that doesn't match any FROM-clause
+		// source — the pre-fix behavior silently fell back to the bare
+		// column lookup, picking whichever side of the JOIN wrote it last.
+		validQualifiers := make(map[string]bool)
+		leftQual := sq.tableAlias
+		if leftQual == "" {
+			leftQual = sq.tableName
+		}
+		validQualifiers[strings.ToUpper(leftQual)] = true
+		for _, jc := range sq.joins {
+			a := jc.alias
+			if a == "" {
+				a = jc.tableName
+			}
+			validQualifiers[strings.ToUpper(a)] = true
+		}
 		// Post-scan: leftRows' bare slots contain left's real values.
 		// If a bare col is ambiguous across any pair of sources, poison
 		// it now so single-table queries in `execSelectJoin`'s tail
@@ -1646,16 +1665,30 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 									"column reference %q is ambiguous", m.Col)
 							}
 							vals[i] = v
-						} else {
-							// Strip table prefix: "a.id" → try "id" in map.
-							if dot := strings.LastIndex(col, "."); dot >= 0 {
-								v := row[col[dot+1:]]
-								if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-									return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-										"column reference %q is ambiguous", m.Col)
-								}
-								vals[i] = v
+						} else if dot := strings.LastIndex(col, "."); dot >= 0 {
+							// Qualified reference whose qualified key is NOT
+							// in the row. Before falling back to the bare
+							// column (which silently returned whichever source
+							// wrote it last), check that the qualifier names a
+							// valid FROM-clause source. If not → 42F01.
+							qual := col[:dot]
+							if !validQualifiers[strings.ToUpper(qual)] {
+								return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+									"column reference %q names unknown table/alias %q", col, qual)
 							}
+							// Valid qualifier but the column isn't there —
+							// fall through to the bare-name lookup (matches
+							// pre-fix behavior for the "safety net" case
+							// documented at scanTableToMaps; both keys exist
+							// on real rows so this path only fires when a
+							// future map producer doesn't populate the
+							// qualified form).
+							v := row[col[dot+1:]]
+							if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+								return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+									"column reference %q is ambiguous", m.Col)
+							}
+							vals[i] = v
 						}
 					}
 				}

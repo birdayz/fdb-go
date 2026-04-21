@@ -107,9 +107,9 @@ tests:
   # star-expansion path goes through resolveQualifierColumns and
   # rejects qualifier `c` (no source matches). Pins that the star
   # validation still fires in the mixed SELECT-list path.
-  # (Note: wrong qualifiers on named columns — e.g. `SELECT a.id, c.label`
-  #  with no source `c` — silently fall back to the unqualified
-  #  column today. That's a separate pre-existing gap, not covered here.)
+  # (Wrong qualifiers on *named* columns — e.g. `SELECT a.id, c.label`
+  #  with no source `c` — now also error 42F01 via the JOIN projection
+  #  path. See wrong_qualifier.yaml for the named-column coverage.)
   - query: SELECT c.*, b.label FROM a, b
     error_code: "42F01"
 
