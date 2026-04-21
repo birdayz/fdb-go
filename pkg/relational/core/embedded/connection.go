@@ -7703,6 +7703,10 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
 
+		// Record the source alias so correlated EXISTS / IN inside WHERE
+		// can resolve outer-row refs (mirrors execUpdate).
+		defer c.pushSourceAliases(tableName)()
+
 		for {
 			result, nextErr := cursor.OnNext(ctx)
 			if nextErr != nil {
