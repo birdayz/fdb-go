@@ -99,3 +99,12 @@ tests:
     rows:
       - [10, 2]
       - [20, 1]
+
+  # Alias-of-alias (Java groupby-tests.yamsql line 105): the GROUP
+  # BY alias can be re-aliased in the SELECT list. Output column is
+  # named by the SELECT-list alias (XX), values come from the
+  # underlying GROUP BY column (col1).
+  - query: SELECT YY AS XX FROM t1 GROUP BY col1 AS YY ORDER BY XX
+    rows:
+      - [10]
+      - [20]
