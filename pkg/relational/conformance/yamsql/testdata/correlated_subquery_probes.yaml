@@ -149,3 +149,22 @@ tests:
     rows:
       - ['Alice']
       - ['Bob']
+
+  # Doubly-nested correlation: an EXISTS inside another EXISTS, where
+  # the innermost subquery references the OUTERMOST row (not the
+  # middle one). The outerScopes stack is consulted innermost-first,
+  # but the innermost subquery can still resolve up to outermost when
+  # the middle layer doesn't shadow the qualifier.
+  # Re-insert Carol for this subtest since the previous DELETE removed
+  # her.
+  - query: INSERT INTO emp VALUES (3, 'Carol', 10)
+  - query: |
+      SELECT fname FROM emp
+      WHERE EXISTS (
+        SELECT 1 FROM project
+        WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+      )
+      ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
