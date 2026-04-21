@@ -81,11 +81,19 @@ tests:
   - query: SELECT id FROM t WHERE id = 'notanumber'
     error_code: "22000"
 
-  # String PK + string literal → pushdown viable.
+  # Non-PK string column equality → scan path (name is not the PK;
+  # id is). Verifies pushdown detection doesn't fire and the scan
+  # path still returns the right row.
   - query: SELECT id, name FROM t WHERE name = 'alpha' ORDER BY id
     rows:
       - [1, 'alpha']
-    # Note: `name` isn't the PK here (id is). This is the scan path.
+
+  # `WHERE pk_col = NULL` is never true (SQL three-valued logic).
+  # Pushdown bails on NULL RHS; the scan path's evalPredicate also
+  # produces UNKNOWN → filter rejects → zero rows. Pinning both
+  # paths produce the same empty result.
+  - query: SELECT id FROM t WHERE id = NULL
+    rows: []
 
   # `<=` is parsed as LESS_SYMBOL + EQUAL_SYMBOL — must NOT be
   # mistaken for equality. Regression: the initial implementation

@@ -1095,19 +1095,18 @@ func pkPushdownCursor(
 }
 
 // pkPushdownScanCursor builds a single-key range scan for a fully
-// determined primary key. Tuple key includes the RecordTypeKey prefix
-// when the PK expression starts with one (the default for SQL CREATE
-// TABLE); for the bare Field-only case (intermingled tables) the
-// prefix is absent.
+// determined primary key. extractPKUserFields gates this to the
+// RecordTypeKey-prefixed PK shape only, so the tuple is always
+// `{rtk, pkVal1, pkVal2, ...}` — the prefix anchors the scan to the
+// right record type, matching ScanRecordsByType's fast-path semantics
+// (see primaryKeyHasRecordTypePrefix in pkg/recordlayer/store.go).
 func pkPushdownScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
 	pkVals []any,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	low := make(tuple.Tuple, 0, 1+len(pkVals))
-	if _, ok := rt.PrimaryKey.(*recordlayer.CompositeKeyExpression); ok {
-		low = append(low, rt.GetRecordTypeKey())
-	}
+	low = append(low, rt.GetRecordTypeKey())
 	for _, v := range pkVals {
 		low = append(low, v)
 	}
@@ -1119,15 +1118,20 @@ func pkPushdownScanCursor(
 }
 
 // extractPKUserFields returns the ordered list of user field names
-// making up the primary key, skipping a RecordTypeKey prefix if
-// present. Returns empty when the PK isn't one of the shapes we push
-// down (currently FieldKeyExpression or CompositeKeyExpression whose
-// children are [RecordTypeKey?, Field(col)...]).
+// making up the primary key when pushdown is safe, or nil otherwise.
+//
+// Only CompositeKeyExpression is supported today: SQL DDL's default
+// (non-intermingled) path emits `Concat(RecordTypeKey, Field(col)…)`,
+// and the RecordTypeKey prefix in the range tuple naturally scopes
+// the FDB scan to the right record type. The bare FieldKeyExpression
+// branch — which SQL DDL only emits for `SetIntermingleTables(true)`
+// schemas — has NO type filter; an intermingled multi-table schema
+// where different types share a PK column space could return a
+// wrong-typed record at the same key. We bail on that shape until
+// a type-filtering wrapper is added; the scan path still handles
+// intermingled tables correctly.
 func extractPKUserFields(pk recordlayer.KeyExpression) []string {
-	switch e := pk.(type) {
-	case *recordlayer.FieldKeyExpression:
-		return e.FieldNames()
-	case *recordlayer.CompositeKeyExpression:
+	if e, ok := pk.(*recordlayer.CompositeKeyExpression); ok {
 		// FieldNames() on a CompositeKeyExpression returns just the
 		// Field children, not the RecordTypeKey (which contributes no
 		// named column). That's exactly the user field list.
