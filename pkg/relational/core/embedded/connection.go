@@ -4423,7 +4423,23 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// time.
 	groupByCtx := simpleTable.GroupByClause()
 	if groupByCtx != nil {
+		// Java alignment: `GROUP BY col AS alias` is a syntactic
+		// extension that assigns a name to the group key. Java errors
+		// 42702 (ambiguous-column) when the same alias appears twice
+		// (groupby-tests.yamsql: `group by col1 as x, col2 as x`).
+		// Track aliases across all items and reject duplicates; the
+		// alias itself is otherwise unused at evaluation time — the
+		// group key comes from the expression.
+		seenAliases := make(map[string]bool)
 		for _, item := range groupByCtx.AllGroupByItem() {
+			if item.Uid() != nil {
+				alias := stripIdentifierQuotes(item.Uid().GetText())
+				if seenAliases[alias] {
+					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"duplicate alias %q in GROUP BY", alias)
+				}
+				seenAliases[alias] = true
+			}
 			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
 			if posErr != nil {
 				return nil, posErr
