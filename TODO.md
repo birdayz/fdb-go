@@ -318,6 +318,8 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] **UNION arity mismatch** (e882b918): now errors 42F64 (UNION_INCORRECT_COLUMN_COUNT, Java class-42) instead of generic 42601 SYNTAX_ERROR. ErrCodeUnionIncorrectColumnCount was defined but unused.
 - [x] **BETWEEN cross-type bounds** (c4d7c99d): `col BETWEEN 10 AND 'a'` now errors 22000 (CANNOT_CONVERT_TYPE) instead of returning silent empty result. valuesComparable check added to evalBetweenPredicateTri.
 - [x] **SQL §7.10 GR1 — bare col + aggregate without GROUP BY** (fca612f7): `SELECT id, COUNT(*) FROM t` now errors 42803 (grouping_error). Go previously silently reclassified bare columns as groupCol entries, producing nonsense output. Validation walks sq.aggCols for groupCol entries and column-referencing outExprs that lack aggregates, rejecting when sq.groupBy is empty.
+- [x] **CTE column-rename count mismatch** (98076b08): now errors 42F10 (INVALID_COLUMN_REFERENCE, Java class-42) instead of generic 22000.
+- [x] **Duplicate CTE name in WITH** (c82cbd03): `WITH c1 AS (...), c1 AS (...)` now errors 42712 (DUPLICATE_ALIAS). Go previously silently overwrote the first definition.
 
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
