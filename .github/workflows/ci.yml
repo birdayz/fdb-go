@@ -49,8 +49,15 @@ jobs:
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed
 
       - name: Race detector (FDB client + record layer)
+        # Race uses a separate --output_base so switching the Go config
+        # back and forth doesn't invalidate the non-race action cache
+        # entries in the main output_base. Without this, every next PR
+        # CI run re-runs the 5 FDB-container tests + their compile chain
+        # (~2m) because Bazel's main-cache GoStdlib / rules_go "_reset"
+        # symlink action keys shift when the server has seen both
+        # configs. Investigation in PR #92.
         run: |
-          bazelisk test \
+          bazelisk --output_base=$HOME/.cache/bazel/_race_output_base test \
             //pkg/fdbgo/client:client_test \
             //pkg/fdbgo/fdb:fdb_test \
             //pkg/recordlayer:recordlayer_test \
