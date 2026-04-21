@@ -5870,8 +5870,19 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 			bare = colName[dot+1:]
 		}
 		if msg != nil {
+			// Inner qualifier match: accept the descriptor name always;
+			// also accept any SQL-level alias declared by the current
+			// scan (conn.currentSourceAliases, populated by scan loops
+			// when they enter), so `FROM project AS p WHERE p.emp_id`
+			// resolves p → project even though the descriptor is
+			// PROJECT. nil conn (unit-test eval) falls back to the
+			// descriptor-only check.
 			innerName := strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name()))
-			if qual == "" || qual == innerName {
+			innerMatches := qual == "" || qual == innerName
+			if !innerMatches && conn != nil && conn.currentSourceAliases[qual] {
+				innerMatches = true
+			}
+			if innerMatches {
 				fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
 				if fd != nil {
 					// Absent proto2 optional fields are SQL NULL — distinct from the zero

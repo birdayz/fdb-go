@@ -132,6 +132,19 @@ tests:
       - ['Bob']
       - ['Carol']
 
+  # Both outer and inner use user aliases on different tables. Exercise
+  # the save/restore of currentSourceAliases across the inner scan:
+  # outer installs {E, EMP}, inner overwrites with {P, PROJECT} during
+  # its scan, and restores {E, EMP} on return so `e.id` resolves via
+  # the outer scope for every outer row.
+  - query: |
+      SELECT fname FROM emp AS e
+      WHERE EXISTS (SELECT 1 FROM project AS p WHERE p.emp_id = e.id)
+      ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+
   # UPDATE with a correlated EXISTS predicate — only employees with a
   # project get dept_id nulled out. The execUpdate scan loop pushes the
   # source alias just like the SELECT path.
