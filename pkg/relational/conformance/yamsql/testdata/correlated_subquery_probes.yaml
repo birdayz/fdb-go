@@ -1,0 +1,44 @@
+# correlated_subquery_probes.yaml
+#
+# DIAGNOSTIC: correlated subqueries reference outer-row columns.
+# Java's join-tests.yamsql exercises these via EXISTS / IN subqueries
+# (`select * from project where emp_id = emp.id`). We don't support
+# correlation today — the inner query has no access to outer-row
+# bindings. Pin the current error so the future implementation flips
+# them to passing tests.
+name: correlated_subquery_probes
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
+  - INSERT INTO project VALUES (100, 1), (101, 2)
+tests:
+  # Correlated EXISTS — inner references emp.id from outer.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+    error_code: "42703"
+  # Correlated IN — inner references outer column.
+  - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id)
+    error_code: "42703"
+  # Correlated scalar subquery — inner references outer column in WHERE.
+  - query: SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp
+    error_code: "42703"
+  # Uncorrelated EXISTS still works (baseline).
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']
+  # Uncorrelated IN still works (baseline).
+  - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+  # Java alignment: ORDER BY inside an EXISTS subquery — Java errors
+  # 0AF00 (UNSUPPORTED_QUERY) since ordering inside a set-existence
+  # check is meaningless. Probe Go's behavior.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project ORDER BY id LIMIT 1) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']

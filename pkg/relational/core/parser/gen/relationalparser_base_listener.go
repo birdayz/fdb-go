@@ -1647,6 +1647,14 @@ func (s *BaseRelationalParserListener) EnterIsExpression(ctx *IsExpressionContex
 // ExitIsExpression is called when production isExpression is exited.
 func (s *BaseRelationalParserListener) ExitIsExpression(ctx *IsExpressionContext) {}
 
+// EnterSubqueryExpressionAtom is called when production subqueryExpressionAtom is entered.
+func (s *BaseRelationalParserListener) EnterSubqueryExpressionAtom(ctx *SubqueryExpressionAtomContext) {
+}
+
+// ExitSubqueryExpressionAtom is called when production subqueryExpressionAtom is exited.
+func (s *BaseRelationalParserListener) ExitSubqueryExpressionAtom(ctx *SubqueryExpressionAtomContext) {
+}
+
 // EnterBinaryComparisonPredicate is called when production binaryComparisonPredicate is entered.
 func (s *BaseRelationalParserListener) EnterBinaryComparisonPredicate(ctx *BinaryComparisonPredicateContext) {
 }

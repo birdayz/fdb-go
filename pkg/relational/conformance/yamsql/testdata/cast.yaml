@@ -44,3 +44,18 @@ tests:
     error_code: "22F3H"
   - query: SELECT CAST(-1e20 AS BIGINT) FROM t
     error_code: "22F3H"
+  # CAST('bogus' AS BOOLEAN) — pre-nightshift-39 this errored 22023
+  # (generic INVALID_PARAMETER); now 22F3H (INVALID_CAST) matching the
+  # other string-parse CAST failures (integer and float above).
+  - query: SELECT CAST('not a bool' AS BOOLEAN) FROM t
+    error_code: "22F3H"
+  # CAST(NaN) / CAST(Infinity) to integer — already 22F3H, pin for the
+  # full family. NaN poisons aggregates so this MUST reject, not silently
+  # wrap.
+  - query: SELECT CAST(CAST('not a number' AS DOUBLE) AS BIGINT) FROM t
+    error_code: "22F3H"
+  # Java alignment (cast-tests.yamsql): LONG value that overflows INTEGER
+  # (32-bit) → 22F3H. Java's CastValue validates range before narrowing
+  # BIGINT to INT. 9223372036854775807 (Long.MAX_VALUE) > Integer.MAX_VALUE.
+  - query: SELECT CAST(9223372036854775807 AS INTEGER) FROM t
+    error_code: "22F3H"

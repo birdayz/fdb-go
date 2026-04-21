@@ -1,0 +1,21 @@
+# order_by_dupe_col.yaml
+#
+# Java's orderby.yamsql tests `ORDER BY b, b` (same column repeated)
+# → error 42701 (column already exists / duplicate). Probe Go's
+# behavior.
+name: order_by_dupe_col
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Java errors 42701 for duplicate ORDER BY column. Postgres / SQL
+  # standard accept it (second key is a no-op). Go currently accepts
+  # it (Postgres-aligned) — pin the current behavior. Documenting the
+  # Java divergence; matching Java is debatable since stricter than
+  # standard.
+  - query: SELECT b FROM t ORDER BY b, b
+    rows:
+      - [10]
+      - [20]
+      - [30]

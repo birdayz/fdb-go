@@ -1,0 +1,37 @@
+# group_by_proj_expr.yaml
+#
+# SELECT projection of an EXPRESSION on group-by columns
+# (e.g. `SELECT a, b, a+b, MAX(c) FROM t GROUP BY a, b`).
+# Java's GroupByQueryTests has this exact pattern. Verify our
+# aggregate path handles a derived projection where the expression
+# inputs are all in the GROUP BY (so the value is constant within
+# each group).
+name: group_by_proj_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES
+      (1, 1, 1, 10),
+      (2, 1, 1, 20),
+      (3, 1, 2, 30),
+      (4, 2, 1, 40),
+      (5, 2, 1, 50),
+      (6, 2, 2, 60)
+tests:
+  # Java pattern: a+b in the projection. Both a and b are in GROUP BY,
+  # so a+b is constant per group.
+  - query: |-
+      SELECT a, b, a+b, MAX(c), MIN(c), COUNT(c), AVG(c)
+      FROM t GROUP BY a, b ORDER BY a, b
+    rows:
+      - [1, 1, 2, 20, 10, 2, 15.0]
+      - [1, 2, 3, 30, 30, 1, 30.0]
+      - [2, 1, 3, 50, 40, 2, 45.0]
+      - [2, 2, 4, 60, 60, 1, 60.0]
+  # SELECT-list arithmetic on the group-by columns alone (no aggregate).
+  - query: SELECT a, b, a*100+b FROM t GROUP BY a, b ORDER BY a, b
+    rows:
+      - [1, 1, 101]
+      - [1, 2, 102]
+      - [2, 1, 201]
+      - [2, 2, 202]

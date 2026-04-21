@@ -1235,6 +1235,7 @@ expressionAtom
     | fullColumnName                                                                      #fullColumnNameExpressionAtom // done
     | functionCall                                                                        #functionCallExpressionAtom // done
     | preparedStatementParameter                                                          #preparedStatementParameterAtom // done
+    | '(' query ')'                                                                       #subqueryExpressionAtom // scalar subquery
     | recordConstructor                                                                   #recordConstructorExpressionAtom // done
     | arrayConstructor                                                                    #arrayConstructorExpressionAtom // done
     | base=expressionAtom LEFT_SQUARE_BRACKET index=expressionAtom RIGHT_SQUARE_BRACKET   #subscriptExpression // done

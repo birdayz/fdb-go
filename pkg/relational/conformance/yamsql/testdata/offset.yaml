@@ -24,7 +24,39 @@ tests:
       - [2]
       - [3]
   # Grammar rejects negative literals in LIMIT at parse time (42601)
-  # — the runtime 22023 check from swingshift-35 is unreachable via
-  # SQL literals, only via parameterised LIMIT ?. Documented here so
-  # future changes that relax the grammar know the downstream check
-  # still exists.
+  # — the runtime 2201W check from nightshift-39 (was 22023 in
+  # swingshift-35) is unreachable via SQL literals, only via
+  # parameterised LIMIT ?. Documented here so future changes that
+  # relax the grammar know the downstream check still exists.
+  # SQLSTATE 2201W (invalid_row_count_in_limit_clause) is the SQL-
+  # standard class-22 code for LIMIT/OFFSET range violations,
+  # tightened from generic 22023 INVALID_PARAMETER.
+  # LIMIT 0 — explicit no-rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    rows: []
+  # LIMIT exactly equals row count — returns all rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 5
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # LIMIT larger than row count — returns all rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # OFFSET partial overlap at end.
+  - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 3
+    rows:
+      - [4]
+      - [5]
+  # OFFSET without LIMIT — parser rejects 42601 (grammar requires LIMIT).
+  # This matches Java where the standard SQL grammar has OFFSET nested
+  # inside the LIMIT clause. Workaround: use LIMIT 9223372036854775807.
+  - query: SELECT id FROM t ORDER BY id OFFSET 2
+    error_code: "42601"

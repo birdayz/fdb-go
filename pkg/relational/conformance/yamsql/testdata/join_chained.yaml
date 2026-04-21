@@ -1,0 +1,43 @@
+# join_chained.yaml
+#
+# Multiple INNER JOINs chained in one FROM clause (Java's join-tests.yamsql).
+# Pre-existing inner_join tests probably cover single-JOIN; this verifies
+# A INNER JOIN B ON ... INNER JOIN C ON ... works.
+name: join_chained
+schema_template: |
+  CREATE TABLE emp (id BIGINT NOT NULL, name STRING, dept_id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dept (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE project (id BIGINT NOT NULL, emp_id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
+  - INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Sales')
+  - INSERT INTO project VALUES (100, 1), (101, 2), (102, 3)
+tests:
+  # Java pattern: chained INNER JOINs.
+  - query: |-
+      SELECT emp.name, dept.name FROM emp
+        INNER JOIN dept ON emp.dept_id = dept.id
+        INNER JOIN project ON project.emp_id = emp.id
+      ORDER BY emp.id
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Bob', 'Sales']
+      - ['Carol', 'Engineering']
+  # Same shape with mixed comma + INNER JOIN.
+  - query: |-
+      SELECT emp.name FROM emp, project
+      WHERE project.emp_id = emp.id
+      ORDER BY emp.id
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']
+  # 3-way comma-join with a WHERE that joins all three.
+  - query: |-
+      SELECT emp.name, dept.name FROM emp, dept, project
+      WHERE emp.dept_id = dept.id AND project.emp_id = emp.id
+      ORDER BY emp.id
+    rows:
+      - ['Alice', 'Engineering']
+      - ['Bob', 'Sales']
+      - ['Carol', 'Engineering']

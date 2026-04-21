@@ -53,6 +53,9 @@ const (
 	ErrCodeUnsupportedQuery     ErrorCode = "0AF00"
 	ErrCodeUnsupportedSort      ErrorCode = "0AF01"
 
+	// Class 21 — Cardinality Violation
+	ErrCodeCardinalityViolation ErrorCode = "21000"
+
 	// Class 22 — Data Exception
 	ErrCodeCannotConvertType            ErrorCode = "22000"
 	ErrCodeNumericValueOutOfRange       ErrorCode = "22003"
@@ -153,6 +156,7 @@ func init() {
 		ErrCodeNoResultSet,
 		ErrCodeUnableToEstablishSQLConnection, ErrCodeConnectionDoesNotExist, ErrCodeInvalidPath, ErrCodeCannotCommitRollbackWithAutocommit,
 		ErrCodeUnsupportedOperation, ErrCodeUnsupportedQuery, ErrCodeUnsupportedSort,
+		ErrCodeCardinalityViolation,
 		ErrCodeCannotConvertType, ErrCodeNumericValueOutOfRange, ErrCodeDivisionByZero, ErrCodeInvalidRowCountInLimitClause, ErrCodeInvalidParameter, ErrCodeArrayElementError,
 		ErrCodeInvalidBinaryRepresentation, ErrCodeInvalidArgumentForFunction, ErrCodeInvalidCast,
 		ErrCodeCopySerializationError, ErrCodeCopyImportValidationError,

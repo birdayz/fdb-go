@@ -1,0 +1,38 @@
+# insert_arity.yaml
+#
+# INSERT column count mismatches (Java's inserts-updates-deletes.yamsql):
+# - Too few values for the schema → 22000.
+# - Too many values for an explicit column list → error.
+# - Reordered column list works.
+name: insert_arity
+schema_template: |
+  CREATE TABLE a (a1 BIGINT NOT NULL, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))
+setup: []
+tests:
+  # Reordered column list with VALUES — INSERT INTO a (a3, a2, a1) puts
+  # the values in the explicit order.
+  - query: INSERT INTO a (a3, a2, a1) VALUES (33, 22, 1)
+  - query: SELECT a1, a2, a3 FROM a WHERE a1 = 1
+    rows:
+      - [1, 22, 33]
+  # Subset column list — leave a3 unset (NULL).
+  - query: INSERT INTO a (a1, a2) VALUES (2, 20)
+  - query: SELECT a1, a2, a3 FROM a WHERE a1 = 2
+    rows:
+      - [2, 20, ~]
+  # Java: INSERT INTO A VALUES (4) — too few values, no column list →
+  # error 22000 CANNOT_CONVERT_TYPE (implicit column list from schema,
+  # partial tuple can't be coerced). Go matches.
+  - query: INSERT INTO a VALUES (4)
+    error_code: "22000"
+  # Java: INSERT INTO A (A1, A2, A3) VALUES (5, 6, 7, 8, 9) — too many
+  # values with explicit column list. Java 4.1.5.0+ errors 42601
+  # SYNTAX_ERROR. Explicit column list + any arity mismatch → 42601.
+  - query: INSERT INTO a (a1, a2, a3) VALUES (5, 6, 7, 8, 9)
+    error_code: "42601"
+  # Java: INSERT INTO A(A1, A2, A3) VALUES (4) — too few with explicit
+  # column list. Java 4.1.5.0+ also errors 42601 (explicit list →
+  # syntax-level). nightshift-39: Go aligned by splitting on
+  # explicit-vs-implicit column list rather than direction.
+  - query: INSERT INTO a (a1, a2, a3) VALUES (4)
+    error_code: "42601"

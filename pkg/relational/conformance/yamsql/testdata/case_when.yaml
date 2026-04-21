@@ -64,3 +64,28 @@ tests:
       - [1, 0]
       - [2, 0]
       - [4, 0]
+  # Java-aligned: mixed-type result branches. CASE WHEN cond THEN <int>
+  # ELSE <float> END — Java promotes both to DOUBLE so the result type
+  # is consistent. Verify Go matches: the integer branch should surface
+  # as float when the other branch is float.
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 10 ELSE 3.14 END
+      FROM t WHERE id = 1
+    rows:
+      - [1, 10.0]
+  - query: |-
+      SELECT id, CASE WHEN v < 10 THEN 10 ELSE 3.14 END
+      FROM t WHERE id = 2
+    rows:
+      - [2, 3.14]
+  # Boolean column directly as CASE condition — no comparison needed.
+  # Java requires version 4.3.5.0; pin our behavior.
+  # We need a boolean column for this — use IS NULL as a proxy.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 'absent' ELSE 'present' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'present']
+      - [2, 'present']
+      - [3, 'absent']
+      - [4, 'present']

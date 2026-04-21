@@ -62,9 +62,12 @@ tests:
       - [10]
       - [20]
 
-  # Column-count mismatch must error (SQL-standard cross-side check).
+  # Column-count mismatch must error — Java uses SQLSTATE 42F64
+  # (UNION_INCORRECT_COLUMN_COUNT, class-42 Java-specific). nightshift-
+  # 39: Go aligned from generic 42601 SYNTAX_ERROR to Java's 42F64 so
+  # callers can distinguish arity mismatch from parse errors.
   - query: SELECT id, v FROM a UNION SELECT id FROM b
-    error_code: "42601"
+    error_code: "42F64"
 
   # UNION with constant literals on one side.
   - query: SELECT v FROM a UNION ALL SELECT 99 FROM b

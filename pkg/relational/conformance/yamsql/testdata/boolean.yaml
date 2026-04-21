@@ -67,3 +67,89 @@ tests:
     unordered: true
     rows:
       - [1, true]
+  # Java-aligned: boolean comparison in SELECT list (returns the result).
+  # b=true → true | b=false → false | b=NULL → NULL.
+  - query: SELECT b = true FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: SELECT b = false FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  - query: SELECT b <> TRUE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  # Java-aligned: IS TRUE in SELECT — never returns NULL (always concrete).
+  - query: SELECT b IS TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [false]
+  - query: SELECT b IS NOT TRUE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [true]
+  - query: SELECT b IS NULL FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [false]
+      - [true]
+  # Java alignment: boolean-op in SELECT projection. Kleene 3VL.
+  # b=true: t AND t=t, t AND f=f, t AND NULL=NULL
+  # b=false: f AND t=f, f AND f=f, f AND NULL=f
+  # b=NULL: NULL AND t=NULL, NULL AND f=f, NULL AND NULL=NULL
+  - query: SELECT b AND TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: SELECT b AND FALSE FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [false]
+      - [false]
+  # b OR TRUE always TRUE.
+  - query: SELECT b OR TRUE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [true]
+      - [true]
+  # b OR FALSE: t/f/NULL.
+  - query: SELECT b OR FALSE FROM lb ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  # NOT b: NOT t=f, NOT f=t, NOT NULL=NULL.
+  - query: SELECT NOT b FROM lb ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]
+  # Same tri-state projection through a CTE — exercises evalExprOnMap
+  # (map-path), not the proto-path evalExprPredicateTri. Pre-fix the
+  # Logical/Not cases in evalExprOnMap used the 2-valued bool wrapper,
+  # dropping UNKNOWN → false so NULL-row projected false instead of
+  # NULL. Now routes through evalPredicateOnMapExprTri and maps
+  # triTrue → true, triFalse → false, triNull → NULL.
+  - query: WITH x AS (SELECT * FROM lb) SELECT b AND TRUE FROM x ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: WITH x AS (SELECT * FROM lb) SELECT b OR FALSE FROM x ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: WITH x AS (SELECT * FROM lb) SELECT NOT b FROM x ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]

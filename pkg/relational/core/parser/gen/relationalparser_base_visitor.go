@@ -1027,6 +1027,10 @@ func (v *BaseRelationalParserVisitor) VisitIsExpression(ctx *IsExpressionContext
 	return v.VisitChildren(ctx)
 }
 
+func (v *BaseRelationalParserVisitor) VisitSubqueryExpressionAtom(ctx *SubqueryExpressionAtomContext) interface{} {
+	return v.VisitChildren(ctx)
+}
+
 func (v *BaseRelationalParserVisitor) VisitBinaryComparisonPredicate(ctx *BinaryComparisonPredicateContext) interface{} {
 	return v.VisitChildren(ctx)
 }

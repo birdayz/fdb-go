@@ -1,0 +1,37 @@
+# insert_values_expr.yaml
+#
+# INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc).
+# Java's inserts-updates-deletes.yamsql tests `insert into B select
+# b1*10, b2, b3 from B` — that's SELECT form. This probes the VALUES
+# form with expressions.
+name: insert_values_expr
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+setup: []
+tests:
+  # INSERT VALUES with arithmetic.
+  - query: INSERT INTO t VALUES (1, 2 + 3), (2, 10 * 10)
+  - query: SELECT id, n FROM t ORDER BY id
+    rows:
+      - [1, 5]
+      - [2, 100]
+  # INSERT VALUES with CASE expression.
+  - query: INSERT INTO t VALUES (3, CASE WHEN 1 < 2 THEN 999 ELSE 0 END)
+  - query: SELECT n FROM t WHERE id = 3
+    rows:
+      - [999]
+  # INSERT VALUES with CAST.
+  - query: INSERT INTO t VALUES (4, CAST('42' AS BIGINT))
+  - query: SELECT n FROM t WHERE id = 4
+    rows:
+      - [42]
+  # INSERT VALUES with function call.
+  - query: INSERT INTO t VALUES (5, ABS(-50))
+  - query: SELECT n FROM t WHERE id = 5
+    rows:
+      - [50]
+  # INSERT VALUES with COALESCE.
+  - query: INSERT INTO t VALUES (6, COALESCE(null, null, 77))
+  - query: SELECT n FROM t WHERE id = 6
+    rows:
+      - [77]

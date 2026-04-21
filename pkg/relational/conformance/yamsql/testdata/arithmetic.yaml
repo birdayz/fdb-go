@@ -59,3 +59,28 @@ tests:
   - query: SELECT -10 % 3
     rows:
       - [-1]
+  # NULL arithmetic — any op with NULL operand returns NULL.
+  - query: SELECT a + NULL FROM t WHERE id = 1
+    rows:
+      - [~]
+  - query: SELECT NULL - b FROM t WHERE id = 1
+    rows:
+      - [~]
+  - query: SELECT NULL * NULL FROM t WHERE id = 1
+    rows:
+      - [~]
+  # NULL / n → NULL (not div-by-zero).
+  - query: SELECT NULL / 5 FROM t WHERE id = 1
+    rows:
+      - [~]
+  # n / NULL → NULL (NULL absorbs div-by-zero).
+  - query: SELECT 5 / NULL FROM t WHERE id = 1
+    rows:
+      - [~]
+  # Actual div-by-zero (non-NULL divisor) errors 22012.
+  - query: SELECT a / 0 FROM t WHERE id = 1
+    error_code: "22012"
+  # NULL / 0 is still NULL (NULL dominates div-by-zero per SQL spec).
+  - query: SELECT NULL / 0 FROM t WHERE id = 1
+    rows:
+      - [~]

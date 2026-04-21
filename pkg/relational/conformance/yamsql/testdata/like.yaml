@@ -43,3 +43,24 @@ tests:
     rows:
       - [3]
       - [5]
+  # Java-aligned: % at start (suffix match).
+  - query: SELECT id FROM t WHERE s LIKE '%lp' ORDER BY id
+    rows:
+      - [2]
+  # Java-aligned: % on both sides (substring contains).
+  - query: SELECT id FROM t WHERE s LIKE '%el%' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+  # Multiple _ wildcards.
+  - query: SELECT id FROM t WHERE s LIKE 'h___o'
+    rows:
+      - [1]
+  # Mix of % and _ — `_o%` matches strings starting with any char then o
+  # then anything: 'world' (w-o-rld).
+  - query: SELECT id FROM t WHERE s LIKE '_o%'
+    rows:
+      - [3]
+  # Pattern matching nothing returns empty even when string is empty.
+  - query: SELECT id FROM t WHERE s LIKE 'x_y'
+    rows: []

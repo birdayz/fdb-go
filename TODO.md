@@ -526,6 +526,68 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 - [x] **INSERT with duplicate PRIMARY KEY silently REPLACES.** ✅ nightshift-36: INSERT paths (execInsert + execInsertSelect) now call `store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)`; the resulting `*recordlayer.RecordAlreadyExistsError` flows through `wrapSaveRecordError` to SQLSTATE 23505. UPDATE continues to use plain `SaveRecord` since it legitimately overwrites. Pinned by `unique_violation.yaml` (now asserts that a failed-duplicate INSERT leaves the original row untouched).
 - [x] **Integer overflow silent wrap (`+` / `-` / `*`).** Java uses `Math.addExact / subtractExact / multiplyExact` which throw `ArithmeticException`; our `applyMathOp` integer fast-path used Go's native operators which silently wrap on overflow (e.g. `MAX_INT + 1 → MIN_INT`). ✅ nightshift-36: added `addInt64Checked`/`subInt64Checked`/`mulInt64Checked` helpers with Hacker's-Delight overflow tests (sign-bit XOR for +/-, divide-back for *). MinInt64/-1 for `/` also caught (abs value doesn't fit). SQLSTATE `22003` NUMERIC_VALUE_OUT_OF_RANGE (added in this shift) — SQL-standard class-22 code for this exception class. `ABS(MinInt64)` and `CAST(float_overflow AS BIGINT)` also switched to 22003 for consistency. Pinned by `overflow.yaml` + updated `cast.yaml` + updated `ABS(MinInt64)` sqldriver test.
 
+### Java-aligned bugs fixed in nightshift-39 (2026-04-21)
+
+The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment bugs:
+
+- [x] **Cross-type comparison** errors 22000 (9b55d469, ad558bcf): Java's `PromoteValue.isPromotionNeeded` → `SemanticException(INCOMPATIBLE_TYPE)` → `CANNOT_CONVERT_TYPE`. Both `=/!=/<>/<>` and IN-list paths.
+- [x] **NULL comparison projection** returns NULL not FALSE (e460afec): `SELECT b = true FROM lb` for b=NULL now surfaces NULL.
+- [x] **IN-list accepts arbitrary expressions** (ad558bcf): `WHERE b IN (1+0, 3+0)` now works (was "must be constant").
+- [x] **SELECT-list IS predicate evaluated** (3c1074e7): `SELECT b IS TRUE FROM lb` now returns the 2-valued result, not the raw column.
+- [x] **GREATEST/LEAST cross-type** errors 22000 (3c1074e7).
+- [x] **Boolean op projection** preserves UNKNOWN as NULL (d0f2a3a1): `SELECT b AND TRUE FROM lb` for b=NULL → NULL.
+- [x] **SELECT * + GROUP BY** errors 42803 (acff37b3): SQL §7.10 GR1 validation.
+- [x] **SELECT qualifier.* + GROUP BY** errors 42803 (1269dc6e).
+- [x] **INSERT column-count mismatch** errors 22000 (f1265c1a): was 22023.
+- [x] **CTE column rename** `WITH name(c1, c2) AS (...)` (bf0f05e8, b9f5ed38): grammar accepted but materializer ignored.
+- [x] **IS [NOT] DISTINCT FROM in JOIN WHERE** (9c24cbfc + 22313c04): both value-eval + tri-predicate paths were missing the null-safe branch.
+- [x] **GROUP BY with expression projection** (946eef1a): `SELECT a+b FROM t GROUP BY a, b` errored 'a+b not found'. Fixed.
+- [x] **GROUP BY without aggregate silently ignored** (946eef1a): `SELECT a FROM t GROUP BY a` returned every row. Fixed — now behaves like DISTINCT.
+- [x] **CAST to INTEGER range-check** (ad068502): `CAST(9223372036854775807 AS INTEGER)` now errors 22F3H (Java CastValue.LONG_TO_INT). Go was silently accepting LONG values beyond Integer.MAX_VALUE because castValue treated INTEGER and BIGINT identically.
+- [ ] **Ambiguous column reference in JOIN** (pinned by `ambiguous_column.yaml`): Java errors 42702 when an unqualified column name appears in multiple joined tables. Go silently picks right side via map-merge last-write-wins in `execSelectJoin`. `ErrCodeAmbiguousColumn` defined but no call sites. Needs: detect duplicate bare-keys during join-merge, surface 42702 on resolution.
+- [x] **UNION arity mismatch** (e882b918): now errors 42F64 (UNION_INCORRECT_COLUMN_COUNT, Java class-42) instead of generic 42601 SYNTAX_ERROR. ErrCodeUnionIncorrectColumnCount was defined but unused.
+- [x] **BETWEEN cross-type bounds** (c4d7c99d): `col BETWEEN 10 AND 'a'` now errors 22000 (CANNOT_CONVERT_TYPE) instead of returning silent empty result. valuesComparable check added to evalBetweenPredicateTri.
+- [x] **SQL §7.10 GR1 — bare col + aggregate without GROUP BY** (fca612f7): `SELECT id, COUNT(*) FROM t` now errors 42803 (grouping_error). Go previously silently reclassified bare columns as groupCol entries, producing nonsense output. Validation walks sq.aggCols for groupCol entries and column-referencing outExprs that lack aggregates, rejecting when sq.groupBy is empty.
+- [x] **CTE column-rename count mismatch** (98076b08): now errors 42F10 (INVALID_COLUMN_REFERENCE, Java class-42) instead of generic 22000.
+- [x] **Duplicate CTE name in WITH** (c82cbd03): `WITH c1 AS (...), c1 AS (...)` now errors 42712 (DUPLICATE_ALIAS). Go previously silently overwrote the first definition.
+- [x] **INSERT arity with explicit column list** (83951668, supersedes b742b250): explicit column list + arity mismatch (either direction) → 42601 SYNTAX_ERROR. Implicit list + too-few → 22000 CANNOT_CONVERT_TYPE. Matches Java's inserts-updates-deletes.yamsql.
+
+### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
+
+User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.
+
+**HIGH — must-have for non-trivial SQL, ranked by impact**
+
+- [ ] **Correlated subqueries** — `WHERE EXISTS (SELECT 1 FROM b WHERE b.aid = a.id)`. Inner query must access outer-row columns. Architectural: per-row execution + outer-row binding chain. Java: `LogicalCorrelatedJoinExpression` in cascades. ~3-4h. Highest user-facing impact.
+- [x] **Cross-type comparison errors 22000** (nightshift-39 commit `9b55d469`): Java's PromoteValue.isPromotionNeeded → SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE (22000). Go now matches — both = / !=/ </> and IN-list paths.
+- [x] **Verified** (nightshift-39): SQL queries do NOT use PK or secondary indexes. Every SELECT path calls `store.ScanRecordsByType(...)` — full table scan. UPDATE / DELETE same. Even `WHERE pk = literal` reads every row of the type and filters in Go. Java cascades picks indexes; we don't. Implementation requires WHERE-clause analysis, PK constraint detection, optional remaining-filter, and `store.LoadRecord(pk)` fast path. **Major perf gap. Needs full design pass before implementation — not a quick fix.**
+- [~] **Date scalar functions** (nightshift-39): CURRENT_TIMESTAMP / CURRENT_DATE / NOW / SYSDATE / CURDATE / CURTIME / UTC_TIMESTAMP / UTC_DATE / UTC_TIME + YEAR / MONTH / DAY / HOUR / MINUTE / SECOND / DAYOFWEEK / DAYOFYEAR all added. Within-statement timestamp consistency per SQL §6.32. Note: these are Go-only extensions — Java's fdb-relational-core doesn't have them; kept as they're harmless Postgres-style extensions useful to users.
+- [ ] **Date arithmetic** — `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `EXTRACT(YEAR FROM d)`. Java `DateAddValue` / `DateSubtractValue` / `ExtractValue` exist only as stubs; effectively absent from fdb-relational-core. Not on the Java alignment path.
+- [ ] **INTERVAL syntax** — `WHERE created > NOW() - INTERVAL '1 day'`. Grammar slot exists. Java `IntervalValue`. Big usability gap.
+
+**MEDIUM — Java has these, we should align**
+
+- [ ] **Recursive CTEs** — `WITH RECURSIVE t(n) AS (...)`. Grammar accepts the keyword; our CTE evaluator errors 22023 (regression-pinned). **Java HAS this**: `RecursiveUnionCursor` + `RecordQueryRecursiveLevelUnionPlan` in `fdb-record-layer-core`. Significant: needs iterative execution loop with seed + recursive branches, fixpoint detection. Worth doing.
+- [ ] **CASE WHEN inside aggregates** — `SUM(CASE WHEN x > 0 THEN x ELSE 0 END)`. Probably works since aggregate-over-expression landed swingshift-38, but unverified for CASE specifically. Verify against Java.
+
+**MEDIUM — Java does NOT have, do not add (per 2026-04-21 direction)**
+
+- ❌ **Window functions** — verified: zero `WindowedAggregateValue`/`WindowExpression` in Java's `fdb-record-layer-core`. Grammar accepts them, but evaluator errors 0A000 cleanly (regression-pinned in `window_function_probes.yaml`). Don't add.
+- ❌ **INTERSECT / EXCEPT** — verified: Java grammar only has UNION (same as ours, vendored verbatim). Don't add.
+- ❌ **ANY / ALL with subquery** — verify Java first if revisited.
+- ❌ **GROUPING SETS / ROLLUP / CUBE** — verify Java first.
+- ❌ **LATERAL joins** — verify Java first.
+- ❌ **PIVOT / UNPIVOT** — Oracle/SQL Server idiom; Java unlikely to have.
+- ❌ **Date arithmetic (`DATE_ADD`/`DATE_SUB`/`DATEDIFF`/`EXTRACT`)** — verified: zero implementations in Java fdb-relational-core. Don't add.
+- ❌ **INTERVAL syntax** — Java doesn't have. Don't add.
+
+**Infrastructure / quality**
+
+- [ ] **Java↔Go conformance harness Phase B** — wire fdb-relational maven deps into Bazel; extend conformance_server.java with `SqlSteps` to drive the same SQL through both engines and diff result sets. Single biggest test-coverage improvement; yamsql currently is the only oracle and we KNOW it's incomplete because every probe finds bugs. ~4-6h.
+- [ ] **Query planner** — no cost-based optimization. Joins are O(n·m) memory-resident map merge. Java cascades. Need `Planner` / `Plan` seam (already in TODO above) and a `NaivePlanner` wrapping today's code, then a real one.
+- [ ] **DDL types** — DATE / TIMESTAMP / ARRAY / JSON column types. Today's CREATE TABLE accepts only BIGINT / INTEGER / DOUBLE / FLOAT / STRING / BYTES / BOOLEAN. Java has all of these.
+- [ ] **EXPLAIN / ANALYZE** — no plan introspection. Useful for users.
+
 **Architecture / design**
 
 - [ ] **Split `connection.go`** (5498 lines, 120 functions) into ~12 files (`exec_select.go`, `exec_join.go`, `exec_dml.go`, `exec_ddl.go`, `exec_sys.go`, `select_parts.go`, `aggregate.go`, `eval_expr.go`, `eval_predicate.go`, `functions.go`, …). Mechanical, no behavioral risk.

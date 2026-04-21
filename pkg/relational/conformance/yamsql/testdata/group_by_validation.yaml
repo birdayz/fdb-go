@@ -1,0 +1,57 @@
+# group_by_validation.yaml
+#
+# Java's groupby-tests.yamsql validates that SELECT columns must
+# either be in GROUP BY or wrapped in an aggregate. SQL standard
+# §7.10 General Rule 1: 'each column reference shall identify a
+# column whose scope is a Q which is a grouping column'.
+# Probes Go's enforcement vs Java's 42803 errors.
+name: group_by_validation
+schema_template: |
+  CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+tests:
+  # Java alignment: SELECT * with GROUP BY errors 42803 (* expands to
+  # non-grouped cols). nightshift-39: now matches Java.
+  - query: SELECT * FROM t1 GROUP BY col1
+    error_code: "42803"
+  # Java: SELECT id with GROUP BY col1 errors 42803 (id not grouped).
+  # Go currently returns NULL for ungrouped columns (one row per group,
+  # value missing). Pin current behavior; full per-column 42803
+  # enforcement is a runtime concern (need schema to distinguish from
+  # 42703 'undefined column'). TODO: enforce at proto-path eval.
+  - query: SELECT id FROM t1 GROUP BY col1 ORDER BY id
+    rows:
+      - [~]
+      - [~]
+  # Java: SELECT undefined_col → 42703 (undefined). Go matches.
+  - query: SELECT bla FROM t1 GROUP BY col1
+    error_code: "42703"
+  # Valid: SELECT col1 FROM t1 GROUP BY col1.
+  - query: SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
+  # Valid: SELECT aggregate alongside grouped column.
+  - query: SELECT col1, COUNT(*) FROM t1 GROUP BY col1 ORDER BY col1
+    rows:
+      - [10, 2]
+      - [20, 1]
+  # Valid: GROUP BY two cols, SELECT both.
+  - query: SELECT col1, col2 FROM t1 GROUP BY col1, col2 ORDER BY col1, col2
+    rows:
+      - [10, 100]
+      - [10, 200]
+      - [20, 300]
+  # Java alignment: SELECT count(*) without group-by col in projection
+  # but with GROUP BY (Java's aggregate-index-tests-count.yamsql).
+  # 'SELECT COUNT(*) FROM t GROUP BY col2' → one count row per col2 group.
+  - query: SELECT COUNT(*) FROM t1 GROUP BY col1 ORDER BY COUNT(*)
+    rows:
+      - [1]
+      - [2]
+  # SELECT aggregate-only without grouping col reference, with GROUP BY.
+  - query: SELECT SUM(col2) FROM t1 GROUP BY col1 ORDER BY SUM(col2)
+    rows:
+      - [300]
+      - [300]
