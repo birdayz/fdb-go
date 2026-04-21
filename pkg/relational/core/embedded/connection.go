@@ -402,24 +402,31 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 		}
 	}
 
-	// SQL standard: UNION sides must have matching column counts; names
-	// are positional (left's names become the result schema). Java's
-	// union.yamsql pins SQLSTATE 42F64 (UNION_INCORRECT_COLUMN_COUNT) —
-	// a Java-specific class-42 code distinct from generic 42601 syntax_
-	// error. Align with Java so callers can tell arity mismatch apart
-	// from a parse error.
-	if len(leftCols) != len(rightCols) {
-		return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
-			"UNION column count mismatch: left has %d columns, right has %d",
-			len(leftCols), len(rightCols))
-	}
-
-	combined := append(leftRows, rightRows...) //nolint:gocritic
-
 	quantifier := ""
 	if q := setQ.GetQuantifier(); q != nil {
 		quantifier = strings.ToUpper(q.GetText())
 	}
+
+	// SQL standard: UNION sides must have matching column counts; names
+	// are positional (left's names become the result schema). Java's
+	// union.yamsql asymmetrically splits the SQLSTATE on the quantifier:
+	// UNION ALL arity mismatch errors 42F64 (UNION_INCORRECT_COLUMN_COUNT
+	// — class-22-style data error), while UNION (implicit DISTINCT) with
+	// arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED). The DISTINCT
+	// variant can't even be expressed when rows have different arities
+	// because set-membership has no meaning.
+	if len(leftCols) != len(rightCols) {
+		if quantifier != "ALL" {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"UNION DISTINCT column count mismatch: left has %d columns, right has %d",
+				len(leftCols), len(rightCols))
+		}
+		return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+			"UNION ALL column count mismatch: left has %d columns, right has %d",
+			len(leftCols), len(rightCols))
+	}
+
+	combined := append(leftRows, rightRows...) //nolint:gocritic
 	if quantifier != "ALL" {
 		// UNION (implicit DISTINCT) — deduplicate.
 		seen := make(map[string]struct{}, len(combined))

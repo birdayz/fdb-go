@@ -561,6 +561,9 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] `SELECT id GROUP BY col1` errors 42803 in the proto path (previously silent NULL). `groupByNames` check fires after the fd-exists 42703 check so Java's error order is preserved. Scope: proto path only; JOIN map path still silent — tracked as next-shift gap.
 - [x] `overflow_mixed.yaml` probe confirmed no divergence on mixed int+float arithmetic (stale `feedback_next_shift_arithmetic_overflow` memory removed; nightshift-36 already fixed the int64+int64 path).
 - [x] Boolean Kleene `b AND NULL` / `b OR NULL` added to boolean.yaml.
+- [x] Duplicate column in ORDER BY errors 42701 (was silently accepted, Postgres-style). Aligned with Java's orderby.yamsql.
+- [x] Fractional float → integer column assignment errors 22000 (was 22023). Aligned with Java's case-when.yamsql.
+- [x] UNION (implicit DISTINCT) with arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED), distinct from UNION ALL's 42F64. Aligned with Java's union.yamsql.
 
 **Next-shift follow-ups (surfaced by dayshift-40 code review)**:
 - [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.
