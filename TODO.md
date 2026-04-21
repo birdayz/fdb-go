@@ -313,6 +313,8 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] **IS [NOT] DISTINCT FROM in JOIN WHERE** (9c24cbfc + 22313c04): both value-eval + tri-predicate paths were missing the null-safe branch.
 - [x] **GROUP BY with expression projection** (946eef1a): `SELECT a+b FROM t GROUP BY a, b` errored 'a+b not found'. Fixed.
 - [x] **GROUP BY without aggregate silently ignored** (946eef1a): `SELECT a FROM t GROUP BY a` returned every row. Fixed — now behaves like DISTINCT.
+- [x] **CAST to INTEGER range-check** (ad068502): `CAST(9223372036854775807 AS INTEGER)` now errors 22F3H (Java CastValue.LONG_TO_INT). Go was silently accepting LONG values beyond Integer.MAX_VALUE because castValue treated INTEGER and BIGINT identically.
+- [ ] **Ambiguous column reference in JOIN** (pinned by `ambiguous_column.yaml`): Java errors 42702 when an unqualified column name appears in multiple joined tables. Go silently picks right side via map-merge last-write-wins in `execSelectJoin`. `ErrCodeAmbiguousColumn` defined but no call sites. Needs: detect duplicate bare-keys during join-merge, surface 42702 on resolution.
 
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
