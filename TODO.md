@@ -296,6 +296,23 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 - [x] **INSERT with duplicate PRIMARY KEY silently REPLACES.** ✅ nightshift-36: INSERT paths (execInsert + execInsertSelect) now call `store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)`; the resulting `*recordlayer.RecordAlreadyExistsError` flows through `wrapSaveRecordError` to SQLSTATE 23505. UPDATE continues to use plain `SaveRecord` since it legitimately overwrites. Pinned by `unique_violation.yaml` (now asserts that a failed-duplicate INSERT leaves the original row untouched).
 - [x] **Integer overflow silent wrap (`+` / `-` / `*`).** Java uses `Math.addExact / subtractExact / multiplyExact` which throw `ArithmeticException`; our `applyMathOp` integer fast-path used Go's native operators which silently wrap on overflow (e.g. `MAX_INT + 1 → MIN_INT`). ✅ nightshift-36: added `addInt64Checked`/`subInt64Checked`/`mulInt64Checked` helpers with Hacker's-Delight overflow tests (sign-bit XOR for +/-, divide-back for *). MinInt64/-1 for `/` also caught (abs value doesn't fit). SQLSTATE `22003` NUMERIC_VALUE_OUT_OF_RANGE (added in this shift) — SQL-standard class-22 code for this exception class. `ABS(MinInt64)` and `CAST(float_overflow AS BIGINT)` also switched to 22003 for consistency. Pinned by `overflow.yaml` + updated `cast.yaml` + updated `ABS(MinInt64)` sqldriver test.
 
+### Java-aligned bugs fixed in nightshift-39 (2026-04-21)
+
+The probe-against-Java-tests strategy surfaced and fixed 12 real Java-alignment bugs:
+
+- [x] **Cross-type comparison** errors 22000 (9b55d469, ad558bcf): Java's `PromoteValue.isPromotionNeeded` → `SemanticException(INCOMPATIBLE_TYPE)` → `CANNOT_CONVERT_TYPE`. Both `=/!=/<>/<>` and IN-list paths.
+- [x] **NULL comparison projection** returns NULL not FALSE (e460afec): `SELECT b = true FROM lb` for b=NULL now surfaces NULL.
+- [x] **IN-list accepts arbitrary expressions** (ad558bcf): `WHERE b IN (1+0, 3+0)` now works (was "must be constant").
+- [x] **SELECT-list IS predicate evaluated** (3c1074e7): `SELECT b IS TRUE FROM lb` now returns the 2-valued result, not the raw column.
+- [x] **GREATEST/LEAST cross-type** errors 22000 (3c1074e7).
+- [x] **Boolean op projection** preserves UNKNOWN as NULL (d0f2a3a1): `SELECT b AND TRUE FROM lb` for b=NULL → NULL.
+- [x] **SELECT * + GROUP BY** errors 42803 (acff37b3): SQL §7.10 GR1 validation.
+- [x] **SELECT qualifier.* + GROUP BY** errors 42803 (1269dc6e).
+- [x] **INSERT column-count mismatch** errors 22000 (f1265c1a): was 22023.
+- [x] **CTE column rename** `WITH name(c1, c2) AS (...)` (bf0f05e8, b9f5ed38): grammar accepted but materializer ignored.
+- [x] **IS [NOT] DISTINCT FROM in JOIN WHERE** (9c24cbfc + 22313c04): both value-eval + tri-predicate paths were missing the null-safe branch.
+- [x] **GROUP BY with expression projection** (946eef1a): `SELECT a+b FROM t GROUP BY a, b` errored 'a+b not found'. Fixed.
+
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
 User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.
