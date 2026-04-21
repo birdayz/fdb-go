@@ -971,19 +971,37 @@ func poisonAmbiguousBareCols(row map[string]driver.Value, ambiguous map[string]b
 //   - Otherwise: computes per-group aggregates (COUNT, COUNT(DISTINCT col), SUM,
 //     MIN, MAX, AVG), emits one row per group (or a single synthetic group when
 //     sq.groupBy is empty), optionally filtered by sq.havingExpr.
+//
+// countStarOutName returns the output column name for a COUNT(*)-only
+// SELECT: the SELECT-list `AS alias` when present, otherwise the
+// canonical reconstruction "COUNT(*)". Used at every emission site so
+// derived tables, UNION arity, and caller projections see the aliased
+// name instead of the canonical form.
+func countStarOutName(sq *selectQuery) string {
+	if sq.countStarAlias != "" {
+		return sq.countStarAlias
+	}
+	return "COUNT(*)"
+}
+
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
 		count := int64(len(filtered))
+		// HAVING refers to the aggregate function, not the SELECT-list
+		// alias (SQL §7.12: HAVING is evaluated against the group, not
+		// the output columns). Always use canonical "COUNT(*)" for the
+		// HAVING rowMap key. The output column name does honor the
+		// alias so the outer scope (derived tables, etc.) sees it.
 		if sq.havingExpr != nil {
 			keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
 			if hErr != nil {
 				return nil, nil, hErr
 			}
 			if !keep {
-				return []string{"COUNT(*)"}, nil, nil
+				return []string{countStarOutName(sq)}, nil, nil
 			}
 		}
-		return []string{"COUNT(*)"}, [][]driver.Value{{count}}, nil
+		return []string{countStarOutName(sq)}, [][]driver.Value{{count}}, nil
 	}
 
 	type mapGroupState struct {
@@ -2098,7 +2116,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		defer cursor.Close() //nolint:errcheck
 
 		if sq.countStar {
-			cols = []string{"COUNT(*)"}
+			cols = []string{countStarOutName(sq)}
 			var count int64
 			for {
 				result, nextErr := cursor.OnNext(ctx)
@@ -2119,6 +2137,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// HAVING on a bare COUNT(*) query: evaluate against the single
 			// aggregate row and drop it when the predicate fails. Without
 			// this the COUNT(*) fast path emitted one row unconditionally.
+			// HAVING references the aggregate function (canonical name),
+			// not the SELECT-list alias — see aggregateMapRows comment.
 			if sq.havingExpr != nil {
 				keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
 				if hErr != nil {
@@ -3033,8 +3053,9 @@ type selectQuery struct {
 	// empty when projCols == nil (SELECT * or pure qualifier-star use the
 	// legacy projQualifier / nil-projCols paths).
 	projStarQualifiers []string
-	countStar          bool // true when SELECT list is exactly COUNT(*)
-	distinct           bool // true when SELECT DISTINCT
+	countStar          bool   // true when SELECT list is exactly COUNT(*)
+	countStarAlias     string // non-empty when countStar is true AND the SELECT element has an `AS alias`. Emitted as the column name so outer scopes (derived-table materializer, UNION arity, etc.) see the aliased name instead of the canonical "COUNT(*)".
+	distinct           bool   // true when SELECT DISTINCT
 	whereExpr          antlrgen.IWhereExprContext
 	// orderBy holds column-name + ascending pairs (nil = no ORDER BY).
 	orderBy []orderByClause
@@ -3390,6 +3411,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	var projExprs []antlrgen.IExpressionContext // parallel to projCols; nil entry = plain column
 	var projStarQualifiers []string             // parallel to projCols; non-empty = <qualifier>.* slot
 	var countStar bool
+	var countStarAlias string
 	var aggCols []aggSelectCol
 	var projQualifier string // non-empty when SELECT list is *only* <qualifier>.*
 	// Snapshots of projAliases / projExprs taken right after the SELECT
@@ -3429,6 +3451,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			case *antlrgen.SelectExpressionElementContext:
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
+					if e.Uid() != nil {
+						countStarAlias = stripIdentifierQuotes(e.Uid().GetText())
+					}
 				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
 					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
 				} else {
@@ -3720,6 +3745,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			projStarQualifiers: projStarQualifiers,
 			projQualifier:      projQualifier,
 			countStar:          countStar,
+			countStarAlias:     countStarAlias,
 			aggCols:            aggCols,
 			distinct:           simpleTable.DISTINCT() != nil,
 			whereExpr:          fromClause.WhereExpr(),
@@ -3787,6 +3813,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		projStarQualifiers: projStarQualifiers,
 		projQualifier:      projQualifier,
 		countStar:          countStar,
+		countStarAlias:     countStarAlias,
 		aggCols:            aggCols,
 		distinct:           simpleTable.DISTINCT() != nil,
 		whereExpr:          fromClause.WhereExpr(),
@@ -4122,10 +4149,16 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	}
 
 	// countStar fast path assumes a single synthetic row. With GROUP BY
-	// present we need a per-group COUNT(*), so demote to aggCols.
+	// present we need a per-group COUNT(*), so demote to aggCols. The
+	// alias (if any) propagates so `SELECT COUNT(*) AS n FROM t GROUP BY g`
+	// emits the column as `n`.
 	if sq.countStar && len(sq.groupBy) > 0 {
 		sq.countStar = false
-		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: "COUNT(*)", aggFunc: "COUNT"})
+		outName := "COUNT(*)"
+		if sq.countStarAlias != "" {
+			outName = sq.countStarAlias
+		}
+		sq.aggCols = append(sq.aggCols, aggSelectCol{outName: outName, aggFunc: "COUNT"})
 	}
 
 	// Harvest aggregates referenced in HAVING and ORDER BY that aren't
