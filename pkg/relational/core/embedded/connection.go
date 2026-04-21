@@ -368,11 +368,13 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	}
 
 	// SQL standard: UNION sides must have matching column counts; names
-	// are positional (left's names become the result schema). Reject
-	// mismatched arity with SQLSTATE 42601 (syntax_error) — consistent
-	// with the grammar-level rejection for incoherent SELECT lists.
+	// are positional (left's names become the result schema). Java's
+	// union.yamsql pins SQLSTATE 42F64 (UNION_INCORRECT_COLUMN_COUNT) —
+	// a Java-specific class-42 code distinct from generic 42601 syntax_
+	// error. Align with Java so callers can tell arity mismatch apart
+	// from a parse error.
 	if len(leftCols) != len(rightCols) {
-		return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+		return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
 			"UNION column count mismatch: left has %d columns, right has %d",
 			len(leftCols), len(rightCols))
 	}
