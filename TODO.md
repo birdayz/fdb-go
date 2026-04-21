@@ -552,6 +552,21 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] **Duplicate CTE name in WITH** (c82cbd03): `WITH c1 AS (...), c1 AS (...)` now errors 42712 (DUPLICATE_ALIAS). Go previously silently overwrote the first definition.
 - [x] **INSERT arity with explicit column list** (83951668, supersedes b742b250): explicit column list + arity mismatch (either direction) → 42601 SYNTAX_ERROR. Implicit list + too-few → 22000 CANNOT_CONVERT_TYPE. Matches Java's inserts-updates-deletes.yamsql.
 
+### Remaining SQL gaps — prioritized list (dayshift-40, 2026-04-21)
+
+**dayshift-40 landings**:
+- [x] Ambiguous unqualified column in JOIN errors 42702 (SELECT/WHERE/ON/ORDER BY). Sentinel `ambiguousColumnMarker` poisoned at JOIN merge time; detected at every lookup site. `ambiguous_column.yaml` flipped from divergence pin to assertion across 9 assertions.
+- [x] Wrong JOIN qualifier errors 42F01 (JOIN SELECT projection). Previously silently fell back to the bare-column lookup. `wrong_qualifier.yaml` pins 6 scenarios. Scope: projection only; WHERE/ON expr paths still silently resolve bare column — tracked as next-shift gap.
+- [x] `SELECT COUNT(*) AS alias FROM …` propagates through derived tables. countStarAlias captured at parse time; `countStarOutName()` helper emits the alias at all three countStar fast-path sites + the countStar→aggCols GROUP BY demotion preserves it. `nested_derived_table.yaml` covers fast-path / grouped / HAVING / SUM-alias regression guard.
+- [x] `SELECT id GROUP BY col1` errors 42803 in the proto path (previously silent NULL). `groupByNames` check fires after the fd-exists 42703 check so Java's error order is preserved. Scope: proto path only; JOIN map path still silent — tracked as next-shift gap.
+- [x] `overflow_mixed.yaml` probe confirmed no divergence on mixed int+float arithmetic (stale `feedback_next_shift_arithmetic_overflow` memory removed; nightshift-36 already fixed the int64+int64 path).
+- [x] Boolean Kleene `b AND NULL` / `b OR NULL` added to boolean.yaml.
+
+**Next-shift follow-ups (surfaced by dayshift-40 code review)**:
+- [ ] **SELECT \* on JOIN with shared CTE column**: `starColAliases` is only populated from `md.GetRecordType()`. CTEs return nil and get no entry → the ambiguous-sentinel fallback at line ~1632 misses. Niche (CTE + table share column name + SELECT \*). Fix: when `GetRecordType(s.tableName)` is nil, read the CTE column list and use the left alias.
+- [ ] **WHERE/ON with wrong qualifier**: `evalExprAtomOnMap`'s FullColumnName lookup falls back to bare column on a qualifier miss. Scope-scoped fix would pass `validQualifiers` through the evaluator; cleanest option is a context field on EmbeddedConnection.
+- [ ] **Map-path 42803 for ungrouped projection**: `aggregateMapRows` silently NULL-fills. Requires either a schema-aware 42703 vs 42803 probe or deferring to the row keys.
+
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
 User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.

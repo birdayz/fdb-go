@@ -66,6 +66,19 @@ tests:
       SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL HAVING COUNT(*) > 0) AS sub
     rows:
       - [3]
+  # COUNT(*) AS alias + GROUP BY + HAVING: reviewer-flagged edge case.
+  # When countStar demotes to aggCols with outName=alias, the group
+  # row map is keyed by the alias and HAVING lookups under canonical
+  # name "COUNT(*)" must still resolve. Each of n=10/20/40 has 1 row
+  # → HAVING COUNT(*) > 0 keeps them all. Pre-fix this would either
+  # panic or silently no-op depending on the HAVING path.
+  - query: |-
+      SELECT cnt FROM (SELECT COUNT(*) AS cnt FROM t1 WHERE n IS NOT NULL GROUP BY n HAVING COUNT(*) > 0) AS sub
+      ORDER BY cnt
+    rows:
+      - [1]
+      - [1]
+      - [1]
   # SUM AS alias (exercising the aggCols path which was already correct;
   # regression guard so the countStarAlias work doesn't accidentally
   # shadow it). 10 + 20 + 40 = 70 (null n is excluded from SUM).
