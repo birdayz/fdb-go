@@ -718,30 +718,47 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 }
 
 // recursiveCTEIterationLimit caps the number of semi-naive iterations
-// for a WITH RECURSIVE body. Protects against unbounded recursion on
-// cyclic graphs with UNION ALL (UNION DISTINCT converges naturally by
-// filtering rows already seen). A well-formed ancestor/descendant query
-// over an acyclic hierarchy terminates far below this cap.
+// (level-order) or the DFS emit count (pre/post-order) for a WITH
+// RECURSIVE body. Protects against unbounded recursion on cyclic
+// graphs with UNION ALL (UNION DISTINCT converges naturally by
+// filtering rows already seen). A well-formed ancestor/descendant
+// query over an acyclic hierarchy terminates far below this cap.
 const recursiveCTEIterationLimit = 10000
 
-// materializeRecursiveCTE evaluates a WITH RECURSIVE CTE body using
-// semi-naive (level-order) evaluation. The body must be a UNION [ALL]
-// where the left (seed) does not self-reference and the right
-// (recursive) references the CTE name. Each iteration binds
-// c.ctes[cteName] to the previous iteration's new rows (the "working
-// set") and re-evaluates the recursive branch; iteration terminates
-// when the branch produces no new rows.
+// recursiveTraversal encodes how Java's `TRAVERSAL ORDER …` clause
+// selects the recursive-CTE emission order. Level-order = semi-naive
+// (BFS per depth); pre-order / post-order = DFS with emission before /
+// after the recursive descent into a row's children.
+type recursiveTraversal int
+
+const (
+	traversalLevelOrder recursiveTraversal = iota
+	traversalPreOrder
+	traversalPostOrder
+)
+
+// materializeRecursiveCTE evaluates a WITH RECURSIVE CTE body. The
+// body must be a UNION [ALL] where the left (seed) does not
+// self-reference and the right (recursive) references the CTE name.
+// The CTE name is bound in c.ctes before the recursive branch is
+// evaluated; different strategies choose a different binding.
 //
-// For UNION ALL, every row from the recursive branch is considered new
-// — the working set naturally shrinks over an acyclic graph until the
-// branch produces nothing. For UNION DISTINCT, rows already present in
-// the cumulative result are filtered out, which also guarantees
-// termination on cyclic graphs.
+// Level-order (BFS / semi-naive): the binding is the last iteration's
+// new rows (the "working set"); iteration terminates when the branch
+// produces no new rows. Pre/post-order (DFS): the binding is a single
+// row at a time; recursion descends row-by-row, with emission before
+// (pre) or after (post) the descent.
+//
+// For UNION ALL, every row the recursive branch produces is emitted;
+// cycles are bounded by the iteration/emit cap. For UNION DISTINCT,
+// rows already present in the cumulative result are filtered out,
+// which also guarantees termination on cyclic graphs.
 func (c *EmbeddedConnection) materializeRecursiveCTE(
 	ctx context.Context,
 	body antlrgen.IQueryExpressionBodyContext,
 	cteName string,
 	renameList []string,
+	traversal recursiveTraversal,
 ) ([]string, [][]driver.Value, error) {
 	setQ, ok := body.(*antlrgen.SetQueryContext)
 	if !ok {
@@ -756,6 +773,7 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 	if q := setQ.GetQuantifier(); q != nil {
 		quantifier = strings.ToUpper(q.GetText())
 	}
+	distinct := quantifier != "ALL"
 
 	// Evaluate the seed with cteName unbound. A stray self-reference in
 	// the seed surfaces as a normal table-not-found error — standard SQL
@@ -778,14 +796,33 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 		seedCols = renameList
 	}
 
-	// For UNION DISTINCT, every row emitted (seed included) must be
-	// tracked so later iterations can filter duplicates — and the seed
-	// itself must be deduplicated. For UNION ALL, the seed passes
-	// through verbatim and no tracking is needed.
+	switch traversal {
+	case traversalPreOrder, traversalPostOrder:
+		rows, dErr := c.recursiveCTEDFS(ctx, setQ, cteName, seedCols, seedRows, distinct, traversal)
+		return seedCols, rows, dErr
+	default:
+		rows, dErr := c.recursiveCTELevelOrder(ctx, setQ, cteName, seedCols, seedRows, distinct)
+		return seedCols, rows, dErr
+	}
+}
+
+// recursiveCTELevelOrder implements semi-naive BFS: each iteration
+// binds the CTE to the previous round's new rows and re-evaluates the
+// recursive branch. Termination: branch produces no new rows (UNION
+// ALL on acyclic data + UNION DISTINCT in general) or iteration cap
+// hit (cyclic UNION ALL).
+func (c *EmbeddedConnection) recursiveCTELevelOrder(
+	ctx context.Context,
+	setQ *antlrgen.SetQueryContext,
+	cteName string,
+	seedCols []string,
+	seedRows [][]driver.Value,
+	distinct bool,
+) ([][]driver.Value, error) {
 	var cumulative [][]driver.Value
 	var working [][]driver.Value
 	var seen map[string]struct{}
-	if quantifier == "ALL" {
+	if !distinct {
 		cumulative = append([][]driver.Value(nil), seedRows...)
 		working = seedRows
 	} else {
@@ -812,22 +849,22 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 
 	for iter := 0; len(working) > 0; iter++ {
 		if iter >= recursiveCTEIterationLimit {
-			return nil, nil, api.NewErrorf(api.ErrCodeExecutionLimitReached,
+			return nil, api.NewErrorf(api.ErrCodeExecutionLimitReached,
 				"recursive CTE %q exceeded iteration limit of %d — possible cycle or an unbounded result set; use UNION (DISTINCT) or a depth predicate",
 				cteName, recursiveCTEIterationLimit)
 		}
 		c.ctes[cteName] = &cteData{cols: seedCols, rows: working}
 		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
 		if iErr != nil {
-			return nil, nil, iErr
+			return nil, iErr
 		}
 		if len(iterCols) != len(seedCols) {
-			return nil, nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+			return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
 				"recursive CTE %q: seed has %d columns, recursive branch produced %d",
 				cteName, len(seedCols), len(iterCols))
 		}
 		var newRows [][]driver.Value
-		if quantifier == "ALL" {
+		if !distinct {
 			newRows = iterRows
 		} else {
 			newRows = make([][]driver.Value, 0, len(iterRows))
@@ -847,7 +884,85 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 		working = newRows
 	}
 
-	return seedCols, cumulative, nil
+	return cumulative, nil
+}
+
+// recursiveCTEDFS implements DFS pre/post-order: for each seed row,
+// emit the row (pre) or descend first (post), then recurse with the
+// CTE bound to just that single row so the recursive branch's
+// self-reference yields this row's "children". Emission order matches
+// Java 4.7.1.0+'s RecursiveUnionCursor DFS modes.
+//
+// For UNION DISTINCT, a shared `seen` set across the whole traversal
+// filters duplicates — both at the seed level and at each descent.
+// For UNION ALL there is no dedup; a hard emit cap bounds cycles.
+func (c *EmbeddedConnection) recursiveCTEDFS(
+	ctx context.Context,
+	setQ *antlrgen.SetQueryContext,
+	cteName string,
+	seedCols []string,
+	seedRows [][]driver.Value,
+	distinct bool,
+	traversal recursiveTraversal,
+) ([][]driver.Value, error) {
+	var seen map[string]struct{}
+	if distinct {
+		seen = make(map[string]struct{}, len(seedRows))
+	}
+	cumulative := make([][]driver.Value, 0, len(seedRows))
+	preorder := traversal == traversalPreOrder
+
+	var descend func(row []driver.Value) error
+	descend = func(row []driver.Value) error {
+		if len(cumulative) >= recursiveCTEIterationLimit {
+			return api.NewErrorf(api.ErrCodeExecutionLimitReached,
+				"recursive CTE %q exceeded emit limit of %d — possible cycle or an unbounded result set; use UNION (DISTINCT) or a depth predicate",
+				cteName, recursiveCTEIterationLimit)
+		}
+		if preorder {
+			cumulative = append(cumulative, row)
+		}
+		c.ctes[cteName] = &cteData{cols: seedCols, rows: [][]driver.Value{row}}
+		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
+		if iErr != nil {
+			return iErr
+		}
+		if len(iterCols) != len(seedCols) {
+			return api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+				"recursive CTE %q: seed has %d columns, recursive branch produced %d",
+				cteName, len(seedCols), len(iterCols))
+		}
+		for _, child := range iterRows {
+			if distinct {
+				k := rowKey(child)
+				if _, dup := seen[k]; dup {
+					continue
+				}
+				seen[k] = struct{}{}
+			}
+			if err := descend(child); err != nil {
+				return err
+			}
+		}
+		if !preorder {
+			cumulative = append(cumulative, row)
+		}
+		return nil
+	}
+
+	for _, seed := range seedRows {
+		if distinct {
+			k := rowKey(seed)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+		if err := descend(seed); err != nil {
+			return nil, err
+		}
+	}
+	return cumulative, nil
 }
 
 // containsTableRef reports whether the parse subtree references a
@@ -968,16 +1083,18 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	if ctesCtx := query.Ctes(); ctesCtx != nil {
 		defer c.pushCTEScope()()
 		// Java's recursive-cte.yamsql accepts a trailing `TRAVERSAL ORDER
-		// {pre_order | level_order | post_order}` clause. Semi-naive /
-		// level-order is the default (and matches Java pre-4.7.1.0 behavior).
-		// DFS pre/post ordering would require per-row recursion and is not
-		// in MVP scope — reject explicitly instead of silently giving the
-		// wrong traversal order.
+		// {pre_order | level_order | post_order}` clause. The default
+		// (unspecified) is level_order — matches Java pre-4.7.1.0
+		// behaviour. PRE_ORDER / POST_ORDER use DFS (Java 4.7.1.0+).
+		traversalOrder := traversalLevelOrder
 		if toc := ctesCtx.TraversalOrderClause(); toc != nil {
-			if toc.PRE_ORDER() != nil || toc.POST_ORDER() != nil {
-				return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-					"TRAVERSAL ORDER %s not yet supported (only level_order / default)",
-					strings.ToUpper(toc.GetOrder().GetText()))
+			switch {
+			case toc.PRE_ORDER() != nil:
+				traversalOrder = traversalPreOrder
+			case toc.POST_ORDER() != nil:
+				traversalOrder = traversalPostOrder
+			case toc.LEVEL_ORDER() != nil:
+				traversalOrder = traversalLevelOrder
 			}
 		}
 		recursiveKeyword := ctesCtx.RECURSIVE() != nil
@@ -1013,7 +1130,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			// marked RECURSIVE that does not actually self-reference is
 			// evaluated non-recursively (matches Postgres / SQL spec).
 			if recursiveKeyword && containsTableRef(body, cteName) {
-				cteCols, cteRows, cteErr = c.materializeRecursiveCTE(ctx, body, cteName, renameList)
+				cteCols, cteRows, cteErr = c.materializeRecursiveCTE(ctx, body, cteName, renameList, traversalOrder)
 			} else {
 				cteCols, cteRows, cteErr = c.execQueryBodyRows(ctx, body)
 				// Apply non-recursive rename here; the recursive path

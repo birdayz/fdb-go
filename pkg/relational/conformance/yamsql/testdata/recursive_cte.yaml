@@ -134,9 +134,10 @@ tests:
       SELECT * FROM ancestors
     error_code: "42F64"
 
-  # TRAVERSAL ORDER pre_order → 0AF00 (feature not supported in MVP).
-  # Grammar accepts the clause; evaluator rejects the unsupported
-  # strategies explicitly instead of silently running level-order.
+  # TRAVERSAL ORDER pre_order — DFS, emit each row before descending
+  # into its children. For a single chain the order is identical to
+  # level_order; the descendant-tree case below shows where they
+  # differ.
   - query: |-
       WITH RECURSIVE ancestors AS (
         SELECT id, parent FROM t WHERE id = 250
@@ -145,9 +146,14 @@ tests:
       )
       TRAVERSAL ORDER pre_order
       SELECT id FROM ancestors
-    error_code: "0AF00"
+    rows:
+      - [250]
+      - [50]
+      - [10]
+      - [1]
 
-  # TRAVERSAL ORDER post_order → same rejection.
+  # TRAVERSAL ORDER post_order — DFS, emit each row AFTER descending
+  # into children. Single-chain ancestor reversal.
   - query: |-
       WITH RECURSIVE ancestors AS (
         SELECT id, parent FROM t WHERE id = 250
@@ -156,7 +162,83 @@ tests:
       )
       TRAVERSAL ORDER post_order
       SELECT id FROM ancestors
-    error_code: "0AF00"
+    rows:
+      - [1]
+      - [10]
+      - [50]
+      - [250]
+
+  # DFS pre-order descending from root — exposes real DFS vs BFS
+  # ordering. Tree: 1 → {10, 20}; 10 → {40, 50, 70}; 20 → {100, 210};
+  # 50 → {250}. Pre-order visits 10's subtree fully before 20's.
+  # Matches Java's recursive-cte.yamsql line 81 (version ≥ 4.7.1.0).
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT id FROM descendants
+    rows:
+      - [1]
+      - [10]
+      - [40]
+      - [50]
+      - [250]
+      - [70]
+      - [20]
+      - [100]
+      - [210]
+
+  # DFS post-order over the same tree — each subtree is fully emitted
+  # (leaves first, then inner nodes) before the parent. Matches
+  # Java's recursive-cte.yamsql line 108.
+  - query: |-
+      WITH RECURSIVE descendants AS (
+        SELECT id, parent FROM t WHERE parent = -1
+        UNION ALL
+        SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
+      )
+      TRAVERSAL ORDER post_order
+      SELECT id FROM descendants
+    rows:
+      - [40]
+      - [250]
+      - [50]
+      - [70]
+      - [10]
+      - [100]
+      - [210]
+      - [20]
+      - [1]
+
+  # DFS on cyclic data with UNION DISTINCT — convergence via the
+  # shared `seen` set. Without dedup, DFS would recurse forever.
+  - query: |-
+      WITH RECURSIVE reach(n) AS (
+        SELECT src FROM edge WHERE src = 1
+        UNION
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT n FROM reach ORDER BY n
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # DFS on cyclic data with UNION ALL — bounded by the emit cap. Same
+  # 54F01 failure mode as level-order.
+  - query: |-
+      WITH RECURSIVE reach(n) AS (
+        SELECT src FROM edge WHERE src = 1
+        UNION ALL
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+      )
+      TRAVERSAL ORDER pre_order
+      SELECT n FROM reach
+    error_code: "54F01"
 
   # TRAVERSAL ORDER level_order → accepted (matches our default).
   - query: |-
