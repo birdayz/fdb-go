@@ -98,11 +98,13 @@ tests:
     rows:
       - [3]
       - [4]
-  # Mismatched rename count errors 22000 (Java alignment).
+  # Mismatched rename count errors 42F10 (INVALID_COLUMN_REFERENCE,
+  # Java class-42; cte.yamsql pins this). nightshift-39: aligned from
+  # generic 22000 to Java's 42F10.
   - query: |-
       WITH c1(only_one) AS (SELECT id, v FROM t)
       SELECT only_one FROM c1
-    error_code: "22000"
+    error_code: "42F10"
   # Single-column rename works.
   - query: |-
       WITH c1(my_id) AS (SELECT id FROM t)

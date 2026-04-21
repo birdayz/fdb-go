@@ -555,12 +555,13 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			// Java alignment: WITH name(c1, c2, ...) AS (SELECT ...) — the
 			// optional column-list renames the CTE's output columns. The
 			// inner query's column names are replaced positionally. Errors
-			// 22000 if the rename count doesn't match the inner column
-			// count.
+			// 42F10 (INVALID_COLUMN_REFERENCE, Java class-42) when the rename
+			// count doesn't match the inner column count — matches Java's
+			// cte.yamsql pin.
 			if aliases := nq.GetColumnAliases(); aliases != nil {
 				renameList := aliases.AllFullId()
 				if len(renameList) != len(cteCols) {
-					return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
 						"CTE %q column-rename has %d names but inner query has %d columns",
 						cteName, len(renameList), len(cteCols))
 				}
