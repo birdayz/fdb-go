@@ -85,15 +85,18 @@ tests:
       - [99]
   # UNION with incompatible types across sides. Java's union.yamsql
   # errors 42F65 (UNION_INCOMPATIBLE_COLUMNS) when the corresponding
-  # columns have non-unifiable types (e.g. BIGINT vs STRING). Go
-  # currently silently combines — pin the divergence, TODO: enforce
-  # UNION branch type unification at parse time.
-  # (ErrCodeUnionIncompatibleColumns exists in api/errcode.go but
-  # has no call sites yet.)
+  # columns have non-unifiable types (e.g. BIGINT vs STRING).
+  # dayshift-40 adds a runtime type probe — sample the first non-NULL
+  # value from each side per column and require `valuesComparable`.
+  # Narrower than Java's plan-time check (all-NULL columns skip) but
+  # catches the common case without a semantic analyzer pass.
   - query: SELECT v FROM a UNION ALL SELECT id_str FROM c
+    error_code: "42F65"
+  # Same types pair cleanly — sanity regression guard.
+  - query: SELECT v FROM a UNION ALL SELECT w FROM b
     unordered: true
     rows:
       - [10]
       - [20]
-      - ['x']
-      - ['y']
+      - [100]
+      - [200]

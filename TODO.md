@@ -564,7 +564,7 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] Duplicate column in ORDER BY errors 42701 (was silently accepted, Postgres-style). Aligned with Java's orderby.yamsql.
 - [x] Fractional float → integer column assignment errors 22000 (was 22023). Aligned with Java's case-when.yamsql.
 - [x] UNION (implicit DISTINCT) with arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED), distinct from UNION ALL's 42F64. Aligned with Java's union.yamsql.
-- [~] UNION with incompatible column types pinned as divergence (42F65) — Go still silently combines; `ErrCodeUnionIncompatibleColumns` has no call sites. Regression guard in place for a future branch type-unification pass.
+- [x] UNION with incompatible column types errors 42F65. Runtime probe samples the first non-NULL value from each side per column and requires `valuesComparable` (same shape as the mixed-type-equality fix). All-NULL columns skip — can't infer a type without a schema-typed plan. Narrower than Java's plan-time check but catches the common case.
 
 **Next-shift follow-ups (surfaced by dayshift-40 code review)**:
 - [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.

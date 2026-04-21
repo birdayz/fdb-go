@@ -426,6 +426,37 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 			len(leftCols), len(rightCols))
 	}
 
+	// Java's union.yamsql errors 42F65 UNION_INCOMPATIBLE_COLUMNS when a
+	// positional column pair has non-unifiable types. Best-effort runtime
+	// check: sample the first non-NULL value from each side per column
+	// and require them to be comparable (numeric pairs are fine, same
+	// concrete type is fine; anything else errors). When one side has
+	// all NULLs for a column we skip that column — can't infer a type
+	// without schema-typed columns.
+	for ci := 0; ci < len(leftCols); ci++ {
+		var lSample, rSample driver.Value
+		for _, row := range leftRows {
+			if ci < len(row) && row[ci] != nil {
+				lSample = row[ci]
+				break
+			}
+		}
+		for _, row := range rightRows {
+			if ci < len(row) && row[ci] != nil {
+				rSample = row[ci]
+				break
+			}
+		}
+		if lSample == nil || rSample == nil {
+			continue
+		}
+		if !valuesComparable(lSample, rSample) {
+			return nil, api.NewErrorf(api.ErrCodeUnionIncompatibleColumns,
+				"UNION column %d has incompatible types: left is %T, right is %T",
+				ci+1, lSample, rSample)
+		}
+	}
+
 	combined := append(leftRows, rightRows...) //nolint:gocritic
 	if quantifier != "ALL" {
 		// UNION (implicit DISTINCT) — deduplicate.
