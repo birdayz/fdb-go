@@ -7398,6 +7398,18 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 		return triFalse, err
 	}
 
+	// Cross-type bounds are an error, same as plain comparison (Java's
+	// between.yamsql pins XX000 for this; we use 22000 CANNOT_CONVERT_TYPE
+	// matching the rest of our cross-type rejection surface).
+	if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
+		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, lo)
+	}
+	if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
+		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, hi)
+	}
+
 	// compareTri returns TRUE/FALSE/NULL based on whether the comparison
 	// can be determined; any NULL operand yields UNKNOWN.
 	compareTri := func(a, b driver.Value, want func(int) bool) triBool {
