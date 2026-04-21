@@ -565,7 +565,7 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 **Next-shift follow-ups (surfaced by dayshift-40 code review)**:
 - [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.
 - [x] **WHERE/ON with wrong qualifier**: addressed at the end of dayshift-40 — added `validQualifiers` as a query-scoped field on `EmbeddedConnection`, installed by `execSelectJoin` via `pushValidQualifiersScope`, consulted by `evalExprAtomOnMap` to reject qualified references whose qualifier isn't in scope (42F01). Pinned in `wrong_qualifier.yaml` for WHERE and INNER JOIN ON clauses.
-- [ ] **Map-path 42803 for ungrouped projection**: `aggregateMapRows` silently NULL-fills. Requires either a schema-aware 42703 vs 42803 probe or deferring to the row keys.
+- [x] **Map-path 42803 for ungrouped projection**: addressed at end of dayshift-40 — `aggregateMapRows` now runs a pre-check that probes the first filtered row's keys to distinguish defined-but-ungrouped (→ 42803) from undefined (left for a future schema-threaded check). Skips on empty filtered (can't distinguish; preserves silent-NULL). JOIN+GROUP BY cases pinned in `group_by_validation.yaml`.
 
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 

@@ -1027,6 +1027,42 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		return []string{countStarOutName(sq)}, [][]driver.Value{{count}}, nil
 	}
 
+	// Map-path SQL §7.10 GR1 pre-check: every `groupCol` in sq.aggCols
+	// that's a bare column reference (not an expression) must either
+	// be in sq.groupBy or be a defined-but-ungrouped projection (→
+	// 42803). We can tell "defined" vs "undefined" here by probing
+	// the first filtered row's keys — the map-path invariant is that
+	// scanTableToMaps / cteRowsToMaps populate bare + qualified forms
+	// for every defined column. Empty filtered result is ambiguous
+	// (we can't tell defined vs undefined) so we skip the check and
+	// preserve the silent-NULL-fill behavior there; correctness under
+	// Java's plan-time ordering isn't achievable without threading
+	// the source schema through this function. Ambiguous pre-probe
+	// (sentinel in row[gcol]) also surfaces 42702 via the emission
+	// loop below — consistent.
+	if len(sq.groupBy) > 0 && len(filtered) > 0 {
+		groupByNames := make(map[string]bool, len(sq.groupBy))
+		for i, gn := range sq.groupBy {
+			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+				continue
+			}
+			groupByNames[gn] = true
+		}
+		for _, ac := range sq.aggCols {
+			if ac.groupCol == "" || ac.outExpr != nil {
+				continue
+			}
+			if groupByNames[ac.groupCol] {
+				continue
+			}
+			if _, defined := filtered[0][ac.groupCol]; defined {
+				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
+					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
+					ac.groupCol)
+			}
+		}
+	}
+
 	type mapGroupState struct {
 		groupVals    []driver.Value
 		counts       []int64

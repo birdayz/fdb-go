@@ -8,8 +8,10 @@
 name: group_by_validation
 schema_template: |
   CREATE TABLE t1 (id BIGINT NOT NULL, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE TABLE t2 (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO t1 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+  - INSERT INTO t2 VALUES (1, 10), (2, 20)
 tests:
   # Java alignment: SELECT * with GROUP BY errors 42803 (* expands to
   # non-grouped cols). nightshift-39: now matches Java.
@@ -57,3 +59,12 @@ tests:
     rows:
       - [300]
       - [300]
+  # Map-path 42803 (dayshift-40): JOIN queries that reach
+  # aggregateMapRows also surface 42803 for ungrouped-but-defined
+  # columns, using the first-filtered-row probe as a schema proxy.
+  # When filtered is non-empty the pre-check runs; when empty the
+  # check is skipped (the silent-NULL behavior is preserved because
+  # we can't tell "defined" from "undefined" without a schema).
+  - query: |-
+      SELECT t1.col2 FROM t1, t2 WHERE t1.col1 = t2.x GROUP BY t1.col1 ORDER BY t1.col2
+    error_code: "42803"
