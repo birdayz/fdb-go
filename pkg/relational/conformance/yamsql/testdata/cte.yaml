@@ -168,3 +168,9 @@ tests:
   - query: |-
       WITH c1(w, z) AS (SELECT id, v FROM t) SELECT id FROM c1
     error_code: "42703"
+  # SELECT * on a renamed CTE returns all renamed cols. Java alignment.
+  - query: |-
+      WITH c1(w, z) AS (SELECT id, v FROM t WHERE id <= 2) SELECT * FROM c1 ORDER BY w
+    rows:
+      - [1, 10]
+      - [2, 20]
