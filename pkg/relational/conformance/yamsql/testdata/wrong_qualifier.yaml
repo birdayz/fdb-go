@@ -7,10 +7,11 @@
 # column reference names an unknown qualifier. Matches the existing
 # `SELECT wrong.* FROM a` pin in qualified_star.yaml.
 #
-# Scope: JOIN SELECT projection (execSelectJoin) + single-source
-# SELECT projection (execSelectQueryFull, nightshift-42 fix). The
-# ON-clause wrong-qualifier path still silently falls back — tracked
-# as a known gap.
+# Scope: all three places a column reference can appear on the map
+# path — JOIN SELECT projection (execSelectJoin), WHERE-clause, and
+# INNER JOIN ON-clause — share the same validQualifiers check via
+# evalExprAtomOnMap. Single-source SELECT projection on the proto
+# path (execSelectQueryFull) joined the party in nightshift-42.
 name: wrong_qualifier
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
@@ -77,3 +78,17 @@ tests:
   # a proto field on table `a` either).
   - query: SELECT c.id FROM a WHERE id = 1
     error_code: "42703"
+
+  # Wrong qualifier on RIGHT side of an ON expression (the existing
+  # pin covers the left side). Symmetric check via validQualifiers —
+  # both sides of a binary comparison go through evalExprAtomOnMap.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON a.id = c.id
+    error_code: "42F01"
+
+  # Wrong qualifier in ON-clause RHS on a multi-arg expression —
+  # qualifier is checked anywhere in the predicate tree, not just at
+  # top level.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON a.id = b.id AND c.id > 0
+    error_code: "42F01"
