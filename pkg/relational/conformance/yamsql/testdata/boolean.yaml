@@ -132,3 +132,24 @@ tests:
       - [false]
       - [true]
       - [~]
+  # Same tri-state projection through a CTE — exercises evalExprOnMap
+  # (map-path), not the proto-path evalExprPredicateTri. Pre-fix the
+  # Logical/Not cases in evalExprOnMap used the 2-valued bool wrapper,
+  # dropping UNKNOWN → false so NULL-row projected false instead of
+  # NULL. Now routes through evalPredicateOnMapExprTri and maps
+  # triTrue → true, triFalse → false, triNull → NULL.
+  - query: WITH x AS (SELECT * FROM lb) SELECT b AND TRUE FROM x ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: WITH x AS (SELECT * FROM lb) SELECT b OR FALSE FROM x ORDER BY a
+    rows:
+      - [true]
+      - [false]
+      - [~]
+  - query: WITH x AS (SELECT * FROM lb) SELECT NOT b FROM x ORDER BY a
+    rows:
+      - [false]
+      - [true]
+      - [~]

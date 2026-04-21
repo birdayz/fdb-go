@@ -4580,6 +4580,12 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		tx.rctx.Cancel()
 	}
 	c.ctes = nil
+	// Drop any cached scalar-subquery results from the last statement.
+	// Cache entries key off parse-tree pointers that belong to the
+	// caller's freshly-parsed statement; retaining them across pool
+	// checkouts would slowly leak memory (and the keys are invalid
+	// against the next statement's tree anyway).
+	c.scalarSubqueryCache = nil
 	c.schemaCache = make(map[string]api.Schema)
 	return nil
 }
@@ -7913,17 +7919,37 @@ func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string
 		}
 		return evalExprAtomOnMap(ctx, conn, row, e.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:
-		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
+		// Value-eval must preserve UNKNOWN as NULL, not collapse to
+		// false. `SELECT b AND TRUE FROM x` for b=NULL should project
+		// NULL, matching the proto-path fix at d0f2a3a1. Using the
+		// 2-valued bool wrapper here dropped UNKNOWN → false and
+		// diverged from Java.
+		t, err := evalPredicateOnMapExprTri(ctx, conn, row, expr)
 		if err != nil {
 			return nil, err
 		}
-		return ok, nil
+		switch t {
+		case triTrue:
+			return true, nil
+		case triFalse:
+			return false, nil
+		default:
+			return nil, nil
+		}
 	case *antlrgen.NotExpressionContext:
-		v, err := evalPredicateOnMapExpr(ctx, conn, row, e.Expression())
+		// Kleene NOT: NOT TRUE = FALSE, NOT FALSE = TRUE, NOT NULL = NULL.
+		t, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression())
 		if err != nil {
 			return nil, err
 		}
-		return !v, nil
+		switch t {
+		case triTrue:
+			return false, nil
+		case triFalse:
+			return true, nil
+		default:
+			return nil, nil
+		}
 	case *antlrgen.ExistsExpressionAtomContext:
 		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
 		if err != nil {
