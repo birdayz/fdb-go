@@ -89,3 +89,28 @@ tests:
       - [2, 'present']
       - [3, 'absent']
       - [4, 'present']
+  # Nested CASE — Java's case-when.yamsql exercises this shape in an
+  # UPDATE. Flatten it to a SELECT for direct result verification:
+  # `CASE WHEN CASE WHEN v = 5 THEN 10 ELSE 20 END > 15 THEN 'big' ELSE 'small' END`.
+  # Inner CASE yields 10 for id=1 (v=5), 20 for the rest. Outer's
+  # predicate (>15) is FALSE for id=1, TRUE for id=2,3,4. NULL v is
+  # not captured by `v = 5`, so the inner ELSE fires → 20 → big.
+  - query: |-
+      SELECT id, CASE WHEN CASE WHEN v = 5 THEN 10 ELSE 20 END > 15
+                      THEN 'big' ELSE 'small' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'small']
+      - [2, 'big']
+      - [3, 'big']
+      - [4, 'big']
+  # CASE with arithmetic in THEN branches — result stays integer when
+  # both branches are integer-typed, matching Java's ADD_LL / SUB_LL.
+  - query: |-
+      SELECT id, CASE WHEN v IS NULL THEN 0 ELSE v + 1 END
+      FROM t ORDER BY id
+    rows:
+      - [1, 6]
+      - [2, 16]
+      - [3, 0]
+      - [4, 31]
