@@ -22,3 +22,19 @@ tests:
   # predicate is UNKNOWN → filtered. Net zero rows.
   - query: SELECT id FROM a WHERE v NOT IN (SELECT v FROM b)
     rows: []
+  # Subquery IN against an empty subquery → always FALSE (nothing to match).
+  - query: SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE id > 999)
+    rows: []
+  # Subquery NOT IN against an empty subquery → always TRUE.
+  - query: SELECT id FROM a WHERE v NOT IN (SELECT v FROM b WHERE id > 999) ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # Subquery IN with all concrete non-matches.
+  - query: SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE v IS NOT NULL AND v != 2)
+    rows: []
+  # Subquery returning column-count mismatch — row-constructor IN needs
+  # matching arity, single-column column-list gets 'must return 1 col'.
+  - query: SELECT id FROM a WHERE v IN (SELECT id, v FROM b)
+    error_code: "22023"
