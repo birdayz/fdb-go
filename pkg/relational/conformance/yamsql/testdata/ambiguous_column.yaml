@@ -50,6 +50,13 @@ tests:
     rows:
       - [1, 'alpha']
       - [2, 'beta']
+  # Ambiguous bare column as GROUP BY key — the group-key lookup in
+  # aggregateMapRows hits the sentinel and errors 42702.
+  - query: SELECT COUNT(*) FROM a, b WHERE a.id = b.id GROUP BY name
+    error_code: "42702"
+  # Ambiguous bare column as aggregate argument.
+  - query: SELECT COUNT(name) FROM a, b WHERE a.id = b.id
+    error_code: "42702"
   # Disjoint-schema sanity check: same query against a second FROM that
   # shares no column names — no sentinel trips.
   - query: |

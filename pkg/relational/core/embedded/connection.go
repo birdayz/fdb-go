@@ -1029,6 +1029,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				continue
 			}
 			if v, ok := row[gcol]; ok {
+				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"GROUP BY column reference %q is ambiguous", m.Col)
+				}
 				gVals[gi] = v
 			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
 				gVals[gi] = row[gcol[dot+1:]]
@@ -1087,6 +1091,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				// is absent from the row.
 				v, ok := row[ac.aggArg]
 				if ok {
+					if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+						return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+							"aggregate argument %q is ambiguous", m.Col)
+					}
 					colVal = v
 				} else if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
 					colVal = row[ac.aggArg[dot+1:]]
