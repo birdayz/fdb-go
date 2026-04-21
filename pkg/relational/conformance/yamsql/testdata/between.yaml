@@ -91,3 +91,16 @@ tests:
     error_code: "22000"
   - query: SELECT id FROM t WHERE 'a' BETWEEN 10 AND 20
     error_code: "22000"
+  # Java alignment (between.yamsql): ORed BETWEEN ranges.
+  # v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 selects the extremes.
+  - query: SELECT id FROM t WHERE v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [5]
+  # BETWEEN with cross-type numeric bounds (int AND double) — Java's
+  # between-compatible-types block. Bounds are promoted to double;
+  # v BETWEEN 4 AND 6.2 keeps v=5.
+  - query: SELECT id FROM t WHERE v BETWEEN 4 AND 6.2
+    rows:
+      - [2]
