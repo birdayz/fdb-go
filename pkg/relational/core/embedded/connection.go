@@ -3978,6 +3978,13 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// Parse ORDER BY clause.
 	orderByClauseCtx := simpleTable.OrderByClause()
 	if orderByClauseCtx != nil {
+		// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
+		// with the same column repeated. Stricter than Postgres, but
+		// per dayshift-40's 100% Java-alignment direction we match.
+		// Expression entries (without a resolved colName) are not
+		// deduped because two identical expressions are syntactically
+		// distinct sort keys (e.g. `ORDER BY a+b, a+b` — Java accepts).
+		seenOrderCols := make(map[string]bool)
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
 			ascending := true
 			var nullsFirst *bool
@@ -4001,6 +4008,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				return nil, posErr
 			}
 			if isPos {
+				if seenOrderCols[posName] {
+					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+						"duplicate column %q in ORDER BY", posName)
+				}
+				seenOrderCols[posName] = true
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
@@ -4009,6 +4021,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
+				if seenOrderCols[colName] {
+					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+						"duplicate column %q in ORDER BY", colName)
+				}
+				seenOrderCols[colName] = true
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
 				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})
