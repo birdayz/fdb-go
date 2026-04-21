@@ -5522,11 +5522,17 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			aliasName := ""
 			if item.Uid() != nil {
 				aliasName = stripIdentifierQuotes(item.Uid().GetText())
-				if seenAliases[aliasName] {
+				// SQL identifiers are case-insensitive, so `GROUP BY
+				// col1 AS x, col2 AS X` must error 42702 even though
+				// the two aliases differ only in case. groupByAliases
+				// below uses uppercase keys for lookup; the dedup
+				// check uses the same normalisation.
+				aliasKey := strings.ToUpper(aliasName)
+				if seenAliases[aliasKey] {
 					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 						"duplicate alias %q in GROUP BY", aliasName)
 				}
-				seenAliases[aliasName] = true
+				seenAliases[aliasKey] = true
 			}
 			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
 			if posErr != nil {

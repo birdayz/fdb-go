@@ -80,6 +80,12 @@ tests:
   # groupby-tests.yamsql).
   - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS x ORDER BY col1
     error_code: "42702"
+
+  # Case-insensitive duplicate (SQL identifiers fold case): `x` and
+  # `X` are the same alias — must also error 42702. Pre-nightshift-42
+  # this silently overwrote the alias→col mapping.
+  - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS X ORDER BY col1
+    error_code: "42702"
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct
