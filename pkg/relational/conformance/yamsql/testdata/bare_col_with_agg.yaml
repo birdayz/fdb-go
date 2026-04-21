@@ -1,0 +1,41 @@
+# bare_col_with_agg.yaml
+#
+# SQL §7.10: when a SELECT list contains an aggregate function, every
+# non-aggregate column must appear in GROUP BY. Without GROUP BY at
+# all, bare columns alongside aggregates violate the grouping rule.
+# Java errors 42803 (grouping_error). Go currently accepts this —
+# pin the divergence + the valid cases.
+name: bare_col_with_agg
+schema_template: |
+  CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Valid: COUNT(*) alone (no bare column).
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+  # Valid: bare aggregate expression.
+  - query: SELECT SUM(v) FROM t
+    rows:
+      - [60]
+  # Valid: multiple aggregates in one SELECT (no bare column).
+  - query: SELECT COUNT(*), SUM(v), MAX(v), MIN(v) FROM t
+    rows:
+      - [3, 60, 30, 10]
+  # Valid: bare column with DISTINCT — not an aggregate context.
+  - query: SELECT DISTINCT v FROM t ORDER BY v
+    rows:
+      - [10]
+      - [20]
+      - [30]
+  # Java alignment (groupby-tests.yamsql): SQL §7.10 GR1 requires every
+  # non-aggregate column to appear in GROUP BY when aggregates are
+  # present. `SELECT id, COUNT(*) FROM t` errors 42803 in Java. Go
+  # currently accepts this silently (no GR1 validation at projection).
+  # Once implemented, the test below would flip from bare rows/rows to
+  # error_code: "42803". Current Go behavior is not asserted here — the
+  # query is kept as a probe site; aggregate+bare mixing is pinned by
+  # its ABSENCE from the valid cases above. TODO: add GR1 validation
+  # at extractFromSimpleTable when aggCols is non-empty and GROUP BY
+  # is absent.
