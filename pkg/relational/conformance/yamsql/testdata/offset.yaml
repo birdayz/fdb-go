@@ -55,3 +55,8 @@ tests:
     rows:
       - [4]
       - [5]
+  # OFFSET without LIMIT — parser rejects 42601 (grammar requires LIMIT).
+  # This matches Java where the standard SQL grammar has OFFSET nested
+  # inside the LIMIT clause. Workaround: use LIMIT 9223372036854775807.
+  - query: SELECT id FROM t ORDER BY id OFFSET 2
+    error_code: "42601"
