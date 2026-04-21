@@ -53,13 +53,15 @@ tests:
       - [3]
       - [4]
 
-  # AND chain → no pushdown (MVP bails on AND; scan handles both predicates).
+  # AND chain with PK equality + extra non-PK equality — pushdown
+  # fires on `id = 3` and the scan's evalPredicate applies `v = 30`
+  # as a post-filter on the one loaded row.
   - query: SELECT id FROM t WHERE id = 3 AND v = 30
     rows:
       - [3]
 
-  # AND chain where the non-PK half rejects the row. Confirms the scan
-  # path still applies the non-PK predicate correctly.
+  # Same shape where the non-PK predicate REJECTS the PK-matched row.
+  # Confirms the extra predicate isn't silently discarded by pushdown.
   - query: SELECT id FROM t WHERE id = 3 AND v = 999
     rows: []
 
