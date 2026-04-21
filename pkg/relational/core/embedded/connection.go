@@ -5233,6 +5233,20 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
+		op := a.ComparisonOperator().GetText()
+		// IS [NOT] DISTINCT FROM is NULL-safe — must be handled before
+		// the generic NULL → UNKNOWN short-circuit below, since two
+		// NULLs are NOT distinct (returns true for NOT DISTINCT FROM,
+		// false for DISTINCT FROM). Mirrors the tri-predicate path
+		// at line 7731. Pre-fix the value-eval path fell through to
+		// "unsupported comparison operator" errors for
+		// `SELECT (col IS DISTINCT FROM NULL)` projections.
+		switch op {
+		case "ISDISTINCTFROM":
+			return !nullSafeEqual(left, right), nil
+		case "ISNOTDISTINCTFROM":
+			return nullSafeEqual(left, right), nil
+		}
 		if left == nil || right == nil {
 			return nil, nil
 		}
@@ -5241,7 +5255,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 				"cannot compare %T with %T", left, right)
 		}
 		cmp := compareValues(left, right)
-		switch a.ComparisonOperator().GetText() {
+		switch op {
 		case "=":
 			return cmp == 0, nil
 		case "!=", "<>":
@@ -5255,7 +5269,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		case ">=":
 			return cmp >= 0, nil
 		}
-		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", a.ComparisonOperator().GetText())
+		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", op)
 	case *antlrgen.SubqueryExpressionAtomContext:
 		return evalScalarSubquery(ctx, conn, a.Query())
 	default:
