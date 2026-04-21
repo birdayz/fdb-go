@@ -2353,8 +2353,8 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		// rule on the bare suffix. Expression slots (projExprs[j] !=
 		// nil) skip the check — evalExprOnMap raises 42703 itself.
 		cteColSet := make(map[string]bool, len(cte.cols))
-		for _, c := range cte.cols {
-			cteColSet[c] = true
+		for _, col := range cte.cols {
+			cteColSet[col] = true
 		}
 		for j, col := range sq.projCols {
 			if j < len(sq.projExprs) && sq.projExprs[j] != nil {
