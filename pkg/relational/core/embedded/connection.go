@@ -2336,6 +2336,35 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 				colNames[j] = col
 			}
 		}
+		// Java alignment (cte.yamsql line 111,114): when a WITH rename
+		// renames the CTE columns (e.g. `WITH c1(w, z) AS (SELECT id,
+		// v FROM t)`), the original names (id, v) are no longer
+		// visible from the CTE. Pre-swingshift-41 Go emitted NULL for
+		// unknown bare columns since `row[col]` returns zero value on
+		// miss. Validate each bare col against the CTE's cols; error
+		// 42703 when missing. Qualified `alias.col` follows the same
+		// rule on the bare suffix. Expression slots (projExprs[j] !=
+		// nil) skip the check — evalExprOnMap raises 42703 itself.
+		cteColSet := make(map[string]bool, len(cte.cols))
+		for _, c := range cte.cols {
+			cteColSet[c] = true
+		}
+		for j, col := range sq.projCols {
+			if j < len(sq.projExprs) && sq.projExprs[j] != nil {
+				continue
+			}
+			if col == "" {
+				continue // qualifier-star sentinel; handled elsewhere
+			}
+			bare := col
+			if dot := strings.LastIndex(col, "."); dot >= 0 {
+				bare = col[dot+1:]
+			}
+			if !cteColSet[bare] {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in CTE %q", col, sq.tableName)
+			}
+		}
 		for _, row := range mapRows {
 			outRow := make([]driver.Value, len(sq.projCols))
 			for j, col := range sq.projCols {

@@ -158,3 +158,13 @@ tests:
     rows:
       - [3]
       - [4]
+  # Java alignment (cte.yamsql line 111,114): WITH rename hides the
+  # original column names. `c1(w, z) AS (SELECT id, v FROM t)`
+  # renames id→w, v→z; referencing `id` or `v` from c1 errors 42703
+  # because those names are no longer in the CTE output.
+  - query: |-
+      WITH c1(w, z) AS (SELECT id, v FROM t) SELECT v FROM c1
+    error_code: "42703"
+  - query: |-
+      WITH c1(w, z) AS (SELECT id, v FROM t) SELECT id FROM c1
+    error_code: "42703"
