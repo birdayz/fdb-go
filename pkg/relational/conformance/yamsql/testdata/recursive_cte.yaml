@@ -298,6 +298,33 @@ tests:
       SELECT n FROM reach
     error_code: "54F01"
 
+  # Recursive CTE referenced via an alias (`FROM ancestors AS a`) —
+  # the alias is what column references in the recursive branch use,
+  # but the walker still detects the real CTE name and routes to the
+  # recursive path correctly.
+  - query: |-
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      SELECT COUNT(*) FROM ancestors
+    rows:
+      - [4]
+
+  # CTE name matches a table alias used inside the body. Self-reference
+  # detection must NOT trigger on the alias — only on a real table
+  # reference — so this evaluates as a non-recursive CTE. Unqualified
+  # projection used to sidestep the known `alias.col → dotted col name`
+  # quirk in non-recursive CTE materialisation.
+  - query: |-
+      WITH RECURSIVE x AS (
+        SELECT id, parent FROM t AS x WHERE id = 250
+      )
+      SELECT id FROM x
+    rows:
+      - [250]
+
   # Using the recursive CTE in a WHERE … IN subquery.
   - query: |-
       WITH RECURSIVE descendants AS (
