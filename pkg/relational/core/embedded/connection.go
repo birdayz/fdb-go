@@ -117,6 +117,14 @@ type EmbeddedConnection struct {
 	// pre-dayshift-40 behavior for non-JOIN code paths.
 	validQualifiers map[string]bool
 
+	// outerScopes is a stack of outer-row scopes used to resolve correlated
+	// column references from inside a subquery (EXISTS / IN / scalar).
+	// Pushed at each subquery entry point (snapshots the current row of
+	// the outer scan), popped on return via the pushOuterScope pop func.
+	// The innermost scope is at the end. Empty stack = no correlation
+	// context. See evalExprAtom / evalExprAtomOnMap for lookup semantics.
+	outerScopes []outerScope
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
@@ -185,6 +193,146 @@ func (c *EmbeddedConnection) pushValidQualifiersScope(set map[string]bool) func(
 	prior := c.validQualifiers
 	c.validQualifiers = set
 	return func() { c.validQualifiers = prior }
+}
+
+// outerScope is one level of outer-row binding for correlated subqueries.
+// At least one of msg / row is non-nil:
+//   - msg  : proto-backed outer (single-source SELECT, WHERE call site).
+//   - row  : map-backed outer (JOIN / CTE / HAVING / aggregate). Keys are
+//     both unqualified (`col`) and qualified (`alias.col`) per
+//     scanTableToMaps convention.
+//
+// qualifiers holds the uppercased set of valid qualifier aliases for this
+// outer. A correlated reference `qual.col` matches this scope iff qual is
+// in the set. Unqualified `col` falls back through scopes innermost-first
+// regardless of qualifiers.
+type outerScope struct {
+	msg        proto.Message
+	row        map[string]driver.Value
+	qualifiers map[string]bool
+}
+
+// pushOuterScope appends one outer-row scope to the correlation stack and
+// returns a pop function that trims it back. Use with `defer` at every
+// subquery entry point (EXISTS, IN, scalar subquery) so nested
+// correlations stack correctly. Safe to call with a zero-value scope
+// (msg == nil && row == nil) — lookups fall through to the next level.
+func (c *EmbeddedConnection) pushOuterScope(s outerScope) func() {
+	c.outerScopes = append(c.outerScopes, s)
+	return func() { c.outerScopes = c.outerScopes[:len(c.outerScopes)-1] }
+}
+
+// outerScopeFromMsg builds an outerScope for a proto-backed outer row.
+// The qualifier set is derived from the message's descriptor name (single-
+// source unaliased FROM — covers the common correlated-subquery cases in
+// yaml-tests). For explicit `FROM t AS alias` the alias is not captured
+// here; tracking the SQL-level alias through to the predicate evaluator
+// is future work. Returns a zero-value scope when msg is nil so the
+// caller doesn't need to nil-check.
+func outerScopeFromMsg(msg proto.Message) outerScope {
+	if msg == nil {
+		return outerScope{}
+	}
+	name := strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name()))
+	return outerScope{msg: msg, qualifiers: map[string]bool{name: true}}
+}
+
+// outerScopeFromMapRow builds an outerScope for a map-backed outer row
+// (JOIN / CTE / HAVING aggregate). qualifiers is derived from every
+// qualified key in the row: for each key of the form `alias.col`, the
+// prefix is added (uppercased) to the qualifier set. Returns a zero-
+// value scope for a nil/empty row.
+func outerScopeFromMapRow(row map[string]driver.Value) outerScope {
+	if len(row) == 0 {
+		return outerScope{}
+	}
+	quals := make(map[string]bool)
+	for k := range row {
+		if dot := strings.LastIndex(k, "."); dot >= 0 {
+			quals[strings.ToUpper(k[:dot])] = true
+		}
+	}
+	return outerScope{row: row, qualifiers: quals}
+}
+
+// outerScopesContainQualifier reports whether any outer scope on the
+// stack declares qualUpper as a valid qualifier alias. Used by the
+// map-path evaluator to let correlated `outer.col` references bypass
+// the JOIN-scope valid-qualifier reject before falling through to
+// resolveOuterColumn.
+func outerScopesContainQualifier(c *EmbeddedConnection, qualUpper string) bool {
+	for _, s := range c.outerScopes {
+		if s.qualifiers[qualUpper] {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveOuterColumn walks the outer-scope stack innermost-first trying
+// to resolve a column reference that was not found in the inner scope.
+// Returns (value, found, err). For qualified `qual.col`, only scopes
+// whose qualifiers set contains qual are consulted; if qual is present
+// but bare column missing in that scope, resolution stops with err
+// 42703. For unqualified `col`, every scope is tried in order.
+func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, bool, error) {
+	qual := ""
+	bare := colName
+	if dot := strings.LastIndex(colName, "."); dot >= 0 {
+		qual = strings.ToUpper(colName[:dot])
+		bare = colName[dot+1:]
+	}
+	for i := len(c.outerScopes) - 1; i >= 0; i-- {
+		s := c.outerScopes[i]
+		if qual != "" && !s.qualifiers[qual] {
+			continue
+		}
+		switch {
+		case s.msg != nil:
+			fd := s.msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
+			if fd == nil {
+				if qual != "" {
+					return nil, false, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"column %q not found in correlated source %q", bare, qual)
+				}
+				continue
+			}
+			if !s.msg.ProtoReflect().Has(fd) {
+				return nil, true, nil
+			}
+			return protoValueToDriver(fd, s.msg.ProtoReflect().Get(fd)), true, nil
+		case s.row != nil:
+			if qual != "" {
+				// Row keys preserve the SQL-level alias case (e.g. `e.id`
+				// when the outer wrote `FROM emp AS e`); the qualifier
+				// set and lookup qual are uppercased. Do a case-
+				// insensitive prefix match so `E.id` → `e.id`.
+				for k, v := range s.row {
+					dot := strings.LastIndex(k, ".")
+					if dot < 0 {
+						continue
+					}
+					if strings.EqualFold(k[:dot], qual) && k[dot+1:] == bare {
+						if _, isAmb := v.(ambiguousColumnMarker); isAmb {
+							return nil, false, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+								"correlated column reference %q is ambiguous", colName)
+						}
+						return v, true, nil
+					}
+				}
+				return nil, false, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in correlated source %q", bare, qual)
+			}
+			if v, ok := s.row[bare]; ok {
+				if _, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, false, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"correlated column reference %q is ambiguous", bare)
+				}
+				return v, true, nil
+			}
+		}
+	}
+	return nil, false, nil
 }
 
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
@@ -5527,20 +5675,48 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		return evalConstant(a.Constant())
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		colName := fullIdToName(a.FullColumnName().FullId())
+		// Try inner scope first: strip any qualifier and look up on msg.
+		// For qualified `qual.col`, fall through to outer scopes when qual
+		// does not match the inner msg's descriptor name — otherwise
+		// `emp.id` in an inner `FROM project` would silently resolve to
+		// `project.id`. Unqualified `col` prefers inner; falls through
+		// only on miss.
+		bare := colName
+		qual := ""
+		if dot := strings.LastIndex(colName, "."); dot >= 0 {
+			qual = strings.ToUpper(colName[:dot])
+			bare = colName[dot+1:]
+		}
+		if msg != nil {
+			innerName := strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name()))
+			if qual == "" || qual == innerName {
+				fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
+				if fd != nil {
+					// Absent proto2 optional fields are SQL NULL — distinct from the zero
+					// value. Predicates already use Has(); function arguments must too,
+					// otherwise UPPER(NULL) would produce "" instead of NULL.
+					if !msg.ProtoReflect().Has(fd) {
+						return nil, nil
+					}
+					return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
+				}
+			}
+		}
+		// Correlated subquery fallback: walk outer-row stack when inner
+		// lookup failed (qualifier mismatch or missing field).
+		if conn != nil && len(conn.outerScopes) > 0 {
+			v, found, oerr := conn.resolveOuterColumn(colName)
+			if oerr != nil {
+				return nil, oerr
+			}
+			if found {
+				return v, nil
+			}
+		}
 		if msg == nil {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "column reference %q not allowed in this context", colName)
 		}
-		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-		if fd == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
-		}
-		// Absent proto2 optional fields are SQL NULL — distinct from the zero
-		// value. Predicates already use Has(); function arguments must too,
-		// otherwise UPPER(NULL) would produce "" instead of NULL.
-		if !msg.ProtoReflect().Has(fd) {
-			return nil, nil
-		}
-		return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
+		return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 	case *antlrgen.MathExpressionAtomContext:
 		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
@@ -7396,9 +7572,13 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
-		// NOTE: Correlated subqueries are not supported — the subquery cannot
-		// reference column values from the outer query row.
+		// Push outer-row scope so a correlated inner reference like
+		// `outer_tbl.col` resolves against this msg via resolveOuterColumn.
+		// Qualifier taken from the proto descriptor name (single-source
+		// FROM without an explicit AS alias — the common case).
+		pop := conn.pushOuterScope(outerScopeFromMsg(msg))
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		pop()
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -7654,7 +7834,9 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
+		pop := conn.pushOuterScope(outerScopeFromMsg(msg))
 		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
+		pop()
 		if err != nil {
 			return triFalse, err
 		}
@@ -7961,7 +8143,9 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
+		pop := conn.pushOuterScope(outerScopeFromMapRow(row))
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
+		pop()
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -8183,23 +8367,40 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if !found {
 			// Try unqualified: "Order.amount" → "amount".
 			if dot := strings.LastIndex(name, "."); dot >= 0 {
+				qual := name[:dot]
+				qualUpper := strings.ToUpper(qual)
 				// When a JOIN scope is active, reject a qualified
 				// reference whose qualifier isn't a valid FROM source
 				// alias — symmetric with the SELECT projection check.
 				// Fires before the bare-column fallback so wrong
 				// qualifiers error 42F01 instead of silently picking
 				// whichever source populated the bare key.
-				if conn.validQualifiers != nil {
-					qual := name[:dot]
-					if !conn.validQualifiers[strings.ToUpper(qual)] {
+				//
+				// Correlated subquery exception: if the qualifier matches
+				// an outer-scope alias, skip the reject and let the outer
+				// fallback below resolve it.
+				if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
+					if !outerScopesContainQualifier(conn, qualUpper) {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
 							"column reference %q names unknown table/alias %q", name, qual)
 					}
+					// Outer qualifier: fall through to outer lookup.
+				} else {
+					v, found = row[name[dot+1:]]
 				}
-				v, found = row[name[dot+1:]]
 			}
 		}
 		if !found {
+			// Correlated subquery fallback: walk outer-row stack.
+			if conn != nil && len(conn.outerScopes) > 0 {
+				ov, ofound, oerr := conn.resolveOuterColumn(name)
+				if oerr != nil {
+					return nil, oerr
+				}
+				if ofound {
+					return ov, nil
+				}
+			}
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
 		}
 		if m, isAmb := v.(ambiguousColumnMarker); isAmb {
@@ -8500,7 +8701,9 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			if conn == nil {
 				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 			}
+			pop := conn.pushOuterScope(outerScopeFromMapRow(row))
 			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
+			pop()
 			if subErr != nil {
 				return triFalse, subErr
 			}
@@ -8590,7 +8793,9 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
+		pop := conn.pushOuterScope(outerScopeFromMapRow(row))
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		pop()
 		if subErr != nil {
 			return triFalse, subErr
 		}

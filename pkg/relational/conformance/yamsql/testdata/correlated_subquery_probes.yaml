@@ -1,11 +1,14 @@
 # correlated_subquery_probes.yaml
 #
-# DIAGNOSTIC: correlated subqueries reference outer-row columns.
-# Java's join-tests.yamsql exercises these via EXISTS / IN subqueries
-# (`select * from project where emp_id = emp.id`). We don't support
-# correlation today — the inner query has no access to outer-row
-# bindings. Pin the current error so the future implementation flips
-# them to passing tests.
+# Correlated subqueries reference outer-row columns. Supported for EXISTS
+# and IN in both the proto-path (single-source outer) and map-path (JOIN /
+# CTE outer) WHERE evaluator, via the outer-scope stack on
+# EmbeddedConnection. See `pushOuterScope` + `resolveOuterColumn`.
+#
+# Scalar subquery correlation (`SELECT (SELECT COUNT(*) FROM p WHERE
+# p.x = outer.id) FROM outer`) is NOT supported: scalar subqueries are
+# pre-evaluated before the outer scan starts (to avoid nested FDB txns),
+# which precludes per-row outer-row binding. Pinned below as 42703.
 name: correlated_subquery_probes
 schema_template: |
   CREATE TABLE emp (id BIGINT NOT NULL, fname STRING, dept_id BIGINT, PRIMARY KEY (id))
@@ -14,13 +17,24 @@ setup:
   - INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)
   - INSERT INTO project VALUES (100, 1), (101, 2)
 tests:
-  # Correlated EXISTS — inner references emp.id from outer.
-  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
-    error_code: "42703"
+  # Correlated EXISTS — inner references emp.id from outer. Alice and Bob
+  # have projects; Carol does not.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+  # Correlated NOT EXISTS — inverse of the above.
+  - query: SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
+    rows:
+      - ['Carol']
   # Correlated IN — inner references outer column.
-  - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id)
-    error_code: "42703"
-  # Correlated scalar subquery — inner references outer column in WHERE.
+  - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+  # Correlated scalar subquery — scalar subqueries are pre-evaluated
+  # before the outer scan starts (no per-row execution), so correlation
+  # is unsupported. Inner errors 42703 at pre-eval time.
   - query: SELECT fname, (SELECT COUNT(*) FROM project WHERE emp_id = emp.id) FROM emp
     error_code: "42703"
   # Uncorrelated EXISTS still works (baseline).
@@ -42,3 +56,40 @@ tests:
       - ['Alice']
       - ['Bob']
       - ['Carol']
+
+  # Correlated EXISTS with additional inner filter: keep outer iff the
+  # inner has a project with emp_id = outer.id AND inner.id >= 100.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id AND id >= 100) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Correlated NOT IN.
+  - query: SELECT fname FROM emp WHERE id NOT IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
+    rows:
+      - ['Carol']
+
+  # Correlated with non-matching literal filter: inner never returns
+  # rows, so EXISTS is always false.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id AND id = 99999)
+    rows: []
+
+  # Unresolvable correlated qualifier — `bogus` is not in scope at all.
+  # Inner has no project table aliased as `bogus`; outer doesn't expose
+  # it either. Error 42703 (column not found).
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = bogus.id)
+    error_code: "42703"
+
+  # Correlated EXISTS from a JOIN outer (map-path evaluator). Outer row
+  # is a map with qualified keys like `emp.id`, `project.id`. Inner's
+  # `emp.id` reference resolves via outerScopeFromMapRow's qualifier
+  # set. We cross-join emp+project on emp_id then re-check EXISTS
+  # correlated — redundant but exercises the map path.
+  - query: |
+      SELECT e.fname FROM emp AS e, project AS p
+      WHERE e.id = p.emp_id
+        AND EXISTS (SELECT 1 FROM project WHERE emp_id = e.id)
+      ORDER BY e.id
+    rows:
+      - ['Alice']
+      - ['Bob']
