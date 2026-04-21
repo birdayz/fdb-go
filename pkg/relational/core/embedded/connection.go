@@ -3674,17 +3674,30 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
 					continue
 				}
-				fd := allFields.ByName(protoreflect.Name(colName))
+				// Strip a trivial qualifier (`d.id` where `d` is this
+				// source's table name or alias) before the field lookup.
+				// Matches how the correlated-subquery path handles
+				// qualified refs in evalExprAtom via currentSourceAliases.
+				// Without this, `SELECT d.id FROM t AS d` errored 42703
+				// at the ByName(`d.id`) lookup.
+				lookupName := colName
+				if dot := strings.LastIndex(colName, "."); dot >= 0 {
+					qual := strings.ToUpper(colName[:dot])
+					if strings.EqualFold(qual, sq.tableName) || (sq.tableAlias != "" && strings.EqualFold(qual, sq.tableAlias)) {
+						lookupName = colName[dot+1:]
+					}
+				}
+				fd := allFields.ByName(protoreflect.Name(lookupName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q not found in table %q", colName, sq.tableName)
 				}
-				outName := colName
+				outName := lookupName
 				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 					outName = sq.projAliases[i]
 				}
 				outFields[i] = outField{name: outName, fd: fd}
-				projByCol[colName] = true
+				projByCol[lookupName] = true
 			}
 			// Alias redirection: if ORDER BY references a SELECT-list alias
 			// (`SELECT id AS n ... ORDER BY n`), it's already projected — no

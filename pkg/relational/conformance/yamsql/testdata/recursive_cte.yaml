@@ -340,6 +340,16 @@ tests:
       - [70]
       - [250]
 
+  # Qualified projection in a single-source CTE body — both the
+  # inner projection resolution (`d.id` resolves via the source
+  # alias `d`) and the CTE output name (bare `id`, not `d.id`)
+  # work end-to-end. Matches Postgres.
+  - query: |-
+      WITH qualified AS (SELECT d.id FROM t AS d WHERE d.parent = -1)
+      SELECT id FROM qualified
+    rows:
+      - [1]
+
   # Multi-CTE WITH RECURSIVE list: first CTE is plain, second is
   # recursive and references the first in its seed. Exercises that
   # `recursiveKeyword && containsTableRef(body, cteName)` correctly
