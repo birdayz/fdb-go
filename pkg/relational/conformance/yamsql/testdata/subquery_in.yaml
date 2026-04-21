@@ -48,3 +48,9 @@ tests:
       WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1)
       SELECT id FROM a WHERE v IN (SELECT label FROM s)
     error_code: "22000"
+  # NOT IN variant also errors on cross-type. The NOT prefix doesn't
+  # suppress the type check since the comparison still has to run.
+  - query: |-
+      WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1)
+      SELECT id FROM a WHERE v NOT IN (SELECT label FROM s)
+    error_code: "22000"
