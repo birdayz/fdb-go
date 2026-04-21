@@ -254,11 +254,6 @@ race:
 race-all:
     bazelisk test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test --@rules_go//go/config:race --test_timeout=900
 
-# Run govulncheck on all packages (pinned version for reproducibility)
-vulncheck:
-    go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
-    govulncheck ./...
-
 # Full pre-merge verification: build + test + race detector + fuzz smoke test.
 # Run this before requesting PR merge. Takes ~3 minutes on a warm cache.
 verify:
