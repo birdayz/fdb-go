@@ -1582,33 +1582,43 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					if leftAliasForStar == "" {
 						leftAliasForStar = sq.tableName
 					}
-					leftRt := md.GetRecordType(sq.tableName)
-					if leftRt != nil {
-						for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
-							name := string(leftRt.Descriptor.Fields().Get(i).Name())
+					// collectCols walks a source's column list (record type
+					// descriptor or CTE) and appends unseen names + their
+					// qualifier to cols/starColAliases. Consolidating the
+					// two loops so CTE sources (md.GetRecordType nil) don't
+					// silently drop out of SELECT * — the reviewer-flagged
+					// CTE starColAliases gap from dayshift-40.
+					collectCols := func(tableName, alias string) {
+						var names []string
+						if c.ctes != nil {
+							if cte, ok := c.ctes[strings.ToUpper(tableName)]; ok {
+								names = cte.cols
+							}
+						}
+						if names == nil {
+							if rt := md.GetRecordType(tableName); rt != nil {
+								fields := rt.Descriptor.Fields()
+								names = make([]string, 0, fields.Len())
+								for i := 0; i < fields.Len(); i++ {
+									names = append(names, string(fields.Get(i).Name()))
+								}
+							}
+						}
+						for _, name := range names {
 							if !seen[name] {
 								cols = append(cols, name)
-								starColAliases = append(starColAliases, leftAliasForStar)
+								starColAliases = append(starColAliases, alias)
 								seen[name] = true
 							}
 						}
 					}
+					collectCols(sq.tableName, leftAliasForStar)
 					for _, jc := range sq.joins {
 						jAlias := jc.alias
 						if jAlias == "" {
 							jAlias = jc.tableName
 						}
-						jRt := md.GetRecordType(jc.tableName)
-						if jRt != nil {
-							for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
-								name := string(jRt.Descriptor.Fields().Get(i).Name())
-								if !seen[name] {
-									cols = append(cols, name)
-									starColAliases = append(starColAliases, jAlias)
-									seen[name] = true
-								}
-							}
-						}
+						collectCols(jc.tableName, jAlias)
 					}
 				}
 			} else {

@@ -563,7 +563,7 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] Boolean Kleene `b AND NULL` / `b OR NULL` added to boolean.yaml.
 
 **Next-shift follow-ups (surfaced by dayshift-40 code review)**:
-- [ ] **SELECT \* on JOIN with shared CTE column**: `starColAliases` is only populated from `md.GetRecordType()`. CTEs return nil and get no entry → the ambiguous-sentinel fallback at line ~1632 misses. Niche (CTE + table share column name + SELECT \*). Fix: when `GetRecordType(s.tableName)` is nil, read the CTE column list and use the left alias.
+- [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.
 - [ ] **WHERE/ON with wrong qualifier**: `evalExprAtomOnMap`'s FullColumnName lookup falls back to bare column on a qualifier miss. Scope-scoped fix would pass `validQualifiers` through the evaluator; cleanest option is a context field on EmbeddedConnection.
 - [ ] **Map-path 42803 for ungrouped projection**: `aggregateMapRows` silently NULL-fills. Requires either a schema-aware 42703 vs 42803 probe or deferring to the row keys.
 

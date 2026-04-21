@@ -57,6 +57,18 @@ tests:
   # Ambiguous bare column as aggregate argument.
   - query: SELECT COUNT(name) FROM a, b WHERE a.id = b.id
     error_code: "42702"
+  # SELECT * on a CTE + table join with an overlapping column name.
+  # Reviewer-flagged starColAliases gap (dayshift-40 follow-up): the
+  # CTE-source branch now populates starColAliases with the CTE alias
+  # so the ambiguous-sentinel fallback resolves to the first source's
+  # qualified value. Cte cx has cols (id, name); so does table a.
+  # Expect 2 cols (the dedupe keeps cx.id / cx.name — first-source
+  # wins as documented above).
+  - query: |-
+      WITH cx AS (SELECT id, name FROM a) SELECT * FROM cx, b WHERE cx.id = b.id ORDER BY cx.id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
   # Disjoint-schema sanity check: same query against a second FROM that
   # shares no column names — no sentinel trips.
   - query: |
