@@ -2219,6 +2219,20 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					groupExprByName[gn] = true
 				}
 			}
+			// groupByNames holds the declared GROUP BY bare-column list so we
+			// can enforce SQL §7.10 GR1 — a projected bare column that isn't
+			// in GROUP BY (and isn't an aggregate argument) is 42803. Pre-
+			// dayshift-40 the emission loop silently NULL-filled instead.
+			groupByNames := make(map[string]bool, len(sq.groupBy))
+			for i, gn := range sq.groupBy {
+				// Expression-based GROUP BY (e.g. `GROUP BY a + b`) is keyed
+				// by the raw expression text as a synthetic display name —
+				// handled via groupExprByName below. Skip here.
+				if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
+					continue
+				}
+				groupByNames[gn] = true
+			}
 			aggArgFDs := make([]protoreflect.FieldDescriptor, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
 				if ac.groupCol != "" {
@@ -2229,6 +2243,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"column %q not found in table %q", ac.groupCol, sq.tableName)
+					}
+					// Java-aligned 42803. The fd-exists check above fired
+					// first so undefined columns still surface as 42703,
+					// matching Java's error order.
+					if !groupByNames[ac.groupCol] {
+						return nil, api.NewErrorf(api.ErrCodeGroupingError,
+							"column %q must appear in the GROUP BY clause or be used in an aggregate function",
+							ac.groupCol)
 					}
 					aggArgFDs[i] = fd
 				} else if ac.aggArg != "" {

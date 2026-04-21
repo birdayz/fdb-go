@@ -15,15 +15,17 @@ tests:
   # non-grouped cols). nightshift-39: now matches Java.
   - query: SELECT * FROM t1 GROUP BY col1
     error_code: "42803"
-  # Java: SELECT id with GROUP BY col1 errors 42803 (id not grouped).
-  # Go currently returns NULL for ungrouped columns (one row per group,
-  # value missing). Pin current behavior; full per-column 42803
-  # enforcement is a runtime concern (need schema to distinguish from
-  # 42703 'undefined column'). TODO: enforce at proto-path eval.
+  # SELECT id with GROUP BY col1 errors 42803 (id not grouped).
+  # dayshift-40 aligned the proto-path with Java: the fd-exists check
+  # fires first (so undefined columns still surface as 42703), and a
+  # following groupByNames check rejects bare columns not in GROUP BY.
   - query: SELECT id FROM t1 GROUP BY col1 ORDER BY id
-    rows:
-      - [~]
-      - [~]
+    error_code: "42803"
+  # Same violation expressed through a second ungrouped projection
+  # column alongside a valid grouped one. `col2` is in schema but not
+  # in GROUP BY, so still 42803 even though `col1` would be fine.
+  - query: SELECT col1, col2 FROM t1 GROUP BY col1 ORDER BY col1
+    error_code: "42803"
   # Java: SELECT undefined_col → 42703 (undefined). Go matches.
   - query: SELECT bla FROM t1 GROUP BY col1
     error_code: "42703"
