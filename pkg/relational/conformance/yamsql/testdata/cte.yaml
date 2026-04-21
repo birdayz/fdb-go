@@ -105,6 +105,15 @@ tests:
       WITH c1(only_one) AS (SELECT id, v FROM t)
       SELECT only_one FROM c1
     error_code: "42F10"
+  # Duplicate CTE names in the same WITH list error 42712 (DUPLICATE_
+  # ALIAS) — Java's cte.yamsql pin:
+  #   WITH c1(w, z) AS (...), c1(a, b) AS (...) SELECT * FROM c1 → 42712.
+  # nightshift-39: added duplicate check at materialization time so the
+  # error triggers before overwriting the first entry.
+  - query: |-
+      WITH c1 AS (SELECT id FROM t), c1 AS (SELECT v FROM t)
+      SELECT * FROM c1
+    error_code: "42712"
   # Single-column rename works.
   - query: |-
       WITH c1(my_id) AS (SELECT id FROM t)

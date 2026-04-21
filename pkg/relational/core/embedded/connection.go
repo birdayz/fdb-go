@@ -547,6 +547,13 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		defer c.pushCTEScope()()
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
+			// Java alignment: duplicate CTE names in the same WITH list
+			// error 42712 (DUPLICATE_ALIAS) per cte.yamsql. Detect before
+			// overwriting so the error points at the second occurrence.
+			if _, dup := c.ctes[cteName]; dup {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"duplicate CTE name %q in WITH clause", cteName)
+			}
 			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
 			if cteErr != nil {
 				return nil, api.WrapErrorf(cteErr, api.ErrCodeInvalidParameter,
