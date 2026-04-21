@@ -1260,14 +1260,12 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 			continue
 		}
 		if colUpper == lastColUpper {
+			// `=` intentionally not handled — tryPKEqualityFromWhere
+			// fires before this function at every call site; if it
+			// would have matched (every PK column equated, types
+			// check), we wouldn't be here. Mirror of the comment in
+			// tryPKRangeFromWhere.
 			switch op {
-			case "=":
-				lastBounds.hasLow = true
-				lastBounds.low = val
-				lastBounds.lowInclusive = true
-				lastBounds.hasHigh = true
-				lastBounds.high = val
-				lastBounds.highInclusive = true
 			case ">":
 				lastBounds.hasLow = true
 				lastBounds.low = val
@@ -1369,11 +1367,9 @@ func pkPushdownCompositeRangeScanCursor(
 }
 
 // tryPKRangeFromWhere recognises single-column PK range predicates
-// (`>`, `>=`, `<`, `<=`, plus `=` as a point range). Returns the
-// low/high bounds when viable, or (_, false) otherwise. Composite
-// PKs stay on equality-only (tryPKEqualityFromWhere) because range
-// semantics over composite keys are more constrained (range is only
-// valid on the last equated component).
+// (`>`, `>=`, `<`, `<=`). Returns the low/high bounds when viable,
+// or (_, false) otherwise. Single-column PKs only; composite PKs
+// with a last-column range go through tryPKCompositeRangeFromWhere.
 //
 // Multiple bounds on the same side are collected with last-write-wins;
 // the scan loop's existing WHERE evaluator re-applies the full
