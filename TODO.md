@@ -298,7 +298,7 @@ Parallel audits across conformance / Go style / testing / correctness / architec
 
 ### Java-aligned bugs fixed in nightshift-39 (2026-04-21)
 
-The probe-against-Java-tests strategy surfaced and fixed 12 real Java-alignment bugs:
+The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment bugs:
 
 - [x] **Cross-type comparison** errors 22000 (9b55d469, ad558bcf): Java's `PromoteValue.isPromotionNeeded` → `SemanticException(INCOMPATIBLE_TYPE)` → `CANNOT_CONVERT_TYPE`. Both `=/!=/<>/<>` and IN-list paths.
 - [x] **NULL comparison projection** returns NULL not FALSE (e460afec): `SELECT b = true FROM lb` for b=NULL now surfaces NULL.
@@ -312,6 +312,7 @@ The probe-against-Java-tests strategy surfaced and fixed 12 real Java-alignment 
 - [x] **CTE column rename** `WITH name(c1, c2) AS (...)` (bf0f05e8, b9f5ed38): grammar accepted but materializer ignored.
 - [x] **IS [NOT] DISTINCT FROM in JOIN WHERE** (9c24cbfc + 22313c04): both value-eval + tri-predicate paths were missing the null-safe branch.
 - [x] **GROUP BY with expression projection** (946eef1a): `SELECT a+b FROM t GROUP BY a, b` errored 'a+b not found'. Fixed.
+- [x] **GROUP BY without aggregate silently ignored** (946eef1a): `SELECT a FROM t GROUP BY a` returned every row. Fixed — now behaves like DISTINCT.
 
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
