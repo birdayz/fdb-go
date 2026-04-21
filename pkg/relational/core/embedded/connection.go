@@ -2316,6 +2316,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if groupByNames[ac.groupCol] {
 				continue
 			}
+			// Qualified SELECT-list ref against an unqualified GROUP
+			// BY (or vice versa): check the bare last-segment too, so
+			// `SELECT x.col1 FROM ... GROUP BY col1` passes.
+			if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
+				if groupByNames[ac.groupCol[dot+1:]] {
+					continue
+				}
+			}
 			if _, defined := filtered[0][ac.groupCol]; defined {
 				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
@@ -2590,6 +2598,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	groupColIdx := map[string]int{}
 	for i, col := range sq.groupBy {
 		groupColIdx[col] = i
+		// Register the bare last-segment too so that a SELECT-list
+		// `col1` resolves a GROUP BY written as `x.col1`, and vice
+		// versa. Qualifier-vs-bare asymmetry otherwise emits NULL for
+		// the projection when the two forms don't match.
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			bare := col[dot+1:]
+			if _, exists := groupColIdx[bare]; !exists {
+				groupColIdx[bare] = i
+			}
+		}
 	}
 	// emitIdx lists the aggCols positions that appear in cols/data:
 	// visible columns first, then sortOnly columns (harvested from
@@ -2627,6 +2645,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			}
 			if ac.groupCol != "" {
 				idx, ok := groupColIdx[ac.groupCol]
+				if !ok {
+					// Qualified SELECT against unqualified GROUP BY:
+					// try the bare last-segment too. Symmetric with
+					// the validation loop above.
+					if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
+						idx, ok = groupColIdx[ac.groupCol[dot+1:]]
+					}
+				}
 				if ok {
 					fullVals[i] = gs.groupVals[idx]
 				}
@@ -3940,6 +3966,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			groupColIdx := map[string]int{}
 			for i, col := range sq.groupBy {
 				groupColIdx[col] = i
+				// Bare last-segment alias (symmetric with
+				// aggregateMapRows) so qualified GROUP BY keys resolve
+				// against unqualified SELECT-list references.
+				if dot := strings.LastIndex(col, "."); dot >= 0 {
+					bare := col[dot+1:]
+					if _, exists := groupColIdx[bare]; !exists {
+						groupColIdx[bare] = i
+					}
+				}
 			}
 			emitIdx := make([]int, 0, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
@@ -3970,6 +4005,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					}
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
+						if !ok {
+							if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
+								idx, ok = groupColIdx[ac.groupCol[dot+1:]]
+							}
+						}
 						if ok {
 							fullVals[i] = gs.groupVals[idx]
 						}

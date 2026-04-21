@@ -86,6 +86,22 @@ tests:
   # this silently overwrote the alias→col mapping.
   - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS X ORDER BY col1
     error_code: "42702"
+
+  # Qualified GROUP BY key on a derived table — Java
+  # groupby-tests.yamsql line 117. The groupColIdx needs to register
+  # the bare last-segment so `SELECT col1` resolves against a GROUP
+  # BY of `x.col1`; pre-fix it emitted NULL for each group.
+  - query: SELECT col1 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
+
+  # Mirror: unqualified GROUP BY key with qualified SELECT — also
+  # needs the bare / qualified symmetry in groupColIdx.
+  - query: SELECT x.col1 FROM (SELECT col1 FROM t1) AS x GROUP BY col1 ORDER BY col1
+    rows:
+      - [10]
+      - [20]
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct
