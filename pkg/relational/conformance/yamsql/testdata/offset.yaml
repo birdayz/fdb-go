@@ -31,3 +31,27 @@ tests:
   # SQLSTATE 2201W (invalid_row_count_in_limit_clause) is the SQL-
   # standard class-22 code for LIMIT/OFFSET range violations,
   # tightened from generic 22023 INVALID_PARAMETER.
+  # LIMIT 0 — explicit no-rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    rows: []
+  # LIMIT exactly equals row count — returns all rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 5
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # LIMIT larger than row count — returns all rows.
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+  # OFFSET partial overlap at end.
+  - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 3
+    rows:
+      - [4]
+      - [5]
