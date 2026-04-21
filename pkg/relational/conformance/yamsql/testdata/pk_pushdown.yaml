@@ -179,6 +179,40 @@ tests:
       - [1, 100]
       - [2, 200]
 
+  # Composite PK: leading equality + range on last component.
+  # Tuple prefix is (rtk, k='a'), range on g is [1, 1] inclusive.
+  # Collapses to the point (k='a', g=1).
+  - query: SELECT v FROM kv WHERE k = 'a' AND g >= 1 AND g <= 1
+    rows:
+      - [100]
+
+  # Composite PK: leading equality + half-open range on last col.
+  - query: SELECT g, v FROM kv WHERE k = 'a' AND g > 1 ORDER BY g
+    rows:
+      - [2, 200]
+
+  # Composite PK: leading equality + upper-bounded range on last col.
+  - query: SELECT g, v FROM kv WHERE k = 'b' AND g < 2 ORDER BY g
+    rows:
+      - [1, 300]
+
+  # Composite PK: inequality on non-last column — must NOT push down,
+  # because that would create a non-contiguous FDB key range. Falls
+  # through to scan.
+  - query: SELECT g, v FROM kv WHERE k > 'a' ORDER BY k, g
+    rows:
+      - [1, 300]
+      - [2, 400]
+
+  # Composite PK: equality on last + inequality on last — both bounds
+  # set on g, plus equality-to-range collapse. Last-write-wins
+  # ordering means the behavior depends on leaf order, but the scan
+  # path's evalPredicate enforces correctness regardless.
+  - query: SELECT v FROM kv WHERE k = 'b' AND g >= 1 AND g <= 2 ORDER BY v
+    rows:
+      - [300]
+      - [400]
+
   # Composite PK with type mismatch on one column (k is STRING, g is
   # BIGINT) — `g = 'notanumber'` should surface 22000 via the scan
   # path, not return an empty set from pushdown.

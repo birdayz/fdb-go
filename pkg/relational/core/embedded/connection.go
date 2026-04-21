@@ -1095,6 +1095,9 @@ func pkPushdownCursor(
 	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownRangeScanCursor(store, rt, bounds)
 	}
+	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
+	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 
@@ -1181,6 +1184,188 @@ func (c *EmbeddedConnection) tryPKRangePushdown(
 		return pkRangeBounds{}, false
 	}
 	return c.tryPKRangeFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// pkCompositeRange describes the leading equalities plus an optional
+// range on the LAST PK column that together yield a contiguous FDB
+// key range. Only valid for composite PKs where every column except
+// possibly the last is equated.
+type pkCompositeRange struct {
+	prefixVals []any // equalities for PK columns 0..len-2
+	lastBounds pkRangeBounds
+}
+
+// tryPKCompositeRangePushdown is the SELECT-gated variant of
+// tryPKCompositeRangeFromWhere.
+func (c *EmbeddedConnection) tryPKCompositeRangePushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) (pkCompositeRange, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return pkCompositeRange{}, false
+	}
+	if sq.havingExpr != nil {
+		return pkCompositeRange{}, false
+	}
+	return c.tryPKCompositeRangeFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// tryPKCompositeRangeFromWhere recognises the case of a composite
+// PK where all leading columns are equated to literals and the
+// LAST column has either an equality or a range predicate. The
+// range is valid on the last component only because composite key
+// ranges are contiguous in FDB only when prefixed by fixed values.
+func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) (pkCompositeRange, bool) {
+	if whereExpr == nil {
+		return pkCompositeRange{}, false
+	}
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) < 2 {
+		// Single-col PKs go through tryPKRangeFromWhere; 0-col PKs
+		// can't be pushed down at all.
+		return pkCompositeRange{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return pkCompositeRange{}, false
+	}
+	// Column-name → (op, val) from the WHERE leaves. An equality
+	// counts once; a range contributes one or both bounds on the
+	// same column. If a non-last PK column has anything other than
+	// equality, bail.
+	equalities := make(map[string]any, len(pkCols))
+	var lastBounds pkRangeBounds
+	lastCol := pkCols[len(pkCols)-1]
+	lastColUpper := strings.ToUpper(lastCol)
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		colUpper := strings.ToUpper(col)
+		isPK := false
+		for _, pkc := range pkCols {
+			if strings.EqualFold(pkc, col) {
+				isPK = true
+				break
+			}
+		}
+		if !isPK {
+			// Non-PK leaves are post-filtered by the scan — ignore.
+			continue
+		}
+		if colUpper == lastColUpper {
+			switch op {
+			case "=":
+				lastBounds.hasLow = true
+				lastBounds.low = val
+				lastBounds.lowInclusive = true
+				lastBounds.hasHigh = true
+				lastBounds.high = val
+				lastBounds.highInclusive = true
+			case ">":
+				lastBounds.hasLow = true
+				lastBounds.low = val
+				lastBounds.lowInclusive = false
+			case ">=":
+				lastBounds.hasLow = true
+				lastBounds.low = val
+				lastBounds.lowInclusive = true
+			case "<":
+				lastBounds.hasHigh = true
+				lastBounds.high = val
+				lastBounds.highInclusive = false
+			case "<=":
+				lastBounds.hasHigh = true
+				lastBounds.high = val
+				lastBounds.highInclusive = true
+			}
+			continue
+		}
+		// Non-last PK column — only equality is acceptable.
+		if op != "=" {
+			return pkCompositeRange{}, false
+		}
+		equalities[colUpper] = val
+	}
+	// Every PK column except the last must have an equality.
+	prefixVals := make([]any, len(pkCols)-1)
+	for i := 0; i < len(pkCols)-1; i++ {
+		col := pkCols[i]
+		val, ok := equalities[strings.ToUpper(col)]
+		if !ok {
+			return pkCompositeRange{}, false
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil {
+			return pkCompositeRange{}, false
+		}
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			return pkCompositeRange{}, false
+		}
+		prefixVals[i] = val
+	}
+	// If the last column has no range or equality, we're left with
+	// just the prefix — that's a prefix scan, not a narrowed range.
+	// Fall through to the regular per-type scan (which is equally
+	// fast since the prefix IS the type prefix plus a bit more, and
+	// the current code doesn't know to narrow without a full bound).
+	if !lastBounds.hasLow && !lastBounds.hasHigh {
+		return pkCompositeRange{}, false
+	}
+	// Type-check the last column's bounds.
+	lastFD := rt.Descriptor.Fields().ByName(protoreflect.Name(lastCol))
+	if lastFD == nil {
+		return pkCompositeRange{}, false
+	}
+	if lastBounds.hasLow && !literalMatchesPKKind(lastBounds.low, lastFD.Kind()) {
+		return pkCompositeRange{}, false
+	}
+	if lastBounds.hasHigh && !literalMatchesPKKind(lastBounds.high, lastFD.Kind()) {
+		return pkCompositeRange{}, false
+	}
+	return pkCompositeRange{prefixVals: prefixVals, lastBounds: lastBounds}, true
+}
+
+// pkPushdownCompositeRangeScanCursor builds a range scan whose low
+// and high tuples share the same leading prefix (the equated
+// non-last PK columns) and differ only in the last component. When
+// the range is open on one side, the corresponding tuple falls back
+// to the prefix (inclusive) — covering the full range of that
+// prefix's last-component values in either direction.
+func pkPushdownCompositeRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	cr pkCompositeRange,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	rtk := rt.GetRecordTypeKey()
+	prefix := make(tuple.Tuple, 0, 1+len(cr.prefixVals))
+	prefix = append(prefix, rtk)
+	for _, v := range cr.prefixVals {
+		prefix = append(prefix, v)
+	}
+	low := append(tuple.Tuple{}, prefix...)
+	high := append(tuple.Tuple{}, prefix...)
+	lowEp := recordlayer.EndpointTypeRangeInclusive
+	highEp := recordlayer.EndpointTypeRangeInclusive
+	if cr.lastBounds.hasLow {
+		low = append(low, cr.lastBounds.low)
+		if !cr.lastBounds.lowInclusive {
+			lowEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	if cr.lastBounds.hasHigh {
+		high = append(high, cr.lastBounds.high)
+		if !cr.lastBounds.highInclusive {
+			highEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
 }
 
 // tryPKRangeFromWhere recognises single-column PK range predicates
@@ -3436,6 +3621,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
+		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}
