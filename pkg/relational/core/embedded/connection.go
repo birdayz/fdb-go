@@ -7177,7 +7177,7 @@ func nullSafeEqual(a, b driver.Value) bool {
 // contributed a NULL (the expansion into an AND/OR chain of equalities
 // collapses to UNKNOWN in that case). WHERE callers collapse triNull to
 // false; NOT IN sees an UNKNOWN that must not flip to TRUE.
-func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) triBool {
+func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bool) (triBool, error) {
 	var hadNull bool
 	for _, row := range subRows {
 		if len(row) == 0 {
@@ -7189,20 +7189,28 @@ func matchSubqueryIN(fieldVal driver.Value, subRows [][]driver.Value, negated bo
 			hadNull = true
 			continue
 		}
+		// Cross-type comparison is 22000 per Java alignment (matches the
+		// IN-list path's valuesComparable check at evalInPredicateTri).
+		// fieldVal != nil is guaranteed by callers — evalInPredicateTri
+		// returns triNull early on NULL fieldVal.
+		if fieldVal != nil && !valuesComparable(fieldVal, v) {
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"subquery IN: cannot compare %T and %T", fieldVal, v)
+		}
 		if valuesEqual(fieldVal, v) {
 			if negated {
-				return triFalse
+				return triFalse, nil
 			}
-			return triTrue
+			return triTrue, nil
 		}
 	}
 	if hadNull {
-		return triNull
+		return triNull, nil
 	}
 	if negated {
-		return triTrue
+		return triTrue, nil
 	}
-	return triFalse
+	return triFalse, nil
 }
 
 // evalInPredicate handles: expr [NOT] IN (val1, val2, ...) or expr [NOT] IN (subquery)
@@ -7246,7 +7254,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
 				"subquery for IN must return exactly one column, got %d", len(subCols))
 		}
-		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil), nil
+		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)
 	}
 
 	exprs := in.InList().Expressions().AllExpression()
@@ -8067,7 +8075,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			if subErr != nil {
 				return triFalse, subErr
 			}
-			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil), nil
+			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil)
 		}
 		if p.InList().Expressions() == nil {
 			return triFromBool(p.NOT() != nil), nil
