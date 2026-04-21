@@ -4204,8 +4204,11 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if len(sq.groupBy) > 0 && len(sq.aggCols) == 0 && len(projCols) > 0 {
 		for _, q := range projStarQualifiers {
 			if q != "" {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					"cannot mix qualifier.* with GROUP BY in SELECT list")
+				// Java errors 42803 (grouping error) for `SELECT a.* ...
+				// GROUP BY a1` because the star expands to cols not in
+				// GROUP BY. Pre-dayshift-40 Go emitted 0A000 (unsupported).
+				return nil, api.NewError(api.ErrCodeGroupingError,
+					"SELECT qualifier.* expands to columns not in GROUP BY")
 			}
 		}
 		// Java 42803 validation per column: defer to runtime so that
