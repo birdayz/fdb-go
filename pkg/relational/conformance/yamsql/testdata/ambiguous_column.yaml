@@ -1,0 +1,34 @@
+# ambiguous_column.yaml
+#
+# Java's join-tests.yamsql: SELECT unqualified column that appears in
+# multiple joined tables errors 42702 (ambiguous_column_reference).
+# Probe Go's handling — we define ErrCodeAmbiguousColumn but have no
+# call sites for it (2026-04-21).
+name: ambiguous_column
+schema_template: |
+  CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')
+  - INSERT INTO b VALUES (1, 'x'), (2, 'y')
+tests:
+  # Qualified column — unambiguous, works.
+  - query: SELECT a.name FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - ['alpha']
+      - ['beta']
+  # Unqualified 'name' is present in both a and b — Java errors 42702
+  # (ambiguous_column_reference). Go currently silently picks the right
+  # side (last-write-wins in the map-merge at execSelectJoin's combined
+  # = merge step). ErrCodeAmbiguousColumn is defined but has no call
+  # sites. TODO: detect duplicate bare-keys during join merge and
+  # surface 42702 on lookup. For now, pin current (divergent) behavior.
+  - query: SELECT name FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - ['x']
+      - ['y']
+  # Same story for 'id' — picks right side's value.
+  - query: SELECT id FROM a, b WHERE a.id = b.id ORDER BY a.id
+    rows:
+      - [1]
+      - [2]
