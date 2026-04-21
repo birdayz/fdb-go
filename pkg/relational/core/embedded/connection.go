@@ -1035,7 +1035,17 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				gVals[gi] = v
 			} else if dot := strings.LastIndex(gcol, "."); dot >= 0 {
-				gVals[gi] = row[gcol[dot+1:]]
+				// Fallback: strip table prefix and retry bare. If the
+				// qualified form wasn't populated (e.g. qualifier doesn't
+				// match any source) and the bare key is ambiguous, still
+				// trip 42702 instead of silently using the sentinel as a
+				// group-key value.
+				v := row[gcol[dot+1:]]
+				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"GROUP BY column reference %q is ambiguous", m.Col)
+				}
+				gVals[gi] = v
 			}
 		}
 		key := groupByKey(gVals)
