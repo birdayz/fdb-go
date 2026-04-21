@@ -117,6 +117,23 @@ type EmbeddedConnection struct {
 	// pre-dayshift-40 behavior for non-JOIN code paths.
 	validQualifiers map[string]bool
 
+	// outerScopes is a stack of outer-row scopes used to resolve correlated
+	// column references from inside a subquery (EXISTS / IN / scalar).
+	// Pushed at each subquery entry point (snapshots the current row of
+	// the outer scan), popped on return via the pushOuterScope pop func.
+	// The innermost scope is at the end. Empty stack = no correlation
+	// context. See evalExprAtom / evalExprAtomOnMap for lookup semantics.
+	outerScopes []outerScope
+
+	// currentSourceAliases holds the uppercased set of qualifier aliases
+	// for the outer proto-path scan currently executing (e.g. `FROM emp
+	// AS e` → {"E", "EMP"}). Consumed by outerScopeFromMsg so a
+	// correlated inner reference like `e.id` resolves even when the
+	// outer uses an explicit user alias distinct from the proto
+	// descriptor name. nil outside a proto scan — outerScopeFromMsg
+	// falls back to msg's descriptor name.
+	currentSourceAliases map[string]bool
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
@@ -185,6 +202,183 @@ func (c *EmbeddedConnection) pushValidQualifiersScope(set map[string]bool) func(
 	prior := c.validQualifiers
 	c.validQualifiers = set
 	return func() { c.validQualifiers = prior }
+}
+
+// outerScope is one level of outer-row binding for correlated subqueries.
+// At least one of msg / row is non-nil:
+//   - msg  : proto-backed outer (single-source SELECT, WHERE call site).
+//   - row  : map-backed outer (JOIN / CTE / HAVING / aggregate). Keys are
+//     both unqualified (`col`) and qualified (`alias.col`) per
+//     scanTableToMaps convention.
+//
+// qualifiers holds the uppercased set of valid qualifier aliases for this
+// outer. A correlated reference `qual.col` matches this scope iff qual is
+// in the set. Unqualified `col` falls back through scopes innermost-first
+// regardless of qualifiers.
+type outerScope struct {
+	msg        proto.Message
+	row        map[string]driver.Value
+	qualifiers map[string]bool
+}
+
+// pushOuterScope appends one outer-row scope to the correlation stack and
+// returns a pop function that trims it back. Use with `defer` at every
+// subquery entry point (EXISTS, IN, scalar subquery) so nested
+// correlations stack correctly. Safe to call with a zero-value scope
+// (msg == nil && row == nil) — lookups fall through to the next level.
+func (c *EmbeddedConnection) pushOuterScope(s outerScope) func() {
+	c.outerScopes = append(c.outerScopes, s)
+	return func() { c.outerScopes = c.outerScopes[:len(c.outerScopes)-1] }
+}
+
+// outerScopeFromMsg builds an outerScope for a proto-backed outer row.
+// Qualifier set combines:
+//   - the message's descriptor name (always)
+//   - any user-level aliases recorded on conn.currentSourceAliases
+//     (e.g. `FROM emp AS e` → {"E"} plus the descriptor "EMP")
+//
+// Returns a zero-value scope when msg is nil so the caller doesn't need
+// to nil-check. conn may be nil in unit tests; descriptor name alone
+// is sufficient there.
+func outerScopeFromMsg(conn *EmbeddedConnection, msg proto.Message) outerScope {
+	if msg == nil {
+		return outerScope{}
+	}
+	quals := map[string]bool{
+		strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name())): true,
+	}
+	if conn != nil {
+		for a := range conn.currentSourceAliases {
+			quals[a] = true
+		}
+	}
+	return outerScope{msg: msg, qualifiers: quals}
+}
+
+// pushSourceAliases records the current outer-scan source aliases so
+// a subquery's outerScopeFromMsg can expose them to correlated column
+// resolution. Pass any SQL-level aliases (e.g. sq.tableAlias and
+// sq.tableName) — they're uppercased for case-insensitive match. Returns
+// a pop function.
+func (c *EmbeddedConnection) pushSourceAliases(aliases ...string) func() {
+	prior := c.currentSourceAliases
+	m := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		if a == "" {
+			continue
+		}
+		m[strings.ToUpper(a)] = true
+	}
+	c.currentSourceAliases = m
+	return func() { c.currentSourceAliases = prior }
+}
+
+// outerScopeFromMapRow builds an outerScope for a map-backed outer row
+// (JOIN / CTE / HAVING aggregate). qualifiers is derived from every
+// qualified key in the row: for each key of the form `alias.col`, the
+// prefix is added (uppercased) to the qualifier set. Returns a zero-
+// value scope for a nil/empty row.
+func outerScopeFromMapRow(row map[string]driver.Value) outerScope {
+	if len(row) == 0 {
+		return outerScope{}
+	}
+	quals := make(map[string]bool)
+	for k := range row {
+		if dot := strings.LastIndex(k, "."); dot >= 0 {
+			quals[strings.ToUpper(k[:dot])] = true
+		}
+	}
+	return outerScope{row: row, qualifiers: quals}
+}
+
+// outerScopesContainQualifier reports whether any outer scope on the
+// stack declares qualUpper as a valid qualifier alias. Used by the
+// map-path evaluator to let correlated `outer.col` references bypass
+// the JOIN-scope valid-qualifier reject before falling through to
+// resolveOuterColumn.
+func outerScopesContainQualifier(c *EmbeddedConnection, qualUpper string) bool {
+	for _, s := range c.outerScopes {
+		if s.qualifiers[qualUpper] {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveOuterColumn walks the outer-scope stack innermost-first trying
+// to resolve a column reference that was not found in the inner scope.
+// Returns (value, found, err).
+//
+// Qualified `qual.col`: only scopes whose qualifiers set contains qual
+// are consulted. A qualified reference binds to exactly one source per
+// SQL semantics, so when a scope's qualifier matches but the bare
+// column is missing, resolution stops with 42703 — we do NOT continue
+// to the next outer scope (another scope with the same qualifier name
+// would be a shadowing violation at the SQL level).
+//
+// Unqualified `col`: every scope is tried in order; first match wins.
+// Identifier case is preserved verbatim from the AST; if a GROUP BY
+// clause and a correlated reference use different casing, the lookup
+// will miss (matches the rest of this evaluator's case-sensitive
+// column semantics).
+func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, bool, error) {
+	qual := ""
+	bare := colName
+	if dot := strings.LastIndex(colName, "."); dot >= 0 {
+		qual = strings.ToUpper(colName[:dot])
+		bare = colName[dot+1:]
+	}
+	for i := len(c.outerScopes) - 1; i >= 0; i-- {
+		s := c.outerScopes[i]
+		if qual != "" && !s.qualifiers[qual] {
+			continue
+		}
+		switch {
+		case s.msg != nil:
+			fd := s.msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
+			if fd == nil {
+				if qual != "" {
+					return nil, false, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"column %q not found in correlated source %q", bare, qual)
+				}
+				continue
+			}
+			if !s.msg.ProtoReflect().Has(fd) {
+				return nil, true, nil
+			}
+			return protoValueToDriver(fd, s.msg.ProtoReflect().Get(fd)), true, nil
+		case s.row != nil:
+			if qual != "" {
+				// Row keys preserve the SQL-level alias case (e.g. `e.id`
+				// when the outer wrote `FROM emp AS e`); the qualifier
+				// set and lookup qual are uppercased. Do a case-
+				// insensitive prefix match so `E.id` → `e.id`.
+				for k, v := range s.row {
+					dot := strings.LastIndex(k, ".")
+					if dot < 0 {
+						continue
+					}
+					if strings.EqualFold(k[:dot], qual) && k[dot+1:] == bare {
+						if _, isAmb := v.(ambiguousColumnMarker); isAmb {
+							return nil, false, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+								"correlated column reference %q is ambiguous", colName)
+						}
+						return v, true, nil
+					}
+				}
+				return nil, false, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in correlated source %q", bare, qual)
+			}
+			if v, ok := s.row[bare]; ok {
+				if _, isAmb := v.(ambiguousColumnMarker); isAmb {
+					return nil, false, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"correlated column reference %q is ambiguous", bare)
+				}
+				return v, true, nil
+			}
+		}
+	}
+	return nil, false, nil
 }
 
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
@@ -629,8 +823,15 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			}
 			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
 			if cteErr != nil {
-				return nil, api.WrapErrorf(cteErr, api.ErrCodeInvalidParameter,
-					"CTE %q", cteName)
+				// Preserve the inner SQLSTATE (e.g. 42703 from a missing
+				// column reference in a renamed outer CTE); otherwise
+				// well-typed inner errors get masked as generic 22023.
+				innerCode := api.ErrCodeInvalidParameter
+				var apiErr *api.Error
+				if errors.As(cteErr, &apiErr) {
+					innerCode = apiErr.Code
+				}
+				return nil, api.WrapErrorf(cteErr, innerCode, "CTE %q", cteName)
 			}
 			// Java alignment: WITH name(c1, c2, ...) AS (SELECT ...) — the
 			// optional column-list renames the CTE's output columns. The
@@ -1079,12 +1280,18 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	// (sentinel in row[gcol]) also surfaces 42702 via the emission
 	// loop below — consistent.
 	if len(sq.groupBy) > 0 && len(filtered) > 0 {
-		groupByNames := make(map[string]bool, len(sq.groupBy))
+		groupByNames := make(map[string]bool, len(sq.groupBy)*2)
 		for i, gn := range sq.groupBy {
 			if i < len(sq.groupByExprs) && sq.groupByExprs[i] != nil {
 				continue
 			}
 			groupByNames[gn] = true
+			// Also store the bare form so `GROUP BY x.col1` matches
+			// a `col1` reference in SELECT-list expressions, and vice
+			// versa. scanTableToMaps / cteRowsToMaps populate both.
+			if dot := strings.LastIndex(gn, "."); dot >= 0 {
+				groupByNames[gn[dot+1:]] = true
+			}
 		}
 		for _, ac := range sq.aggCols {
 			if ac.groupCol == "" || ac.outExpr != nil {
@@ -1097,6 +1304,68 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 					ac.groupCol)
+			}
+		}
+		// Aggregate function argument: MAX(x.col) etc. must reference a
+		// column defined by the source. Java errors 42703 when it isn't.
+		// Pre-fix Go silently treated nil as a NULL and the MIN/MAX slot
+		// was left at zero-value. Probe the first filtered row's keys.
+		for _, ac := range sq.aggCols {
+			if ac.aggArg == "" || ac.aggExpr != nil {
+				continue
+			}
+			if _, defined := filtered[0][ac.aggArg]; defined {
+				continue
+			}
+			if dot := strings.LastIndex(ac.aggArg, "."); dot >= 0 {
+				if _, defined := filtered[0][ac.aggArg[dot+1:]]; defined {
+					continue
+				}
+			}
+			return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q not found", ac.aggArg)
+		}
+		// outExpr entries (post-aggregation projection expressions like
+		// `x.col1 + x.col2`): each referenced column must either be in
+		// GROUP BY or wrapped in an aggregate. Java errors 42803 for
+		// ungrouped; pre-swingshift-41 Go let the reference through then
+		// failed at emit time with 42703 ("not found in row"). Walk the
+		// expression tree collecting bare column refs; any ref not in
+		// GROUP BY that IS defined in the source → 42803. Refs inside
+		// aggregate calls are fine (the aggregate computes them).
+		//
+		// Asymmetry: when a ref is NOT in GROUP BY AND NOT defined in
+		// the source, we intentionally do NOT raise 42803 here — it
+		// falls through and fails downstream at evalExprOnMap time with
+		// 42703 ("column not found"). Matches Java's distinction:
+		// 42803 = "column exists but ungrouped"; 42703 = "column
+		// doesn't exist at all".
+		//
+		// groupByNames preserves identifier case from the AST (no
+		// case folding). A GROUP BY that uses `x.Col1` and an outExpr
+		// that uses `x.col1` will miss the match and raise a false
+		// 42803 — consistent with the rest of this evaluator's case-
+		// sensitive semantics, not a new regression.
+		for _, ac := range sq.aggCols {
+			if ac.outExpr == nil {
+				continue
+			}
+			for _, ref := range harvestColumnRefs(ac.outExpr) {
+				bare := ref
+				if dot := strings.LastIndex(ref, "."); dot >= 0 {
+					bare = ref[dot+1:]
+				}
+				if groupByNames[ref] || groupByNames[bare] {
+					continue
+				}
+				// Not grouped — check if the column is defined in source.
+				_, definedQual := filtered[0][ref]
+				_, definedBare := filtered[0][bare]
+				if definedQual || definedBare {
+					return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
+						"column %q must appear in the GROUP BY clause or be used in an aggregate function",
+						ref)
+				}
 			}
 		}
 	}
@@ -1369,6 +1638,26 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			rowMap[ac.outName] = fullVals[i]
+		}
+		// Seed the group-by column values into rowMap so Pass 2 outExpr
+		// entries can reference them (`SELECT x.col1 + 10 FROM ... GROUP
+		// BY x.col1`). Pre-fix, only aggCols-outName entries were in
+		// rowMap so any reference to a bare group key errored 42703.
+		// Populate both the GROUP BY name (qualified or bare as written)
+		// and the stripped bare form so the evaluator finds it either way.
+		for i, gname := range sq.groupBy {
+			if i >= len(gs.groupVals) {
+				break
+			}
+			if _, seen := rowMap[gname]; !seen {
+				rowMap[gname] = gs.groupVals[i]
+			}
+			if dot := strings.LastIndex(gname, "."); dot >= 0 {
+				bare := gname[dot+1:]
+				if _, seen := rowMap[bare]; !seen {
+					rowMap[bare] = gs.groupVals[i]
+				}
+			}
 		}
 		// Pass 2: evaluate outExpr entries against the now-populated rowMap.
 		// evalExprOnMap resolves AggregateFunctionCall atoms via rowMap lookup
@@ -2054,6 +2343,35 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 				colNames[j] = col
 			}
 		}
+		// Java alignment (cte.yamsql line 111,114): when a WITH rename
+		// renames the CTE columns (e.g. `WITH c1(w, z) AS (SELECT id,
+		// v FROM t)`), the original names (id, v) are no longer
+		// visible from the CTE. Pre-swingshift-41 Go emitted NULL for
+		// unknown bare columns since `row[col]` returns zero value on
+		// miss. Validate each bare col against the CTE's cols; error
+		// 42703 when missing. Qualified `alias.col` follows the same
+		// rule on the bare suffix. Expression slots (projExprs[j] !=
+		// nil) skip the check — evalExprOnMap raises 42703 itself.
+		cteColSet := make(map[string]bool, len(cte.cols))
+		for _, col := range cte.cols {
+			cteColSet[col] = true
+		}
+		for j, col := range sq.projCols {
+			if j < len(sq.projExprs) && sq.projExprs[j] != nil {
+				continue
+			}
+			if col == "" {
+				continue // qualifier-star sentinel; handled elsewhere
+			}
+			bare := col
+			if dot := strings.LastIndex(col, "."); dot >= 0 {
+				bare = col[dot+1:]
+			}
+			if !cteColSet[bare] {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in CTE %q", col, sq.tableName)
+			}
+		}
 		for _, row := range mapRows {
 			outRow := make([]driver.Value, len(sq.projCols))
 			for j, col := range sq.projCols {
@@ -2273,6 +2591,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
+
+		// Record the SQL-level aliases of this scan so correlated
+		// subqueries can expose them to outerScopeFromMsg (e.g.
+		// `FROM emp AS e` → {"E", "EMP"}). Pop on function return.
+		defer c.pushSourceAliases(sq.tableName, sq.tableAlias)()
 
 		if sq.countStar {
 			cols = []string{countStarOutName(sq)}
@@ -3912,7 +4235,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				"JOIN clauses on comma-separated FROM sources are not supported")
 		}
 	}
-	// Check for derived table: FROM (SELECT ...) AS alias
+	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
+	// a plain atom table. Build a common `sq` in either case so the
+	// post-construction pipeline (ORDER BY / LIMIT / GROUP BY / HAVING /
+	// GR1 validation) applies uniformly — pre-swingshift-41 the derived
+	// branch returned early, dropping all of those.
+	var sq *selectQuery
 	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
 		alias := ""
 		if subItem.GetAlias() != nil {
@@ -3921,14 +4249,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
-		// Pre-dayshift-40: extraCrossJoins built from `FROM (sub) AS sq, b, c`
-		// were silently dropped here because the return bailed before
-		// plumbing them. Thread them through so comma-joined real tables
-		// on the right of a derived-table left source actually execute.
 		// Derived-table-on-the-right + comma-joined remains a separate
 		// gap (the extra-source parser still rejects SubqueryTableItem at
-		// line ~3757; see derived_table_renamed.yaml's 0A000 pin).
-		return &selectQuery{
+		// line ~3757; see derived_table_renamed.yaml's 0A000 pin). For the
+		// left-derived case, thread extraCrossJoins so `(sub) AS x, b, c`
+		// runs the comma-joined real tables on the right.
+		sq = &selectQuery{
 			tableName:          alias,
 			tableAlias:         alias,
 			joins:              extraCrossJoins,
@@ -3944,73 +4270,73 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			whereExpr:          fromClause.WhereExpr(),
 			limit:              -1,
 			derivedQuery:       subItem.Query(),
-		}, nil
-	}
-
-	atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"unsupported table source item %T; only plain table names are supported",
-			srcBase.TableSourceItem())
-	}
-	// Build table name from uid segments, stripping identifier quotes.
-	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
-	uids := atomItem.TableName().FullId().AllUid()
-	parts := make([]string, len(uids))
-	for i, u := range uids {
-		parts[i] = stripIdentifierQuotes(u.GetText())
-	}
-	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
-	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
-	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
-	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
-	// InnerJoinContext to a LEFT/RIGHT join.
-	leftAlias := ""
-	promotedJoinType := ""
-	if atomItem.AS() != nil && atomItem.Uid() != nil {
-		leftAlias = stripIdentifierQuotes(atomItem.Uid().GetText())
-	} else if atomItem.Uid() != nil {
-		misAlias := strings.ToUpper(atomItem.Uid().GetText())
-		if misAlias == "LEFT" || misAlias == "RIGHT" {
-			promotedJoinType = misAlias
 		}
-	}
-	if leftAlias == "" {
-		leftAlias = strings.Join(parts, ".")
-	}
-
-	// Parse JOIN clauses.
-	var joins []joinClause
-	for _, jp := range srcBase.AllJoinPart() {
-		jc, jErr := extractJoinClause(jp)
-		if jErr != nil {
-			return nil, jErr
+	} else {
+		atomItem, ok := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+		if !ok {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"unsupported table source item %T; only plain table names are supported",
+				srcBase.TableSourceItem())
 		}
-		joins = append(joins, jc)
-	}
-	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-	if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
-		joins[0].joinType = promotedJoinType
-	}
-	// Implicit cross joins from comma-separated FROM sources run last; the
-	// WHERE predicate decides which combinations survive.
-	joins = append(joins, extraCrossJoins...)
+		// Build table name from uid segments, stripping identifier quotes.
+		// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
+		uids := atomItem.TableName().FullId().AllUid()
+		parts := make([]string, len(uids))
+		for i, u := range uids {
+			parts[i] = stripIdentifierQuotes(u.GetText())
+		}
+		// Only use Uid() as alias when AS is explicit. Without AS, the parser may
+		// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
+		// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
+		// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
+		// InnerJoinContext to a LEFT/RIGHT join.
+		leftAlias := ""
+		promotedJoinType := ""
+		if atomItem.AS() != nil && atomItem.Uid() != nil {
+			leftAlias = stripIdentifierQuotes(atomItem.Uid().GetText())
+		} else if atomItem.Uid() != nil {
+			misAlias := strings.ToUpper(atomItem.Uid().GetText())
+			if misAlias == "LEFT" || misAlias == "RIGHT" {
+				promotedJoinType = misAlias
+			}
+		}
+		if leftAlias == "" {
+			leftAlias = strings.Join(parts, ".")
+		}
 
-	sq := &selectQuery{
-		tableName:          strings.Join(parts, "."),
-		tableAlias:         leftAlias,
-		joins:              joins,
-		projCols:           projCols,
-		projAliases:        projAliases,
-		projExprs:          projExprs,
-		projStarQualifiers: projStarQualifiers,
-		projQualifier:      projQualifier,
-		countStar:          countStar,
-		countStarAlias:     countStarAlias,
-		aggCols:            aggCols,
-		distinct:           simpleTable.DISTINCT() != nil,
-		whereExpr:          fromClause.WhereExpr(),
-		limit:              -1,
+		// Parse JOIN clauses.
+		var joins []joinClause
+		for _, jp := range srcBase.AllJoinPart() {
+			jc, jErr := extractJoinClause(jp)
+			if jErr != nil {
+				return nil, jErr
+			}
+			joins = append(joins, jc)
+		}
+		// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
+		if promotedJoinType != "" && len(joins) > 0 && joins[0].joinType == "INNER" {
+			joins[0].joinType = promotedJoinType
+		}
+		// Implicit cross joins from comma-separated FROM sources run last; the
+		// WHERE predicate decides which combinations survive.
+		joins = append(joins, extraCrossJoins...)
+
+		sq = &selectQuery{
+			tableName:          strings.Join(parts, "."),
+			tableAlias:         leftAlias,
+			joins:              joins,
+			projCols:           projCols,
+			projAliases:        projAliases,
+			projExprs:          projExprs,
+			projStarQualifiers: projStarQualifiers,
+			projQualifier:      projQualifier,
+			countStar:          countStar,
+			countStarAlias:     countStarAlias,
+			aggCols:            aggCols,
+			distinct:           simpleTable.DISTINCT() != nil,
+			whereExpr:          fromClause.WhereExpr(),
+			limit:              -1,
+		}
 	}
 
 	// Parse ORDER BY clause.
@@ -4133,7 +4459,23 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	// time.
 	groupByCtx := simpleTable.GroupByClause()
 	if groupByCtx != nil {
+		// Java alignment: `GROUP BY col AS alias` is a syntactic
+		// extension that assigns a name to the group key. Java errors
+		// 42702 (ambiguous-column) when the same alias appears twice
+		// (groupby-tests.yamsql: `group by col1 as x, col2 as x`).
+		// Track aliases across all items and reject duplicates; the
+		// alias itself is otherwise unused at evaluation time — the
+		// group key comes from the expression.
+		seenAliases := make(map[string]bool)
 		for _, item := range groupByCtx.AllGroupByItem() {
+			if item.Uid() != nil {
+				alias := stripIdentifierQuotes(item.Uid().GetText())
+				if seenAliases[alias] {
+					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"duplicate alias %q in GROUP BY", alias)
+				}
+				seenAliases[alias] = true
+			}
 			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
 			if posErr != nil {
 				return nil, posErr
@@ -4525,6 +4867,46 @@ func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
 	}
 	visit(expr)
 	return found
+}
+
+// harvestColumnRefs walks an expression tree and returns the set of column
+// names (dot-separated) referenced outside of aggregate function calls.
+// Used by aggregateMapRows's pre-check to detect ungrouped column
+// references in outExpr projection entries (42803 vs 42703 distinction).
+// Refs inside aggregate calls are correctly computed by the aggregate
+// itself — walking into them would flag false positives.
+func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
+	if expr == nil {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil {
+			return
+		}
+		// Don't recurse into aggregate function calls — the aggregate
+		// resolves its own argument from the group's accumulator.
+		if fc, ok := n.(*antlrgen.FunctionCallExpressionAtomContext); ok {
+			if _, isAgg := fc.FunctionCall().(*antlrgen.AggregateFunctionCallContext); isAgg {
+				return
+			}
+		}
+		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			name := fullIdToName(c.FullColumnName().FullId())
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(expr)
+	return names
 }
 
 // harvestAggregates walks an expression tree looking for aggregate function
@@ -5527,20 +5909,59 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		return evalConstant(a.Constant())
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		colName := fullIdToName(a.FullColumnName().FullId())
+		// Try inner scope first: strip any qualifier and look up on msg.
+		// For qualified `qual.col`, fall through to outer scopes when qual
+		// does not match the inner msg's descriptor name — otherwise
+		// `emp.id` in an inner `FROM project` would silently resolve to
+		// `project.id`. Unqualified `col` prefers inner; falls through
+		// only on miss.
+		bare := colName
+		qual := ""
+		if dot := strings.LastIndex(colName, "."); dot >= 0 {
+			qual = strings.ToUpper(colName[:dot])
+			bare = colName[dot+1:]
+		}
+		if msg != nil {
+			// Inner qualifier match: accept the descriptor name always;
+			// also accept any SQL-level alias declared by the current
+			// scan (conn.currentSourceAliases, populated by scan loops
+			// when they enter), so `FROM project AS p WHERE p.emp_id`
+			// resolves p → project even though the descriptor is
+			// PROJECT. nil conn (unit-test eval) falls back to the
+			// descriptor-only check.
+			innerName := strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name()))
+			innerMatches := qual == "" || qual == innerName
+			if !innerMatches && conn != nil && conn.currentSourceAliases[qual] {
+				innerMatches = true
+			}
+			if innerMatches {
+				fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(bare))
+				if fd != nil {
+					// Absent proto2 optional fields are SQL NULL — distinct from the zero
+					// value. Predicates already use Has(); function arguments must too,
+					// otherwise UPPER(NULL) would produce "" instead of NULL.
+					if !msg.ProtoReflect().Has(fd) {
+						return nil, nil
+					}
+					return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
+				}
+			}
+		}
+		// Correlated subquery fallback: walk outer-row stack when inner
+		// lookup failed (qualifier mismatch or missing field).
+		if conn != nil && len(conn.outerScopes) > 0 {
+			v, found, oerr := conn.resolveOuterColumn(colName)
+			if oerr != nil {
+				return nil, oerr
+			}
+			if found {
+				return v, nil
+			}
+		}
 		if msg == nil {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "column reference %q not allowed in this context", colName)
 		}
-		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
-		if fd == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
-		}
-		// Absent proto2 optional fields are SQL NULL — distinct from the zero
-		// value. Predicates already use Has(); function arguments must too,
-		// otherwise UPPER(NULL) would produce "" instead of NULL.
-		if !msg.ProtoReflect().Has(fd) {
-			return nil, nil
-		}
-		return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
+		return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 	case *antlrgen.MathExpressionAtomContext:
 		left, err := evalExprAtom(ctx, conn, msg, a.GetLeft())
 		if err != nil {
@@ -7230,6 +7651,11 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
 
+		// Record the source alias so correlated EXISTS / IN inside WHERE
+		// can resolve outer-row refs. UPDATE/DELETE don't expose a user
+		// alias in the grammar today; descriptor name + tableName match.
+		defer c.pushSourceAliases(tableName)()
+
 		for {
 			result, nextErr := cursor.OnNext(ctx)
 			if nextErr != nil {
@@ -7340,6 +7766,10 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
 
+		// Record the source alias so correlated EXISTS / IN inside WHERE
+		// can resolve outer-row refs (mirrors execUpdate).
+		defer c.pushSourceAliases(tableName)()
+
 		for {
 			result, nextErr := cursor.OnNext(ctx)
 			if nextErr != nil {
@@ -7396,8 +7826,11 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
-		// NOTE: Correlated subqueries are not supported — the subquery cannot
-		// reference column values from the outer query row.
+		// Push outer-row scope so a correlated inner reference like
+		// `outer_tbl.col` resolves against this msg via resolveOuterColumn.
+		// Qualifier taken from the proto descriptor name (single-source
+		// FROM without an explicit AS alias — the common case).
+		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr
@@ -7654,6 +8087,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
+		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
 		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
 		if err != nil {
 			return triFalse, err
@@ -7961,6 +8395,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
+		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr
@@ -8183,23 +8618,40 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if !found {
 			// Try unqualified: "Order.amount" → "amount".
 			if dot := strings.LastIndex(name, "."); dot >= 0 {
+				qual := name[:dot]
+				qualUpper := strings.ToUpper(qual)
 				// When a JOIN scope is active, reject a qualified
 				// reference whose qualifier isn't a valid FROM source
 				// alias — symmetric with the SELECT projection check.
 				// Fires before the bare-column fallback so wrong
 				// qualifiers error 42F01 instead of silently picking
 				// whichever source populated the bare key.
-				if conn.validQualifiers != nil {
-					qual := name[:dot]
-					if !conn.validQualifiers[strings.ToUpper(qual)] {
+				//
+				// Correlated subquery exception: if the qualifier matches
+				// an outer-scope alias, skip the reject and let the outer
+				// fallback below resolve it.
+				if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
+					if !outerScopesContainQualifier(conn, qualUpper) {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
 							"column reference %q names unknown table/alias %q", name, qual)
 					}
+					// Outer qualifier: fall through to outer lookup.
+				} else {
+					v, found = row[name[dot+1:]]
 				}
-				v, found = row[name[dot+1:]]
 			}
 		}
 		if !found {
+			// Correlated subquery fallback: walk outer-row stack.
+			if conn != nil && len(conn.outerScopes) > 0 {
+				ov, ofound, oerr := conn.resolveOuterColumn(name)
+				if oerr != nil {
+					return nil, oerr
+				}
+				if ofound {
+					return ov, nil
+				}
+			}
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
 		}
 		if m, isAmb := v.(ambiguousColumnMarker); isAmb {
@@ -8500,6 +8952,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			if conn == nil {
 				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 			}
+			defer conn.pushOuterScope(outerScopeFromMapRow(row))()
 			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
 			if subErr != nil {
 				return triFalse, subErr
@@ -8590,6 +9043,7 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
+		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr

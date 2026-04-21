@@ -40,3 +40,17 @@ tests:
     rows:
       - [2, 20]
       - [4, ~]
+  # DELETE with no WHERE removes all rows. SQL standard: missing
+  # WHERE is treated as always-true. evalPredicate returns true on
+  # nil whereExpr.
+  - query: DELETE FROM t
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [0]
+  # UPDATE with no WHERE updates all rows.
+  - query: INSERT INTO t VALUES (1, 10), (2, 20)
+  - query: UPDATE t SET v = 100
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 100]
+      - [2, 100]

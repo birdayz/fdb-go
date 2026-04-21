@@ -85,3 +85,43 @@ tests:
   - query: SELECT s FROM (SELECT SUM(n) AS s FROM t1) AS sub
     rows:
       - [70]
+  # MIN AS alias through derived table. n in {10,20,null,40} → min = 10.
+  - query: SELECT m FROM (SELECT MIN(n) AS m FROM t1) AS sub
+    rows:
+      - [10]
+  # MAX AS alias through derived table. max = 40.
+  - query: SELECT m FROM (SELECT MAX(n) AS m FROM t1) AS sub
+    rows:
+      - [40]
+  # AVG AS alias through derived table. (10+20+40)/3 = 23.333... —
+  # Java's AVG(long) returns double.
+  - query: SELECT a FROM (SELECT AVG(n) AS a FROM t1) AS sub
+    rows:
+      - [23.333333333333332]
+  # Aliased aggregates with GROUP BY + derived-table wrap. Exercises
+  # the grouped aggCols path. Groups: n=10 (id=1), n=20 (id=2),
+  # n=40 (id=4). sum_id equals id in each single-row group.
+  - query: |-
+      SELECT grp, total FROM (
+        SELECT n AS grp, SUM(id) AS total FROM t1 WHERE n IS NOT NULL GROUP BY n
+      ) AS sub
+      ORDER BY grp
+    rows:
+      - [10, 1]
+      - [20, 2]
+      - [40, 4]
+  # MIN + alias + GROUP BY through derived table. Each n-group has one
+  # row, so MIN(id) equals that row's id.
+  - query: |-
+      SELECT lo FROM (SELECT MIN(id) AS lo FROM t1 WHERE n IS NOT NULL GROUP BY n) AS sub
+      ORDER BY lo
+    rows:
+      - [1]
+      - [2]
+      - [4]
+  # Aliased AVG + HAVING + derived table. HAVING references canonical
+  # AVG(n) (not alias); outer resolves alias. Single group without
+  # GROUP BY: AVG(n) = 23.333... > 10 → passes HAVING.
+  - query: SELECT a FROM (SELECT AVG(n) AS a FROM t1 HAVING AVG(n) > 10) AS sub
+    rows:
+      - [23.333333333333332]

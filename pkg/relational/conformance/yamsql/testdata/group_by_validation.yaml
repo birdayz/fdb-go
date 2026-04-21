@@ -68,14 +68,22 @@ tests:
   - query: |-
       SELECT t1.col2 FROM t1, t2 WHERE t1.col1 = t2.x GROUP BY t1.col1 ORDER BY t1.col2
     error_code: "42803"
-  # Probe: GROUP BY with AS alias syntax. Java's groupby-tests.yamsql
-  # treats `GROUP BY col1 AS x` as a syntactic extension (and flags
-  # `GROUP BY col1 AS x, col2 AS x` as duplicate-alias 42702). Our
-  # grammar silently accepts the AS clause and appears to discard it
-  # — behaves as a plain `GROUP BY col1`. Pin the divergence; TODO:
-  # either reject the syntax (we don't use the alias anywhere) or
-  # enforce Java's 42702 for duplicate aliases.
+  # Java alignment (groupby-tests.yamsql): `GROUP BY col AS alias`
+  # is a syntactic extension; a single alias is accepted and the
+  # group key comes from the expression as usual. Java errors 42702
+  # on duplicate alias; we now match (swingshift-41).
   - query: SELECT col1 FROM t1 GROUP BY col1 AS x ORDER BY col1
     rows:
       - [10]
       - [20]
+  # Duplicate AS alias → 42702 AMBIGUOUS_COLUMN (matches Java's
+  # groupby-tests.yamsql).
+  - query: SELECT col1 FROM t1 GROUP BY col1 AS x, col2 AS x ORDER BY col1
+    error_code: "42702"
+  # Java: `SELECT x FROM T1 GROUP BY col1 AS x` — the alias becomes
+  # a SELECT-list output column reference. We don't support this
+  # (the alias is tracked for dedup but not as a resolvable name).
+  # Pin: Go errors 42703 (column not found) since `x` isn't in
+  # projCols or the schema. Tracked for future alignment.
+  - query: SELECT x FROM t1 GROUP BY col1 AS x ORDER BY x
+    error_code: "42703"

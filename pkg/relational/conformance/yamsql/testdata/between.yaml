@@ -91,3 +91,33 @@ tests:
     error_code: "22000"
   - query: SELECT id FROM t WHERE 'a' BETWEEN 10 AND 20
     error_code: "22000"
+  # Java alignment (between.yamsql): ORed BETWEEN ranges.
+  # v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 selects the extremes.
+  - query: SELECT id FROM t WHERE v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [5]
+  # BETWEEN with cross-type numeric bounds (int AND double) — Java's
+  # between-compatible-types block. Bounds are promoted to double;
+  # v BETWEEN 4 AND 6.2 keeps v=5.
+  - query: SELECT id FROM t WHERE v BETWEEN 4 AND 6.2
+    rows:
+      - [2]
+  # Constant in BETWEEN's left-operand position. Java's between.yamsql
+  # tests this for count(*) filter shapes.
+  - query: SELECT COUNT(*) FROM t WHERE 4.5 BETWEEN 4 AND 6
+    rows:
+      - [5]
+  # Expression in left operand — `2+2 BETWEEN 1+1 AND 3+3` is TRUE for
+  # every row (predicate doesn't depend on the row).
+  - query: SELECT COUNT(*) FROM t WHERE 2+2 BETWEEN 1+1 AND 3+3
+    rows:
+      - [5]
+  # Java's between-nulls block: `v NOT BETWEEN NULL AND 2` expands to
+  # `v < NULL OR v > 2`. For v>2 rows the OR short-circuits to TRUE;
+  # for v<=2 rows both sides are UNKNOWN → UNKNOWN → excluded. Our 5
+  # rows: 0, 5, 10, 15, 100 → 4 rows with v > 2 (ids 2, 3, 4, 5).
+  - query: SELECT COUNT(*) FROM t WHERE v NOT BETWEEN NULL AND 2
+    rows:
+      - [4]

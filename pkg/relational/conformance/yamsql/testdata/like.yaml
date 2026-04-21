@@ -64,3 +64,20 @@ tests:
   # Pattern matching nothing returns empty even when string is empty.
   - query: SELECT id FROM t WHERE s LIKE 'x_y'
     rows: []
+  # Java alignment (like.yamsql): LIKE pattern is case-sensitive.
+  # 'hello' does NOT match 'HEL%'.
+  - query: SELECT id FROM t WHERE s LIKE 'HEL%'
+    rows: []
+  # Regex metacharacters in pattern — LIKE does NOT interpret them as
+  # regex. `s LIKE '(hello)'` looks for the literal string '(hello)'.
+  # None of our rows have parens so result is empty.
+  - query: SELECT id FROM t WHERE s LIKE '(hello)'
+    rows: []
+  # Same for bracket / brace / star / caret / dollar — all treated as
+  # literals by LIKE.
+  - query: SELECT id FROM t WHERE s LIKE '[h]ello'
+    rows: []
+  - query: SELECT id FROM t WHERE s LIKE 'h*llo'
+    rows: []
+  - query: SELECT id FROM t WHERE s LIKE '^hello'
+    rows: []
