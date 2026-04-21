@@ -576,13 +576,9 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				for i, fid := range renameList {
 					renamed[i] = stripIdentifierQuotes(fullIdToName(fid))
 				}
-				// Re-key each row map from the old names to the new names.
-				newRows := make([][]driver.Value, len(cteRows))
-				for ri, r := range cteRows {
-					newRows[ri] = r // values are positional in the row slice
-				}
+				// Values are stored positionally in each row slice, so
+				// renaming cols[] is enough — no per-row rewrite needed.
 				cteCols = renamed
-				cteRows = newRows
 			}
 			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
 		}
@@ -3842,9 +3838,10 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				slotExpr = projExprs[i]
 			}
 			switch {
-			case slotExpr != nil && !exprReferencesColumn(slotExpr):
-				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
 			case slotExpr != nil:
+				// Constant or column-referencing expression — both route
+				// to outExpr and are evaluated post-aggregation against
+				// the rowMap (which carries group-by column values).
 				extra[i] = aggSelectCol{outName: out, outExpr: slotExpr}
 			default:
 				extra[i] = aggSelectCol{outName: out, groupCol: c}
