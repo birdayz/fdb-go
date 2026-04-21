@@ -40,3 +40,9 @@ tests:
   # Empty IN list errors 42601 (Java alignment, grammar rejection).
   - query: SELECT a FROM ta WHERE b IN ()
     error_code: "42601"
+  # Java alignment: IN list with incompatible types (Java's
+  # in-predicate.yamsql probes `e IN ('foo', 35 + 4)` where e is INT).
+  # Java errors 22000 (cannot_convert_type). Probe Go's behavior for
+  # a mixed-type IN list against a BIGINT column.
+  - query: SELECT a FROM ta WHERE b IN ('foo', 3)
+    error_code: "22000"
