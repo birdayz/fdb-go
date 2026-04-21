@@ -9,9 +9,11 @@ name: union_columns
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
   CREATE TABLE b (id BIGINT NOT NULL, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT NOT NULL, id_str STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO a VALUES (1, 10), (2, 20)
   - INSERT INTO b VALUES (1, 100), (2, 200)
+  - INSERT INTO c VALUES (1, 'x'), (2, 'y')
 tests:
   # UNION ALL with differently-named columns across sides.
   # Position-based: left's `v` / right's `w` combine into a single
@@ -81,3 +83,17 @@ tests:
       - [20]
       - [99]
       - [99]
+  # UNION with incompatible types across sides. Java's union.yamsql
+  # errors 42F65 (UNION_INCOMPATIBLE_COLUMNS) when the corresponding
+  # columns have non-unifiable types (e.g. BIGINT vs STRING). Go
+  # currently silently combines — pin the divergence, TODO: enforce
+  # UNION branch type unification at parse time.
+  # (ErrCodeUnionIncompatibleColumns exists in api/errcode.go but
+  # has no call sites yet.)
+  - query: SELECT v FROM a UNION ALL SELECT id_str FROM c
+    unordered: true
+    rows:
+      - [10]
+      - [20]
+      - ['x']
+      - ['y']
