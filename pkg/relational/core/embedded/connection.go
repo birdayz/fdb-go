@@ -4745,16 +4745,19 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		for _, rowCtx := range valCtx.AllRecordConstructorForInsert() {
 			exprs := rowCtx.AllExpressionWithOptionalName()
 			// Java alignment (inserts-updates-deletes.yamsql):
-			//   - Too MANY values for an explicit column list → 42601
-			//     SYNTAX_ERROR (Java's post-4.1.5.0 behavior).
-			//   - Too FEW values → 22000 CANNOT_CONVERT_TYPE (Java's
-			//     behavior when the column list is implicit from the
-			//     schema and VALUES is shorter).
-			if len(exprs) > len(cols) {
-				return nil, api.NewErrorf(api.ErrCodeSyntaxError,
-					"INSERT has %d values but only %d columns", len(exprs), len(cols))
-			}
-			if len(exprs) < len(cols) {
+			//   - Explicit column list + arity mismatch (either direction) →
+			//     42601 SYNTAX_ERROR. Java 4.1.5.0+ treats the mismatch
+			//     as a parse-level error because the user named the target
+			//     columns explicitly.
+			//   - Implicit column list (schema-derived) + fewer VALUES than
+			//     columns → 22000 CANNOT_CONVERT_TYPE. Java surfaces this
+			//     as a type-conversion error since the partial tuple can't
+			//     be coerced into the full row.
+			if len(exprs) != len(cols) {
+				if explicitCols != nil {
+					return nil, api.NewErrorf(api.ErrCodeSyntaxError,
+						"INSERT column list has %d columns but VALUES has %d", len(cols), len(exprs))
+				}
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"column count %d does not match value count %d", len(cols), len(exprs))
 			}
