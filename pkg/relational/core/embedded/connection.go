@@ -47,6 +47,18 @@ type cteData struct {
 	rows [][]driver.Value
 }
 
+// ambiguousColumnMarker is the sentinel stored in a JOIN row map's bare
+// column slot when the same column name is defined on more than one
+// FROM-clause source. The map keeps qualified `alias.col` slots intact;
+// the bare slot is poisoned so any unqualified reference surfaces the
+// ambiguity as SQLSTATE 42702 at lookup time instead of silently
+// returning last-write-wins data. Matches Java's
+// AmbiguousColumnReferenceException (plan-time) behavior at the runtime
+// map-eval boundary we have today.
+type ambiguousColumnMarker struct {
+	Col string
+}
+
 // EmbeddedConnection is an in-process SQL connection backed by FDB.
 //
 // Implements driver.Conn and driver.ExecerContext so DDL statements can
@@ -882,6 +894,69 @@ func (c *EmbeddedConnection) collectLeftJoinKeys(md *recordlayer.RecordMetaData,
 	return keys
 }
 
+// computeAmbiguousBareColumns returns the set of bare column names that
+// appear in the schema of more than one FROM-clause source (including
+// comma-cross-joins and explicit JOINs). Unqualified references to such
+// columns are ambiguous per SQL §6.4 and must error 42702 at lookup
+// time. Column sources come from the CTE column list when the source
+// names a CTE, and from the record type descriptor otherwise.
+func (c *EmbeddedConnection) computeAmbiguousBareColumns(md *recordlayer.RecordMetaData, sq *selectQuery) map[string]bool {
+	sources := make([]struct{ tableName string }, 0, 1+len(sq.joins))
+	sources = append(sources, struct{ tableName string }{sq.tableName})
+	for _, jc := range sq.joins {
+		sources = append(sources, struct{ tableName string }{jc.tableName})
+	}
+	counts := make(map[string]int)
+	for _, s := range sources {
+		var cols []string
+		if c.ctes != nil {
+			if cte, ok := c.ctes[strings.ToUpper(s.tableName)]; ok {
+				cols = cte.cols
+			}
+		}
+		if cols == nil {
+			rt := md.GetRecordType(s.tableName)
+			if rt != nil {
+				fields := rt.Descriptor.Fields()
+				cols = make([]string, 0, fields.Len())
+				for i := 0; i < fields.Len(); i++ {
+					cols = append(cols, string(fields.Get(i).Name()))
+				}
+			}
+		}
+		// A single source listing the same column twice (descriptors
+		// shouldn't, CTEs also shouldn't) must not self-bump the count.
+		seen := make(map[string]bool, len(cols))
+		for _, col := range cols {
+			if !seen[col] {
+				counts[col]++
+				seen[col] = true
+			}
+		}
+	}
+	result := make(map[string]bool)
+	for col, count := range counts {
+		if count > 1 {
+			result[col] = true
+		}
+	}
+	return result
+}
+
+// poisonAmbiguousBareCols overwrites any bare key in row that matches an
+// entry in ambiguous with the ambiguousColumnMarker sentinel. Qualified
+// (alias.col) entries are left untouched, so callers that qualify their
+// reference still resolve normally. Call after every row merge/build
+// path in execSelectJoin so no emitted row exposes the last-write-wins
+// bare value.
+func poisonAmbiguousBareCols(row map[string]driver.Value, ambiguous map[string]bool) {
+	for col := range ambiguous {
+		if _, has := row[col]; has {
+			row[col] = ambiguousColumnMarker{Col: col}
+		}
+	}
+}
+
 // execSelectJoin executes a SELECT with one or more JOIN clauses.
 // Supports INNER JOIN and LEFT OUTER JOIN using nested-loop join.
 // aggregateMapRows applies GROUP BY + aggregate computation to a slice of map rows
@@ -1277,6 +1352,22 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			return nil, leftErr
 		}
 
+		// Bare column names present in more than one FROM-clause source.
+		// After every row merge below we poison these bare slots with
+		// the ambiguousColumnMarker sentinel so unqualified references
+		// surface 42702. Qualified (alias.col) slots remain usable.
+		ambiguousBare := c.computeAmbiguousBareColumns(md, sq)
+		// Post-scan: leftRows' bare slots contain left's real values.
+		// If a bare col is ambiguous across any pair of sources, poison
+		// it now so single-table queries in `execSelectJoin`'s tail
+		// (e.g. degenerate `joined` where no join rows match) don't
+		// leak the pre-merge value.
+		if len(ambiguousBare) > 0 {
+			for _, r := range leftRows {
+				poisonAmbiguousBareCols(r, ambiguousBare)
+			}
+		}
+
 		// Track the sources (tableName + alias) merged into `joined` so
 		// far. RIGHT JOIN NULL-padding uses this to derive left-side
 		// column keys from metadata rather than sampling a runtime row
@@ -1311,6 +1402,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					for k, v := range right {
 						combined[k] = v
 					}
+					// Poison bare columns defined on >1 source so
+					// unqualified refs error 42702 instead of silently
+					// picking the right-hand side (last-write-wins).
+					poisonAmbiguousBareCols(combined, ambiguousBare)
 					// Evaluate ON condition.
 					if jc.onExpr != nil {
 						ok, onErr := evalPredicateOnMapExpr(ctx, c, combined, jc.onExpr)
@@ -1350,6 +1445,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						}
 						nullRight[k] = nil
 					}
+					// LEFT JOIN unmatched row inherits ambiguous bare
+					// slots from `left`; re-poison so the unqualified
+					// ref still errors at WHERE/SELECT evaluation.
+					poisonAmbiguousBareCols(nullRight, ambiguousBare)
 					next = append(next, nullRight)
 				}
 			}
@@ -1375,6 +1474,10 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						for k, v := range right {
 							combined[k] = v
 						}
+						// RIGHT JOIN unmatched row: bare slot carries
+						// right's value; poison to keep ambiguous refs
+						// erroring symmetrically with LEFT JOIN.
+						poisonAmbiguousBareCols(combined, ambiguousBare)
 						next = append(next, combined)
 					}
 				}
@@ -1415,6 +1518,14 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 			// For SELECT *, collect all unique unqualified column names in order.
 			// For SELECT <qualifier>.*, restrict to the aliased source's columns.
 			var qualifierKey string // non-empty when qualified-star; row lookups use "qualifier.col"
+			// colSourceAlias maps the column name (index-parallel with `cols`
+			// via a parallel slice below) to the source alias that provided
+			// it. Used by the SELECT * projection to look up via
+			// `alias.col` when the bare key is poisoned by ambiguity —
+			// keeping the current SELECT * behavior (first source wins)
+			// instead of erroring 42702 for a SELECT that isn't actually
+			// referencing the bare name.
+			var starColAliases []string
 			if sq.projCols == nil {
 				if sq.projQualifier != "" {
 					qCols, qAlias, qErr := c.resolveQualifierColumns(md, sq, sq.projQualifier)
@@ -1426,23 +1537,33 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				} else {
 					seen := make(map[string]bool)
 					// Order: left table columns first, then join table columns.
+					leftAliasForStar := sq.tableAlias
+					if leftAliasForStar == "" {
+						leftAliasForStar = sq.tableName
+					}
 					leftRt := md.GetRecordType(sq.tableName)
 					if leftRt != nil {
 						for i := 0; i < leftRt.Descriptor.Fields().Len(); i++ {
 							name := string(leftRt.Descriptor.Fields().Get(i).Name())
 							if !seen[name] {
 								cols = append(cols, name)
+								starColAliases = append(starColAliases, leftAliasForStar)
 								seen[name] = true
 							}
 						}
 					}
 					for _, jc := range sq.joins {
+						jAlias := jc.alias
+						if jAlias == "" {
+							jAlias = jc.tableName
+						}
 						jRt := md.GetRecordType(jc.tableName)
 						if jRt != nil {
 							for i := 0; i < jRt.Descriptor.Fields().Len(); i++ {
 								name := string(jRt.Descriptor.Fields().Get(i).Name())
 								if !seen[name] {
 									cols = append(cols, name)
+									starColAliases = append(starColAliases, jAlias)
 									seen[name] = true
 								}
 							}
@@ -1481,18 +1602,41 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 								continue
 							}
 						}
-						vals[i] = row[col]
+						v := row[col]
+						// SELECT * dedupes ambiguous bare names by first
+						// source (see cols build above). Fall through the
+						// ambiguous-bare sentinel to the qualified lookup
+						// so SELECT * on a.(id,name) + b.(id,label) still
+						// returns three columns instead of erroring.
+						// Referencing the bare name explicitly
+						// (`SELECT id FROM a,b`) goes through the projCols
+						// branch below and keeps the 42702 behavior.
+						if _, isAmb := v.(ambiguousColumnMarker); isAmb && i < len(starColAliases) && starColAliases[i] != "" {
+							if qv, ok := row[starColAliases[i]+"."+col]; ok {
+								v = qv
+							}
+						}
+						vals[i] = v
 					}
 				} else {
 					vals = make([]driver.Value, len(sq.projCols))
 					for i, col := range sq.projCols {
 						// Try qualified first, then unqualified.
 						if v, ok := row[col]; ok {
+							if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+								return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+									"column reference %q is ambiguous", m.Col)
+							}
 							vals[i] = v
 						} else {
 							// Strip table prefix: "a.id" → try "id" in map.
 							if dot := strings.LastIndex(col, "."); dot >= 0 {
-								vals[i] = row[col[dot+1:]]
+								v := row[col[dot+1:]]
+								if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+									return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+										"column reference %q is ambiguous", m.Col)
+								}
+								vals[i] = v
 							}
 						}
 					}
@@ -1580,7 +1724,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 					if _, ok := colIdx[ob.colName]; ok {
 						continue
 					}
-					if _, present := filtered[0][ob.colName]; present {
+					if v, present := filtered[0][ob.colName]; present {
+						if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+							return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+								"column reference %q is ambiguous", m.Col)
+						}
 						continue
 					}
 					// "alias.col" → strip qualifier and re-check (the
@@ -7787,6 +7935,10 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		}
 		if !found {
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
+		}
+		if m, isAmb := v.(ambiguousColumnMarker); isAmb {
+			return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"column reference %q is ambiguous", m.Col)
 		}
 		return v, nil
 	case *antlrgen.BinaryComparisonPredicateContext:
