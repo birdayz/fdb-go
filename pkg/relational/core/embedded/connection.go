@@ -986,7 +986,7 @@ func (c *EmbeddedConnection) tryPKEqualityPushdown(
 	ctx context.Context,
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
-) (any, bool) {
+) ([]any, bool) {
 	// Gate on query shape. Aggregate / GROUP BY / COUNT(*) paths
 	// all run through their own code below the cursor; leave them to
 	// the full scan. Same for empty WHERE.
@@ -997,89 +997,177 @@ func (c *EmbeddedConnection) tryPKEqualityPushdown(
 		return nil, false
 	}
 
-	// Primary key shape: single user field, optionally preceded by the
-	// RecordTypeKey prefix. Bare FieldKeyExpression or a
-	// CompositeKeyExpression whose children are [RecordTypeKey, Field].
-	var pkCol string
-	switch pk := rt.PrimaryKey.(type) {
-	case *recordlayer.FieldKeyExpression:
-		names := pk.FieldNames()
-		if len(names) != 1 {
-			return nil, false
-		}
-		pkCol = names[0]
-	case *recordlayer.CompositeKeyExpression:
-		// Only handle the pattern `Concat(RecordTypeKey, Field(col))`.
-		// Anything longer implies a composite PK — out of MVP scope.
-		children := pk.FieldNames()
-		if len(children) != 1 {
-			return nil, false
-		}
-		pkCol = children[0]
-	default:
+	// Primary key shape: an ordered list of user fields. Accepts a
+	// bare FieldKeyExpression (single col, intermingled table) or a
+	// CompositeKeyExpression whose children are
+	// [RecordTypeKey?, Field(col1), Field(col2), ...] (the two shapes
+	// CREATE TABLE emits).
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) == 0 {
 		return nil, false
 	}
 
-	// WHERE shape: PredicatedExpression whose ExpressionAtom is a
-	// BinaryComparison `=`. ANTLR's grammar stores binary comparisons
-	// as ExpressionAtoms, not Predicates (Predicate() is for IS /
-	// IN / BETWEEN / LIKE). No AND / OR / NOT / IS / IN here.
-	expr := sq.whereExpr.Expression()
-	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	// Walk the WHERE into a flat list of AND-joined leaf predicates.
+	// Any non-AND operator (OR, XOR, NOT) bails — conservative for MVP.
+	leaves, ok := flattenAndPredicates(sq.whereExpr.Expression())
 	if !ok {
 		return nil, false
 	}
-	if pred.Predicate() != nil {
-		// IS / IN / BETWEEN / LIKE path — not a simple equality.
+
+	// Each leaf must be a `col = literal` equality. Collect into a
+	// map keyed by the bare column name. Duplicates are allowed (same
+	// col equated twice — rare but harmless; last wins).
+	equalities := make(map[string]any, len(leaves))
+	for _, leaf := range leaves {
+		col, val, ok := extractColEqualsLiteral(ctx, c, leaf)
+		if !ok {
+			return nil, false
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+
+	// Build the PK tuple in declared order. Every PK column must
+	// appear in the WHERE; partial matches can't be narrowed to a
+	// single key.
+	pkVals := make([]any, len(pkCols))
+	for i, col := range pkCols {
+		val, ok := equalities[strings.ToUpper(col)]
+		if !ok {
+			return nil, false
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil {
+			return nil, false
+		}
+		// Type compatibility: the literal must match the PK column's
+		// proto kind. See literalMatchesPKKind for rationale — a
+		// type-mismatched literal must fall through to the scan so
+		// evalPredicate surfaces 22000.
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			return nil, false
+		}
+		pkVals[i] = val
+	}
+	// If WHERE had non-PK equalities in the AND chain, we can't
+	// push the whole predicate down — the scan path would still need
+	// to filter. MVP keeps it simple: only pushdown when WHERE is
+	// EXACTLY the PK equalities, no extras.
+	if len(equalities) != len(pkCols) {
 		return nil, false
+	}
+	return pkVals, true
+}
+
+// extractPKUserFields returns the ordered list of user field names
+// making up the primary key, skipping a RecordTypeKey prefix if
+// present. Returns empty when the PK isn't one of the shapes we push
+// down (currently FieldKeyExpression or CompositeKeyExpression whose
+// children are [RecordTypeKey?, Field(col)...]).
+func extractPKUserFields(pk recordlayer.KeyExpression) []string {
+	switch e := pk.(type) {
+	case *recordlayer.FieldKeyExpression:
+		return e.FieldNames()
+	case *recordlayer.CompositeKeyExpression:
+		// FieldNames() on a CompositeKeyExpression returns just the
+		// Field children, not the RecordTypeKey (which contributes no
+		// named column). That's exactly the user field list.
+		return e.FieldNames()
+	}
+	return nil
+}
+
+// flattenAndPredicates walks a WHERE expression as a conjunction of
+// leaf predicates. Returns the flat list of leaves and `true` on
+// success. Fails (returns false) when the expression contains any
+// non-AND logical operator (OR, XOR, NOT) — those break the
+// "everything the scan would also have matched" invariant that
+// pushdown relies on.
+func flattenAndPredicates(expr antlrgen.IExpressionContext) ([]antlrgen.IExpressionContext, bool) {
+	le, ok := expr.(*antlrgen.LogicalExpressionContext)
+	if !ok {
+		return []antlrgen.IExpressionContext{expr}, true
+	}
+	op := le.LogicalOperator()
+	opText := strings.ReplaceAll(op.GetText(), " ", "")
+	isAnd := op.AND() != nil || opText == "&&"
+	if !isAnd {
+		return nil, false
+	}
+	left, lok := flattenAndPredicates(le.Expression(0))
+	if !lok {
+		return nil, false
+	}
+	right, rok := flattenAndPredicates(le.Expression(1))
+	if !rok {
+		return nil, false
+	}
+	return append(left, right...), true
+}
+
+// extractColEqualsLiteral returns (colName, literalValue, true) when
+// the expression is exactly a `col = literal` equality. NULL on the
+// RHS and any non-constant RHS cause a `false` return, in which case
+// the pushdown caller falls back to the full scan.
+func extractColEqualsLiteral(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (string, any, bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", nil, false
+	}
+	if pred.Predicate() != nil {
+		return "", nil, false
 	}
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
-		return nil, false
+		return "", nil, false
 	}
 	op := bcp.ComparisonOperator()
-	// `<=` / `>=` tokenise as two symbols including EQUAL_SYMBOL, so
-	// checking EQUAL_SYMBOL() alone is not enough. Compare the whole
-	// operator text after stripping whitespace.
 	if op == nil || strings.ReplaceAll(op.GetText(), " ", "") != "=" {
-		return nil, false
+		return "", nil, false
 	}
+	// One side must be a column ref; the other must evaluate to a
+	// literal. Try both orderings.
+	if colName, ok := extractColumnRef(bcp.GetLeft()); ok {
+		if val, ok := evalConstantAtom(ctx, c, bcp.GetRight()); ok {
+			return colName, val, true
+		}
+	}
+	if colName, ok := extractColumnRef(bcp.GetRight()); ok {
+		if val, ok := evalConstantAtom(ctx, c, bcp.GetLeft()); ok {
+			return colName, val, true
+		}
+	}
+	return "", nil, false
+}
 
-	// Identify which side is the column ref matching pkCol; the other
-	// side must evaluate to a constant without a message (i.e. a
-	// literal or bound parameter, not a correlated column).
-	colAtom, litAtom := pickPKEqualitySides(bcp.GetLeft(), bcp.GetRight(), pkCol)
-	if colAtom == nil {
-		return nil, false
+// extractColumnRef returns the bare (last-segment) column name from a
+// FullColumnName expression atom.
+func extractColumnRef(atom antlrgen.IExpressionAtomContext) (string, bool) {
+	fcn, ok := atom.(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return "", false
 	}
-	val, err := evalExprAtom(ctx, c, nil, litAtom)
+	name := fullIdToName(fcn.FullColumnName().FullId())
+	return name[strings.LastIndex(name, ".")+1:], true
+}
+
+// evalConstantAtom attempts to evaluate an expression atom without a
+// row context. Succeeds for literals / bound params / pure-constant
+// expressions; fails otherwise (including for NULL, since NULL on the
+// RHS of `=` is never true under three-valued logic and should fall
+// back to scan for consistent semantics).
+func evalConstantAtom(ctx context.Context, c *EmbeddedConnection, atom antlrgen.IExpressionAtomContext) (any, bool) {
+	v, err := evalExprAtom(ctx, c, nil, atom)
 	if err != nil {
-		// Any eval failure (unknown column, un-pre-evaluated
-		// subquery, ...) means we can't prove the RHS is a pure
-		// literal — fall back to scan so the existing evaluator
-		// produces the right error or result.
 		return nil, false
 	}
-	// NULL on the RHS of `=` is never true (SQL three-valued logic).
-	// Rather than return an empty result here, fall back so the scan
-	// path handles NULL semantics uniformly.
-	if val == nil {
+	if v == nil {
 		return nil, false
 	}
-	// Type compatibility: the literal's Go type must match the PK
-	// column's proto kind. Otherwise the scan path's evalPredicate
-	// surfaces 22000 (CANNOT_CONVERT_TYPE); a pushed-down scan would
-	// silently return zero rows by constructing a wrong-typed tuple
-	// element that doesn't match any actual key. Fall back so the
-	// type error reaches the user.
-	fd := rt.Descriptor.Fields().ByName(protoreflect.Name(pkCol))
-	if fd == nil {
-		return nil, false
-	}
-	if !literalMatchesPKKind(val, fd.Kind()) {
-		return nil, false
-	}
-	return val, true
+	return v, true
 }
 
 // literalMatchesPKKind reports whether a driver-value literal is a
@@ -1104,45 +1192,6 @@ func literalMatchesPKKind(val any, kind protoreflect.Kind) bool {
 	case protoreflect.BytesKind:
 		_, ok := val.([]byte)
 		return ok
-	}
-	return false
-}
-
-// pickPKEqualitySides inspects both sides of a binary equality and
-// returns (colAtom, litAtom) when exactly one side is a column ref
-// matching pkCol and the other is anything else (evaluated as a
-// constant by the caller). Returns (nil, nil) if neither or both
-// sides match the PK column.
-func pickPKEqualitySides(
-	left, right antlrgen.IExpressionAtomContext,
-	pkCol string,
-) (antlrgen.IExpressionAtomContext, antlrgen.IExpressionAtomContext) {
-	leftIsPK := atomIsPKColumn(left, pkCol)
-	rightIsPK := atomIsPKColumn(right, pkCol)
-	if leftIsPK == rightIsPK {
-		// Both or neither match: ambiguous or irrelevant.
-		return nil, nil
-	}
-	if leftIsPK {
-		return left, right
-	}
-	return right, left
-}
-
-// atomIsPKColumn reports whether the expression atom is an unqualified
-// or trivially-qualified reference to the given primary-key column
-// name. "Trivially qualified" means `tableName.pkCol` or
-// `alias.pkCol` — at this point we don't have enough scope to
-// distinguish safely, so we accept the bare last segment equalling
-// pkCol. The scan path would do the same resolution and still match.
-func atomIsPKColumn(atom antlrgen.IExpressionAtomContext, pkCol string) bool {
-	fcn, ok := atom.(*antlrgen.FullColumnNameExpressionAtomContext)
-	if !ok {
-		return false
-	}
-	name := fullIdToName(fcn.FullColumnName().FullId())
-	if bare := name[strings.LastIndex(name, ".")+1:]; strings.EqualFold(bare, pkCol) {
-		return true
 	}
 	return false
 }
@@ -3072,23 +3121,24 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, storeErr
 		}
 
-		// PK pushdown: if WHERE is a simple `pk_col = literal` on a
-		// single-column PK, narrow the scan from the whole type range
-		// to the exact key. The existing scan loop still runs over the
-		// cursor (applying WHERE, projection, ORDER BY, LIMIT), just
-		// over at-most-one record. Zero behavioural change besides
-		// avoiding the full-type iteration.
+		// PK pushdown: if WHERE is an AND-chain of `pk_col = literal`
+		// equalities covering every PK column, narrow the scan from
+		// the whole type range to the exact key. The existing scan
+		// loop still runs over the cursor (applying WHERE, projection,
+		// ORDER BY, LIMIT), just over at-most-one record. Zero
+		// behavioural change besides avoiding the full-type iteration.
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
-		if pkVal, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
-			// Tuple key always includes the RecordTypeKey prefix when
-			// the PK expression starts with one (the default for SQL
-			// CREATE TABLE). For the bare Field-only case (intermingled
+		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
+			// Tuple key includes the RecordTypeKey prefix when the PK
+			// expression starts with one (the default for SQL CREATE
+			// TABLE). For the bare Field-only case (intermingled
 			// tables) the prefix is absent.
-			var low tuple.Tuple
+			low := make(tuple.Tuple, 0, 1+len(pkVals))
 			if _, ok := rt.PrimaryKey.(*recordlayer.CompositeKeyExpression); ok {
-				low = tuple.Tuple{rt.GetRecordTypeKey(), pkVal}
-			} else {
-				low = tuple.Tuple{pkVal}
+				low = append(low, rt.GetRecordTypeKey())
+			}
+			for _, v := range pkVals {
+				low = append(low, v)
 			}
 			cursor = store.ScanRecordsInRange(
 				low, low,
