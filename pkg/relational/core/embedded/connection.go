@@ -3849,6 +3849,55 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		projStarQualifiers = nil
 	}
 
+	// SQL §7.10 GR1: when a SELECT list contains aggregates, every
+	// non-aggregate column reference must appear in GROUP BY. With no
+	// GROUP BY at all, the query is implicitly one group and bare
+	// column references violate the rule. Java errors 42803. Matches
+	// Java's groupby-tests.yamsql 42803 pattern extended to the
+	// no-GROUP-BY-at-all variant.
+	//
+	// The SELECT loop at line 3352 silently reclassifies a bare-column
+	// element as `aggSelectCol{groupCol: ...}` when aggregates are in
+	// the list — checking projCols alone misses those. Walk sq.aggCols
+	// for entries that are neither aggregates nor outExprs (bare group
+	// column references) and for outExprs that reference columns:
+	// both are GR1 violations when there's no GROUP BY.
+	hasAggregates := sq.countStar
+	for _, ac := range sq.aggCols {
+		if ac.aggFunc != "" {
+			hasAggregates = true
+			break
+		}
+	}
+	if hasAggregates && len(sq.groupBy) == 0 {
+		for _, ac := range sq.aggCols {
+			if ac.aggFunc != "" {
+				continue // aggregate — fine
+			}
+			if ac.outExpr != nil {
+				// Expression entries are fine if they either have no
+				// column references (constants) or wrap aggregates (the
+				// column refs are inside a SUM/MAX/... call). An outExpr
+				// that references columns but contains no aggregates is a
+				// bare-column expression (e.g. `v + 1`) and violates GR1.
+				if !exprReferencesColumn(ac.outExpr) {
+					continue
+				}
+				if len(harvestAggregates(ac.outExpr)) > 0 {
+					continue
+				}
+			}
+			// Bare column reference or column-referencing expression
+			// without any aggregate — GR1 violation.
+			offender := ac.groupCol
+			if offender == "" {
+				offender = ac.outName
+			}
+			return nil, api.NewErrorf(api.ErrCodeGroupingError,
+				"column %q must appear in the GROUP BY clause or be used in an aggregate function", offender)
+		}
+	}
+
 	// Parse HAVING clause (only meaningful with GROUP BY).
 	havingCtx := simpleTable.HavingClause()
 	if havingCtx != nil {
