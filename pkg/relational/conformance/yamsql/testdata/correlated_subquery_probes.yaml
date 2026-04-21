@@ -93,3 +93,41 @@ tests:
     rows:
       - ['Alice']
       - ['Bob']
+
+  # Java alignment — join-tests.yamsql: correlated EXISTS inside a
+  # derived table that is itself joined. Outer derived materializes
+  # employees who have projects, then cross-joins / filters.
+  # `(SELECT fname FROM emp WHERE EXISTS ...)` is the correlated inner
+  # inside the derived; the outer SELECT then reads through the alias.
+  - query: |
+      SELECT fname FROM (
+        SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
+      ) AS sq
+      ORDER BY fname
+    rows:
+      - ['Alice']
+      - ['Bob']
+
+  # Self-referential uncorrelated: inner FROM references the same table
+  # as outer but without outer-row binding. Java's `SELECT ida FROM a
+  # WHERE EXISTS (SELECT ida FROM a WHERE ida = 1)`. Keeps all outer
+  # rows iff the inner has any match at all.
+  - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM emp WHERE id = 1) ORDER BY id
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Carol']
+
+  # Self-correlated via user alias: `FROM emp AS e`, inner references
+  # `e.id`. The outer scope's qualifier set picks up both the proto
+  # descriptor name (EMP) and the SQL-level alias (E) via
+  # conn.currentSourceAliases, populated by the scan loop before
+  # evalPredicate fires. Filter keeps emp rows where there's a
+  # self-match with id > 1 — Bob (id=2) and Carol (id=3).
+  - query: |
+      SELECT fname FROM emp AS e
+      WHERE EXISTS (SELECT 1 FROM emp WHERE id = e.id AND id > 1)
+      ORDER BY id
+    rows:
+      - ['Bob']
+      - ['Carol']

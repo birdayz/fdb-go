@@ -125,6 +125,15 @@ type EmbeddedConnection struct {
 	// context. See evalExprAtom / evalExprAtomOnMap for lookup semantics.
 	outerScopes []outerScope
 
+	// currentSourceAliases holds the uppercased set of qualifier aliases
+	// for the outer proto-path scan currently executing (e.g. `FROM emp
+	// AS e` → {"E", "EMP"}). Consumed by outerScopeFromMsg so a
+	// correlated inner reference like `e.id` resolves even when the
+	// outer uses an explicit user alias distinct from the proto
+	// descriptor name. nil outside a proto scan — outerScopeFromMsg
+	// falls back to msg's descriptor name.
+	currentSourceAliases map[string]bool
+
 	// catalogReady is set to true after the first successful catalog init.
 	// Protected by catalogMu so transient failures can be retried.
 	catalogMu    sync.Mutex
@@ -223,18 +232,45 @@ func (c *EmbeddedConnection) pushOuterScope(s outerScope) func() {
 }
 
 // outerScopeFromMsg builds an outerScope for a proto-backed outer row.
-// The qualifier set is derived from the message's descriptor name (single-
-// source unaliased FROM — covers the common correlated-subquery cases in
-// yaml-tests). For explicit `FROM t AS alias` the alias is not captured
-// here; tracking the SQL-level alias through to the predicate evaluator
-// is future work. Returns a zero-value scope when msg is nil so the
-// caller doesn't need to nil-check.
-func outerScopeFromMsg(msg proto.Message) outerScope {
+// Qualifier set combines:
+//   - the message's descriptor name (always)
+//   - any user-level aliases recorded on conn.currentSourceAliases
+//     (e.g. `FROM emp AS e` → {"E"} plus the descriptor "EMP")
+//
+// Returns a zero-value scope when msg is nil so the caller doesn't need
+// to nil-check. conn may be nil in unit tests; descriptor name alone
+// is sufficient there.
+func outerScopeFromMsg(conn *EmbeddedConnection, msg proto.Message) outerScope {
 	if msg == nil {
 		return outerScope{}
 	}
-	name := strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name()))
-	return outerScope{msg: msg, qualifiers: map[string]bool{name: true}}
+	quals := map[string]bool{
+		strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name())): true,
+	}
+	if conn != nil {
+		for a := range conn.currentSourceAliases {
+			quals[a] = true
+		}
+	}
+	return outerScope{msg: msg, qualifiers: quals}
+}
+
+// pushSourceAliases records the current outer-scan source aliases so
+// a subquery's outerScopeFromMsg can expose them to correlated column
+// resolution. Pass any SQL-level aliases (e.g. sq.tableAlias and
+// sq.tableName) — they're uppercased for case-insensitive match. Returns
+// a pop function.
+func (c *EmbeddedConnection) pushSourceAliases(aliases ...string) func() {
+	prior := c.currentSourceAliases
+	m := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		if a == "" {
+			continue
+		}
+		m[strings.ToUpper(a)] = true
+	}
+	c.currentSourceAliases = m
+	return func() { c.currentSourceAliases = prior }
 }
 
 // outerScopeFromMapRow builds an outerScope for a map-backed outer row
@@ -2496,6 +2532,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		defer cursor.Close() //nolint:errcheck
+
+		// Record the SQL-level aliases of this scan so correlated
+		// subqueries can expose them to outerScopeFromMsg (e.g.
+		// `FROM emp AS e` → {"E", "EMP"}). Pop on function return.
+		defer c.pushSourceAliases(sq.tableName, sq.tableAlias)()
 
 		if sq.countStar {
 			cols = []string{countStarOutName(sq)}
@@ -7694,7 +7735,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		// `outer_tbl.col` resolves against this msg via resolveOuterColumn.
 		// Qualifier taken from the proto descriptor name (single-source
 		// FROM without an explicit AS alias — the common case).
-		pop := conn.pushOuterScope(outerScopeFromMsg(msg))
+		pop := conn.pushOuterScope(outerScopeFromMsg(conn, msg))
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		pop()
 		if subErr != nil {
@@ -7952,7 +7993,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
-		pop := conn.pushOuterScope(outerScopeFromMsg(msg))
+		pop := conn.pushOuterScope(outerScopeFromMsg(conn, msg))
 		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
 		pop()
 		if err != nil {
