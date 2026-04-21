@@ -110,6 +110,23 @@ tests:
     rows:
       - [10, 2]
       - [20, 1]
+
+  # Qualified arg inside aggregate: `MAX(x.col2)` with derived table
+  # `x` — the qualifier resolves through the derived-table alias.
+  # Java groupby-tests.yamsql line 126. t1 rows: (1,10,100),
+  # (2,10,200), (3,20,300) → MAX per col1 group: 10→200, 20→300.
+  - query: SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1
+    rows:
+      - [200]
+      - [300]
+
+  # Aggregate of a GROUP BY alias: `MAX(z)` where z aliases x.col1.
+  # Java groupby-tests.yamsql line 123. MAX of a group-key column per
+  # group collapses to that group's key value.
+  - query: SELECT MAX(z) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 AS z ORDER BY z
+    rows:
+      - [10]
+      - [20]
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct

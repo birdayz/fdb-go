@@ -5675,21 +5675,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// Also rewrite aggCols entries: when the SELECT list mixes
 		// plain-col refs with aggregates, bare columns are classified
 		// into aggCols with groupCol set rather than into projCols.
+		// Also rewrite aggregate arguments — `MAX(z)` where z is a
+		// GROUP BY alias needs the arg resolved to the underlying col
+		// before per-row evaluation.
 		for i := range sq.aggCols {
 			ac := &sq.aggCols[i]
-			if ac.aggFunc != "" || ac.outExpr != nil {
+			if ac.outExpr != nil {
 				continue
 			}
-			if ac.groupCol == "" {
-				continue
+			if ac.groupCol != "" {
+				if underlying, outName, ok := aliasResolves(ac.groupCol); ok {
+					ac.groupCol = underlying
+					if ac.outName == "" {
+						ac.outName = outName
+					}
+				}
 			}
-			underlying, outName, ok := aliasResolves(ac.groupCol)
-			if !ok {
-				continue
-			}
-			ac.groupCol = underlying
-			if ac.outName == "" {
-				ac.outName = outName
+			if ac.aggFunc != "" && ac.aggArg != "" && ac.aggExpr == nil {
+				if underlying, _, ok := aliasResolves(ac.aggArg); ok {
+					ac.aggArg = underlying
+				}
 			}
 		}
 	}
