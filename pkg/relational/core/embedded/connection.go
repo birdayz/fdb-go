@@ -307,10 +307,20 @@ func outerScopesContainQualifier(c *EmbeddedConnection, qualUpper string) bool {
 
 // resolveOuterColumn walks the outer-scope stack innermost-first trying
 // to resolve a column reference that was not found in the inner scope.
-// Returns (value, found, err). For qualified `qual.col`, only scopes
-// whose qualifiers set contains qual are consulted; if qual is present
-// but bare column missing in that scope, resolution stops with err
-// 42703. For unqualified `col`, every scope is tried in order.
+// Returns (value, found, err).
+//
+// Qualified `qual.col`: only scopes whose qualifiers set contains qual
+// are consulted. A qualified reference binds to exactly one source per
+// SQL semantics, so when a scope's qualifier matches but the bare
+// column is missing, resolution stops with 42703 — we do NOT continue
+// to the next outer scope (another scope with the same qualifier name
+// would be a shadowing violation at the SQL level).
+//
+// Unqualified `col`: every scope is tried in order; first match wins.
+// Identifier case is preserved verbatim from the AST; if a GROUP BY
+// clause and a correlated reference use different casing, the lookup
+// will miss (matches the rest of this evaluator's case-sensitive
+// column semantics).
 func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, bool, error) {
 	qual := ""
 	bare := colName
@@ -1316,6 +1326,19 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		// expression tree collecting bare column refs; any ref not in
 		// GROUP BY that IS defined in the source → 42803. Refs inside
 		// aggregate calls are fine (the aggregate computes them).
+		//
+		// Asymmetry: when a ref is NOT in GROUP BY AND NOT defined in
+		// the source, we intentionally do NOT raise 42803 here — it
+		// falls through and fails downstream at evalExprOnMap time with
+		// 42703 ("column not found"). Matches Java's distinction:
+		// 42803 = "column exists but ungrouped"; 42703 = "column
+		// doesn't exist at all".
+		//
+		// groupByNames preserves identifier case from the AST (no
+		// case folding). A GROUP BY that uses `x.Col1` and an outExpr
+		// that uses `x.col1` will miss the match and raise a false
+		// 42803 — consistent with the rest of this evaluator's case-
+		// sensitive semantics, not a new regression.
 		for _, ac := range sq.aggCols {
 			if ac.outExpr == nil {
 				continue
@@ -7740,9 +7763,8 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		// `outer_tbl.col` resolves against this msg via resolveOuterColumn.
 		// Qualifier taken from the proto descriptor name (single-source
 		// FROM without an explicit AS alias — the common case).
-		pop := conn.pushOuterScope(outerScopeFromMsg(conn, msg))
+		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
-		pop()
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -7998,9 +8020,8 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
-		pop := conn.pushOuterScope(outerScopeFromMsg(conn, msg))
+		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
 		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
-		pop()
 		if err != nil {
 			return triFalse, err
 		}
@@ -8307,9 +8328,8 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
-		pop := conn.pushOuterScope(outerScopeFromMapRow(row))
+		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
-		pop()
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -8865,9 +8885,8 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			if conn == nil {
 				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 			}
-			pop := conn.pushOuterScope(outerScopeFromMapRow(row))
+			defer conn.pushOuterScope(outerScopeFromMapRow(row))()
 			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
-			pop()
 			if subErr != nil {
 				return triFalse, subErr
 			}
@@ -8957,9 +8976,8 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 		if conn == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
-		pop := conn.pushOuterScope(outerScopeFromMapRow(row))
+		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
 		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
-		pop()
 		if subErr != nil {
 			return triFalse, subErr
 		}
