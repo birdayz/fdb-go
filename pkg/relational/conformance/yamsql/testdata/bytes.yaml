@@ -42,6 +42,9 @@ tests:
   # Invalid hex (odd length) raises 22F03 INVALID_BINARY_REPRESENTATION.
   - query: SELECT a FROM lb WHERE b = x'0'
     error_code: "22F03"
+  # Invalid hex (non-hex chars 'M' 'N') — Java pins 22F03 too.
+  - query: SELECT a FROM lb WHERE b = x'ABCDMN'
+    error_code: "22F03"
   # Invalid base64 chars raise 22F03.
   - query: SELECT a FROM lb WHERE b = b64'***'
     error_code: "22F03"
