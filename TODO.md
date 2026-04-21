@@ -315,6 +315,9 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] **GROUP BY without aggregate silently ignored** (946eef1a): `SELECT a FROM t GROUP BY a` returned every row. Fixed — now behaves like DISTINCT.
 - [x] **CAST to INTEGER range-check** (ad068502): `CAST(9223372036854775807 AS INTEGER)` now errors 22F3H (Java CastValue.LONG_TO_INT). Go was silently accepting LONG values beyond Integer.MAX_VALUE because castValue treated INTEGER and BIGINT identically.
 - [ ] **Ambiguous column reference in JOIN** (pinned by `ambiguous_column.yaml`): Java errors 42702 when an unqualified column name appears in multiple joined tables. Go silently picks right side via map-merge last-write-wins in `execSelectJoin`. `ErrCodeAmbiguousColumn` defined but no call sites. Needs: detect duplicate bare-keys during join-merge, surface 42702 on resolution.
+- [x] **UNION arity mismatch** (e882b918): now errors 42F64 (UNION_INCORRECT_COLUMN_COUNT, Java class-42) instead of generic 42601 SYNTAX_ERROR. ErrCodeUnionIncorrectColumnCount was defined but unused.
+- [x] **BETWEEN cross-type bounds** (c4d7c99d): `col BETWEEN 10 AND 'a'` now errors 22000 (CANNOT_CONVERT_TYPE) instead of returning silent empty result. valuesComparable check added to evalBetweenPredicateTri.
+- [x] **SQL §7.10 GR1 — bare col + aggregate without GROUP BY** (fca612f7): `SELECT id, COUNT(*) FROM t` now errors 42803 (grouping_error). Go previously silently reclassified bare columns as groupCol entries, producing nonsense output. Validation walks sq.aggCols for groupCol entries and column-referencing outExprs that lack aggregates, rejecting when sq.groupBy is empty.
 
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
