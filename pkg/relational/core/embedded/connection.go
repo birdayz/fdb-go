@@ -32,8 +32,8 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -439,77 +439,75 @@ func New(
 	}
 }
 
-// ExecContext executes SQL (DDL only in phase 1) and returns the result.
-// Implements driver.ExecerContext so database/sql skips the Prepare round-trip.
-func (c *EmbeddedConnection) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+// ExecContext executes SQL (DDL/DML/transaction) and returns the row-
+// count result. Routes through the query.Generator seam — the naive
+// Generator parses, dispatches to execStatement, and returns a Plan
+// whose Execute aggregates RowsAffected across a multi-statement
+// batch.
+func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args []driver.NamedValue) (driver.Result, error) {
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	defer c.beginStatement()()
-	var err error
-	if query, err = substituteParams(query, args); err != nil {
-		return nil, err
-	}
-	root, err := parser.Parse(query)
+	substituted, err := substituteParams(sql, args)
 	if err != nil {
 		return nil, err
 	}
-	stmts := root.Statements()
-	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return driver.RowsAffected(0), nil
+	gen := &naiveGenerator{c: c}
+	plan, err := gen.Plan(ctx, substituted)
+	if err != nil {
+		return nil, err
 	}
-	var totalRows int64
-	for _, stmt := range stmts.AllStatement() {
-		rows, execErr := c.execStatement(ctx, stmt)
-		if execErr != nil {
-			return nil, execErr
-		}
-		totalRows += rows
+	// ExecContext accepts only update-shaped plans. A bare SELECT or
+	// SHOW passed to Exec is rejected with the pre-seam error message
+	// (matches TestFDB_EmbeddedSelectReturnsUnsupported). Callers use
+	// QueryContext for row-returning statements.
+	if !plan.IsUpdate() {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"unsupported statement type; supported: DDL, INSERT, UPDATE, DELETE")
 	}
-	return driver.RowsAffected(totalRows), nil
+	result, err := plan.Execute(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return driver.RowsAffected(result.RowsAffected), nil
 }
 
-// QueryContext handles read-only queries. Supports SHOW statements and
-// SELECT * FROM <table>; all other queries return ErrCodeUnsupportedOperation.
-func (c *EmbeddedConnection) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+// QueryContext handles read-only queries (SELECT / SHOW). Routes
+// through the query.Generator seam. Rejects multi-statement batches
+// and non-row-returning Plans — behaviour matches the pre-seam
+// QueryContext.
+func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args []driver.NamedValue) (driver.Rows, error) {
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
 	defer c.beginStatement()()
-	var subErr error
-	if query, subErr = substituteParams(query, args); subErr != nil {
-		return nil, subErr
+	substituted, err := substituteParams(sql, args)
+	if err != nil {
+		return nil, err
 	}
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return nil, err
 	}
-	root, err := parser.Parse(query)
+	gen := &naiveGenerator{c: c}
+	plan, err := gen.Plan(ctx, substituted)
 	if err != nil {
 		return nil, err
 	}
-	stmts := root.Statements()
-	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return emptyRows{}, nil
-	}
-	if len(stmts.AllStatement()) > 1 {
+	// QueryContext expects a Rows-returning plan. A multi-statement
+	// batch (MultiPlan) is always an update plan under today's
+	// semantics; reject with the same message the pre-seam code used.
+	if _, isMulti := plan.(*query.MultiPlan); isMulti {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "multi-statement queries are not supported")
 	}
-	stmt := stmts.AllStatement()[0]
-
-	// Route SELECT statements.
-	if sel := stmt.SelectStatement(); sel != nil {
-		return c.execSelect(ctx, sel)
-	}
-
-	admin := stmt.AdministrationStatement()
-	if admin == nil {
+	if plan.IsUpdate() {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW and SELECT statements are supported")
 	}
-	show := admin.ShowStatement()
-	if show == nil {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "only SHOW statements are supported")
+	result, err := plan.Execute(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return c.execShowStatement(ctx, show)
+	return rowsOrEmpty(result.Rows), nil
 }
 
 // execQueryBodyRows executes a queryExpressionBody and returns (colNames, rows).
