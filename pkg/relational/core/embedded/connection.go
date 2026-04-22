@@ -1400,7 +1400,8 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 	}
 	// Bucket range bounds by (uppercase) column. Equalities skipped.
 	// BETWEEN lo AND hi contributes both inclusive bounds to the
-	// column's entry.
+	// column's entry. LIKE 'prefix%' contributes [prefix,
+	// strinc(prefix)) (half-open, string cols only).
 	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
 	for _, leaf := range leaves {
 		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
@@ -1412,6 +1413,24 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 			b.hasHigh = true
 			b.high = hi
 			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			colUpper := strings.ToUpper(col)
+			lb, lbOk := likePrefixToPKRangeBounds(prefix)
+			if !lbOk {
+				continue
+			}
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lb.low
+			b.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				b.hasHigh = true
+				b.high = lb.high
+				b.highInclusive = lb.highInclusive
+			}
 			rangeByCol[colUpper] = b
 			continue
 		}
@@ -1989,6 +2008,30 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 			bounds.hasHigh = true
 			bounds.high = hi
 			bounds.highInclusive = true
+			continue
+		}
+		// `col LIKE 'prefix%'` — narrows to [prefix, strinc(prefix))
+		// on STRING-kind PK columns. Other kinds can't carry a LIKE
+		// literal anyway (SQL surfaces a type error at eval time).
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			if strings.ToUpper(col) != pkColUpper {
+				continue
+			}
+			if fd.Kind() != protoreflect.StringKind {
+				return pkRangeBounds{}, false
+			}
+			lb, lbOk := likePrefixToPKRangeBounds(prefix)
+			if !lbOk {
+				continue
+			}
+			bounds.hasLow = true
+			bounds.low = lb.low
+			bounds.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				bounds.hasHigh = true
+				bounds.high = lb.high
+				bounds.highInclusive = lb.highInclusive
+			}
 			continue
 		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)

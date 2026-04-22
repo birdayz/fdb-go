@@ -6,6 +6,7 @@ go_library(
         "connection.go",
         "covering_index.go",
         "in_list_pushdown.go",
+        "like_prefix_pushdown.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
