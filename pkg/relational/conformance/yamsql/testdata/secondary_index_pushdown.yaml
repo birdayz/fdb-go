@@ -157,3 +157,14 @@ tests:
   - query: SELECT COUNT(*) FROM t2 WHERE region = 'eu'
     rows:
       - [1]
+
+  # NULL literal in secondary-index WHERE: three-valued logic, never
+  # true, pushdown bails on NULL RHS, scan's evalPredicate also
+  # produces UNKNOWN. Empty result either way.
+  - query: SELECT id FROM t WHERE status = NULL
+    rows: []
+
+  # Composite index with a NULL literal on one side — same as above,
+  # pushdown bails on NULL RHS.
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan = NULL
+    rows: []
