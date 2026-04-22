@@ -1561,6 +1561,19 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 	}
 	// Walk AND leaves once, splitting into equalities and range bounds.
 	// BETWEEN lo AND hi contributes both inclusive bounds.
+	//
+	// We don't filter to index cols here: without picking an index
+	// first we don't know which cols are "index cols", and multiple
+	// indexes may share different columns. Non-index leaves land in
+	// the maps but are never looked up — the index-selection loop
+	// below only probes rangeByCol / equalities on actual idxCols, so
+	// asymmetry vs the PK path (which knows its cols upfront and can
+	// filter inline) is harmless.
+	//
+	// Multiple range leaves on the same column use last-write-wins;
+	// correctness holds because the scan loop's evalPredicate
+	// re-applies the full WHERE to each loaded row, even when the
+	// chosen bound is looser.
 	equalities := make(map[string]any, len(leaves))
 	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
 	for _, leaf := range leaves {
@@ -1677,7 +1690,14 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 
 // secondaryIndexCompositeRangeScanCursor builds a range scan whose
 // low and high tuples share the same leading prefix (the equated
-// leading index cols) and differ only in the last component.
+// leading index cols) and differ only in the range component.
+//
+// Open ends fall back to the prefix tuple with EndpointTypeRangeInclusive,
+// not TreeStart/TreeEnd. Inclusive on the high side appends 0xFF to the
+// packed prefix (see index_scan.go ToFDBRange), so pack(prefix)+0xFF
+// covers every suffix under the prefix — exactly what we want for an
+// open-ended composite scan bounded by the equated cols. The single-col
+// range cursor uses TreeStart/TreeEnd because there IS no prefix there.
 func secondaryIndexCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	cr secondaryIndexCompositeRange,
