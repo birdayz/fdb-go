@@ -1720,10 +1720,24 @@ func (c *EmbeddedConnection) tryPKCompositeRangePushdown(
 }
 
 // tryPKCompositeRangeFromWhere recognises the case of a composite
-// PK where all leading columns are equated to literals and the
-// LAST column has either an equality or a range predicate. The
-// range is valid on the last component only because composite key
-// ranges are contiguous in FDB only when prefixed by fixed values.
+// PK where the first PK column with a range predicate is preceded by
+// equalities on all earlier PK columns. The range column contributes
+// the scan bounds; any equality/range leaves on PK columns AFTER the
+// range column are ignored here and re-applied by the scan loop's
+// evalPredicate post-filter.
+//
+// Why relaxed past the last column: composite key ranges in FDB are
+// contiguous as long as the prefix is fixed and the first varying
+// component carries a bound. Pinning unrelated trailing columns in
+// the range tuple would over-constrain the key space. For PK cols
+// after the range col we therefore leave the scan bounds open and
+// post-filter.
+//
+// Pure-equality composite is handled by tryPKEqualityFromWhere at
+// every call site and runs first; if we see no range on any PK col
+// we bail. A PK whose leading equalities are partial (e.g. `a=1`
+// without a range on b for PK (a,b,c)) also bails here — a pure
+// prefix narrowing is a separate feature.
 func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 	ctx context.Context,
 	whereExpr antlrgen.IWhereExprContext,
@@ -1742,20 +1756,15 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 	if !ok {
 		return pkCompositeRange{}, false
 	}
-	// Column-name → (op, val) from the WHERE leaves. An equality
-	// counts once; a range contributes one or both bounds on the
-	// same column. If a non-last PK column has anything other than
-	// equality, bail.
+	// Walk AND leaves once, splitting by op into equalities and range
+	// bounds. Non-PK leaves stay as post-filter (ignored here).
 	equalities := make(map[string]any, len(pkCols))
-	var lastBounds pkRangeBounds
-	lastCol := pkCols[len(pkCols)-1]
-	lastColUpper := strings.ToUpper(lastCol)
+	rangeByCol := make(map[string]pkRangeBounds, len(pkCols))
 	for _, leaf := range leaves {
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
 		}
-		colUpper := strings.ToUpper(col)
 		isPK := false
 		for _, pkc := range pkCols {
 			if strings.EqualFold(pkc, col) {
@@ -1764,78 +1773,81 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 			}
 		}
 		if !isPK {
-			// Non-PK leaves are post-filtered by the scan — ignore.
 			continue
 		}
-		if colUpper == lastColUpper {
-			// `=` intentionally not handled — tryPKEqualityFromWhere
-			// fires before this function at every call site; if it
-			// would have matched (every PK column equated, types
-			// check), we wouldn't be here. Mirror of the comment in
-			// tryPKRangeFromWhere.
-			switch op {
-			case ">":
-				lastBounds.hasLow = true
-				lastBounds.low = val
-				lastBounds.lowInclusive = false
-			case ">=":
-				lastBounds.hasLow = true
-				lastBounds.low = val
-				lastBounds.lowInclusive = true
-			case "<":
-				lastBounds.hasHigh = true
-				lastBounds.high = val
-				lastBounds.highInclusive = false
-			case "<=":
-				lastBounds.hasHigh = true
-				lastBounds.high = val
-				lastBounds.highInclusive = true
-			}
-			continue
+		colUpper := strings.ToUpper(col)
+		switch op {
+		case "=":
+			equalities[colUpper] = val
+		case ">":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = false
+			rangeByCol[colUpper] = b
+		case ">=":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = true
+			rangeByCol[colUpper] = b
+		case "<":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = false
+			rangeByCol[colUpper] = b
+		case "<=":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
 		}
-		// Non-last PK column — only equality is acceptable.
-		if op != "=" {
-			return pkCompositeRange{}, false
-		}
-		equalities[colUpper] = val
 	}
-	// Every PK column except the last must have an equality.
-	prefixVals := make([]any, len(pkCols)-1)
-	for i := 0; i < len(pkCols)-1; i++ {
+	// Find the first PK col (in declared order) carrying a range
+	// bound. Every PK col before it must have an equality.
+	rangeK := -1
+	for i, col := range pkCols {
+		if _, has := rangeByCol[strings.ToUpper(col)]; has {
+			rangeK = i
+			break
+		}
+	}
+	if rangeK == -1 {
+		return pkCompositeRange{}, false
+	}
+	prefixVals := make([]any, rangeK)
+	for i := 0; i < rangeK; i++ {
 		col := pkCols[i]
 		val, ok := equalities[strings.ToUpper(col)]
 		if !ok {
 			return pkCompositeRange{}, false
 		}
 		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-		if fd == nil {
-			return pkCompositeRange{}, false
-		}
-		if !literalMatchesPKKind(val, fd.Kind()) {
+		if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
 			return pkCompositeRange{}, false
 		}
 		prefixVals[i] = val
 	}
-	// If the last column has no range or equality, we're left with
-	// just the prefix — that's a prefix scan, not a narrowed range.
-	// Fall through to the regular per-type scan (which is equally
-	// fast since the prefix IS the type prefix plus a bit more, and
-	// the current code doesn't know to narrow without a full bound).
-	if !lastBounds.hasLow && !lastBounds.hasHigh {
+	rangeCol := pkCols[rangeK]
+	bounds := rangeByCol[strings.ToUpper(rangeCol)]
+	if !bounds.hasLow && !bounds.hasHigh {
+		// Shouldn't happen — rangeK was only set when at least one
+		// bound existed — but keep the guard for clarity.
 		return pkCompositeRange{}, false
 	}
-	// Type-check the last column's bounds.
-	lastFD := rt.Descriptor.Fields().ByName(protoreflect.Name(lastCol))
-	if lastFD == nil {
+	rangeFD := rt.Descriptor.Fields().ByName(protoreflect.Name(rangeCol))
+	if rangeFD == nil {
 		return pkCompositeRange{}, false
 	}
-	if lastBounds.hasLow && !literalMatchesPKKind(lastBounds.low, lastFD.Kind()) {
+	if bounds.hasLow && !literalMatchesPKKind(bounds.low, rangeFD.Kind()) {
 		return pkCompositeRange{}, false
 	}
-	if lastBounds.hasHigh && !literalMatchesPKKind(lastBounds.high, lastFD.Kind()) {
+	if bounds.hasHigh && !literalMatchesPKKind(bounds.high, rangeFD.Kind()) {
 		return pkCompositeRange{}, false
 	}
-	return pkCompositeRange{prefixVals: prefixVals, lastBounds: lastBounds}, true
+	return pkCompositeRange{prefixVals: prefixVals, lastBounds: bounds}, true
 }
 
 // pkPushdownCompositeRangeScanCursor builds a range scan whose low
