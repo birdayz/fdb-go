@@ -1903,6 +1903,27 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter,
 				"derived table %q", sq.tableName)
 		}
+		// Reject duplicate output column names in the derived table's
+		// projection (e.g. `SELECT a.*, a.* FROM a` which collapses
+		// to id/name × 2). Java errors 42702 at the outer reference
+		// because both sources of `id` are equally valid; Go surfaces
+		// 22023 via the materialiser since the cte.cols list can't
+		// disambiguate. Pinned by ambiguous_column.yaml.
+		if len(cols) > 1 {
+			seen := make(map[string]bool, len(cols))
+			for _, col := range cols {
+				key := col
+				if dot := strings.LastIndex(col, "."); dot >= 0 {
+					key = col[dot+1:]
+				}
+				key = strings.ToUpper(key)
+				if seen[key] {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"derived table %q has duplicate column %q", sq.tableName, col)
+				}
+				seen[key] = true
+			}
+		}
 		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
 	}
 
