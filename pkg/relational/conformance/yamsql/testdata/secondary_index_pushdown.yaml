@@ -1,0 +1,63 @@
+# secondary_index_pushdown.yaml
+#
+# Secondary-index pushdown: `SELECT ... WHERE col = literal` on a
+# non-PK column with a matching single-column value index narrows
+# the scan from ScanRecordsByType (full type scan + post-filter) to
+# ScanIndexRecords (index range scan + record fetch by PK).
+#
+# Result equivalence between index path and scan path is the
+# correctness invariant; the perf benefit (index range O(matches)
+# vs full type scan O(|T|)) is not directly observable from rows.
+name: secondary_index_pushdown
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    status STRING,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_status ON t (status)
+setup:
+  - INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)
+tests:
+  # Basic: WHERE on indexed column returns matching rows via index
+  # scan. Order of rows within the same index key is FDB scan order.
+  - query: SELECT id, status, v FROM t WHERE status = 'active' ORDER BY id
+    rows:
+      - [1, 'active', 10]
+      - [3, 'active', 30]
+
+  # Symmetric: literal on LHS.
+  - query: SELECT id FROM t WHERE 'archived' = status
+    rows:
+      - [2]
+
+  # No match → empty via index scan (cursor yields nothing, not an
+  # error).
+  - query: SELECT id FROM t WHERE status = 'nonexistent'
+    rows: []
+
+  # Index pushdown + extra non-PK predicate — index narrows the scan
+  # to the matching range, scan's evalPredicate applies `v > 20`
+  # post-filter on the loaded records.
+  - query: SELECT id FROM t WHERE status = 'active' AND v > 20
+    rows:
+      - [3]
+
+  # Index pushdown + LIMIT (applied post-fetch; index scan still
+  # yields all matches until the limit is reached).
+  - query: SELECT id FROM t WHERE status = 'active' ORDER BY id LIMIT 1
+    rows:
+      - [1]
+
+  # Non-indexed column → falls through to full scan (still correct).
+  - query: SELECT id FROM t WHERE v = 30
+    rows:
+      - [3]
+
+  # WHERE on PK column → PK pushdown takes precedence (tested in
+  # pk_pushdown.yaml); regression check that it still works when a
+  # secondary index ALSO exists on another column.
+  - query: SELECT id FROM t WHERE id = 2
+    rows:
+      - [2]

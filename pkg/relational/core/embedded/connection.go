@@ -1170,6 +1170,98 @@ func pkPushdownRangeScanCursor(
 	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
 }
 
+// trySecondaryIndexPushdown looks for a VALUE index on a single bare
+// column that matches a `col = literal` leaf in WHERE, and returns a
+// cursor over the index-scoped records. This lets `SELECT ... WHERE
+// status = 'active'` scan the `status` index range instead of the
+// full type range. Conservative MVP:
+//   - single-column VALUE index only (RootExpression = Field(col))
+//   - any AND-chain leaf that equals the index column with a literal
+//     triggers the match; other leaves stay as post-filter via the
+//     scan loop's existing evalPredicate
+//   - callers still gate on query shape (aggregates / GROUP BY / …)
+//     via tryPKRangePushdown's pattern
+func (c *EmbeddedConnection) trySecondaryIndexPushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (indexName string, keyVal any, ok bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return "", nil, false
+	}
+	if sq.havingExpr != nil || sq.whereExpr == nil {
+		return "", nil, false
+	}
+	leaves, lok := flattenAndPredicates(sq.whereExpr.Expression())
+	if !lok {
+		return "", nil, false
+	}
+	// Collect bare col=literal equalities into a map.
+	equalities := make(map[string]any, len(leaves))
+	for _, leaf := range leaves {
+		col, val, leafOk := extractColEqualsLiteral(ctx, c, leaf)
+		if !leafOk {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+	if len(equalities) == 0 {
+		return "", nil, false
+	}
+	// Scan indexes on this record type. Pick the first VALUE index
+	// whose single-column key matches an equality leaf.
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		fke, isField := idx.RootExpression.(*recordlayer.FieldKeyExpression)
+		if !isField {
+			continue
+		}
+		names := fke.FieldNames()
+		if len(names) != 1 {
+			continue
+		}
+		col := names[0]
+		val, found := equalities[strings.ToUpper(col)]
+		if !found {
+			continue
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil {
+			continue
+		}
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			continue
+		}
+		return idx.Name, val, true
+	}
+	return "", nil, false
+}
+
+// secondaryIndexPushdownCursor wraps `store.ScanIndexRecords` and
+// adapts its `*FDBIndexedRecord` stream to the `*FDBStoredRecord` the
+// SQL scan loop expects. The returned cursor yields only the records
+// matching the exact index key.
+func secondaryIndexPushdownCursor(
+	store *recordlayer.FDBRecordStore,
+	indexName string,
+	keyVal any,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	scanRange := recordlayer.TupleRange{
+		Low:          tuple.Tuple{keyVal},
+		High:         tuple.Tuple{keyVal},
+		LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+		HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
+	}
+	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}
+
 // tryPKRangePushdown is the SELECT-gated variant of
 // tryPKRangeFromWhere. Same shape gates as tryPKEqualityPushdown.
 func (c *EmbeddedConnection) tryPKRangePushdown(
@@ -3646,6 +3738,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, sq, rt, md); ok {
+			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}
