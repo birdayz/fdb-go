@@ -4364,12 +4364,30 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, storeErr
 		}
 
-		// PK pushdown: if WHERE is an AND-chain of `pk_col = literal`
-		// equalities covering every PK column, narrow the scan from
-		// the whole type range to the exact key. The existing scan
-		// loop still runs over the cursor (applying WHERE, projection,
-		// ORDER BY, LIMIT), just over at-most-one record. Zero
-		// behavioural change besides avoiding the full-type iteration.
+		// Scan-cursor pushdown chain. Order is "narrowest first": each
+		// branch represents a progressively looser shape, so the first
+		// match is always the tightest narrowing. Fallthrough is the
+		// full type scan. The scan loop below still applies the full
+		// WHERE via evalPredicate, so every pushdown is a superset of
+		// the rows the scan would have matched — partial narrowing is
+		// correct. Covering-index optimisation (skip the by-PK fetch)
+		// is considered at the secondary-index branches when the
+		// SELECT's referenced column set fits the (idx cols, PK cols)
+		// union.
+		//
+		// Chain order:
+		//   PK:
+		//     1. equality on every PK col         — 1 key
+		//     2. single-col IN-list               — N keys
+		//     3. single-col range / BETWEEN / LIKE
+		//     4. composite range with leading eq
+		//   Secondary index (single-col then composite; each gated on
+		//   index scannability inside its helper):
+		//     5. equality                         — exact key (covered)
+		//     6. IN-list                          — N keys (covered)
+		//     7. range / BETWEEN / LIKE prefix    — (covered)
+		//     8. composite range with leading eq  — (covered)
+		//   9. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
