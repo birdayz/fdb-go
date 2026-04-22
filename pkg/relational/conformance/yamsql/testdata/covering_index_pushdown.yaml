@@ -266,3 +266,23 @@ tests:
       - ['active']
       - ['archived']
       - ['deleted']
+
+  # -------------------------------------------------------------------
+  # Covering + subquery in WHERE
+  # -------------------------------------------------------------------
+  #
+  # The subquery brings its own columns into the WHERE via the IN
+  # predicate. canCoverIndex walks sq.whereExpr collecting every
+  # bare column reference, including inside the subquery. The walker
+  # may over-include (a subquery's own column names appear in
+  # `need`), but the check against (idxCols, PKCols) is
+  # conservative — when the subquery's column happens NOT to be
+  # covered by the outer index, canCoverIndex bails and the non-
+  # covering cursor serves the query. Result is still correct.
+
+  # Outer id (PK) + subquery on t returning id. canCoverIndex's
+  # walker sees 'id' (in need), which is in outer PK → covered.
+  - query: SELECT id FROM t WHERE id IN (SELECT id FROM t WHERE status = 'active') ORDER BY id
+    rows:
+      - [1]
+      - [3]
