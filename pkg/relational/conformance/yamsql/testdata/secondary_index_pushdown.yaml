@@ -362,3 +362,46 @@ tests:
   - query: SELECT amount FROM t2 WHERE id = 11
     rows:
       - [200]
+
+  # ---------------------------------------------------------------
+  # BETWEEN pushdown on secondary indexes (single-col + composite).
+  # ---------------------------------------------------------------
+  # Re-seed t for a clean single-col BETWEEN test on idx_v.
+  - query: DELETE FROM t
+  - query: INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30), (4, 'd', 40), (5, 'e', 50)
+
+  # Single-col secondary-index: BETWEEN on the indexed column.
+  - query: SELECT id FROM t WHERE v BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+
+  # Single-col secondary-index: BETWEEN + extra post-filter.
+  - query: SELECT id FROM t WHERE v BETWEEN 10 AND 40 AND id <> 3 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+
+  # Single-col secondary-index: NOT BETWEEN falls through to full
+  # scan (non-contiguous), still correct.
+  - query: SELECT id FROM t WHERE v NOT BETWEEN 20 AND 40 ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # Composite secondary-index: BETWEEN on the last index col with
+  # a leading equality.
+  - query: DELETE FROM t2
+  - query: INSERT INTO t2 VALUES (10, 'us', 'a', 100), (11, 'us', 'b', 50), (12, 'us', 'c', 200), (13, 'eu', 'b', 300)
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan BETWEEN 'a' AND 'b' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+
+  # Composite secondary-index: BETWEEN on the FIRST index col
+  # (empty prefix, relaxed composite range path).
+  - query: SELECT id FROM t2 WHERE region BETWEEN 'a' AND 'f' ORDER BY id
+    rows:
+      - [13]

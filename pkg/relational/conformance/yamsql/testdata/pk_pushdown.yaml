@@ -417,3 +417,77 @@ tests:
     rows:
       - ['eu']
       - ['eu']
+
+  # ---------------------------------------------------------------
+  # BETWEEN pushdown: `col BETWEEN lo AND hi` is inclusive on both
+  # sides, equivalent to `col >= lo AND col <= hi`. Tested on single
+  # PK, composite PK, and across mutation paths.
+  # ---------------------------------------------------------------
+  # Re-seed t for predictable BETWEEN tests.
+  - query: DELETE FROM t
+  - query: INSERT INTO t VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30), (4, 'delta', 40), (5, 'epsilon', 50)
+
+  # Single-col PK, bare BETWEEN.
+  - query: SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+
+  # BETWEEN with bounds equal — single-point range.
+  - query: SELECT id FROM t WHERE id BETWEEN 3 AND 3
+    rows:
+      - [3]
+
+  # BETWEEN with lo > hi → empty (scan produces no rows because
+  # evalPredicate's inclusive BETWEEN semantics never match).
+  - query: SELECT id FROM t WHERE id BETWEEN 10 AND 5
+    rows: []
+
+  # BETWEEN + extra predicate — range narrows, extras post-filter.
+  - query: SELECT id FROM t WHERE id BETWEEN 1 AND 5 AND name <> 'gamma' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+      - [5]
+
+  # NOT BETWEEN: pushdown bails (non-contiguous range) and the scan
+  # path evaluates the predicate. Still correct.
+  - query: SELECT id FROM t WHERE id NOT BETWEEN 2 AND 4 ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # Composite PK: BETWEEN on the last PK col.
+  - query: DELETE FROM kv
+  - query: INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('a', 3, 300), ('b', 1, 400)
+  - query: SELECT k, g FROM kv WHERE k = 'a' AND g BETWEEN 1 AND 2 ORDER BY g
+    rows:
+      - ['a', 1]
+      - ['a', 2]
+
+  # Composite PK: BETWEEN on the first PK col (empty prefix).
+  - query: SELECT k FROM kv WHERE k BETWEEN 'a' AND 'a' ORDER BY g
+    rows:
+      - ['a']
+      - ['a']
+      - ['a']
+
+  # UPDATE via BETWEEN pushdown.
+  - query: UPDATE t SET v = 0 WHERE id BETWEEN 2 AND 4
+  - query: SELECT id, v FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id
+    rows:
+      - [2, 0]
+      - [3, 0]
+      - [4, 0]
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # DELETE via BETWEEN pushdown.
+  - query: DELETE FROM t WHERE id BETWEEN 2 AND 4
+  - query: SELECT id FROM t ORDER BY id
+    rows:
+      - [1]
+      - [5]

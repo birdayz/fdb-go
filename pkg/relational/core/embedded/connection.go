@@ -1396,8 +1396,22 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 		return secondaryIndexRange{}, false
 	}
 	// Bucket range bounds by (uppercase) column. Equalities skipped.
+	// BETWEEN lo AND hi contributes both inclusive bounds to the
+	// column's entry.
 	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
 	for _, leaf := range leaves {
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lo
+			b.lowInclusive = true
+			b.hasHigh = true
+			b.high = hi
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok || op == "=" {
 			continue
@@ -1546,9 +1560,22 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 		return secondaryIndexCompositeRange{}, false
 	}
 	// Walk AND leaves once, splitting into equalities and range bounds.
+	// BETWEEN lo AND hi contributes both inclusive bounds.
 	equalities := make(map[string]any, len(leaves))
 	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
 	for _, leaf := range leaves {
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lo
+			b.lowInclusive = true
+			b.hasHigh = true
+			b.high = hi
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
@@ -1769,19 +1796,35 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 	// bounds. Non-PK leaves stay as post-filter (ignored here).
 	equalities := make(map[string]any, len(pkCols))
 	rangeByCol := make(map[string]pkRangeBounds, len(pkCols))
+	isPKCol := func(col string) bool {
+		for _, pkc := range pkCols {
+			if strings.EqualFold(pkc, col) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, leaf := range leaves {
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			if !isPKCol(col) {
+				continue
+			}
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lo
+			b.lowInclusive = true
+			b.hasHigh = true
+			b.high = hi
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
 		}
-		isPK := false
-		for _, pkc := range pkCols {
-			if strings.EqualFold(pkc, col) {
-				isPK = true
-				break
-			}
-		}
-		if !isPK {
+		if !isPKCol(col) {
 			continue
 		}
 		colUpper := strings.ToUpper(col)
@@ -1931,6 +1974,22 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 	var bounds pkRangeBounds
 	pkColUpper := strings.ToUpper(pkCol)
 	for _, leaf := range leaves {
+		// `col BETWEEN lo AND hi` — inclusive on both sides.
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			if strings.ToUpper(col) != pkColUpper {
+				continue
+			}
+			if !literalMatchesPKKind(lo, fd.Kind()) || !literalMatchesPKKind(hi, fd.Kind()) {
+				return pkRangeBounds{}, false
+			}
+			bounds.hasLow = true
+			bounds.low = lo
+			bounds.lowInclusive = true
+			bounds.hasHigh = true
+			bounds.high = hi
+			bounds.highInclusive = true
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
@@ -2017,6 +2076,45 @@ func extractColOpLiteral(
 		}
 	}
 	return "", "", nil, false
+}
+
+// extractColBetweenLiteral recognises `col BETWEEN lo AND hi` where
+// col is a bare column reference and lo, hi are constant literals.
+// Returns the column name and both literal values. NOT BETWEEN,
+// non-constant bounds, and NULL bounds bail out — NOT BETWEEN is a
+// non-contiguous key range (two open half-ranges), and a NULL bound
+// makes the predicate UNKNOWN per SQL 3VL so it cannot narrow the
+// scan. BETWEEN's SQL semantics are inclusive on both sides, which
+// the callers translate into `col >= lo AND col <= hi` bounds.
+func extractColBetweenLiteral(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (col string, lo, hi any, ok bool) {
+	pred, good := expr.(*antlrgen.PredicatedExpressionContext)
+	if !good {
+		return "", nil, nil, false
+	}
+	bet, good := pred.Predicate().(*antlrgen.BetweenComparisonPredicateContext)
+	if !good {
+		return "", nil, nil, false
+	}
+	if bet.NOT() != nil {
+		return "", nil, nil, false
+	}
+	name, isCol := extractColumnRef(pred.ExpressionAtom())
+	if !isCol {
+		return "", nil, nil, false
+	}
+	loVal, isLit := evalConstantAtom(ctx, c, bet.GetLeft())
+	if !isLit || loVal == nil {
+		return "", nil, nil, false
+	}
+	hiVal, isLit := evalConstantAtom(ctx, c, bet.GetRight())
+	if !isLit || hiVal == nil {
+		return "", nil, nil, false
+	}
+	return name, loVal, hiVal, true
 }
 
 // flipComparisonOp flips a comparison operator for the case where
