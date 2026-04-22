@@ -1971,9 +1971,10 @@ func pkPushdownCompositeRangeScanCursor(
 }
 
 // tryPKRangeFromWhere recognises single-column PK range predicates
-// (`>`, `>=`, `<`, `<=`). Returns the low/high bounds when viable,
-// or (_, false) otherwise. Single-column PKs only; composite PKs
-// with a last-column range go through tryPKCompositeRangeFromWhere.
+// (`>`, `>=`, `<`, `<=`, and `BETWEEN lo AND hi`). Returns the
+// low/high bounds when viable, or (_, false) otherwise. Single-column
+// PKs only; composite PKs with a range on any column go through
+// tryPKCompositeRangeFromWhere.
 //
 // Multiple bounds on the same side are collected with last-write-wins;
 // the scan loop's existing WHERE evaluator re-applies the full
