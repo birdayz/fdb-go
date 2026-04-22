@@ -30,6 +30,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
@@ -3238,7 +3239,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 						// matches via counts[i] — no extra work.
 						switch ac.aggFunc {
 						case "SUM", "AVG":
-							fv, ok := toFloat64(colVal)
+							fv, ok := functions.ToFloat64(colVal)
 							if !ok {
 								return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 									"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, colVal)
@@ -3274,7 +3275,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			gs.counts[i]++
 			switch ac.aggFunc {
 			case "SUM", "AVG":
-				fv, ok := toFloat64(colVal)
+				fv, ok := functions.ToFloat64(colVal)
 				if !ok {
 					return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"%s requires numeric input, got %T", ac.aggFunc, colVal)
@@ -4763,7 +4764,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							gs.counts[i]++
 							switch ac.aggFunc {
 							case "SUM", "AVG":
-								fv, ok := toFloat64(v)
+								fv, ok := functions.ToFloat64(v)
 								if !ok {
 									return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 										"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
@@ -4798,7 +4799,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					gs.counts[i]++
 					switch ac.aggFunc {
 					case "SUM", "AVG":
-						fv, ok := toFloat64(v)
+						fv, ok := functions.ToFloat64(v)
 						if !ok {
 							return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 								"%s requires numeric input, got %T", ac.aggFunc, v)
@@ -7571,6 +7572,50 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 	}
 }
 
+// wrapSaveRecordError translates record-layer-level errors thrown by
+// store.SaveRecord into api.Error values carrying the Java-matching
+// SQLSTATE. Without this, SQL callers would see a raw recordlayer
+// error type that doesn't `errors.As` to `*api.Error`, defeating the
+// SQLSTATE contract that the relational layer documents.
+//
+// Java's relational layer performs the equivalent mapping in
+// RelationalException.toRelationalException (class 23 -> SQLSTATE).
+func wrapSaveRecordError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var uniqErr *recordlayer.RecordIndexUniquenessViolationError
+	if errors.As(err, &uniqErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
+	}
+	var existsErr *recordlayer.RecordAlreadyExistsError
+	if errors.As(err, &existsErr) {
+		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
+			"primary key %v already exists", existsErr.PrimaryKey)
+	}
+	var keySizeErr *recordlayer.IndexKeySizeError
+	if errors.As(err, &keySizeErr) {
+		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+			"index %q key size %d exceeds limit %d", keySizeErr.IndexName, keySizeErr.KeySize, keySizeErr.Limit)
+	}
+	var valueSizeErr *recordlayer.IndexValueSizeError
+	if errors.As(err, &valueSizeErr) {
+		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
+			"index %q value size %d exceeds limit %d", valueSizeErr.IndexName, valueSizeErr.ValueSize, valueSizeErr.Limit)
+	}
+	// Already a relational-layer error (e.g. from validation upstream of
+	// the save) — pass through untouched.
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) {
+		return err
+	}
+	// Unknown record-layer error — wrap as internal so callers still see a
+	// stable SQLSTATE and can `errors.As` to *api.Error for logging. The
+	// original record-layer error is preserved via %w.
+	return api.WrapErrorf(err, api.ErrCodeInternalError, "record save failed")
+}
+
 // execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
 func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInsertStatementContext) (int64, error) {
 	if c.sess.Schema == "" {
@@ -8095,7 +8140,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		return applyMathOp(left, right, a.MathOperator().GetText())
+		return functions.ApplyMathOp(left, right, a.MathOperator().GetText())
 	case *antlrgen.BitExpressionAtomContext:
 		// Grammar: bitOperator : '<' '<' | '>' '>' | '&' | '^' | '|'
 		// Java registers bitand/bitor/bitxor + shifts in SqlFunctionCatalog.
@@ -8107,7 +8152,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		if err != nil {
 			return nil, err
 		}
-		return applyBitOp(left, right, a.BitOperator().GetText())
+		return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		return evalScalarFunctionCall(ctx, conn, msg, a.FunctionCall())
 	case *antlrgen.RecordConstructorExpressionAtomContext:
@@ -8606,7 +8651,7 @@ func evalScalarFunctionCallCore(
 				if dv == nil {
 					return nil, nil
 				}
-				d, ierr := toIntegerArg(dv, "ROUND", "decimals")
+				d, ierr := functions.ToIntegerArg(dv, "ROUND", "decimals")
 				if ierr != nil {
 					return nil, ierr
 				}
@@ -8671,11 +8716,11 @@ func evalScalarFunctionCallCore(
 		if eerr != nil || expV == nil {
 			return nil, eerr
 		}
-		base, ok := toFloat64(baseV)
+		base, ok := functions.ToFloat64(baseV)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: base must be numeric, got %T", baseV)
 		}
-		exp, ok := toFloat64(expV)
+		exp, ok := functions.ToFloat64(expV)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
 		}
@@ -8819,7 +8864,7 @@ func evalScalarFunctionCallCore(
 		if err != nil || v == nil {
 			return nil, err
 		}
-		f, ok := toFloat64(v)
+		f, ok := functions.ToFloat64(v)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT: argument must be numeric, got %T", v)
 		}
@@ -8838,7 +8883,7 @@ func evalScalarFunctionCallCore(
 		if err != nil || v == nil {
 			return nil, err
 		}
-		f, ok := toFloat64(v)
+		f, ok := functions.ToFloat64(v)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP: argument must be numeric, got %T", v)
 		}
@@ -8855,7 +8900,7 @@ func evalScalarFunctionCallCore(
 		if err != nil || v == nil {
 			return nil, err
 		}
-		f, ok := toFloat64(v)
+		f, ok := functions.ToFloat64(v)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN: argument must be numeric, got %T", v)
 		}
@@ -8874,7 +8919,7 @@ func evalScalarFunctionCallCore(
 		if err != nil || v == nil {
 			return nil, err
 		}
-		f, ok := toFloat64(v)
+		f, ok := functions.ToFloat64(v)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v)
 		}
@@ -8890,7 +8935,7 @@ func evalScalarFunctionCallCore(
 		if err != nil || v2 == nil {
 			return nil, err
 		}
-		f2, ok := toFloat64(v2)
+		f2, ok := functions.ToFloat64(v2)
 		if !ok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v2)
 		}
@@ -8947,7 +8992,7 @@ func evalScalarFunctionCallCore(
 		if nErr != nil {
 			return nil, nErr
 		}
-		n, err := toIntegerArg(nVal, "LEFT", "length")
+		n, err := functions.ToIntegerArg(nVal, "LEFT", "length")
 		if err != nil {
 			return nil, err
 		}
@@ -8973,7 +9018,7 @@ func evalScalarFunctionCallCore(
 		if nErr != nil {
 			return nil, nErr
 		}
-		n, err := toIntegerArg(nVal, "RIGHT", "length")
+		n, err := functions.ToIntegerArg(nVal, "RIGHT", "length")
 		if err != nil {
 			return nil, err
 		}
@@ -8999,7 +9044,7 @@ func evalScalarFunctionCallCore(
 		if posErr != nil {
 			return nil, posErr
 		}
-		pos, err := toIntegerArg(posVal, "SUBSTRING", "position")
+		pos, err := functions.ToIntegerArg(posVal, "SUBSTRING", "position")
 		if err != nil {
 			return nil, err
 		}
@@ -9016,7 +9061,7 @@ func evalScalarFunctionCallCore(
 			if lenErr != nil {
 				return nil, lenErr
 			}
-			n, err := toIntegerArg(lenVal, "SUBSTRING", "length")
+			n, err := functions.ToIntegerArg(lenVal, "SUBSTRING", "length")
 			if err != nil {
 				return nil, err
 			}
@@ -9475,255 +9520,6 @@ func triOr(a, b triBool) triBool {
 		return triNull
 	}
 	return triFalse
-}
-
-// addInt64Checked returns a+b and a success flag. On signed overflow
-// the flag is false and the first return value is undefined — mirrors
-// Java's Math.addExact (throws on overflow). Overflow happens iff the
-// signs of a and b match but the sign of the sum flips, i.e.
-// (a^b) >= 0 && (a^sum) < 0.
-func addInt64Checked(a, b int64) (int64, bool) {
-	s := a + b
-	if (a^b) < 0 || (a^s) >= 0 {
-		return s, true
-	}
-	return 0, false
-}
-
-// subInt64Checked returns a-b and a success flag. Overflow iff the
-// signs of a and b differ and the sign of the result flips against a.
-func subInt64Checked(a, b int64) (int64, bool) {
-	d := a - b
-	if (a^b) >= 0 || (a^d) >= 0 {
-		return d, true
-	}
-	return 0, false
-}
-
-// mulInt64Checked returns a*b and a success flag. Mirrors Java's
-// Math.multiplyExact. Uses the textbook "divide back" check: overflow
-// iff (a*b)/b != a. The first special case (a == MinInt64 && b == -1)
-// is REQUIRED: p/b would compute MinInt64 / -1, which traps with
-// SIGFPE on amd64 — we must detect and bail before the divide. The
-// second symmetric case is redundant (divide-back would flag it
-// without a hardware trap, because the divisor is MinInt64 not -1)
-// but kept for parallelism with the first so the intent is obvious.
-func mulInt64Checked(a, b int64) (int64, bool) {
-	if a == 0 || b == 0 {
-		return 0, true
-	}
-	if a == math.MinInt64 && b == -1 {
-		return 0, false
-	}
-	if b == math.MinInt64 && a == -1 {
-		return 0, false
-	}
-	p := a * b
-	if p/b != a {
-		return 0, false
-	}
-	return p, true
-}
-
-func applyMathOp(left, right any, op string) (any, error) {
-	// NULL propagates through arithmetic per SQL 3-valued logic.
-	if left == nil || right == nil {
-		return nil, nil
-	}
-	// Integer / integer stays integer and is overflow-checked — matches
-	// Java's ArithmeticValue.PhysicalOperator.ADD_LL/SUB_LL/MUL_LL/DIV_LL/
-	// MOD_LL which are `Math.addExact/subtractExact/multiplyExact` on
-	// longs (throwing ArithmeticException on overflow) and literal
-	// `long / long` / `long % long` (truncation toward zero). Going
-	// through float first would turn `10 / 3` into 3.333 instead of 3,
-	// and unchecked ops would silently wrap `MAX_INT + 1` to `MIN_INT`.
-	li, lok := left.(int64)
-	ri, rok := right.(int64)
-	if lok && rok {
-		switch op {
-		case "+":
-			r, ok := addInt64Checked(li, ri)
-			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d + %d", li, ri)
-			}
-			return r, nil
-		case "-":
-			r, ok := subInt64Checked(li, ri)
-			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d - %d", li, ri)
-			}
-			return r, nil
-		case "*":
-			r, ok := mulInt64Checked(li, ri)
-			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d * %d", li, ri)
-			}
-			return r, nil
-		case "/":
-			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
-			}
-			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
-			if li == math.MinInt64 && ri == -1 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d / %d", li, ri)
-			}
-			return li / ri, nil
-		case "%":
-			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
-			}
-			return li % ri, nil
-		default:
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
-		}
-	}
-	lf, lok := toFloat64(left)
-	rf, rok := toFloat64(right)
-	if !lok || !rok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"arithmetic operator %q requires numeric operands, got %T and %T", op, left, right)
-	}
-	var result float64
-	switch op {
-	case "+":
-		result = lf + rf
-	case "-":
-		result = lf - rf
-	case "*":
-		result = lf * rf
-	case "/":
-		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
-		}
-		result = lf / rf
-	case "%":
-		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
-		}
-		result = math.Mod(lf, rf)
-	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)
-	}
-	return result, nil
-}
-
-// applyBitOp evaluates a bitwise operator. SQL standard + Java both require
-// integer operands; float / string operands are an error (not a silent cast).
-// The grammar exposes bitOperator tokens as concatenated text, so `<<` comes
-// through as "<<" and `>>` as ">>".
-// wrapSaveRecordError translates record-layer-level errors thrown by
-// store.SaveRecord into api.Error values carrying the Java-matching
-// SQLSTATE. Without this, SQL callers would see a raw recordlayer
-// error type that doesn't `errors.As` to `*api.Error`, defeating the
-// SQLSTATE contract that the relational layer documents.
-//
-// Java's relational layer performs the equivalent mapping in
-// RelationalException.toRelationalException (class 23 -> SQLSTATE).
-func wrapSaveRecordError(err error) error {
-	if err == nil {
-		return nil
-	}
-	var uniqErr *recordlayer.RecordIndexUniquenessViolationError
-	if errors.As(err, &uniqErr) {
-		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
-			"unique index %q violated: value %v already exists", uniqErr.IndexName, uniqErr.IndexKey)
-	}
-	var existsErr *recordlayer.RecordAlreadyExistsError
-	if errors.As(err, &existsErr) {
-		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
-			"primary key %v already exists", existsErr.PrimaryKey)
-	}
-	var keySizeErr *recordlayer.IndexKeySizeError
-	if errors.As(err, &keySizeErr) {
-		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
-			"index %q key size %d exceeds limit %d", keySizeErr.IndexName, keySizeErr.KeySize, keySizeErr.Limit)
-	}
-	var valueSizeErr *recordlayer.IndexValueSizeError
-	if errors.As(err, &valueSizeErr) {
-		return api.WrapErrorf(err, api.ErrCodeInvalidParameter,
-			"index %q value size %d exceeds limit %d", valueSizeErr.IndexName, valueSizeErr.ValueSize, valueSizeErr.Limit)
-	}
-	// Already a relational-layer error (e.g. from validation upstream of
-	// the save) — pass through untouched.
-	var apiErr *api.Error
-	if errors.As(err, &apiErr) {
-		return err
-	}
-	// Unknown record-layer error — wrap as internal so callers still see a
-	// stable SQLSTATE and can `errors.As` to *api.Error for logging. The
-	// original record-layer error is preserved via %w.
-	return api.WrapErrorf(err, api.ErrCodeInternalError, "record save failed")
-}
-
-func applyBitOp(left, right any, op string) (any, error) {
-	if left == nil || right == nil {
-		return nil, nil // NULL propagates
-	}
-	li, lok := left.(int64)
-	ri, rok := right.(int64)
-	if !lok || !rok {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"bitwise operator %q requires integer operands, got %T and %T", op, left, right)
-	}
-	switch op {
-	case "&":
-		return li & ri, nil
-	case "|":
-		return li | ri, nil
-	case "^":
-		return li ^ ri, nil
-	case "<<":
-		if ri < 0 || ri >= 64 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"shift count out of range: %d", ri)
-		}
-		return li << uint64(ri), nil
-	case ">>":
-		if ri < 0 || ri >= 64 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"shift count out of range: %d", ri)
-		}
-		// Arithmetic right shift (Java >>). Use unsigned (>>>) for logical;
-		// we don't expose that operator.
-		return li >> uint64(ri), nil
-	}
-	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported bitwise operator %q", op)
-}
-
-func toFloat64(v any) (float64, bool) {
-	switch n := v.(type) {
-	case int64:
-		return float64(n), true
-	case float64:
-		return n, true
-	default:
-		return 0, false
-	}
-}
-
-// toIntegerArg coerces v to int64 for integer-typed function arguments
-// (position, length, count). Whole-value floats are accepted as a
-// convenience (`LEFT('hi', 2.0)` works); fractional floats and non-numeric
-// types error rather than silently truncating to 0.
-func toIntegerArg(v any, funcName, argName string) (int64, error) {
-	switch n := v.(type) {
-	case int64:
-		return n, nil
-	case float64:
-		if math.IsNaN(n) || math.IsInf(n, 0) {
-			return 0, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"%s: %s must be an integer, got %v", funcName, argName, n)
-		}
-		i := int64(n)
-		if float64(i) != n {
-			return 0, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"%s: %s must be an integer, got %v", funcName, argName, n)
-		}
-		return i, nil
-	default:
-		return 0, api.NewErrorf(api.ErrCodeInvalidParameter,
-			"%s: %s must be an integer, got %T", funcName, argName, v)
-	}
 }
 
 // execUpdate executes UPDATE <table> SET col = val [, ...] [WHERE col = val].
@@ -10677,7 +10473,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if rErr != nil {
 				return nil, rErr
 			}
-			return applyMathOp(left, right, a.MathOperator().GetText())
+			return functions.ApplyMathOp(left, right, a.MathOperator().GetText())
 		case *antlrgen.BitExpressionAtomContext:
 			// Same shape as MathExpression but with bitwise ops. HAVING on
 			// bitwise expressions (`COUNT(*) & 1`) is unusual but valid and
@@ -10690,7 +10486,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			if rErr != nil {
 				return nil, rErr
 			}
-			return applyBitOp(left, right, a.BitOperator().GetText())
+			return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
 		case *antlrgen.SubqueryExpressionAtomContext:
 			// HAVING `agg <op> (SELECT ... )` — uncorrelated subquery
 			// pre-evaluated before the outer query started. Look up the
@@ -10859,7 +10655,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		if err != nil {
 			return nil, err
 		}
-		return applyBitOp(left, right, a.BitOperator().GetText())
+		return functions.ApplyBitOp(left, right, a.BitOperator().GetText())
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		// Aggregate function calls inside a row-map expression evaluate
 		// by looking up the reconstructed aggregate name in the row map.
@@ -11284,7 +11080,7 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 // canonical `applyMathOp` so proto and map paths stay behaviourally identical
 // (div/0 errors per SQL standard, int64 preservation, `%` support).
 func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
-	return applyMathOp(left, right, op)
+	return functions.ApplyMathOp(left, right, op)
 }
 
 // substituteParams replaces positional '?' placeholders in a query with
