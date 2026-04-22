@@ -38,5 +38,6 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/relational/core/session",
     ],
 )
