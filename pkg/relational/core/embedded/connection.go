@@ -1099,13 +1099,13 @@ func pkPushdownCursor(
 	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
 	}
-	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(idxName) {
+	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
 	}
-	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(sir.indexName) {
+	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
 	}
-	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(sicr.indexName) {
+	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexCompositeRangeScanCursor(store, sicr)
 	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
@@ -1193,6 +1193,7 @@ func pkPushdownRangeScanCursor(
 //     via tryPKRangePushdown's pattern
 func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1203,7 +1204,7 @@ func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 	if sq.havingExpr != nil {
 		return "", nil, false
 	}
-	return c.trySecondaryIndexFromWhere(ctx, sq.whereExpr, rt, md)
+	return c.trySecondaryIndexFromWhere(ctx, store, sq.whereExpr, rt, md)
 }
 
 // trySecondaryIndexFromWhere is the shared core of secondary-index
@@ -1212,8 +1213,14 @@ func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 // the AND chain. UPDATE / DELETE call this directly (no aggregate
 // gates apply to mutations); SELECT wraps it in
 // trySecondaryIndexPushdown above.
+//
+// Non-scannable indexes (WRITE_ONLY / DISABLED) are skipped inside
+// the iteration so a later scannable match can still be picked up —
+// without this the caller would have to fall through to a full scan
+// even when a different index would work.
 func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	whereExpr antlrgen.IWhereExprContext,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1237,13 +1244,16 @@ func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
 	if len(equalities) == 0 {
 		return "", nil, false
 	}
-	// Scan indexes on this record type. Pick the first VALUE index
-	// whose single-column key matches an equality leaf.
+	// Scan indexes on this record type. Pick the first scannable
+	// VALUE index whose single-column key matches an equality leaf.
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
 		// VALUE index only. NewIndex always stamps Type="value"; the
 		// empty-string arm is defensive for hand-constructed Indexes.
 		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
 			continue
 		}
 		idxCols := secondaryIndexColumns(idx)
@@ -1354,6 +1364,7 @@ type secondaryIndexRange struct {
 // trySecondaryIndexRangeFromWhere.
 func (c *EmbeddedConnection) trySecondaryIndexRangePushdown(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1364,7 +1375,7 @@ func (c *EmbeddedConnection) trySecondaryIndexRangePushdown(
 	if sq.havingExpr != nil {
 		return secondaryIndexRange{}, false
 	}
-	return c.trySecondaryIndexRangeFromWhere(ctx, sq.whereExpr, rt, md)
+	return c.trySecondaryIndexRangeFromWhere(ctx, store, sq.whereExpr, rt, md)
 }
 
 // trySecondaryIndexRangeFromWhere looks for a single-column VALUE
@@ -1384,6 +1395,7 @@ func (c *EmbeddedConnection) trySecondaryIndexRangePushdown(
 // row, so correctness holds even when the chosen bound is looser.
 func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	whereExpr antlrgen.IWhereExprContext,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1440,11 +1452,16 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 	if len(rangeByCol) == 0 {
 		return secondaryIndexRange{}, false
 	}
-	// Pick the first single-column VALUE index whose column carries
-	// at least one range bound with a type-compatible literal.
+	// Pick the first scannable single-column VALUE index whose
+	// column carries at least one range bound with a type-compatible
+	// literal. Non-scannable (WRITE_ONLY / DISABLED) indexes are
+	// skipped so a later scannable match can still be picked up.
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
 		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
 			continue
 		}
 		idxCols := secondaryIndexColumns(idx)
@@ -1527,6 +1544,7 @@ type secondaryIndexCompositeRange struct {
 // of trySecondaryIndexCompositeRangeFromWhere.
 func (c *EmbeddedConnection) trySecondaryIndexCompositeRangePushdown(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1537,7 +1555,7 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangePushdown(
 	if sq.havingExpr != nil {
 		return secondaryIndexCompositeRange{}, false
 	}
-	return c.trySecondaryIndexCompositeRangeFromWhere(ctx, sq.whereExpr, rt, md)
+	return c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, sq.whereExpr, rt, md)
 }
 
 // trySecondaryIndexCompositeRangeFromWhere recognises composite VALUE
@@ -1553,6 +1571,7 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangePushdown(
 // the relaxation applied to PK composite range pushdown.
 func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	whereExpr antlrgen.IWhereExprContext,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1631,12 +1650,17 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 	if len(rangeByCol) == 0 {
 		return secondaryIndexCompositeRange{}, false
 	}
-	// Pick the first composite VALUE index where the first-in-declared-
-	// order index column carrying a range bound is preceded by
-	// equalities on every earlier index column.
+	// Pick the first scannable composite VALUE index where the
+	// first-in-declared-order index column carrying a range bound is
+	// preceded by equalities on every earlier index column.
+	// Non-scannable (WRITE_ONLY / DISABLED) indexes are skipped so
+	// a later scannable match can still be picked up.
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
 		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
 			continue
 		}
 		idxCols := secondaryIndexColumns(idx)
@@ -4327,16 +4351,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
-		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(idxName) {
-			// IsIndexScannable guards against WRITE_ONLY / DISABLED
-			// indexes: without it the pushdown would convert a
-			// previously-working full-scan query into a hard error at
-			// first OnNext(). Today the embedded DDL layer only builds
-			// READABLE indexes, but online indexing may change that.
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
+			// The helper itself filters out WRITE_ONLY / DISABLED
+			// indexes while iterating, so any returned index is
+			// guaranteed scannable. Falls through to the next branch
+			// (and ultimately to a full scan) when no scannable match
+			// exists.
 			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
-		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(sir.indexName) {
+		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
-		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(sicr.indexName) {
+		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
 			cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
