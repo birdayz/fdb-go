@@ -639,6 +639,51 @@ func FuzzApplyBitOp(f *testing.F) {
 	})
 }
 
+// FuzzLikePrefixStrinc pins the LIKE-prefix strinc helper — must never
+// panic, and when it returns ok=true the result must be strictly
+// greater than any string starting with the prefix (in byte order).
+// The all-0xFF case must return ok=false, never a wrong bound.
+func FuzzLikePrefixStrinc(f *testing.F) {
+	f.Add("a")
+	f.Add("foo")
+	f.Add("")
+	f.Add("\xff")
+	f.Add("\xff\xff")
+	f.Add("a\xff")
+	f.Add("\xff\xffa")
+	f.Add("Hello, 世界")
+	f.Add("0")
+	f.Add("~")
+	f.Fuzz(func(t *testing.T, prefix string) {
+		high, ok := likePrefixStrinc(prefix)
+		if !ok {
+			// Unreachable for any prefix with a byte < 0xFF.
+			for _, b := range []byte(prefix) {
+				if b < 0xFF {
+					t.Fatalf("likePrefixStrinc(%q) = _, false but prefix has byte < 0xFF", prefix)
+				}
+			}
+			return
+		}
+		// high must be strictly greater than prefix, and greater than
+		// every extension `prefix || anything`. The latter is implied
+		// by high being the byte-level successor of some prefix of
+		// `prefix` — so any string S with S >= prefix AND S < high
+		// must start with `prefix` (which is what the range scan
+		// semantics rely on).
+		if high <= prefix {
+			t.Fatalf("likePrefixStrinc(%q) = %q, not > prefix", prefix, high)
+		}
+		// Known worst-case extension: `prefix || \xff` must sort
+		// before `high` (otherwise we'd miss rows).
+		ext := prefix + "\xff"
+		if ext >= high {
+			t.Fatalf("likePrefixStrinc(%q) = %q, but %q >= high — extension misses range",
+				prefix, high, ext)
+		}
+	})
+}
+
 // TestWrapSaveRecordError pins the mapping between record-layer
 // error types and SQLSTATE-carrying api.Error values. Tests run
 // without FDB — the helper is pure.
