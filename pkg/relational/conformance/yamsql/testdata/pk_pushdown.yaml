@@ -491,3 +491,14 @@ tests:
     rows:
       - [1]
       - [5]
+
+  # BETWEEN under an OR: flattenAndPredicates bails on OR, so no
+  # pushdown fires and the scan path handles the full predicate.
+  # Correctness only — proves the OR → scan fallthrough path.
+  - query: DELETE FROM t
+  - query: INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30), (10, 'x', 100)
+  - query: SELECT id FROM t WHERE id BETWEEN 1 AND 2 OR id = 10 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [10]
