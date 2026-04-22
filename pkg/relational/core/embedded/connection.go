@@ -1240,43 +1240,93 @@ func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
 		if idx.Type != "" && idx.Type != "value" {
 			continue
 		}
-		fke, isField := idx.RootExpression.(*recordlayer.FieldKeyExpression)
-		if !isField {
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) == 0 {
 			continue
 		}
-		names := fke.FieldNames()
-		if len(names) != 1 {
+		// Every index column must have an equality in the AND chain
+		// with a type-compatible literal. Tuple is built in declared
+		// index-column order.
+		vals := make([]any, len(idxCols))
+		matched := true
+		for i, col := range idxCols {
+			v, found := equalities[strings.ToUpper(col)]
+			if !found {
+				matched = false
+				break
+			}
+			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+			if fd == nil {
+				matched = false
+				break
+			}
+			if !literalMatchesPKKind(v, fd.Kind()) {
+				matched = false
+				break
+			}
+			vals[i] = v
+		}
+		if !matched {
 			continue
 		}
-		col := names[0]
-		val, found := equalities[strings.ToUpper(col)]
-		if !found {
-			continue
+		if len(vals) == 1 {
+			return idx.Name, vals[0], true
 		}
-		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-		if fd == nil {
-			continue
-		}
-		if !literalMatchesPKKind(val, fd.Kind()) {
-			continue
-		}
-		return idx.Name, val, true
+		// Composite index: pack all values into a single tuple that
+		// secondaryIndexPushdownCursor can pass straight to
+		// ScanIndexRecords as a point range on the full index key.
+		// The tuple is wrapped in a sentinel so the cursor builder
+		// can distinguish it from a single-value match.
+		return idx.Name, secondaryIndexKeyTuple{values: vals}, true
 	}
 	return "", nil, false
 }
 
+// secondaryIndexKeyTuple wraps the composite-index key values so
+// secondaryIndexPushdownCursor can tell composite from single-col
+// without reflecting on the concrete type.
+type secondaryIndexKeyTuple struct {
+	values []any
+}
+
+// secondaryIndexColumns returns the ordered list of field names that
+// make up a VALUE index's key, or nil if the shape isn't one we push
+// down on. Accepts FieldKeyExpression (single column) or
+// CompositeKeyExpression whose children are all FieldKeyExpressions
+// (the two shapes SQL DDL's buildIndexKeyExpression emits).
+func secondaryIndexColumns(idx *recordlayer.Index) []string {
+	switch e := idx.RootExpression.(type) {
+	case *recordlayer.FieldKeyExpression:
+		return e.FieldNames()
+	case *recordlayer.CompositeKeyExpression:
+		return e.FieldNames()
+	}
+	return nil
+}
+
 // secondaryIndexPushdownCursor wraps `store.ScanIndexRecords` and
 // adapts its `*FDBIndexedRecord` stream to the `*FDBStoredRecord` the
-// SQL scan loop expects. The returned cursor yields only the records
-// matching the exact index key.
+// SQL scan loop expects. The `keyVal` argument is either a single
+// value (single-col index) or a `secondaryIndexKeyTuple` carrying
+// the composite-index key values in declared order. The returned
+// cursor yields only the records matching the exact index key.
 func secondaryIndexPushdownCursor(
 	store *recordlayer.FDBRecordStore,
 	indexName string,
 	keyVal any,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	var keyTuple tuple.Tuple
+	if composite, ok := keyVal.(secondaryIndexKeyTuple); ok {
+		keyTuple = make(tuple.Tuple, 0, len(composite.values))
+		for _, v := range composite.values {
+			keyTuple = append(keyTuple, v)
+		}
+	} else {
+		keyTuple = tuple.Tuple{keyVal}
+	}
 	scanRange := recordlayer.TupleRange{
-		Low:          tuple.Tuple{keyVal},
-		High:         tuple.Tuple{keyVal},
+		Low:          keyTuple,
+		High:         keyTuple,
 		LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 		HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
 	}

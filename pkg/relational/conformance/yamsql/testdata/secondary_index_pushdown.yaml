@@ -18,8 +18,17 @@ schema_template: |
   )
   CREATE INDEX idx_status ON t (status)
   CREATE INDEX idx_v ON t (v)
+  CREATE TABLE t2 (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON t2 (region, plan)
 setup:
   - INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)
+  - INSERT INTO t2 VALUES (10, 'us', 'pro', 100), (11, 'us', 'free', 50), (12, 'us', 'pro', 200), (13, 'eu', 'pro', 300), (14, 'eu', 'free', 75)
 tests:
   # Basic: WHERE on indexed column returns matching rows via index
   # scan. Order of rows within the same index key is FDB scan order.
@@ -97,3 +106,54 @@ tests:
   - query: SELECT COUNT(*) FROM t
     rows:
       - [3]
+
+  # Composite secondary-index pushdown: idx_region_plan is (region,
+  # plan). `WHERE region = 'us' AND plan = 'pro'` matches both
+  # columns, pushdown builds a 2-element tuple range.
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10, 100]
+      - [12, 200]
+
+  # Composite index reverse-order AND — equality collection is
+  # order-insensitive.
+  - query: SELECT id FROM t2 WHERE plan = 'free' AND region = 'eu'
+    rows:
+      - [14]
+
+  # Composite index with only one of the two columns equated → not a
+  # contiguous range at the full key level, bails to scan. The scan
+  # path's evalPredicate applies the partial predicate.
+  - query: SELECT id FROM t2 WHERE region = 'us' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+      - [12]
+
+  # Composite index + extra non-index predicate — pushdown narrows
+  # to (region='eu', plan='pro'); scan filters amount > 100. Only
+  # row (13, eu, pro, 300) qualifies.
+  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan = 'pro' AND amount > 100
+    rows:
+      - [13]
+
+  # No-match composite index range → empty.
+  - query: SELECT id FROM t2 WHERE region = 'asia' AND plan = 'pro'
+    rows: []
+
+  # Composite index on mutation path — UPDATE via pushdown.
+  - query: UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10, 999]
+      - [12, 999]
+  # Other rows untouched.
+  - query: SELECT amount FROM t2 WHERE id = 11
+    rows:
+      - [50]
+
+  # Composite index on DELETE path.
+  - query: DELETE FROM t2 WHERE region = 'eu' AND plan = 'free'
+  - query: SELECT COUNT(*) FROM t2 WHERE region = 'eu'
+    rows:
+      - [1]
