@@ -4287,7 +4287,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// Matches how the correlated-subquery path handles
 				// qualified refs in evalExprAtom via currentSourceAliases.
 				// Without this, `SELECT d.id FROM t AS d` errored 42703
-				// at the ByName(`d.id`) lookup.
+				// at the ByName(`d.id`) lookup. The output column name
+				// keeps the qualifier — downstream derived-table
+				// materialisation relies on that preserved form to
+				// detect duplicate-column shapes like `SELECT a.*,
+				// a.* FROM a`, which collapse to equal names only
+				// after qualifier stripping.
 				lookupName := colName
 				if dot := strings.LastIndex(colName, "."); dot >= 0 {
 					qual := strings.ToUpper(colName[:dot])
@@ -4300,12 +4305,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q not found in table %q", colName, sq.tableName)
 				}
-				outName := lookupName
+				outName := colName
 				if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 					outName = sq.projAliases[i]
 				}
 				outFields[i] = outField{name: outName, fd: fd}
-				projByCol[lookupName] = true
+				projByCol[colName] = true
 			}
 			// Alias redirection: if ORDER BY references a SELECT-list alias
 			// (`SELECT id AS n ... ORDER BY n`), it's already projected — no
