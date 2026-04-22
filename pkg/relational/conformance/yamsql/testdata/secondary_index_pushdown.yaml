@@ -17,6 +17,7 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_status ON t (status)
+  CREATE INDEX idx_v ON t (v)
 setup:
   - INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)
 tests:
@@ -61,3 +62,19 @@ tests:
   - query: SELECT id FROM t WHERE id = 2
     rows:
       - [2]
+
+  # Multiple VALUE indexes + AND equalities on both indexed cols —
+  # first-match semantics: the iteration order of
+  # GetIndexesForRecordType picks the first matching index, the
+  # other equality becomes a post-filter via the scan loop's
+  # evalPredicate. Result is identical regardless of which index
+  # gets picked.
+  - query: SELECT id FROM t WHERE status = 'active' AND v = 30
+    rows:
+      - [3]
+
+  # Secondary index on the `v` (int64) column — proves literal type
+  # check handles non-string indexed columns too.
+  - query: SELECT id, status FROM t WHERE v = 20
+    rows:
+      - [2, 'archived']

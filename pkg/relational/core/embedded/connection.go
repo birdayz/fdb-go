@@ -1213,6 +1213,8 @@ func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 	// whose single-column key matches an equality leaf.
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
+		// VALUE index only. NewIndex always stamps Type="value"; the
+		// empty-string arm is defensive for hand-constructed Indexes.
 		if idx.Type != "" && idx.Type != "value" {
 			continue
 		}
@@ -3738,7 +3740,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
-		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, sq, rt, md); ok {
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(idxName) {
+			// IsIndexScannable guards against WRITE_ONLY / DISABLED
+			// indexes: without it the pushdown would convert a
+			// previously-working full-scan query into a hard error at
+			// first OnNext(). Today the embedded DDL layer only builds
+			// READABLE indexes, but online indexing may change that.
 			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
