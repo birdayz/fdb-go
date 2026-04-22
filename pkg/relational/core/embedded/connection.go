@@ -1424,10 +1424,7 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 		}
 		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
 			colUpper := strings.ToUpper(col)
-			lb, lbOk := likePrefixToPKRangeBounds(prefix)
-			if !lbOk {
-				continue
-			}
+			lb := likePrefixToPKRangeBounds(prefix)
 			b := rangeByCol[colUpper]
 			b.hasLow = true
 			b.low = lb.low
@@ -1609,10 +1606,7 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 			continue
 		}
 		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
-			lb, lbOk := likePrefixToPKRangeBounds(prefix)
-			if !lbOk {
-				continue
-			}
+			lb := likePrefixToPKRangeBounds(prefix)
 			colUpper := strings.ToUpper(col)
 			b := rangeByCol[colUpper]
 			b.hasLow = true
@@ -1863,10 +1857,7 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 			if !isPKCol(col) {
 				continue
 			}
-			lb, lbOk := likePrefixToPKRangeBounds(prefix)
-			if !lbOk {
-				continue
-			}
+			lb := likePrefixToPKRangeBounds(prefix)
 			colUpper := strings.ToUpper(col)
 			b := rangeByCol[colUpper]
 			b.hasLow = true
@@ -2065,10 +2056,7 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 			if fd.Kind() != protoreflect.StringKind {
 				return pkRangeBounds{}, false
 			}
-			lb, lbOk := likePrefixToPKRangeBounds(prefix)
-			if !lbOk {
-				continue
-			}
+			lb := likePrefixToPKRangeBounds(prefix)
 			bounds.hasLow = true
 			bounds.low = lb.low
 			bounds.lowInclusive = lb.lowInclusive

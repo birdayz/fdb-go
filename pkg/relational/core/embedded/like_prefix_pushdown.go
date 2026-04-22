@@ -168,19 +168,21 @@ func likePrefixStrinc(prefix string) (string, bool) {
 
 // likePrefixToPKRangeBounds converts a LIKE-prefix match on a STRING
 // column into a pkRangeBounds describing the half-open range
-// `[prefix, strinc(prefix))`. Returns !ok when the prefix has no
-// successor (all-0xFF) — unreachable for valid UTF-8 input.
-func likePrefixToPKRangeBounds(prefix string) (pkRangeBounds, bool) {
+// `[prefix, strinc(prefix))`. Falls back to "low bound only" when
+// the prefix has no byte-level successor (all-0xFF — unreachable for
+// valid UTF-8 input, but guarded): the scan runs to the end of the
+// record-type range and evalPredicate post-filters.
+//
+// Always succeeds for non-empty prefixes; callers don't need to
+// handle a failure case.
+func likePrefixToPKRangeBounds(prefix string) pkRangeBounds {
 	high, ok := likePrefixStrinc(prefix)
 	if !ok {
-		// Treat as "low bound only" open-high range. Safe: the scan
-		// runs to the end of the record-type range and evalPredicate
-		// post-filters.
 		return pkRangeBounds{
 			hasLow:       true,
 			low:          prefix,
 			lowInclusive: true,
-		}, true
+		}
 	}
 	return pkRangeBounds{
 		hasLow:        true,
@@ -189,5 +191,5 @@ func likePrefixToPKRangeBounds(prefix string) (pkRangeBounds, bool) {
 		hasHigh:       true,
 		high:          high,
 		highInclusive: false,
-	}, true
+	}
 }
