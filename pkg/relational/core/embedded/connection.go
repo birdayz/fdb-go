@@ -4288,6 +4288,43 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	return &staticRows{cols: colNames, rows: outRows}, nil
 }
 
+// naturalOrderSatisfies reports whether sq.orderBy is a prefix of the
+// chosen scan cursor's natural emission order (aliases resolved),
+// with every clause ASC and no explicit NULLS LAST. Shared by the
+// ORDER BY elimination check (skip the in-memory sort) and the LIMIT
+// early-termination check (stop reading the cursor once enough rows
+// are accumulated).
+//
+// Empty naturalOrder → false: the cursor's emission order is
+// unspecified (IN-list chains, aggregate paths). Empty sq.orderBy →
+// true: nothing to satisfy. aliasToUnderlying may be nil when the
+// SELECT has no aliases; the lookup falls through to the direct col
+// match.
+func naturalOrderSatisfies(orderBy []orderByClause, naturalOrder []string, aliasToUnderlying map[string]string) bool {
+	if len(naturalOrder) == 0 {
+		return false
+	}
+	for i, ob := range orderBy {
+		if !ob.ascending {
+			return false
+		}
+		if ob.nullsFirst != nil && !*ob.nullsFirst {
+			return false
+		}
+		if i >= len(naturalOrder) {
+			return false
+		}
+		obCol := ob.colName
+		if underlying, isAlias := aliasToUnderlying[strings.ToUpper(obCol)]; isAlias {
+			obCol = underlying
+		}
+		if !strings.EqualFold(obCol, naturalOrder[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	if len(sq.joins) > 0 {
 		return c.execSelectJoin(ctx, sq)
@@ -5047,33 +5084,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// not-satisfiable-by-natural-order all fall back to the
 		// full scan and sort later.
 		earlyTermTarget := int64(-1)
-		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 && len(naturalOrder) > 0 {
-			canTerm := true
-			for i, ob := range sq.orderBy {
-				if !ob.ascending {
-					canTerm = false
-					break
-				}
-				if ob.nullsFirst != nil && !*ob.nullsFirst {
-					canTerm = false
-					break
-				}
-				if i >= len(naturalOrder) {
-					canTerm = false
-					break
-				}
-				obCol := ob.colName
-				if underlying, isAlias := naturalOrderAliases[strings.ToUpper(obCol)]; isAlias {
-					obCol = underlying
-				}
-				if !strings.EqualFold(obCol, naturalOrder[i]) {
-					canTerm = false
-					break
-				}
-			}
-			if canTerm {
-				earlyTermTarget = sq.offset + sq.limit
-			}
+		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 &&
+			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) {
+			earlyTermTarget = sq.offset + sq.limit
 		}
 
 		for {
@@ -5205,31 +5218,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//     Treat `ob.nullsFirst == nil` (default) and explicit
 		//     `*ob.nullsFirst == true` as compatible.
 		//   - ORDER BY col not in naturalOrder prefix.
-		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar && len(naturalOrder) > 0
-		if sortSkippable {
-			for i, ob := range sq.orderBy {
-				if !ob.ascending {
-					sortSkippable = false
-					break
-				}
-				if ob.nullsFirst != nil && !*ob.nullsFirst {
-					sortSkippable = false
-					break
-				}
-				if i >= len(naturalOrder) {
-					sortSkippable = false
-					break
-				}
-				obCol := ob.colName
-				if underlying, isAlias := naturalOrderAliases[strings.ToUpper(obCol)]; isAlias {
-					obCol = underlying
-				}
-				if !strings.EqualFold(obCol, naturalOrder[i]) {
-					sortSkippable = false
-					break
-				}
-			}
-		}
+		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
+			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases)
 		if sortSkippable {
 			// Skip the sort — rows already in ORDER BY order.
 			goto sortDone
