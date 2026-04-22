@@ -720,32 +720,17 @@ func FuzzLikePatternToPrefix(f *testing.F) {
 		if prefix == "" {
 			t.Fatalf("likePatternToPrefix(%q, %q) returned empty prefix with ok=true", pattern, escape)
 		}
-		// Narrowing correctness: the extracted prefix must be a
-		// byte-level prefix of the pattern's literal head (up to the
-		// first unescaped wildcard). Equivalently — any matching
-		// string is >= prefix. We verify a necessary condition:
-		// the pattern can match SOME string whose byte-prefix starts
-		// at the extracted prefix. Construct a candidate by
-		// appending a variety of suffixes and confirm at least one
-		// matches. If none matches, the narrowing prunes every
-		// possible match — a false-positive bug.
-		candidates := []string{prefix, prefix + "x", prefix + "xy", prefix + "xyz"}
-		anyMatch := false
-		for _, cand := range candidates {
-			if likeMatch(pattern, cand, escape) {
-				anyMatch = true
-				break
-			}
-		}
-		// The candidates above cover the "trailing wildcard absorbs
-		// anything" case. Patterns with mandatory literal tails
-		// (e.g. "foo%bar") need candidates that happen to end in
-		// that tail — not something the fuzz constructs. So we
-		// don't fail on anyMatch==false; instead we ensure the
-		// check itself didn't panic. The narrowing correctness is
-		// pinned by yamsql cases that exercise every shape
-		// explicitly.
-		_ = anyMatch
+		// The extracted prefix must be a byte-level prefix of the
+		// pattern's literal head (up to the first unescaped wildcard).
+		// Equivalently, every matching row is >= prefix. A tighter
+		// property — "every string in [prefix, strinc(prefix)) is a
+		// candidate for the pattern" — would be a false-positive
+		// pushdown if not, but proving it here requires generating
+		// matching strings which is hard across all pattern shapes
+		// (mandatory tails like "foo%bar" need the tail preserved).
+		// yamsql tests pin that shape by shape. The fuzz's job is to
+		// prove no-panic on arbitrary inputs and that the prefix
+		// is non-empty; the no-panic + non-empty checks already fire.
 	})
 }
 
