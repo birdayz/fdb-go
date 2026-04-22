@@ -1093,6 +1093,9 @@ func pkPushdownCursor(
 	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownScanCursor(store, rt, pkVals)
 	}
+	if pkVals, ok := c.tryPKInListFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownInListScanCursor(store, rt, pkVals)
+	}
 	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownRangeScanCursor(store, rt, bounds)
 	}
@@ -1101,6 +1104,9 @@ func pkPushdownCursor(
 	}
 	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
+	}
+	if sil, ok := c.trySecondaryIndexInListFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexInListScanCursor(store, sil)
 	}
 	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
@@ -4347,6 +4353,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
+		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownInListScanCursor(store, rt, pkVals)
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
@@ -4369,6 +4377,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			} else {
 				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
 			}
+		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
+			cursor = secondaryIndexInListScanCursor(store, sil)
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			if idx := md.GetIndex(sir.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, sir.indexName,

@@ -1,0 +1,432 @@
+package embedded
+
+import (
+	"context"
+	"strings"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+)
+
+// IN-list pushdown: `WHERE pk_col IN (v1, v2, ..., vN)` on a single-column
+// primary key decomposes into N point scans — one per list element —
+// concatenated in declared list order. ORDER BY still re-sorts, so the
+// emission order of the cursor is not user-visible.
+//
+// NOT IN bails: a NOT IN over a contiguous key range is the complement,
+// which is all of the record type MINUS the listed points. That's a
+// scan + post-filter, no narrower. The scan path handles it correctly
+// via evalPredicate.
+//
+// Subquery IN bails: the subquery is materialised after the outer
+// transaction opens (pre-evaluation in execSelectQuery) but decomposing
+// its rows into a union of point scans is extra machinery for marginal
+// benefit. MVP handles literal-list IN only.
+//
+// NULL in the list is ignored: `x IN (1, NULL, 2)` = `x = 1 OR x = NULL
+// OR x = 2`, and `x = NULL` is UNKNOWN (never matches). So the pushdown
+// can safely drop NULL elements — the remaining narrowing is correct
+// and the scan's post-filter still applies the full WHERE via
+// evalPredicate.
+//
+// Scope restrictions:
+//   - Single-column PK only (composite PK IN would require a cross
+//     product, e.g. `WHERE a = 1 AND id IN (1,2,3)`, which we could
+//     support as a follow-up).
+//   - AND-chain WHERE only (flattenAndPredicates bails on OR).
+//   - PK equality pushdown takes precedence: an AND with both
+//     `id = 1` and `id IN (1,2)` would pick equality first (narrower).
+//   - Type-mismatched literals bail to the scan so evalPredicate can
+//     surface 22000, matching the other pushdown paths.
+
+// extractColInList returns (colName, values, true) when the leaf is
+// exactly `col IN (lit1, lit2, ..., litN)` with every element evaluating
+// to a non-NULL literal. NULL elements are silently dropped (see file
+// header). The returned values preserve the declared order modulo the
+// NULL drops.
+//
+// NOT IN / subquery IN / non-bare-column LHS / empty list all return
+// false so the caller falls back to scan.
+func extractColInList(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (string, []any, bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", nil, false
+	}
+	if pred.Predicate() == nil {
+		return "", nil, false
+	}
+	inPred, ok := pred.Predicate().(*antlrgen.InPredicateContext)
+	if !ok {
+		return "", nil, false
+	}
+	if inPred.NOT() != nil {
+		return "", nil, false
+	}
+
+	colName, ok := extractColumnRef(pred.ExpressionAtom())
+	if !ok {
+		return "", nil, false
+	}
+
+	if inPred.InList().QueryExpressionBody() != nil {
+		return "", nil, false
+	}
+
+	exprs := inPred.InList().Expressions().AllExpression()
+	if len(exprs) == 0 {
+		return "", nil, false
+	}
+
+	vals := make([]any, 0, len(exprs))
+	for _, e := range exprs {
+		pe, ok := e.(*antlrgen.PredicatedExpressionContext)
+		if !ok {
+			return "", nil, false
+		}
+		if pe.Predicate() != nil {
+			// Nested predicate inside an IN element isn't a literal.
+			return "", nil, false
+		}
+		v, ok := evalConstantAtom(ctx, c, pe.ExpressionAtom())
+		if !ok {
+			// NULL / non-constant element: NULL is silently dropped
+			// (doesn't narrow nor reject); a non-constant element
+			// bails entirely — evalConstantAtom returns false for
+			// both cases, so separate them by eagerly evaluating.
+			raw, evalErr := evalExprAtom(ctx, c, nil, pe.ExpressionAtom())
+			if evalErr == nil && raw == nil {
+				continue // NULL element — drop
+			}
+			return "", nil, false
+		}
+		vals = append(vals, v)
+	}
+	if len(vals) == 0 {
+		// IN-list of only NULLs: predicate is always UNKNOWN →
+		// zero rows match. Bail to scan; the post-filter rejects
+		// every row correctly.
+		return "", nil, false
+	}
+	return colName, vals, true
+}
+
+// tryPKInListFromWhere reports whether the WHERE is an AND chain
+// containing `pk_col IN (...)` on a single-column primary key. Returns
+// the PK values to point-scan on success. PK equality pushdown is
+// tried first at every call site — if we reach this function, no
+// single-key equality was found.
+func (c *EmbeddedConnection) tryPKInListFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) ([]any, bool) {
+	if whereExpr == nil {
+		return nil, false
+	}
+
+	// Single-column PK only.
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) != 1 {
+		return nil, false
+	}
+	pkCol := pkCols[0]
+	fd := rt.Descriptor.Fields().ByName(protoreflect.Name(pkCol))
+	if fd == nil {
+		return nil, false
+	}
+
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return nil, false
+	}
+
+	// Scan the AND leaves for a `pk_col IN (...)` predicate. First
+	// hit wins — multiple IN leaves on the same column are rare and
+	// the scan's evalPredicate re-applies the full WHERE so the
+	// narrower list is still correct.
+	for _, leaf := range leaves {
+		col, vals, inOk := extractColInList(ctx, c, leaf)
+		if !inOk {
+			continue
+		}
+		if !strings.EqualFold(col, pkCol) {
+			continue
+		}
+		// Type-check every element against the PK column kind. A
+		// single mismatch bails — the scan path's evalPredicate will
+		// surface 22000 correctly. Don't silently drop mismatched
+		// elements (that would reduce the narrowing without the
+		// post-filter knowing).
+		for _, v := range vals {
+			if !literalMatchesPKKind(v, fd.Kind()) {
+				return nil, false
+			}
+		}
+		return vals, true
+	}
+	return nil, false
+}
+
+// tryPKInListPushdown is the SELECT-gated variant of
+// tryPKInListFromWhere. Shape gates match the other PK pushdown
+// helpers.
+func (c *EmbeddedConnection) tryPKInListPushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) ([]any, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return nil, false
+	}
+	if sq.havingExpr != nil {
+		return nil, false
+	}
+	return c.tryPKInListFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// secondaryIndexInList describes an IN-list pushdown on a single-column
+// VALUE index: the index name + the list of per-element equality values
+// to point-scan on that index.
+type secondaryIndexInList struct {
+	indexName string
+	values    []any
+}
+
+// trySecondaryIndexInListFromWhere looks for a single-column VALUE
+// index whose column has an `IN (...)` predicate in the AND chain.
+// Pure-equality pushdown on the indexed column is tried first at
+// every call site (trySecondaryIndexFromWhere), so the IN-list
+// extractor only needs to find its own shape — equality leaves on
+// the indexed column can't reach here (they'd have matched the
+// equality path and short-circuited).
+//
+// Only single-column VALUE indexes — composite-index IN would need
+// to combine one IN leaf with other-column equalities to form the
+// tuple prefix, which is a more involved variation we can add in a
+// follow-up. Non-scannable indexes are skipped in the iteration,
+// matching the dayshift-43 fix in trySecondaryIndexRangeFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexInListFromWhere(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexInList, bool) {
+	if whereExpr == nil {
+		return secondaryIndexInList{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return secondaryIndexInList{}, false
+	}
+
+	// Gather IN-list leaves by (uppercase) column.
+	inByCol := make(map[string][]any, len(leaves))
+	for _, leaf := range leaves {
+		col, vals, inOk := extractColInList(ctx, c, leaf)
+		if !inOk {
+			continue
+		}
+		inByCol[strings.ToUpper(col)] = vals
+	}
+	if len(inByCol) == 0 {
+		return secondaryIndexInList{}, false
+	}
+
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) != 1 {
+			continue
+		}
+		vals, found := inByCol[strings.ToUpper(idxCols[0])]
+		if !found {
+			continue
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(idxCols[0]))
+		if fd == nil {
+			continue
+		}
+		// Every list element must be type-compatible with the index
+		// column; a single mismatch bails so the scan's evalPredicate
+		// surfaces 22000 per the cross-type rule.
+		allOk := true
+		for _, v := range vals {
+			if !literalMatchesPKKind(v, fd.Kind()) {
+				allOk = false
+				break
+			}
+		}
+		if !allOk {
+			continue
+		}
+		return secondaryIndexInList{indexName: idx.Name, values: vals}, true
+	}
+	return secondaryIndexInList{}, false
+}
+
+// trySecondaryIndexInListPushdown is the SELECT-gated variant.
+func (c *EmbeddedConnection) trySecondaryIndexInListPushdown(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexInList, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexInList{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexInList{}, false
+	}
+	return c.trySecondaryIndexInListFromWhere(ctx, store, sq.whereExpr, rt, md)
+}
+
+// secondaryIndexInListCursor runs a sequence of single-value index
+// scans, one per IN-list element, yielding records in declared list
+// order. Same lazy chaining as pkInListCursor but over
+// secondaryIndexPushdownCursor.
+type secondaryIndexInListCursor struct {
+	store     *recordlayer.FDBRecordStore
+	indexName string
+	values    []any
+	idx       int
+	current   recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+	closed    bool
+}
+
+func (c *secondaryIndexInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
+	for {
+		if c.current != nil {
+			result, err := c.current.OnNext(ctx)
+			if err != nil {
+				return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+			}
+			if result.HasNext() {
+				return result, nil
+			}
+			_ = c.current.Close()
+			c.current = nil
+		}
+		if c.idx >= len(c.values) {
+			return recordlayer.NewResultNoNext[*recordlayer.FDBStoredRecord[proto.Message]](
+				recordlayer.SourceExhausted,
+				&recordlayer.EndContinuation{},
+			), nil
+		}
+		c.current = secondaryIndexPushdownCursor(c.store, c.indexName, c.values[c.idx])
+		c.idx++
+	}
+}
+
+func (c *secondaryIndexInListCursor) Close() error {
+	c.closed = true
+	if c.current != nil {
+		return c.current.Close()
+	}
+	return nil
+}
+
+func (c *secondaryIndexInListCursor) IsClosed() bool {
+	return c.closed
+}
+
+// secondaryIndexInListScanCursor wraps N sequential single-value index
+// scans as one cursor.
+func secondaryIndexInListScanCursor(
+	store *recordlayer.FDBRecordStore,
+	sil secondaryIndexInList,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	if len(sil.values) == 0 {
+		return recordlayer.Empty[*recordlayer.FDBStoredRecord[proto.Message]]()
+	}
+	return &secondaryIndexInListCursor{
+		store:     store,
+		indexName: sil.indexName,
+		values:    sil.values,
+	}
+}
+
+// pkInListCursor runs a sequence of point scans — one per IN-list
+// value — lazily: the next sub-scan starts only after the previous one
+// exhausts. Output order is declared-list order (ORDER BY re-sorts if
+// the SELECT asked for one).
+//
+// Each sub-scan uses pkPushdownScanCursor which yields at most one
+// record (PK equality). So the total round-trip count is N, same as
+// `N separate SELECT … WHERE pk = v_i` queries but served from one
+// logical cursor and one FDB transaction.
+type pkInListCursor struct {
+	store   *recordlayer.FDBRecordStore
+	rt      *recordlayer.RecordType
+	pkVals  []any
+	idx     int
+	current recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+	closed  bool
+}
+
+func (c *pkInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
+	for {
+		if c.current != nil {
+			result, err := c.current.OnNext(ctx)
+			if err != nil {
+				return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+			}
+			if result.HasNext() {
+				return result, nil
+			}
+			_ = c.current.Close()
+			c.current = nil
+		}
+		if c.idx >= len(c.pkVals) {
+			return recordlayer.NewResultNoNext[*recordlayer.FDBStoredRecord[proto.Message]](
+				recordlayer.SourceExhausted,
+				&recordlayer.EndContinuation{},
+			), nil
+		}
+		c.current = pkPushdownScanCursor(c.store, c.rt, []any{c.pkVals[c.idx]})
+		c.idx++
+	}
+}
+
+func (c *pkInListCursor) Close() error {
+	c.closed = true
+	if c.current != nil {
+		return c.current.Close()
+	}
+	return nil
+}
+
+func (c *pkInListCursor) IsClosed() bool {
+	return c.closed
+}
+
+// pkPushdownInListScanCursor wraps the N point-scan decomposition as a
+// single RecordCursor. Empty pkVals yields an empty cursor (shouldn't
+// happen — tryPKInListFromWhere returns false for empty lists).
+func pkPushdownInListScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	pkVals []any,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	if len(pkVals) == 0 {
+		return recordlayer.Empty[*recordlayer.FDBStoredRecord[proto.Message]]()
+	}
+	return &pkInListCursor{
+		store:  store,
+		rt:     rt,
+		pkVals: pkVals,
+	}
+}
