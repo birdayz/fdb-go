@@ -237,3 +237,34 @@ tests:
       - [10]
       - [15]
       - [20]
+
+  # -------------------------------------------------------------------
+  # ORDER BY alias + natural-order elim
+  # -------------------------------------------------------------------
+  #
+  # `SELECT id AS pk ... ORDER BY pk` should resolve the alias to id
+  # and eliminate the sort since id matches the PK natural order.
+
+  - query: SELECT id AS pk FROM t ORDER BY pk
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # Alias + LIMIT → early termination fires.
+  - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
+    rows:
+      - [1]
+      - [2]
+
+  # Alias that shadows a different col — ORDER BY matches the
+  # alias's underlying column, not the alias's own name.
+  - query: SELECT v AS id FROM t ORDER BY id
+    rows:
+      - [10]
+      - [15]
+      - [20]
+      - [30]
+      - [40]

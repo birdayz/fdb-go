@@ -4311,12 +4311,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	// a prefix of the natural order (and all ASC). Empty means the
 	// cursor's emission order is unspecified — always sort.
 	var naturalOrder []string
+	// naturalOrderAliases maps uppercase SELECT-list alias names to
+	// their underlying column names, so `SELECT id AS pk ... ORDER BY
+	// pk` resolves to the PK col for the natural-order prefix check.
+	// Captured from the scan loop so the out-of-closure sort path can
+	// use it without re-parsing.
+	var naturalOrderAliases map[string]string
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
 		extraSortFields = nil
 		naturalOrder = nil
+		naturalOrderAliases = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -4984,6 +4991,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					aliasToCol[sq.projAliases[i]] = colName
 				}
 			}
+			// Capture aliases for the out-of-closure ORDER BY eliminator
+			// so `ORDER BY <alias>` resolves to the underlying column
+			// when checking natural-order prefix.
+			naturalOrderAliases = make(map[string]string, len(aliasToCol))
+			for alias, col := range aliasToCol {
+				naturalOrderAliases[strings.ToUpper(alias)] = col
+			}
 			// Add any ORDER BY columns not already in the projection.
 			// Expression ORDER BY was already converted to sentinel extra
 			// sort fields above; mark those sentinels present in projByCol
@@ -5044,7 +5058,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					canTerm = false
 					break
 				}
-				if i >= len(naturalOrder) || !strings.EqualFold(ob.colName, naturalOrder[i]) {
+				if i >= len(naturalOrder) {
+					canTerm = false
+					break
+				}
+				obCol := ob.colName
+				if underlying, isAlias := naturalOrderAliases[strings.ToUpper(obCol)]; isAlias {
+					obCol = underlying
+				}
+				if !strings.EqualFold(obCol, naturalOrder[i]) {
 					canTerm = false
 					break
 				}
@@ -5194,7 +5216,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					sortSkippable = false
 					break
 				}
-				if i >= len(naturalOrder) || !strings.EqualFold(ob.colName, naturalOrder[i]) {
+				if i >= len(naturalOrder) {
+					sortSkippable = false
+					break
+				}
+				obCol := ob.colName
+				if underlying, isAlias := naturalOrderAliases[strings.ToUpper(obCol)]; isAlias {
+					obCol = underlying
+				}
+				if !strings.EqualFold(obCol, naturalOrder[i]) {
 					sortSkippable = false
 					break
 				}
