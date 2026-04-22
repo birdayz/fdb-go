@@ -199,6 +199,219 @@ func (c *EmbeddedConnection) tryPKInListPushdown(
 	return c.tryPKInListFromWhere(ctx, sq.whereExpr, rt)
 }
 
+// pkCompositeInList describes a composite-PK IN-list pushdown:
+// equalities on the first len(prefixVals) PK cols + `IN (...)` on
+// the next PK col. Any PK cols after the IN-col are unconstrained
+// at the pushdown level (post-filtered by evalPredicate on each
+// scanned record, same pattern as composite range).
+type pkCompositeInList struct {
+	prefixVals  []any
+	inValues    []any
+	inColName   string // uppercase — for fd lookup / logging
+	totalPKCols int
+}
+
+// tryPKCompositeInListFromWhere looks for the composite-PK equivalent
+// of tryPKInListFromWhere: equalities on every PK col before the
+// IN-col + one IN-list on a later PK col. Same relaxation as
+// tryPKCompositeRangeFromWhere (dayshift-43 dd97a817) — the IN col
+// can sit anywhere, not just at the end; PK cols after it are
+// unconstrained and post-filtered.
+func (c *EmbeddedConnection) tryPKCompositeInListFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) (pkCompositeInList, bool) {
+	if whereExpr == nil {
+		return pkCompositeInList{}, false
+	}
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) < 2 {
+		// Single-col PK goes through tryPKInListFromWhere; no PK can't
+		// push down at all.
+		return pkCompositeInList{}, false
+	}
+
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return pkCompositeInList{}, false
+	}
+
+	// Walk AND leaves once, collecting equalities and at-most-one
+	// IN-list per column (later leaves for the same column overwrite
+	// earlier ones — last-write-wins, same as the range extractors).
+	isPKCol := func(col string) bool {
+		for _, pkc := range pkCols {
+			if strings.EqualFold(pkc, col) {
+				return true
+			}
+		}
+		return false
+	}
+	equalities := make(map[string]any, len(pkCols))
+	inByCol := make(map[string][]any, 1)
+	for _, leaf := range leaves {
+		if col, vals, inOk := extractColInList(ctx, c, leaf); inOk {
+			if !isPKCol(col) {
+				continue
+			}
+			inByCol[strings.ToUpper(col)] = vals
+			continue
+		}
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok || op != "=" {
+			continue
+		}
+		if !isPKCol(col) {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+	if len(inByCol) == 0 {
+		return pkCompositeInList{}, false
+	}
+
+	// Find the first PK col (in declared order) carrying an IN-list.
+	// Every PK col before it must have an equality.
+	inK := -1
+	var inVals []any
+	for i, col := range pkCols {
+		if vals, has := inByCol[strings.ToUpper(col)]; has {
+			inK = i
+			inVals = vals
+			break
+		}
+	}
+	if inK == -1 {
+		return pkCompositeInList{}, false
+	}
+	prefixVals := make([]any, inK)
+	for i := 0; i < inK; i++ {
+		col := pkCols[i]
+		val, has := equalities[strings.ToUpper(col)]
+		if !has {
+			return pkCompositeInList{}, false
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
+			return pkCompositeInList{}, false
+		}
+		prefixVals[i] = val
+	}
+	// Type-check the IN col values against its field kind.
+	inCol := pkCols[inK]
+	fd := rt.Descriptor.Fields().ByName(protoreflect.Name(inCol))
+	if fd == nil {
+		return pkCompositeInList{}, false
+	}
+	for _, v := range inVals {
+		if !literalMatchesPKKind(v, fd.Kind()) {
+			return pkCompositeInList{}, false
+		}
+	}
+	return pkCompositeInList{
+		prefixVals:  prefixVals,
+		inValues:    inVals,
+		inColName:   strings.ToUpper(inCol),
+		totalPKCols: len(pkCols),
+	}, true
+}
+
+func (c *EmbeddedConnection) tryPKCompositeInListPushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) (pkCompositeInList, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return pkCompositeInList{}, false
+	}
+	if sq.havingExpr != nil {
+		return pkCompositeInList{}, false
+	}
+	return c.tryPKCompositeInListFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// pkCompositeInListCursor iterates N sub-scans, one per IN value,
+// each narrowed to the prefix equalities || one IN value. PK cols
+// after the IN-col are unconstrained at the scan level — records
+// with the right prefix + IN-col value flow through and evalPredicate
+// applies the residual AND leaves.
+type pkCompositeInListCursor struct {
+	store   *recordlayer.FDBRecordStore
+	rt      *recordlayer.RecordType
+	cil     pkCompositeInList
+	idx     int
+	current recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+	closed  bool
+}
+
+func (c *pkCompositeInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
+	for {
+		if c.current != nil {
+			result, err := c.current.OnNext(ctx)
+			if err != nil {
+				return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+			}
+			if result.HasNext() {
+				return result, nil
+			}
+			_ = c.current.Close()
+			c.current = nil
+		}
+		if c.idx >= len(c.cil.inValues) {
+			return recordlayer.NewResultNoNext[*recordlayer.FDBStoredRecord[proto.Message]](
+				recordlayer.SourceExhausted,
+				&recordlayer.EndContinuation{},
+			), nil
+		}
+		val := c.cil.inValues[c.idx]
+		c.idx++
+		// Build a pkCompositeRange with the prefix + inclusive-inclusive
+		// single-value bounds on the IN-col; trailing PK cols are
+		// unconstrained (lastBounds.hasLow = hasHigh = true on the same
+		// point collapses the range to the exact tuple at the
+		// prefix || in_val anchor, with trailing-cols unconstrained).
+		cr := pkCompositeRange{
+			prefixVals: c.cil.prefixVals,
+			lastBounds: pkRangeBounds{
+				hasLow:        true,
+				low:           val,
+				lowInclusive:  true,
+				hasHigh:       true,
+				high:          val,
+				highInclusive: true,
+			},
+		}
+		c.current = pkPushdownCompositeRangeScanCursor(c.store, c.rt, cr)
+	}
+}
+
+func (c *pkCompositeInListCursor) Close() error {
+	c.closed = true
+	if c.current != nil {
+		return c.current.Close()
+	}
+	return nil
+}
+
+func (c *pkCompositeInListCursor) IsClosed() bool { return c.closed }
+
+// pkCompositeInListScanCursor wraps the composite IN-list decomposition.
+func pkCompositeInListScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	cil pkCompositeInList,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	if len(cil.inValues) == 0 {
+		return recordlayer.Empty[*recordlayer.FDBStoredRecord[proto.Message]]()
+	}
+	return &pkCompositeInListCursor{
+		store: store,
+		rt:    rt,
+		cil:   cil,
+	}
+}
+
 // secondaryIndexInList describes an IN-list pushdown on a single-column
 // VALUE index: the index name + the list of per-element equality values
 // to point-scan on that index.

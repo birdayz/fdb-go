@@ -205,6 +205,43 @@ tests:
       - [2, 30, 300]
 
   # -------------------------------------------------------------------
+  # Composite PK IN-list — leading eq + trailing IN
+  # -------------------------------------------------------------------
+  #
+  # kvw has PK (a, b, c). WHERE a = 1 AND b IN (10, 20) decomposes
+  # into 2 point scans on [1, 10, *] and [1, 20, *]. c is
+  # unconstrained and post-filtered by the scan loop.
+
+  - query: SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) ORDER BY b, c
+    rows:
+      - [1, 10, 100]
+      - [1, 20, 200]
+
+  # Leading eq + middle-col IN + trailing eq — all three PK cols
+  # fixed per IN value, so each sub-scan yields at most one record.
+  - query: SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 30) AND c = 100
+    rows:
+      - [1, 10, 100]
+
+  # IN on the LAST PK col, leading eqs on all prior cols — 1 key
+  # per IN value.
+  - query: SELECT a, b, c FROM kvw WHERE a = 1 AND b = 20 AND c IN (100, 200) ORDER BY c
+    rows:
+      - [1, 20, 200]
+
+  # Missing equality on a prior PK col → composite IN bails to
+  # composite range (also fails) → full scan. Result still correct.
+  - query: SELECT a, b, c FROM kvw WHERE b IN (10, 30)
+    unordered: true
+    rows:
+      - [1, 10, 100]
+      - [2, 30, 300]
+
+  # Composite IN on middle col with non-matching eq on later col.
+  - query: SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) AND c = 999
+    rows: []
+
+  # -------------------------------------------------------------------
   # Secondary-index IN-list pushdown
   # -------------------------------------------------------------------
   #

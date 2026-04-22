@@ -1099,6 +1099,9 @@ func pkPushdownCursor(
 	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownRangeScanCursor(store, rt, bounds)
 	}
+	if cil, ok := c.tryPKCompositeInListFromWhere(ctx, whereExpr, rt); ok {
+		return pkCompositeInListScanCursor(store, rt, cil)
+	}
 	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
 	}
@@ -4395,6 +4398,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownInListScanCursor(store, rt, pkVals)
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
+		} else if cil, ok := c.tryPKCompositeInListPushdown(ctx, sq, rt); ok {
+			cursor = pkCompositeInListScanCursor(store, rt, cil)
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
 		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
