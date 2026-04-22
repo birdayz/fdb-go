@@ -135,6 +135,18 @@ tests:
     rows:
       - [1]
       - [1]
+
+  # Arithmetic on aggregates with qualified args (Java
+  # groupby-tests.yamsql line 143). t1 rows: (1,10,100), (2,10,200),
+  # (3,20,300). Per col1 group:
+  #   col1=10: SUM(col2)=300, COUNT(col2)=2, SUM/COUNT=150, AVG=150.0
+  #   col1=20: SUM(col2)=300, COUNT(col2)=1, SUM/COUNT=300, AVG=300.0
+  - query: |-
+      SELECT SUM(x.col2) / COUNT(x.col2), AVG(x.col2)
+      FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1
+    rows:
+      - [150, 150.0]
+      - [300, 300.0]
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct
