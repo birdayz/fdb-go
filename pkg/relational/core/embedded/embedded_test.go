@@ -684,6 +684,43 @@ func FuzzLikePrefixStrinc(f *testing.F) {
 	})
 }
 
+// FuzzLikePatternToPrefix pins the LIKE-pattern prefix extractor.
+// Must never panic; every returned prefix must, when used as a
+// range low-bound, correctly describe a superset of the strings
+// that match the pattern under likeMatch semantics (i.e. every
+// string starting with the prefix is a candidate; strings not
+// starting with it cannot match and are correctly excluded by
+// the scan-path evalPredicate re-applying the full LIKE).
+func FuzzLikePatternToPrefix(f *testing.F) {
+	f.Add("foo%", rune(-1))
+	f.Add("foo\\_%", rune('\\'))
+	f.Add("foo", rune(-1))
+	f.Add("%", rune(-1))
+	f.Add("", rune(-1))
+	f.Add("_", rune(-1))
+	f.Add("f%o", rune(-1))
+	f.Add("\\%", rune('\\'))
+	f.Add("\\", rune('\\')) // dangling escape
+	f.Add("%%", rune(-1))
+	f.Fuzz(func(t *testing.T, pattern string, escape rune) {
+		prefix, ok := likePatternToPrefix(pattern, escape)
+		if !ok {
+			return
+		}
+		// Invariant 1: non-empty prefix.
+		if prefix == "" {
+			t.Fatalf("likePatternToPrefix(%q, %q) returned empty prefix with ok=true", pattern, escape)
+		}
+		// Invariant 2: the literal exact-match `prefix` (a test string
+		// equal to the prefix itself) MUST match the pattern. The
+		// scan-path likeMatch is the source of truth.
+		if !likeMatch(pattern, prefix, escape) {
+			t.Fatalf("likePatternToPrefix(%q, %q) = %q, but likeMatch returns false on the prefix itself — false-negative pushdown",
+				pattern, escape, prefix)
+		}
+	})
+}
+
 // TestWrapSaveRecordError pins the mapping between record-layer
 // error types and SQLSTATE-carrying api.Error values. Tests run
 // without FDB — the helper is pure.

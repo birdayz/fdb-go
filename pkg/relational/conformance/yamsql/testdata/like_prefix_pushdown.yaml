@@ -270,3 +270,32 @@ tests:
   # at the index level (no such region) — empty.
   - query: SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'
     rows: []
+
+  # -------------------------------------------------------------------
+  # LIKE prefix with ESCAPE clause
+  # -------------------------------------------------------------------
+
+  # Seed rows with literal underscores / percents so ESCAPE patterns
+  # have something real to narrow.
+  - query: INSERT INTO t VALUES ('x_ray', 'extra', 88), ('y%lo', 'extra', 99)
+  - query: SELECT name FROM t WHERE name LIKE 'x\_%' ESCAPE '\' ORDER BY name
+    rows:
+      - ['x_ray']
+
+  # Escaped `%` inside the pattern becomes a literal. Here pattern
+  # 'y\%%' = literal "y%" + trailing wildcard → matches y%lo.
+  - query: SELECT name FROM t WHERE name LIKE 'y\%%' ESCAPE '\' ORDER BY name
+    rows:
+      - ['y%lo']
+
+  # ESCAPE without a trailing `%` is exact-match — not a prefix
+  # scan, but still correct via the scan path.
+  - query: SELECT name FROM t WHERE name LIKE 'x\_ray' ESCAPE '\'
+    rows:
+      - ['x_ray']
+
+  # ESCAPE with interior `_` (unescaped) still bails — pattern
+  # 'y\%l_' has an unescaped single-char wildcard.
+  - query: SELECT name FROM t WHERE name LIKE 'y\%l_' ESCAPE '\' ORDER BY name
+    rows:
+      - ['y%lo']

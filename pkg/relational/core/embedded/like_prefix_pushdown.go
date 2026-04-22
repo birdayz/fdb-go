@@ -14,13 +14,17 @@ import (
 // bails to the scan path, which applies likeMatch per row.
 //
 // Scope:
-//   - Only `col LIKE 'foo%'` where "foo" contains neither `%` nor
-//     `_`. Escaped wildcards (via an ESCAPE clause) are conservative
-//     territory — MVP bails rather than handle the escape rules here.
+//   - `col LIKE 'foo%'` where the pattern resolves (after ESCAPE
+//     processing) to a pure literal prefix followed by a single
+//     trailing `%`. No unescaped `_`, no interior unescaped `%`.
+//   - ESCAPE clause is honoured: `LIKE 'foo\_%' ESCAPE '\'` narrows
+//     on the literal prefix "foo_".
 //   - NOT LIKE bails (complement of a contiguous range isn't
 //     contiguous).
 //   - Empty-prefix patterns (`%`, `%foo`, `%foo%`) bail — the whole
 //     range already covers them so narrowing is a no-op anyway.
+//   - No-wildcard patterns (`LIKE 'exact'`) bail too: they are
+//     equality, and the scan path's likeMatch handles them trivially.
 //   - 0xFF-overflow prefixes (in theory — Go string LIKE prefixes
 //     are valid UTF-8, where no byte is 0xFF, so the strinc always
 //     has a well-defined successor).
@@ -36,9 +40,11 @@ import (
 //     rows (e.g. range plus post-filter) stays correct.
 
 // extractColLikePrefixLiteral returns (colName, prefix, ok) when the
-// leaf is exactly `col LIKE 'literal_prefix%'` with no other
-// wildcards and no ESCAPE clause. The returned prefix is the literal
-// substring before the trailing `%`.
+// leaf is exactly `col LIKE 'literal_prefix%'` (optionally with an
+// ESCAPE clause) and the pattern resolves to a pure literal prefix
+// followed by a single trailing `%` — no unescaped `_`, no interior
+// unescaped `%`. The returned prefix is the decoded literal string
+// (escape sequences applied).
 func extractColLikePrefixLiteral(
 	_ context.Context,
 	_ *EmbeddedConnection,
@@ -58,11 +64,6 @@ func extractColLikePrefixLiteral(
 	if like.NOT() != nil {
 		return "", "", false
 	}
-	// ESCAPE handling introduces per-escape rewrite rules; conservative
-	// MVP bails rather than get it subtly wrong.
-	if like.GetEscape() != nil {
-		return "", "", false
-	}
 
 	colName, ok := extractColumnRef(pred.ExpressionAtom())
 	if !ok {
@@ -75,21 +76,70 @@ func extractColLikePrefixLiteral(
 	}
 	pattern := stripStringLiteralQuotes(patternTok.GetText())
 
-	// Must end in `%`.
-	if !strings.HasSuffix(pattern, "%") {
+	// Resolve the optional ESCAPE clause. Invalid escape char counts
+	// (zero or more than one) bail — the scan path surfaces 22023
+	// cleanly for malformed patterns.
+	escape := rune(-1)
+	if esc := like.GetEscape(); esc != nil {
+		escStr := stripStringLiteralQuotes(esc.GetText())
+		runes := []rune(escStr)
+		if len(runes) != 1 {
+			return "", "", false
+		}
+		escape = runes[0]
+	}
+
+	prefix, prefixOk := likePatternToPrefix(pattern, escape)
+	if !prefixOk {
 		return "", "", false
 	}
-	body := pattern[:len(pattern)-1]
-	// The body must not contain `%` or `_` — those would make the
-	// matching non-contiguous / single-char-wildcard.
-	if strings.ContainsAny(body, "%_") {
-		return "", "", false
+	return colName, prefix, true
+}
+
+// likePatternToPrefix walks a LIKE pattern and returns (decoded
+// prefix, true) iff the pattern is exactly `<literal_prefix>%` with
+// no unescaped `_`, no interior unescaped `%`, and a non-empty
+// literal part. Escape-char handling follows SQL: an escape char
+// consumes the next char verbatim (including `%`, `_`, or another
+// escape). A dangling escape at end-of-pattern bails.
+//
+// Exported shape for the fuzz target and future reuse by cursor-
+// elimination logic (which may want to know the exact prefix before
+// it hits the pushdown extractor).
+func likePatternToPrefix(pattern string, escape rune) (string, bool) {
+	runes := []rune(pattern)
+	var b strings.Builder
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if escape >= 0 && r == escape {
+			if i+1 >= len(runes) {
+				// Dangling escape — malformed, bail. Scan path
+				// surfaces the error.
+				return "", false
+			}
+			b.WriteRune(runes[i+1])
+			i++
+			continue
+		}
+		switch r {
+		case '%':
+			if i != len(runes)-1 {
+				return "", false // interior %
+			}
+			if b.Len() == 0 {
+				return "", false // empty prefix
+			}
+			return b.String(), true
+		case '_':
+			return "", false // unescaped single-char wildcard
+		default:
+			b.WriteRune(r)
+		}
 	}
-	// Empty prefix matches everything; scan is already the same.
-	if body == "" {
-		return "", "", false
-	}
-	return colName, body, true
+	// No trailing %, so the pattern matches the literal exactly —
+	// that's equality, not a prefix scan. Let the scan path handle
+	// it (trivially).
+	return "", false
 }
 
 // likePrefixStrinc returns the smallest string that is strictly
