@@ -1,0 +1,336 @@
+# like_prefix_pushdown.yaml
+#
+# LIKE prefix pushdown: `WHERE col LIKE 'foo%'` on a STRING column
+# (either PK or single-col VALUE index) narrows to a range scan
+# `[prefix, strinc(prefix))` — a contiguous half-open interval over
+# the tuple-encoded byte order. Previously fell through to full-type
+# scan + per-row likeMatch.
+#
+# Scope of the pushdown path (tested via equivalence with the scan
+# path):
+#   - Pattern ends in trailing `%`, no other `%` or `_`, no ESCAPE.
+#   - NOT LIKE bails (complement of a contiguous range).
+#   - Interior wildcards (`foo%bar`, `f_o%`) bail.
+#   - Leading wildcards (`%foo`, `%foo%`) bail.
+#   - Empty-prefix (`%`) bails — it already matches everything.
+#   - Non-string column kind bails.
+#
+# Correctness invariant: result rows match the scan path regardless
+# of whether pushdown fires. The tests cover both directions:
+# pushdown-eligible patterns (verifying the narrowed range still
+# yields correct rows) and pushdown-ineligible patterns (verifying
+# the scan fallback produces the same rows).
+name: like_prefix_pushdown
+schema_template: |
+  CREATE TABLE t (
+    name STRING NOT NULL,
+    tag STRING,
+    v BIGINT,
+    PRIMARY KEY (name)
+  )
+  CREATE TABLE t2 (
+    id BIGINT NOT NULL,
+    status STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_status ON t2 (status)
+  CREATE TABLE cp (
+    region STRING NOT NULL,
+    name STRING NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (region, name)
+  )
+  CREATE TABLE ci (
+    id BIGINT NOT NULL,
+    region STRING,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_name ON ci (region, name)
+setup:
+  - INSERT INTO t VALUES
+      ('apple',   'fruit',   10),
+      ('apricot', 'fruit',   20),
+      ('banana',  'fruit',   30),
+      ('bean',    'veggie',  40),
+      ('carrot',  'veggie',  50),
+      ('cabbage', 'veggie',  60),
+      ('date',    'fruit',   70)
+  - INSERT INTO t2 VALUES
+      (1, 'active'),
+      (2, 'archived'),
+      (3, 'awaiting'),
+      (4, 'deleted'),
+      (5, 'disabled')
+  - INSERT INTO cp VALUES
+      ('us', 'apple',   10),
+      ('us', 'apricot', 20),
+      ('us', 'banana',  30),
+      ('eu', 'apple',   40),
+      ('eu', 'bean',    50)
+  - INSERT INTO ci VALUES
+      (1, 'us', 'apple'),
+      (2, 'us', 'apricot'),
+      (3, 'us', 'banana'),
+      (4, 'eu', 'apple'),
+      (5, 'eu', 'bean')
+tests:
+  # -------------------------------------------------------------------
+  # PK LIKE prefix — basic cases
+  # -------------------------------------------------------------------
+
+  # 'a%' matches apple, apricot.
+  - query: SELECT name FROM t WHERE name LIKE 'a%' ORDER BY name
+    rows:
+      - ['apple']
+      - ['apricot']
+
+  # 'ba%' matches banana (not bean — 'bean' starts with 'be').
+  - query: SELECT name FROM t WHERE name LIKE 'ba%'
+    rows:
+      - ['banana']
+
+  # 'be%' matches bean.
+  - query: SELECT name FROM t WHERE name LIKE 'be%'
+    rows:
+      - ['bean']
+
+  # Longer prefix — 'car%' matches only carrot.
+  - query: SELECT name FROM t WHERE name LIKE 'car%'
+    rows:
+      - ['carrot']
+
+  # Exact prefix (pattern without wildcards not covered by LIKE
+  # pushdown — it's equality, but LIKE 'apple' with no % still works
+  # via scan).
+  - query: SELECT name FROM t WHERE name LIKE 'apple'
+    rows:
+      - ['apple']
+
+  # No matches.
+  - query: SELECT name FROM t WHERE name LIKE 'xyz%'
+    rows: []
+
+  # Prefix matches everything starting with that letter.
+  - query: SELECT name FROM t WHERE name LIKE 'c%' ORDER BY name
+    rows:
+      - ['cabbage']
+      - ['carrot']
+
+  # Prefix matches single row where the prefix is longer than row
+  # (pattern "appleX%" matches nothing, since "apple" != "appleX").
+  - query: SELECT name FROM t WHERE name LIKE 'appleX%'
+    rows: []
+
+  # -------------------------------------------------------------------
+  # PK LIKE prefix + residual AND predicates
+  # -------------------------------------------------------------------
+
+  # Range narrows to 'a*'; residual `v > 10` drops apple.
+  - query: SELECT name FROM t WHERE name LIKE 'a%' AND v > 10 ORDER BY name
+    rows:
+      - ['apricot']
+
+  # Range narrows to 'b*'; residual tag filter drops bean.
+  - query: SELECT name FROM t WHERE name LIKE 'b%' AND tag = 'fruit'
+    rows:
+      - ['banana']
+
+  # -------------------------------------------------------------------
+  # Bails to scan — NOT LIKE
+  # -------------------------------------------------------------------
+
+  # NOT LIKE bails. Result still correct via scan.
+  - query: SELECT name FROM t WHERE name NOT LIKE 'a%' ORDER BY name
+    rows:
+      - ['banana']
+      - ['bean']
+      - ['cabbage']
+      - ['carrot']
+      - ['date']
+
+  # -------------------------------------------------------------------
+  # Bails to scan — interior wildcard / underscore / leading wildcard
+  # -------------------------------------------------------------------
+
+  # Interior `_`: matches 'bean' (4 chars: b-e-a-n), pattern 'b_an'
+  # wildcards the second char → 'bean' matches; 'banana' doesn't
+  # (wrong length).
+  - query: SELECT name FROM t WHERE name LIKE 'b_an'
+    rows:
+      - ['bean']
+
+  # Interior `%`: pattern 'b%an%' — 'banana' (has 'an' after 'b'),
+  # 'bean' (has 'an' at end).
+  - query: SELECT name FROM t WHERE name LIKE 'b%an%' ORDER BY name
+    rows:
+      - ['banana']
+      - ['bean']
+
+  # Leading wildcard: bails.
+  - query: SELECT name FROM t WHERE name LIKE '%ate'
+    rows:
+      - ['date']
+
+  # Empty-prefix `%` matches everything.
+  - query: SELECT COUNT(*) FROM t WHERE name LIKE '%'
+    rows:
+      - [7]
+
+  # -------------------------------------------------------------------
+  # Secondary-index LIKE prefix pushdown
+  # -------------------------------------------------------------------
+
+  # idx_status is a VALUE index on status (STRING). `status LIKE 'a%'`
+  # pushes down as a range on the index key.
+  - query: SELECT id, status FROM t2 WHERE status LIKE 'a%' ORDER BY id
+    rows:
+      - [1, 'active']
+      - [2, 'archived']
+      - [3, 'awaiting']
+
+  # `status LIKE 'd%'` hits the 'de*' and 'di*' rows.
+  - query: SELECT id FROM t2 WHERE status LIKE 'd%' ORDER BY id
+    rows:
+      - [4]
+      - [5]
+
+  # Longer prefix: only the matching status.
+  - query: SELECT id FROM t2 WHERE status LIKE 'awa%'
+    rows:
+      - [3]
+
+  # No match on the index → empty.
+  - query: SELECT id FROM t2 WHERE status LIKE 'zzz%'
+    rows: []
+
+  # -------------------------------------------------------------------
+  # UPDATE / DELETE via PK LIKE prefix
+  # -------------------------------------------------------------------
+
+  - query: UPDATE t SET tag = 'updated' WHERE name LIKE 'a%'
+  - query: SELECT name, tag FROM t WHERE name LIKE 'a%' ORDER BY name
+    rows:
+      - ['apple',   'updated']
+      - ['apricot', 'updated']
+  # Rows outside the prefix untouched.
+  - query: SELECT tag FROM t WHERE name = 'banana'
+    rows:
+      - ['fruit']
+
+  - query: DELETE FROM t WHERE name LIKE 'c%'
+  - query: SELECT COUNT(*) FROM t WHERE name LIKE 'c%'
+    rows:
+      - [0]
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [5]
+
+  # -------------------------------------------------------------------
+  # Composite-PK LIKE prefix: leading eq on region + LIKE on name
+  # -------------------------------------------------------------------
+
+  # PK (region, name) — WHERE region = 'us' AND name LIKE 'a%' narrows
+  # to the tuple prefix ['us', 'a'] with a bound on the second col.
+  - query: SELECT region, name FROM cp WHERE region = 'us' AND name LIKE 'a%' ORDER BY name
+    rows:
+      - ['us', 'apple']
+      - ['us', 'apricot']
+
+  # Same shape, different prefix.
+  - query: SELECT region, name FROM cp WHERE region = 'eu' AND name LIKE 'b%'
+    rows:
+      - ['eu', 'bean']
+
+  # Composite PK LIKE + residual on non-indexed col.
+  - query: SELECT name FROM cp WHERE region = 'us' AND name LIKE 'a%' AND v > 10
+    rows:
+      - ['apricot']
+
+  # Composite PK LIKE with NO match.
+  - query: SELECT region FROM cp WHERE region = 'us' AND name LIKE 'zzz%'
+    rows: []
+
+  # -------------------------------------------------------------------
+  # Composite secondary-index LIKE prefix
+  # -------------------------------------------------------------------
+
+  # idx_region_name on (region, name). WHERE region = 'us' AND
+  # name LIKE 'a%' narrows to tuple [us, a, ...) on the index.
+  - query: SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id
+    rows:
+      - [1, 'us', 'apple']
+      - [2, 'us', 'apricot']
+
+  - query: SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'
+    rows:
+      - [5]
+
+  # Composite index + LIKE on second col + non-matching first col bails
+  # at the index level (no such region) — empty.
+  - query: SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'
+    rows: []
+
+  # -------------------------------------------------------------------
+  # LIKE prefix with ESCAPE clause
+  # -------------------------------------------------------------------
+
+  # Seed rows with literal underscores / percents so ESCAPE patterns
+  # have something real to narrow.
+  - query: INSERT INTO t VALUES ('x_ray', 'extra', 88), ('y%lo', 'extra', 99)
+  - query: SELECT name FROM t WHERE name LIKE 'x\_%' ESCAPE '\' ORDER BY name
+    rows:
+      - ['x_ray']
+
+  # Escaped `%` inside the pattern becomes a literal. Here pattern
+  # 'y\%%' = literal "y%" + trailing wildcard → matches y%lo.
+  - query: SELECT name FROM t WHERE name LIKE 'y\%%' ESCAPE '\' ORDER BY name
+    rows:
+      - ['y%lo']
+
+  # ESCAPE without a trailing `%` is exact-match — not a prefix
+  # scan, but still correct via the scan path.
+  - query: SELECT name FROM t WHERE name LIKE 'x\_ray' ESCAPE '\'
+    rows:
+      - ['x_ray']
+
+  # ESCAPE with interior `_` (unescaped) narrows to the prefix
+  # before the `_`. The scan loop's likeMatch handles the single-char
+  # wildcard position. Result is the same rows as the scan-only path.
+  - query: SELECT name FROM t WHERE name LIKE 'y\%l_' ESCAPE '\' ORDER BY name
+    rows:
+      - ['y%lo']
+
+  # -------------------------------------------------------------------
+  # Interior-wildcard prefix narrowing
+  # -------------------------------------------------------------------
+  #
+  # `LIKE 'foo%bar'` / `LIKE 'f_o'` narrow at the first unescaped
+  # wildcard — "foo" or "f" respectively. The scan loop's likeMatch
+  # handles the wildcards and trailing literal. The narrowing keeps
+  # the scan bounded while the post-filter enforces full semantics.
+
+  # 'a%le' → narrows at 'a', matches 'apple'.
+  - query: SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name
+    rows:
+      - ['apple']
+
+  # 'a_ple' → narrows at 'a', matches 'apple' (5 chars, a-_-p-l-e
+  # where `_` matches 'p'). Wait — the pattern has underscore at
+  # position 1, literal 'p','l','e' at 2,3,4 — so "apple" is
+  # a=a, _=p, p=p, l=l, e=e → matches. "apricot" doesn't match
+  # (length mismatch).
+  - query: SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name
+    rows:
+      - ['apple']
+
+  # 'bana%' — ends with %, narrows at 'bana'. Matches banana.
+  - query: SELECT name FROM t WHERE name LIKE 'bana%'
+    rows:
+      - ['banana']
+
+  # Underscore at the start — no literal prefix → bails. Still
+  # correct via the scan path.
+  - query: SELECT name FROM t WHERE name LIKE '_anana'
+    rows:
+      - ['banana']

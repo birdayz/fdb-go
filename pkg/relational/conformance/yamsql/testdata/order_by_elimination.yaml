@@ -1,0 +1,273 @@
+# order_by_elimination.yaml
+#
+# ORDER BY elimination: when the chosen scan cursor emits rows in a
+# natural order that already satisfies sq.orderBy (all ASC, prefix
+# of naturalOrder), the post-scan in-memory sort is skipped. Tests
+# here pin the correctness invariant: result rows must match what a
+# full sort would produce, even when elimination fires.
+#
+# The elimination itself isn't directly observable from row contents.
+# This file's value is regression safety — if elimination incorrectly
+# fires on a query where the cursor order DOESN'T match (e.g. DESC,
+# mid-chain col), the result order would diverge and tests fail.
+#
+# Cursor natural orders (per execSelectQueryFull):
+#   - PK equality / PK range / composite-PK range: PK cols ASC
+#   - Secondary-index equality: PK cols ASC (index key fixed)
+#   - Secondary-index range: (idxCols..., PKCols...) ASC
+#   - Composite-secondary-index range: (idxCols..., PKCols...) ASC
+#   - Full type scan: PK cols ASC
+#   - IN-list / composite-IN-list: unsorted (sub-scan chain)
+name: order_by_elimination
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_v ON t (v)
+  CREATE TABLE ab (
+    a BIGINT NOT NULL,
+    b BIGINT NOT NULL,
+    c BIGINT,
+    PRIMARY KEY (a, b)
+  )
+  CREATE TABLE rp (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON rp (region, plan)
+setup:
+  - INSERT INTO t VALUES (3, 10, 'c'), (1, 30, 'a'), (2, 20, 'b'), (4, 40, 'd'), (5, 15, 'e')
+  - INSERT INTO ab VALUES (1, 10, 100), (2, 20, 200), (1, 20, 150), (2, 10, 250), (1, 30, 130)
+  - INSERT INTO rp VALUES
+      (1, 'us', 'pro'), (2, 'us', 'free'), (3, 'us', 'pro'),
+      (4, 'eu', 'pro'), (5, 'eu', 'free')
+tests:
+  # -------------------------------------------------------------------
+  # Full scan + ORDER BY id ASC — should eliminate sort, PK cols ASC
+  # -------------------------------------------------------------------
+
+  - query: SELECT id, v FROM t ORDER BY id
+    rows:
+      - [1, 30]
+      - [2, 20]
+      - [3, 10]
+      - [4, 40]
+      - [5, 15]
+
+  # Full scan + ORDER BY on non-PK col — must actually sort (v).
+  - query: SELECT id, v FROM t ORDER BY v
+    rows:
+      - [3, 10]
+      - [5, 15]
+      - [2, 20]
+      - [1, 30]
+      - [4, 40]
+
+  # -------------------------------------------------------------------
+  # PK range + ORDER BY id ASC — eliminate sort
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t WHERE id > 1 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # PK range + DESC — sort must run (cursor is ASC only).
+  - query: SELECT id FROM t WHERE id > 1 ORDER BY id DESC
+    rows:
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+
+  # -------------------------------------------------------------------
+  # Secondary-index equality + ORDER BY PK — eliminate sort
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t WHERE v = 10 ORDER BY id
+    rows:
+      - [3]
+
+  # Secondary-index range + ORDER BY v (the indexed col) — eliminate.
+  - query: SELECT id, v FROM t WHERE v >= 20 ORDER BY v
+    rows:
+      - [2, 20]
+      - [1, 30]
+      - [4, 40]
+
+  # Secondary-index range + ORDER BY (v, id) — prefix matches
+  # natural order (idxCol + PK suffix), eliminate.
+  - query: SELECT id, v FROM t WHERE v >= 20 ORDER BY v, id
+    rows:
+      - [2, 20]
+      - [1, 30]
+      - [4, 40]
+
+  # Secondary-index range + ORDER BY on DIFFERENT col — must sort.
+  - query: SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
+    rows:
+      - [1, 30, 'a']
+      - [2, 20, 'b']
+      - [4, 40, 'd']
+
+  # -------------------------------------------------------------------
+  # Composite PK range + ORDER BY (a, b) — eliminate
+  # -------------------------------------------------------------------
+
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a, b
+    rows:
+      - [1, 10]
+      - [1, 20]
+      - [1, 30]
+
+  # Composite PK range + ORDER BY a — prefix, eliminate. The scan
+  # emits in PK tuple order (a ASC, b ASC), which is a superset of
+  # `ORDER BY a`, so the result ordering is also deterministic
+  # beyond the `a` key (b ASC within each a group). Locked in to
+  # catch any regression that breaks PK tuple ordering.
+  - query: SELECT a, b FROM ab WHERE b > 5 ORDER BY a
+    rows:
+      - [1, 10]
+      - [1, 20]
+      - [1, 30]
+      - [2, 10]
+      - [2, 20]
+
+  # Composite PK range + ORDER BY b (non-prefix) — must sort.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # -------------------------------------------------------------------
+  # Composite secondary-index range + ORDER BY (region, plan)
+  # -------------------------------------------------------------------
+
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY region, plan
+    rows:
+      - [2, 'us', 'free']
+      - [1, 'us', 'pro']
+      - [3, 'us', 'pro']
+
+  # ORDER BY id on a secondary-index scan: id is in PK suffix, and
+  # natural order is (region, plan, id). ORDER BY [id] alone is NOT
+  # a prefix of (region, plan, id) — must sort.
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  # -------------------------------------------------------------------
+  # PK equality — at-most-one row, sort is trivially no-op
+  # -------------------------------------------------------------------
+
+  - query: SELECT id FROM t WHERE id = 3 ORDER BY id
+    rows:
+      - [3]
+
+  # -------------------------------------------------------------------
+  # NULLS FIRST/LAST — ASC + NULLS FIRST matches natural order for
+  # non-null data (tuple order puts NULLs first in ASC); NULLS LAST
+  # needs sort even when direction matches.
+  # -------------------------------------------------------------------
+
+  # ASC + NULLS FIRST (explicit): eliminate.
+  - query: SELECT id FROM t ORDER BY id ASC NULLS FIRST
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # ASC + NULLS LAST: must sort (id is NOT NULL so result is the
+  # same, but the sort path is exercised).
+  - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # -------------------------------------------------------------------
+  # LIMIT + ORDER BY elim → early termination
+  # -------------------------------------------------------------------
+  #
+  # When the scan's natural order satisfies ORDER BY AND there's a
+  # LIMIT, the scan loop stops reading after OFFSET+LIMIT rows —
+  # avoiding unnecessary FDB round-trips. Not directly observable
+  # from result rows, but correctness must hold.
+
+  - query: SELECT id FROM t ORDER BY id LIMIT 3
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2
+    rows:
+      - [3]
+      - [4]
+
+  # Secondary-index range + LIMIT + ORDER BY idx col — early term.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    rows:
+      - [3, 10]
+      - [5, 15]
+      - [2, 20]
+
+  # ORDER BY elim doesn't fire (DESC) — early termination off,
+  # full sort runs. Result still correct.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    rows:
+      - [5]
+      - [4]
+
+  # DISTINCT + LIMIT — early termination disabled (dedup may drop
+  # rows). Full scan runs. Result correct.
+  - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    rows:
+      - [10]
+      - [15]
+      - [20]
+
+  # -------------------------------------------------------------------
+  # ORDER BY alias + natural-order elim
+  # -------------------------------------------------------------------
+  #
+  # `SELECT id AS pk ... ORDER BY pk` should resolve the alias to id
+  # and eliminate the sort since id matches the PK natural order.
+
+  - query: SELECT id AS pk FROM t ORDER BY pk
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
+
+  # Alias + LIMIT → early termination fires.
+  - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
+    rows:
+      - [1]
+      - [2]
+
+  # Alias that shadows a different col — ORDER BY matches the
+  # alias's underlying column, not the alias's own name.
+  - query: SELECT v AS id FROM t ORDER BY id
+    rows:
+      - [10]
+      - [15]
+      - [20]
+      - [30]
+      - [40]

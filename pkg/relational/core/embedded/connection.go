@@ -1093,14 +1093,26 @@ func pkPushdownCursor(
 	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownScanCursor(store, rt, pkVals)
 	}
+	if pkVals, ok := c.tryPKInListFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownInListScanCursor(store, rt, pkVals)
+	}
 	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownRangeScanCursor(store, rt, bounds)
+	}
+	if cil, ok := c.tryPKCompositeInListFromWhere(ctx, whereExpr, rt); ok {
+		return pkCompositeInListScanCursor(store, rt, cil)
 	}
 	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
 	}
 	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
+	}
+	if sil, ok := c.trySecondaryIndexInListFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexInListScanCursor(store, sil, nil, nil)
+	}
+	if cil, ok := c.trySecondaryIndexCompositeInListFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
 	}
 	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
@@ -1331,22 +1343,7 @@ func secondaryIndexPushdownCursor(
 	indexName string,
 	keyVal any,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	var keyTuple tuple.Tuple
-	if composite, ok := keyVal.(secondaryIndexKeyTuple); ok {
-		keyTuple = make(tuple.Tuple, 0, len(composite.values))
-		for _, v := range composite.values {
-			keyTuple = append(keyTuple, v)
-		}
-	} else {
-		keyTuple = tuple.Tuple{keyVal}
-	}
-	scanRange := recordlayer.TupleRange{
-		Low:          keyTuple,
-		High:         keyTuple,
-		LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-		HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
-	}
-	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexEqualityTupleRange(keyVal), nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -1409,7 +1406,8 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 	}
 	// Bucket range bounds by (uppercase) column. Equalities skipped.
 	// BETWEEN lo AND hi contributes both inclusive bounds to the
-	// column's entry.
+	// column's entry. LIKE 'prefix%' contributes [prefix,
+	// strinc(prefix)) (half-open, string cols only).
 	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
 	for _, leaf := range leaves {
 		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
@@ -1421,6 +1419,21 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 			b.hasHigh = true
 			b.high = hi
 			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			colUpper := strings.ToUpper(col)
+			lb := likePrefixToPKRangeBounds(prefix)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lb.low
+			b.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				b.hasHigh = true
+				b.high = lb.high
+				b.highInclusive = lb.highInclusive
+			}
 			rangeByCol[colUpper] = b
 			continue
 		}
@@ -1498,28 +1511,7 @@ func secondaryIndexRangeScanCursor(
 	indexName string,
 	bounds pkRangeBounds,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	var scanRange recordlayer.TupleRange
-	if bounds.hasLow {
-		scanRange.Low = tuple.Tuple{bounds.low}
-		if bounds.lowInclusive {
-			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
-		} else {
-			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeExclusive
-		}
-	} else {
-		scanRange.LowEndpoint = recordlayer.EndpointTypeTreeStart
-	}
-	if bounds.hasHigh {
-		scanRange.High = tuple.Tuple{bounds.high}
-		if bounds.highInclusive {
-			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
-		} else {
-			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeExclusive
-		}
-	} else {
-		scanRange.HighEndpoint = recordlayer.EndpointTypeTreeEnd
-	}
-	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexRangeTupleRange(bounds), nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -1610,6 +1602,21 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 			b.hasHigh = true
 			b.high = hi
 			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			lb := likePrefixToPKRangeBounds(prefix)
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lb.low
+			b.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				b.hasHigh = true
+				b.high = lb.high
+				b.highInclusive = lb.highInclusive
+			}
 			rangeByCol[colUpper] = b
 			continue
 		}
@@ -1731,33 +1738,7 @@ func secondaryIndexCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	cr secondaryIndexCompositeRange,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	prefix := make(tuple.Tuple, 0, len(cr.prefixVals))
-	for _, v := range cr.prefixVals {
-		prefix = append(prefix, v)
-	}
-	low := append(tuple.Tuple{}, prefix...)
-	high := append(tuple.Tuple{}, prefix...)
-	lowEp := recordlayer.EndpointTypeRangeInclusive
-	highEp := recordlayer.EndpointTypeRangeInclusive
-	if cr.lastBounds.hasLow {
-		low = append(low, cr.lastBounds.low)
-		if !cr.lastBounds.lowInclusive {
-			lowEp = recordlayer.EndpointTypeRangeExclusive
-		}
-	}
-	if cr.lastBounds.hasHigh {
-		high = append(high, cr.lastBounds.high)
-		if !cr.lastBounds.highInclusive {
-			highEp = recordlayer.EndpointTypeRangeExclusive
-		}
-	}
-	scanRange := recordlayer.TupleRange{
-		Low:          low,
-		High:         high,
-		LowEndpoint:  lowEp,
-		HighEndpoint: highEp,
-	}
-	inner := store.ScanIndexRecords(cr.indexName, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(cr.indexName, buildSecondaryIndexCompositeRangeTupleRange(cr), nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -1869,6 +1850,24 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 			b.hasHigh = true
 			b.high = hi
 			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			if !isPKCol(col) {
+				continue
+			}
+			lb := likePrefixToPKRangeBounds(prefix)
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lb.low
+			b.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				b.hasHigh = true
+				b.high = lb.high
+				b.highInclusive = lb.highInclusive
+			}
 			rangeByCol[colUpper] = b
 			continue
 		}
@@ -2045,6 +2044,27 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 			bounds.hasHigh = true
 			bounds.high = hi
 			bounds.highInclusive = true
+			continue
+		}
+		// `col LIKE 'prefix%'` — narrows to [prefix, strinc(prefix))
+		// on STRING-kind PK columns. Other kinds can't carry a LIKE
+		// literal anyway (SQL surfaces a type error at eval time).
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			if strings.ToUpper(col) != pkColUpper {
+				continue
+			}
+			if fd.Kind() != protoreflect.StringKind {
+				return pkRangeBounds{}, false
+			}
+			lb := likePrefixToPKRangeBounds(prefix)
+			bounds.hasLow = true
+			bounds.low = lb.low
+			bounds.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				bounds.hasHigh = true
+				bounds.high = lb.high
+				bounds.highInclusive = lb.highInclusive
+			}
 			continue
 		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
@@ -4268,6 +4288,43 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	return &staticRows{cols: colNames, rows: outRows}, nil
 }
 
+// naturalOrderSatisfies reports whether sq.orderBy is a prefix of the
+// chosen scan cursor's natural emission order (aliases resolved),
+// with every clause ASC and no explicit NULLS LAST. Shared by the
+// ORDER BY elimination check (skip the in-memory sort) and the LIMIT
+// early-termination check (stop reading the cursor once enough rows
+// are accumulated).
+//
+// Empty naturalOrder → false: the cursor's emission order is
+// unspecified (IN-list chains, aggregate paths). Empty sq.orderBy →
+// true: nothing to satisfy. aliasToUnderlying may be nil when the
+// SELECT has no aliases; the lookup falls through to the direct col
+// match.
+func naturalOrderSatisfies(orderBy []orderByClause, naturalOrder []string, aliasToUnderlying map[string]string) bool {
+	if len(naturalOrder) == 0 {
+		return false
+	}
+	for i, ob := range orderBy {
+		if !ob.ascending {
+			return false
+		}
+		if ob.nullsFirst != nil && !*ob.nullsFirst {
+			return false
+		}
+		if i >= len(naturalOrder) {
+			return false
+		}
+		obCol := ob.colName
+		if underlying, isAlias := aliasToUnderlying[strings.ToUpper(obCol)]; isAlias {
+			obCol = underlying
+		}
+		if !strings.EqualFold(obCol, naturalOrder[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	if len(sq.joins) > 0 {
 		return c.execSelectJoin(ctx, sq)
@@ -4285,11 +4342,25 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	var cols []string
 	var data []row
 	var extraSortFields []outField
+	// naturalOrder holds the column names the chosen scan cursor emits
+	// rows in, always ASC, without tiebreakers. Used by the post-scan
+	// sort to skip the in-memory ORDER BY when sq.orderBy is already
+	// a prefix of the natural order (and all ASC). Empty means the
+	// cursor's emission order is unspecified — always sort.
+	var naturalOrder []string
+	// naturalOrderAliases maps uppercase SELECT-list alias names to
+	// their underlying column names, so `SELECT id AS pk ... ORDER BY
+	// pk` resolves to the PK col for the natural-order prefix check.
+	// Captured from the scan loop so the out-of-closure sort path can
+	// use it without re-parsing.
+	var naturalOrderAliases map[string]string
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
 		extraSortFields = nil
+		naturalOrder = nil
+		naturalOrderAliases = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -4338,32 +4409,130 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, storeErr
 		}
 
-		// PK pushdown: if WHERE is an AND-chain of `pk_col = literal`
-		// equalities covering every PK column, narrow the scan from
-		// the whole type range to the exact key. The existing scan
-		// loop still runs over the cursor (applying WHERE, projection,
-		// ORDER BY, LIMIT), just over at-most-one record. Zero
-		// behavioural change besides avoiding the full-type iteration.
+		// Scan-cursor pushdown chain. Order is "narrowest first": each
+		// branch represents a progressively looser shape, so the first
+		// match is always the tightest narrowing. Fallthrough is the
+		// full type scan. The scan loop below still applies the full
+		// WHERE via evalPredicate, so every pushdown is a superset of
+		// the rows the scan would have matched — partial narrowing is
+		// correct.
+		//
+		// Each branch sets naturalOrder — the column sequence the
+		// resulting cursor emits rows in, always ASC. Used downstream
+		// by naturalOrderSatisfies to skip the in-memory ORDER BY sort
+		// and to enable LIMIT early-termination when the ORDER BY
+		// clause is a prefix of this order.
+		//
+		// Covering-index optimisation (skip the by-PK fetch) is
+		// considered at every secondary-index branch when the SELECT's
+		// referenced column set fits the (idx cols, PK cols) union.
+		//
+		// Chain order:
+		//   PK:
+		//     1. equality on every PK col          — 1 key
+		//     2. single-col IN-list                — N keys
+		//     3. single-col range / BETWEEN / LIKE
+		//     4. composite leading-eq + IN-list    — N keys on composite
+		//     5. composite range with leading eq
+		//   Secondary index (each gated on index scannability inside
+		//   its helper):
+		//     6. equality                          — exact key (covered)
+		//     7. single-col IN-list                — N keys (covered)
+		//     8. composite leading-eq + IN-list    — N keys (covered)
+		//     9. range / BETWEEN / LIKE prefix     — (covered)
+		//    10. composite range with leading eq   — (covered)
+		//    11. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+		pkCols := extractPKUserFields(rt.PrimaryKey)
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
+			// At-most-one row — sort is trivially no-op. Flag it as
+			// fully ordered by PK so ORDER BY on PK cols is skipped.
+			naturalOrder = pkCols
+		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownInListScanCursor(store, rt, pkVals)
+			// IN-list lazy chain — emits in declared-list order,
+			// no usable natural order for ORDER BY elimination.
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
+			// Single-col PK range → ASC on the PK col, then nothing.
+			naturalOrder = pkCols
+		} else if cil, ok := c.tryPKCompositeInListPushdown(ctx, sq, rt); ok {
+			cursor = pkCompositeInListScanCursor(store, rt, cil)
+			// Per-sub-scan natural order is ASC on PK cols; but
+			// sub-scans run sequentially over IN-list values in
+			// declared order, so the overall emission isn't sorted.
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
+			// Composite PK range emits rows in ASC PK order.
+			naturalOrder = pkCols
 		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
 			// The helper itself filters out WRITE_ONLY / DISABLED
 			// indexes while iterating, so any returned index is
 			// guaranteed scannable. Falls through to the next branch
 			// (and ultimately to a full scan) when no scannable match
 			// exists.
-			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+			//
+			// Covering-index optimisation: when every column the SELECT
+			// reads from each row is derivable from the index key + PK,
+			// bypass the per-row LoadRecord fetch by synthesising a
+			// dynamicpb record from the IndexEntry. One FDB round-trip
+			// per row instead of two. See covering_index.go.
+			idx := md.GetIndex(idxName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
+					buildSecondaryIndexEqualityTupleRange(idxVal))
+			} else {
+				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+			}
+			// Index equality → rows emit in (idxCols..., PKCols...)
+			// tuple order. Equality fixes idxCols, so effective
+			// sort key is PKCols.
+			naturalOrder = pkCols
+		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
+			// Covering also applies to IN-list: each sub-scan can skip
+			// the by-PK fetch when the index covers every referenced
+			// column. Same decision as the equality path.
+			if idx := md.GetIndex(sil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = secondaryIndexInListScanCursor(store, sil, rt, idx)
+			} else {
+				cursor = secondaryIndexInListScanCursor(store, sil, nil, nil)
+			}
+			// IN-list lazy chain — not sorted across sub-scans.
+		} else if cil, ok := c.trySecondaryIndexCompositeInListPushdown(ctx, store, sq, rt, md); ok {
+			if idx := md.GetIndex(cil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = secondaryIndexCompositeInListScanCursor(store, cil, rt, idx)
+			} else {
+				cursor = secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
+			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
-			cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+			idx := md.GetIndex(sir.indexName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
+					buildSecondaryIndexRangeTupleRange(sir.bounds))
+			} else {
+				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+			}
+			// Index range → (idxCol ASC, PKCols ASC).
+			if idx != nil {
+				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
 		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
-			cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
+			idx := md.GetIndex(sicr.indexName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
+					buildSecondaryIndexCompositeRangeTupleRange(sicr))
+			} else {
+				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
+			}
+			if idx != nil {
+				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
+			// Full type scan emits in PK tuple order (record-type-key
+			// prefix keeps records of the same type contiguous).
+			naturalOrder = pkCols
 		}
 		defer cursor.Close() //nolint:errcheck
 
@@ -4866,6 +5035,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					aliasToCol[sq.projAliases[i]] = colName
 				}
 			}
+			// Capture aliases for the out-of-closure ORDER BY eliminator
+			// so `ORDER BY <alias>` resolves to the underlying column
+			// when checking natural-order prefix.
+			naturalOrderAliases = make(map[string]string, len(aliasToCol))
+			for alias, col := range aliasToCol {
+				naturalOrderAliases[strings.ToUpper(alias)] = col
+			}
 			// Add any ORDER BY columns not already in the projection.
 			// Expression ORDER BY was already converted to sentinel extra
 			// sort fields above; mark those sentinels present in projByCol
@@ -4901,7 +5077,29 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cols[i] = f.name
 		}
 
+		// Early-termination target: when the scan's natural order
+		// already satisfies sq.orderBy (ORDER BY elimination is
+		// eligible), and there's no DISTINCT, the scan accumulates
+		// rows in final output order — so we can stop reading from
+		// the cursor once we've collected enough rows to cover
+		// OFFSET + LIMIT. Saves FDB round-trips on queries like
+		// `SELECT id FROM t WHERE v > 1000 ORDER BY v LIMIT 5`
+		// against a multi-million-row table.
+		//
+		// Negative (-1) means "no early termination" — read the
+		// cursor to exhaustion. Aggregate / DISTINCT / ORDER BY
+		// not-satisfiable-by-natural-order all fall back to the
+		// full scan and sort later.
+		earlyTermTarget := int64(-1)
+		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 &&
+			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) {
+			earlyTermTarget = sq.offset + sq.limit
+		}
+
 		for {
+			if earlyTermTarget >= 0 && int64(len(data)) >= earlyTermTarget {
+				break
+			}
 			result, nextErr := cursor.OnNext(ctx)
 			if nextErr != nil {
 				return nil, nextErr
@@ -5005,20 +5203,46 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 		}
-		sort.SliceStable(data, func(i, j int) bool {
-			for _, ob := range sq.orderBy {
-				idx, ok := colIdx[ob.colName]
-				if !ok {
-					// Column validated during scan setup; safe to skip.
-					continue
+		// ORDER BY elimination: if the scan cursor emitted rows in a
+		// natural order that already satisfies sq.orderBy, skip the
+		// in-memory sort. Requires every ORDER BY clause to be ASC
+		// (with nullsFirst default / NULLS FIRST) and to be a prefix
+		// of naturalOrder.
+		//
+		// Correctness: a stable sort on a sequence already sorted by
+		// the same key is a no-op. Skipping the sort preserves row
+		// order — which for naturally-ordered cursors IS the ORDER BY
+		// result.
+		//
+		// Bail conditions:
+		//   - aggregate path: data is post-aggregate, naturalOrder
+		//     doesn't apply.
+		//   - any DESC clause: cursor is ASC; reverse scan would
+		//     require separate plumbing (not in scope for MVP).
+		//   - any NULLS LAST on ASC (SQL default is NULLS FIRST for
+		//     ASC under our convention): the natural tuple order
+		//     puts NULLs first in ASC, so NULLS LAST needs sort.
+		//     Treat `ob.nullsFirst == nil` (default) and explicit
+		//     `*ob.nullsFirst == true` as compatible.
+		//   - ORDER BY col not in naturalOrder prefix.
+		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
+			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases)
+		if !sortSkippable {
+			sort.SliceStable(data, func(i, j int) bool {
+				for _, ob := range sq.orderBy {
+					idx, ok := colIdx[ob.colName]
+					if !ok {
+						// Column validated during scan setup; safe to skip.
+						continue
+					}
+					less, equal := orderByLess(data[i][idx], data[j][idx], ob)
+					if !equal {
+						return less
+					}
 				}
-				less, equal := orderByLess(data[i][idx], data[j][idx], ob)
-				if !equal {
-					return less
-				}
-			}
-			return false
-		})
+				return false
+			})
+		}
 	}
 
 	// Strip extra sort columns that were not in the SELECT list.
@@ -10005,7 +10229,20 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)
 	}
 
-	exprs := in.InList().Expressions().AllExpression()
+	// The inList grammar rule admits three shapes:
+	//   1. '(' (queryExpressionBody | expressions) ')' — subquery or
+	//      parenthesized literal list
+	//   2. preparedStatementParameter — `IN ?` / `IN :name`
+	//   3. fullColumnName — `IN someCol`
+	// Only shape 1 carries a non-nil Expressions() child. Shapes 2
+	// and 3 hit this path with Expressions() == nil — reject cleanly
+	// rather than crashing on AllExpression().
+	exprsCtx := in.InList().Expressions()
+	if exprsCtx == nil {
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"IN requires a parenthesized expression list or subquery")
+	}
+	exprs := exprsCtx.AllExpression()
 	var hadNullElement bool
 	for _, expr := range exprs {
 		// Java-aligned: IN list elements are arbitrary expressions, not
@@ -10861,8 +11098,16 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			}
 			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil)
 		}
+		// Same grammar-shape bail as evalInPredicateTri — `IN ?` /
+		// `IN someCol` parse through the preparedStatementParameter /
+		// fullColumnName alternatives, which don't carry an
+		// ExpressionsContext. The previous silent-FALSE (and silent-
+		// TRUE for NOT IN) behaviour was surprising; align with the
+		// proto path and surface 0A000 for every non-parenthesized-
+		// list, non-subquery IN.
 		if p.InList().Expressions() == nil {
-			return triFromBool(p.NOT() != nil), nil
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"IN requires a parenthesized expression list or subquery")
 		}
 		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {

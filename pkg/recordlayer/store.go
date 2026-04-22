@@ -1224,6 +1224,14 @@ func primaryKeyHasRecordTypePrefix(expr KeyExpression) bool {
 	return false
 }
 
+// KeyExpressionHasRecordTypePrefix is the exported form of the per-expression
+// prefix check. Used by the SQL layer's covering-index pushdown to decide
+// how to slice a primary-key tuple (first element is the record-type key
+// when true).
+func KeyExpressionHasRecordTypePrefix(expr KeyExpression) bool {
+	return primaryKeyHasRecordTypePrefix(expr)
+}
+
 // ScanRecordsInRange scans records in a key range
 func (store *FDBRecordStore) ScanRecordsInRange(
 	low, high tuple.Tuple,
