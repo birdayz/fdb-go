@@ -34,6 +34,19 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_status ON t2 (status)
+  CREATE TABLE cp (
+    region STRING NOT NULL,
+    name STRING NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (region, name)
+  )
+  CREATE TABLE ci (
+    id BIGINT NOT NULL,
+    region STRING,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_name ON ci (region, name)
 setup:
   - INSERT INTO t VALUES
       ('apple',   'fruit',   10),
@@ -49,6 +62,18 @@ setup:
       (3, 'awaiting'),
       (4, 'deleted'),
       (5, 'disabled')
+  - INSERT INTO cp VALUES
+      ('us', 'apple',   10),
+      ('us', 'apricot', 20),
+      ('us', 'banana',  30),
+      ('eu', 'apple',   40),
+      ('eu', 'bean',    50)
+  - INSERT INTO ci VALUES
+      (1, 'us', 'apple'),
+      (2, 'us', 'apricot'),
+      (3, 'us', 'banana'),
+      (4, 'eu', 'apple'),
+      (5, 'eu', 'bean')
 tests:
   # -------------------------------------------------------------------
   # PK LIKE prefix — basic cases
@@ -200,3 +225,48 @@ tests:
   - query: SELECT COUNT(*) FROM t
     rows:
       - [5]
+
+  # -------------------------------------------------------------------
+  # Composite-PK LIKE prefix: leading eq on region + LIKE on name
+  # -------------------------------------------------------------------
+
+  # PK (region, name) — WHERE region = 'us' AND name LIKE 'a%' narrows
+  # to the tuple prefix ['us', 'a'] with a bound on the second col.
+  - query: SELECT region, name FROM cp WHERE region = 'us' AND name LIKE 'a%' ORDER BY name
+    rows:
+      - ['us', 'apple']
+      - ['us', 'apricot']
+
+  # Same shape, different prefix.
+  - query: SELECT region, name FROM cp WHERE region = 'eu' AND name LIKE 'b%'
+    rows:
+      - ['eu', 'bean']
+
+  # Composite PK LIKE + residual on non-indexed col.
+  - query: SELECT name FROM cp WHERE region = 'us' AND name LIKE 'a%' AND v > 10
+    rows:
+      - ['apricot']
+
+  # Composite PK LIKE with NO match.
+  - query: SELECT region FROM cp WHERE region = 'us' AND name LIKE 'zzz%'
+    rows: []
+
+  # -------------------------------------------------------------------
+  # Composite secondary-index LIKE prefix
+  # -------------------------------------------------------------------
+
+  # idx_region_name on (region, name). WHERE region = 'us' AND
+  # name LIKE 'a%' narrows to tuple [us, a, ...) on the index.
+  - query: SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id
+    rows:
+      - [1, 'us', 'apple']
+      - [2, 'us', 'apricot']
+
+  - query: SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'
+    rows:
+      - [5]
+
+  # Composite index + LIKE on second col + non-matching first col bails
+  # at the index level (no such region) — empty.
+  - query: SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'
+    rows: []

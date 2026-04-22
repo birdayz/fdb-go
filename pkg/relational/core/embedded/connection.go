@@ -1602,6 +1602,24 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 			rangeByCol[colUpper] = b
 			continue
 		}
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			lb, lbOk := likePrefixToPKRangeBounds(prefix)
+			if !lbOk {
+				continue
+			}
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lb.low
+			b.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				b.hasHigh = true
+				b.high = lb.high
+				b.highInclusive = lb.highInclusive
+			}
+			rangeByCol[colUpper] = b
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
@@ -1832,6 +1850,27 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 			b.hasHigh = true
 			b.high = hi
 			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		if col, prefix, ok := extractColLikePrefixLiteral(ctx, c, leaf); ok {
+			if !isPKCol(col) {
+				continue
+			}
+			lb, lbOk := likePrefixToPKRangeBounds(prefix)
+			if !lbOk {
+				continue
+			}
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lb.low
+			b.lowInclusive = lb.lowInclusive
+			if lb.hasHigh {
+				b.hasHigh = true
+				b.high = lb.high
+				b.highInclusive = lb.highInclusive
+			}
 			rangeByCol[colUpper] = b
 			continue
 		}
