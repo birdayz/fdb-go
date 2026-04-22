@@ -4,13 +4,17 @@ go_library(
     name = "functions",
     srcs = [
         "arith.go",
+        "ast_util.go",
         "cast.go",
+        "compare.go",
+        "like.go",
         "proto_value.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/relational/api",
+        "//pkg/relational/core/parser/gen",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

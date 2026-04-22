@@ -2306,7 +2306,7 @@ func extractColumnRef(atom antlrgen.IExpressionAtomContext) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	name := fullIdToName(fcn.FullColumnName().FullId())
+	name := functions.FullIdToName(fcn.FullColumnName().FullId())
 	return name[strings.LastIndex(name, ".")+1:], true
 }
 
@@ -2358,7 +2358,7 @@ func containsTableRef(tree antlr.Tree, upperName string) bool {
 		return false
 	}
 	if tn, ok := tree.(antlrgen.ITableNameContext); ok {
-		if strings.ToUpper(fullIdToName(tn.FullId())) == upperName {
+		if strings.ToUpper(functions.FullIdToName(tn.FullId())) == upperName {
 			return true
 		}
 	}
@@ -2503,7 +2503,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 		}
 		recursiveKeyword := ctesCtx.RECURSIVE() != nil
 		for _, nq := range ctesCtx.AllNamedQuery() {
-			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
+			cteName := strings.ToUpper(functions.FullIdToName(nq.GetName()))
 			// Java alignment: duplicate CTE names in the same WITH list
 			// error 42712 (DUPLICATE_ALIAS) per cte.yamsql. Detect before
 			// overwriting so the error points at the second occurrence.
@@ -2523,7 +2523,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				list := aliases.AllFullId()
 				renameList = make([]string, len(list))
 				for i, fid := range list {
-					renameList[i] = stripIdentifierQuotes(fullIdToName(fid))
+					renameList[i] = functions.StripIdentifierQuotes(functions.FullIdToName(fid))
 				}
 			}
 			var cteCols []string
@@ -3225,11 +3225,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 								gs.avgsN[i]++
 							}
 						case "MIN":
-							if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+							if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 								gs.mins[i] = colVal
 							}
 						case "MAX":
-							if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+							if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
 								gs.maxes[i] = colVal
 							}
 						}
@@ -3261,11 +3261,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					gs.avgsN[i]++
 				}
 			case "MIN":
-				if gs.mins[i] == nil || compareValues(colVal, gs.mins[i]) < 0 {
+				if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 					gs.mins[i] = colVal
 				}
 			case "MAX":
-				if gs.maxes[i] == nil || compareValues(colVal, gs.maxes[i]) > 0 {
+				if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
 					gs.maxes[i] = colVal
 				}
 			}
@@ -4750,11 +4750,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 									gs.avgsN[i]++
 								}
 							case "MIN":
-								if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+								if gs.mins[i] == nil || functions.CompareValues(v, gs.mins[i]) < 0 {
 									gs.mins[i] = v
 								}
 							case "MAX":
-								if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+								if gs.maxes[i] == nil || functions.CompareValues(v, gs.maxes[i]) > 0 {
 									gs.maxes[i] = v
 								}
 							}
@@ -4785,11 +4785,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							gs.avgsN[i]++
 						}
 					case "MIN":
-						if gs.mins[i] == nil || compareValues(v, gs.mins[i]) < 0 {
+						if gs.mins[i] == nil || functions.CompareValues(v, gs.mins[i]) < 0 {
 							gs.mins[i] = v
 						}
 					case "MAX":
-						if gs.maxes[i] == nil || compareValues(v, gs.maxes[i]) > 0 {
+						if gs.maxes[i] == nil || functions.CompareValues(v, gs.maxes[i]) > 0 {
 							gs.maxes[i] = v
 						}
 					}
@@ -5653,7 +5653,7 @@ func orderByLess(a, b driver.Value, ob orderByClause) (less, equal bool) {
 		}
 		return !nullsFirst, false
 	}
-	cmp := compareValues(a, b)
+	cmp := functions.CompareValues(a, b)
 	if cmp == 0 {
 		return false, true
 	}
@@ -5755,7 +5755,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	// wins over the reconstructed default ("SUM(v)") as the output column
 	// name.
 	if e.Uid() != nil {
-		outName = stripIdentifierQuotes(e.Uid().GetText())
+		outName = functions.StripIdentifierQuotes(e.Uid().GetText())
 	}
 	return fn, arg, aExpr, outName, isDistinct, true
 }
@@ -5776,7 +5776,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 		expr := fa.Expression()
 		if pred, ok := expr.(*antlrgen.PredicatedExpressionContext); ok {
 			if col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-				argCol = fullIdToName(col.FullColumnName().FullId())
+				argCol = functions.FullIdToName(col.FullColumnName().FullId())
 				return
 			}
 		}
@@ -5843,7 +5843,7 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 	}
 	switch a := pred.ExpressionAtom().(type) {
 	case *antlrgen.FullColumnNameExpressionAtomContext:
-		return fullIdToName(a.FullColumnName().FullId()), nil
+		return functions.FullIdToName(a.FullColumnName().FullId()), nil
 	case *antlrgen.FunctionCallExpressionAtomContext:
 		// Aggregate function in ORDER BY — return the canonical output name
 		// (e.g. COUNT(*), SUM(col)) so it can be matched against the SELECT list.
@@ -5887,7 +5887,7 @@ func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string,
 	}
 	alias := ""
 	if e.Uid() != nil {
-		alias = stripIdentifierQuotes(e.Uid().GetText())
+		alias = functions.StripIdentifierQuotes(e.Uid().GetText())
 	}
 	return colName, alias, nil
 }
@@ -5959,7 +5959,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"SELECT <qualifier>.* missing qualifier")
 				}
-				qual := stripIdentifierQuotes(e.Uid().GetText())
+				qual := functions.StripIdentifierQuotes(e.Uid().GetText())
 				if len(elems) == 1 {
 					projQualifier = qual
 				} else {
@@ -5972,7 +5972,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
 					if e.Uid() != nil {
-						countStarAlias = stripIdentifierQuotes(e.Uid().GetText())
+						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
 					}
 				} else if fn, argCol, argExpr, alias, isDistinct, isAgg := extractAggFunc(e); isAgg {
 					aggCols = append(aggCols, aggSelectCol{outName: alias, aggFunc: fn, aggArg: argCol, aggExpr: argExpr, aggDistinct: isDistinct})
@@ -5984,7 +5984,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 						// Use alias as the output name; fall back to the raw expression text.
 						alias = ""
 						if e.Uid() != nil {
-							alias = stripIdentifierQuotes(e.Uid().GetText())
+							alias = functions.StripIdentifierQuotes(e.Uid().GetText())
 						}
 						if alias == "" {
 							alias = e.Expression().GetText()
@@ -6228,12 +6228,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		uids := atomItem.TableName().FullId().AllUid()
 		parts := make([]string, len(uids))
 		for i, u := range uids {
-			parts[i] = stripIdentifierQuotes(u.GetText())
+			parts[i] = functions.StripIdentifierQuotes(u.GetText())
 		}
 		tblName := strings.Join(parts, ".")
 		alias := tblName
 		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+			alias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
 		}
 		extraCrossJoins = append(extraCrossJoins, joinClause{
 			tableName: tblName,
@@ -6256,7 +6256,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
 		alias := ""
 		if subItem.GetAlias() != nil {
-			alias = stripIdentifierQuotes(subItem.GetAlias().GetText())
+			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
 		}
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
@@ -6295,7 +6295,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		uids := atomItem.TableName().FullId().AllUid()
 		parts := make([]string, len(uids))
 		for i, u := range uids {
-			parts[i] = stripIdentifierQuotes(u.GetText())
+			parts[i] = functions.StripIdentifierQuotes(u.GetText())
 		}
 		// Only use Uid() as alias when AS is explicit. Without AS, the parser may
 		// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
@@ -6305,7 +6305,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		leftAlias := ""
 		promotedJoinType := ""
 		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			leftAlias = stripIdentifierQuotes(atomItem.Uid().GetText())
+			leftAlias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
 		} else if atomItem.Uid() != nil {
 			misAlias := strings.ToUpper(atomItem.Uid().GetText())
 			if misAlias == "LEFT" || misAlias == "RIGHT" {
@@ -6482,7 +6482,7 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		for _, item := range groupByCtx.AllGroupByItem() {
 			aliasName := ""
 			if item.Uid() != nil {
-				aliasName = stripIdentifierQuotes(item.Uid().GetText())
+				aliasName = functions.StripIdentifierQuotes(item.Uid().GetText())
 				// SQL identifiers are case-insensitive, so `GROUP BY
 				// col1 AS x, col2 AS X` must error 42702 even though
 				// the two aliases differ only in case. groupByAliases
@@ -6993,7 +6993,7 @@ func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
 			}
 		}
 		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-			name := fullIdToName(c.FullColumnName().FullId())
+			name := functions.FullIdToName(c.FullColumnName().FullId())
 			if !seen[name] {
 				seen[name] = true
 				names = append(names, name)
@@ -7085,12 +7085,12 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		uids := atomItem.TableName().FullId().AllUid()
 		parts := make([]string, len(uids))
 		for i, u := range uids {
-			parts[i] = stripIdentifierQuotes(u.GetText())
+			parts[i] = functions.StripIdentifierQuotes(u.GetText())
 		}
 		tblName := strings.Join(parts, ".")
 		alias := tblName
 		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+			alias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
 		}
 		var onExpr antlrgen.IExpressionContext
 		if j.Expression() != nil {
@@ -7107,12 +7107,12 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		uids := atomItem.TableName().FullId().AllUid()
 		parts := make([]string, len(uids))
 		for i, u := range uids {
-			parts[i] = stripIdentifierQuotes(u.GetText())
+			parts[i] = functions.StripIdentifierQuotes(u.GetText())
 		}
 		tblName := strings.Join(parts, ".")
 		alias := tblName
 		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			alias = stripIdentifierQuotes(atomItem.Uid().GetText())
+			alias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
 		}
 		jt := "LEFT"
 		if j.RIGHT() != nil {
@@ -7131,24 +7131,6 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 }
 
 // stripIdentifierQuotes removes surrounding double-quotes or backticks from a
-// SQL identifier produced by the ANTLR parser (e.g. `"FOO"` → `FOO`).
-func stripIdentifierQuotes(s string) string {
-	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// fullIdToName converts a FullId parse-tree node to a dot-separated,
-// quote-stripped name. Used for table names in INSERT, UPDATE, DELETE.
-func fullIdToName(fid antlrgen.IFullIdContext) string {
-	uids := fid.AllUid()
-	parts := make([]string, len(uids))
-	for i, u := range uids {
-		parts[i] = stripIdentifierQuotes(u.GetText())
-	}
-	return strings.Join(parts, ".")
-}
 
 // execShowStatement routes SHOW … to the appropriate catalog reader.
 func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrgen.IShowStatementContext) (driver.Rows, error) {
@@ -7579,11 +7561,11 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 	var explicitCols []string // nil = no column list (use schema order)
 	if colCtx != nil {
 		for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
-			explicitCols = append(explicitCols, stripIdentifierQuotes(uw.Uid().GetText()))
+			explicitCols = append(explicitCols, functions.StripIdentifierQuotes(uw.Uid().GetText()))
 		}
 	}
 
-	tableName := fullIdToName(ins.TableName().FullId())
+	tableName := functions.FullIdToName(ins.TableName().FullId())
 
 	// Handle INSERT INTO ... SELECT (insertStatementValueSelect).
 	if selCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueSelectContext); ok {
@@ -7912,7 +7894,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 	case *antlrgen.ConstantExpressionAtomContext:
 		return evalConstant(a.Constant())
 	case *antlrgen.FullColumnNameExpressionAtomContext:
-		colName := fullIdToName(a.FullColumnName().FullId())
+		colName := functions.FullIdToName(a.FullColumnName().FullId())
 		// Try inner scope first: strip any qualifier and look up on msg.
 		// For qualified `qual.col`, fall through to outer scopes when qual
 		// does not match the inner msg's descriptor name — otherwise
@@ -8077,7 +8059,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"cannot compare %T with %T", left, right)
 		}
-		cmp := compareValues(left, right)
+		cmp := functions.CompareValues(left, right)
 		switch op {
 		case "=":
 			return cmp == 0, nil
@@ -8644,7 +8626,7 @@ func evalScalarFunctionCallCore(
 		if err2 != nil {
 			return nil, err2
 		}
-		if compareValues(a, b) == 0 {
+		if functions.CompareValues(a, b) == 0 {
 			return nil, nil
 		}
 		return a, nil
@@ -8683,7 +8665,7 @@ func evalScalarFunctionCallCore(
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"cannot compare %T with %T in %s", v, best, name)
 			}
-			cmp := compareValues(v, best)
+			cmp := functions.CompareValues(v, best)
 			if (isGreatest && cmp > 0) || (!isGreatest && cmp < 0) {
 				best = v
 			}
@@ -8941,7 +8923,7 @@ func evalScalarFunctionCallCore(
 		if err != nil {
 			return nil, err
 		}
-		if isTruthy(cond) {
+		if functions.IsTruthy(cond) {
 			return eval(fArgs[1].Expression())
 		}
 		return eval(fArgs[2].Expression())
@@ -9133,7 +9115,7 @@ func evalSpecificFunctionCore(
 			if subject == nil || whenVal == nil {
 				continue
 			}
-			if compareValues(subject, whenVal) == 0 {
+			if functions.CompareValues(subject, whenVal) == 0 {
 				return eval(alt.GetConsequent().Expression())
 			}
 		}
@@ -9155,24 +9137,6 @@ func evalSpecificFunctionCore(
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, sf)
 	}
-}
-
-// isTruthy returns true when v is a non-nil, non-zero boolean or non-zero numeric.
-func isTruthy(v any) bool {
-	if v == nil {
-		return false
-	}
-	switch n := v.(type) {
-	case bool:
-		return n
-	case int64:
-		return n != 0
-	case float64:
-		return n != 0
-	case string:
-		return n != ""
-	}
-	return true
 }
 
 // triBool is a Kleene three-valued truth type used by predicate evaluators so
@@ -9243,7 +9207,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := fullIdToName(upd.TableName().FullId())
+	tableName := functions.FullIdToName(upd.TableName().FullId())
 	whereExpr := upd.WhereExpr()
 	updatedElems := upd.AllUpdatedElement()
 
@@ -9308,7 +9272,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			cloned := proto.Clone(rec.Record)
 			clonedRefl := cloned.ProtoReflect()
 			for _, elem := range updatedElems {
-				colName := fullIdToName(elem.FullColumnName().FullId())
+				colName := functions.FullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", colName, tableName)
@@ -9360,7 +9324,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
-	tableName := fullIdToName(del.TableName().FullId())
+	tableName := functions.FullIdToName(del.TableName().FullId())
 	whereExpr := del.WhereExpr()
 
 	var deleted int64
@@ -9560,7 +9524,7 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 		if v == nil {
 			return triNull, nil
 		}
-		return triFromBool(isTruthy(v)), nil
+		return triFromBool(functions.IsTruthy(v)), nil
 	}
 	opText := bcp.ComparisonOperator().GetText()
 
@@ -9600,7 +9564,7 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 			"cannot compare %T with %T", left, right)
 	}
 
-	cmp := compareValues(left, right)
+	cmp := functions.CompareValues(left, right)
 	switch opText {
 	case "=":
 		return triFromBool(cmp == 0), nil
@@ -9695,7 +9659,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() so unset optionals (SQL NULL) yield UNKNOWN.
-		colName := fullIdToName(colAtom.FullColumnName().FullId())
+		colName := functions.FullIdToName(colAtom.FullColumnName().FullId())
 		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
 		if fd == nil {
 			return triFalse, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
@@ -9797,7 +9761,7 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 	var fieldVal driver.Value
 	if colAtom, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 		// Column: use proto Has() to distinguish NULL (unset optional) from zero.
-		colName := fullIdToName(colAtom.FullColumnName().FullId())
+		colName := functions.FullIdToName(colAtom.FullColumnName().FullId())
 		fd := msg.ProtoReflect().Descriptor().Fields().ByName(protoreflect.Name(colName))
 		if fd == nil {
 			return false, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
@@ -9875,64 +9839,11 @@ func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		escape = runes[0]
 	}
 
-	matched := likeMatch(pattern, s, escape)
+	matched := functions.LikeMatch(pattern, s, escape)
 	if like.NOT() != nil {
 		return triFromBool(!matched), nil
 	}
 	return triFromBool(matched), nil
-}
-
-// likeMatch implements SQL LIKE pattern matching: % = any sequence, _ = any
-// single char. If escape >= 0, that rune makes the following char literal
-// (only valid before %, _, or escape itself per SQL standard).
-func likeMatch(pattern, s string, escape rune) bool {
-	if pattern == "" {
-		return s == ""
-	}
-	p, str := []rune(pattern), []rune(s)
-	return likeMatchRunes(p, str, escape)
-}
-
-func likeMatchRunes(p, s []rune, escape rune) bool {
-	for len(p) > 0 {
-		// Escape handling: consume the escape char and treat the next char
-		// as a literal. SQL: escape must precede %, _, or itself; otherwise
-		// undefined. Match Java's lenient interpretation (just literal char).
-		if escape >= 0 && p[0] == escape && len(p) >= 2 {
-			if len(s) == 0 || p[1] != s[0] {
-				return false
-			}
-			p, s = p[2:], s[1:]
-			continue
-		}
-		switch p[0] {
-		case '%':
-			// skip consecutive %
-			for len(p) > 0 && p[0] == '%' {
-				p = p[1:]
-			}
-			if len(p) == 0 {
-				return true
-			}
-			for i := 0; i <= len(s); i++ {
-				if likeMatchRunes(p, s[i:], escape) {
-					return true
-				}
-			}
-			return false
-		case '_':
-			if len(s) == 0 {
-				return false
-			}
-			p, s = p[1:], s[1:]
-		default:
-			if len(s) == 0 || p[0] != s[0] {
-				return false
-			}
-			p, s = p[1:], s[1:]
-		}
-	}
-	return len(s) == 0
 }
 
 // evalBetweenPredicateTri handles: expr [NOT] BETWEEN lo AND hi (inclusive).
@@ -9981,7 +9892,7 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 		if a == nil || b == nil {
 			return triNull
 		}
-		return triFromBool(want(compareValues(a, b)))
+		return triFromBool(want(functions.CompareValues(a, b)))
 	}
 
 	if bet.NOT() != nil {
@@ -10131,7 +10042,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 		case *antlrgen.ConstantExpressionAtomContext:
 			return evalConstant(a.Constant())
 		case *antlrgen.FullColumnNameExpressionAtomContext:
-			name := fullIdToName(a.FullColumnName().FullId())
+			name := functions.FullIdToName(a.FullColumnName().FullId())
 			v, found := row[name]
 			if !found {
 				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "HAVING column %q not in SELECT list", name)
@@ -10221,7 +10132,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 	if leftVal == nil || rightVal == nil {
 		return triNull, nil
 	}
-	cmp := compareValues(leftVal, rightVal)
+	cmp := functions.CompareValues(leftVal, rightVal)
 	switch opText {
 	case "=":
 		return triFromBool(cmp == 0), nil
@@ -10250,7 +10161,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		}
 		return v, nil
 	case *antlrgen.FullColumnNameExpressionAtomContext:
-		name := fullIdToName(a.FullColumnName().FullId())
+		name := functions.FullIdToName(a.FullColumnName().FullId())
 		v, found := row[name]
 		if !found {
 			// Try unqualified: "Order.amount" → "amount".
@@ -10324,7 +10235,7 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 				"cannot compare %T with %T", left, right)
 		}
-		cmp := compareValues(left, right)
+		cmp := functions.CompareValues(left, right)
 		switch opText {
 		case "=":
 			return cmp == 0, nil
@@ -10501,7 +10412,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if fieldVal == nil {
 			return triNull, nil
 		}
-		return triFromBool(isTruthy(fieldVal)), nil
+		return triFromBool(functions.IsTruthy(fieldVal)), nil
 	}
 
 	switch p := pred.Predicate().(type) {
@@ -10554,7 +10465,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			}
 			escape = runes[0]
 		}
-		matched := likeMatch(functions.StripStringLiteralQuotes(patternLit), s, escape)
+		matched := functions.LikeMatch(functions.StripStringLiteralQuotes(patternLit), s, escape)
 		if p.NOT() != nil {
 			matched = !matched
 		}
@@ -10575,7 +10486,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if lo == nil || hi == nil {
 			return triNull, nil
 		}
-		result := compareValues(fieldVal, lo) >= 0 && compareValues(fieldVal, hi) <= 0
+		result := functions.CompareValues(fieldVal, lo) >= 0 && functions.CompareValues(fieldVal, hi) <= 0
 		if p.NOT() != nil {
 			result = !result
 		}
@@ -10652,7 +10563,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if fieldVal == nil || rightVal == nil {
 			return triNull, nil
 		}
-		cmp := compareValues(fieldVal, rightVal)
+		cmp := functions.CompareValues(fieldVal, rightVal)
 		switch bcp.ComparisonOperator().GetText() {
 		case "=":
 			return triFromBool(cmp == 0), nil
@@ -10751,7 +10662,7 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			if left == nil || right == nil {
 				return triNull, nil
 			}
-			cmp := compareValues(left, right)
+			cmp := functions.CompareValues(left, right)
 			switch opText {
 			case "=":
 				return triFromBool(cmp == 0), nil
@@ -10774,7 +10685,7 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 		if v == nil {
 			return triNull, nil
 		}
-		return triFromBool(isTruthy(v)), nil
+		return triFromBool(functions.IsTruthy(v)), nil
 	default:
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T in map eval", expr)
 	}
@@ -11052,91 +10963,6 @@ func valuesEqual(a, b any) bool {
 		return false
 	}
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
-}
-
-// compareValues returns -1, 0, or 1 for two driver.Values.
-// Used by ORDER BY post-sort (NULL sorts last) and by comparison predicates.
-//
-// Cross-type comparisons (e.g. int vs string) return a non-zero value ordered
-// by type name, so that `'5' = 5` never matches. Numeric coercion across
-// int64/float64 is preserved because SQL treats them as the same type family.
-func compareValues(a, b driver.Value) int {
-	// NULL ordering: NULL < non-NULL. Sort callers go through orderByLess
-	// which handles NULLs before reaching compareValues (to honour
-	// explicit NULLS FIRST/LAST), so this branch only matters for
-	// non-sort callers (WHERE comparisons where -1 == less-than).
-	if a == nil && b == nil {
-		return 0
-	}
-	if a == nil {
-		return -1
-	}
-	if b == nil {
-		return 1
-	}
-
-	// Exact int64 compare when both are int64 avoids float64 precision loss
-	// for values beyond ±2^53.
-	if ai, ok1 := a.(int64); ok1 {
-		if bi, ok2 := b.(int64); ok2 {
-			switch {
-			case ai < bi:
-				return -1
-			case ai > bi:
-				return 1
-			}
-			return 0
-		}
-	}
-	toFloat := func(v any) (float64, bool) {
-		switch n := v.(type) {
-		case int64:
-			return float64(n), true
-		case float64:
-			return n, true
-		}
-		return 0, false
-	}
-	fa, aNum := toFloat(a)
-	fb, bNum := toFloat(b)
-	if aNum && bNum {
-		switch {
-		case fa < fb:
-			return -1
-		case fa > fb:
-			return 1
-		}
-		return 0
-	}
-	// One numeric and one non-numeric → not equal. SQL rejects cross-type
-	// comparison; we return a stable non-zero ordering so `=` fails.
-	if aNum != bNum {
-		return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
-	}
-
-	// Same concrete type.
-	if reflect.TypeOf(a) == reflect.TypeOf(b) {
-		switch av := a.(type) {
-		case string:
-			return strings.Compare(av, b.(string))
-		case bool:
-			bv := b.(bool)
-			if av == bv {
-				return 0
-			}
-			if !av {
-				return -1
-			}
-			return 1
-		case []byte:
-			return bytes.Compare(av, b.([]byte))
-		}
-		// Exotic driver types with equal concrete type: compare via fmt.
-		return strings.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
-	}
-
-	// Genuinely different types (e.g. string vs bool) — stable non-zero order.
-	return strings.Compare(reflect.TypeOf(a).String(), reflect.TypeOf(b).String())
 }
 
 // rowKey serializes a result row to a collision-free string key for DISTINCT deduplication.

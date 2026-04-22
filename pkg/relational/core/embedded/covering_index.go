@@ -45,7 +45,7 @@ func collectColumnRefs(tree antlr.Tree, out map[string]struct{}) {
 		return
 	}
 	if atom, ok := tree.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-		name := fullIdToName(atom.FullColumnName().FullId())
+		name := functions.FullIdToName(atom.FullColumnName().FullId())
 		bare := name[strings.LastIndex(name, ".")+1:]
 		out[strings.ToUpper(bare)] = struct{}{}
 	}

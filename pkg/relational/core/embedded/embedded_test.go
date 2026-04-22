@@ -498,9 +498,9 @@ func TestLikeMatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
 			t.Parallel()
-			got := likeMatch(tc.pattern, tc.s, -1) // no escape
+			got := functions.LikeMatch(tc.pattern, tc.s, -1) // no escape
 			if got != tc.want {
-				t.Errorf("likeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
+				t.Errorf("functions.LikeMatch(%q, %q) = %v, want %v", tc.pattern, tc.s, got, tc.want)
 			}
 		})
 	}
@@ -535,9 +535,9 @@ func TestLikeMatchWithEscape(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.s, func(t *testing.T) {
 			t.Parallel()
-			got := likeMatch(tc.pattern, tc.s, tc.escape)
+			got := functions.LikeMatch(tc.pattern, tc.s, tc.escape)
 			if got != tc.want {
-				t.Errorf("likeMatch(%q, %q, %q) = %v, want %v",
+				t.Errorf("functions.LikeMatch(%q, %q, %q) = %v, want %v",
 					tc.pattern, tc.s, string(tc.escape), got, tc.want)
 			}
 		})
