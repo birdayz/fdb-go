@@ -147,6 +147,21 @@ tests:
     rows:
       - [150, 150.0]
       - [300, 300.0]
+
+  # Java groupby-tests.yamsql line 178 shape: aggregate alias in a
+  # derived table, referenced in the outer SELECT and WHERE.
+  # Inner: MIN(col2) per col1 group → 100 (col1=10), 300 (col1=20).
+  # Outer: WHERE G > 5 → both pass. SELECT G + 4 → 104, 304.
+  - query: |-
+      SELECT G + 4 FROM (
+        SELECT MIN(x.col2) AS G
+        FROM (SELECT col1, col2 FROM t1) AS x
+        GROUP BY x.col1
+      ) AS Y
+      WHERE G > 5 ORDER BY G
+    rows:
+      - [104]
+      - [304]
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct
