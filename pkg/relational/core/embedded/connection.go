@@ -1522,15 +1522,16 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangePushdown(
 }
 
 // trySecondaryIndexCompositeRangeFromWhere recognises composite VALUE
-// indexes where every leading index column has an equality in the
-// WHERE AND chain and the LAST index column has at least one range
-// bound. The range is valid on the last component only because
-// composite key ranges are contiguous in FDB only when prefixed by
-// fixed values.
+// indexes where the first index column carrying a range predicate is
+// preceded by equalities on all earlier index columns. The range
+// column contributes the scan bounds; any leaves on index columns
+// AFTER the range column are ignored here and re-applied as
+// post-filter by the scan loop's evalPredicate.
 //
 // Pure-equality composite pushdown is handled by
-// trySecondaryIndexFromWhere and runs first at every call site — if
-// the last column is also equated we never get here.
+// trySecondaryIndexFromWhere and runs first at every call site, so a
+// fully equated composite key never reaches this extractor. Matches
+// the relaxation applied to PK composite range pushdown.
 func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 	ctx context.Context,
 	whereExpr antlrgen.IWhereExprContext,
@@ -1585,8 +1586,9 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 	if len(rangeByCol) == 0 {
 		return secondaryIndexCompositeRange{}, false
 	}
-	// Pick the first composite VALUE index whose leading columns are
-	// all equated and whose last column has a compatible range.
+	// Pick the first composite VALUE index where the first-in-declared-
+	// order index column carrying a range bound is preceded by
+	// equalities on every earlier index column.
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
 		if idx.Type != "" && idx.Type != "value" {
@@ -1596,9 +1598,19 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 		if len(idxCols) < 2 {
 			continue
 		}
-		prefixVals := make([]any, len(idxCols)-1)
+		rangeK := -1
+		for i, col := range idxCols {
+			if _, has := rangeByCol[strings.ToUpper(col)]; has {
+				rangeK = i
+				break
+			}
+		}
+		if rangeK == -1 {
+			continue
+		}
+		prefixVals := make([]any, rangeK)
 		matched := true
-		for i := 0; i < len(idxCols)-1; i++ {
+		for i := 0; i < rangeK; i++ {
 			col := idxCols[i]
 			v, found := equalities[strings.ToUpper(col)]
 			if !found {
@@ -1615,25 +1627,22 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 		if !matched {
 			continue
 		}
-		lastCol := idxCols[len(idxCols)-1]
-		lastBounds, hasRange := rangeByCol[strings.ToUpper(lastCol)]
-		if !hasRange || (!lastBounds.hasLow && !lastBounds.hasHigh) {
+		rangeCol := idxCols[rangeK]
+		bounds := rangeByCol[strings.ToUpper(rangeCol)]
+		rangeFD := rt.Descriptor.Fields().ByName(protoreflect.Name(rangeCol))
+		if rangeFD == nil {
 			continue
 		}
-		lastFD := rt.Descriptor.Fields().ByName(protoreflect.Name(lastCol))
-		if lastFD == nil {
+		if bounds.hasLow && !literalMatchesPKKind(bounds.low, rangeFD.Kind()) {
 			continue
 		}
-		if lastBounds.hasLow && !literalMatchesPKKind(lastBounds.low, lastFD.Kind()) {
-			continue
-		}
-		if lastBounds.hasHigh && !literalMatchesPKKind(lastBounds.high, lastFD.Kind()) {
+		if bounds.hasHigh && !literalMatchesPKKind(bounds.high, rangeFD.Kind()) {
 			continue
 		}
 		return secondaryIndexCompositeRange{
 			indexName:  idx.Name,
 			prefixVals: prefixVals,
-			lastBounds: lastBounds,
+			lastBounds: bounds,
 		}, true
 	}
 	return secondaryIndexCompositeRange{}, false

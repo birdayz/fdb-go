@@ -320,3 +320,45 @@ tests:
   - query: SELECT COUNT(*) FROM t2
     rows:
       - [3]
+
+  # ---------------------------------------------------------------
+  # Composite secondary-index: range on a NON-last index column.
+  # Mirror of the PK composite range relaxation: the range may sit
+  # on the first index column (empty prefix) as well as the last.
+  # ---------------------------------------------------------------
+  # Re-seed t2 to a known shape.
+  - query: DELETE FROM t2
+  - query: INSERT INTO t2 VALUES (10, 'af', 'pro', 100), (11, 'eu', 'pro', 200), (12, 'us', 'pro', 300), (13, 'us', 'free', 400)
+
+  # Range on the FIRST index column of idx_region_plan (region).
+  # region < 'us' matches 'af' and 'eu' rows.
+  - query: SELECT id FROM t2 WHERE region < 'us' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+
+  # Range on first index col + equality on trailing index col.
+  # region <= 'us' narrows the scan; plan='pro' post-filters.
+  # Matches all rows with plan='pro' up to region='us' inclusive.
+  - query: SELECT id FROM t2 WHERE region <= 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+      - [12]
+
+  # Bounded range on first index col. region BETWEEN 'eu' AND 'us'.
+  - query: SELECT id FROM t2 WHERE region >= 'eu' AND region <= 'us' ORDER BY id
+    rows:
+      - [11]
+      - [12]
+      - [13]
+
+  # UPDATE via composite secondary-index range on first col.
+  - query: UPDATE t2 SET amount = 555 WHERE region < 'eu'
+  - query: SELECT id, amount FROM t2 WHERE region < 'eu'
+    rows:
+      - [10, 555]
+  # Untouched rows.
+  - query: SELECT amount FROM t2 WHERE id = 11
+    rows:
+      - [200]
