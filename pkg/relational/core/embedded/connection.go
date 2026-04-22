@@ -1102,6 +1102,9 @@ func pkPushdownCursor(
 	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(idxName) {
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
 	}
+	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(sir.indexName) {
+		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 
@@ -1329,6 +1332,158 @@ func secondaryIndexPushdownCursor(
 		High:         keyTuple,
 		LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
 		HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
+	}
+	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}
+
+// secondaryIndexRange describes a range scan on a single-column VALUE
+// index: the index name plus the low/high bounds on the indexed
+// column. Mirror of pkRangeBounds + index name.
+type secondaryIndexRange struct {
+	indexName string
+	bounds    pkRangeBounds
+}
+
+// trySecondaryIndexRangePushdown is the SELECT-gated variant of
+// trySecondaryIndexRangeFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexRangePushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexRange, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexRange{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexRange{}, false
+	}
+	return c.trySecondaryIndexRangeFromWhere(ctx, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexRangeFromWhere looks for a single-column VALUE
+// index whose column carries at least one range predicate (`>`,
+// `>=`, `<`, `<=`) in the AND chain. Both sides of a bounded range
+// are collected (`WHERE col > 5 AND col < 10`). Extra non-indexed
+// leaves remain post-filtered by the scan loop's evalPredicate.
+//
+// Equalities on the indexed column are intentionally skipped here —
+// trySecondaryIndexFromWhere is tried first at every call site and
+// handles the pure-equality case; if we reach this function with an
+// equality leaf, equality pushdown already rejected it (e.g. type
+// mismatch) and we must not resurrect it with a range bound.
+//
+// Multiple range leaves on the same column use last-write-wins; the
+// scan loop's evalPredicate re-applies the full WHERE to each loaded
+// row, so correctness holds even when the chosen bound is looser.
+func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexRange, bool) {
+	if whereExpr == nil {
+		return secondaryIndexRange{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return secondaryIndexRange{}, false
+	}
+	// Bucket range bounds by (uppercase) column. Equalities skipped.
+	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok || op == "=" {
+			continue
+		}
+		b := rangeByCol[strings.ToUpper(col)]
+		switch op {
+		case ">":
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = false
+		case ">=":
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = true
+		case "<":
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = false
+		case "<=":
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = true
+		}
+		rangeByCol[strings.ToUpper(col)] = b
+	}
+	if len(rangeByCol) == 0 {
+		return secondaryIndexRange{}, false
+	}
+	// Pick the first single-column VALUE index whose column carries
+	// at least one range bound with a type-compatible literal.
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) != 1 {
+			continue
+		}
+		bounds, found := rangeByCol[strings.ToUpper(idxCols[0])]
+		if !found || (!bounds.hasLow && !bounds.hasHigh) {
+			continue
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(idxCols[0]))
+		if fd == nil {
+			continue
+		}
+		if bounds.hasLow && !literalMatchesPKKind(bounds.low, fd.Kind()) {
+			continue
+		}
+		if bounds.hasHigh && !literalMatchesPKKind(bounds.high, fd.Kind()) {
+			continue
+		}
+		return secondaryIndexRange{indexName: idx.Name, bounds: bounds}, true
+	}
+	return secondaryIndexRange{}, false
+}
+
+// secondaryIndexRangeScanCursor wraps `store.ScanIndexRecords` with a
+// single-column range on the index key, and adapts the resulting
+// `*FDBIndexedRecord` stream to `*FDBStoredRecord`. When one side of
+// the range is open, the corresponding endpoint falls back to
+// TreeStart / TreeEnd so the scan runs to the end of the index range
+// in that direction.
+func secondaryIndexRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	indexName string,
+	bounds pkRangeBounds,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	var scanRange recordlayer.TupleRange
+	if bounds.hasLow {
+		scanRange.Low = tuple.Tuple{bounds.low}
+		if bounds.lowInclusive {
+			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		scanRange.LowEndpoint = recordlayer.EndpointTypeTreeStart
+	}
+	if bounds.hasHigh {
+		scanRange.High = tuple.Tuple{bounds.high}
+		if bounds.highInclusive {
+			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		scanRange.HighEndpoint = recordlayer.EndpointTypeTreeEnd
 	}
 	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
@@ -3840,6 +3995,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// first OnNext(). Today the embedded DDL layer only builds
 			// READABLE indexes, but online indexing may change that.
 			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(sir.indexName) {
+			cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}

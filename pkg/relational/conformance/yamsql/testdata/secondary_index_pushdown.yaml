@@ -168,3 +168,83 @@ tests:
   # pushdown bails on NULL RHS.
   - query: SELECT id FROM t2 WHERE region = 'us' AND plan = NULL
     rows: []
+
+  # ---------------------------------------------------------------
+  # Range predicates on a single-column VALUE index.
+  # ---------------------------------------------------------------
+  # Seed rows for idx_v: v ∈ {10, 20, 30, 40} (ids 1..4).
+  # Row with status='archived' (id=2) was DELETEd above, leaving
+  # ids 1, 3, 4 on the t table.
+
+  # Half-open lower bound inclusive: v >= 30.
+  - query: SELECT id FROM t WHERE v >= 30 ORDER BY id
+    rows:
+      - [3]
+      - [4]
+
+  # Half-open lower bound exclusive: v > 30.
+  - query: SELECT id FROM t WHERE v > 30 ORDER BY id
+    rows:
+      - [4]
+
+  # Half-open upper bound inclusive: v <= 20.
+  # Row (2, 20) was deleted; only (1, 10) remains below 20.
+  - query: SELECT id FROM t WHERE v <= 20 ORDER BY id
+    rows:
+      - [1]
+
+  # Half-open upper bound exclusive: v < 30.
+  - query: SELECT id FROM t WHERE v < 30 ORDER BY id
+    rows:
+      - [1]
+
+  # Bounded both sides: 20 < v < 40 — matches id=3 (v=30).
+  - query: SELECT id FROM t WHERE v > 20 AND v < 40 ORDER BY id
+    rows:
+      - [3]
+
+  # Bounded both sides inclusive: 10 <= v <= 30 — matches ids 1, 3.
+  - query: SELECT id FROM t WHERE v >= 10 AND v <= 30 ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # Bounded both sides with empty result (range doesn't cover any v).
+  - query: SELECT id FROM t WHERE v > 100 AND v < 200
+    rows: []
+
+  # Range + extra non-indexed predicate — index narrows the scan to
+  # v >= 20, evalPredicate applies id <> 3 on loaded rows.
+  - query: SELECT id FROM t WHERE v >= 20 AND id <> 3 ORDER BY id
+    rows:
+      - [4]
+
+  # Range pushdown on non-existent range (above max) → empty.
+  - query: SELECT id FROM t WHERE v > 9999
+    rows: []
+
+  # Symmetric: literal on LHS. extractColOpLiteral flips so that
+  # `50 > v` becomes `v < 50`. Matches ids 1, 3 (v=10, v=30).
+  - query: SELECT id FROM t WHERE 50 > v ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # UPDATE via secondary-index range pushdown.
+  - query: UPDATE t SET status = 'bulk' WHERE v >= 30
+  - query: SELECT id, status FROM t WHERE v >= 30 ORDER BY id
+    rows:
+      - [3, 'bulk']
+      - [4, 'bulk']
+  # Row below the range untouched.
+  - query: SELECT status FROM t WHERE id = 1
+    rows:
+      - ['active']
+
+  # DELETE via secondary-index range pushdown.
+  - query: DELETE FROM t WHERE v > 30
+  - query: SELECT id FROM t WHERE v > 30
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [2]
