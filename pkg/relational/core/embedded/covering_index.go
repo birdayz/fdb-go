@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -250,12 +251,13 @@ func synthesizeCoveredRecord(
 		}
 		protoVal, err := convertToProtoValue(fd, val)
 		if err != nil {
-			// Conversion failure here would be a bug — canCoverIndex
-			// already restricted kinds to supported ones. Fall back to
-			// leaving the field absent rather than crashing; evalPredicate
-			// treats absent fields as NULL, so correctness degrades
-			// gracefully to a row that fails the WHERE.
-			continue
+			// canCoverIndex restricts needed columns to kinds supported
+			// by convertToProtoValue, so reaching this branch means the
+			// tuple element shape diverged from the proto field shape —
+			// a real bug. Surface it rather than silently dropping the
+			// field (which would become NULL and pass through the WHERE
+			// as a wrong row).
+			return nil, fmt.Errorf("covering index %q: cannot convert indexed column %q from tuple: %w", entry.Index.Name, col, err)
 		}
 		msg.Set(fd, protoVal)
 	}
@@ -284,7 +286,7 @@ func synthesizeCoveredRecord(
 		}
 		protoVal, err := convertToProtoValue(fd, val)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("covering index %q: cannot convert PK column %q from tuple: %w", entry.Index.Name, col, err)
 		}
 		msg.Set(fd, protoVal)
 	}
@@ -302,16 +304,16 @@ func synthesizeCoveredRecord(
 // subspace. Mirrors secondaryIndexRangeScanCursor / secondaryIndexComposite
 // RangeScanCursor's wrapping pattern but uses store.ScanIndex (raw entry
 // stream) instead of ScanIndexRecords (which fetches records).
+//
+// Takes the Index directly (not a name) so all metadata resolution happens
+// at the call site — there's exactly one lookup, and the "missing index"
+// case is impossible to express.
 func coveringIndexRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
-	indexName string,
+	idx *recordlayer.Index,
 	scanRange recordlayer.TupleRange,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	idx := store.GetMetaData().GetIndex(indexName)
-	if idx == nil {
-		return nil // caller already validated the index exists
-	}
 	inner := store.ScanIndex(idx, scanRange, nil, recordlayer.ForwardScan())
 	return &coveringCursor{
 		inner: inner,

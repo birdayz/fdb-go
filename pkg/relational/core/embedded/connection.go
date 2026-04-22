@@ -1337,22 +1337,7 @@ func secondaryIndexPushdownCursor(
 	indexName string,
 	keyVal any,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	var keyTuple tuple.Tuple
-	if composite, ok := keyVal.(secondaryIndexKeyTuple); ok {
-		keyTuple = make(tuple.Tuple, 0, len(composite.values))
-		for _, v := range composite.values {
-			keyTuple = append(keyTuple, v)
-		}
-	} else {
-		keyTuple = tuple.Tuple{keyVal}
-	}
-	scanRange := recordlayer.TupleRange{
-		Low:          keyTuple,
-		High:         keyTuple,
-		LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
-		HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
-	}
-	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexEqualityTupleRange(keyVal), nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -1504,28 +1489,7 @@ func secondaryIndexRangeScanCursor(
 	indexName string,
 	bounds pkRangeBounds,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	var scanRange recordlayer.TupleRange
-	if bounds.hasLow {
-		scanRange.Low = tuple.Tuple{bounds.low}
-		if bounds.lowInclusive {
-			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
-		} else {
-			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeExclusive
-		}
-	} else {
-		scanRange.LowEndpoint = recordlayer.EndpointTypeTreeStart
-	}
-	if bounds.hasHigh {
-		scanRange.High = tuple.Tuple{bounds.high}
-		if bounds.highInclusive {
-			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
-		} else {
-			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeExclusive
-		}
-	} else {
-		scanRange.HighEndpoint = recordlayer.EndpointTypeTreeEnd
-	}
-	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexRangeTupleRange(bounds), nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -1737,33 +1701,7 @@ func secondaryIndexCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	cr secondaryIndexCompositeRange,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	prefix := make(tuple.Tuple, 0, len(cr.prefixVals))
-	for _, v := range cr.prefixVals {
-		prefix = append(prefix, v)
-	}
-	low := append(tuple.Tuple{}, prefix...)
-	high := append(tuple.Tuple{}, prefix...)
-	lowEp := recordlayer.EndpointTypeRangeInclusive
-	highEp := recordlayer.EndpointTypeRangeInclusive
-	if cr.lastBounds.hasLow {
-		low = append(low, cr.lastBounds.low)
-		if !cr.lastBounds.lowInclusive {
-			lowEp = recordlayer.EndpointTypeRangeExclusive
-		}
-	}
-	if cr.lastBounds.hasHigh {
-		high = append(high, cr.lastBounds.high)
-		if !cr.lastBounds.highInclusive {
-			highEp = recordlayer.EndpointTypeRangeExclusive
-		}
-	}
-	scanRange := recordlayer.TupleRange{
-		Low:          low,
-		High:         high,
-		LowEndpoint:  lowEp,
-		HighEndpoint: highEp,
-	}
-	inner := store.ScanIndexRecords(cr.indexName, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(cr.indexName, buildSecondaryIndexCompositeRangeTupleRange(cr), nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -4372,7 +4310,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// dynamicpb record from the IndexEntry. One FDB round-trip
 			// per row instead of two. See covering_index.go.
 			if idx := md.GetIndex(idxName); idx != nil && canCoverIndex(sq, idx, rt) {
-				cursor = coveringIndexRangeScanCursor(store, rt, idxName,
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexEqualityTupleRange(idxVal))
 			} else {
 				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
@@ -4381,14 +4319,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = secondaryIndexInListScanCursor(store, sil)
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			if idx := md.GetIndex(sir.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
-				cursor = coveringIndexRangeScanCursor(store, rt, sir.indexName,
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexRangeTupleRange(sir.bounds))
 			} else {
 				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
 			}
 		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
 			if idx := md.GetIndex(sicr.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
-				cursor = coveringIndexRangeScanCursor(store, rt, sicr.indexName,
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexCompositeRangeTupleRange(sicr))
 			} else {
 				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
