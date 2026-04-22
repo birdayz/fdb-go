@@ -1923,11 +1923,15 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 }
 
 // pkPushdownCompositeRangeScanCursor builds a range scan whose low
-// and high tuples share the same leading prefix (the equated
-// non-last PK columns) and differ only in the last component. When
-// the range is open on one side, the corresponding tuple falls back
-// to the prefix (inclusive) — covering the full range of that
-// prefix's last-component values in either direction.
+// and high tuples share the same leading prefix (the equated PK cols
+// before the range col) and differ only in the range col. Since the
+// dd97a817 relaxation the range col may sit at any position in the
+// PK, not just the last — `cr.prefixVals` is the equated prefix
+// before it, `cr.lastBounds` are its bounds, and PK cols after the
+// range col are unconstrained here and re-applied as post-filter by
+// the scan loop. When the range is open on one side, the corresponding
+// tuple falls back to the prefix (inclusive) — covering the full
+// range of that prefix's suffix values in either direction.
 func pkPushdownCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
