@@ -117,7 +117,6 @@ func extractColLikePrefixLiteral(
 func likePatternToPrefix(pattern string, escape rune) (string, bool) {
 	runes := []rune(pattern)
 	var b strings.Builder
-	sawWildcard := false
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if escape >= 0 && r == escape {
@@ -132,7 +131,6 @@ func likePatternToPrefix(pattern string, escape rune) (string, bool) {
 		}
 		switch r {
 		case '%', '_':
-			sawWildcard = true
 			// First unescaped wildcard terminates the literal prefix.
 			if b.Len() == 0 {
 				return "", false // pattern starts with wildcard
@@ -144,7 +142,6 @@ func likePatternToPrefix(pattern string, escape rune) (string, bool) {
 	}
 	// Pattern consumed with no wildcard — treat as exact match, no
 	// range narrowing needed (scan path's likeMatch handles it).
-	_ = sawWildcard
 	return "", false
 }
 
