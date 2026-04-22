@@ -1509,12 +1509,17 @@ func secondaryIndexRangeScanCursor(
 }
 
 // secondaryIndexCompositeRange describes a range scan on a composite
-// VALUE index where every index column except the last is equated to
-// a literal and the LAST column carries a range predicate. Mirror of
-// pkCompositeRange but carrying the index name.
+// VALUE index. `prefixVals` holds the equality-equated values for
+// every index column BEFORE the first range column (the "prefix");
+// `lastBounds` holds the range bounds for that first range column.
+// Index columns AFTER the range column are unconstrained here and
+// re-applied as post-filter by the scan loop. Mirror of
+// pkCompositeRange but carrying the index name. Name historical —
+// the "last" in `lastBounds` predates the 9dcb0bfb relaxation that
+// allows the range col to sit anywhere, not only at the end.
 type secondaryIndexCompositeRange struct {
 	indexName  string
-	prefixVals []any // equalities for index cols 0..n-2
+	prefixVals []any // equalities for index cols 0..rangeK-1
 	lastBounds pkRangeBounds
 }
 
@@ -1750,12 +1755,15 @@ func (c *EmbeddedConnection) tryPKRangePushdown(
 	return c.tryPKRangeFromWhere(ctx, sq.whereExpr, rt)
 }
 
-// pkCompositeRange describes the leading equalities plus an optional
-// range on the LAST PK column that together yield a contiguous FDB
-// key range. Only valid for composite PKs where every column except
-// possibly the last is equated.
+// pkCompositeRange describes a composite-PK range scan. `prefixVals`
+// holds the equality-equated values for every PK column BEFORE the
+// first range column; `lastBounds` holds the range bounds for that
+// first range column. PK columns AFTER the range column are
+// unconstrained here and re-applied as post-filter by the scan loop.
+// Name historical — the "last" in `lastBounds` predates the dd97a817
+// relaxation that allows the range col to sit anywhere in the PK.
 type pkCompositeRange struct {
-	prefixVals []any // equalities for PK columns 0..len-2
+	prefixVals []any // equalities for PK cols 0..rangeK-1
 	lastBounds pkRangeBounds
 }
 
