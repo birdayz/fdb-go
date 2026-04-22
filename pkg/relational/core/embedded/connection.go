@@ -4305,11 +4305,18 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	var cols []string
 	var data []row
 	var extraSortFields []outField
+	// naturalOrder holds the column names the chosen scan cursor emits
+	// rows in, always ASC, without tiebreakers. Used by the post-scan
+	// sort to skip the in-memory ORDER BY when sq.orderBy is already
+	// a prefix of the natural order (and all ASC). Empty means the
+	// cursor's emission order is unspecified — always sort.
+	var naturalOrder []string
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
 		extraSortFields = nil
+		naturalOrder = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
 		if loadErr != nil {
@@ -4385,16 +4392,29 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//    10. composite range with leading eq   — (covered)
 		//    11. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+		pkCols := extractPKUserFields(rt.PrimaryKey)
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
+			// At-most-one row — sort is trivially no-op. Flag it as
+			// fully ordered by PK so ORDER BY on PK cols is skipped.
+			naturalOrder = pkCols
 		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownInListScanCursor(store, rt, pkVals)
+			// IN-list lazy chain — emits in declared-list order,
+			// no usable natural order for ORDER BY elimination.
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
+			// Single-col PK range → ASC on the PK col, then nothing.
+			naturalOrder = pkCols
 		} else if cil, ok := c.tryPKCompositeInListPushdown(ctx, sq, rt); ok {
 			cursor = pkCompositeInListScanCursor(store, rt, cil)
+			// Per-sub-scan natural order is ASC on PK cols; but
+			// sub-scans run sequentially over IN-list values in
+			// declared order, so the overall emission isn't sorted.
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
+			// Composite PK range emits rows in ASC PK order.
+			naturalOrder = pkCols
 		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
 			// The helper itself filters out WRITE_ONLY / DISABLED
 			// indexes while iterating, so any returned index is
@@ -4407,12 +4427,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// bypass the per-row LoadRecord fetch by synthesising a
 			// dynamicpb record from the IndexEntry. One FDB round-trip
 			// per row instead of two. See covering_index.go.
-			if idx := md.GetIndex(idxName); idx != nil && canCoverIndex(sq, idx, rt) {
+			idx := md.GetIndex(idxName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexEqualityTupleRange(idxVal))
 			} else {
 				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
 			}
+			// Index equality → rows emit in (idxCols..., PKCols...)
+			// tuple order. Equality fixes idxCols, so effective
+			// sort key is PKCols.
+			naturalOrder = pkCols
 		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
 			// Covering also applies to IN-list: each sub-scan can skip
 			// the by-PK fetch when the index covers every referenced
@@ -4422,6 +4447,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			} else {
 				cursor = secondaryIndexInListScanCursor(store, sil, nil, nil)
 			}
+			// IN-list lazy chain — not sorted across sub-scans.
 		} else if cil, ok := c.trySecondaryIndexCompositeInListPushdown(ctx, store, sq, rt, md); ok {
 			if idx := md.GetIndex(cil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = secondaryIndexCompositeInListScanCursor(store, cil, rt, idx)
@@ -4429,21 +4455,33 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cursor = secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
 			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
-			if idx := md.GetIndex(sir.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+			idx := md.GetIndex(sir.indexName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexRangeTupleRange(sir.bounds))
 			} else {
 				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
 			}
+			// Index range → (idxCol ASC, PKCols ASC).
+			if idx != nil {
+				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
 		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
-			if idx := md.GetIndex(sicr.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+			idx := md.GetIndex(sicr.indexName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexCompositeRangeTupleRange(sicr))
 			} else {
 				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
 			}
+			if idx != nil {
+				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
+			// Full type scan emits in PK tuple order (record-type-key
+			// prefix keeps records of the same type contiguous).
+			naturalOrder = pkCols
 		}
 		defer cursor.Close() //nolint:errcheck
 
@@ -5085,6 +5123,49 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 		}
+		// ORDER BY elimination: if the scan cursor emitted rows in a
+		// natural order that already satisfies sq.orderBy, skip the
+		// in-memory sort. Requires every ORDER BY clause to be ASC
+		// (with nullsFirst default / NULLS FIRST) and to be a prefix
+		// of naturalOrder.
+		//
+		// Correctness: a stable sort on a sequence already sorted by
+		// the same key is a no-op. Skipping the sort preserves row
+		// order — which for naturally-ordered cursors IS the ORDER BY
+		// result.
+		//
+		// Bail conditions:
+		//   - aggregate path: data is post-aggregate, naturalOrder
+		//     doesn't apply.
+		//   - any DESC clause: cursor is ASC; reverse scan would
+		//     require separate plumbing (not in scope for MVP).
+		//   - any NULLS LAST on ASC (SQL default is NULLS FIRST for
+		//     ASC under our convention): the natural tuple order
+		//     puts NULLs first in ASC, so NULLS LAST needs sort.
+		//     Treat `ob.nullsFirst == nil` (default) and explicit
+		//     `*ob.nullsFirst == true` as compatible.
+		//   - ORDER BY col not in naturalOrder prefix.
+		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar && len(naturalOrder) > 0
+		if sortSkippable {
+			for i, ob := range sq.orderBy {
+				if !ob.ascending {
+					sortSkippable = false
+					break
+				}
+				if ob.nullsFirst != nil && !*ob.nullsFirst {
+					sortSkippable = false
+					break
+				}
+				if i >= len(naturalOrder) || !strings.EqualFold(ob.colName, naturalOrder[i]) {
+					sortSkippable = false
+					break
+				}
+			}
+		}
+		if sortSkippable {
+			// Skip the sort — rows already in ORDER BY order.
+			goto sortDone
+		}
 		sort.SliceStable(data, func(i, j int) bool {
 			for _, ob := range sq.orderBy {
 				idx, ok := colIdx[ob.colName]
@@ -5099,6 +5180,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			return false
 		})
+	sortDone:
 	}
 
 	// Strip extra sort columns that were not in the SELECT list.
