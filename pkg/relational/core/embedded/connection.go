@@ -5220,25 +5220,22 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//   - ORDER BY col not in naturalOrder prefix.
 		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
 			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases)
-		if sortSkippable {
-			// Skip the sort — rows already in ORDER BY order.
-			goto sortDone
+		if !sortSkippable {
+			sort.SliceStable(data, func(i, j int) bool {
+				for _, ob := range sq.orderBy {
+					idx, ok := colIdx[ob.colName]
+					if !ok {
+						// Column validated during scan setup; safe to skip.
+						continue
+					}
+					less, equal := orderByLess(data[i][idx], data[j][idx], ob)
+					if !equal {
+						return less
+					}
+				}
+				return false
+			})
 		}
-		sort.SliceStable(data, func(i, j int) bool {
-			for _, ob := range sq.orderBy {
-				idx, ok := colIdx[ob.colName]
-				if !ok {
-					// Column validated during scan setup; safe to skip.
-					continue
-				}
-				less, equal := orderByLess(data[i][idx], data[j][idx], ob)
-				if !equal {
-					return less
-				}
-			}
-			return false
-		})
-	sortDone:
 	}
 
 	// Strip extra sort columns that were not in the SELECT list.
