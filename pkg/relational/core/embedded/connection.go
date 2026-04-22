@@ -4357,11 +4357,32 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// guaranteed scannable. Falls through to the next branch
 			// (and ultimately to a full scan) when no scannable match
 			// exists.
-			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+			//
+			// Covering-index optimisation: when every column the SELECT
+			// reads from each row is derivable from the index key + PK,
+			// bypass the per-row LoadRecord fetch by synthesising a
+			// dynamicpb record from the IndexEntry. One FDB round-trip
+			// per row instead of two. See covering_index.go.
+			if idx := md.GetIndex(idxName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idxName,
+					buildSecondaryIndexEqualityTupleRange(idxVal))
+			} else {
+				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
-			cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+			if idx := md.GetIndex(sir.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, sir.indexName,
+					buildSecondaryIndexRangeTupleRange(sir.bounds))
+			} else {
+				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+			}
 		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
-			cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
+			if idx := md.GetIndex(sicr.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, sicr.indexName,
+					buildSecondaryIndexCompositeRangeTupleRange(sicr))
+			} else {
+				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
+			}
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}

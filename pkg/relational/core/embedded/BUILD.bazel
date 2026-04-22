@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "embedded",
-    srcs = ["connection.go"],
+    srcs = [
+        "connection.go",
+        "covering_index.go",
+    ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
     deps = [
