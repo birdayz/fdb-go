@@ -11,9 +11,11 @@ name: pk_pushdown
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, name STRING, v BIGINT, PRIMARY KEY (id))
   CREATE TABLE kv (k STRING NOT NULL, g BIGINT NOT NULL, v BIGINT, PRIMARY KEY (k, g))
+  CREATE TABLE kvw (region STRING NOT NULL, bucket BIGINT NOT NULL, tag STRING NOT NULL, v BIGINT, PRIMARY KEY (region, bucket, tag))
 setup:
   - INSERT INTO t VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30), (4, 'delta', 40)
   - INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('b', 1, 300), ('b', 2, 400)
+  - INSERT INTO kvw VALUES ('us', 1, 'a', 10), ('us', 1, 'b', 20), ('us', 2, 'a', 30), ('us', 2, 'b', 40), ('eu', 1, 'a', 50), ('eu', 1, 'b', 60)
 tests:
   # Simple pushdown: literal on RHS.
   - query: SELECT id, name, v FROM t WHERE id = 3
@@ -338,3 +340,165 @@ tests:
   - query: SELECT k, g FROM kv
     rows:
       - ['b', 1]
+
+  # ---------------------------------------------------------------
+  # Relaxed composite PK range: range on the FIRST PK column, or on
+  # an interior column with unrelated trailing PK cols. The narrowed
+  # FDB key range stays contiguous because the prefix is fixed; any
+  # trailing-PK-col predicates fall through to the scan loop's
+  # evalPredicate post-filter.
+  # ---------------------------------------------------------------
+  # Range on the first PK column of kv (k), prefix empty.
+  # Matches all ('b', *) rows. (Only 'b' exists after the DELETE
+  # above — ('b', 1) remains.)
+  - query: SELECT k, g FROM kv WHERE k > 'a'
+    rows:
+      - ['b', 1]
+
+  # Re-seed kv for the next set of tests (the DELETE above left
+  # only ('b', 1)).
+  - query: INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('b', 2, 400)
+
+  # Range on first PK col with bounded range.
+  - query: SELECT k FROM kv WHERE k >= 'a' AND k < 'b' ORDER BY k, g
+    rows:
+      - ['a']
+      - ['a']
+
+  # 3-col PK: range on MIDDLE column, trailing col ignored for
+  # scan bounds. `region='us' AND bucket > 1` scans the contiguous
+  # range {us, (1..∞), *} and returns rows with bucket=2.
+  - query: SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket > 1 ORDER BY region, bucket, tag
+    rows:
+      - ['us', 2, 'a']
+      - ['us', 2, 'b']
+
+  # 3-col PK: range on middle column + equality on trailing column.
+  # The range narrows to bucket=[1..1]; tag='a' becomes post-filter.
+  # Only ('us', 1, 'a') qualifies.
+  - query: SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket <= 1 AND tag = 'a'
+    rows:
+      - ['us', 1, 'a']
+
+  # 3-col PK: range on first column, preserves all trailing cols.
+  # region < 'us' matches only the two 'eu' rows.
+  - query: SELECT region, bucket, tag FROM kvw WHERE region < 'us' ORDER BY region, bucket, tag
+    rows:
+      - ['eu', 1, 'a']
+      - ['eu', 1, 'b']
+
+  # 3-col PK: range on first column + additional PK equality on a
+  # trailing col — the range drives the scan bounds, the trailing
+  # equality post-filters. `region <= 'us' AND tag = 'b'` returns
+  # all rows with tag='b' across both regions.
+  - query: SELECT region, bucket, v FROM kvw WHERE region <= 'us' AND tag = 'b' ORDER BY region, bucket
+    rows:
+      - ['eu', 1, 60]
+      - ['us', 1, 20]
+      - ['us', 2, 40]
+
+  # 3-col PK: UPDATE with range on middle col, trailing col free.
+  - query: UPDATE kvw SET v = 999 WHERE region = 'us' AND bucket >= 2
+  - query: SELECT region, bucket, tag, v FROM kvw WHERE region = 'us' AND bucket = 2 ORDER BY tag
+    rows:
+      - ['us', 2, 'a', 999]
+      - ['us', 2, 'b', 999]
+  # Row outside the range untouched.
+  - query: SELECT v FROM kvw WHERE region = 'us' AND bucket = 1 AND tag = 'a'
+    rows:
+      - [10]
+
+  # 3-col PK: DELETE with range on first col.
+  - query: DELETE FROM kvw WHERE region > 'u'
+  - query: SELECT COUNT(*) FROM kvw
+    rows:
+      - [2]
+  - query: SELECT region FROM kvw ORDER BY region
+    rows:
+      - ['eu']
+      - ['eu']
+
+  # ---------------------------------------------------------------
+  # BETWEEN pushdown: `col BETWEEN lo AND hi` is inclusive on both
+  # sides, equivalent to `col >= lo AND col <= hi`. Tested on single
+  # PK, composite PK, and across mutation paths.
+  # ---------------------------------------------------------------
+  # Re-seed t for predictable BETWEEN tests.
+  - query: DELETE FROM t
+  - query: INSERT INTO t VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30), (4, 'delta', 40), (5, 'epsilon', 50)
+
+  # Single-col PK, bare BETWEEN.
+  - query: SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id
+    rows:
+      - [2]
+      - [3]
+      - [4]
+
+  # BETWEEN with bounds equal — single-point range.
+  - query: SELECT id FROM t WHERE id BETWEEN 3 AND 3
+    rows:
+      - [3]
+
+  # BETWEEN with lo > hi → empty (scan produces no rows because
+  # evalPredicate's inclusive BETWEEN semantics never match).
+  - query: SELECT id FROM t WHERE id BETWEEN 10 AND 5
+    rows: []
+
+  # BETWEEN + extra predicate — range narrows, extras post-filter.
+  - query: SELECT id FROM t WHERE id BETWEEN 1 AND 5 AND name <> 'gamma' ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [4]
+      - [5]
+
+  # NOT BETWEEN: pushdown bails (non-contiguous range) and the scan
+  # path evaluates the predicate. Still correct.
+  - query: SELECT id FROM t WHERE id NOT BETWEEN 2 AND 4 ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # Composite PK: BETWEEN on the last PK col.
+  - query: DELETE FROM kv
+  - query: INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('a', 3, 300), ('b', 1, 400)
+  - query: SELECT k, g FROM kv WHERE k = 'a' AND g BETWEEN 1 AND 2 ORDER BY g
+    rows:
+      - ['a', 1]
+      - ['a', 2]
+
+  # Composite PK: BETWEEN on the first PK col (empty prefix).
+  - query: SELECT k FROM kv WHERE k BETWEEN 'a' AND 'a' ORDER BY g
+    rows:
+      - ['a']
+      - ['a']
+      - ['a']
+
+  # UPDATE via BETWEEN pushdown.
+  - query: UPDATE t SET v = 0 WHERE id BETWEEN 2 AND 4
+  - query: SELECT id, v FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id
+    rows:
+      - [2, 0]
+      - [3, 0]
+      - [4, 0]
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # DELETE via BETWEEN pushdown.
+  - query: DELETE FROM t WHERE id BETWEEN 2 AND 4
+  - query: SELECT id FROM t ORDER BY id
+    rows:
+      - [1]
+      - [5]
+
+  # BETWEEN under an OR: flattenAndPredicates bails on OR, so no
+  # pushdown fires and the scan path handles the full predicate.
+  # Correctness only — proves the OR → scan fallthrough path.
+  - query: DELETE FROM t
+  - query: INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30), (10, 'x', 100)
+  - query: SELECT id FROM t WHERE id BETWEEN 1 AND 2 OR id = 10 ORDER BY id
+    rows:
+      - [1]
+      - [2]
+      - [10]

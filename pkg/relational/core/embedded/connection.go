@@ -1099,8 +1099,14 @@ func pkPushdownCursor(
 	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
 	}
-	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(idxName) {
+	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
+	}
+	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+	}
+	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexCompositeRangeScanCursor(store, sicr)
 	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
@@ -1187,6 +1193,7 @@ func pkPushdownRangeScanCursor(
 //     via tryPKRangePushdown's pattern
 func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1197,7 +1204,7 @@ func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 	if sq.havingExpr != nil {
 		return "", nil, false
 	}
-	return c.trySecondaryIndexFromWhere(ctx, sq.whereExpr, rt, md)
+	return c.trySecondaryIndexFromWhere(ctx, store, sq.whereExpr, rt, md)
 }
 
 // trySecondaryIndexFromWhere is the shared core of secondary-index
@@ -1206,8 +1213,14 @@ func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 // the AND chain. UPDATE / DELETE call this directly (no aggregate
 // gates apply to mutations); SELECT wraps it in
 // trySecondaryIndexPushdown above.
+//
+// Non-scannable indexes (WRITE_ONLY / DISABLED) are skipped inside
+// the iteration so a later scannable match can still be picked up —
+// without this the caller would have to fall through to a full scan
+// even when a different index would work.
 func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
 	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
 	whereExpr antlrgen.IWhereExprContext,
 	rt *recordlayer.RecordType,
 	md *recordlayer.RecordMetaData,
@@ -1231,13 +1244,16 @@ func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
 	if len(equalities) == 0 {
 		return "", nil, false
 	}
-	// Scan indexes on this record type. Pick the first VALUE index
-	// whose single-column key matches an equality leaf.
+	// Scan indexes on this record type. Pick the first scannable
+	// VALUE index whose single-column key matches an equality leaf.
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
 		// VALUE index only. NewIndex always stamps Type="value"; the
 		// empty-string arm is defensive for hand-constructed Indexes.
 		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
 			continue
 		}
 		idxCols := secondaryIndexColumns(idx)
@@ -1336,6 +1352,417 @@ func secondaryIndexPushdownCursor(
 	})
 }
 
+// secondaryIndexRange describes a range scan on a single-column VALUE
+// index: the index name plus the low/high bounds on the indexed
+// column. Mirror of pkRangeBounds + index name.
+type secondaryIndexRange struct {
+	indexName string
+	bounds    pkRangeBounds
+}
+
+// trySecondaryIndexRangePushdown is the SELECT-gated variant of
+// trySecondaryIndexRangeFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexRangePushdown(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexRange, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexRange{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexRange{}, false
+	}
+	return c.trySecondaryIndexRangeFromWhere(ctx, store, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexRangeFromWhere looks for a single-column VALUE
+// index whose column carries at least one range predicate (`>`,
+// `>=`, `<`, `<=`) in the AND chain. Both sides of a bounded range
+// are collected (`WHERE col > 5 AND col < 10`). Extra non-indexed
+// leaves remain post-filtered by the scan loop's evalPredicate.
+//
+// Equalities on the indexed column are intentionally skipped here —
+// trySecondaryIndexFromWhere is tried first at every call site and
+// handles the pure-equality case; if we reach this function with an
+// equality leaf, equality pushdown already rejected it (e.g. type
+// mismatch) and we must not resurrect it with a range bound.
+//
+// Multiple range leaves on the same column use last-write-wins; the
+// scan loop's evalPredicate re-applies the full WHERE to each loaded
+// row, so correctness holds even when the chosen bound is looser.
+func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexRange, bool) {
+	if whereExpr == nil {
+		return secondaryIndexRange{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return secondaryIndexRange{}, false
+	}
+	// Bucket range bounds by (uppercase) column. Equalities skipped.
+	// BETWEEN lo AND hi contributes both inclusive bounds to the
+	// column's entry.
+	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
+	for _, leaf := range leaves {
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lo
+			b.lowInclusive = true
+			b.hasHigh = true
+			b.high = hi
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok || op == "=" {
+			continue
+		}
+		b := rangeByCol[strings.ToUpper(col)]
+		switch op {
+		case ">":
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = false
+		case ">=":
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = true
+		case "<":
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = false
+		case "<=":
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = true
+		}
+		rangeByCol[strings.ToUpper(col)] = b
+	}
+	if len(rangeByCol) == 0 {
+		return secondaryIndexRange{}, false
+	}
+	// Pick the first scannable single-column VALUE index whose
+	// column carries at least one range bound with a type-compatible
+	// literal. Non-scannable (WRITE_ONLY / DISABLED) indexes are
+	// skipped so a later scannable match can still be picked up.
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) != 1 {
+			continue
+		}
+		bounds, found := rangeByCol[strings.ToUpper(idxCols[0])]
+		if !found || (!bounds.hasLow && !bounds.hasHigh) {
+			continue
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(idxCols[0]))
+		if fd == nil {
+			continue
+		}
+		if bounds.hasLow && !literalMatchesPKKind(bounds.low, fd.Kind()) {
+			continue
+		}
+		if bounds.hasHigh && !literalMatchesPKKind(bounds.high, fd.Kind()) {
+			continue
+		}
+		return secondaryIndexRange{indexName: idx.Name, bounds: bounds}, true
+	}
+	return secondaryIndexRange{}, false
+}
+
+// secondaryIndexRangeScanCursor wraps `store.ScanIndexRecords` with a
+// single-column range on the index key, and adapts the resulting
+// `*FDBIndexedRecord` stream to `*FDBStoredRecord`. When one side of
+// the range is open, the corresponding endpoint falls back to
+// TreeStart / TreeEnd so the scan runs to the end of the index range
+// in that direction.
+func secondaryIndexRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	indexName string,
+	bounds pkRangeBounds,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	var scanRange recordlayer.TupleRange
+	if bounds.hasLow {
+		scanRange.Low = tuple.Tuple{bounds.low}
+		if bounds.lowInclusive {
+			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			scanRange.LowEndpoint = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		scanRange.LowEndpoint = recordlayer.EndpointTypeTreeStart
+	}
+	if bounds.hasHigh {
+		scanRange.High = tuple.Tuple{bounds.high}
+		if bounds.highInclusive {
+			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			scanRange.HighEndpoint = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		scanRange.HighEndpoint = recordlayer.EndpointTypeTreeEnd
+	}
+	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}
+
+// secondaryIndexCompositeRange describes a range scan on a composite
+// VALUE index. `prefixVals` holds the equality-equated values for
+// every index column BEFORE the first range column (the "prefix");
+// `lastBounds` holds the range bounds for that first range column.
+// Index columns AFTER the range column are unconstrained here and
+// re-applied as post-filter by the scan loop. Mirror of
+// pkCompositeRange but carrying the index name. Name historical —
+// the "last" in `lastBounds` predates the 9dcb0bfb relaxation that
+// allows the range col to sit anywhere, not only at the end.
+type secondaryIndexCompositeRange struct {
+	indexName  string
+	prefixVals []any // equalities for index cols 0..rangeK-1
+	lastBounds pkRangeBounds
+}
+
+// trySecondaryIndexCompositeRangePushdown is the SELECT-gated variant
+// of trySecondaryIndexCompositeRangeFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexCompositeRangePushdown(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositeRange, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexCompositeRange{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexCompositeRange{}, false
+	}
+	return c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexCompositeRangeFromWhere recognises composite VALUE
+// indexes where the first index column carrying a range predicate is
+// preceded by equalities on all earlier index columns. The range
+// column contributes the scan bounds; any leaves on index columns
+// AFTER the range column are ignored here and re-applied as
+// post-filter by the scan loop's evalPredicate.
+//
+// Pure-equality composite pushdown is handled by
+// trySecondaryIndexFromWhere and runs first at every call site, so a
+// fully equated composite key never reaches this extractor. Matches
+// the relaxation applied to PK composite range pushdown.
+func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositeRange, bool) {
+	if whereExpr == nil {
+		return secondaryIndexCompositeRange{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return secondaryIndexCompositeRange{}, false
+	}
+	// Walk AND leaves once, splitting into equalities and range bounds.
+	// BETWEEN lo AND hi contributes both inclusive bounds.
+	//
+	// We don't filter to index cols here: without picking an index
+	// first we don't know which cols are "index cols", and multiple
+	// indexes may share different columns. Non-index leaves land in
+	// the maps but are never looked up — the index-selection loop
+	// below only probes rangeByCol / equalities on actual idxCols, so
+	// asymmetry vs the PK path (which knows its cols upfront and can
+	// filter inline) is harmless.
+	//
+	// Multiple range leaves on the same column use last-write-wins;
+	// correctness holds because the scan loop's evalPredicate
+	// re-applies the full WHERE to each loaded row, even when the
+	// chosen bound is looser.
+	equalities := make(map[string]any, len(leaves))
+	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
+	for _, leaf := range leaves {
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lo
+			b.lowInclusive = true
+			b.hasHigh = true
+			b.high = hi
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		colUpper := strings.ToUpper(col)
+		switch op {
+		case "=":
+			equalities[colUpper] = val
+		case ">":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = false
+			rangeByCol[colUpper] = b
+		case ">=":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = true
+			rangeByCol[colUpper] = b
+		case "<":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = false
+			rangeByCol[colUpper] = b
+		case "<=":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+		}
+	}
+	if len(rangeByCol) == 0 {
+		return secondaryIndexCompositeRange{}, false
+	}
+	// Pick the first scannable composite VALUE index where the
+	// first-in-declared-order index column carrying a range bound is
+	// preceded by equalities on every earlier index column.
+	// Non-scannable (WRITE_ONLY / DISABLED) indexes are skipped so
+	// a later scannable match can still be picked up.
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) < 2 {
+			continue
+		}
+		rangeK := -1
+		for i, col := range idxCols {
+			if _, has := rangeByCol[strings.ToUpper(col)]; has {
+				rangeK = i
+				break
+			}
+		}
+		if rangeK == -1 {
+			continue
+		}
+		prefixVals := make([]any, rangeK)
+		matched := true
+		for i := 0; i < rangeK; i++ {
+			col := idxCols[i]
+			v, found := equalities[strings.ToUpper(col)]
+			if !found {
+				matched = false
+				break
+			}
+			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+			if fd == nil || !literalMatchesPKKind(v, fd.Kind()) {
+				matched = false
+				break
+			}
+			prefixVals[i] = v
+		}
+		if !matched {
+			continue
+		}
+		rangeCol := idxCols[rangeK]
+		bounds := rangeByCol[strings.ToUpper(rangeCol)]
+		rangeFD := rt.Descriptor.Fields().ByName(protoreflect.Name(rangeCol))
+		if rangeFD == nil {
+			continue
+		}
+		if bounds.hasLow && !literalMatchesPKKind(bounds.low, rangeFD.Kind()) {
+			continue
+		}
+		if bounds.hasHigh && !literalMatchesPKKind(bounds.high, rangeFD.Kind()) {
+			continue
+		}
+		return secondaryIndexCompositeRange{
+			indexName:  idx.Name,
+			prefixVals: prefixVals,
+			lastBounds: bounds,
+		}, true
+	}
+	return secondaryIndexCompositeRange{}, false
+}
+
+// secondaryIndexCompositeRangeScanCursor builds a range scan whose
+// low and high tuples share the same leading prefix (the equated
+// leading index cols) and differ only in the range component.
+//
+// Open ends fall back to the prefix tuple with EndpointTypeRangeInclusive,
+// not TreeStart/TreeEnd. Inclusive on the high side appends 0xFF to the
+// packed prefix (see index_scan.go ToFDBRange), so pack(prefix)+0xFF
+// covers every suffix under the prefix — exactly what we want for an
+// open-ended composite scan bounded by the equated cols. The single-col
+// range cursor uses TreeStart/TreeEnd because there IS no prefix there.
+func secondaryIndexCompositeRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	cr secondaryIndexCompositeRange,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	prefix := make(tuple.Tuple, 0, len(cr.prefixVals))
+	for _, v := range cr.prefixVals {
+		prefix = append(prefix, v)
+	}
+	low := append(tuple.Tuple{}, prefix...)
+	high := append(tuple.Tuple{}, prefix...)
+	lowEp := recordlayer.EndpointTypeRangeInclusive
+	highEp := recordlayer.EndpointTypeRangeInclusive
+	if cr.lastBounds.hasLow {
+		low = append(low, cr.lastBounds.low)
+		if !cr.lastBounds.lowInclusive {
+			lowEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	if cr.lastBounds.hasHigh {
+		high = append(high, cr.lastBounds.high)
+		if !cr.lastBounds.highInclusive {
+			highEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	scanRange := recordlayer.TupleRange{
+		Low:          low,
+		High:         high,
+		LowEndpoint:  lowEp,
+		HighEndpoint: highEp,
+	}
+	inner := store.ScanIndexRecords(cr.indexName, scanRange, nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}
+
 // tryPKRangePushdown is the SELECT-gated variant of
 // tryPKRangeFromWhere. Same shape gates as tryPKEqualityPushdown.
 func (c *EmbeddedConnection) tryPKRangePushdown(
@@ -1352,12 +1779,15 @@ func (c *EmbeddedConnection) tryPKRangePushdown(
 	return c.tryPKRangeFromWhere(ctx, sq.whereExpr, rt)
 }
 
-// pkCompositeRange describes the leading equalities plus an optional
-// range on the LAST PK column that together yield a contiguous FDB
-// key range. Only valid for composite PKs where every column except
-// possibly the last is equated.
+// pkCompositeRange describes a composite-PK range scan. `prefixVals`
+// holds the equality-equated values for every PK column BEFORE the
+// first range column; `lastBounds` holds the range bounds for that
+// first range column. PK columns AFTER the range column are
+// unconstrained here and re-applied as post-filter by the scan loop.
+// Name historical — the "last" in `lastBounds` predates the dd97a817
+// relaxation that allows the range col to sit anywhere in the PK.
 type pkCompositeRange struct {
-	prefixVals []any // equalities for PK columns 0..len-2
+	prefixVals []any // equalities for PK cols 0..rangeK-1
 	lastBounds pkRangeBounds
 }
 
@@ -1378,10 +1808,24 @@ func (c *EmbeddedConnection) tryPKCompositeRangePushdown(
 }
 
 // tryPKCompositeRangeFromWhere recognises the case of a composite
-// PK where all leading columns are equated to literals and the
-// LAST column has either an equality or a range predicate. The
-// range is valid on the last component only because composite key
-// ranges are contiguous in FDB only when prefixed by fixed values.
+// PK where the first PK column with a range predicate is preceded by
+// equalities on all earlier PK columns. The range column contributes
+// the scan bounds; any equality/range leaves on PK columns AFTER the
+// range column are ignored here and re-applied by the scan loop's
+// evalPredicate post-filter.
+//
+// Why relaxed past the last column: composite key ranges in FDB are
+// contiguous as long as the prefix is fixed and the first varying
+// component carries a bound. Pinning unrelated trailing columns in
+// the range tuple would over-constrain the key space. For PK cols
+// after the range col we therefore leave the scan bounds open and
+// post-filter.
+//
+// Pure-equality composite is handled by tryPKEqualityFromWhere at
+// every call site and runs first; if we see no range on any PK col
+// we bail. A PK whose leading equalities are partial (e.g. `a=1`
+// without a range on b for PK (a,b,c)) also bails here — a pure
+// prefix narrowing is a separate feature.
 func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 	ctx context.Context,
 	whereExpr antlrgen.IWhereExprContext,
@@ -1400,108 +1844,126 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 	if !ok {
 		return pkCompositeRange{}, false
 	}
-	// Column-name → (op, val) from the WHERE leaves. An equality
-	// counts once; a range contributes one or both bounds on the
-	// same column. If a non-last PK column has anything other than
-	// equality, bail.
+	// Walk AND leaves once, splitting by op into equalities and range
+	// bounds. Non-PK leaves stay as post-filter (ignored here).
 	equalities := make(map[string]any, len(pkCols))
-	var lastBounds pkRangeBounds
-	lastCol := pkCols[len(pkCols)-1]
-	lastColUpper := strings.ToUpper(lastCol)
+	rangeByCol := make(map[string]pkRangeBounds, len(pkCols))
+	isPKCol := func(col string) bool {
+		for _, pkc := range pkCols {
+			if strings.EqualFold(pkc, col) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, leaf := range leaves {
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			if !isPKCol(col) {
+				continue
+			}
+			colUpper := strings.ToUpper(col)
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = lo
+			b.lowInclusive = true
+			b.hasHigh = true
+			b.high = hi
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
 		}
+		if !isPKCol(col) {
+			continue
+		}
 		colUpper := strings.ToUpper(col)
-		isPK := false
-		for _, pkc := range pkCols {
-			if strings.EqualFold(pkc, col) {
-				isPK = true
-				break
-			}
+		switch op {
+		case "=":
+			equalities[colUpper] = val
+		case ">":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = false
+			rangeByCol[colUpper] = b
+		case ">=":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = true
+			rangeByCol[colUpper] = b
+		case "<":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = false
+			rangeByCol[colUpper] = b
+		case "<=":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
 		}
-		if !isPK {
-			// Non-PK leaves are post-filtered by the scan — ignore.
-			continue
-		}
-		if colUpper == lastColUpper {
-			// `=` intentionally not handled — tryPKEqualityFromWhere
-			// fires before this function at every call site; if it
-			// would have matched (every PK column equated, types
-			// check), we wouldn't be here. Mirror of the comment in
-			// tryPKRangeFromWhere.
-			switch op {
-			case ">":
-				lastBounds.hasLow = true
-				lastBounds.low = val
-				lastBounds.lowInclusive = false
-			case ">=":
-				lastBounds.hasLow = true
-				lastBounds.low = val
-				lastBounds.lowInclusive = true
-			case "<":
-				lastBounds.hasHigh = true
-				lastBounds.high = val
-				lastBounds.highInclusive = false
-			case "<=":
-				lastBounds.hasHigh = true
-				lastBounds.high = val
-				lastBounds.highInclusive = true
-			}
-			continue
-		}
-		// Non-last PK column — only equality is acceptable.
-		if op != "=" {
-			return pkCompositeRange{}, false
-		}
-		equalities[colUpper] = val
 	}
-	// Every PK column except the last must have an equality.
-	prefixVals := make([]any, len(pkCols)-1)
-	for i := 0; i < len(pkCols)-1; i++ {
+	// Find the first PK col (in declared order) carrying a range
+	// bound. Every PK col before it must have an equality.
+	rangeK := -1
+	for i, col := range pkCols {
+		if _, has := rangeByCol[strings.ToUpper(col)]; has {
+			rangeK = i
+			break
+		}
+	}
+	if rangeK == -1 {
+		return pkCompositeRange{}, false
+	}
+	prefixVals := make([]any, rangeK)
+	for i := 0; i < rangeK; i++ {
 		col := pkCols[i]
 		val, ok := equalities[strings.ToUpper(col)]
 		if !ok {
 			return pkCompositeRange{}, false
 		}
 		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-		if fd == nil {
-			return pkCompositeRange{}, false
-		}
-		if !literalMatchesPKKind(val, fd.Kind()) {
+		if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
 			return pkCompositeRange{}, false
 		}
 		prefixVals[i] = val
 	}
-	// If the last column has no range or equality, we're left with
-	// just the prefix — that's a prefix scan, not a narrowed range.
-	// Fall through to the regular per-type scan (which is equally
-	// fast since the prefix IS the type prefix plus a bit more, and
-	// the current code doesn't know to narrow without a full bound).
-	if !lastBounds.hasLow && !lastBounds.hasHigh {
+	rangeCol := pkCols[rangeK]
+	bounds := rangeByCol[strings.ToUpper(rangeCol)]
+	if !bounds.hasLow && !bounds.hasHigh {
+		// Shouldn't happen — rangeK was only set when at least one
+		// bound existed — but keep the guard for clarity.
 		return pkCompositeRange{}, false
 	}
-	// Type-check the last column's bounds.
-	lastFD := rt.Descriptor.Fields().ByName(protoreflect.Name(lastCol))
-	if lastFD == nil {
+	rangeFD := rt.Descriptor.Fields().ByName(protoreflect.Name(rangeCol))
+	if rangeFD == nil {
 		return pkCompositeRange{}, false
 	}
-	if lastBounds.hasLow && !literalMatchesPKKind(lastBounds.low, lastFD.Kind()) {
+	if bounds.hasLow && !literalMatchesPKKind(bounds.low, rangeFD.Kind()) {
 		return pkCompositeRange{}, false
 	}
-	if lastBounds.hasHigh && !literalMatchesPKKind(lastBounds.high, lastFD.Kind()) {
+	if bounds.hasHigh && !literalMatchesPKKind(bounds.high, rangeFD.Kind()) {
 		return pkCompositeRange{}, false
 	}
-	return pkCompositeRange{prefixVals: prefixVals, lastBounds: lastBounds}, true
+	return pkCompositeRange{prefixVals: prefixVals, lastBounds: bounds}, true
 }
 
 // pkPushdownCompositeRangeScanCursor builds a range scan whose low
-// and high tuples share the same leading prefix (the equated
-// non-last PK columns) and differ only in the last component. When
-// the range is open on one side, the corresponding tuple falls back
-// to the prefix (inclusive) — covering the full range of that
-// prefix's last-component values in either direction.
+// and high tuples share the same leading prefix (the equated PK cols
+// before the range col) and differ only in the range col. Since the
+// dd97a817 relaxation the range col may sit at any position in the
+// PK, not just the last — `cr.prefixVals` is the equated prefix
+// before it, `cr.lastBounds` are its bounds, and PK cols after the
+// range col are unconstrained here and re-applied as post-filter by
+// the scan loop. When the range is open on one side, the corresponding
+// tuple falls back to the prefix (inclusive) — covering the full
+// range of that prefix's suffix values in either direction.
 func pkPushdownCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
@@ -1533,9 +1995,10 @@ func pkPushdownCompositeRangeScanCursor(
 }
 
 // tryPKRangeFromWhere recognises single-column PK range predicates
-// (`>`, `>=`, `<`, `<=`). Returns the low/high bounds when viable,
-// or (_, false) otherwise. Single-column PKs only; composite PKs
-// with a last-column range go through tryPKCompositeRangeFromWhere.
+// (`>`, `>=`, `<`, `<=`, and `BETWEEN lo AND hi`). Returns the
+// low/high bounds when viable, or (_, false) otherwise. Single-column
+// PKs only; composite PKs with a range on any column go through
+// tryPKCompositeRangeFromWhere.
 //
 // Multiple bounds on the same side are collected with last-write-wins;
 // the scan loop's existing WHERE evaluator re-applies the full
@@ -1568,6 +2031,22 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 	var bounds pkRangeBounds
 	pkColUpper := strings.ToUpper(pkCol)
 	for _, leaf := range leaves {
+		// `col BETWEEN lo AND hi` — inclusive on both sides.
+		if col, lo, hi, ok := extractColBetweenLiteral(ctx, c, leaf); ok {
+			if strings.ToUpper(col) != pkColUpper {
+				continue
+			}
+			if !literalMatchesPKKind(lo, fd.Kind()) || !literalMatchesPKKind(hi, fd.Kind()) {
+				return pkRangeBounds{}, false
+			}
+			bounds.hasLow = true
+			bounds.low = lo
+			bounds.lowInclusive = true
+			bounds.hasHigh = true
+			bounds.high = hi
+			bounds.highInclusive = true
+			continue
+		}
 		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
 		if !ok {
 			continue
@@ -1654,6 +2133,45 @@ func extractColOpLiteral(
 		}
 	}
 	return "", "", nil, false
+}
+
+// extractColBetweenLiteral recognises `col BETWEEN lo AND hi` where
+// col is a bare column reference and lo, hi are constant literals.
+// Returns the column name and both literal values. NOT BETWEEN,
+// non-constant bounds, and NULL bounds bail out — NOT BETWEEN is a
+// non-contiguous key range (two open half-ranges), and a NULL bound
+// makes the predicate UNKNOWN per SQL 3VL so it cannot narrow the
+// scan. BETWEEN's SQL semantics are inclusive on both sides, which
+// the callers translate into `col >= lo AND col <= hi` bounds.
+func extractColBetweenLiteral(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (col string, lo, hi any, ok bool) {
+	pred, good := expr.(*antlrgen.PredicatedExpressionContext)
+	if !good {
+		return "", nil, nil, false
+	}
+	bet, good := pred.Predicate().(*antlrgen.BetweenComparisonPredicateContext)
+	if !good {
+		return "", nil, nil, false
+	}
+	if bet.NOT() != nil {
+		return "", nil, nil, false
+	}
+	name, isCol := extractColumnRef(pred.ExpressionAtom())
+	if !isCol {
+		return "", nil, nil, false
+	}
+	loVal, isLit := evalConstantAtom(ctx, c, bet.GetLeft())
+	if !isLit || loVal == nil {
+		return "", nil, nil, false
+	}
+	hiVal, isLit := evalConstantAtom(ctx, c, bet.GetRight())
+	if !isLit || hiVal == nil {
+		return "", nil, nil, false
+	}
+	return name, loVal, hiVal, true
 }
 
 // flipComparisonOp flips a comparison operator for the case where
@@ -3833,13 +4351,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
-		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(idxName) {
-			// IsIndexScannable guards against WRITE_ONLY / DISABLED
-			// indexes: without it the pushdown would convert a
-			// previously-working full-scan query into a hard error at
-			// first OnNext(). Today the embedded DDL layer only builds
-			// READABLE indexes, but online indexing may change that.
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
+			// The helper itself filters out WRITE_ONLY / DISABLED
+			// indexes while iterating, so any returned index is
+			// guaranteed scannable. Falls through to the next branch
+			// (and ultimately to a full scan) when no scannable match
+			// exists.
 			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
+			cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
+			cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}
