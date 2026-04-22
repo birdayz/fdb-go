@@ -239,3 +239,35 @@ tests:
     rows:
       - [1]
       - [3]
+
+  # -------------------------------------------------------------------
+  # Panic guard: IN with a column reference must not crash the
+  # extractor. `IN someCol` parses via the fullColumnName alt of the
+  # inList grammar rule, where Expressions() is nil. The extractor
+  # must bail gracefully.
+  # -------------------------------------------------------------------
+
+  # IN with a bare column reference parses via the grammar's
+  # `fullColumnName` alternative of inList — Expressions() is nil.
+  # Both the pushdown extractor and the scan-path evaluator must
+  # bail cleanly rather than panic. Scope of this test: prove no
+  # panic and that a sensible error surfaces (unsupported syntax
+  # via the scan path).
+  - query: SELECT id FROM t WHERE v IN v
+    error_code: "0A000"
+
+  # -------------------------------------------------------------------
+  # Covering-index + IN-list composition
+  # -------------------------------------------------------------------
+  #
+  # SELECT indexed-col + PK col via IN-list → covering path + IN-list
+  # decomposition. Each sub-scan uses the covering cursor, no by-PK
+  # fetch per row. t2 has (1,active), (2,archived), (3,active),
+  # (4,archived), (5,deleted).
+
+  - query: SELECT id, status FROM t2 WHERE status IN ('active', 'archived') ORDER BY id
+    rows:
+      - [1, 'active']
+      - [2, 'archived']
+      - [3, 'active']
+      - [4, 'archived']

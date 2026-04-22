@@ -1106,7 +1106,7 @@ func pkPushdownCursor(
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
 	}
 	if sil, ok := c.trySecondaryIndexInListFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexInListScanCursor(store, sil)
+		return secondaryIndexInListScanCursor(store, sil, nil, nil)
 	}
 	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
@@ -4359,7 +4359,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
 			}
 		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
-			cursor = secondaryIndexInListScanCursor(store, sil)
+			// Covering also applies to IN-list: each sub-scan can skip
+			// the by-PK fetch when the index covers every referenced
+			// column. Same decision as the equality path.
+			if idx := md.GetIndex(sil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = secondaryIndexInListScanCursor(store, sil, rt, idx)
+			} else {
+				cursor = secondaryIndexInListScanCursor(store, sil, nil, nil)
+			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			if idx := md.GetIndex(sir.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
@@ -10017,7 +10024,20 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)
 	}
 
-	exprs := in.InList().Expressions().AllExpression()
+	// The inList grammar rule admits three shapes:
+	//   1. '(' (queryExpressionBody | expressions) ')' — subquery or
+	//      parenthesized literal list
+	//   2. preparedStatementParameter — `IN ?` / `IN :name`
+	//   3. fullColumnName — `IN someCol`
+	// Only shape 1 carries a non-nil Expressions() child. Shapes 2
+	// and 3 hit this path with Expressions() == nil — reject cleanly
+	// rather than crashing on AllExpression().
+	exprsCtx := in.InList().Expressions()
+	if exprsCtx == nil {
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"IN requires a parenthesized expression list or subquery")
+	}
+	exprs := exprsCtx.AllExpression()
 	var hadNullElement bool
 	for _, expr := range exprs {
 		// Java-aligned: IN list elements are arbitrary expressions, not

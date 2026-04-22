@@ -78,7 +78,16 @@ func extractColInList(
 		return "", nil, false
 	}
 
-	exprs := inPred.InList().Expressions().AllExpression()
+	// The ANTLR rule `inList : '(' (queryExpressionBody | expressions) ')'
+	//                        | preparedStatementParameter
+	//                        | fullColumnName ;`
+	// means Expressions() is nil for `IN ?` / `IN :param` / `IN someCol`.
+	// A bare AllExpression() on nil panics — bail before touching it.
+	exprsCtx := inPred.InList().Expressions()
+	if exprsCtx == nil {
+		return "", nil, false
+	}
+	exprs := exprsCtx.AllExpression()
 	if len(exprs) == 0 {
 		return "", nil, false
 	}
@@ -296,15 +305,22 @@ func (c *EmbeddedConnection) trySecondaryIndexInListPushdown(
 
 // secondaryIndexInListCursor runs a sequence of single-value index
 // scans, one per IN-list element, yielding records in declared list
-// order. Same lazy chaining as pkInListCursor but over
-// secondaryIndexPushdownCursor.
+// order. Same lazy chaining as pkInListCursor. When the SELECT's
+// column set is covered by (index cols, PK cols), each sub-scan uses
+// the covering cursor (one FDB round-trip per row) instead of the
+// standard ScanIndexRecords path (two round-trips per row).
 type secondaryIndexInListCursor struct {
 	store     *recordlayer.FDBRecordStore
 	indexName string
 	values    []any
 	idx       int
-	current   recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
-	closed    bool
+	// covering, if non-nil, is the resolved Index + RecordType used to
+	// build covering sub-scans. When nil, fall back to the plain
+	// secondaryIndexPushdownCursor (which fetches records).
+	coveringIdx *recordlayer.Index
+	coveringRT  *recordlayer.RecordType
+	current     recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+	closed      bool
 }
 
 func (c *secondaryIndexInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
@@ -326,8 +342,14 @@ func (c *secondaryIndexInListCursor) OnNext(ctx context.Context) (recordlayer.Re
 				&recordlayer.EndContinuation{},
 			), nil
 		}
-		c.current = secondaryIndexPushdownCursor(c.store, c.indexName, c.values[c.idx])
+		val := c.values[c.idx]
 		c.idx++
+		if c.coveringIdx != nil {
+			c.current = coveringIndexRangeScanCursor(c.store, c.coveringRT, c.coveringIdx,
+				buildSecondaryIndexEqualityTupleRange(val))
+		} else {
+			c.current = secondaryIndexPushdownCursor(c.store, c.indexName, val)
+		}
 	}
 }
 
@@ -344,18 +366,26 @@ func (c *secondaryIndexInListCursor) IsClosed() bool {
 }
 
 // secondaryIndexInListScanCursor wraps N sequential single-value index
-// scans as one cursor.
+// scans as one cursor. When coveringRT + coveringIdx are non-nil, each
+// sub-scan avoids the by-PK record fetch by synthesising the record
+// from the IndexEntry directly (same covering-index mechanism as the
+// equality / range paths). Caller is responsible for checking
+// canCoverIndex before setting these.
 func secondaryIndexInListScanCursor(
 	store *recordlayer.FDBRecordStore,
 	sil secondaryIndexInList,
+	coveringRT *recordlayer.RecordType,
+	coveringIdx *recordlayer.Index,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	if len(sil.values) == 0 {
 		return recordlayer.Empty[*recordlayer.FDBStoredRecord[proto.Message]]()
 	}
 	return &secondaryIndexInListCursor{
-		store:     store,
-		indexName: sil.indexName,
-		values:    sil.values,
+		store:       store,
+		indexName:   sil.indexName,
+		values:      sil.values,
+		coveringIdx: coveringIdx,
+		coveringRT:  coveringRT,
 	}
 }
 
