@@ -1086,6 +1086,7 @@ func pkPushdownCursor(
 	c *EmbeddedConnection,
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
 	whereExpr antlrgen.IWhereExprContext,
 	tableName string,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
@@ -1097,6 +1098,9 @@ func pkPushdownCursor(
 	}
 	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
+	}
+	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(idxName) {
+		return secondaryIndexPushdownCursor(store, idxName, idxVal)
 	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
@@ -1190,10 +1194,28 @@ func (c *EmbeddedConnection) trySecondaryIndexPushdown(
 	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
 		return "", nil, false
 	}
-	if sq.havingExpr != nil || sq.whereExpr == nil {
+	if sq.havingExpr != nil {
 		return "", nil, false
 	}
-	leaves, lok := flattenAndPredicates(sq.whereExpr.Expression())
+	return c.trySecondaryIndexFromWhere(ctx, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexFromWhere is the shared core of secondary-index
+// pushdown: given a WHERE and the record type + metadata, find a
+// single-column VALUE index that matches a col=literal equality in
+// the AND chain. UPDATE / DELETE call this directly (no aggregate
+// gates apply to mutations); SELECT wraps it in
+// trySecondaryIndexPushdown above.
+func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (indexName string, keyVal any, ok bool) {
+	if whereExpr == nil {
+		return "", nil, false
+	}
+	leaves, lok := flattenAndPredicates(whereExpr.Expression())
 	if !lok {
 		return "", nil, false
 	}
@@ -8930,7 +8952,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			return nil, storeErr
 		}
 
-		cursor := pkPushdownCursor(ctx, c, store, rt, whereExpr, tableName)
+		cursor := pkPushdownCursor(ctx, c, store, rt, md, whereExpr, tableName)
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the source alias so correlated EXISTS / IN inside WHERE
@@ -9045,7 +9067,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 			return nil, storeErr
 		}
 
-		cursor := pkPushdownCursor(ctx, c, store, rt, whereExpr, tableName)
+		cursor := pkPushdownCursor(ctx, c, store, rt, md, whereExpr, tableName)
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the source alias so correlated EXISTS / IN inside WHERE

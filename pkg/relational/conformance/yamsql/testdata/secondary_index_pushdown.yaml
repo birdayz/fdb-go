@@ -78,3 +78,22 @@ tests:
   - query: SELECT id, status FROM t WHERE v = 20
     rows:
       - [2, 'archived']
+
+  # UPDATE via secondary-index pushdown. Index narrows the scan to
+  # rows with status='deleted'; only one row (id=4) qualifies.
+  - query: UPDATE t SET v = 99 WHERE status = 'deleted'
+  - query: SELECT id, v FROM t WHERE status = 'deleted'
+    rows:
+      - [4, 99]
+  # Rows on other index values untouched.
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # DELETE via secondary-index pushdown.
+  - query: DELETE FROM t WHERE status = 'archived'
+  - query: SELECT id FROM t WHERE status = 'archived'
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
