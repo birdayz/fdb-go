@@ -5019,7 +5019,45 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cols[i] = f.name
 		}
 
+		// Early-termination target: when the scan's natural order
+		// already satisfies sq.orderBy (ORDER BY elimination is
+		// eligible), and there's no DISTINCT, the scan accumulates
+		// rows in final output order — so we can stop reading from
+		// the cursor once we've collected enough rows to cover
+		// OFFSET + LIMIT. Saves FDB round-trips on queries like
+		// `SELECT id FROM t WHERE v > 1000 ORDER BY v LIMIT 5`
+		// against a multi-million-row table.
+		//
+		// Negative (-1) means "no early termination" — read the
+		// cursor to exhaustion. Aggregate / DISTINCT / ORDER BY
+		// not-satisfiable-by-natural-order all fall back to the
+		// full scan and sort later.
+		earlyTermTarget := int64(-1)
+		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 && len(naturalOrder) > 0 {
+			canTerm := true
+			for i, ob := range sq.orderBy {
+				if !ob.ascending {
+					canTerm = false
+					break
+				}
+				if ob.nullsFirst != nil && !*ob.nullsFirst {
+					canTerm = false
+					break
+				}
+				if i >= len(naturalOrder) || !strings.EqualFold(ob.colName, naturalOrder[i]) {
+					canTerm = false
+					break
+				}
+			}
+			if canTerm {
+				earlyTermTarget = sq.offset + sq.limit
+			}
+		}
+
 		for {
+			if earlyTermTarget >= 0 && int64(len(data)) >= earlyTermTarget {
+				break
+			}
 			result, nextErr := cursor.OnNext(ctx)
 			if nextErr != nil {
 				return nil, nextErr

@@ -195,3 +195,45 @@ tests:
       - [3]
       - [4]
       - [5]
+
+  # -------------------------------------------------------------------
+  # LIMIT + ORDER BY elim → early termination
+  # -------------------------------------------------------------------
+  #
+  # When the scan's natural order satisfies ORDER BY AND there's a
+  # LIMIT, the scan loop stops reading after OFFSET+LIMIT rows —
+  # avoiding unnecessary FDB round-trips. Not directly observable
+  # from result rows, but correctness must hold.
+
+  - query: SELECT id FROM t ORDER BY id LIMIT 3
+    rows:
+      - [1]
+      - [2]
+      - [3]
+
+  - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2
+    rows:
+      - [3]
+      - [4]
+
+  # Secondary-index range + LIMIT + ORDER BY idx col — early term.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    rows:
+      - [3, 10]
+      - [5, 15]
+      - [2, 20]
+
+  # ORDER BY elim doesn't fire (DESC) — early termination off,
+  # full sort runs. Result still correct.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    rows:
+      - [5]
+      - [4]
+
+  # DISTINCT + LIMIT — early termination disabled (dedup may drop
+  # rows). Full scan runs. Result correct.
+  - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
+    rows:
+      - [10]
+      - [15]
+      - [20]
