@@ -102,17 +102,17 @@ func extractColInList(
 			// Nested predicate inside an IN element isn't a literal.
 			return "", nil, false
 		}
-		v, ok := evalConstantAtom(ctx, c, pe.ExpressionAtom())
-		if !ok {
-			// NULL / non-constant element: NULL is silently dropped
-			// (doesn't narrow nor reject); a non-constant element
-			// bails entirely — evalConstantAtom returns false for
-			// both cases, so separate them by eagerly evaluating.
-			raw, evalErr := evalExprAtom(ctx, c, nil, pe.ExpressionAtom())
-			if evalErr == nil && raw == nil {
-				continue // NULL element — drop
-			}
-			return "", nil, false
+		// Evaluate the element without a row context. A non-constant
+		// expression (one that references a column) returns err; NULL
+		// returns (nil, nil) — both are distinguished here so NULL
+		// elements drop silently while non-constants bail entirely.
+		// evalConstantAtom collapses both cases, so we can't use it.
+		v, err := evalExprAtom(ctx, c, nil, pe.ExpressionAtom())
+		if err != nil {
+			return "", nil, false // non-constant — needs a row context
+		}
+		if v == nil {
+			continue // NULL element — drop (x = NULL is UNKNOWN)
 		}
 		vals = append(vals, v)
 	}
