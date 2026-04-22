@@ -17,6 +17,7 @@ go_library(
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
         "//pkg/relational/core/catalog",
+        "//pkg/relational/core/functions",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
@@ -38,6 +39,7 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/relational/core/functions",
         "//pkg/relational/core/session",
     ],
 )

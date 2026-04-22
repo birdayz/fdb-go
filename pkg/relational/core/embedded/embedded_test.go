@@ -12,6 +12,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
 )
 
@@ -589,19 +590,19 @@ func FuzzApplyMathOp(f *testing.F) {
 	// Mixed int/float shouldn't panic — we pass only int64 to the int64 fuzz,
 	// but the NULL-on-either-side path is critical.
 	f.Fuzz(func(t *testing.T, a, b int64, op string) {
-		_, err := applyMathOp(a, b, op)
+		_, err := functions.ApplyMathOp(a, b, op)
 		_ = err
 		// NULL propagation on left, right, and both.
 		for _, pair := range []struct{ l, r any }{{nil, b}, {a, nil}, {nil, nil}} {
-			v, err := applyMathOp(pair.l, pair.r, op)
+			v, err := functions.ApplyMathOp(pair.l, pair.r, op)
 			if err != nil || v != nil {
-				t.Fatalf("applyMathOp(%v, %v, %q) = (%v, %v), want (nil, nil)",
+				t.Fatalf("functions.ApplyMathOp(%v, %v, %q) = (%v, %v), want (nil, nil)",
 					pair.l, pair.r, op, v, err)
 			}
 		}
 		// Non-numeric operand must error cleanly.
-		if _, err := applyMathOp("bad", b, op); err == nil {
-			t.Fatalf("applyMathOp(string, _, %q) must error", op)
+		if _, err := functions.ApplyMathOp("bad", b, op); err == nil {
+			t.Fatalf("functions.ApplyMathOp(string, _, %q) must error", op)
 		}
 	})
 }
@@ -624,20 +625,20 @@ func FuzzApplyBitOp(f *testing.F) {
 	f.Add(int64(1), int64(2), "@")
 	f.Fuzz(func(t *testing.T, a, b int64, op string) {
 		// Must not panic. Either returns a value+nil, NULL+nil, or value+error.
-		_, err := applyBitOp(a, b, op)
+		_, err := functions.ApplyBitOp(a, b, op)
 		_ = err // accept any error
 		// Also try with NULL operands; those must always return nil, nil.
-		v, err := applyBitOp(nil, b, op)
+		v, err := functions.ApplyBitOp(nil, b, op)
 		if err != nil || v != nil {
-			t.Fatalf("applyBitOp(nil, _) = (%v, %v), want (nil, nil)", v, err)
+			t.Fatalf("functions.ApplyBitOp(nil, _) = (%v, %v), want (nil, nil)", v, err)
 		}
-		v, err = applyBitOp(a, nil, op)
+		v, err = functions.ApplyBitOp(a, nil, op)
 		if err != nil || v != nil {
-			t.Fatalf("applyBitOp(_, nil) = (%v, %v), want (nil, nil)", v, err)
+			t.Fatalf("functions.ApplyBitOp(_, nil) = (%v, %v), want (nil, nil)", v, err)
 		}
 		// Non-integer operand must error cleanly, not panic.
-		if _, err := applyBitOp("string", b, op); err == nil {
-			t.Fatalf("applyBitOp(string, _) must error")
+		if _, err := functions.ApplyBitOp("string", b, op); err == nil {
+			t.Fatalf("functions.ApplyBitOp(string, _) must error")
 		}
 	})
 }
@@ -850,39 +851,39 @@ func TestInt64CheckedArithmetic(t *testing.T) {
 		wantOK bool
 	}{
 		// Add
-		{"add/ok", addInt64Checked, 1, 2, 3, true},
-		{"add/zero", addInt64Checked, 0, 0, 0, true},
-		{"add/negatives", addInt64Checked, -3, -4, -7, true},
-		{"add/max+0", addInt64Checked, math.MaxInt64, 0, math.MaxInt64, true},
-		{"add/max+1", addInt64Checked, math.MaxInt64, 1, 0, false},
-		{"add/max+max", addInt64Checked, math.MaxInt64, math.MaxInt64, 0, false},
-		{"add/min-1", addInt64Checked, math.MinInt64, -1, 0, false},
-		{"add/min+min", addInt64Checked, math.MinInt64, math.MinInt64, 0, false},
+		{"add/ok", functions.AddInt64Checked, 1, 2, 3, true},
+		{"add/zero", functions.AddInt64Checked, 0, 0, 0, true},
+		{"add/negatives", functions.AddInt64Checked, -3, -4, -7, true},
+		{"add/max+0", functions.AddInt64Checked, math.MaxInt64, 0, math.MaxInt64, true},
+		{"add/max+1", functions.AddInt64Checked, math.MaxInt64, 1, 0, false},
+		{"add/max+max", functions.AddInt64Checked, math.MaxInt64, math.MaxInt64, 0, false},
+		{"add/min-1", functions.AddInt64Checked, math.MinInt64, -1, 0, false},
+		{"add/min+min", functions.AddInt64Checked, math.MinInt64, math.MinInt64, 0, false},
 		// Cross-sign cannot overflow.
-		{"add/max-1", addInt64Checked, math.MaxInt64, -1, math.MaxInt64 - 1, true},
-		{"add/min+1", addInt64Checked, math.MinInt64, 1, math.MinInt64 + 1, true},
+		{"add/max-1", functions.AddInt64Checked, math.MaxInt64, -1, math.MaxInt64 - 1, true},
+		{"add/min+1", functions.AddInt64Checked, math.MinInt64, 1, math.MinInt64 + 1, true},
 		// Sub
-		{"sub/ok", subInt64Checked, 5, 3, 2, true},
-		{"sub/zero", subInt64Checked, 0, 0, 0, true},
-		{"sub/max-max", subInt64Checked, math.MaxInt64, math.MaxInt64, 0, true},
-		{"sub/min-min", subInt64Checked, math.MinInt64, math.MinInt64, 0, true},
-		{"sub/min-1", subInt64Checked, math.MinInt64, 1, 0, false},
-		{"sub/min-max", subInt64Checked, math.MinInt64, math.MaxInt64, 0, false},
-		{"sub/max-(-1)", subInt64Checked, math.MaxInt64, -1, 0, false},
+		{"sub/ok", functions.SubInt64Checked, 5, 3, 2, true},
+		{"sub/zero", functions.SubInt64Checked, 0, 0, 0, true},
+		{"sub/max-max", functions.SubInt64Checked, math.MaxInt64, math.MaxInt64, 0, true},
+		{"sub/min-min", functions.SubInt64Checked, math.MinInt64, math.MinInt64, 0, true},
+		{"sub/min-1", functions.SubInt64Checked, math.MinInt64, 1, 0, false},
+		{"sub/min-max", functions.SubInt64Checked, math.MinInt64, math.MaxInt64, 0, false},
+		{"sub/max-(-1)", functions.SubInt64Checked, math.MaxInt64, -1, 0, false},
 		// Same-sign subtraction cannot overflow.
-		{"sub/max-1", subInt64Checked, math.MaxInt64, 1, math.MaxInt64 - 1, true},
-		{"sub/min-(-1)", subInt64Checked, math.MinInt64, -1, math.MinInt64 + 1, true},
+		{"sub/max-1", functions.SubInt64Checked, math.MaxInt64, 1, math.MaxInt64 - 1, true},
+		{"sub/min-(-1)", functions.SubInt64Checked, math.MinInt64, -1, math.MinInt64 + 1, true},
 		// Mul
-		{"mul/zero.l", mulInt64Checked, 0, math.MaxInt64, 0, true},
-		{"mul/zero.r", mulInt64Checked, math.MinInt64, 0, 0, true},
-		{"mul/small", mulInt64Checked, 7, 8, 56, true},
-		{"mul/neg", mulInt64Checked, -7, 8, -56, true},
-		{"mul/min*-1", mulInt64Checked, math.MinInt64, -1, 0, false},
-		{"mul/-1*min", mulInt64Checked, -1, math.MinInt64, 0, false},
-		{"mul/min*1", mulInt64Checked, math.MinInt64, 1, math.MinInt64, true},
-		{"mul/max*2", mulInt64Checked, math.MaxInt64, 2, 0, false},
-		{"mul/half*3", mulInt64Checked, math.MaxInt64 / 2, 3, 0, false},
-		{"mul/half*2", mulInt64Checked, math.MaxInt64 / 2, 2, (math.MaxInt64 / 2) * 2, true},
+		{"mul/zero.l", functions.MulInt64Checked, 0, math.MaxInt64, 0, true},
+		{"mul/zero.r", functions.MulInt64Checked, math.MinInt64, 0, 0, true},
+		{"mul/small", functions.MulInt64Checked, 7, 8, 56, true},
+		{"mul/neg", functions.MulInt64Checked, -7, 8, -56, true},
+		{"mul/min*-1", functions.MulInt64Checked, math.MinInt64, -1, 0, false},
+		{"mul/-1*min", functions.MulInt64Checked, -1, math.MinInt64, 0, false},
+		{"mul/min*1", functions.MulInt64Checked, math.MinInt64, 1, math.MinInt64, true},
+		{"mul/max*2", functions.MulInt64Checked, math.MaxInt64, 2, 0, false},
+		{"mul/half*3", functions.MulInt64Checked, math.MaxInt64 / 2, 3, 0, false},
+		{"mul/half*2", functions.MulInt64Checked, math.MaxInt64 / 2, 2, (math.MaxInt64 / 2) * 2, true},
 	}
 	for _, tc := range cases {
 		tc := tc
