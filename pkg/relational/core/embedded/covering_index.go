@@ -8,6 +8,7 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -249,7 +250,7 @@ func synthesizeCoveredRecord(
 		if fd == nil {
 			continue
 		}
-		protoVal, err := convertToProtoValue(fd, val)
+		protoVal, err := functions.ConvertToProtoValue(fd, val)
 		if err != nil {
 			// canCoverIndex restricts needed columns to kinds supported
 			// by convertToProtoValue, so reaching this branch means the
@@ -284,7 +285,7 @@ func synthesizeCoveredRecord(
 		if fd == nil {
 			continue
 		}
-		protoVal, err := convertToProtoValue(fd, val)
+		protoVal, err := functions.ConvertToProtoValue(fd, val)
 		if err != nil {
 			return nil, fmt.Errorf("covering index %q: cannot convert PK column %q from tuple: %w", entry.Index.Name, col, err)
 		}

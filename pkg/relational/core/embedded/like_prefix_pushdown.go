@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
@@ -74,14 +75,14 @@ func extractColLikePrefixLiteral(
 	if patternTok == nil {
 		return "", "", false
 	}
-	pattern := stripStringLiteralQuotes(patternTok.GetText())
+	pattern := functions.StripStringLiteralQuotes(patternTok.GetText())
 
 	// Resolve the optional ESCAPE clause. Invalid escape char counts
 	// (zero or more than one) bail — the scan path surfaces 22023
 	// cleanly for malformed patterns.
 	escape := rune(-1)
 	if esc := like.GetEscape(); esc != nil {
-		escStr := stripStringLiteralQuotes(esc.GetText())
+		escStr := functions.StripStringLiteralQuotes(esc.GetText())
 		runes := []rune(escStr)
 		if len(runes) != 1 {
 			return "", "", false
