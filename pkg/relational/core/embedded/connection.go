@@ -10932,8 +10932,16 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			}
 			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil)
 		}
+		// Same grammar-shape bail as evalInPredicateTri — `IN ?` /
+		// `IN someCol` parse through the preparedStatementParameter /
+		// fullColumnName alternatives, which don't carry an
+		// ExpressionsContext. The previous silent-FALSE (and silent-
+		// TRUE for NOT IN) behaviour was surprising; align with the
+		// proto path and surface 0A000 for every non-parenthesized-
+		// list, non-subquery IN.
 		if p.InList().Expressions() == nil {
-			return triFromBool(p.NOT() != nil), nil
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"IN requires a parenthesized expression list or subquery")
 		}
 		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
