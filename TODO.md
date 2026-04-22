@@ -575,6 +575,41 @@ The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment 
 - [x] **WHERE/ON with wrong qualifier**: addressed at the end of dayshift-40 — added `validQualifiers` as a query-scoped field on `EmbeddedConnection`, installed by `execSelectJoin` via `pushValidQualifiersScope`, consulted by `evalExprAtomOnMap` to reject qualified references whose qualifier isn't in scope (42F01). Pinned in `wrong_qualifier.yaml` for WHERE and INNER JOIN ON clauses.
 - [x] **Map-path 42803 for ungrouped projection**: addressed at end of dayshift-40 — `aggregateMapRows` now runs a pre-check that probes the first filtered row's keys to distinguish defined-but-ungrouped (→ 42803) from undefined (left for a future schema-threaded check). Skips on empty filtered (can't distinguish; preserves silent-NULL). JOIN+GROUP BY cases pinned in `group_by_validation.yaml`.
 
+### Pushdown / planner follow-ups (swingshift-44, 2026-04-22)
+
+Post-merge carry-overs from the swingshift-44 pushdown-saturation work
+(PR #98 landed covering-index, IN-list × 4, LIKE prefix × 4 + ESCAPE,
+ORDER BY elimination, LIMIT early-termination, 11-branch chain).
+
+**HIGH — still deferred from dayshift-43**
+
+- [ ] **Intermingled schema type-filter wrapper** — re-enable PK pushdown on `FieldKeyExpression` PKs (intermingled tables) by wrapping the narrowed cursor with a type-filtering predicate. **Blocker**: `INTERMINGLE_TABLES` exists in the lexer/parser grammar but isn't wired through DDL. Either wire DDL end-to-end first, or test via unit tests with hand-constructed metadata.
+
+**MEDIUM — complement the landed pushdown chain**
+
+- [ ] **ORDER BY DESC via reverse scan** — today's natural-order elimination only fires when every ORDER BY clause is ASC. When sq.orderBy matches `naturalOrder` but all clauses are DESC, we could use `ReverseScan()` on the cursor instead of sorting. Needs plumbing a `ScanProperties` argument through every pushdown cursor builder — mechanical but touches every branch.
+- [ ] **IN-list via subquery decomposition** — `WHERE col IN (SELECT …)` currently bails. If the subquery is small (pre-evaluated to a literal list via the existing `preEvaluateScalarSubqueries` path), decompose into N point scans like literal IN-list. Scalar subqueries already pre-evaluate; rows-result subqueries don't yet.
+- [ ] **Fuzz corpus with string dimension** — extend `FuzzLikePatternToPrefix` with an `s string` input, assert `likeMatch(pattern, s, esc) && ok ⇒ strings.HasPrefix(s, prefix)`. Directly pins "no matching row excluded by the range" instead of today's weaker no-panic + non-empty invariants.
+- [ ] **Mutual recursion** — `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs are evaluated in declaration order; mutual refs bail. (Carried forward from dayshift-43.)
+- [ ] **Continuation resumption of partial recursive results** — for `maxRows: 1` pagination. Java's `RecursiveStateManager` uses TempTable cursors. (Carried forward from dayshift-43.)
+
+**LOW — niche / perf polish**
+
+- [ ] **ORDER BY dedup edge cases** — `ORDER BY b, B` (case-folded) and `ORDER BY a.b, b` (qualified-vs-bare resolving to the same column). Rides on a future identifier-folding pass. (Duplicate of the line-570 item; listed here for completeness.)
+- [ ] **GROUP BY (a+b) AS alias** — expression group keys can't be referenced via alias from the SELECT list because the rewrite path only handles bare-column group-by entries.
+- [ ] **Benchmark pushdown vs full scan** — no direct micro-benchmark. Existing `just bench` doesn't isolate the cursor-pick cost; a targeted bench would make the perf win observable and guard against regressions.
+- [ ] **One-element IN-list → equality** — `WHERE pk IN (5)` could fire the tighter equality pushdown instead of the IN-list sub-scan-of-one. Tiny perf.
+- [ ] **Pure-prefix composite-PK pushdown** — `WHERE a = 1 AND b = 10` on PK (a, b, c) currently bails to scan (no range col). A pure-prefix extractor could narrow to `[rtk, 1, 10]` with trailing-PK unconstrained (same decomposition as IN-list-of-one on c). Moderate effort.
+
+### Cross-language SQL conformance — still the biggest hole
+
+See "Phase 0-2 quality assessment" (line 435) for the full assessment.
+The short version:
+
+- [ ] **Actually run the yamsql corpus through Java *and* Go and diff result sets.** The corpus (1587 statements) currently only verifies parsing; execution equivalence is asserted by construction, not tested. Seed candidate: `conformance/sql/` with fdb-relational maven deps wired into Bazel, a `just conformance-sql-java` target. This is the single highest-ROI unchecked item in the SQL layer.
+- [ ] **Write-in-Go → read-in-Java round-trip for INSERT / SELECT.** And the reverse. Would have caught the catalog subspace bug fixed in swingshift-35.
+- [ ] **Plan-cache key stability** (Go hash == Java hash) — blocks shared RPC caching but not correctness.
+
 ### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
 
 User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.
