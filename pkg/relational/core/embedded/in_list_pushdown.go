@@ -412,6 +412,219 @@ func pkCompositeInListScanCursor(
 	}
 }
 
+// secondaryIndexCompositeInList is the composite-secondary-index
+// counterpart of pkCompositeInList: leading equalities on N-1 cols
+// + IN-list on the remaining col of a composite VALUE index.
+type secondaryIndexCompositeInList struct {
+	indexName  string
+	prefixVals []any
+	inValues   []any
+}
+
+// trySecondaryIndexCompositeInListFromWhere finds a composite VALUE
+// index where the first index col carrying an IN-list is preceded
+// by equalities on every earlier index col. Same shape rules as
+// tryPKCompositeInListFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexCompositeInListFromWhere(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositeInList, bool) {
+	if whereExpr == nil {
+		return secondaryIndexCompositeInList{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return secondaryIndexCompositeInList{}, false
+	}
+
+	equalities := make(map[string]any, len(leaves))
+	inByCol := make(map[string][]any, 1)
+	for _, leaf := range leaves {
+		if col, vals, inOk := extractColInList(ctx, c, leaf); inOk {
+			inByCol[strings.ToUpper(col)] = vals
+			continue
+		}
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok || op != "=" {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+	if len(inByCol) == 0 {
+		return secondaryIndexCompositeInList{}, false
+	}
+
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) < 2 {
+			continue
+		}
+		// Find first index col with IN-list.
+		inK := -1
+		var inVals []any
+		for i, col := range idxCols {
+			if vals, has := inByCol[strings.ToUpper(col)]; has {
+				inK = i
+				inVals = vals
+				break
+			}
+		}
+		if inK == -1 {
+			continue
+		}
+		// Every index col before inK must have an equality on the
+		// same col. Type-check too.
+		prefixVals := make([]any, inK)
+		ok := true
+		for i := 0; i < inK; i++ {
+			col := idxCols[i]
+			val, has := equalities[strings.ToUpper(col)]
+			if !has {
+				ok = false
+				break
+			}
+			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+			if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
+				ok = false
+				break
+			}
+			prefixVals[i] = val
+		}
+		if !ok {
+			continue
+		}
+		inFd := rt.Descriptor.Fields().ByName(protoreflect.Name(idxCols[inK]))
+		if inFd == nil {
+			continue
+		}
+		typeOk := true
+		for _, v := range inVals {
+			if !literalMatchesPKKind(v, inFd.Kind()) {
+				typeOk = false
+				break
+			}
+		}
+		if !typeOk {
+			continue
+		}
+		return secondaryIndexCompositeInList{
+			indexName:  idx.Name,
+			prefixVals: prefixVals,
+			inValues:   inVals,
+		}, true
+	}
+	return secondaryIndexCompositeInList{}, false
+}
+
+func (c *EmbeddedConnection) trySecondaryIndexCompositeInListPushdown(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositeInList, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexCompositeInList{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexCompositeInList{}, false
+	}
+	return c.trySecondaryIndexCompositeInListFromWhere(ctx, store, sq.whereExpr, rt, md)
+}
+
+// secondaryIndexCompositeInListCursor runs N sub-scans, each using
+// the composite-range cursor with lastBounds collapsed to (in_val,
+// in_val) inclusive-inclusive at the prefix anchor. Covering-index
+// dispatch applies when canCoverIndex holds.
+type secondaryIndexCompositeInListCursor struct {
+	store       *recordlayer.FDBRecordStore
+	cil         secondaryIndexCompositeInList
+	idx         int
+	coveringIdx *recordlayer.Index
+	coveringRT  *recordlayer.RecordType
+	current     recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+	closed      bool
+}
+
+func (c *secondaryIndexCompositeInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]], error) {
+	for {
+		if c.current != nil {
+			result, err := c.current.OnNext(ctx)
+			if err != nil {
+				return recordlayer.RecordCursorResult[*recordlayer.FDBStoredRecord[proto.Message]]{}, err
+			}
+			if result.HasNext() {
+				return result, nil
+			}
+			_ = c.current.Close()
+			c.current = nil
+		}
+		if c.idx >= len(c.cil.inValues) {
+			return recordlayer.NewResultNoNext[*recordlayer.FDBStoredRecord[proto.Message]](
+				recordlayer.SourceExhausted,
+				&recordlayer.EndContinuation{},
+			), nil
+		}
+		val := c.cil.inValues[c.idx]
+		c.idx++
+		cr := secondaryIndexCompositeRange{
+			indexName:  c.cil.indexName,
+			prefixVals: c.cil.prefixVals,
+			lastBounds: pkRangeBounds{
+				hasLow:        true,
+				low:           val,
+				lowInclusive:  true,
+				hasHigh:       true,
+				high:          val,
+				highInclusive: true,
+			},
+		}
+		if c.coveringIdx != nil {
+			c.current = coveringIndexRangeScanCursor(c.store, c.coveringRT, c.coveringIdx,
+				buildSecondaryIndexCompositeRangeTupleRange(cr))
+		} else {
+			c.current = secondaryIndexCompositeRangeScanCursor(c.store, cr)
+		}
+	}
+}
+
+func (c *secondaryIndexCompositeInListCursor) Close() error {
+	c.closed = true
+	if c.current != nil {
+		return c.current.Close()
+	}
+	return nil
+}
+
+func (c *secondaryIndexCompositeInListCursor) IsClosed() bool { return c.closed }
+
+func secondaryIndexCompositeInListScanCursor(
+	store *recordlayer.FDBRecordStore,
+	cil secondaryIndexCompositeInList,
+	coveringRT *recordlayer.RecordType,
+	coveringIdx *recordlayer.Index,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	if len(cil.inValues) == 0 {
+		return recordlayer.Empty[*recordlayer.FDBStoredRecord[proto.Message]]()
+	}
+	return &secondaryIndexCompositeInListCursor{
+		store:       store,
+		cil:         cil,
+		coveringIdx: coveringIdx,
+		coveringRT:  coveringRT,
+	}
+}
+
 // secondaryIndexInList describes an IN-list pushdown on a single-column
 // VALUE index: the index name + the list of per-element equality values
 // to point-scan on that index.

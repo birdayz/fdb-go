@@ -1111,6 +1111,9 @@ func pkPushdownCursor(
 	if sil, ok := c.trySecondaryIndexInListFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexInListScanCursor(store, sil, nil, nil)
 	}
+	if cil, ok := c.trySecondaryIndexCompositeInListFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
+	}
 	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
 	}
@@ -4428,6 +4431,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cursor = secondaryIndexInListScanCursor(store, sil, rt, idx)
 			} else {
 				cursor = secondaryIndexInListScanCursor(store, sil, nil, nil)
+			}
+		} else if cil, ok := c.trySecondaryIndexCompositeInListPushdown(ctx, store, sq, rt, md); ok {
+			if idx := md.GetIndex(cil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = secondaryIndexCompositeInListScanCursor(store, cil, rt, idx)
+			} else {
+				cursor = secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
 			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			if idx := md.GetIndex(sir.indexName); idx != nil && canCoverIndex(sq, idx, rt) {

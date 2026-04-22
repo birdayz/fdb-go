@@ -38,11 +38,24 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_t2_status ON t2 (status)
+  CREATE TABLE tp (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON tp (region, plan)
 setup:
   - INSERT INTO t VALUES (1, 'one', 10), (2, 'two', 20), (3, 'three', 30), (4, 'four', 40), (5, 'five', 50)
   - INSERT INTO ts VALUES ('alpha', 1), ('beta', 2), ('gamma', 3), ('delta', 4)
   - INSERT INTO kvw VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300), (2, 40, 400)
   - INSERT INTO t2 VALUES (1, 'active', 5), (2, 'archived', 15), (3, 'active', 25), (4, 'archived', 5), (5, 'deleted', 50)
+  - INSERT INTO tp VALUES
+      (10, 'us', 'pro'),
+      (11, 'us', 'free'),
+      (12, 'us', 'pro'),
+      (13, 'eu', 'pro'),
+      (14, 'eu', 'free')
 tests:
   # -------------------------------------------------------------------
   # Basic: single-col PK IN-list, two values
@@ -240,6 +253,32 @@ tests:
   # Composite IN on middle col with non-matching eq on later col.
   - query: SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) AND c = 999
     rows: []
+
+  # -------------------------------------------------------------------
+  # Composite secondary-index IN-list
+  # -------------------------------------------------------------------
+  #
+  # idx_region_plan is a composite VALUE index on (region, plan).
+  # WHERE region = 'us' AND plan IN ('pro', 'free') decomposes into
+  # 2 sub-scans at tuple anchors [us, pro] and [us, free].
+
+  - query: SELECT id, region, plan FROM tp WHERE region = 'us' AND plan IN ('pro', 'free') ORDER BY id
+    rows:
+      - [10, 'us', 'pro']
+      - [11, 'us', 'free']
+      - [12, 'us', 'pro']
+
+  # Leading-eq on second col + IN on first — bails on the composite
+  # path (IN is at position 0 which needs no prefix, but the extractor
+  # needs a leading eq on position before to fire composite; position 0
+  # IN is already handled by the non-composite trySecondaryIndexInList
+  # path. Wait — that path requires len(idxCols)==1. Composite idx with
+  # IN on first col + eq on second → bails to scan.
+  - query: SELECT id FROM tp WHERE plan = 'pro' AND region IN ('us', 'eu') ORDER BY id
+    rows:
+      - [10]
+      - [12]
+      - [13]
 
   # -------------------------------------------------------------------
   # Secondary-index IN-list pushdown
