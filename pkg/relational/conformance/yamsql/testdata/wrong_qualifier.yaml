@@ -7,9 +7,11 @@
 # column reference names an unknown qualifier. Matches the existing
 # `SELECT wrong.* FROM a` pin in qualified_star.yaml.
 #
-# Scope: JOIN SELECT projection (execSelectJoin). Single-table path
-# and WHERE/ON expression paths still silently fall back — tracked as
-# a known gap (see handover).
+# Scope: all three places a column reference can appear on the map
+# path — JOIN SELECT projection (execSelectJoin), WHERE-clause, and
+# INNER JOIN ON-clause — share the same validQualifiers check via
+# evalExprAtomOnMap. Single-source SELECT projection on the proto
+# path (execSelectQueryFull) joined the party in nightshift-42.
 name: wrong_qualifier
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
@@ -58,3 +60,35 @@ tests:
   - query: SELECT a.id FROM a, b WHERE a.id = b.id AND b.label = 'one'
     rows:
       - [1]
+
+  # nightshift-42: single-source SELECT with alias-qualified
+  # projection resolves via the table alias (was 42703 before).
+  - query: SELECT d.id, d.name FROM a AS d WHERE d.id = 1
+    rows:
+      - [1, 'alpha']
+
+  # Same pattern without explicit alias — qualifier is the table
+  # name itself.
+  - query: SELECT a.id, a.name FROM a WHERE a.id = 2
+    rows:
+      - [2, 'beta']
+
+  # Unknown qualifier on single-source projection — still the error
+  # case. `c.id` has no matching source; 42703 fires (bare `id` isn't
+  # a proto field on table `a` either).
+  - query: SELECT c.id FROM a WHERE id = 1
+    error_code: "42703"
+
+  # Wrong qualifier on RIGHT side of an ON expression (the existing
+  # pin covers the left side). Symmetric check via validQualifiers —
+  # both sides of a binary comparison go through evalExprAtomOnMap.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON a.id = c.id
+    error_code: "42F01"
+
+  # Wrong qualifier in ON-clause RHS on a multi-arg expression —
+  # qualifier is checked anywhere in the predicate tree, not just at
+  # top level.
+  - query: |
+      SELECT a.id FROM a INNER JOIN b ON a.id = b.id AND c.id > 0
+    error_code: "42F01"

@@ -1,0 +1,170 @@
+# secondary_index_pushdown.yaml
+#
+# Secondary-index pushdown: `SELECT ... WHERE col = literal` on a
+# non-PK column with a matching single-column value index narrows
+# the scan from ScanRecordsByType (full type scan + post-filter) to
+# ScanIndexRecords (index range scan + record fetch by PK).
+#
+# Result equivalence between index path and scan path is the
+# correctness invariant; the perf benefit (index range O(matches)
+# vs full type scan O(|T|)) is not directly observable from rows.
+name: secondary_index_pushdown
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    status STRING,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_status ON t (status)
+  CREATE INDEX idx_v ON t (v)
+  CREATE TABLE t2 (
+    id BIGINT NOT NULL,
+    region STRING,
+    plan STRING,
+    amount BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_region_plan ON t2 (region, plan)
+setup:
+  - INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)
+  - INSERT INTO t2 VALUES (10, 'us', 'pro', 100), (11, 'us', 'free', 50), (12, 'us', 'pro', 200), (13, 'eu', 'pro', 300), (14, 'eu', 'free', 75)
+tests:
+  # Basic: WHERE on indexed column returns matching rows via index
+  # scan. Order of rows within the same index key is FDB scan order.
+  - query: SELECT id, status, v FROM t WHERE status = 'active' ORDER BY id
+    rows:
+      - [1, 'active', 10]
+      - [3, 'active', 30]
+
+  # Symmetric: literal on LHS.
+  - query: SELECT id FROM t WHERE 'archived' = status
+    rows:
+      - [2]
+
+  # No match → empty via index scan (cursor yields nothing, not an
+  # error).
+  - query: SELECT id FROM t WHERE status = 'nonexistent'
+    rows: []
+
+  # Index pushdown + extra non-PK predicate — index narrows the scan
+  # to the matching range, scan's evalPredicate applies `v > 20`
+  # post-filter on the loaded records.
+  - query: SELECT id FROM t WHERE status = 'active' AND v > 20
+    rows:
+      - [3]
+
+  # Index pushdown + LIMIT (applied post-fetch; index scan still
+  # yields all matches until the limit is reached).
+  - query: SELECT id FROM t WHERE status = 'active' ORDER BY id LIMIT 1
+    rows:
+      - [1]
+
+  # Non-indexed column → falls through to full scan (still correct).
+  - query: SELECT id FROM t WHERE v = 30
+    rows:
+      - [3]
+
+  # WHERE on PK column → PK pushdown takes precedence (tested in
+  # pk_pushdown.yaml); regression check that it still works when a
+  # secondary index ALSO exists on another column.
+  - query: SELECT id FROM t WHERE id = 2
+    rows:
+      - [2]
+
+  # Multiple VALUE indexes + AND equalities on both indexed cols —
+  # first-match semantics: the iteration order of
+  # GetIndexesForRecordType picks the first matching index, the
+  # other equality becomes a post-filter via the scan loop's
+  # evalPredicate. Result is identical regardless of which index
+  # gets picked.
+  - query: SELECT id FROM t WHERE status = 'active' AND v = 30
+    rows:
+      - [3]
+
+  # Secondary index on the `v` (int64) column — proves literal type
+  # check handles non-string indexed columns too.
+  - query: SELECT id, status FROM t WHERE v = 20
+    rows:
+      - [2, 'archived']
+
+  # UPDATE via secondary-index pushdown. Index narrows the scan to
+  # rows with status='deleted'; only one row (id=4) qualifies.
+  - query: UPDATE t SET v = 99 WHERE status = 'deleted'
+  - query: SELECT id, v FROM t WHERE status = 'deleted'
+    rows:
+      - [4, 99]
+  # Rows on other index values untouched.
+  - query: SELECT v FROM t WHERE id = 1
+    rows:
+      - [10]
+
+  # DELETE via secondary-index pushdown.
+  - query: DELETE FROM t WHERE status = 'archived'
+  - query: SELECT id FROM t WHERE status = 'archived'
+    rows: []
+  - query: SELECT COUNT(*) FROM t
+    rows:
+      - [3]
+
+  # Composite secondary-index pushdown: idx_region_plan is (region,
+  # plan). `WHERE region = 'us' AND plan = 'pro'` matches both
+  # columns, pushdown builds a 2-element tuple range.
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10, 100]
+      - [12, 200]
+
+  # Composite index reverse-order AND — equality collection is
+  # order-insensitive.
+  - query: SELECT id FROM t2 WHERE plan = 'free' AND region = 'eu'
+    rows:
+      - [14]
+
+  # Composite index with only one of the two columns equated → not a
+  # contiguous range at the full key level, bails to scan. The scan
+  # path's evalPredicate applies the partial predicate.
+  - query: SELECT id FROM t2 WHERE region = 'us' ORDER BY id
+    rows:
+      - [10]
+      - [11]
+      - [12]
+
+  # Composite index + extra non-index predicate — pushdown narrows
+  # to (region='eu', plan='pro'); scan filters amount > 100. Only
+  # row (13, eu, pro, 300) qualifies.
+  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan = 'pro' AND amount > 100
+    rows:
+      - [13]
+
+  # No-match composite index range → empty.
+  - query: SELECT id FROM t2 WHERE region = 'asia' AND plan = 'pro'
+    rows: []
+
+  # Composite index on mutation path — UPDATE via pushdown.
+  - query: UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+    rows:
+      - [10, 999]
+      - [12, 999]
+  # Other rows untouched.
+  - query: SELECT amount FROM t2 WHERE id = 11
+    rows:
+      - [50]
+
+  # Composite index on DELETE path.
+  - query: DELETE FROM t2 WHERE region = 'eu' AND plan = 'free'
+  - query: SELECT COUNT(*) FROM t2 WHERE region = 'eu'
+    rows:
+      - [1]
+
+  # NULL literal in secondary-index WHERE: three-valued logic, never
+  # true, pushdown bails on NULL RHS, scan's evalPredicate also
+  # produces UNKNOWN. Empty result either way.
+  - query: SELECT id FROM t WHERE status = NULL
+    rows: []
+
+  # Composite index with a NULL literal on one side — same as above,
+  # pushdown bails on NULL RHS.
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan = NULL
+    rows: []

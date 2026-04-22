@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",

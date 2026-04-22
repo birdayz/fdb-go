@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/antlr4-go/antlr/v4"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
@@ -717,6 +718,1147 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	return &staticRows{cols: leftCols, rows: combined}, nil
 }
 
+// recursiveCTEIterationLimit caps the number of semi-naive iterations
+// (level-order) or the DFS emit count (pre/post-order) for a WITH
+// RECURSIVE body. Protects against unbounded recursion on cyclic
+// graphs with UNION ALL (UNION DISTINCT converges naturally by
+// filtering rows already seen). A well-formed ancestor/descendant
+// query over an acyclic hierarchy terminates far below this cap.
+const recursiveCTEIterationLimit = 10000
+
+// recursiveTraversal encodes how Java's `TRAVERSAL ORDER …` clause
+// selects the recursive-CTE emission order. Level-order = semi-naive
+// (BFS per depth); pre-order / post-order = DFS with emission before /
+// after the recursive descent into a row's children.
+type recursiveTraversal int
+
+const (
+	traversalLevelOrder recursiveTraversal = iota
+	traversalPreOrder
+	traversalPostOrder
+)
+
+// materializeRecursiveCTE evaluates a WITH RECURSIVE CTE body. The
+// body must be a UNION [ALL] where the left (seed) does not
+// self-reference and the right (recursive) references the CTE name.
+// The CTE name is bound in c.ctes before the recursive branch is
+// evaluated; different strategies choose a different binding.
+//
+// Level-order (BFS / semi-naive): the binding is the last iteration's
+// new rows (the "working set"); iteration terminates when the branch
+// produces no new rows. Pre/post-order (DFS): the binding is a single
+// row at a time; recursion descends row-by-row, with emission before
+// (pre) or after (post) the descent.
+//
+// For UNION ALL, every row the recursive branch produces is emitted;
+// cycles are bounded by the iteration/emit cap. For UNION DISTINCT,
+// rows already present in the cumulative result are filtered out,
+// which also guarantees termination on cyclic graphs.
+func (c *EmbeddedConnection) materializeRecursiveCTE(
+	ctx context.Context,
+	body antlrgen.IQueryExpressionBodyContext,
+	cteName string,
+	renameList []string,
+	traversal recursiveTraversal,
+) ([]string, [][]driver.Value, error) {
+	setQ, ok := body.(*antlrgen.SetQueryContext)
+	if !ok {
+		return nil, nil, api.NewErrorf(api.ErrCodeInvalidRecursion,
+			"recursive CTE %q body must be a UNION between a non-recursive seed and a recursive branch", cteName)
+	}
+	if setQ.UNION() == nil {
+		return nil, nil, api.NewErrorf(api.ErrCodeInvalidRecursion,
+			"recursive CTE %q requires UNION in the body", cteName)
+	}
+	quantifier := ""
+	if q := setQ.GetQuantifier(); q != nil {
+		quantifier = strings.ToUpper(q.GetText())
+	}
+	distinct := quantifier != "ALL"
+
+	// Evaluate the seed with cteName unbound. A stray self-reference in
+	// the seed surfaces as a normal table-not-found error — standard SQL
+	// forbids seed self-reference, and we get that enforcement for free.
+	seedCols, seedRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Apply column rename (`WITH RECURSIVE t(c1, c2, ...) AS ...`) to
+	// the seed schema so the recursive branch — which scans this CTE
+	// via its name — sees the renamed columns, not the seed's original
+	// projection names. When no rename is present, strip projection
+	// qualifiers so `SELECT d.id FROM t AS d` produces a CTE column
+	// named `id` rather than `d.id` (matches the non-recursive path).
+	if renameList != nil {
+		if len(renameList) != len(seedCols) {
+			return nil, nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+				"CTE %q column-rename has %d names but inner query has %d columns",
+				cteName, len(renameList), len(seedCols))
+		}
+		seedCols = renameList
+	} else {
+		seedCols = stripCTEColumnQualifiers(seedCols)
+	}
+
+	switch traversal {
+	case traversalPreOrder, traversalPostOrder:
+		rows, dErr := c.recursiveCTEDFS(ctx, setQ, cteName, seedCols, seedRows, distinct, traversal)
+		return seedCols, rows, dErr
+	default:
+		rows, dErr := c.recursiveCTELevelOrder(ctx, setQ, cteName, seedCols, seedRows, distinct)
+		return seedCols, rows, dErr
+	}
+}
+
+// recursiveCTELevelOrder implements semi-naive BFS: each iteration
+// binds the CTE to the previous round's new rows and re-evaluates the
+// recursive branch. Termination: branch produces no new rows (UNION
+// ALL on acyclic data + UNION DISTINCT in general) or iteration cap
+// hit (cyclic UNION ALL).
+func (c *EmbeddedConnection) recursiveCTELevelOrder(
+	ctx context.Context,
+	setQ *antlrgen.SetQueryContext,
+	cteName string,
+	seedCols []string,
+	seedRows [][]driver.Value,
+	distinct bool,
+) ([][]driver.Value, error) {
+	var cumulative [][]driver.Value
+	var working [][]driver.Value
+	var seen map[string]struct{}
+	if !distinct {
+		cumulative = append([][]driver.Value(nil), seedRows...)
+		working = seedRows
+	} else {
+		seen = make(map[string]struct{}, len(seedRows))
+		dedup := make([][]driver.Value, 0, len(seedRows))
+		for _, r := range seedRows {
+			k := rowKey(r)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			dedup = append(dedup, r)
+		}
+		cumulative = dedup
+		working = dedup
+	}
+
+	// The per-iteration binding c.ctes[cteName] is left in place when
+	// the loop exits — the caller (the WITH clause loop in execSelect)
+	// overwrites it with the cumulative result immediately after this
+	// function returns. On error, execSelect returns early and the
+	// enclosing pushCTEScope defer pops the whole scope, so a stale
+	// intermediate binding is unreachable either way.
+
+	for iter := 0; len(working) > 0; iter++ {
+		if iter >= recursiveCTEIterationLimit {
+			return nil, api.NewErrorf(api.ErrCodeExecutionLimitReached,
+				"recursive CTE %q exceeded iteration limit of %d — possible cycle or an unbounded result set; use UNION (DISTINCT) or a depth predicate",
+				cteName, recursiveCTEIterationLimit)
+		}
+		c.ctes[cteName] = &cteData{cols: seedCols, rows: working}
+		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
+		if iErr != nil {
+			return nil, iErr
+		}
+		if len(iterCols) != len(seedCols) {
+			return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+				"recursive CTE %q: seed has %d columns, recursive branch produced %d",
+				cteName, len(seedCols), len(iterCols))
+		}
+		var newRows [][]driver.Value
+		if !distinct {
+			newRows = iterRows
+		} else {
+			newRows = make([][]driver.Value, 0, len(iterRows))
+			for _, r := range iterRows {
+				k := rowKey(r)
+				if _, dup := seen[k]; dup {
+					continue
+				}
+				seen[k] = struct{}{}
+				newRows = append(newRows, r)
+			}
+		}
+		if len(newRows) == 0 {
+			break
+		}
+		cumulative = append(cumulative, newRows...)
+		working = newRows
+	}
+
+	return cumulative, nil
+}
+
+// recursiveCTEDFS implements DFS pre/post-order: for each seed row,
+// emit the row (pre) or descend first (post), then recurse with the
+// CTE bound to just that single row so the recursive branch's
+// self-reference yields this row's "children". Emission order matches
+// Java 4.7.1.0+'s RecursiveUnionCursor DFS modes.
+//
+// For UNION DISTINCT, a shared `seen` set across the whole traversal
+// filters duplicates — both at the seed level and at each descent.
+// For UNION ALL there is no dedup; a hard emit cap bounds cycles.
+func (c *EmbeddedConnection) recursiveCTEDFS(
+	ctx context.Context,
+	setQ *antlrgen.SetQueryContext,
+	cteName string,
+	seedCols []string,
+	seedRows [][]driver.Value,
+	distinct bool,
+	traversal recursiveTraversal,
+) ([][]driver.Value, error) {
+	var seen map[string]struct{}
+	if distinct {
+		seen = make(map[string]struct{}, len(seedRows))
+	}
+	cumulative := make([][]driver.Value, 0, len(seedRows))
+	preorder := traversal == traversalPreOrder
+
+	var descend func(row []driver.Value) error
+	descend = func(row []driver.Value) error {
+		if len(cumulative) >= recursiveCTEIterationLimit {
+			return api.NewErrorf(api.ErrCodeExecutionLimitReached,
+				"recursive CTE %q exceeded emit limit of %d — possible cycle or an unbounded result set; use UNION (DISTINCT) or a depth predicate",
+				cteName, recursiveCTEIterationLimit)
+		}
+		if preorder {
+			cumulative = append(cumulative, row)
+		}
+		c.ctes[cteName] = &cteData{cols: seedCols, rows: [][]driver.Value{row}}
+		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
+		if iErr != nil {
+			return iErr
+		}
+		if len(iterCols) != len(seedCols) {
+			return api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
+				"recursive CTE %q: seed has %d columns, recursive branch produced %d",
+				cteName, len(seedCols), len(iterCols))
+		}
+		for _, child := range iterRows {
+			if distinct {
+				k := rowKey(child)
+				if _, dup := seen[k]; dup {
+					continue
+				}
+				seen[k] = struct{}{}
+			}
+			if err := descend(child); err != nil {
+				return err
+			}
+		}
+		if !preorder {
+			cumulative = append(cumulative, row)
+		}
+		return nil
+	}
+
+	for _, seed := range seedRows {
+		if distinct {
+			k := rowKey(seed)
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+		}
+		if err := descend(seed); err != nil {
+			return nil, err
+		}
+	}
+	return cumulative, nil
+}
+
+// tryPKEqualityPushdown reports whether `sq`'s WHERE clause is a
+// simple primary-key equality match (`pk_col = literal`) against a
+// record type whose primary key is a single user field (possibly
+// prefixed by RecordTypeKey). When it returns true, the caller can
+// narrow the scan from ScanRecordsByType to ScanRecordsInRange on the
+// exact PK — reducing a full type scan to a single KV lookup.
+//
+// Conservative on purpose: bails on anything complicated
+// (aggregates/GROUP BY/count*, composite PKs, AND chains, OR, qualified
+// column refs the parser doesn't cleanly match to the bare PK field
+// name, non-literal RHS). The fallback is the existing scan, which is
+// correct but slower.
+//
+// Returns the single TupleElement for the equality literal when
+// viable. The caller constructs the full FDB range key from it
+// together with `rt.GetRecordTypeKey()`.
+func (c *EmbeddedConnection) tryPKEqualityPushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) ([]any, bool) {
+	// Gate on SELECT-specific shape. Aggregate / GROUP BY / COUNT(*)
+	// paths all run through their own code below the cursor; leave
+	// them to the full scan. HAVING similarly evaluates post-aggregate.
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return nil, false
+	}
+	if sq.havingExpr != nil {
+		return nil, false
+	}
+	return c.tryPKEqualityFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// tryPKEqualityFromWhere is the shared core of PK equality pushdown:
+// given a WHERE expression and a record type, it reports whether the
+// WHERE resolves to an AND-chain of equalities covering every PK
+// column with literals of the right type. Used by SELECT, UPDATE,
+// and DELETE call sites; each caller layers its own shape gates on
+// top (e.g. SELECT bails on aggregates).
+func (c *EmbeddedConnection) tryPKEqualityFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) ([]any, bool) {
+	if whereExpr == nil {
+		return nil, false
+	}
+
+	// Primary key shape: an ordered list of user fields. Accepts a
+	// bare FieldKeyExpression (single col, intermingled table) or a
+	// CompositeKeyExpression whose children are
+	// [RecordTypeKey?, Field(col1), Field(col2), ...] (the two shapes
+	// CREATE TABLE emits).
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) == 0 {
+		return nil, false
+	}
+
+	// Walk the WHERE into a flat list of AND-joined leaf predicates.
+	// Any non-AND operator (OR, XOR, NOT) bails — conservative for MVP.
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return nil, false
+	}
+
+	// Collect `col = literal` equalities from the leaves. Non-equality
+	// leaves (e.g. `other_col > 10`, `SIN(x) > 0`, `IS NULL`) are kept
+	// in the AND chain: they'll be re-evaluated by the scan loop's
+	// evalPredicate after the narrowed cursor yields at most one row.
+	// This is safe because the range scan is a SUPERSET of the
+	// matching rows and the existing WHERE filter still runs on the
+	// loaded record.
+	equalities := make(map[string]any, len(leaves))
+	for _, leaf := range leaves {
+		col, val, ok := extractColEqualsLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+
+	// Build the PK tuple in declared order. Every PK column must
+	// appear in the WHERE; partial matches can't be narrowed to a
+	// single key.
+	pkVals := make([]any, len(pkCols))
+	for i, col := range pkCols {
+		val, ok := equalities[strings.ToUpper(col)]
+		if !ok {
+			return nil, false
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil {
+			return nil, false
+		}
+		// Type compatibility: the literal must match the PK column's
+		// proto kind. See literalMatchesPKKind for rationale — a
+		// type-mismatched literal must fall through to the scan so
+		// evalPredicate surfaces 22000.
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			return nil, false
+		}
+		pkVals[i] = val
+	}
+	return pkVals, true
+}
+
+// pkPushdownCursor returns a cursor narrowed to the primary-key
+// range dictated by WHERE, or a full type scan when pushdown doesn't
+// apply. Shared by UPDATE / DELETE (SELECT uses the more-specific
+// gated variant tryPKEqualityPushdown that also filters on aggregates
+// / GROUP BY / HAVING / COUNT(*)).
+func pkPushdownCursor(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+	whereExpr antlrgen.IWhereExprContext,
+	tableName string,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownScanCursor(store, rt, pkVals)
+	}
+	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownRangeScanCursor(store, rt, bounds)
+	}
+	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
+	}
+	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(idxName) {
+		return secondaryIndexPushdownCursor(store, idxName, idxVal)
+	}
+	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+}
+
+// pkPushdownScanCursor builds a single-key range scan for a fully
+// determined primary key. extractPKUserFields gates this to the
+// RecordTypeKey-prefixed PK shape only, so the tuple is always
+// `{rtk, pkVal1, pkVal2, ...}` — the prefix anchors the scan to the
+// right record type, matching ScanRecordsByType's fast-path semantics
+// (see primaryKeyHasRecordTypePrefix in pkg/recordlayer/store.go).
+func pkPushdownScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	pkVals []any,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	low := make(tuple.Tuple, 0, 1+len(pkVals))
+	low = append(low, rt.GetRecordTypeKey())
+	for _, v := range pkVals {
+		low = append(low, v)
+	}
+	return store.ScanRecordsInRange(
+		low, low,
+		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
+		nil, recordlayer.ForwardScan(),
+	)
+}
+
+// pkRangeBounds describes an open or half-open range constraint on a
+// single-column primary key derived from WHERE. Either bound may be
+// absent (represented by the `has…` flag), in which case the scan
+// runs to the corresponding end of the record-type range.
+type pkRangeBounds struct {
+	hasLow, hasHigh             bool
+	low, high                   any
+	lowInclusive, highInclusive bool
+}
+
+// pkPushdownRangeScanCursor builds a range scan bounded by `bounds`.
+// When only one side is set, the other falls back to the end of the
+// record-type range (`{rtk}` with RangeInclusive, matching
+// ScanRecordsByType's prefix semantics).
+func pkPushdownRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	bounds pkRangeBounds,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	rtk := rt.GetRecordTypeKey()
+	var low, high tuple.Tuple
+	lowEp := recordlayer.EndpointTypeRangeInclusive
+	highEp := recordlayer.EndpointTypeRangeInclusive
+	if bounds.hasLow {
+		low = tuple.Tuple{rtk, bounds.low}
+		if bounds.lowInclusive {
+			lowEp = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			lowEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		low = tuple.Tuple{rtk}
+	}
+	if bounds.hasHigh {
+		high = tuple.Tuple{rtk, bounds.high}
+		if bounds.highInclusive {
+			highEp = recordlayer.EndpointTypeRangeInclusive
+		} else {
+			highEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	} else {
+		high = tuple.Tuple{rtk}
+	}
+	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
+}
+
+// trySecondaryIndexPushdown looks for a VALUE index on a single bare
+// column that matches a `col = literal` leaf in WHERE, and returns a
+// cursor over the index-scoped records. This lets `SELECT ... WHERE
+// status = 'active'` scan the `status` index range instead of the
+// full type range. Conservative MVP:
+//   - single-column VALUE index only (RootExpression = Field(col))
+//   - any AND-chain leaf that equals the index column with a literal
+//     triggers the match; other leaves stay as post-filter via the
+//     scan loop's existing evalPredicate
+//   - callers still gate on query shape (aggregates / GROUP BY / …)
+//     via tryPKRangePushdown's pattern
+func (c *EmbeddedConnection) trySecondaryIndexPushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (indexName string, keyVal any, ok bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return "", nil, false
+	}
+	if sq.havingExpr != nil {
+		return "", nil, false
+	}
+	return c.trySecondaryIndexFromWhere(ctx, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexFromWhere is the shared core of secondary-index
+// pushdown: given a WHERE and the record type + metadata, find a
+// single-column VALUE index that matches a col=literal equality in
+// the AND chain. UPDATE / DELETE call this directly (no aggregate
+// gates apply to mutations); SELECT wraps it in
+// trySecondaryIndexPushdown above.
+func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (indexName string, keyVal any, ok bool) {
+	if whereExpr == nil {
+		return "", nil, false
+	}
+	leaves, lok := flattenAndPredicates(whereExpr.Expression())
+	if !lok {
+		return "", nil, false
+	}
+	// Collect bare col=literal equalities into a map.
+	equalities := make(map[string]any, len(leaves))
+	for _, leaf := range leaves {
+		col, val, leafOk := extractColEqualsLiteral(ctx, c, leaf)
+		if !leafOk {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+	if len(equalities) == 0 {
+		return "", nil, false
+	}
+	// Scan indexes on this record type. Pick the first VALUE index
+	// whose single-column key matches an equality leaf.
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		// VALUE index only. NewIndex always stamps Type="value"; the
+		// empty-string arm is defensive for hand-constructed Indexes.
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) == 0 {
+			continue
+		}
+		// Every index column must have an equality in the AND chain
+		// with a type-compatible literal. Tuple is built in declared
+		// index-column order.
+		vals := make([]any, len(idxCols))
+		matched := true
+		for i, col := range idxCols {
+			v, found := equalities[strings.ToUpper(col)]
+			if !found {
+				matched = false
+				break
+			}
+			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+			if fd == nil {
+				matched = false
+				break
+			}
+			if !literalMatchesPKKind(v, fd.Kind()) {
+				matched = false
+				break
+			}
+			vals[i] = v
+		}
+		if !matched {
+			continue
+		}
+		if len(vals) == 1 {
+			return idx.Name, vals[0], true
+		}
+		// Composite index: pack all values into a single tuple that
+		// secondaryIndexPushdownCursor can pass straight to
+		// ScanIndexRecords as a point range on the full index key.
+		// The tuple is wrapped in a sentinel so the cursor builder
+		// can distinguish it from a single-value match.
+		return idx.Name, secondaryIndexKeyTuple{values: vals}, true
+	}
+	return "", nil, false
+}
+
+// secondaryIndexKeyTuple wraps the composite-index key values so
+// secondaryIndexPushdownCursor can tell composite from single-col
+// without reflecting on the concrete type.
+type secondaryIndexKeyTuple struct {
+	values []any
+}
+
+// secondaryIndexColumns returns the ordered list of field names that
+// make up a VALUE index's key, or nil if the shape isn't one we push
+// down on. Accepts FieldKeyExpression (single column) or
+// CompositeKeyExpression whose children are all FieldKeyExpressions
+// (the two shapes SQL DDL's buildIndexKeyExpression emits).
+func secondaryIndexColumns(idx *recordlayer.Index) []string {
+	switch e := idx.RootExpression.(type) {
+	case *recordlayer.FieldKeyExpression:
+		return e.FieldNames()
+	case *recordlayer.CompositeKeyExpression:
+		return e.FieldNames()
+	}
+	return nil
+}
+
+// secondaryIndexPushdownCursor wraps `store.ScanIndexRecords` and
+// adapts its `*FDBIndexedRecord` stream to the `*FDBStoredRecord` the
+// SQL scan loop expects. The `keyVal` argument is either a single
+// value (single-col index) or a `secondaryIndexKeyTuple` carrying
+// the composite-index key values in declared order. The returned
+// cursor yields only the records matching the exact index key.
+func secondaryIndexPushdownCursor(
+	store *recordlayer.FDBRecordStore,
+	indexName string,
+	keyVal any,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	var keyTuple tuple.Tuple
+	if composite, ok := keyVal.(secondaryIndexKeyTuple); ok {
+		keyTuple = make(tuple.Tuple, 0, len(composite.values))
+		for _, v := range composite.values {
+			keyTuple = append(keyTuple, v)
+		}
+	} else {
+		keyTuple = tuple.Tuple{keyVal}
+	}
+	scanRange := recordlayer.TupleRange{
+		Low:          keyTuple,
+		High:         keyTuple,
+		LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+		HighEndpoint: recordlayer.EndpointTypeRangeInclusive,
+	}
+	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}
+
+// tryPKRangePushdown is the SELECT-gated variant of
+// tryPKRangeFromWhere. Same shape gates as tryPKEqualityPushdown.
+func (c *EmbeddedConnection) tryPKRangePushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) (pkRangeBounds, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return pkRangeBounds{}, false
+	}
+	if sq.havingExpr != nil {
+		return pkRangeBounds{}, false
+	}
+	return c.tryPKRangeFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// pkCompositeRange describes the leading equalities plus an optional
+// range on the LAST PK column that together yield a contiguous FDB
+// key range. Only valid for composite PKs where every column except
+// possibly the last is equated.
+type pkCompositeRange struct {
+	prefixVals []any // equalities for PK columns 0..len-2
+	lastBounds pkRangeBounds
+}
+
+// tryPKCompositeRangePushdown is the SELECT-gated variant of
+// tryPKCompositeRangeFromWhere.
+func (c *EmbeddedConnection) tryPKCompositeRangePushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) (pkCompositeRange, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return pkCompositeRange{}, false
+	}
+	if sq.havingExpr != nil {
+		return pkCompositeRange{}, false
+	}
+	return c.tryPKCompositeRangeFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// tryPKCompositeRangeFromWhere recognises the case of a composite
+// PK where all leading columns are equated to literals and the
+// LAST column has either an equality or a range predicate. The
+// range is valid on the last component only because composite key
+// ranges are contiguous in FDB only when prefixed by fixed values.
+func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) (pkCompositeRange, bool) {
+	if whereExpr == nil {
+		return pkCompositeRange{}, false
+	}
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) < 2 {
+		// Single-col PKs go through tryPKRangeFromWhere; 0-col PKs
+		// can't be pushed down at all.
+		return pkCompositeRange{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return pkCompositeRange{}, false
+	}
+	// Column-name → (op, val) from the WHERE leaves. An equality
+	// counts once; a range contributes one or both bounds on the
+	// same column. If a non-last PK column has anything other than
+	// equality, bail.
+	equalities := make(map[string]any, len(pkCols))
+	var lastBounds pkRangeBounds
+	lastCol := pkCols[len(pkCols)-1]
+	lastColUpper := strings.ToUpper(lastCol)
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		colUpper := strings.ToUpper(col)
+		isPK := false
+		for _, pkc := range pkCols {
+			if strings.EqualFold(pkc, col) {
+				isPK = true
+				break
+			}
+		}
+		if !isPK {
+			// Non-PK leaves are post-filtered by the scan — ignore.
+			continue
+		}
+		if colUpper == lastColUpper {
+			// `=` intentionally not handled — tryPKEqualityFromWhere
+			// fires before this function at every call site; if it
+			// would have matched (every PK column equated, types
+			// check), we wouldn't be here. Mirror of the comment in
+			// tryPKRangeFromWhere.
+			switch op {
+			case ">":
+				lastBounds.hasLow = true
+				lastBounds.low = val
+				lastBounds.lowInclusive = false
+			case ">=":
+				lastBounds.hasLow = true
+				lastBounds.low = val
+				lastBounds.lowInclusive = true
+			case "<":
+				lastBounds.hasHigh = true
+				lastBounds.high = val
+				lastBounds.highInclusive = false
+			case "<=":
+				lastBounds.hasHigh = true
+				lastBounds.high = val
+				lastBounds.highInclusive = true
+			}
+			continue
+		}
+		// Non-last PK column — only equality is acceptable.
+		if op != "=" {
+			return pkCompositeRange{}, false
+		}
+		equalities[colUpper] = val
+	}
+	// Every PK column except the last must have an equality.
+	prefixVals := make([]any, len(pkCols)-1)
+	for i := 0; i < len(pkCols)-1; i++ {
+		col := pkCols[i]
+		val, ok := equalities[strings.ToUpper(col)]
+		if !ok {
+			return pkCompositeRange{}, false
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil {
+			return pkCompositeRange{}, false
+		}
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			return pkCompositeRange{}, false
+		}
+		prefixVals[i] = val
+	}
+	// If the last column has no range or equality, we're left with
+	// just the prefix — that's a prefix scan, not a narrowed range.
+	// Fall through to the regular per-type scan (which is equally
+	// fast since the prefix IS the type prefix plus a bit more, and
+	// the current code doesn't know to narrow without a full bound).
+	if !lastBounds.hasLow && !lastBounds.hasHigh {
+		return pkCompositeRange{}, false
+	}
+	// Type-check the last column's bounds.
+	lastFD := rt.Descriptor.Fields().ByName(protoreflect.Name(lastCol))
+	if lastFD == nil {
+		return pkCompositeRange{}, false
+	}
+	if lastBounds.hasLow && !literalMatchesPKKind(lastBounds.low, lastFD.Kind()) {
+		return pkCompositeRange{}, false
+	}
+	if lastBounds.hasHigh && !literalMatchesPKKind(lastBounds.high, lastFD.Kind()) {
+		return pkCompositeRange{}, false
+	}
+	return pkCompositeRange{prefixVals: prefixVals, lastBounds: lastBounds}, true
+}
+
+// pkPushdownCompositeRangeScanCursor builds a range scan whose low
+// and high tuples share the same leading prefix (the equated
+// non-last PK columns) and differ only in the last component. When
+// the range is open on one side, the corresponding tuple falls back
+// to the prefix (inclusive) — covering the full range of that
+// prefix's last-component values in either direction.
+func pkPushdownCompositeRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	rt *recordlayer.RecordType,
+	cr pkCompositeRange,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	rtk := rt.GetRecordTypeKey()
+	prefix := make(tuple.Tuple, 0, 1+len(cr.prefixVals))
+	prefix = append(prefix, rtk)
+	for _, v := range cr.prefixVals {
+		prefix = append(prefix, v)
+	}
+	low := append(tuple.Tuple{}, prefix...)
+	high := append(tuple.Tuple{}, prefix...)
+	lowEp := recordlayer.EndpointTypeRangeInclusive
+	highEp := recordlayer.EndpointTypeRangeInclusive
+	if cr.lastBounds.hasLow {
+		low = append(low, cr.lastBounds.low)
+		if !cr.lastBounds.lowInclusive {
+			lowEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	if cr.lastBounds.hasHigh {
+		high = append(high, cr.lastBounds.high)
+		if !cr.lastBounds.highInclusive {
+			highEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
+}
+
+// tryPKRangeFromWhere recognises single-column PK range predicates
+// (`>`, `>=`, `<`, `<=`). Returns the low/high bounds when viable,
+// or (_, false) otherwise. Single-column PKs only; composite PKs
+// with a last-column range go through tryPKCompositeRangeFromWhere.
+//
+// Multiple bounds on the same side are collected with last-write-wins;
+// the scan loop's existing WHERE evaluator re-applies the full
+// predicate to each loaded row, so correctness holds even when the
+// bounds we chose are looser than necessary.
+func (c *EmbeddedConnection) tryPKRangeFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) (pkRangeBounds, bool) {
+	if whereExpr == nil {
+		return pkRangeBounds{}, false
+	}
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) != 1 {
+		return pkRangeBounds{}, false
+	}
+	pkCol := pkCols[0]
+
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return pkRangeBounds{}, false
+	}
+
+	fd := rt.Descriptor.Fields().ByName(protoreflect.Name(pkCol))
+	if fd == nil {
+		return pkRangeBounds{}, false
+	}
+
+	var bounds pkRangeBounds
+	pkColUpper := strings.ToUpper(pkCol)
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		if strings.ToUpper(col) != pkColUpper {
+			continue
+		}
+		if !literalMatchesPKKind(val, fd.Kind()) {
+			return pkRangeBounds{}, false
+		}
+		// `=` intentionally not handled here — the caller tries
+		// tryPKEqualityFromWhere first, which succeeds for any valid
+		// equality on a single-col PK. Reaching this function with
+		// an equality leaf means equality pushdown already rejected
+		// the query for some other reason; we skip equalities here
+		// and let any range predicates determine the bounds.
+		switch op {
+		case ">":
+			bounds.hasLow = true
+			bounds.low = val
+			bounds.lowInclusive = false
+		case ">=":
+			bounds.hasLow = true
+			bounds.low = val
+			bounds.lowInclusive = true
+		case "<":
+			bounds.hasHigh = true
+			bounds.high = val
+			bounds.highInclusive = false
+		case "<=":
+			bounds.hasHigh = true
+			bounds.high = val
+			bounds.highInclusive = true
+		}
+	}
+	if !bounds.hasLow && !bounds.hasHigh {
+		return pkRangeBounds{}, false
+	}
+	return bounds, true
+}
+
+// extractColOpLiteral generalises extractColEqualsLiteral to any
+// comparison operator among `=`, `>`, `>=`, `<`, `<=`. Returns the
+// operator text (one of the above), the bare column name, and the
+// literal value. When the RHS side is the column and the LHS is the
+// literal, the operator is flipped to preserve col-on-left semantics
+// (so `5 < id` becomes `id > 5`).
+func extractColOpLiteral(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (op, col string, val any, ok bool) {
+	pred, good := expr.(*antlrgen.PredicatedExpressionContext)
+	if !good {
+		return "", "", nil, false
+	}
+	if pred.Predicate() != nil {
+		return "", "", nil, false
+	}
+	bcp, good := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if !good {
+		return "", "", nil, false
+	}
+	opC := bcp.ComparisonOperator()
+	if opC == nil {
+		return "", "", nil, false
+	}
+	opText := strings.ReplaceAll(opC.GetText(), " ", "")
+	switch opText {
+	case "=", ">", ">=", "<", "<=":
+	default:
+		return "", "", nil, false
+	}
+	// Column-on-left, literal-on-right.
+	if name, isCol := extractColumnRef(bcp.GetLeft()); isCol {
+		if v, isLit := evalConstantAtom(ctx, c, bcp.GetRight()); isLit {
+			return opText, name, v, true
+		}
+	}
+	// Column-on-right, literal-on-left — flip the operator.
+	if name, isCol := extractColumnRef(bcp.GetRight()); isCol {
+		if v, isLit := evalConstantAtom(ctx, c, bcp.GetLeft()); isLit {
+			return flipComparisonOp(opText), name, v, true
+		}
+	}
+	return "", "", nil, false
+}
+
+// flipComparisonOp flips a comparison operator for the case where
+// the column ref appears on the right (`5 < id` → treat as `id > 5`).
+func flipComparisonOp(op string) string {
+	switch op {
+	case ">":
+		return "<"
+	case ">=":
+		return "<="
+	case "<":
+		return ">"
+	case "<=":
+		return ">="
+	}
+	return op // `=` is symmetric
+}
+
+// extractPKUserFields returns the ordered list of user field names
+// making up the primary key when pushdown is safe, or nil otherwise.
+//
+// Only CompositeKeyExpression is supported today: SQL DDL's default
+// (non-intermingled) path emits `Concat(RecordTypeKey, Field(col)…)`,
+// and the RecordTypeKey prefix in the range tuple naturally scopes
+// the FDB scan to the right record type. The bare FieldKeyExpression
+// branch — which SQL DDL only emits for `SetIntermingleTables(true)`
+// schemas — has NO type filter; an intermingled multi-table schema
+// where different types share a PK column space could return a
+// wrong-typed record at the same key. We bail on that shape until
+// a type-filtering wrapper is added; the scan path still handles
+// intermingled tables correctly.
+func extractPKUserFields(pk recordlayer.KeyExpression) []string {
+	if e, ok := pk.(*recordlayer.CompositeKeyExpression); ok {
+		// FieldNames() on a CompositeKeyExpression returns just the
+		// Field children, not the RecordTypeKey (which contributes no
+		// named column). That's exactly the user field list.
+		return e.FieldNames()
+	}
+	return nil
+}
+
+// flattenAndPredicates walks a WHERE expression as a conjunction of
+// leaf predicates. Returns the flat list of leaves and `true` on
+// success. Fails (returns false) when the expression contains any
+// non-AND logical operator (OR, XOR, NOT) — those break the
+// "everything the scan would also have matched" invariant that
+// pushdown relies on.
+func flattenAndPredicates(expr antlrgen.IExpressionContext) ([]antlrgen.IExpressionContext, bool) {
+	le, ok := expr.(*antlrgen.LogicalExpressionContext)
+	if !ok {
+		return []antlrgen.IExpressionContext{expr}, true
+	}
+	op := le.LogicalOperator()
+	opText := strings.ReplaceAll(op.GetText(), " ", "")
+	isAnd := op.AND() != nil || opText == "&&"
+	if !isAnd {
+		return nil, false
+	}
+	left, lok := flattenAndPredicates(le.Expression(0))
+	if !lok {
+		return nil, false
+	}
+	right, rok := flattenAndPredicates(le.Expression(1))
+	if !rok {
+		return nil, false
+	}
+	return append(left, right...), true
+}
+
+// extractColEqualsLiteral returns (colName, literalValue, true) when
+// the expression is exactly a `col = literal` equality. NULL on the
+// RHS and any non-constant RHS cause a `false` return, in which case
+// the pushdown caller falls back to the full scan.
+func extractColEqualsLiteral(
+	ctx context.Context,
+	c *EmbeddedConnection,
+	expr antlrgen.IExpressionContext,
+) (string, any, bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return "", nil, false
+	}
+	if pred.Predicate() != nil {
+		return "", nil, false
+	}
+	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
+	if !ok {
+		return "", nil, false
+	}
+	op := bcp.ComparisonOperator()
+	if op == nil || strings.ReplaceAll(op.GetText(), " ", "") != "=" {
+		return "", nil, false
+	}
+	// One side must be a column ref; the other must evaluate to a
+	// literal. Try both orderings.
+	if colName, ok := extractColumnRef(bcp.GetLeft()); ok {
+		if val, ok := evalConstantAtom(ctx, c, bcp.GetRight()); ok {
+			return colName, val, true
+		}
+	}
+	if colName, ok := extractColumnRef(bcp.GetRight()); ok {
+		if val, ok := evalConstantAtom(ctx, c, bcp.GetLeft()); ok {
+			return colName, val, true
+		}
+	}
+	return "", nil, false
+}
+
+// extractColumnRef returns the bare (last-segment) column name from a
+// FullColumnName expression atom.
+func extractColumnRef(atom antlrgen.IExpressionAtomContext) (string, bool) {
+	fcn, ok := atom.(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok {
+		return "", false
+	}
+	name := fullIdToName(fcn.FullColumnName().FullId())
+	return name[strings.LastIndex(name, ".")+1:], true
+}
+
+// evalConstantAtom attempts to evaluate an expression atom without a
+// row context. Succeeds for literals / bound params / pure-constant
+// expressions; fails otherwise (including for NULL, since NULL on the
+// RHS of `=` is never true under three-valued logic and should fall
+// back to scan for consistent semantics).
+func evalConstantAtom(ctx context.Context, c *EmbeddedConnection, atom antlrgen.IExpressionAtomContext) (any, bool) {
+	v, err := evalExprAtom(ctx, c, nil, atom)
+	if err != nil {
+		return nil, false
+	}
+	if v == nil {
+		return nil, false
+	}
+	return v, true
+}
+
+// literalMatchesPKKind reports whether a driver-value literal is a
+// safe tuple element for a PK column of the given proto kind. Only
+// numeric / string / bytes kinds are in scope — booleans and
+// enums can be PK columns in theory but are unusual and left to the
+// scan path for now.
+func literalMatchesPKKind(val any, kind protoreflect.Kind) bool {
+	switch kind {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		switch val.(type) {
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return true
+		}
+		return false
+	case protoreflect.StringKind:
+		_, ok := val.(string)
+		return ok
+	case protoreflect.BytesKind:
+		_, ok := val.([]byte)
+		return ok
+	}
+	return false
+}
+
+// stripCTEColumnQualifiers returns the column list with any leading
+// `alias.` qualifier removed from each name (taking the text after
+// the LAST dot). CTE output schemas expose bare column names —
+// `WITH x AS (SELECT d.id FROM t AS d)` yields a CTE with column
+// `id`, not `d.id`, matching Postgres / SQL standard. If the inner
+// query has two qualified projections that collapse to the same
+// bare name (`SELECT a.v, b.v FROM …`) both columns keep their
+// suffix form and downstream queries must use aliases to
+// disambiguate — consistent with how regular SQL handles ambiguous
+// projection names.
+func stripCTEColumnQualifiers(cols []string) []string {
+	out := make([]string, len(cols))
+	for i, col := range cols {
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			out[i] = col[dot+1:]
+		} else {
+			out[i] = col
+		}
+	}
+	return out
+}
+
+// containsTableRef reports whether the parse subtree references a
+// table with the given uppercase name. Used by the recursive CTE
+// evaluator to decide whether a CTE body actually self-references —
+// the RECURSIVE keyword is a scope enabler (matches Postgres), so a
+// non-self-referencing body is evaluated on the non-recursive path.
+func containsTableRef(tree antlr.Tree, upperName string) bool {
+	if tree == nil {
+		return false
+	}
+	if tn, ok := tree.(antlrgen.ITableNameContext); ok {
+		if strings.ToUpper(fullIdToName(tn.FullId())) == upperName {
+			return true
+		}
+	}
+	for i := 0; i < tree.GetChildCount(); i++ {
+		if containsTableRef(tree.GetChild(i), upperName) {
+			return true
+		}
+	}
+	return false
+}
+
 // execSelectQuery executes a parsed selectQuery and returns a driver.Rows.
 // Extracted so execQueryBodyRows can call it without an ISelectStatementContext.
 func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
@@ -760,6 +1902,27 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter,
 				"derived table %q", sq.tableName)
+		}
+		// Reject duplicate output column names in the derived table's
+		// projection (e.g. `SELECT a.*, a.* FROM a` which collapses
+		// to id/name × 2). Java errors 42702 at the outer reference
+		// because both sources of `id` are equally valid; Go surfaces
+		// 22023 via the materialiser since the cte.cols list can't
+		// disambiguate. Pinned by ambiguous_column.yaml.
+		if len(cols) > 1 {
+			seen := make(map[string]bool, len(cols))
+			for _, col := range cols {
+				key := col
+				if dot := strings.LastIndex(col, "."); dot >= 0 {
+					key = col[dot+1:]
+				}
+				key = strings.ToUpper(key)
+				if seen[key] {
+					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+						"derived table %q has duplicate column %q", sq.tableName, col)
+				}
+				seen[key] = true
+			}
 		}
 		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
 	}
@@ -812,6 +1975,22 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 	// nested query returns.
 	if ctesCtx := query.Ctes(); ctesCtx != nil {
 		defer c.pushCTEScope()()
+		// Java's recursive-cte.yamsql accepts a trailing `TRAVERSAL ORDER
+		// {pre_order | level_order | post_order}` clause. The default
+		// (unspecified) is level_order — matches Java pre-4.7.1.0
+		// behaviour. PRE_ORDER / POST_ORDER use DFS (Java 4.7.1.0+).
+		traversalOrder := traversalLevelOrder
+		if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+			switch {
+			case toc.PRE_ORDER() != nil:
+				traversalOrder = traversalPreOrder
+			case toc.POST_ORDER() != nil:
+				traversalOrder = traversalPostOrder
+			case toc.LEVEL_ORDER() != nil:
+				traversalOrder = traversalLevelOrder
+			}
+		}
+		recursiveKeyword := ctesCtx.RECURSIVE() != nil
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			cteName := strings.ToUpper(fullIdToName(nq.GetName()))
 			// Java alignment: duplicate CTE names in the same WITH list
@@ -821,7 +2000,52 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
 					"duplicate CTE name %q in WITH clause", cteName)
 			}
-			cteCols, cteRows, cteErr := c.execQueryBodyRows(ctx, nq.Query().QueryExpressionBody())
+			// Column-rename list (`WITH name(c1, c2, ...) AS ...`) is
+			// resolved once up-front so both the recursive and
+			// non-recursive paths can apply it consistently. Recursive
+			// CTEs need the renamed names INSIDE the iteration so the
+			// recursive branch can reference the renamed columns
+			// (e.g. `WITH RECURSIVE t(node, up) ... SELECT b.id, b.parent
+			// FROM t AS a ... WHERE b.id = a.up`).
+			var renameList []string
+			if aliases := nq.GetColumnAliases(); aliases != nil {
+				list := aliases.AllFullId()
+				renameList = make([]string, len(list))
+				for i, fid := range list {
+					renameList[i] = stripIdentifierQuotes(fullIdToName(fid))
+				}
+			}
+			var cteCols []string
+			var cteRows [][]driver.Value
+			var cteErr error
+			body := nq.Query().QueryExpressionBody()
+			// RECURSIVE is a scope enabler, not a requirement: a CTE
+			// marked RECURSIVE that does not actually self-reference is
+			// evaluated non-recursively (matches Postgres / SQL spec).
+			if recursiveKeyword && containsTableRef(body, cteName) {
+				cteCols, cteRows, cteErr = c.materializeRecursiveCTE(ctx, body, cteName, renameList, traversalOrder)
+			} else {
+				cteCols, cteRows, cteErr = c.execQueryBodyRows(ctx, body)
+				// Apply non-recursive rename here; the recursive path
+				// handled it internally.
+				if cteErr == nil && renameList != nil {
+					if len(renameList) != len(cteCols) {
+						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+							"CTE %q column-rename has %d names but inner query has %d columns",
+							cteName, len(renameList), len(cteCols))
+					}
+					cteCols = renameList
+				} else if cteErr == nil {
+					// Strip projection qualifiers from CTE output column
+					// names: `SELECT d.id FROM t AS d` materialises a CTE
+					// whose column is `id`, not `d.id`. Matches Postgres /
+					// SQL standard where the CTE's output schema exposes
+					// the bare column name (the inner alias is an internal
+					// detail). Without this, `WITH x AS (SELECT d.id FROM
+					// t AS d) SELECT id FROM x` errored 42703.
+					cteCols = stripCTEColumnQualifiers(cteCols)
+				}
+			}
 			if cteErr != nil {
 				// Preserve the inner SQLSTATE (e.g. 42703 from a missing
 				// column reference in a renamed outer CTE); otherwise
@@ -832,27 +2056,6 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 					innerCode = apiErr.Code
 				}
 				return nil, api.WrapErrorf(cteErr, innerCode, "CTE %q", cteName)
-			}
-			// Java alignment: WITH name(c1, c2, ...) AS (SELECT ...) — the
-			// optional column-list renames the CTE's output columns. The
-			// inner query's column names are replaced positionally. Errors
-			// 42F10 (INVALID_COLUMN_REFERENCE, Java class-42) when the rename
-			// count doesn't match the inner column count — matches Java's
-			// cte.yamsql pin.
-			if aliases := nq.GetColumnAliases(); aliases != nil {
-				renameList := aliases.AllFullId()
-				if len(renameList) != len(cteCols) {
-					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-						"CTE %q column-rename has %d names but inner query has %d columns",
-						cteName, len(renameList), len(cteCols))
-				}
-				renamed := make([]string, len(renameList))
-				for i, fid := range renameList {
-					renamed[i] = stripIdentifierQuotes(fullIdToName(fid))
-				}
-				// Values are stored positionally in each row slice, so
-				// renaming cols[] is enough — no per-row rewrite needed.
-				cteCols = renamed
 			}
 			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
 		}
@@ -1300,6 +2503,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if groupByNames[ac.groupCol] {
 				continue
 			}
+			// Qualified SELECT-list ref against an unqualified GROUP
+			// BY (or vice versa): check the bare last-segment too, so
+			// `SELECT x.col1 FROM ... GROUP BY col1` passes.
+			if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
+				if groupByNames[ac.groupCol[dot+1:]] {
+					continue
+				}
+			}
 			if _, defined := filtered[0][ac.groupCol]; defined {
 				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
@@ -1574,6 +2785,18 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	groupColIdx := map[string]int{}
 	for i, col := range sq.groupBy {
 		groupColIdx[col] = i
+		// Register the bare last-segment too so that a SELECT-list
+		// `col1` resolves a GROUP BY written as `x.col1`, and vice
+		// versa. First-wins on collision: if two GROUP BY keys share
+		// the same bare name (`GROUP BY x.col1, y.col1`), the first
+		// takes the bare slot; queries like `SELECT col1` over such a
+		// group are ambiguous to begin with.
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			bare := col[dot+1:]
+			if _, exists := groupColIdx[bare]; !exists {
+				groupColIdx[bare] = i
+			}
+		}
 	}
 	// emitIdx lists the aggCols positions that appear in cols/data:
 	// visible columns first, then sortOnly columns (harvested from
@@ -1611,6 +2834,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			}
 			if ac.groupCol != "" {
 				idx, ok := groupColIdx[ac.groupCol]
+				if !ok {
+					// Qualified SELECT against unqualified GROUP BY:
+					// try the bare last-segment too. Symmetric with
+					// the validation loop above.
+					if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
+						idx, ok = groupColIdx[ac.groupCol[dot+1:]]
+					}
+				}
 				if ok {
 					fullVals[i] = gs.groupVals[idx]
 				}
@@ -2589,7 +3820,29 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
+		// PK pushdown: if WHERE is an AND-chain of `pk_col = literal`
+		// equalities covering every PK column, narrow the scan from
+		// the whole type range to the exact key. The existing scan
+		// loop still runs over the cursor (applying WHERE, projection,
+		// ORDER BY, LIMIT), just over at-most-one record. Zero
+		// behavioural change besides avoiding the full-type iteration.
+		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
+		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownScanCursor(store, rt, pkVals)
+		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
+		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
+			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(idxName) {
+			// IsIndexScannable guards against WRITE_ONLY / DISABLED
+			// indexes: without it the pushdown would convert a
+			// previously-working full-scan query into a hard error at
+			// first OnNext(). Today the embedded DDL layer only builds
+			// READABLE indexes, but online indexing may change that.
+			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+		} else {
+			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
+		}
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the SQL-level aliases of this scan so correlated
@@ -2909,6 +4162,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			groupColIdx := map[string]int{}
 			for i, col := range sq.groupBy {
 				groupColIdx[col] = i
+				// Bare last-segment alias (symmetric with
+				// aggregateMapRows) so qualified GROUP BY keys resolve
+				// against unqualified SELECT-list references.
+				// First-wins on bare collision; see aggregateMapRows.
+				if dot := strings.LastIndex(col, "."); dot >= 0 {
+					bare := col[dot+1:]
+					if _, exists := groupColIdx[bare]; !exists {
+						groupColIdx[bare] = i
+					}
+				}
 			}
 			emitIdx := make([]int, 0, len(sq.aggCols))
 			for i, ac := range sq.aggCols {
@@ -2939,6 +4202,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					}
 					if ac.groupCol != "" {
 						idx, ok := groupColIdx[ac.groupCol]
+						if !ok {
+							if dot := strings.LastIndex(ac.groupCol, "."); dot >= 0 {
+								idx, ok = groupColIdx[ac.groupCol[dot+1:]]
+							}
+						}
 						if ok {
 							fullVals[i] = gs.groupVals[idx]
 						}
@@ -3035,7 +4303,25 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
 					continue
 				}
-				fd := allFields.ByName(protoreflect.Name(colName))
+				// Strip a trivial qualifier (`d.id` where `d` is this
+				// source's table name or alias) before the field lookup.
+				// Matches how the correlated-subquery path handles
+				// qualified refs in evalExprAtom via currentSourceAliases.
+				// Without this, `SELECT d.id FROM t AS d` errored 42703
+				// at the ByName(`d.id`) lookup. The output column name
+				// keeps the qualifier — downstream derived-table
+				// materialisation relies on that preserved form to
+				// detect duplicate-column shapes like `SELECT a.*,
+				// a.* FROM a`, which collapse to equal names only
+				// after qualifier stripping.
+				lookupName := colName
+				if dot := strings.LastIndex(colName, "."); dot >= 0 {
+					qual := strings.ToUpper(colName[:dot])
+					if strings.EqualFold(qual, sq.tableName) || (sq.tableAlias != "" && strings.EqualFold(qual, sq.tableAlias)) {
+						lookupName = colName[dot+1:]
+					}
+				}
+				fd := allFields.ByName(protoreflect.Name(lookupName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q not found in table %q", colName, sq.tableName)
@@ -3579,6 +4865,13 @@ type selectQuery struct {
 	// groupByExprs is parallel to groupBy. nil entry = bare column (fast path
 	// via field-descriptor / map lookup); non-nil = evaluate per row/message.
 	groupByExprs []antlrgen.IExpressionContext
+	// groupByAliases maps UPPERCASE `GROUP BY col AS alias` alias names to
+	// their index in groupBy. Used at parse time to resolve SELECT-list
+	// references to a GROUP BY alias (`SELECT x FROM t GROUP BY col1 AS x`)
+	// — the SELECT-list column gets rewritten to the underlying group-by
+	// name with the alias preserved as the output column name. Nil = no
+	// aliased GROUP BY entries.
+	groupByAliases map[string]int
 	// aggCols describes a mixed GROUP BY + aggregate SELECT list.
 	// Non-nil only when groupBy is non-empty.
 	aggCols []aggSelectCol
@@ -4468,13 +5761,20 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// group key comes from the expression.
 		seenAliases := make(map[string]bool)
 		for _, item := range groupByCtx.AllGroupByItem() {
+			aliasName := ""
 			if item.Uid() != nil {
-				alias := stripIdentifierQuotes(item.Uid().GetText())
-				if seenAliases[alias] {
+				aliasName = stripIdentifierQuotes(item.Uid().GetText())
+				// SQL identifiers are case-insensitive, so `GROUP BY
+				// col1 AS x, col2 AS X` must error 42702 even though
+				// the two aliases differ only in case. groupByAliases
+				// below uses uppercase keys for lookup; the dedup
+				// check uses the same normalisation.
+				aliasKey := strings.ToUpper(aliasName)
+				if seenAliases[aliasKey] {
 					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-						"duplicate alias %q in GROUP BY", alias)
+						"duplicate alias %q in GROUP BY", aliasName)
 				}
-				seenAliases[alias] = true
+				seenAliases[aliasKey] = true
 			}
 			posName, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projCols, projAliases, sq.aggCols)
 			if posErr != nil {
@@ -4483,6 +5783,12 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			if isPos {
 				sq.groupBy = append(sq.groupBy, posName)
 				sq.groupByExprs = append(sq.groupByExprs, nil)
+				if aliasName != "" {
+					if sq.groupByAliases == nil {
+						sq.groupByAliases = make(map[string]int)
+					}
+					sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+				}
 				continue
 			}
 			colName, nameErr := columnNameFromExpr(item.Expression(), "GROUP BY expression")
@@ -4517,6 +5823,80 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				// value used for grouping comes from evaluating the expr.
 				sq.groupBy = append(sq.groupBy, item.Expression().GetText())
 				sq.groupByExprs = append(sq.groupByExprs, item.Expression())
+			}
+			if aliasName != "" {
+				if sq.groupByAliases == nil {
+					sq.groupByAliases = make(map[string]int)
+				}
+				sq.groupByAliases[strings.ToUpper(aliasName)] = len(sq.groupBy) - 1
+			}
+		}
+
+		// Java alignment (groupby-tests.yamsql): `SELECT x FROM t GROUP
+		// BY col1 AS x` — the alias becomes a usable SELECT-list
+		// reference. Rewrite any bare projection whose name matches a
+		// GROUP BY alias to the underlying group-by column, preserving
+		// the alias itself as the output column name. Only bare column
+		// group-by items (groupByExprs[i] == nil) are handled;
+		// expression group keys keep their synthetic display name.
+		aliasResolves := func(name string) (underlying string, outName string, ok bool) {
+			idx, aliased := sq.groupByAliases[strings.ToUpper(name)]
+			if !aliased {
+				return "", "", false
+			}
+			if idx < len(sq.groupByExprs) && sq.groupByExprs[idx] != nil {
+				return "", "", false
+			}
+			return sq.groupBy[idx], name, true
+		}
+		for i := range sq.projCols {
+			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				continue
+			}
+			col := sq.projCols[i]
+			if col == "" {
+				continue
+			}
+			underlying, outName, ok := aliasResolves(col)
+			if !ok {
+				continue
+			}
+			if i >= len(sq.projAliases) {
+				padded := make([]string, i+1)
+				copy(padded, sq.projAliases)
+				sq.projAliases = padded
+			}
+			if sq.projAliases[i] == "" {
+				sq.projAliases[i] = outName
+			}
+			sq.projCols[i] = underlying
+		}
+		// Also rewrite aggCols entries: when the SELECT list mixes
+		// plain-col refs with aggregates, bare columns are classified
+		// into aggCols with groupCol set rather than into projCols.
+		// Also rewrite aggregate arguments — `MAX(z)` where z is a
+		// GROUP BY alias needs the arg resolved to the underlying col
+		// before per-row evaluation.
+		for i := range sq.aggCols {
+			ac := &sq.aggCols[i]
+			if ac.outExpr != nil {
+				continue
+			}
+			if ac.groupCol != "" {
+				if underlying, outName, ok := aliasResolves(ac.groupCol); ok {
+					ac.groupCol = underlying
+					if ac.outName == "" {
+						ac.outName = outName
+					}
+				}
+			}
+			if ac.aggFunc != "" && ac.aggArg != "" && ac.aggExpr == nil {
+				// Rewrite arg only; aggregate's outName (e.g. `MAX(z)`)
+				// is already set at parse time and shouldn't be
+				// collapsed to the alias string.
+				if underlying, _, ok := aliasResolves(ac.aggArg); ok {
+					ac.aggArg = underlying
+				}
 			}
 		}
 	}
@@ -7648,7 +9028,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		cursor := pkPushdownCursor(ctx, c, store, rt, md, whereExpr, tableName)
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the source alias so correlated EXISTS / IN inside WHERE
@@ -7763,7 +9143,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 			return nil, storeErr
 		}
 
-		cursor := store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
+		cursor := pkPushdownCursor(ctx, c, store, rt, md, whereExpr, tableName)
 		defer cursor.Close() //nolint:errcheck
 
 		// Record the source alias so correlated EXISTS / IN inside WHERE

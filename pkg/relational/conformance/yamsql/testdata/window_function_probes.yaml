@@ -20,18 +20,3 @@ tests:
   # DENSE_RANK() OVER (PARTITION BY g ORDER BY v).
   - query: SELECT id, DENSE_RANK() OVER (PARTITION BY g ORDER BY v) FROM t ORDER BY id
     error_code: "0A000"
-  # Recursive CTE (WITH RECURSIVE) — grammar accepts the keyword.
-  # Evaluator bails because the inner SELECT references the CTE name
-  # being defined (the recursive part), which the non-recursive CTE
-  # evaluator can't bind — errors 42F01 (UNDEFINED_TABLE) at inner
-  # resolution, surfaced with that code after swingshift-41's CTE
-  # wrap change preserved the inner SQLSTATE. Ideally 0A000 (feature
-  # not supported); match-Java work tracked in TODO.md.
-  - query: |-
-      WITH RECURSIVE counter(n) AS (
-        SELECT 1 FROM t
-        UNION ALL
-        SELECT n + 1 FROM counter WHERE n < 5
-      )
-      SELECT * FROM counter ORDER BY n
-    error_code: "42F01"
