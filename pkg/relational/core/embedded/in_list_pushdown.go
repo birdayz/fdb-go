@@ -215,10 +215,8 @@ func (c *EmbeddedConnection) tryPKInListPushdown(
 // at the pushdown level (post-filtered by evalPredicate on each
 // scanned record, same pattern as composite range).
 type pkCompositeInList struct {
-	prefixVals  []any
-	inValues    []any
-	inColName   string // uppercase — for fd lookup / logging
-	totalPKCols int
+	prefixVals []any
+	inValues   []any
 }
 
 // tryPKCompositeInListFromWhere looks for the composite-PK equivalent
@@ -320,10 +318,8 @@ func (c *EmbeddedConnection) tryPKCompositeInListFromWhere(
 		}
 	}
 	return pkCompositeInList{
-		prefixVals:  prefixVals,
-		inValues:    inVals,
-		inColName:   strings.ToUpper(inCol),
-		totalPKCols: len(pkCols),
+		prefixVals: prefixVals,
+		inValues:   inVals,
 	}, true
 }
 
