@@ -31,15 +31,25 @@ import (
 // and the scan's post-filter still applies the full WHERE via
 // evalPredicate.
 //
-// Scope restrictions:
-//   - Single-column PK only (composite PK IN would require a cross
-//     product, e.g. `WHERE a = 1 AND id IN (1,2,3)`, which we could
-//     support as a follow-up).
+// Scope (single-col PK covered here; composite-PK IN below as
+// tryPKCompositeInListFromWhere; secondary-index IN covered in the
+// trySecondaryIndexInList* family further down):
 //   - AND-chain WHERE only (flattenAndPredicates bails on OR).
 //   - PK equality pushdown takes precedence: an AND with both
 //     `id = 1` and `id IN (1,2)` would pick equality first (narrower).
 //   - Type-mismatched literals bail to the scan so evalPredicate can
 //     surface 22000, matching the other pushdown paths.
+//
+// Composite-PK form (tryPKCompositeInListFromWhere): `WHERE a = lit AND
+// b IN (v1..vN)` on PK (a, b) — N point scans, each anchored at
+// [a_lit, v_i]. Same leading-eq relaxation as the composite range
+// extractor: the IN-col can sit anywhere in the PK; earlier cols
+// must be equated; later cols are unconstrained (post-filtered).
+//
+// Secondary-index forms: single-col (trySecondaryIndexInListFromWhere)
+// and composite (trySecondaryIndexCompositeInListFromWhere). Same
+// decomposition, but each sub-scan uses the covering-index cursor
+// when canCoverIndex holds.
 
 // extractColInList returns (colName, values, true) when the leaf is
 // exactly `col IN (lit1, lit2, ..., litN)` with every element evaluating
