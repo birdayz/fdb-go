@@ -127,6 +127,14 @@ tests:
     rows:
       - [10]
       - [20]
+
+  # COUNT(DISTINCT alias): aggDistinct=true branch of the alias-in-
+  # arg rewrite. Each group has one distinct value of z (= its
+  # group key), so the count is 1 per group.
+  - query: SELECT COUNT(DISTINCT z) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 AS z ORDER BY z
+    rows:
+      - [1]
+      - [1]
   # Java alignment (groupby-tests.yamsql): `SELECT x FROM T1 GROUP BY
   # col1 AS x` — the alias becomes a usable SELECT-list reference;
   # the output column is named `x` and its values are col1's distinct

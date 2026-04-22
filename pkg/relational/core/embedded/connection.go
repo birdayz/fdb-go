@@ -5692,6 +5692,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				}
 			}
 			if ac.aggFunc != "" && ac.aggArg != "" && ac.aggExpr == nil {
+				// Rewrite arg only; aggregate's outName (e.g. `MAX(z)`)
+				// is already set at parse time and shouldn't be
+				// collapsed to the alias string.
 				if underlying, _, ok := aliasResolves(ac.aggArg); ok {
 					ac.aggArg = underlying
 				}
