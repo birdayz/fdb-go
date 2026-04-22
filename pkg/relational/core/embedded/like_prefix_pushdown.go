@@ -97,18 +97,27 @@ func extractColLikePrefixLiteral(
 }
 
 // likePatternToPrefix walks a LIKE pattern and returns (decoded
-// prefix, true) iff the pattern is exactly `<literal_prefix>%` with
-// no unescaped `_`, no interior unescaped `%`, and a non-empty
-// literal part. Escape-char handling follows SQL: an escape char
-// consumes the next char verbatim (including `%`, `_`, or another
-// escape). A dangling escape at end-of-pattern bails.
+// prefix, true) when the pattern has a non-empty literal prefix
+// before the first unescaped wildcard (`%` or `_`). The prefix is
+// the narrowing range low-bound; any wildcards and literal suffix
+// after it are handled by the scan loop's post-filter likeMatch.
+//
+// Escape-char handling follows SQL: an escape char consumes the
+// next char verbatim (including `%`, `_`, or another escape). A
+// dangling escape at end-of-pattern bails to the scan path.
+//
+// Bail cases:
+//   - Pattern starts with a wildcard (no literal prefix to narrow).
+//   - Pattern has no wildcard at all (exact match — scan path
+//     handles equality trivially, no range to narrow).
+//   - Dangling escape at end of pattern.
 //
 // Exported shape for the fuzz target and future reuse by cursor-
-// elimination logic (which may want to know the exact prefix before
-// it hits the pushdown extractor).
+// elimination logic.
 func likePatternToPrefix(pattern string, escape rune) (string, bool) {
 	runes := []rune(pattern)
 	var b strings.Builder
+	sawWildcard := false
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		if escape >= 0 && r == escape {
@@ -122,23 +131,20 @@ func likePatternToPrefix(pattern string, escape rune) (string, bool) {
 			continue
 		}
 		switch r {
-		case '%':
-			if i != len(runes)-1 {
-				return "", false // interior %
-			}
+		case '%', '_':
+			sawWildcard = true
+			// First unescaped wildcard terminates the literal prefix.
 			if b.Len() == 0 {
-				return "", false // empty prefix
+				return "", false // pattern starts with wildcard
 			}
 			return b.String(), true
-		case '_':
-			return "", false // unescaped single-char wildcard
 		default:
 			b.WriteRune(r)
 		}
 	}
-	// No trailing %, so the pattern matches the literal exactly —
-	// that's equality, not a prefix scan. Let the scan path handle
-	// it (trivially).
+	// Pattern consumed with no wildcard — treat as exact match, no
+	// range narrowing needed (scan path's likeMatch handles it).
+	_ = sawWildcard
 	return "", false
 }
 

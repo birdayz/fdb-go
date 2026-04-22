@@ -294,8 +294,43 @@ tests:
     rows:
       - ['x_ray']
 
-  # ESCAPE with interior `_` (unescaped) still bails — pattern
-  # 'y\%l_' has an unescaped single-char wildcard.
+  # ESCAPE with interior `_` (unescaped) narrows to the prefix
+  # before the `_`. The scan loop's likeMatch handles the single-char
+  # wildcard position. Result is the same rows as the scan-only path.
   - query: SELECT name FROM t WHERE name LIKE 'y\%l_' ESCAPE '\' ORDER BY name
     rows:
       - ['y%lo']
+
+  # -------------------------------------------------------------------
+  # Interior-wildcard prefix narrowing
+  # -------------------------------------------------------------------
+  #
+  # `LIKE 'foo%bar'` / `LIKE 'f_o'` narrow at the first unescaped
+  # wildcard — "foo" or "f" respectively. The scan loop's likeMatch
+  # handles the wildcards and trailing literal. The narrowing keeps
+  # the scan bounded while the post-filter enforces full semantics.
+
+  # 'a%le' → narrows at 'a', matches 'apple'.
+  - query: SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name
+    rows:
+      - ['apple']
+
+  # 'a_ple' → narrows at 'a', matches 'apple' (5 chars, a-_-p-l-e
+  # where `_` matches 'p'). Wait — the pattern has underscore at
+  # position 1, literal 'p','l','e' at 2,3,4 — so "apple" is
+  # a=a, _=p, p=p, l=l, e=e → matches. "apricot" doesn't match
+  # (length mismatch).
+  - query: SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name
+    rows:
+      - ['apple']
+
+  # 'bana%' — ends with %, narrows at 'bana'. Matches banana.
+  - query: SELECT name FROM t WHERE name LIKE 'bana%'
+    rows:
+      - ['banana']
+
+  # Underscore at the start — no literal prefix → bails. Still
+  # correct via the scan path.
+  - query: SELECT name FROM t WHERE name LIKE '_anana'
+    rows:
+      - ['banana']
