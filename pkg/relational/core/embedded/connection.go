@@ -4415,10 +4415,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// full type scan. The scan loop below still applies the full
 		// WHERE via evalPredicate, so every pushdown is a superset of
 		// the rows the scan would have matched — partial narrowing is
-		// correct. Covering-index optimisation (skip the by-PK fetch)
-		// is considered at the secondary-index branches when the
-		// SELECT's referenced column set fits the (idx cols, PK cols)
-		// union.
+		// correct.
+		//
+		// Each branch sets naturalOrder — the column sequence the
+		// resulting cursor emits rows in, always ASC. Used downstream
+		// by naturalOrderSatisfies to skip the in-memory ORDER BY sort
+		// and to enable LIMIT early-termination when the ORDER BY
+		// clause is a prefix of this order.
+		//
+		// Covering-index optimisation (skip the by-PK fetch) is
+		// considered at every secondary-index branch when the SELECT's
+		// referenced column set fits the (idx cols, PK cols) union.
 		//
 		// Chain order:
 		//   PK:
