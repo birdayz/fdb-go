@@ -127,15 +127,18 @@ tests:
       - [1, 20]
       - [1, 30]
 
-  # Composite PK range + ORDER BY a — prefix, eliminate.
+  # Composite PK range + ORDER BY a — prefix, eliminate. The scan
+  # emits in PK tuple order (a ASC, b ASC), which is a superset of
+  # `ORDER BY a`, so the result ordering is also deterministic
+  # beyond the `a` key (b ASC within each a group). Locked in to
+  # catch any regression that breaks PK tuple ordering.
   - query: SELECT a, b FROM ab WHERE b > 5 ORDER BY a
-    unordered: true
     rows:
       - [1, 10]
-      - [2, 10]
       - [1, 20]
-      - [2, 20]
       - [1, 30]
+      - [2, 10]
+      - [2, 20]
 
   # Composite PK range + ORDER BY b (non-prefix) — must sort.
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
