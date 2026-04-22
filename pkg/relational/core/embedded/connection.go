@@ -4383,17 +4383,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//
 		// Chain order:
 		//   PK:
-		//     1. equality on every PK col         — 1 key
-		//     2. single-col IN-list               — N keys
+		//     1. equality on every PK col          — 1 key
+		//     2. single-col IN-list                — N keys
 		//     3. single-col range / BETWEEN / LIKE
-		//     4. composite range with leading eq
-		//   Secondary index (single-col then composite; each gated on
-		//   index scannability inside its helper):
-		//     5. equality                         — exact key (covered)
-		//     6. IN-list                          — N keys (covered)
-		//     7. range / BETWEEN / LIKE prefix    — (covered)
-		//     8. composite range with leading eq  — (covered)
-		//   9. full type scan (fallback)
+		//     4. composite leading-eq + IN-list    — N keys on composite
+		//     5. composite range with leading eq
+		//   Secondary index (each gated on index scannability inside
+		//   its helper):
+		//     6. equality                          — exact key (covered)
+		//     7. single-col IN-list                — N keys (covered)
+		//     8. composite leading-eq + IN-list    — N keys (covered)
+		//     9. range / BETWEEN / LIKE prefix     — (covered)
+		//    10. composite range with leading eq   — (covered)
+		//    11. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownScanCursor(store, rt, pkVals)
