@@ -1105,6 +1105,9 @@ func pkPushdownCursor(
 	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(sir.indexName) {
 		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
 	}
+	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, whereExpr, rt, md); ok && store.IsIndexScannable(sicr.indexName) {
+		return secondaryIndexCompositeRangeScanCursor(store, sicr)
+	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 
@@ -1486,6 +1489,190 @@ func secondaryIndexRangeScanCursor(
 		scanRange.HighEndpoint = recordlayer.EndpointTypeTreeEnd
 	}
 	inner := store.ScanIndexRecords(indexName, scanRange, nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}
+
+// secondaryIndexCompositeRange describes a range scan on a composite
+// VALUE index where every index column except the last is equated to
+// a literal and the LAST column carries a range predicate. Mirror of
+// pkCompositeRange but carrying the index name.
+type secondaryIndexCompositeRange struct {
+	indexName  string
+	prefixVals []any // equalities for index cols 0..n-2
+	lastBounds pkRangeBounds
+}
+
+// trySecondaryIndexCompositeRangePushdown is the SELECT-gated variant
+// of trySecondaryIndexCompositeRangeFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexCompositeRangePushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositeRange, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexCompositeRange{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexCompositeRange{}, false
+	}
+	return c.trySecondaryIndexCompositeRangeFromWhere(ctx, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexCompositeRangeFromWhere recognises composite VALUE
+// indexes where every leading index column has an equality in the
+// WHERE AND chain and the LAST index column has at least one range
+// bound. The range is valid on the last component only because
+// composite key ranges are contiguous in FDB only when prefixed by
+// fixed values.
+//
+// Pure-equality composite pushdown is handled by
+// trySecondaryIndexFromWhere and runs first at every call site — if
+// the last column is also equated we never get here.
+func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositeRange, bool) {
+	if whereExpr == nil {
+		return secondaryIndexCompositeRange{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return secondaryIndexCompositeRange{}, false
+	}
+	// Walk AND leaves once, splitting into equalities and range bounds.
+	equalities := make(map[string]any, len(leaves))
+	rangeByCol := make(map[string]pkRangeBounds, len(leaves))
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok {
+			continue
+		}
+		colUpper := strings.ToUpper(col)
+		switch op {
+		case "=":
+			equalities[colUpper] = val
+		case ">":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = false
+			rangeByCol[colUpper] = b
+		case ">=":
+			b := rangeByCol[colUpper]
+			b.hasLow = true
+			b.low = val
+			b.lowInclusive = true
+			rangeByCol[colUpper] = b
+		case "<":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = false
+			rangeByCol[colUpper] = b
+		case "<=":
+			b := rangeByCol[colUpper]
+			b.hasHigh = true
+			b.high = val
+			b.highInclusive = true
+			rangeByCol[colUpper] = b
+		}
+	}
+	if len(rangeByCol) == 0 {
+		return secondaryIndexCompositeRange{}, false
+	}
+	// Pick the first composite VALUE index whose leading columns are
+	// all equated and whose last column has a compatible range.
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) < 2 {
+			continue
+		}
+		prefixVals := make([]any, len(idxCols)-1)
+		matched := true
+		for i := 0; i < len(idxCols)-1; i++ {
+			col := idxCols[i]
+			v, found := equalities[strings.ToUpper(col)]
+			if !found {
+				matched = false
+				break
+			}
+			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+			if fd == nil || !literalMatchesPKKind(v, fd.Kind()) {
+				matched = false
+				break
+			}
+			prefixVals[i] = v
+		}
+		if !matched {
+			continue
+		}
+		lastCol := idxCols[len(idxCols)-1]
+		lastBounds, hasRange := rangeByCol[strings.ToUpper(lastCol)]
+		if !hasRange || (!lastBounds.hasLow && !lastBounds.hasHigh) {
+			continue
+		}
+		lastFD := rt.Descriptor.Fields().ByName(protoreflect.Name(lastCol))
+		if lastFD == nil {
+			continue
+		}
+		if lastBounds.hasLow && !literalMatchesPKKind(lastBounds.low, lastFD.Kind()) {
+			continue
+		}
+		if lastBounds.hasHigh && !literalMatchesPKKind(lastBounds.high, lastFD.Kind()) {
+			continue
+		}
+		return secondaryIndexCompositeRange{
+			indexName:  idx.Name,
+			prefixVals: prefixVals,
+			lastBounds: lastBounds,
+		}, true
+	}
+	return secondaryIndexCompositeRange{}, false
+}
+
+// secondaryIndexCompositeRangeScanCursor builds a range scan whose
+// low and high tuples share the same leading prefix (the equated
+// leading index cols) and differ only in the last component.
+func secondaryIndexCompositeRangeScanCursor(
+	store *recordlayer.FDBRecordStore,
+	cr secondaryIndexCompositeRange,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	prefix := make(tuple.Tuple, 0, len(cr.prefixVals))
+	for _, v := range cr.prefixVals {
+		prefix = append(prefix, v)
+	}
+	low := append(tuple.Tuple{}, prefix...)
+	high := append(tuple.Tuple{}, prefix...)
+	lowEp := recordlayer.EndpointTypeRangeInclusive
+	highEp := recordlayer.EndpointTypeRangeInclusive
+	if cr.lastBounds.hasLow {
+		low = append(low, cr.lastBounds.low)
+		if !cr.lastBounds.lowInclusive {
+			lowEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	if cr.lastBounds.hasHigh {
+		high = append(high, cr.lastBounds.high)
+		if !cr.lastBounds.highInclusive {
+			highEp = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	scanRange := recordlayer.TupleRange{
+		Low:          low,
+		High:         high,
+		LowEndpoint:  lowEp,
+		HighEndpoint: highEp,
+	}
+	inner := store.ScanIndexRecords(cr.indexName, scanRange, nil, recordlayer.ForwardScan())
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -3997,6 +4184,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(sir.indexName) {
 			cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, sq, rt, md); ok && store.IsIndexScannable(sicr.indexName) {
+			cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
 		} else {
 			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 		}
