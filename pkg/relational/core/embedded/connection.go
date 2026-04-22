@@ -350,7 +350,7 @@ func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, b
 			if !s.msg.ProtoReflect().Has(fd) {
 				return nil, true, nil
 			}
-			return protoValueToDriver(fd, s.msg.ProtoReflect().Get(fd)), true, nil
+			return functions.ProtoValueToDriver(fd, s.msg.ProtoReflect().Get(fd)), true, nil
 		case s.row != nil:
 			if qual != "" {
 				// Row keys preserve the SQL-level alias case (e.g. `e.id`
@@ -1067,7 +1067,7 @@ func (c *EmbeddedConnection) tryPKEqualityFromWhere(
 		// proto kind. See literalMatchesPKKind for rationale — a
 		// type-mismatched literal must fall through to the scan so
 		// evalPredicate surfaces 22000.
-		if !literalMatchesPKKind(val, fd.Kind()) {
+		if !functions.LiteralMatchesPKKind(val, fd.Kind()) {
 			return nil, false
 		}
 		pkVals[i] = val
@@ -1287,7 +1287,7 @@ func (c *EmbeddedConnection) trySecondaryIndexFromWhere(
 				matched = false
 				break
 			}
-			if !literalMatchesPKKind(v, fd.Kind()) {
+			if !functions.LiteralMatchesPKKind(v, fd.Kind()) {
 				matched = false
 				break
 			}
@@ -1488,10 +1488,10 @@ func (c *EmbeddedConnection) trySecondaryIndexRangeFromWhere(
 		if fd == nil {
 			continue
 		}
-		if bounds.hasLow && !literalMatchesPKKind(bounds.low, fd.Kind()) {
+		if bounds.hasLow && !functions.LiteralMatchesPKKind(bounds.low, fd.Kind()) {
 			continue
 		}
-		if bounds.hasHigh && !literalMatchesPKKind(bounds.high, fd.Kind()) {
+		if bounds.hasHigh && !functions.LiteralMatchesPKKind(bounds.high, fd.Kind()) {
 			continue
 		}
 		return secondaryIndexRange{indexName: idx.Name, bounds: bounds}, true
@@ -1693,7 +1693,7 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 				break
 			}
 			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-			if fd == nil || !literalMatchesPKKind(v, fd.Kind()) {
+			if fd == nil || !functions.LiteralMatchesPKKind(v, fd.Kind()) {
 				matched = false
 				break
 			}
@@ -1708,10 +1708,10 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 		if rangeFD == nil {
 			continue
 		}
-		if bounds.hasLow && !literalMatchesPKKind(bounds.low, rangeFD.Kind()) {
+		if bounds.hasLow && !functions.LiteralMatchesPKKind(bounds.low, rangeFD.Kind()) {
 			continue
 		}
-		if bounds.hasHigh && !literalMatchesPKKind(bounds.high, rangeFD.Kind()) {
+		if bounds.hasHigh && !functions.LiteralMatchesPKKind(bounds.high, rangeFD.Kind()) {
 			continue
 		}
 		return secondaryIndexCompositeRange{
@@ -1927,7 +1927,7 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 			return pkCompositeRange{}, false
 		}
 		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-		if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
+		if fd == nil || !functions.LiteralMatchesPKKind(val, fd.Kind()) {
 			return pkCompositeRange{}, false
 		}
 		prefixVals[i] = val
@@ -1943,10 +1943,10 @@ func (c *EmbeddedConnection) tryPKCompositeRangeFromWhere(
 	if rangeFD == nil {
 		return pkCompositeRange{}, false
 	}
-	if bounds.hasLow && !literalMatchesPKKind(bounds.low, rangeFD.Kind()) {
+	if bounds.hasLow && !functions.LiteralMatchesPKKind(bounds.low, rangeFD.Kind()) {
 		return pkCompositeRange{}, false
 	}
-	if bounds.hasHigh && !literalMatchesPKKind(bounds.high, rangeFD.Kind()) {
+	if bounds.hasHigh && !functions.LiteralMatchesPKKind(bounds.high, rangeFD.Kind()) {
 		return pkCompositeRange{}, false
 	}
 	return pkCompositeRange{prefixVals: prefixVals, lastBounds: bounds}, true
@@ -2034,7 +2034,7 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 			if strings.ToUpper(col) != pkColUpper {
 				continue
 			}
-			if !literalMatchesPKKind(lo, fd.Kind()) || !literalMatchesPKKind(hi, fd.Kind()) {
+			if !functions.LiteralMatchesPKKind(lo, fd.Kind()) || !functions.LiteralMatchesPKKind(hi, fd.Kind()) {
 				return pkRangeBounds{}, false
 			}
 			bounds.hasLow = true
@@ -2073,7 +2073,7 @@ func (c *EmbeddedConnection) tryPKRangeFromWhere(
 		if strings.ToUpper(col) != pkColUpper {
 			continue
 		}
-		if !literalMatchesPKKind(val, fd.Kind()) {
+		if !functions.LiteralMatchesPKKind(val, fd.Kind()) {
 			return pkRangeBounds{}, false
 		}
 		// `=` intentionally not handled here — the caller tries
@@ -2324,32 +2324,6 @@ func evalConstantAtom(ctx context.Context, c *EmbeddedConnection, atom antlrgen.
 		return nil, false
 	}
 	return v, true
-}
-
-// literalMatchesPKKind reports whether a driver-value literal is a
-// safe tuple element for a PK column of the given proto kind. Only
-// numeric / string / bytes kinds are in scope — booleans and
-// enums can be PK columns in theory but are unusual and left to the
-// scan path for now.
-func literalMatchesPKKind(val any, kind protoreflect.Kind) bool {
-	switch kind {
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		switch val.(type) {
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			return true
-		}
-		return false
-	case protoreflect.StringKind:
-		_, ok := val.(string)
-		return ok
-	case protoreflect.BytesKind:
-		_, ok := val.([]byte)
-		return ok
-	}
-	return false
 }
 
 // stripCTEColumnQualifiers returns the column list with any leading
@@ -2659,7 +2633,7 @@ func (c *EmbeddedConnection) scanTableToMaps(
 			col := string(fd.Name())
 			var v driver.Value
 			if msgRef.Has(fd) {
-				v = protoValueToDriver(fd, msgRef.Get(fd))
+				v = functions.ProtoValueToDriver(fd, msgRef.Get(fd))
 			}
 			m[col] = v
 			m[alias+"."+col] = v
@@ -4699,7 +4673,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					}
 					fd := groupFDs[i]
 					if fd != nil && msg.ProtoReflect().Has(fd) {
-						gVals[i] = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+						gVals[i] = functions.ProtoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 					}
 				}
 				key := groupByKey(gVals)
@@ -4746,7 +4720,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						}
 						v = ev
 					} else if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
-						v = protoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
+						v = functions.ProtoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
 					}
 					if ac.aggDistinct && hasArg {
 						// *(DISTINCT col|expr): accumulate only the first occurrence
@@ -5142,7 +5116,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					continue
 				}
 				if msg.ProtoReflect().Has(f.fd) {
-					vals[i] = protoValueToDriver(f.fd, msg.ProtoReflect().Get(f.fd))
+					vals[i] = functions.ProtoValueToDriver(f.fd, msg.ProtoReflect().Get(f.fd))
 				}
 				// else nil (proto2 optional field absent → NULL)
 			}
@@ -7176,31 +7150,6 @@ func fullIdToName(fid antlrgen.IFullIdContext) string {
 	return strings.Join(parts, ".")
 }
 
-// protoValueToDriver converts a protoreflect.Value to a driver.Value.
-// For proto2 optional fields that are not set, returns nil (SQL NULL).
-func protoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) driver.Value {
-	switch fd.Kind() {
-	case protoreflect.BoolKind:
-		return v.Bool()
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return v.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		return int64(v.Uint()) //nolint:gosec
-	case protoreflect.FloatKind:
-		return float64(v.Float())
-	case protoreflect.DoubleKind:
-		return v.Float()
-	case protoreflect.StringKind:
-		return v.String()
-	case protoreflect.BytesKind:
-		return []byte(v.Bytes())
-	default:
-		return v.Interface()
-	}
-}
-
 // execShowStatement routes SHOW … to the appropriate catalog reader.
 func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrgen.IShowStatementContext) (driver.Rows, error) {
 	switch show.(type) {
@@ -7728,7 +7677,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 					// Nullable — leave field absent (proto2 optional semantics).
 					continue
 				}
-				protoVal, convErr := convertToProtoValue(fd, val)
+				protoVal, convErr := functions.ConvertToProtoValue(fd, val)
 				if convErr != nil {
 					return nil, convErr
 				}
@@ -7853,7 +7802,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 					}
 					continue
 				}
-				protoVal, convErr := convertToProtoValue(fd, val)
+				protoVal, convErr := functions.ConvertToProtoValue(fd, val)
 				if convErr != nil {
 					return nil, convErr
 				}
@@ -7894,120 +7843,6 @@ func evalLiteralExpr(expr antlrgen.IExpressionWithOptionalNameContext) (any, err
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T in INSERT", pred.ExpressionAtom())
 	}
 	return evalConstant(atomCtx.Constant())
-}
-
-// convertToProtoValue converts a Go value (int64, float64, string, bool) to
-// a protoreflect.Value matching the field descriptor's kind.
-func convertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
-	switch fd.Kind() {
-	case protoreflect.BoolKind:
-		switch v := val.(type) {
-		case bool:
-			return protoreflect.ValueOfBool(v), nil
-		case int64:
-			return protoreflect.ValueOfBool(v != 0), nil
-		}
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		if v, ok := val.(int64); ok {
-			// Java CastValue.LONG_TO_INT range-checks before narrowing. Go
-			// used to silently wrap via int32() which could turn an
-			// INSERT of 2147483648 into -2147483648 — a value-corrupting
-			// divergence. Reject cleanly.
-			if v < math.MinInt32 || v > math.MaxInt32 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
-			}
-			return protoreflect.ValueOfInt32(int32(v)), nil
-		}
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		if v, ok := val.(int64); ok {
-			return protoreflect.ValueOfInt64(v), nil
-		}
-		// INSERT ... SELECT with an aggregate (SUM/AVG) produces a float64
-		// value even for integer inputs because the accumulator stores
-		// float64 state. Accept a whole-valued float64 and coerce, matching
-		// Postgres/MySQL semantics where `INSERT INTO t(n) SELECT SUM(v)`
-		// is well-defined. Rejects non-integer floats with a clear error.
-		if v, ok := val.(float64); ok {
-			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
-				// Java aligns a fractional float → integer column at
-				// assignment-time with 22000 (cannot_convert_type) —
-				// see case-when.yamsql. Pre-dayshift-40 Go used 22023
-				// (INVALID_PARAMETER), same class but wrong specific
-				// code. Whole-valued floats still coerce (supports
-				// INSERT ... SELECT SUM(v) and CASE branches where
-				// the double result is a whole integer).
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
-			}
-			if v < math.MinInt64 || v > math.MaxInt64 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"value %g out of range for %s column %q", v, fd.Kind(), fd.Name())
-			}
-			return protoreflect.ValueOfInt64(int64(v)), nil
-		}
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		if v, ok := val.(int64); ok {
-			if v < 0 || v > math.MaxUint32 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
-			}
-			return protoreflect.ValueOfUint32(uint32(v)), nil
-		}
-	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		if v, ok := val.(int64); ok {
-			if v < 0 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"negative value %d cannot be stored in unsigned %s column %q", v, fd.Kind(), fd.Name())
-			}
-			return protoreflect.ValueOfUint64(uint64(v)), nil
-		}
-	case protoreflect.FloatKind:
-		switch v := val.(type) {
-		case float64:
-			// Java CastValue.DOUBLE_TO_FLOAT range-checks against ±MaxFloat
-			// and rejects NaN/Inf. Reject here too — silent +Inf from
-			// overflow is a value corruption.
-			if math.IsNaN(v) || math.IsInf(v, 0) {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
-					"cannot store NaN or Infinity in FLOAT column %q", fd.Name())
-			}
-			if v > math.MaxFloat32 || v < -math.MaxFloat32 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"value %v out of range for FLOAT column %q", v, fd.Name())
-			}
-			return protoreflect.ValueOfFloat32(float32(v)), nil
-		case int64:
-			return protoreflect.ValueOfFloat32(float32(v)), nil
-		}
-	case protoreflect.DoubleKind:
-		switch v := val.(type) {
-		case float64:
-			// NaN/Inf are silent data corruption vectors — a later read
-			// via protoValueToDriver would pass them through and confuse
-			// comparisons / aggregates.
-			if math.IsNaN(v) || math.IsInf(v, 0) {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
-					"cannot store NaN or Infinity in DOUBLE column %q", fd.Name())
-			}
-			return protoreflect.ValueOfFloat64(v), nil
-		case int64:
-			return protoreflect.ValueOfFloat64(float64(v)), nil
-		}
-	case protoreflect.StringKind:
-		if v, ok := val.(string); ok {
-			return protoreflect.ValueOfString(v), nil
-		}
-	case protoreflect.BytesKind:
-		if v, ok := val.([]byte); ok {
-			return protoreflect.ValueOfBytes(v), nil
-		}
-		if v, ok := val.(string); ok {
-			return protoreflect.ValueOfBytes([]byte(v)), nil
-		}
-	}
-	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
-		"cannot convert %T to proto field kind %s", val, fd.Kind())
 }
 
 // evalExpr evaluates an expression against msg, returning a scalar driver.Value.
@@ -8112,7 +7947,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 					if !msg.ProtoReflect().Has(fd) {
 						return nil, nil
 					}
-					return protoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
+					return functions.ProtoValueToDriver(fd, msg.ProtoReflect().Get(fd)), nil
 				}
 			}
 		}
@@ -9316,133 +9151,10 @@ func evalSpecificFunctionCore(
 			return nil, nil // CAST(NULL AS type) = NULL
 		}
 		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
-		return castValue(val, typeName)
+		return functions.CastValue(val, typeName)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, sf)
 	}
-}
-
-// castValue converts v to the SQL type named by typeName (e.g. "BIGINT", "VARCHAR", "TEXT", "BOOLEAN").
-func castValue(v any, typeName string) (any, error) {
-	// SQL: CAST(NULL AS <type>) is NULL of the target type.
-	if v == nil {
-		return nil, nil
-	}
-	// Split INTEGER (32-bit) from BIGINT (64-bit) so CAST range-checks
-	// match Java: `CAST(9223372036854775807 AS INTEGER)` errors 22F3H
-	// because the value exceeds Integer.MAX_VALUE. Java's CastValue
-	// applies LONG_TO_INT validation even though our runtime value
-	// type stays int64 (Go doesn't need a narrower representation).
-	is32BitInteger := typeName == "INTEGER" || typeName == "INT"
-	switch {
-	case is32BitInteger, strings.HasPrefix(typeName, "BIGINT"), strings.HasPrefix(typeName, "INT"), typeName == "LONG":
-		switch n := v.(type) {
-		case int64:
-			if is32BitInteger && (n < math.MinInt32 || n > math.MaxInt32) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value %d out of range for INTEGER", n)
-			}
-			return n, nil
-		case float64:
-			// Java CastValue.DOUBLE_TO_LONG: reject NaN/Inf, round to nearest
-			// using ties-to-positive-infinity (`Math.round` = floor(x + 0.5)),
-			// error on range overflow. Previously Go truncated silently and
-			// relied on int64() wrap on overflow — both diverged from Java.
-			if math.IsNaN(n) || math.IsInf(n, 0) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"cannot CAST NaN or Infinity to integer")
-			}
-			// Java's Math.round(double) returns floor(x + 0.5).
-			rounded := math.Floor(n + 0.5)
-			// Guard overflow before the int64() conversion. float64 can't
-			// represent every int64 exactly near the limits, so use a strict
-			// comparison against the max/min-as-float (values that *do* fit
-			// exactly into float64).
-			if rounded > 9.2233720368547748e18 || rounded < -9.2233720368547758e18 {
-				// Java CastValue uses INVALID_CAST (22F3H) for all CAST
-				// failures including range overflow — matches our
-				// ErrCodeInvalidCast. Distinct from arithmetic-overflow
-				// sites (which use 22003) because Java specifically
-				// categorises CAST failures separately.
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value out of range for integer: %v", n)
-			}
-			r := int64(rounded)
-			if is32BitInteger && (r < math.MinInt32 || r > math.MaxInt32) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value %d out of range for INTEGER", r)
-			}
-			return r, nil
-		case string:
-			// Java CastValue.STRING_TO_LONG: Integer.parseInt(in.trim()) —
-			// trims whitespace before parsing.
-			i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
-			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to integer: %v", n, err)
-			}
-			if is32BitInteger && (i < math.MinInt32 || i > math.MaxInt32) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value %d out of range for INTEGER", i)
-			}
-			return i, nil
-		case bool:
-			if n {
-				return int64(1), nil
-			}
-			return int64(0), nil
-		}
-	case strings.HasPrefix(typeName, "FLOAT"), strings.HasPrefix(typeName, "DOUBLE"), strings.HasPrefix(typeName, "DECIMAL"), strings.HasPrefix(typeName, "NUMERIC"):
-		switch n := v.(type) {
-		case float64:
-			return n, nil
-		case int64:
-			return float64(n), nil
-		case string:
-			// Java CastValue.STRING_TO_DOUBLE: Double.parseDouble(in.trim()) —
-			// trims whitespace before parsing.
-			f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
-			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to float: %v", n, err)
-			}
-			return f, nil
-		}
-	case strings.HasPrefix(typeName, "VARCHAR"), strings.HasPrefix(typeName, "CHAR"), typeName == "TEXT", typeName == "STRING":
-		switch n := v.(type) {
-		case string:
-			return n, nil
-		case int64:
-			return strconv.FormatInt(n, 10), nil
-		case float64:
-			return strconv.FormatFloat(n, 'g', -1, 64), nil
-		case bool:
-			if n {
-				return "true", nil
-			}
-			return "false", nil
-		}
-	case typeName == "BOOLEAN", typeName == "BOOL":
-		switch n := v.(type) {
-		case bool:
-			return n, nil
-		case int64:
-			return n != 0, nil
-		case string:
-			// Java CastValue.STRING_TO_BOOLEAN only accepts trim()ed
-			// "true"/"false" (case-insensitive) plus "1"/"0"; Go's
-			// strconv.ParseBool is wider (accepts "t", "T", "F", …).
-			// Narrow to match Java so Go and Java reject / accept the
-			// same strings.
-			s := strings.ToLower(strings.TrimSpace(n))
-			switch s {
-			case "true", "1":
-				return true, nil
-			case "false", "0":
-				return false, nil
-			}
-			return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to boolean", n)
-		}
-	}
-	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported CAST from %T to %s", v, typeName)
 }
 
 // isTruthy returns true when v is a non-nil, non-zero boolean or non-zero numeric.
@@ -9615,7 +9327,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					clonedRefl.Clear(fd)
 					continue
 				}
-				protoVal, convErr := convertToProtoValue(fd, val)
+				protoVal, convErr := functions.ConvertToProtoValue(fd, val)
 				if convErr != nil {
 					return nil, convErr
 				}
@@ -9991,7 +9703,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		if !msg.ProtoReflect().Has(fd) {
 			return triNull, nil // NULL [NOT] IN (...) = UNKNOWN
 		}
-		fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+		fieldVal = functions.ProtoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 	} else {
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
@@ -10091,7 +9803,7 @@ func evalIsNullPredicate(ctx context.Context, conn *EmbeddedConnection, msg prot
 			return false, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found", colName)
 		}
 		if msg.ProtoReflect().Has(fd) {
-			fieldVal = protoValueToDriver(fd, msg.ProtoReflect().Get(fd))
+			fieldVal = functions.ProtoValueToDriver(fd, msg.ProtoReflect().Get(fd))
 		}
 	} else {
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
@@ -10149,12 +9861,12 @@ func evalLikePredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 
 	// Pattern is the first STRING_LITERAL token; strip surrounding quotes.
 	patternLit := like.GetPattern().GetText()
-	pattern := stripStringLiteralQuotes(patternLit)
+	pattern := functions.StripStringLiteralQuotes(patternLit)
 
 	// Optional ESCAPE 'c' clause — Java asserts length==1 too.
 	var escape rune = -1
 	if esc := like.GetEscape(); esc != nil {
-		escStr := stripStringLiteralQuotes(esc.GetText())
+		escStr := functions.StripStringLiteralQuotes(esc.GetText())
 		runes := []rune(escStr)
 		if len(runes) != 1 {
 			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -10221,14 +9933,6 @@ func likeMatchRunes(p, s []rune, escape rune) bool {
 		}
 	}
 	return len(s) == 0
-}
-
-// stripStringLiteralQuotes removes surrounding single-quotes and unescapes ” → '.
-func stripStringLiteralQuotes(s string) string {
-	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
-		s = s[1 : len(s)-1]
-	}
-	return strings.ReplaceAll(s, "''", "'")
 }
 
 // evalBetweenPredicateTri handles: expr [NOT] BETWEEN lo AND hi (inclusive).
@@ -10842,7 +10546,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		patternLit := p.GetPattern().GetText()
 		var escape rune = -1
 		if esc := p.GetEscape(); esc != nil {
-			escStr := stripStringLiteralQuotes(esc.GetText())
+			escStr := functions.StripStringLiteralQuotes(esc.GetText())
 			runes := []rune(escStr)
 			if len(runes) != 1 {
 				return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -10850,7 +10554,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 			}
 			escape = runes[0]
 		}
-		matched := likeMatch(stripStringLiteralQuotes(patternLit), s, escape)
+		matched := likeMatch(functions.StripStringLiteralQuotes(patternLit), s, escape)
 		if p.NOT() != nil {
 			matched = !matched
 		}

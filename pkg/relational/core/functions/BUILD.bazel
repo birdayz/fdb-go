@@ -2,8 +2,15 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "functions",
-    srcs = ["arith.go"],
+    srcs = [
+        "arith.go",
+        "cast.go",
+        "proto_value.go",
+    ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//pkg/relational/api",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
 )

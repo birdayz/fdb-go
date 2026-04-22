@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -183,7 +184,7 @@ func (c *EmbeddedConnection) tryPKInListFromWhere(
 		// elements (that would reduce the narrowing without the
 		// post-filter knowing).
 		for _, v := range vals {
-			if !literalMatchesPKKind(v, fd.Kind()) {
+			if !functions.LiteralMatchesPKKind(v, fd.Kind()) {
 				return nil, false
 			}
 		}
@@ -301,7 +302,7 @@ func (c *EmbeddedConnection) tryPKCompositeInListFromWhere(
 			return pkCompositeInList{}, false
 		}
 		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-		if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
+		if fd == nil || !functions.LiteralMatchesPKKind(val, fd.Kind()) {
 			return pkCompositeInList{}, false
 		}
 		prefixVals[i] = val
@@ -313,7 +314,7 @@ func (c *EmbeddedConnection) tryPKCompositeInListFromWhere(
 		return pkCompositeInList{}, false
 	}
 	for _, v := range inVals {
-		if !literalMatchesPKKind(v, fd.Kind()) {
+		if !functions.LiteralMatchesPKKind(v, fd.Kind()) {
 			return pkCompositeInList{}, false
 		}
 	}
@@ -500,7 +501,7 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeInListFromWhere(
 				break
 			}
 			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
-			if fd == nil || !literalMatchesPKKind(val, fd.Kind()) {
+			if fd == nil || !functions.LiteralMatchesPKKind(val, fd.Kind()) {
 				ok = false
 				break
 			}
@@ -515,7 +516,7 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeInListFromWhere(
 		}
 		typeOk := true
 		for _, v := range inVals {
-			if !literalMatchesPKKind(v, inFd.Kind()) {
+			if !functions.LiteralMatchesPKKind(v, inFd.Kind()) {
 				typeOk = false
 				break
 			}
@@ -705,7 +706,7 @@ func (c *EmbeddedConnection) trySecondaryIndexInListFromWhere(
 		// surfaces 22000 per the cross-type rule.
 		allOk := true
 		for _, v := range vals {
-			if !literalMatchesPKKind(v, fd.Kind()) {
+			if !functions.LiteralMatchesPKKind(v, fd.Kind()) {
 				allOk = false
 				break
 			}
