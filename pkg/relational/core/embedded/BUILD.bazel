@@ -22,6 +22,7 @@ go_library(
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query",
+        "//pkg/relational/core/session",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",

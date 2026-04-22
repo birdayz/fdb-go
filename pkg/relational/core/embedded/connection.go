@@ -34,6 +34,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -71,14 +72,15 @@ type ambiguousColumnMarker struct {
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
-	dbPath        string // current database URI (e.g. "/mydb")
-	schema        string // current schema name (set via USE SCHEMA / SetSchema)
-	defaultSchema string // schema set at connection creation time; restored on ResetSession
-	fdbDB         *recordlayer.FDBDatabase
-	cat           *catalog.RecordLayerStoreCatalog
-	ks            *keyspace.RelationalKeyspace
-	factory       apiddl.MetadataOperationsFactory
-	closed        atomic.Bool
+	// sess carries the durable resource handles + session identifiers
+	// (FDB database, catalog, keyspace, metadata factory, current /
+	// default schema + database path). Extracted to the core/session
+	// package in Phase 1b of RFC 021 so future frontends (gRPC, REPL,
+	// direct in-process API without database/sql) can hold the same
+	// session object.
+	sess *session.Session
+
+	closed atomic.Bool
 
 	// activeTx is non-nil when an explicit transaction is open (BeginTx called).
 	// nil means auto-commit mode.
@@ -170,7 +172,7 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 	if c.activeTx != nil {
 		return fn(c.activeTx.rctx)
 	}
-	return c.fdbDB.Run(ctx, fn)
+	return c.sess.DB.Run(ctx, fn)
 }
 
 func (c *EmbeddedConnection) schemaCacheKey(dbPath, schemaName string) string {
@@ -402,13 +404,13 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 		// read-conflict ranges that conflict with concurrent DDL.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, err = c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		_, err = c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 			readTxn := catalog.NewFDBTransaction(rctx)
-			s, err = c.cat.LoadSchema(readTxn, dbPath, schemaName)
+			s, err = c.sess.Catalog.LoadSchema(readTxn, dbPath, schemaName)
 			return nil, err
 		})
 	} else {
-		s, err = c.cat.LoadSchema(txn, dbPath, schemaName)
+		s, err = c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
 	}
 	if err != nil {
 		return nil, err
@@ -429,12 +431,10 @@ func New(
 	factory apiddl.MetadataOperationsFactory,
 	ks *keyspace.RelationalKeyspace,
 ) *EmbeddedConnection {
+	sess := session.New(fdbDB, cat, ks, factory)
+	sess.DBPath = dbPath
 	return &EmbeddedConnection{
-		dbPath:      dbPath,
-		fdbDB:       fdbDB,
-		cat:         cat,
-		factory:     factory,
-		ks:          ks,
+		sess:        sess,
 		schemaCache: make(map[string]api.Schema),
 	}
 }
@@ -2486,10 +2486,10 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		return projectSystemRows(sysRows, sq)
 	}
 
-	if c.schema == "" {
+	if c.sess.Schema == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
-	if c.dbPath == "" {
+	if c.sess.DBPath == "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 	// Delegate to the existing full implementation.
@@ -3507,7 +3507,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		data = nil
 		cols = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -3522,7 +3522,7 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		if expandErr := c.expandStarSlots(md, sq); expandErr != nil {
 			return nil, expandErr
 		}
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
 		}
@@ -4360,7 +4360,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		naturalOrder = nil
 		naturalOrderAliases = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -4394,7 +4394,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		}
 		msgDesc := rt.Descriptor
 
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
 		}
@@ -5319,7 +5319,7 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -5355,7 +5355,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -5416,7 +5416,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -5496,7 +5496,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.cat.ListSchemas(txn, nil)
+		rs, rsErr := c.sess.Catalog.ListSchemas(txn, nil)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -7218,7 +7218,7 @@ func (c *EmbeddedConnection) execShowDatabases(ctx context.Context) (driver.Rows
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.cat.ListDatabases(txn, nil)
+		rs, rsErr := c.sess.Catalog.ListDatabases(txn, nil)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -7244,7 +7244,7 @@ func (c *EmbeddedConnection) execShowSchemaTemplates(ctx context.Context) (drive
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
-		rs, rsErr := c.cat.SchemaTemplateCatalog().ListTemplates(txn)
+		rs, rsErr := c.sess.Catalog.SchemaTemplateCatalog().ListTemplates(txn)
 		if rsErr != nil {
 			return nil, rsErr
 		}
@@ -7438,7 +7438,7 @@ func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (
 }
 
 func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
-	fdbTx, err := c.fdbDB.CreateTransaction()
+	fdbTx, err := c.sess.DB.CreateTransaction()
 	if err != nil {
 		return nil, err
 	}
@@ -7452,8 +7452,8 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 // SetDefaultSchema sets the initial schema that is restored by ResetSession.
 // Called by the driver when the DSN contains ?schema=.
 func (c *EmbeddedConnection) SetDefaultSchema(s string) {
-	c.defaultSchema = s
-	c.schema = s
+	c.sess.DefaultSchema = s
+	c.sess.Schema = s
 }
 
 // ResetSession implements driver.SessionResetter. Resets per-request
@@ -7468,7 +7468,7 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
-	c.schema = c.defaultSchema
+	c.sess.Schema = c.sess.DefaultSchema
 	if c.activeTx != nil {
 		// Best-effort rollback; we're about to release the connection
 		// back to the pool and must not leak the open FDB tx.
@@ -7500,13 +7500,13 @@ func (c *EmbeddedConnection) PrepareContext(_ context.Context, query string) (dr
 }
 
 // SetSchema sets the current schema label used when no schema is specified in SQL.
-func (c *EmbeddedConnection) SetSchema(s string) { c.schema = s }
+func (c *EmbeddedConnection) SetSchema(s string) { c.sess.Schema = s }
 
 // GetSchema returns the current schema label.
-func (c *EmbeddedConnection) GetSchema() string { return c.schema }
+func (c *EmbeddedConnection) GetSchema() string { return c.sess.Schema }
 
 // GetDBPath returns the current database path.
-func (c *EmbeddedConnection) GetDBPath() string { return c.dbPath }
+func (c *EmbeddedConnection) GetDBPath() string { return c.sess.DBPath }
 
 // execStatement routes a single parsed statement to the right handler.
 func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IStatementContext) (int64, error) {
@@ -7573,10 +7573,10 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 
 // execInsert executes INSERT INTO table (col1, col2, ...) VALUES (...), (...).
 func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInsertStatementContext) (int64, error) {
-	if c.schema == "" {
+	if c.sess.Schema == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
-	if c.dbPath == "" {
+	if c.sess.DBPath == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
@@ -7606,7 +7606,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		totalRows = 0 // reset on retry
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -7622,7 +7622,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 		}
 		msgDesc := rt.Descriptor
 
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
 		}
@@ -7720,10 +7720,10 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 // execInsertSelect implements INSERT INTO table (cols) SELECT ...
 // It evaluates the SELECT query and inserts each row into the table.
 func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName string, explicitCols []string, body antlrgen.IQueryExpressionBodyContext) (int64, error) {
-	if c.schema == "" {
+	if c.sess.Schema == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
-	if c.dbPath == "" {
+	if c.sess.DBPath == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
@@ -7739,7 +7739,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 	_, err = c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		totalRows = 0
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -7755,7 +7755,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 		}
 		msgDesc := rt.Descriptor
 
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
 		}
@@ -9728,10 +9728,10 @@ func toIntegerArg(v any, funcName, argName string) (int64, error) {
 
 // execUpdate executes UPDATE <table> SET col = val [, ...] [WHERE col = val].
 func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdateStatementContext) (int64, error) {
-	if c.schema == "" {
+	if c.sess.Schema == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
-	if c.dbPath == "" {
+	if c.sess.DBPath == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
@@ -9743,7 +9743,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		updated = 0
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -9759,7 +9759,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		}
 		msgDesc := rt.Descriptor
 
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
 		}
@@ -9845,10 +9845,10 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 
 // execDelete executes DELETE FROM <table> [WHERE col = value].
 func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDeleteStatementContext) (int64, error) {
-	if c.schema == "" {
+	if c.sess.Schema == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no schema selected")
 	}
-	if c.dbPath == "" {
+	if c.sess.DBPath == "" {
 		return 0, api.NewError(api.ErrCodeUnsupportedOperation, "no database selected")
 	}
 
@@ -9859,7 +9859,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		deleted = 0
 		txn := catalog.NewFDBTransaction(rctx)
-		schema, loadErr := c.cachedLoadSchema(txn, c.dbPath, c.schema)
+		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -9874,7 +9874,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
 		}
 
-		ss, ssErr := c.ks.SchemaSubspace(c.dbPath, c.schema)
+		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
 		}
@@ -11688,7 +11688,7 @@ func (c *EmbeddedConnection) execCreateDatabase(ctx context.Context, s *antlrgen
 	if err := validateDatabasePath(dbPath); err != nil {
 		return 0, err
 	}
-	action := c.factory.CreateDatabase(dbPath, *api.NoOptions())
+	action := c.sess.Factory.CreateDatabase(dbPath, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
 
@@ -11698,24 +11698,24 @@ func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.D
 		return 0, err
 	}
 	throwIfNotExist := s.IfExists() == nil
-	action := c.factory.DropDatabase(dbPath, throwIfNotExist, *api.NoOptions())
+	action := c.sess.Factory.DropDatabase(dbPath, throwIfNotExist, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
 
 func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.CreateSchemaStatementContext) (int64, error) {
 	schemaText := s.SchemaId().GetText()
-	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.dbPath)
+	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
 	}
 	templateID := s.SchemaTemplateId().GetText()
-	action := c.factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
+	action := c.sess.Factory.CreateSchema(dbPath, schemaName, templateID, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
 
 func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.DropSchemaStatementContext) (int64, error) {
 	schemaText := s.Uid().GetText()
-	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.dbPath)
+	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
 		return 0, err
 	}
@@ -11723,7 +11723,7 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
 			"invalid database identifier in %q", schemaText)
 	}
-	action := c.factory.DropSchema(dbPath, schemaName, *api.NoOptions())
+	action := c.sess.Factory.DropSchema(dbPath, schemaName, *api.NoOptions())
 	if err := c.runDDL(ctx, action); err != nil {
 		return 0, err
 	}
@@ -11734,7 +11734,7 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 func (c *EmbeddedConnection) execDropSchemaTemplate(ctx context.Context, s *antlrgen.DropSchemaTemplateStatementContext) (int64, error) {
 	templateID := s.Uid().GetText()
 	throwIfNotExist := s.IfExists() == nil
-	action := c.factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
+	action := c.sess.Factory.DropSchemaTemplate(templateID, throwIfNotExist, *api.NoOptions())
 	return 0, c.runDDL(ctx, action)
 }
 
@@ -11772,7 +11772,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	if err != nil {
 		return 0, err
 	}
-	action := c.factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
+	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
 	if err := c.runDDL(ctx, action); err != nil {
 		return 0, err
 	}
@@ -11881,9 +11881,9 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 	if c.catalogReady {
 		return nil
 	}
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
-		if initErr := c.cat.Initialize(txn); initErr != nil {
+		if initErr := c.sess.Catalog.Initialize(txn); initErr != nil {
 			return nil, initErr
 		}
 		return nil, txn.Commit()
@@ -11908,7 +11908,7 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return err
 	}
-	_, err := c.fdbDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		execErr := action.Execute(txn)
 		if execErr != nil {

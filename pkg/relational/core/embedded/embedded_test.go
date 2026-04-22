@@ -12,6 +12,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
 )
 
 func TestSubstituteParams(t *testing.T) {
@@ -341,12 +342,12 @@ func TestTriBool(t *testing.T) {
 
 func TestEmbeddedConnection_ResetSession(t *testing.T) {
 	t.Parallel()
-	conn := &EmbeddedConnection{schema: "myschema"}
+	conn := &EmbeddedConnection{sess: &session.Session{Schema: "myschema"}}
 	if err := conn.ResetSession(context.TODO()); err != nil {
 		t.Fatalf("ResetSession: unexpected error: %v", err)
 	}
-	if conn.schema != "" {
-		t.Errorf("ResetSession: schema not cleared, got %q", conn.schema)
+	if conn.sess.Schema != "" {
+		t.Errorf("ResetSession: schema not cleared, got %q", conn.sess.Schema)
 	}
 }
 
@@ -356,8 +357,10 @@ func TestEmbeddedConnection_ResetSession(t *testing.T) {
 func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{
-		schema:        "other",
-		defaultSchema: "main",
+		sess: &session.Session{
+			Schema:        "other",
+			DefaultSchema: "main",
+		},
 		ctes: map[string]*cteData{
 			"LEAKED": {cols: []string{"x"}, rows: [][]driver.Value{{int64(1)}}},
 		},
@@ -371,8 +374,8 @@ func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 	if err := conn.ResetSession(context.TODO()); err != nil {
 		t.Fatalf("ResetSession: unexpected error: %v", err)
 	}
-	if conn.schema != "main" {
-		t.Errorf("schema not restored to defaultSchema: got %q want %q", conn.schema, "main")
+	if conn.sess.Schema != "main" {
+		t.Errorf("schema not restored to defaultSchema: got %q want %q", conn.sess.Schema, "main")
 	}
 	if conn.ctes != nil {
 		t.Errorf("ctes not cleared: %v", conn.ctes)
