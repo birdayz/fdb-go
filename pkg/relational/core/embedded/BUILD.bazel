@@ -29,6 +29,7 @@ go_library(
         "tri_bool.go",
         "union.go",
         "update_delete.go",
+        "utilities.go",
         "where_extractors.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
