@@ -18,6 +18,7 @@ go_library(
         "recursive_cte.go",
         "scope.go",
         "secondary_index_pushdown.go",
+        "select_dispatch.go",
         "select_helpers.go",
         "select_parser.go",
         "select_query_full.go",
