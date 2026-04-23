@@ -389,7 +389,10 @@ func (c *pkCompositeInListCursor) OnNext(ctx context.Context) (recordlayer.Recor
 				highInclusive: true,
 			},
 		}
-		c.current = pkPushdownCompositeRangeScanCursor(c.store, c.rt, cr)
+		// IN-list sub-scans always run in forward (list-order emission);
+		// direction is not observable because the outer chain doesn't
+		// promise any natural order across sub-scans.
+		c.current = pkPushdownCompositeRangeScanCursor(c.store, c.rt, cr, recordlayer.ForwardScan())
 	}
 }
 
@@ -859,7 +862,7 @@ func (c *pkInListCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRe
 				&recordlayer.EndContinuation{},
 			), nil
 		}
-		c.current = pkPushdownScanCursor(c.store, c.rt, []any{c.pkVals[c.idx]})
+		c.current = pkPushdownScanCursor(c.store, c.rt, []any{c.pkVals[c.idx]}, recordlayer.ForwardScan())
 		c.idx++
 	}
 }

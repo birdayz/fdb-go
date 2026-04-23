@@ -271,3 +271,95 @@ tests:
       - [20]
       - [30]
       - [40]
+
+  # -------------------------------------------------------------------
+  # ORDER BY DESC via reverse scan
+  #
+  # When sq.orderBy is a non-empty all-DESC prefix of naturalOrder,
+  # the dispatcher builds the cursor with ReverseScan. The cursor
+  # emits rows in reverse natural order, which IS the DESC the user
+  # asked for — the post-scan sort is skipped (same eliminator path
+  # as ASC) and LIMIT early-terminates.
+  #
+  # Directly observable: row order is correct DESC. If the reverse
+  # flag were applied but the eliminator still sorted ASC, the rows
+  # would come out DESC (reverse scan wins) — so the test still
+  # passes. If reverse weren't applied, the cursor would emit ASC
+  # and the sort would fix it up — also passes. So these tests
+  # verify correctness but not which path was taken. Bazel's build
+  # time + the elimination counter would surface regressions in the
+  # direction selection.
+  # -------------------------------------------------------------------
+
+  # Full type scan + ORDER BY id DESC — single-col PK, reverse scan.
+  - query: SELECT id FROM t ORDER BY id DESC
+    rows:
+      - [5]
+      - [4]
+      - [3]
+      - [2]
+      - [1]
+
+  # PK range + ORDER BY id DESC — reverse scan on the range.
+  - query: SELECT id FROM t WHERE id > 1 AND id < 5 ORDER BY id DESC
+    rows:
+      - [4]
+      - [3]
+      - [2]
+
+  # Composite PK range + ORDER BY (a DESC, b DESC) — reverse scan
+  # produces tuple order reversed.
+  - query: SELECT a, b FROM ab WHERE a = 1 AND b > 10 ORDER BY a DESC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+
+  # Composite PK pure prefix + ORDER BY (a DESC, b DESC) — reverse
+  # scan over the tuple-prefix [rtk, 1].
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # ORDER BY id DESC + LIMIT — reverse scan early-terminates after
+  # LIMIT rows. Result is the top-N in DESC order.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    rows:
+      - [5]
+      - [4]
+
+  # PK equality + ORDER BY id DESC — single row, direction irrelevant
+  # to the row set. Pins that the reverse-scan branch doesn't break
+  # the at-most-one case.
+  - query: SELECT id, v FROM t WHERE id = 3 ORDER BY id DESC
+    rows:
+      - [3, 10]
+
+  # Mixed ASC / DESC — can't satisfy with a single direction. Must
+  # fall back to in-memory sort. Output must match the requested
+  # order regardless.
+  - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+      - [2, 20]
+      - [2, 10]
+
+  # ORDER BY id DESC with alias — alias resolves to the underlying
+  # PK col; reverse scan applies.
+  - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
+    rows:
+      - [5]
+      - [4]
+      - [3]
+
+  # ORDER BY DESC on a non-leading naturalOrder col — can't apply
+  # reverse scan (naturalOrderSatisfiesReverse requires a prefix
+  # match). Falls back to in-memory sort; correctness preserved.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]

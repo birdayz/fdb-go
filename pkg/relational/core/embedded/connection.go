@@ -1090,19 +1090,22 @@ func pkPushdownCursor(
 	tableName string,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	if pkVals, ok := c.tryPKEqualityFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownScanCursor(store, rt, pkVals)
+		return pkPushdownScanCursor(store, rt, pkVals, recordlayer.ForwardScan())
 	}
 	if pkVals, ok := c.tryPKInListFromWhere(ctx, whereExpr, rt); ok {
 		return pkPushdownInListScanCursor(store, rt, pkVals)
 	}
 	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownRangeScanCursor(store, rt, bounds)
+		return pkPushdownRangeScanCursor(store, rt, bounds, recordlayer.ForwardScan())
 	}
 	if cil, ok := c.tryPKCompositeInListFromWhere(ctx, whereExpr, rt); ok {
 		return pkCompositeInListScanCursor(store, rt, cil)
 	}
 	if cr, ok := c.tryPKCompositeRangeFromWhere(ctx, whereExpr, rt); ok {
-		return pkPushdownCompositeRangeScanCursor(store, rt, cr)
+		return pkPushdownCompositeRangeScanCursor(store, rt, cr, recordlayer.ForwardScan())
+	}
+	if cp, ok := c.tryPKCompositePrefixFromWhere(ctx, whereExpr, rt); ok {
+		return pkPushdownScanCursor(store, rt, cp.prefixVals, recordlayer.ForwardScan())
 	}
 	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexPushdownCursor(store, idxName, idxVal)
@@ -1132,6 +1135,7 @@ func pkPushdownScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
 	pkVals []any,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	low := make(tuple.Tuple, 0, 1+len(pkVals))
 	low = append(low, rt.GetRecordTypeKey())
@@ -1141,7 +1145,7 @@ func pkPushdownScanCursor(
 	return store.ScanRecordsInRange(
 		low, low,
 		recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive,
-		nil, recordlayer.ForwardScan(),
+		nil, scanProps,
 	)
 }
 
@@ -1163,6 +1167,7 @@ func pkPushdownRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
 	bounds pkRangeBounds,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	rtk := rt.GetRecordTypeKey()
 	var low, high tuple.Tuple
@@ -1188,7 +1193,7 @@ func pkPushdownRangeScanCursor(
 	} else {
 		high = tuple.Tuple{rtk}
 	}
-	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
+	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, scanProps)
 }
 
 // trySecondaryIndexPushdown looks for a VALUE index on a single bare
@@ -1966,6 +1971,7 @@ func pkPushdownCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	rt *recordlayer.RecordType,
 	cr pkCompositeRange,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	rtk := rt.GetRecordTypeKey()
 	prefix := make(tuple.Tuple, 0, 1+len(cr.prefixVals))
@@ -1989,7 +1995,7 @@ func pkPushdownCompositeRangeScanCursor(
 			highEp = recordlayer.EndpointTypeRangeExclusive
 		}
 	}
-	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
+	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, scanProps)
 }
 
 // pkCompositePrefix describes a composite-PK pure-prefix pushdown:
@@ -4369,15 +4375,49 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 // SELECT has no aliases; the lookup falls through to the direct col
 // match.
 func naturalOrderSatisfies(orderBy []orderByClause, naturalOrder []string, aliasToUnderlying map[string]string) bool {
+	return naturalOrderSatisfiesDir(orderBy, naturalOrder, aliasToUnderlying, true /*ascending*/)
+}
+
+// naturalOrderSatisfiesReverse is the DESC counterpart. Returns true
+// when sq.orderBy is a non-empty prefix of naturalOrder with every
+// clause DESC and compatible NULLS handling. Under a reverse scan the
+// cursor emits rows in the exact reverse of its forward natural
+// order, which is precisely what an all-DESC prefix ORDER BY asks
+// for — no in-memory sort needed, and LIMIT still early-terminates
+// against the reversed emission.
+//
+// Empty sq.orderBy → false (the ASC variant would say "nothing to
+// satisfy, use forward"; the reverse variant only applies when the
+// user actually asked for DESC).
+func naturalOrderSatisfiesReverse(orderBy []orderByClause, naturalOrder []string, aliasToUnderlying map[string]string) bool {
+	if len(orderBy) == 0 {
+		return false
+	}
+	return naturalOrderSatisfiesDir(orderBy, naturalOrder, aliasToUnderlying, false /*descending*/)
+}
+
+func naturalOrderSatisfiesDir(orderBy []orderByClause, naturalOrder []string, aliasToUnderlying map[string]string, ascending bool) bool {
 	if len(naturalOrder) == 0 {
 		return false
 	}
 	for i, ob := range orderBy {
-		if !ob.ascending {
+		if ob.ascending != ascending {
 			return false
 		}
-		if ob.nullsFirst != nil && !*ob.nullsFirst {
-			return false
+		// NULLS handling. Tuple order: NULLs sort first under FDB's
+		// tuple encoding. Forward scan emits NULLs first → compatible
+		// with ASC NULLS FIRST (and unspecified). Reverse scan emits
+		// NULLs LAST → compatible with DESC NULLS LAST (and
+		// unspecified). Any explicit NULL ordering opposite to the
+		// direction's native order forces the in-memory sort.
+		if ascending {
+			if ob.nullsFirst != nil && !*ob.nullsFirst {
+				return false
+			}
+		} else {
+			if ob.nullsFirst != nil && *ob.nullsFirst {
+				return false
+			}
 		}
 		if i >= len(naturalOrder) {
 			return false
@@ -4391,6 +4431,38 @@ func naturalOrderSatisfies(orderBy []orderByClause, naturalOrder []string, alias
 		}
 	}
 	return true
+}
+
+// buildOrderByAliases extracts the SELECT-list alias map that
+// naturalOrderSatisfies / naturalOrderSatisfiesReverse consult to
+// resolve `ORDER BY <alias>` to the underlying column. Equivalent to
+// the scan-setup block further down but hoisted so the pushdown-chain
+// direction decision can use it.
+func buildOrderByAliases(sq *selectQuery) map[string]string {
+	if len(sq.projAliases) == 0 {
+		return nil
+	}
+	aliases := make(map[string]string, len(sq.projAliases))
+	for i, colName := range sq.projCols {
+		if i < len(sq.projAliases) && sq.projAliases[i] != "" {
+			aliases[strings.ToUpper(sq.projAliases[i])] = colName
+		}
+	}
+	return aliases
+}
+
+// scanPropsForOrder picks the ScanProperties a pushdown branch should
+// feed into its cursor builder based on sq.orderBy + the branch's
+// natural emission order. Returns ReverseScan when the ORDER BY is a
+// non-empty all-DESC prefix of naturalOrder (and forward otherwise,
+// including the empty-orderBy case). The bool result signals whether
+// reverse was applied — the sort / LIMIT-early-term logic downstream
+// needs it to accept DESC-prefix matches too.
+func scanPropsForOrder(orderBy []orderByClause, naturalOrder []string, aliasToUnderlying map[string]string) (recordlayer.ScanProperties, bool) {
+	if naturalOrderSatisfiesReverse(orderBy, naturalOrder, aliasToUnderlying) {
+		return recordlayer.ReverseScan(), true
+	}
+	return recordlayer.ForwardScan(), false
 }
 
 func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
@@ -4422,6 +4494,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	// Captured from the scan loop so the out-of-closure sort path can
 	// use it without re-parsing.
 	var naturalOrderAliases map[string]string
+	// reverseScanApplied tracks whether the chosen cursor uses a
+	// reverse scan to satisfy an all-DESC ORDER BY prefix of
+	// naturalOrder. When true, the post-scan sort is skipped (the
+	// cursor's reverse emission IS the requested DESC order) and the
+	// LIMIT early-termination logic treats the reverse-DESC match the
+	// same as a forward-ASC match.
+	var reverseScanApplied bool
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
@@ -4429,6 +4508,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		extraSortFields = nil
 		naturalOrder = nil
 		naturalOrderAliases = nil
+		reverseScanApplied = false
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
@@ -4514,11 +4594,27 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//    12. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		pkCols := extractPKUserFields(rt.PrimaryKey)
+		// Populate naturalOrderAliases early so each branch's reverse-
+		// scan decision can resolve ORDER BY aliases against the
+		// SELECT-list. The scan-setup block below overwrites this with
+		// the same value; hoisting is cheap.
+		naturalOrderAliases = buildOrderByAliases(sq)
+		// pkScanProps carries the direction (forward/reverse) the PK
+		// branches pass into their cursor builders. Each branch sets
+		// this based on whether sq.orderBy is an all-DESC prefix of
+		// pkCols (the naturalOrder these branches all produce). On ASC
+		// prefix (or empty orderBy), stays ForwardScan. naturalOrder
+		// is still recorded as pkCols — the sort eliminator downstream
+		// uses reverseApplied to accept either direction.
+		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, naturalOrderAliases)
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
-			cursor = pkPushdownScanCursor(store, rt, pkVals)
+			// At-most-one row — direction is irrelevant for the record
+			// set, but forwarding pkScanProps keeps the branch uniform.
+			cursor = pkPushdownScanCursor(store, rt, pkVals, pkScanProps)
 			// At-most-one row — sort is trivially no-op. Flag it as
 			// fully ordered by PK so ORDER BY on PK cols is skipped.
 			naturalOrder = pkCols
+			reverseScanApplied = pkReverseApplied
 		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok {
 			if len(pkVals) == 1 {
 				// Degenerate IN-list: `pk IN (v)` is equivalent to `pk =
@@ -4526,34 +4622,38 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// of a one-element lazy chain, and naturalOrder can flag
 				// PK cols (at-most-one row) to enable ORDER BY
 				// elimination and LIMIT early-termination.
-				cursor = pkPushdownScanCursor(store, rt, pkVals)
+				cursor = pkPushdownScanCursor(store, rt, pkVals, pkScanProps)
 				naturalOrder = pkCols
+				reverseScanApplied = pkReverseApplied
 			} else {
 				cursor = pkPushdownInListScanCursor(store, rt, pkVals)
 				// IN-list lazy chain — emits in declared-list order,
 				// no usable natural order for ORDER BY elimination.
 			}
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
-			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
+			cursor = pkPushdownRangeScanCursor(store, rt, bounds, pkScanProps)
 			// Single-col PK range → ASC on the PK col, then nothing.
 			naturalOrder = pkCols
+			reverseScanApplied = pkReverseApplied
 		} else if cil, ok := c.tryPKCompositeInListPushdown(ctx, sq, rt); ok {
 			cursor = pkCompositeInListScanCursor(store, rt, cil)
 			// Per-sub-scan natural order is ASC on PK cols; but
 			// sub-scans run sequentially over IN-list values in
 			// declared order, so the overall emission isn't sorted.
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
-			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
+			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr, pkScanProps)
 			// Composite PK range emits rows in ASC PK order.
 			naturalOrder = pkCols
+			reverseScanApplied = pkReverseApplied
 		} else if cp, ok := c.tryPKCompositePrefixPushdown(ctx, sq, rt); ok {
 			// Pure-prefix composite PK: `WHERE a = 1 AND b = 5` on PK
 			// (a, b, c) narrows to the tuple-prefix scan [rtk, 1, 5]
 			// without any range/IN-list on trailing cols. Last PK
 			// branch before secondary — tighter composite forms have
 			// already been tried.
-			cursor = pkPushdownScanCursor(store, rt, cp.prefixVals)
+			cursor = pkPushdownScanCursor(store, rt, cp.prefixVals, pkScanProps)
 			naturalOrder = pkCols
+			reverseScanApplied = pkReverseApplied
 		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
 			// The helper itself filters out WRITE_ONLY / DISABLED
 			// indexes while iterating, so any returned index is
@@ -4631,10 +4731,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
 			}
 		} else {
-			cursor = store.ScanRecordsByType(sq.tableName, nil, recordlayer.ForwardScan())
 			// Full type scan emits in PK tuple order (record-type-key
-			// prefix keeps records of the same type contiguous).
+			// prefix keeps records of the same type contiguous). Use
+			// reverse scan when ORDER BY is an all-DESC prefix of
+			// pkCols — same direction-selection rule as the PK
+			// pushdown branches.
+			cursor = store.ScanRecordsByType(sq.tableName, nil, pkScanProps)
 			naturalOrder = pkCols
+			reverseScanApplied = pkReverseApplied
 		}
 		defer cursor.Close() //nolint:errcheck
 
@@ -5194,7 +5298,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// full scan and sort later.
 		earlyTermTarget := int64(-1)
 		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 &&
-			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) {
+			(naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) || reverseScanApplied) {
 			earlyTermTarget = sq.offset + sq.limit
 		}
 
@@ -5307,9 +5411,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		}
 		// ORDER BY elimination: if the scan cursor emitted rows in a
 		// natural order that already satisfies sq.orderBy, skip the
-		// in-memory sort. Requires every ORDER BY clause to be ASC
-		// (with nullsFirst default / NULLS FIRST) and to be a prefix
-		// of naturalOrder.
+		// in-memory sort.
+		//
+		// Two satisfying cases:
+		//   (a) Forward scan + all-ASC prefix match: cursor emits in
+		//       naturalOrder; ASC prefix is trivially satisfied.
+		//   (b) Reverse scan + all-DESC prefix match: the pushdown
+		//       branch already picked ReverseScan — cursor emits in
+		//       reverse of naturalOrder, which IS the DESC order the
+		//       user asked for. Flagged via reverseScanApplied.
 		//
 		// Correctness: a stable sort on a sequence already sorted by
 		// the same key is a no-op. Skipping the sort preserves row
@@ -5319,16 +5429,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// Bail conditions:
 		//   - aggregate path: data is post-aggregate, naturalOrder
 		//     doesn't apply.
-		//   - any DESC clause: cursor is ASC; reverse scan would
-		//     require separate plumbing (not in scope for MVP).
-		//   - any NULLS LAST on ASC (SQL default is NULLS FIRST for
-		//     ASC under our convention): the natural tuple order
-		//     puts NULLs first in ASC, so NULLS LAST needs sort.
-		//     Treat `ob.nullsFirst == nil` (default) and explicit
-		//     `*ob.nullsFirst == true` as compatible.
+		//   - mixed ASC / DESC across clauses: neither direction
+		//     satisfies the full prefix, so we sort.
+		//   - NULLS ordering opposite the scan direction's native
+		//     placement (ASC + NULLS LAST, or DESC + NULLS FIRST).
 		//   - ORDER BY col not in naturalOrder prefix.
 		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
-			naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases)
+			(naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) || reverseScanApplied)
 		if !sortSkippable {
 			sort.SliceStable(data, func(i, j int) bool {
 				for _, ob := range sq.orderBy {
