@@ -35,9 +35,6 @@ import (
 // Phase 1c. Phase 2 Cascades subsumes this into Logical* expression
 // builders.
 
-//	MIN, MAX, AVG), emits one row per group (or a single synthetic group when
-//	sq.groupBy is empty), optionally filtered by sq.havingExpr.
-//
 // countStarOutName returns the output column name for a COUNT(*)-only
 // SELECT: the SELECT-list `AS alias` when present, otherwise the
 // canonical reconstruction "COUNT(*)". Used at every emission site so

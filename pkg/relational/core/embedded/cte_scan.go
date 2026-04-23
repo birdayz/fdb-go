@@ -76,7 +76,7 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			}
 			outRows = append(outRows, outRow)
 		}
-	} else if sq.projCols != nil {
+	} else {
 		colNames = make([]string, len(sq.projCols))
 		for j, col := range sq.projCols {
 			if j < len(sq.projAliases) && sq.projAliases[j] != "" {

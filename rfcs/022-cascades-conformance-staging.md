@@ -135,4 +135,14 @@ Current order in TODO.md is 4.0 → 4.7 linearly. Proposed:
 - Does the naive `query.Generator` (Phase 1a) have a stable
   plan-cache-key format today? If not, should it? (Might affect
   RPC plan-cache behaviour for clients hitting Go before Cascades
-  lands.)
+  lands.) **Answer (2026-04-23):** No stable format. `query.Generator`
+  today does not expose a plan-cache key at all — it parses + plans
+  + executes each statement inline per call with no cross-statement
+  reuse. Clients MUST NOT send plan keys across engine upgrades.
+  Plan-cache compatibility is thus strictly a Phase 2 / 4.-0.25
+  concern; nothing pre-Cascades pins a wire format we'd have to
+  preserve. If a future shift wants to introduce a naive-generator
+  cache key (e.g. to speed up repeated ExecContext calls from a
+  single connection), it should mark the format as private-to-Go-
+  engine and reject cross-engine use — the Cascades cache key
+  (when it lands) is a separate namespace.
