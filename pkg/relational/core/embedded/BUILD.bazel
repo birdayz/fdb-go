@@ -26,6 +26,7 @@ go_library(
         "select_query_full.go",
         "system_rows.go",
         "system_tables.go",
+        "tri_bool.go",
         "union.go",
         "update_delete.go",
         "where_extractors.go",
