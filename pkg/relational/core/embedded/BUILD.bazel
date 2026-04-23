@@ -6,6 +6,7 @@ go_library(
         "aggregate.go",
         "connection.go",
         "covering_index.go",
+        "cte_scan.go",
         "in_list_pushdown.go",
         "join.go",
         "like_prefix_pushdown.go",
