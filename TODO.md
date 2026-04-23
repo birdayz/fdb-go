@@ -853,6 +853,20 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 **This is ~104K LOC in Java, ~500 files. It will not fit in one shift. Break it into sub-phases and plan across many shifts.**
 
+**Staging / conformance ordering:** see `rfcs/022-cascades-conformance-staging.md`. The three sub-phases below (4.-1, 4.-0.5, 4.-0.25) run *before* 4.0 so the hardest conformance questions are answered up front rather than discovered after weeks of rule-porting. Rule porting in 4.5 is also re-ordered to start with the six rules that cover swingshift-44's existing 11-branch pushdown chain, so the plan-equivalence harness (4.-1) gets end-to-end coverage against the 94-scenario yamsql corpus early.
+
+- [ ] **4.-1 — Plan-equivalence harness (build FIRST)**
+  - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
+  - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
+  - [ ] Decide: live in `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner)? See RFC-022 open questions.
+- [ ] **4.-0.5 — Generics-vs-interfaces spike** (RFC 021 risk #3)
+  - [ ] Port `Value` + one `BindingMatcher` in shape (a): interfaces + `any`.
+  - [ ] Same in shape (b): generic structs + constraint interfaces.
+  - [ ] Measure compile-time safety, API friction on a 10-line predicate matcher, downstream impact on `Matcher[? extends Value]` patterns.
+  - [ ] Pick one. Document the call in RFC 022 or a follow-up RFC.
+- [ ] **4.-0.25 — Plan-cache-key compatibility spec**
+  - [ ] Sub-RFC answering: (a) are we targeting hash-identical cache keys with Java? (b) if yes, which Java version do we pin (currently 4.10.6.0 in MODULE.bazel)? (c) if no, what's the migration path for clients expecting cross-engine cache sharing?
+  - [ ] Answer decides whether 4.4 (cost model) chases Java parity or ships a simpler Go-native cost.
 - [ ] **4.0 — Foundation types**
   - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation
   - [ ] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes
@@ -876,19 +890,22 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [ ] Cardinality estimation hooks, `properties/` package (~25 classes)
 - [ ] **4.5 — Rules**
   - [ ] Rule base classes (`CascadesRule`, `CascadesRuleCall`)
-  - [ ] Data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`, `PrimaryScanRule`, index scan rules)
-  - [ ] Implementation rules (`ImplementFilterRule`, `ImplementSortRule`, `ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`, etc.)
-  - [ ] Decomposition rules (`InComparisonToExplodeRule`, `DecorrelateValuesRule`)
-  - [ ] Optimization rules (`MergeFetchIntoCoveringIndexRule`, `PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`, etc.)
-  - [ ] Finalization rules (`FinalizeExpressionsRule`)
+  - [ ] **Batch A (covers swingshift-44's 11-branch pushdown chain — port FIRST so 4.-1 harness gets end-to-end yamsql coverage):**
+    - `PrimaryScanRule`
+    - `ImplementFilterRule`
+    - `ImplementSortRule`
+    - `MergeFetchIntoCoveringIndexRule`
+    - Index-equality + index-range implementation rules
+    - `InComparisonToExplodeRule` (IN-list decomposition)
+  - [ ] **Batch B and beyond:** rest of data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`), implementation rules (`ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`…), decomposition (`DecorrelateValuesRule`), optimization (`PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`…), finalization (`FinalizeExpressionsRule`). Port in batches aligned to yamsql feature flags (JOIN, CTE, aggregate).
   - [ ] **~69 rules total.** Port in batches, pick representative tests from Java's rule test suite.
 - [ ] **4.6 — Planner driver**
   - [ ] `CascadesPlanner` — task stack, EXPLORE phase → OPTIMIZE phase
   - [ ] `PlannerEvent` debug hooks
   - [ ] Integration with `RecordMetaData` + index availability
-- [ ] **4.7 — Correctness tests**
-  - [ ] Port enough of Java's planner test suite to validate rule-by-rule equivalence
-  - [ ] Add a **plan equivalence harness**: run same SQL through Go and Java planners in a container, diff the plans.
+- [ ] **4.7 — Correctness tests** (rule-by-rule; plan-equivalence harness itself lands in 4.-1)
+  - [ ] Port enough of Java's planner test suite to validate rule-by-rule equivalence.
+  - [ ] Extend the 4.-1 harness as rules land: every new rule in 4.5 adds a batch of yamsql queries it's expected to fire on, with the Java-plan oracle as the diff target.
 
 #### Phase 5 — Query execution
 
@@ -946,7 +963,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 ### Java compatibility conformance (continuous)
 
 - [ ] **Catalog wire format** — extract a schema via Go, load with Java, run a SELECT. Round-trip.
-- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching).
+- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching). **Scope decision pending** — see `rfcs/022-cascades-conformance-staging.md` §4.-0.25. Depending on the answer this is either a hard conformance item (requires Java-tag pinning + cost-model parity) or a best-effort goal we commit to re-visit post-Cascades.
 - [ ] **System table contents** — `SELECT * FROM INFORMATION_SCHEMA.TABLES` returns byte-identical rows from Go and Java against the same store.
 - [ ] **SQL semantic equivalence** — feed the yamsql test corpus through both engines; require identical result sets for read queries.
 - [ ] **FRL perf comparison — Go vs Java** — we have a Go-vs-Java benchmark table for the record layer (see CLAUDE.md), but nothing yet for the relational / SQL layer. Once Phase 5 (embedded Connection) + Phase 3 (semantic analyzer) land enough to run a real SELECT, stand up the same comparison harness for common SQL workloads (simple SELECT, secondary-index SELECT, INSERT, aggregate, prepared statement with parameters). Drive both via the same `java-jdbc-connector` vs `database/sql` test rig; measure latency, allocs, throughput. Goal: parity or better, same posture as the record-layer numbers.
