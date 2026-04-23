@@ -16,6 +16,7 @@ go_library(
         "pk_pushdown.go",
         "recursive_cte.go",
         "secondary_index_pushdown.go",
+        "select_parser.go",
         "select_query_full.go",
         "system_tables.go",
     ],
