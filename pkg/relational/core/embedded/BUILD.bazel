@@ -20,6 +20,7 @@ go_library(
         "select_parser.go",
         "select_query_full.go",
         "system_tables.go",
+        "where_extractors.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
