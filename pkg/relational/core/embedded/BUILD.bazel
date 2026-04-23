@@ -8,6 +8,8 @@ go_library(
         "in_list_pushdown.go",
         "like_prefix_pushdown.go",
         "naive_generator.go",
+        "order_by.go",
+        "pk_prefix_pushdown.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
