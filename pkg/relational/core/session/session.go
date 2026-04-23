@@ -11,17 +11,22 @@
 //   - one per database/sql driver.Conn today
 //   - one per RPC stream in the future gRPC frontend
 //
-// The Session type deliberately starts minimal — only the long-lived
-// resource handles + durable session identifiers migrate here in
-// Phase 1b of RFC 021. Statement-scoped state (CTE map, scalar
-// subquery cache, outer-scope stack, per-statement time, valid-
-// qualifier set) and the driver-level transaction handle stay on
-// EmbeddedConnection during 1b and follow in Phase 1c as the exec*
-// bodies move behind the Plan seam.
+// The Session type deliberately starts minimal — resource handles
+// and durable session identifiers migrated in Phase 1b of RFC 021.
+// Phase 1d adds connection-lifetime caches that follow Session
+// identity rather than statement execution: schema lookup cache and
+// catalog-initialisation flag. Statement-scoped state (CTE map,
+// scalar subquery cache, outer-scope stack, per-statement time,
+// valid-qualifier set) and the driver-level transaction handle
+// still live on EmbeddedConnection — those follow Phase 1c as the
+// exec* bodies move behind the Plan seam.
 package session
 
 import (
+	"sync"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
@@ -61,6 +66,41 @@ type Session struct {
 	// by ResetSession to restore the original after the pool hands the
 	// connection back.
 	DefaultSchema string
+
+	// SchemaCache memoises catalog schema lookups for the session's
+	// lifetime. Key is SchemaCacheKey(dbPath, schemaName). Safe for
+	// single-goroutine use — matches database/sql's per-Conn threading
+	// contract. Invalidated on DDL via InvalidateSchema and on
+	// ResetSession.
+	SchemaCache map[string]api.Schema
+
+	// CatalogMu + CatalogReady gate the first successful catalog init.
+	// Lock on access; set CatalogReady=true after init succeeds so
+	// later calls short-circuit. Transient init failures leave
+	// CatalogReady false so the next caller retries.
+	CatalogMu    sync.Mutex
+	CatalogReady bool
+}
+
+// SchemaCacheKey builds the canonical key under which SchemaCache
+// stores a lookup for (dbPath, schemaName). Callers must use this
+// helper rather than hand-concatenating so both stores/loads agree.
+func SchemaCacheKey(dbPath, schemaName string) string {
+	return dbPath + "\x00" + schemaName
+}
+
+// InvalidateSchema removes the cached api.Schema for (dbPath,
+// schemaName) if present. No-op when not cached. Callers hold this
+// method's contract: call after any DDL that changes the schema's
+// metadata or proto descriptor.
+func (s *Session) InvalidateSchema(dbPath, schemaName string) {
+	delete(s.SchemaCache, SchemaCacheKey(dbPath, schemaName))
+}
+
+// ResetSchemaCache drops every cached schema. Used by ResetSession
+// when the driver-layer hands the connection back to the pool.
+func (s *Session) ResetSchemaCache() {
+	s.SchemaCache = make(map[string]api.Schema)
 }
 
 // New builds a Session with the given resource handles. DBPath,
@@ -74,9 +114,10 @@ func New(
 	factory apiddl.MetadataOperationsFactory,
 ) *Session {
 	return &Session{
-		DB:       db,
-		Catalog:  cat,
-		Keyspace: ks,
-		Factory:  factory,
+		DB:          db,
+		Catalog:     cat,
+		Keyspace:    ks,
+		Factory:     factory,
+		SchemaCache: make(map[string]api.Schema),
 	}
 }

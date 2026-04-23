@@ -356,22 +356,22 @@ func TestEmbeddedConnection_ResetSession(t *testing.T) {
 
 // TestEmbeddedConnection_ResetSessionClearsPerRequestState pins the
 // pooled-connection hygiene invariants that were missing before:
-// activeTx, ctes, and schemaCache must not leak across checkouts.
+// activeTx, ctes, and SchemaCache must not leak across checkouts.
 func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{
 		sess: &session.Session{
 			Schema:        "other",
 			DefaultSchema: "main",
+			SchemaCache: map[string]api.Schema{
+				"stale": nil,
+			},
 		},
 		ctes: map[string]*cteData{
 			"LEAKED": {cols: []string{"x"}, rows: [][]driver.Value{{int64(1)}}},
 		},
-		schemaCache: map[string]api.Schema{
-			"stale": nil,
-		},
 		// activeTx left nil — rolling back a nil tx must not panic, but the
-		// reset must still run to completion (the schemaCache / ctes cleanup
+		// reset must still run to completion (the schema-cache / ctes cleanup
 		// would be skipped if we early-returned on activeTx presence).
 	}
 	if err := conn.ResetSession(context.TODO()); err != nil {
@@ -383,8 +383,8 @@ func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 	if conn.ctes != nil {
 		t.Errorf("ctes not cleared: %v", conn.ctes)
 	}
-	if len(conn.schemaCache) != 0 {
-		t.Errorf("schemaCache not cleared: %v", conn.schemaCache)
+	if len(conn.sess.SchemaCache) != 0 {
+		t.Errorf("SchemaCache not cleared: %v", conn.sess.SchemaCache)
 	}
 	if conn.activeTx != nil {
 		t.Errorf("activeTx not cleared: %v", conn.activeTx)
@@ -404,15 +404,15 @@ func TestEmbeddedConnection_ResetSessionClosedReturnsError(t *testing.T) {
 func TestEmbeddedConnection_IsValid(t *testing.T) {
 	t.Parallel()
 	// Open connections are valid regardless of catalog init state.
-	conn := &EmbeddedConnection{catalogReady: true}
+	conn := &EmbeddedConnection{sess: &session.Session{CatalogReady: true}}
 	if !conn.IsValid() {
 		t.Error("IsValid: want true, got false")
 	}
-	conn2 := &EmbeddedConnection{catalogReady: false}
+	conn2 := &EmbeddedConnection{sess: &session.Session{CatalogReady: false}}
 	if !conn2.IsValid() {
 		t.Error("IsValid: uninitialized but open should be valid")
 	}
-	conn3 := &EmbeddedConnection{catalogReady: true}
+	conn3 := &EmbeddedConnection{sess: &session.Session{CatalogReady: true}}
 	conn3.closed.Store(true)
 	if conn3.IsValid() {
 		t.Error("IsValid: want false for closed, got true")

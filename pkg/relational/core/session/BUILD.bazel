@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer",
+        "//pkg/relational/api",
         "//pkg/relational/api/ddl",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/keyspace",

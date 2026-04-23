@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -87,10 +86,6 @@ type EmbeddedConnection struct {
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
 
-	// schemaCache is a connection-level cache: (dbPath+"\x00"+schemaName) → api.Schema.
-	// Safe because driver connections are single-goroutine. Invalidated by DDL.
-	schemaCache map[string]api.Schema
-
 	// ctes holds materialized CTE results for the current SELECT statement.
 	// Non-nil only during execSelect; nil outside of that scope.
 	ctes map[string]*cteData
@@ -137,11 +132,6 @@ type EmbeddedConnection struct {
 	// descriptor name. nil outside a proto scan — outerScopeFromMsg
 	// falls back to msg's descriptor name.
 	currentSourceAliases map[string]bool
-
-	// catalogReady is set to true after the first successful catalog init.
-	// Protected by catalogMu so transient failures can be retried.
-	catalogMu    sync.Mutex
-	catalogReady bool
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
@@ -174,10 +164,6 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 		return fn(c.activeTx.rctx)
 	}
 	return c.sess.DB.Run(ctx, fn)
-}
-
-func (c *EmbeddedConnection) schemaCacheKey(dbPath, schemaName string) string {
-	return dbPath + "\x00" + schemaName
 }
 
 // pushCTEScope replaces c.ctes with a fresh map that inherits the outer
@@ -394,8 +380,8 @@ func (c *EmbeddedConnection) resolveOuterColumn(colName string) (driver.Value, b
 // conflict ranges to the user's write transaction, which would cause spurious
 // not_committed (1020) conflicts when other tests run DDL concurrently.
 func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
-	key := c.schemaCacheKey(dbPath, schemaName)
-	if s, ok := c.schemaCache[key]; ok {
+	key := session.SchemaCacheKey(dbPath, schemaName)
+	if s, ok := c.sess.SchemaCache[key]; ok {
 		return s, nil
 	}
 	var s api.Schema
@@ -416,12 +402,12 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 	if err != nil {
 		return nil, err
 	}
-	c.schemaCache[key] = s
+	c.sess.SchemaCache[key] = s
 	return s, nil
 }
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
-	delete(c.schemaCache, c.schemaCacheKey(dbPath, schemaName))
+	c.sess.InvalidateSchema(dbPath, schemaName)
 }
 
 // New returns a ready-to-use embedded connection.
@@ -435,8 +421,7 @@ func New(
 	sess := session.New(fdbDB, cat, ks, factory)
 	sess.DBPath = dbPath
 	return &EmbeddedConnection{
-		sess:        sess,
-		schemaCache: make(map[string]api.Schema),
+		sess: sess,
 	}
 }
 
@@ -7651,7 +7636,7 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	// checkouts would slowly leak memory (and the keys are invalid
 	// against the next statement's tree anyway).
 	c.scalarSubqueryCache = nil
-	c.schemaCache = make(map[string]api.Schema)
+	c.sess.ResetSchemaCache()
 	return nil
 }
 
@@ -11339,7 +11324,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		return 0, err
 	}
 	// Template change may affect any schema using it — flush the whole cache.
-	c.schemaCache = make(map[string]api.Schema)
+	c.sess.ResetSchemaCache()
 	return 0, nil
 }
 
@@ -11438,9 +11423,9 @@ func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataTyp
 // ensureCatalogInit bootstraps the catalog. Retries on transient failure
 // (unlike sync.Once, a mutex+bool allows retry when the previous attempt failed).
 func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
-	c.catalogMu.Lock()
-	defer c.catalogMu.Unlock()
-	if c.catalogReady {
+	c.sess.CatalogMu.Lock()
+	defer c.sess.CatalogMu.Unlock()
+	if c.sess.CatalogReady {
 		return nil
 	}
 	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -11453,7 +11438,7 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.catalogReady = true
+	c.sess.CatalogReady = true
 	return nil
 }
 
