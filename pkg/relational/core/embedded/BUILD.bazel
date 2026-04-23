@@ -9,6 +9,7 @@ go_library(
         "cte_scan.go",
         "ddl.go",
         "in_list_pushdown.go",
+        "insert.go",
         "join.go",
         "like_prefix_pushdown.go",
         "naive_generator.go",
