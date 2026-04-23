@@ -8,6 +8,7 @@ go_library(
         "covering_index.go",
         "cte_scan.go",
         "ddl.go",
+        "eval_proto.go",
         "in_list_pushdown.go",
         "insert.go",
         "join.go",
