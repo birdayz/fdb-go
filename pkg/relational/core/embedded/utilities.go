@@ -143,8 +143,16 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			b.WriteString(strings.ReplaceAll(val, "'", "''"))
 			b.WriteByte('\'')
 		case []byte:
-			// Represent as hex string literal using SQL standard X'...' is not
-			// in our grammar — encode as quoted string for now.
+			// ⚠️ Known limitation: emits a plain quoted string of hex
+			// digits (`'deadbeef'`) rather than the SQL-standard
+			// `x'deadbeef'` bytes literal. Our grammar doesn't accept
+			// the x'...' form here, so `WHERE bytes_col = ?` with a
+			// []byte arg becomes `WHERE bytes_col = 'deadbeef'` after
+			// substitution — a STRING comparison against the bytes
+			// column, not a BYTES one. For callers using the
+			// bytes-column path this is silently wrong. Replace once
+			// the grammar or the substituteParams path supports
+			// emitting `x'...'` directly.
 			b.WriteByte('\'')
 			for _, bv := range val {
 				fmt.Fprintf(&b, "%02x", bv)
