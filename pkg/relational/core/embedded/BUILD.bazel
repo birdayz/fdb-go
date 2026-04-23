@@ -10,6 +10,7 @@ go_library(
         "naive_generator.go",
         "order_by.go",
         "pk_prefix_pushdown.go",
+        "secondary_index_pushdown.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
