@@ -21,6 +21,7 @@ go_library(
         "select_query_full.go",
         "system_rows.go",
         "system_tables.go",
+        "union.go",
         "where_extractors.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
