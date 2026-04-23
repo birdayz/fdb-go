@@ -1992,6 +1992,101 @@ func pkPushdownCompositeRangeScanCursor(
 	return store.ScanRecordsInRange(low, high, lowEp, highEp, nil, recordlayer.ForwardScan())
 }
 
+// pkCompositePrefix describes a composite-PK pure-prefix pushdown:
+// equalities on the first len(prefixVals) PK cols with no range /
+// IN-list / BETWEEN on any col. Scan range is `[rtk, prefixVals...]`
+// as a tuple prefix — every record whose leading PK components
+// match drops into the cursor. PK cols after the prefix are
+// unconstrained here; the scan loop's evalPredicate re-applies
+// any residual WHERE on trailing cols as a post-filter.
+type pkCompositePrefix struct {
+	prefixVals []any
+}
+
+// tryPKCompositePrefixPushdown is the SELECT-gated variant of
+// tryPKCompositePrefixFromWhere.
+func (c *EmbeddedConnection) tryPKCompositePrefixPushdown(
+	ctx context.Context,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+) (pkCompositePrefix, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return pkCompositePrefix{}, false
+	}
+	if sq.havingExpr != nil {
+		return pkCompositePrefix{}, false
+	}
+	return c.tryPKCompositePrefixFromWhere(ctx, sq.whereExpr, rt)
+}
+
+// tryPKCompositePrefixFromWhere recognises a composite PK where the
+// leading cols are equated but no range / IN-list constraint is
+// available to feed the tighter composite-range or composite-IN-list
+// paths. `WHERE a = 1 AND b = 5` on PK (a, b, c) narrows to `[rtk,
+// 1, 5]` as a tuple prefix — strict win over the fallback full type
+// scan.
+//
+// Call ordering: tried LAST of the PK pushdown branches, after
+// equality (all cols), composite IN-list, composite range, and
+// single-col forms. If any tighter branch succeeds, this one never
+// runs. Non-PK leaves (and leaves on unequated trailing PK cols)
+// remain post-filter via evalPredicate — same discipline as the
+// composite-range relaxation.
+//
+// Bail cases:
+//   - Single-col PKs (no composite structure — single-col range /
+//     equality / IN-list handle these).
+//   - No equality on the first PK col (prefix is empty → no narrowing).
+//   - Equality on every PK col (full equality path handles it, and
+//     composite-prefix would degenerate into a duplicate).
+func (c *EmbeddedConnection) tryPKCompositePrefixFromWhere(
+	ctx context.Context,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+) (pkCompositePrefix, bool) {
+	if whereExpr == nil {
+		return pkCompositePrefix{}, false
+	}
+	pkCols := extractPKUserFields(rt.PrimaryKey)
+	if len(pkCols) < 2 {
+		return pkCompositePrefix{}, false
+	}
+	leaves, ok := flattenAndPredicates(whereExpr.Expression())
+	if !ok {
+		return pkCompositePrefix{}, false
+	}
+	equalities := make(map[string]any, len(pkCols))
+	for _, leaf := range leaves {
+		op, col, val, ok := extractColOpLiteral(ctx, c, leaf)
+		if !ok || op != "=" {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+	// Collect the longest leading prefix of equated PK cols.
+	prefixVals := make([]any, 0, len(pkCols))
+	for _, col := range pkCols {
+		val, has := equalities[strings.ToUpper(col)]
+		if !has {
+			break
+		}
+		fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+		if fd == nil || !functions.LiteralMatchesPKKind(val, fd.Kind()) {
+			return pkCompositePrefix{}, false
+		}
+		prefixVals = append(prefixVals, val)
+	}
+	if len(prefixVals) == 0 {
+		return pkCompositePrefix{}, false
+	}
+	if len(prefixVals) == len(pkCols) {
+		// Full equality — the equality path already caught this. Bail
+		// to keep this branch non-overlapping with tryPKEquality.
+		return pkCompositePrefix{}, false
+	}
+	return pkCompositePrefix{prefixVals: prefixVals}, true
+}
+
 // tryPKRangeFromWhere recognises single-column PK range predicates
 // (`>`, `>=`, `<`, `<=`, and `BETWEEN lo AND hi`). Returns the
 // low/high bounds when viable, or (_, false) otherwise. Single-column
@@ -4407,14 +4502,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//     3. single-col range / BETWEEN / LIKE
 		//     4. composite leading-eq + IN-list    — N keys on composite
 		//     5. composite range with leading eq
+		//     6. composite pure-prefix             — equalities on a
+		//        leading PK subset, no range / IN — tuple-prefix scan
 		//   Secondary index (each gated on index scannability inside
 		//   its helper):
-		//     6. equality                          — exact key (covered)
-		//     7. single-col IN-list                — N keys (covered)
-		//     8. composite leading-eq + IN-list    — N keys (covered)
-		//     9. range / BETWEEN / LIKE prefix     — (covered)
-		//    10. composite range with leading eq   — (covered)
-		//    11. full type scan (fallback)
+		//     7. equality                          — exact key (covered)
+		//     8. single-col IN-list                — N keys (covered)
+		//     9. composite leading-eq + IN-list    — N keys (covered)
+		//    10. range / BETWEEN / LIKE prefix     — (covered)
+		//    11. composite range with leading eq   — (covered)
+		//    12. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		pkCols := extractPKUserFields(rt.PrimaryKey)
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
@@ -4448,6 +4545,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr)
 			// Composite PK range emits rows in ASC PK order.
+			naturalOrder = pkCols
+		} else if cp, ok := c.tryPKCompositePrefixPushdown(ctx, sq, rt); ok {
+			// Pure-prefix composite PK: `WHERE a = 1 AND b = 5` on PK
+			// (a, b, c) narrows to the tuple-prefix scan [rtk, 1, 5]
+			// without any range/IN-list on trailing cols. Last PK
+			// branch before secondary — tighter composite forms have
+			// already been tried.
+			cursor = pkPushdownScanCursor(store, rt, cp.prefixVals)
 			naturalOrder = pkCols
 		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
 			// The helper itself filters out WRITE_ONLY / DISABLED
