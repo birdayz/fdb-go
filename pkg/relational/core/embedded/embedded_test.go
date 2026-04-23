@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -690,33 +692,53 @@ func FuzzLikePrefixStrinc(f *testing.F) {
 
 // FuzzLikePatternToPrefix pins the LIKE-pattern prefix extractor.
 // Must never panic on arbitrary inputs, and every returned prefix
-// must (a) be non-empty and (b) itself be a legal scan low-bound —
-// i.e., some string that matches the pattern must start with it.
-// We approximate (b) by constructing the minimal match: the
-// extracted prefix + a suffix that satisfies the rest of the
-// pattern's wildcards. Since likePatternToPrefix stops at the first
-// unescaped wildcard, the pattern tail is "<wildcard><rest>". We
-// construct suffix = "\x00" (a char that `_` matches, or that
-// likeMatch treats as any-content under `%`). If likeMatch on
-// (pattern, prefix+suffix) returns true for some choice, the prefix
-// is a valid narrowing bound. Conservative check: we don't exhaust
-// all suffixes, but any case where NO suffix matches would be a
-// bug (the pushdown would narrow to a range that contains zero
-// matching rows — false-positive pruning).
+// must be non-empty.
+//
+// The stronger invariant — "every string matching the pattern starts
+// with the extracted prefix" — is the correctness condition for the
+// pushdown: if some matching row `s` does NOT have `prefix` as a
+// byte-level prefix, the scan range `[prefix, strinc(prefix))` would
+// exclude it (false-negative pruning → silently wrong query results).
+//
+// Scope: valid-UTF-8 only. likePatternToPrefix uses []rune decoding,
+// which folds invalid UTF-8 bytes (0x80-0xFF not forming a legal
+// sequence) into U+FFFD — likeMatch compares the same folded runes
+// and returns true for distinct invalid-byte inputs, but
+// strings.HasPrefix is byte-level and sees them as different. For
+// protobuf STRING columns this is moot: protobuf rejects invalid
+// UTF-8 at (de)serialization time, so the fuzz skips such inputs.
+//
+// The corpus drives `s` explicitly so the fuzzer can find counter-
+// examples rather than only random patterns that no input happens
+// to match. When likeMatch(pattern, s, escape) is true and ok is
+// true, strings.HasPrefix(s, prefix) must hold. Any divergence is
+// a pushdown bug.
 func FuzzLikePatternToPrefix(f *testing.F) {
-	f.Add("foo%", rune(-1))
-	f.Add("foo\\_%", rune('\\'))
-	f.Add("foo", rune(-1))
-	f.Add("%", rune(-1))
-	f.Add("", rune(-1))
-	f.Add("_", rune(-1))
-	f.Add("f%o", rune(-1))
-	f.Add("f_o", rune(-1))
-	f.Add("foo%bar", rune(-1))
-	f.Add("\\%", rune('\\'))
-	f.Add("\\", rune('\\')) // dangling escape
-	f.Add("%%", rune(-1))
-	f.Fuzz(func(t *testing.T, pattern string, escape rune) {
+	// (pattern, escape, candidate string) seeds. Candidates are chosen
+	// so at least some satisfy likeMatch on the paired pattern.
+	f.Add("foo%", rune(-1), "foobar")
+	f.Add("foo\\_%", rune('\\'), "foo_bar")
+	f.Add("foo", rune(-1), "foo")
+	f.Add("%", rune(-1), "anything")
+	f.Add("", rune(-1), "")
+	f.Add("_", rune(-1), "x")
+	f.Add("f%o", rune(-1), "foo")
+	f.Add("f_o", rune(-1), "fxo")
+	f.Add("foo%bar", rune(-1), "foobar")
+	f.Add("foo%bar", rune(-1), "fooxbar")
+	f.Add("\\%", rune('\\'), "%")
+	f.Add("\\", rune('\\'), "")
+	f.Add("%%", rune(-1), "abc")
+	f.Add("a_b%c", rune(-1), "axbxc")
+	f.Fuzz(func(t *testing.T, pattern string, escape rune, s string) {
+		// Protobuf STRING columns reject invalid UTF-8 on
+		// (de)serialization; replicate that contract here so the
+		// byte-vs-rune mismatch on invalid sequences (both fold to
+		// U+FFFD in likeMatch but remain byte-distinct in HasPrefix)
+		// doesn't produce spurious failures.
+		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
+			return
+		}
 		prefix, ok := likePatternToPrefix(pattern, escape)
 		if !ok {
 			return
@@ -724,17 +746,13 @@ func FuzzLikePatternToPrefix(f *testing.F) {
 		if prefix == "" {
 			t.Fatalf("likePatternToPrefix(%q, %q) returned empty prefix with ok=true", pattern, escape)
 		}
-		// The extracted prefix must be a byte-level prefix of the
-		// pattern's literal head (up to the first unescaped wildcard).
-		// Equivalently, every matching row is >= prefix. A tighter
-		// property — "every string in [prefix, strinc(prefix)) is a
-		// candidate for the pattern" — would be a false-positive
-		// pushdown if not, but proving it here requires generating
-		// matching strings which is hard across all pattern shapes
-		// (mandatory tails like "foo%bar" need the tail preserved).
-		// yamsql tests pin that shape by shape. The fuzz's job is to
-		// prove no-panic on arbitrary inputs and that the prefix
-		// is non-empty; the no-panic + non-empty checks already fire.
+		// Correctness invariant: if `s` matches `pattern`, it MUST
+		// start with `prefix`. Otherwise the pushdown's scan bound
+		// excludes a matching row.
+		if functions.LikeMatch(pattern, s, escape) && !strings.HasPrefix(s, prefix) {
+			t.Fatalf("likePatternToPrefix false-negative: pattern=%q escape=%q s=%q matches but prefix=%q is not a prefix of s",
+				pattern, escape, s, prefix)
+		}
 	})
 }
 
