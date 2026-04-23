@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "session",
@@ -12,4 +12,11 @@ go_library(
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/keyspace",
     ],
+)
+
+go_test(
+    name = "session_test",
+    srcs = ["session_test.go"],
+    embed = [":session"],
+    deps = ["//pkg/relational/api"],
 )
