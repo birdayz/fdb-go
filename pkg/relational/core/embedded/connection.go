@@ -97,15 +97,6 @@ type EmbeddedConnection struct {
 	// Non-nil only during execSelect.
 	scalarSubqueryCache map[antlrgen.IQueryContext]any
 
-	// statementTime is the timestamp captured at the start of the
-	// current top-level statement. SQL standard requires every
-	// reference to CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME /
-	// LOCALTIME within a single statement to return the same value;
-	// caching here gives us that consistency without per-call time.Now().
-	// Zero value (statementTime.IsZero()) means "not in a statement
-	// scope, fall back to time.Now()".
-	statementTime time.Time
-
 	// validQualifiers holds the uppercased set of valid qualifier aliases
 	// for the JOIN query currently executing (left source + every join
 	// source). Used by evalExprAtomOnMap to reject WHERE/ON references
@@ -9242,26 +9233,20 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "unsupported function %q in map eval context", "unsupported specific function %T in map eval", fc)
 }
 
-// statementNow returns the timestamp captured at the start of the current
-// top-level statement, or time.Now().UTC() as a fallback if the field
-// hasn't been set (defensive — every Query/Exec entry sets it). All
-// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME within
-// the same statement see the same value, per SQL standard.
+// statementNow forwards to Session.StatementNow. Retained as a
+// thin shim while exec* callers still live in this file; will be
+// deleted as Phase 1c moves those bodies into core/plan/physical.
 func (c *EmbeddedConnection) statementNow() time.Time {
-	if c == nil || c.statementTime.IsZero() {
+	if c == nil {
 		return time.Now().UTC()
 	}
-	return c.statementTime
+	return c.sess.StatementNow()
 }
 
-// beginStatement captures the statement-start timestamp. Called at the
-// top of QueryContext / ExecContext / Prepare → Exec to make
-// CURRENT_TIMESTAMP-family calls deterministic within one statement.
-// Returns a cleanup function for use in defer.
+// beginStatement forwards to Session.BeginStatement. Thin shim —
+// see statementNow's note for removal trigger.
 func (c *EmbeddedConnection) beginStatement() func() {
-	prior := c.statementTime
-	c.statementTime = time.Now().UTC()
-	return func() { c.statementTime = prior }
+	return c.sess.BeginStatement()
 }
 
 // evalSpecificFunctionCore is the unified implementation shared by

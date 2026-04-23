@@ -24,6 +24,7 @@ package session
 
 import (
 	"sync"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -80,6 +81,37 @@ type Session struct {
 	// CatalogReady false so the next caller retries.
 	CatalogMu    sync.Mutex
 	CatalogReady bool
+
+	// StatementTime is the timestamp captured at the top of the
+	// current statement. SQL standard requires every reference to
+	// CURRENT_TIMESTAMP / CURRENT_DATE / CURRENT_TIME / LOCALTIME
+	// within a single statement to return the same value; callers
+	// read this field through StatementNow so the deterministic
+	// value is used while a statement is executing, and time.Now()
+	// is used outside. Zero value means "no statement in flight".
+	StatementTime time.Time
+}
+
+// StatementNow returns the timestamp captured at the top of the
+// current statement, or time.Now().UTC() when no statement is in
+// flight. Callers that need deterministic CURRENT_TIMESTAMP-family
+// values within a statement use this instead of time.Now() directly.
+func (s *Session) StatementNow() time.Time {
+	if s == nil || s.StatementTime.IsZero() {
+		return time.Now().UTC()
+	}
+	return s.StatementTime
+}
+
+// BeginStatement captures the statement-start timestamp and returns
+// a cleanup function that restores the previous value. Callers use
+// `defer sess.BeginStatement()()` at every public Query/Exec entry
+// point to ensure CURRENT_TIMESTAMP-family calls see a stable value
+// for the life of the statement.
+func (s *Session) BeginStatement() func() {
+	prior := s.StatementTime
+	s.StatementTime = time.Now().UTC()
+	return func() { s.StatementTime = prior }
 }
 
 // SchemaCacheKey builds the canonical key under which SchemaCache
