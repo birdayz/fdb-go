@@ -4423,9 +4423,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// fully ordered by PK so ORDER BY on PK cols is skipped.
 			naturalOrder = pkCols
 		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok {
-			cursor = pkPushdownInListScanCursor(store, rt, pkVals)
-			// IN-list lazy chain — emits in declared-list order,
-			// no usable natural order for ORDER BY elimination.
+			if len(pkVals) == 1 {
+				// Degenerate IN-list: `pk IN (v)` is equivalent to `pk =
+				// v` — take the equality path. Single point scan instead
+				// of a one-element lazy chain, and naturalOrder can flag
+				// PK cols (at-most-one row) to enable ORDER BY
+				// elimination and LIMIT early-termination.
+				cursor = pkPushdownScanCursor(store, rt, pkVals)
+				naturalOrder = pkCols
+			} else {
+				cursor = pkPushdownInListScanCursor(store, rt, pkVals)
+				// IN-list lazy chain — emits in declared-list order,
+				// no usable natural order for ORDER BY elimination.
+			}
 		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds)
 			// Single-col PK range → ASC on the PK col, then nothing.
@@ -4466,7 +4476,21 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// Covering also applies to IN-list: each sub-scan can skip
 			// the by-PK fetch when the index covers every referenced
 			// column. Same decision as the equality path.
-			if idx := md.GetIndex(sil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
+			idx := md.GetIndex(sil.indexName)
+			if len(sil.values) == 1 {
+				// Degenerate IN-list: single sub-scan is an index
+				// equality point scan — take the equality path directly
+				// to drop the lazy-chain wrapper and enable ORDER BY
+				// elimination on (idxCols..., PKCols...) = PKCols (with
+				// idxCols fixed).
+				if idx != nil && canCoverIndex(sq, idx, rt) {
+					cursor = coveringIndexRangeScanCursor(store, rt, idx,
+						buildSecondaryIndexEqualityTupleRange(sil.values[0]))
+				} else {
+					cursor = secondaryIndexPushdownCursor(store, sil.indexName, sil.values[0])
+				}
+				naturalOrder = pkCols
+			} else if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = secondaryIndexInListScanCursor(store, sil, rt, idx)
 			} else {
 				cursor = secondaryIndexInListScanCursor(store, sil, nil, nil)

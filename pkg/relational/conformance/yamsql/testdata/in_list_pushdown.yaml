@@ -75,10 +75,26 @@ tests:
       - [3, 'three']
 
   # Single-element IN-list — degenerate but must still work (same as
-  # equality pushdown semantically).
+  # equality pushdown semantically). Extractor returns len==1 which
+  # the dispatcher promotes to the equality point scan (drops the
+  # lazy-chain wrapper and flags naturalOrder = PK cols).
   - query: SELECT id FROM t WHERE id IN (2)
     rows:
       - [2]
+
+  # Single-element IN with ORDER BY + LIMIT — equality promotion sets
+  # naturalOrder = pkCols, so ORDER BY on PK is eliminated and LIMIT
+  # is early-terminated. Output row set must still match scan.
+  - query: SELECT id, name FROM t WHERE id IN (3) ORDER BY id LIMIT 1
+    rows:
+      - [3, 'three']
+
+  # Single-element IN after NULL-drop — `IN (5, NULL)` has NULL
+  # stripped by the extractor, leaving a one-element list that the
+  # dispatcher promotes to equality.
+  - query: SELECT id FROM t WHERE id IN (5, NULL)
+    rows:
+      - [5]
 
   # All values → all rows (order by id to deterministically compare).
   - query: SELECT id FROM t WHERE id IN (1, 2, 3, 4, 5) ORDER BY id
@@ -330,6 +346,22 @@ tests:
       - [1, 'active']
       - [3, 'active']
       - [5, 'deleted']
+
+  # Single-element IN on a secondary index — degenerate list promoted
+  # to the equality path (single point scan on idx_t2_status, no lazy
+  # chain wrapper). Row set must match the N-element form.
+  - query: SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id
+    rows:
+      - [1, 'active']
+      - [3, 'active']
+
+  # Single-element IN on a secondary index with LIMIT — the equality
+  # promotion sets naturalOrder = pkCols, enabling LIMIT
+  # early-termination when ORDER BY is on PK cols. Semantics identical
+  # to N-element IN with LIMIT.
+  - query: SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id LIMIT 1
+    rows:
+      - [1, 'active']
 
   # Index IN + residual — index narrows to status IN (A, B);
   # residual `v > 10` post-filters.
