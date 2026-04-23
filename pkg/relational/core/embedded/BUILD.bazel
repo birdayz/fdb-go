@@ -13,6 +13,7 @@ go_library(
         "order_by.go",
         "pk_prefix_pushdown.go",
         "pk_pushdown.go",
+        "recursive_cte.go",
         "secondary_index_pushdown.go",
         "system_tables.go",
     ],
