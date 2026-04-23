@@ -145,21 +145,6 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 	return c.sess.DB.Run(ctx, fn)
 }
 
-// pushCTEScope replaces c.ctes with a fresh map that inherits the outer
-// scope's entries (so inner queries can reference outer CTEs) and returns
-// a pop function that restores the previous scope verbatim. Use with
-// `defer c.pushCTEScope()()` at every point that introduces new CTE names
-// (WITH clauses, derived tables) so inner definitions don't leak out.
-func (c *EmbeddedConnection) pushCTEScope() func() {
-	prior := c.ctes
-	next := make(map[string]*cteData, len(prior))
-	for k, v := range prior {
-		next[k] = v
-	}
-	c.ctes = next
-	return func() { c.ctes = prior }
-}
-
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName), using the
 // connection-level cache to avoid repeated FDB reads within the same session.
 // The cache is invalidated by any DDL that modifies schema definitions.

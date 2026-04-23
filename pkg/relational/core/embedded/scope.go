@@ -34,6 +34,21 @@ import (
 // pop-func-returns-restore-prior-state pattern is safe under
 // nested defer.
 
+// pushCTEScope replaces c.ctes with a fresh map that inherits the outer
+// scope's entries (so inner queries can reference outer CTEs) and returns
+// a pop function that restores the previous scope verbatim. Use with
+// `defer c.pushCTEScope()()` at every point that introduces new CTE names
+// (WITH clauses, derived tables) so inner definitions don't leak out.
+func (c *EmbeddedConnection) pushCTEScope() func() {
+	prior := c.ctes
+	next := make(map[string]*cteData, len(prior))
+	for k, v := range prior {
+		next[k] = v
+	}
+	c.ctes = next
+	return func() { c.ctes = prior }
+}
+
 // pushValidQualifiersScope installs a per-query set of valid qualifier
 // aliases (uppercased) and returns a pop function restoring the prior
 // scope. Called from execSelectJoin so the map-path evaluator can
