@@ -24,6 +24,7 @@ go_library(
         "select_helpers.go",
         "select_parser.go",
         "select_query_full.go",
+        "stmt.go",
         "system_rows.go",
         "system_tables.go",
         "tri_bool.go",

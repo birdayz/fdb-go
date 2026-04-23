@@ -2893,34 +2893,6 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 	}
 }
 
-// embeddedStmt is a prepared DDL statement (no bind parameters).
-type embeddedStmt struct {
-	conn  *EmbeddedConnection
-	query string
-}
-
-func (s *embeddedStmt) Close() error { return nil }
-
-func (s *embeddedStmt) NumInput() int { return -1 } // unknown, variadic-safe
-
-func (s *embeddedStmt) Exec(args []driver.Value) (driver.Result, error) {
-	named := make([]driver.NamedValue, len(args))
-	for i, v := range args {
-		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
-	}
-	return s.conn.ExecContext(context.Background(), s.query, named)
-}
-
-func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
-	named := make([]driver.NamedValue, len(args))
-	for i, v := range args {
-		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
-	}
-	// TODO: driver.Stmt.Query has no context parameter; use context.Background() until
-	// database/sql upgrades all call sites to QueryContext.
-	return s.conn.QueryContext(context.Background(), s.query, named)
-}
-
 // Static interface checks.
 var (
 	_ driver.Conn               = (*EmbeddedConnection)(nil)
