@@ -158,6 +158,12 @@ func pkPushdownCursor(
 		return pkPushdownScanCursor(store, rt, pkVals, recordlayer.ForwardScan())
 	}
 	if pkVals, ok := c.tryPKInListFromWhere(ctx, whereExpr, rt); ok {
+		if len(pkVals) == 1 {
+			// Degenerate IN-list — `pk IN (v)` is a single-point lookup;
+			// drop the lazy-chain wrapper for UPDATE/DELETE same as the
+			// SELECT path at execSelectQueryFull's dispatcher.
+			return pkPushdownScanCursor(store, rt, pkVals, recordlayer.ForwardScan())
+		}
 		return pkPushdownInListScanCursor(store, rt, pkVals)
 	}
 	if bounds, ok := c.tryPKRangeFromWhere(ctx, whereExpr, rt); ok {
@@ -190,8 +196,12 @@ func pkPushdownCursor(
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 
-// pkPushdownScanCursor builds a single-key range scan for a fully
-// determined primary key. extractPKUserFields gates this to the
+// pkPushdownScanCursor builds a tuple-prefix range scan for a
+// fully-or-partially-determined primary key. When pkVals covers every
+// PK col (the equality / 1-element IN-list paths) the scan yields at
+// most one record; when pkVals covers only a leading subset (the
+// composite pure-prefix path) the scan yields every record whose PK
+// starts with that prefix. extractPKUserFields gates this to the
 // RecordTypeKey-prefixed PK shape only, so the tuple is always
 // `{rtk, pkVal1, pkVal2, ...}` — the prefix anchors the scan to the
 // right record type, matching ScanRecordsByType's fast-path semantics
