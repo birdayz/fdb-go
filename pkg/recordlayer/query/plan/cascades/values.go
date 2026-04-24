@@ -11,9 +11,9 @@
 // Dayshift-46 seed contents:
 //
 //   - values.go          — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 5 concrete
+//     Evaluate) + ValueType enum + 6 concrete
 //     values (Constant, Field, Arithmetic, Boolean,
-//     Cast).
+//     Cast, Null) + ExplainValue SQL-ish renderer.
 //   - matcher.go         — BindingMatcher interface +
 //     PlannerBindings + MergedWith + AnyValue /
 //     Instance / ArithmeticMatcher + the generic
@@ -36,10 +36,12 @@
 //     (Yield / Yielded) + FireRule testing driver.
 //     Example addConstantFoldRule folds
 //     `Const + Const` → `Const`.
-//   - rule_simplify.go   — Four Phase 4.5 Batch A-style rules:
-//     AndConstantSimplify / OrConstantSimplify /
-//     NotConstantSimplify /
-//     ComparisonConstantSimplify.
+//   - rule_simplify.go   — Eight Phase 4.5 Batch A-style rules:
+//     AndFlatten / OrFlatten (associative
+//     normalisation), AndConstantSimplify /
+//     OrConstantSimplify / NotConstantSimplify /
+//     ComparisonConstantSimplify (Kleene folds),
+//     AndDedup / OrDedup (structural dedup).
 //   - simplifier.go      — Fixed-point Simplify driver + the
 //     DefaultSimplifyRules rule set. Pre-4.6 seed;
 //     real planner task-stack replaces this later.
