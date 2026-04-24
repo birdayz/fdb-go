@@ -7,7 +7,57 @@ var (
 	_ CascadesRule = (*OrConstantSimplifyRule)(nil)
 	_ CascadesRule = (*NotConstantSimplifyRule)(nil)
 	_ CascadesRule = (*ComparisonConstantSimplifyRule)(nil)
+	_ CascadesRule = (*AndFlattenRule)(nil)
+	_ CascadesRule = (*OrFlattenRule)(nil)
 )
+
+// AndFlattenRule collapses nested AndPredicates into a single flat
+// list of operands.
+func TestAndFlatten_NestedBecomesFlat(t *testing.T) {
+	t.Parallel()
+	rule := NewAndFlattenRule()
+	// AND(AND(a, b), c)  →  AND(a, b, c)
+	a := NewConstantPredicate(TriUnknown)
+	b := NewConstantPredicate(TriUnknown)
+	c := NewConstantPredicate(TriUnknown)
+	nested := NewAnd(NewAnd(a, b), c)
+	got := FireRule(rule, nested)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	flat, ok := got[0].(*AndPredicate)
+	if !ok || len(flat.SubPredicates) != 3 {
+		t.Fatalf("expected flat AND with 3 children, got %v", got[0])
+	}
+}
+
+// Already-flat AND → rule declines (idempotent).
+func TestAndFlatten_AlreadyFlat(t *testing.T) {
+	t.Parallel()
+	rule := NewAndFlattenRule()
+	flat := NewAnd(NewConstantPredicate(TriUnknown), NewConstantPredicate(TriUnknown))
+	if got := FireRule(rule, flat); len(got) != 0 {
+		t.Fatalf("expected 0 yields, got %d", len(got))
+	}
+}
+
+// OrFlattenRule mirror.
+func TestOrFlatten_NestedBecomesFlat(t *testing.T) {
+	t.Parallel()
+	rule := NewOrFlattenRule()
+	a := NewConstantPredicate(TriUnknown)
+	b := NewConstantPredicate(TriUnknown)
+	c := NewConstantPredicate(TriUnknown)
+	nested := NewOr(NewOr(a, b), c)
+	got := FireRule(rule, nested)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	flat, ok := got[0].(*OrPredicate)
+	if !ok || len(flat.SubPredicates) != 3 {
+		t.Fatalf("expected flat OR with 3 children, got %v", got[0])
+	}
+}
 
 // ComparisonConstantSimplify: both sides literal → constant
 // predicate. Covers true/false/unknown outcomes.

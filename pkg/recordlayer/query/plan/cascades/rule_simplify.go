@@ -115,6 +115,86 @@ func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 }
 
+// --- AndFlattenRule / OrFlattenRule --------------------------------
+
+// AndFlattenRule normalises nested AndPredicates: `AND(AND(a, b), c)`
+// → `AND(a, b, c)`. Mirrors Java's associative-flatten in
+// `ValueSimplificationRuleSet`. Runs before the constant-simplify
+// pass so the simplifier sees a flat list of operands.
+type AndFlattenRule struct {
+	matcher BindingMatcher
+}
+
+// NewAndFlattenRule constructs the rule.
+func NewAndFlattenRule() *AndFlattenRule {
+	r := &AndFlattenRule{}
+	r.matcher = newAndPredicateMatcher()
+	return r
+}
+
+func (r *AndFlattenRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *AndFlattenRule) OnMatch(call *RuleCall) {
+	and := call.Bindings.Get(r.matcher).(*AndPredicate)
+	// Check for any child that is itself an AndPredicate.
+	hasNested := false
+	for _, sp := range and.SubPredicates {
+		if _, ok := sp.(*AndPredicate); ok {
+			hasNested = true
+			break
+		}
+	}
+	if !hasNested {
+		return
+	}
+	flat := make([]QueryPredicate, 0, len(and.SubPredicates))
+	for _, sp := range and.SubPredicates {
+		if inner, ok := sp.(*AndPredicate); ok {
+			flat = append(flat, inner.SubPredicates...)
+		} else {
+			flat = append(flat, sp)
+		}
+	}
+	call.Yield(&AndPredicate{SubPredicates: flat})
+}
+
+// OrFlattenRule: mirror of AndFlattenRule for OR.
+type OrFlattenRule struct {
+	matcher BindingMatcher
+}
+
+// NewOrFlattenRule constructs the rule.
+func NewOrFlattenRule() *OrFlattenRule {
+	r := &OrFlattenRule{}
+	r.matcher = newOrPredicateMatcher()
+	return r
+}
+
+func (r *OrFlattenRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *OrFlattenRule) OnMatch(call *RuleCall) {
+	or := call.Bindings.Get(r.matcher).(*OrPredicate)
+	hasNested := false
+	for _, sp := range or.SubPredicates {
+		if _, ok := sp.(*OrPredicate); ok {
+			hasNested = true
+			break
+		}
+	}
+	if !hasNested {
+		return
+	}
+	flat := make([]QueryPredicate, 0, len(or.SubPredicates))
+	for _, sp := range or.SubPredicates {
+		if inner, ok := sp.(*OrPredicate); ok {
+			flat = append(flat, inner.SubPredicates...)
+		} else {
+			flat = append(flat, sp)
+		}
+	}
+	call.Yield(&OrPredicate{SubPredicates: flat})
+}
+
 // --- NotConstantSimplifyRule + DoubleNegationRule ------------------
 
 // NotConstantSimplifyRule folds NOT over a constant child per Kleene

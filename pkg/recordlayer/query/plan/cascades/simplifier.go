@@ -94,10 +94,14 @@ func applyRulesOnce(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 
 // DefaultSimplifyRules returns the canonical simplification rule
 // set this shift ships. Callers pass this to Simplify for a typical
-// "constant-fold + identity-drop" pass. Order matters — constant
-// folds run first so identities see already-collapsed children.
+// "flatten + constant-fold + identity-drop" pass. Order matters:
+// flattens run first so the constant-fold rules see a flat operand
+// list; then Comparison constants fold; then Not resolves; then the
+// And/Or identity-drop + absorbing-element rules.
 func DefaultSimplifyRules() []CascadesRule {
 	return []CascadesRule{
+		NewAndFlattenRule(),
+		NewOrFlattenRule(),
 		NewComparisonConstantSimplifyRule(),
 		NewNotConstantSimplifyRule(),
 		NewAndConstantSimplifyRule(),
