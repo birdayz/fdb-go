@@ -68,8 +68,84 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		// integer div are not wired yet — cascades.ArithmeticOp
 		// doesn't expose them.
 		return r.walkMathExpression(a)
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		// Function call — only aggregates (COUNT/SUM/MIN/MAX/AVG)
+		// are wired in the seed. Scalar functions land once the
+		// scalar-function catalogue is ported.
+		return r.walkFunctionCall(a.FunctionCall())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
+}
+
+// walkFunctionCall handles FunctionCall contexts. Only aggregate
+// functions are wired today (COUNT/SUM/MIN/MAX/AVG); scalar function
+// dispatch waits on the scalar-function catalogue port.
+//
+// The Resolver is constructed without a FunctionCatalog in its
+// seed form — we build a fresh one with the defaults inline so the
+// walker stays self-contained. Future: thread the catalog through
+// New() so callers can register scalar extensions.
+func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.Value, error) {
+	if fc == nil {
+		return nil, fmt.Errorf("expr.walkFunctionCall: nil")
+	}
+	agg, ok := fc.(*antlrgen.AggregateFunctionCallContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("non-aggregate function call %T", fc)}
+	}
+	awf := agg.AggregateWindowedFunction()
+	if awf == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "AggregateFunctionCall without AggregateWindowedFunction"}
+	}
+	awfc, ok := awf.(*antlrgen.AggregateWindowedFunctionContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("AggregateWindowedFunction ctx %T", awf)}
+	}
+	name, ok := aggregateFunctionName(awfc)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: "AggregateWindowedFunction with unknown operator"}
+	}
+	fcat := semantic.NewFunctionCatalog()
+	fcat.RegisterDefaults()
+	// COUNT(*) — the `STAR()` accessor, which I cross-checked earlier.
+	isStar := awfc.STAR() != nil
+	var args []cascades.Value
+	if !isStar && awfc.FunctionArg() != nil {
+		// FunctionArg wraps an expression or a * sentinel — we only
+		// walk the expression form; the star path is the isStar flag.
+		argCtx, ok := awfc.FunctionArg().(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", awfc.FunctionArg())}
+		}
+		if argCtx.Expression() == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression (star handled separately)"}
+		}
+		v, err := r.WalkExpression(argCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		args = []cascades.Value{v}
+	}
+	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
+}
+
+// aggregateFunctionName reads which terminal is present on the
+// AggregateWindowedFunction context and returns the canonical
+// UPPER-case name.
+func aggregateFunctionName(awf *antlrgen.AggregateWindowedFunctionContext) (string, bool) {
+	switch {
+	case awf.COUNT() != nil:
+		return "COUNT", true
+	case awf.SUM() != nil:
+		return "SUM", true
+	case awf.MIN() != nil:
+		return "MIN", true
+	case awf.MAX() != nil:
+		return "MAX", true
+	case awf.AVG() != nil:
+		return "AVG", true
+	}
+	return "", false
 }
 
 // walkMathExpression walks an arithmetic atom (`a + b`, `a * b`)

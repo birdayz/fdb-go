@@ -652,6 +652,42 @@ func TestWalkExpression_Arithmetic_Nested(t *testing.T) {
 	}
 }
 
+// Aggregate function calls: COUNT(*), COUNT(col), SUM, MIN, MAX, AVG.
+func TestWalkExpression_AggregateFunctions(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	cases := []struct {
+		sql  string
+		want cascades.AggregateOp
+	}{
+		{"SELECT * FROM users WHERE COUNT(*)", cascades.AggCountStar},
+		{"SELECT * FROM users WHERE COUNT(id)", cascades.AggCount},
+		{"SELECT * FROM users WHERE SUM(id)", cascades.AggSum},
+		{"SELECT * FROM users WHERE MIN(id)", cascades.AggMin},
+		{"SELECT * FROM users WHERE MAX(id)", cascades.AggMax},
+		{"SELECT * FROM users WHERE AVG(id)", cascades.AggAvg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, tc.sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			av, ok := v.(*cascades.AggregateValue)
+			if !ok {
+				t.Fatalf("expected *AggregateValue, got %T", v)
+			}
+			if av.Op != tc.want {
+				t.Fatalf("Op: got %v, want %v", av.Op, tc.want)
+			}
+		})
+	}
+}
+
 func TestWalkExpression_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
