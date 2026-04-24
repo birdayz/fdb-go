@@ -859,14 +859,14 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
   - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
   - [ ] Decide: live in `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner)? See RFC-022 open questions.
-- [ ] **4.-0.5 — Generics-vs-interfaces spike** (RFC 021 risk #3)
-  - [ ] Port `Value` + one `BindingMatcher` in shape (a): interfaces + `any`.
-  - [ ] Same in shape (b): generic structs + constraint interfaces.
-  - [ ] Measure compile-time safety, API friction on a 10-line predicate matcher, downstream impact on `Matcher[? extends Value]` patterns.
-  - [ ] Pick one. Document the call in RFC 022 or a follow-up RFC.
-- [ ] **4.-0.25 — Plan-cache-key compatibility spec**
-  - [ ] Sub-RFC answering: (a) are we targeting hash-identical cache keys with Java? (b) if yes, which Java version do we pin (currently 4.10.6.0 in MODULE.bazel)? (c) if no, what's the migration path for clients expecting cross-engine cache sharing?
-  - [ ] Answer decides whether 4.4 (cost model) chases Java parity or ships a simpler Go-native cost.
+- [x] **4.-0.5 — Generics-vs-interfaces spike** (RFC 021 risk #3) — dayshift-46.
+  - [x] Port `Value` + one `BindingMatcher` in shape (a): interfaces + `any` (`pkg/relational/core/plan/cascadesspike/shapea/`).
+  - [x] Same in shape (b): generic structs + constraint interfaces (`pkg/relational/core/plan/cascadesspike/shapeb/`).
+  - [x] Measure compile-time safety, API friction on a 10-line predicate matcher, downstream impact on heterogeneous children.
+  - [x] **Decision: shape (a).** See `rfcs/023-cascades-generics-decision.md`. Spike packages stay in-tree until Phase 4.0 lands; removed in that shift. Zero-size-struct identity gotcha documented — all matcher structs need a nonce field + factory constructor.
+- [x] **4.-0.25 — Plan-cache-key compatibility spec** — dayshift-46.
+  - [x] Sub-RFC: `rfcs/024-plan-cache-compat.md`.
+  - [x] **Decision: hash-identical Java compatibility is NOT a goal.** Java's `RelationalPlanCache` is Caffeine-backed per-process in-memory; no wire format, no distributed deployment, no cross-engine contract to preserve. Phase 4.4 free to ship simpler Go-native cost. Go-internal hash stability + schema-version-sensitive keys + test fixtures still required — added as Phase 4.0 sub-items.
 - [ ] **4.0 — Foundation types**
   - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation
   - [ ] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes
