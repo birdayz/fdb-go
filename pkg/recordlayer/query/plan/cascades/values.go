@@ -11,10 +11,10 @@
 // Dayshift-46 seed contents:
 //
 //   - values.go          — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 7 concrete
+//     Evaluate) + ValueType enum + 8 concrete
 //     values (Constant, Field, Arithmetic, Boolean,
-//     Cast, Null, Aggregate) + ExplainValue SQL-ish
-//     renderer.
+//     Cast, Null, Aggregate, QuantifiedObject) +
+//     ExplainValue SQL-ish renderer.
 //   - matcher.go         — BindingMatcher interface +
 //     PlannerBindings + MergedWith + AnyValue /
 //     Instance / ArithmeticMatcher + the generic
@@ -207,6 +207,8 @@ func ExplainValue(v Value) string {
 			return "COUNT(*)"
 		}
 		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
+	case *QuantifiedObjectValue:
+		return cv.Correlation.Name()
 	}
 	return v.Name()
 }
@@ -425,6 +427,78 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		}
 	}
 	return nil
+}
+
+// --- QuantifiedObjectValue -----------------------------------------
+
+// QuantifiedObjectValue represents "the current row of the
+// quantifier identified by Correlation". Emitted by the analyzer
+// for references like `t` in `SELECT t.col FROM tbl AS t` — the
+// parent expression (`t.col`) then projects a FieldValue with
+// operand = QuantifiedObjectValue{Correlation: t}.
+//
+// Mirrors Java's `QuantifiedObjectValue`. The seed Evaluate reads
+// the row directly out of the eval context when it's a
+// `map[CorrelationIdentifier]map[string]any` (the multi-source
+// shape); for the single-source `map[string]any` shape it returns
+// the map verbatim so downstream FieldValue lookups can index into
+// it.
+type QuantifiedObjectValue struct {
+	Correlation CorrelationIdentifier
+	// Typ is the row type (struct shape) this quantifier produces.
+	// Seed keeps it as TypeUnknown until the Type hierarchy port
+	// lands — the test surface doesn't need real struct types yet.
+	Typ ValueType
+}
+
+// NewQuantifiedObjectValue constructs a QuantifiedObjectValue. Zero
+// correlation is rejected — a quantifier without an identifier is a
+// design error, not something the analyzer should allow.
+func NewQuantifiedObjectValue(corr CorrelationIdentifier) *QuantifiedObjectValue {
+	if corr.IsZero() {
+		panic("NewQuantifiedObjectValue: correlation is zero-value; use NamedCorrelationIdentifier or UniqueCorrelationIdentifier")
+	}
+	return &QuantifiedObjectValue{Correlation: corr, Typ: TypeUnknown}
+}
+
+// Children returns an empty slice — the quantifier is a leaf in
+// the Value tree, with its correlation link being external metadata
+// (not a child Value).
+func (*QuantifiedObjectValue) Children() []Value { return []Value{} }
+
+// Type returns the seed's placeholder TypeUnknown for the row type.
+func (q *QuantifiedObjectValue) Type() ValueType { return q.Typ }
+
+// Name returns the debug-print kind.
+func (*QuantifiedObjectValue) Name() string { return "quantifier" }
+
+// Evaluate extracts the row bound to this quantifier's correlation.
+// Eval context shapes this impl handles:
+//
+//   - map[CorrelationIdentifier]map[string]any — multi-source shape,
+//     returns the nested map for this correlation (nil if missing).
+//   - map[string]any — single-source shape, returned verbatim.
+//   - anything else — nil.
+//
+// Downstream FieldValue / nested-field resolvers then index into the
+// returned map to pick a specific column.
+func (q *QuantifiedObjectValue) Evaluate(evalCtx any) any {
+	if evalCtx == nil {
+		return nil
+	}
+	switch ctx := evalCtx.(type) {
+	case map[CorrelationIdentifier]map[string]any:
+		return ctx[q.Correlation]
+	case map[string]any:
+		return ctx
+	}
+	return nil
+}
+
+// GetCorrelatedTo implements the Correlated interface — returns
+// a set containing this quantifier's correlation.
+func (q *QuantifiedObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
+	return map[CorrelationIdentifier]struct{}{q.Correlation: {}}
 }
 
 // --- AggregateValue -----------------------------------------------

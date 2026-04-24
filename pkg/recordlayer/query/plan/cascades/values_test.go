@@ -324,3 +324,97 @@ func TestAggregateValue_EvaluatePanics(t *testing.T) {
 	}()
 	_ = sum.Evaluate(map[string]any{"x": int64(5)})
 }
+
+// --- QuantifiedObjectValue -----------------------------------------
+
+var (
+	_ Value      = (*QuantifiedObjectValue)(nil)
+	_ Correlated = (*QuantifiedObjectValue)(nil)
+)
+
+func TestQuantifiedObjectValue_Shape(t *testing.T) {
+	t.Parallel()
+	corr := NamedCorrelationIdentifier("t")
+	q := NewQuantifiedObjectValue(corr)
+
+	if got, want := q.Name(), "quantifier"; got != want {
+		t.Fatalf("Name: got %q, want %q", got, want)
+	}
+	if q.Type() != TypeUnknown {
+		t.Fatal("seed quantifier Type should be TypeUnknown")
+	}
+	if len(q.Children()) != 0 {
+		t.Fatal("quantifier has no Value children")
+	}
+	if got, want := ExplainValue(q), "t"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+func TestQuantifiedObjectValue_GetCorrelatedTo(t *testing.T) {
+	t.Parallel()
+	corr := NamedCorrelationIdentifier("u")
+	q := NewQuantifiedObjectValue(corr)
+
+	set := q.GetCorrelatedTo()
+	if len(set) != 1 {
+		t.Fatalf("GetCorrelatedTo: expected 1 entry, got %d", len(set))
+	}
+	if _, ok := set[corr]; !ok {
+		t.Fatal("correlation should be in the set")
+	}
+}
+
+func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
+	t.Parallel()
+	corr := NamedCorrelationIdentifier("t")
+	q := NewQuantifiedObjectValue(corr)
+	ctx := map[CorrelationIdentifier]map[string]any{
+		corr:                            {"age": int64(30)},
+		NamedCorrelationIdentifier("u"): {"other": "field"},
+	}
+	row, ok := q.Evaluate(ctx).(map[string]any)
+	if !ok {
+		t.Fatalf("expected map row, got %T", q.Evaluate(ctx))
+	}
+	if got, want := row["age"], int64(30); got != want {
+		t.Fatalf("age: got %v, want %v", got, want)
+	}
+}
+
+func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
+	t.Parallel()
+	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	// Single-source: the whole row IS the correlation's row.
+	ctx := map[string]any{"age": int64(42)}
+	if got := q.Evaluate(ctx); got == nil {
+		t.Fatal("single-source Evaluate should return the row")
+	}
+}
+
+func TestQuantifiedObjectValue_Evaluate_NilContext(t *testing.T) {
+	t.Parallel()
+	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	if got := q.Evaluate(nil); got != nil {
+		t.Fatalf("nil ctx: got %v, want nil", got)
+	}
+}
+
+func TestQuantifiedObjectValue_Evaluate_ForeignContextIsNil(t *testing.T) {
+	t.Parallel()
+	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	// Unfamiliar context shape degrades to nil.
+	if got := q.Evaluate(42); got != nil {
+		t.Fatalf("unfamiliar ctx: got %v", got)
+	}
+}
+
+func TestQuantifiedObjectValue_ZeroCorrelationPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on zero correlation")
+		}
+	}()
+	_ = NewQuantifiedObjectValue(CorrelationIdentifier{})
+}
