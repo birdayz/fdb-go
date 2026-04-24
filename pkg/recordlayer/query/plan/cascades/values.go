@@ -11,10 +11,10 @@
 // Dayshift-46 seed contents:
 //
 //   - values.go          — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 8 concrete
+//     Evaluate) + ValueType enum + 9 concrete
 //     values (Constant, Field, Arithmetic, Boolean,
-//     Cast, Null, Aggregate, QuantifiedObject) +
-//     ExplainValue SQL-ish renderer.
+//     Cast, Null, Aggregate, QuantifiedObject,
+//     Promote) + ExplainValue SQL-ish renderer.
 //   - matcher.go         — BindingMatcher interface +
 //     PlannerBindings + MergedWith + AnyValue /
 //     Instance / ArithmeticMatcher + the generic
@@ -200,6 +200,8 @@ func ExplainValue(v Value) string {
 		return "FALSE"
 	case *CastValue:
 		return "CAST(" + ExplainValue(cv.Child) + " AS " + cv.Target.String() + ")"
+	case *PromoteValue:
+		return "PROMOTE(" + ExplainValue(cv.Child) + " TO " + cv.Target.String() + ")"
 	case *NullValue:
 		return "NULL"
 	case *AggregateValue:
@@ -427,6 +429,56 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		}
 	}
 	return nil
+}
+
+// --- PromoteValue --------------------------------------------------
+
+// PromoteValue wraps a child Value to coerce it to a target SQL type
+// when the analyzer inserts an implicit conversion. E.g.
+// `int_col = 5.0` rewrites to `PromoteValue(int_col, FLOAT) = 5.0`
+// so the comparison sees two FLOATs.
+//
+// Distinct from CastValue: Cast is an explicit `CAST(x AS T)` that
+// the user wrote; Promote is machine-inserted and cost-modelled
+// separately. Mirrors Java's `PromoteValue`.
+//
+// Seed Evaluate currently delegates to Child.Evaluate — the seed's
+// cmpAny already promotes numerics at runtime, so an explicit
+// Promote in the tree is a no-op evaluation-wise. The value is in
+// having the coercion visible at plan time so rule matchers can
+// simplify `Promote(x, x.Type)` → `x`.
+type PromoteValue struct {
+	Child  Value
+	Target ValueType
+}
+
+// NewPromoteValue constructs a PromoteValue. Rejects nil child and
+// zero-value Target — both are programmer errors.
+func NewPromoteValue(child Value, target ValueType) *PromoteValue {
+	if child == nil {
+		panic("NewPromoteValue: child is nil")
+	}
+	if target == TypeUnknown {
+		panic("NewPromoteValue: target is TypeUnknown; use CastValue if target is genuinely unknown")
+	}
+	return &PromoteValue{Child: child, Target: target}
+}
+
+// Children returns the single child as a one-element slice.
+func (p *PromoteValue) Children() []Value { return []Value{p.Child} }
+
+// Type returns the promotion target.
+func (p *PromoteValue) Type() ValueType { return p.Target }
+
+// Name returns the debug-print kind.
+func (*PromoteValue) Name() string { return "promote" }
+
+// Evaluate delegates to the child — the seed treats Promote as a
+// no-op at runtime since cmpAny already handles cross-width
+// promotion. Plan-time inspection (explain, rewrite rules) is where
+// Promote earns its keep.
+func (p *PromoteValue) Evaluate(evalCtx any) any {
+	return p.Child.Evaluate(evalCtx)
 }
 
 // --- QuantifiedObjectValue -----------------------------------------

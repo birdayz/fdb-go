@@ -418,3 +418,56 @@ func TestQuantifiedObjectValue_ZeroCorrelationPanics(t *testing.T) {
 	}()
 	_ = NewQuantifiedObjectValue(CorrelationIdentifier{})
 }
+
+// --- PromoteValue --------------------------------------------------
+
+var _ Value = (*PromoteValue)(nil)
+
+func TestPromoteValue_Shape(t *testing.T) {
+	t.Parallel()
+	child := &FieldValue{Field: "age", Typ: TypeInt}
+	p := NewPromoteValue(child, TypeString)
+
+	if got, want := p.Type(), TypeString; got != want {
+		t.Fatalf("Type: got %v, want %v", got, want)
+	}
+	if len(p.Children()) != 1 {
+		t.Fatalf("Children: expected 1, got %d", len(p.Children()))
+	}
+	if got, want := p.Name(), "promote"; got != want {
+		t.Fatalf("Name: got %q, want %q", got, want)
+	}
+	if got, want := ExplainValue(p), "PROMOTE(age TO STRING)"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+func TestPromoteValue_EvaluateDelegatesToChild(t *testing.T) {
+	t.Parallel()
+	child := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	p := NewPromoteValue(child, TypeString)
+	// Seed: Promote is a runtime no-op — child's evaluation shines through.
+	if got, want := p.Evaluate(nil), int64(42); got != want {
+		t.Fatalf("Evaluate: got %v, want %v", got, want)
+	}
+}
+
+func TestPromoteValue_NilChildPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil child")
+		}
+	}()
+	_ = NewPromoteValue(nil, TypeInt)
+}
+
+func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on TypeUnknown target")
+		}
+	}()
+	_ = NewPromoteValue(&ConstantValue{Value: int64(1), Typ: TypeInt}, TypeUnknown)
+}
