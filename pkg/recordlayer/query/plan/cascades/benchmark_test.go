@@ -71,6 +71,11 @@ func BenchmarkKleeneAnd_Eval(b *testing.B) {
 }
 
 func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
+	// Allocations matter here — each successful Bind copies the
+	// PlannerBindings map. ReportAllocs surfaces the alloc count in
+	// default `go test -bench` output without requiring -benchmem,
+	// which matters for the stated regression-detection goal.
+	b.ReportAllocs()
 	// Match `ArithmeticValue(Add, ConstantValue, FieldValue)`.
 	lhs := NewConstantMatcher()
 	rhs := NewFieldMatcher()
@@ -87,6 +92,7 @@ func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
 }
 
 func BenchmarkAllOf_BindMatches(b *testing.B) {
+	b.ReportAllocs()
 	// AllOf(ConstantMatcher, AnyValue) against a ConstantValue.
 	pattern := NewAllOf("ConstantValue", NewConstantMatcher(), NewAnyValue())
 	cv := &ConstantValue{Value: int64(7), Typ: TypeInt}
