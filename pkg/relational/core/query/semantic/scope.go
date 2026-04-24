@@ -108,7 +108,13 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 		}
 		return Column{}, ScopeSource{}, &ColumnNotFoundError{Id: id}
 	default:
-		return Column{}, ScopeSource{}, &AmbiguousColumnError{Id: id, Matches: len(matches)}
+		sources := make([]Identifier, 0, len(matches))
+		for _, m := range matches {
+			sources = append(sources, m.src.Alias)
+		}
+		return Column{}, ScopeSource{}, &AmbiguousColumnError{
+			Id: id, Matches: len(matches), Sources: sources,
+		}
 	}
 }
 
@@ -135,14 +141,41 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 
 // AmbiguousColumnError is returned when a bare column reference
 // matches multiple sources at the same scope level. Carries the
-// conflicting identifier + count so error messages can be helpful.
+// conflicting identifier, the count, and the conflicting source
+// aliases so the user knows which tables to qualify against.
 type AmbiguousColumnError struct {
 	Id      Identifier
 	Matches int
+	// Sources is the list of ScopeSource aliases that matched,
+	// allowing the user-facing message to suggest
+	// `alias.column` for each candidate.
+	Sources []Identifier
 }
 
 func (e *AmbiguousColumnError) Error() string {
-	return fmt.Sprintf("ambiguous column %s (matches %d sources)", e.Id, e.Matches)
+	if len(e.Sources) == 0 {
+		return fmt.Sprintf("ambiguous column %s (matches %d sources)", e.Id, e.Matches)
+	}
+	names := make([]string, 0, len(e.Sources))
+	for _, s := range e.Sources {
+		names = append(names, s.Name())
+	}
+	return fmt.Sprintf("ambiguous column %s (matched by: %s)", e.Id, joinStrings(names, ", "))
+}
+
+// joinStrings is a tiny strings.Join to avoid pulling strings into
+// the package import surface (we already ToUpper via strings
+// elsewhere — reuse would be fine but this keeps the error-building
+// path cheap).
+func joinStrings(parts []string, sep string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	out := parts[0]
+	for _, p := range parts[1:] {
+		out += sep + p
+	}
+	return out
 }
 
 // SourceNotFoundError is returned when a qualifier doesn't match

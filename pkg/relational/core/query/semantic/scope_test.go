@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,15 @@ func TestScope_ResolveColumn_Ambiguous(t *testing.T) {
 	}
 	if ace.Matches != 2 {
 		t.Fatalf("expected 2 matches, got %d", ace.Matches)
+	}
+	if len(ace.Sources) != 2 {
+		t.Fatalf("expected 2 conflicting sources, got %d", len(ace.Sources))
+	}
+	// Error message should name the conflicting aliases so the user
+	// can qualify.
+	msg := err.Error()
+	if !strings.Contains(msg, "U") || !strings.Contains(msg, "D") {
+		t.Fatalf("error should name both aliases; got %q", msg)
 	}
 }
 
