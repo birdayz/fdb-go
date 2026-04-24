@@ -42,7 +42,9 @@ func BenchmarkScope_ResolveColumn(b *testing.B) {
 	cat := buildTestCatalog()
 	users, _ := cat.LookupTable(ParseQualifiedName("users", false))
 	scope := NewScope(nil)
-	_ = scope.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")})
+	if err := scope.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")}); err != nil {
+		b.Fatalf("AddSource: %v", err)
+	}
 	target := NewUnquoted("name")
 	for i := 0; i < b.N; i++ {
 		_, _, _ = scope.ResolveColumn(target)
@@ -53,7 +55,9 @@ func BenchmarkScope_ResolveQualifiedColumn(b *testing.B) {
 	cat := buildTestCatalog()
 	users, _ := cat.LookupTable(ParseQualifiedName("users", false))
 	scope := NewScope(nil)
-	_ = scope.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")})
+	if err := scope.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")}); err != nil {
+		b.Fatalf("AddSource: %v", err)
+	}
 	qualifier := NewUnquoted("u")
 	col := NewUnquoted("name")
 	for i := 0; i < b.N; i++ {
