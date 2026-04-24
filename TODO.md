@@ -587,9 +587,9 @@ ORDER BY elimination, LIMIT early-termination, 11-branch chain).
 
 **MEDIUM — complement the landed pushdown chain**
 
-- [ ] **ORDER BY DESC via reverse scan** — today's natural-order elimination only fires when every ORDER BY clause is ASC. When sq.orderBy matches `naturalOrder` but all clauses are DESC, we could use `ReverseScan()` on the cursor instead of sorting. Needs plumbing a `ScanProperties` argument through every pushdown cursor builder — mechanical but touches every branch.
+- [x] **ORDER BY DESC via reverse scan** — ✅ nightshift-45 (PR #107): added `naturalOrderSatisfiesReverse` (DESC-prefix counterpart to the ASC check) + `scanPropsForOrder` direction selector. PK branches (equality / range / composite-range / composite-prefix / full-scan) now build their cursor with `ReverseScan()` when ORDER BY is an all-DESC prefix of `pkCols`. Secondary-index reverse scan still pending — scope-controlled follow-up. `order_by_elimination.yaml` pins 9 new cases.
 - [ ] **IN-list via subquery decomposition** — `WHERE col IN (SELECT …)` currently bails. If the subquery is small (pre-evaluated to a literal list via the existing `preEvaluateScalarSubqueries` path), decompose into N point scans like literal IN-list. Scalar subqueries already pre-evaluate; rows-result subqueries don't yet.
-- [ ] **Fuzz corpus with string dimension** — extend `FuzzLikePatternToPrefix` with an `s string` input, assert `likeMatch(pattern, s, esc) && ok ⇒ strings.HasPrefix(s, prefix)`. Directly pins "no matching row excluded by the range" instead of today's weaker no-panic + non-empty invariants.
+- [x] **Fuzz corpus with string dimension** — ✅ nightshift-45 (PR #107): `FuzzLikePatternToPrefix` now takes `(pattern, escape, s)`. When the harness finds `likeMatch(pattern, s, escape) && ok` it asserts `strings.HasPrefix(s, prefix)` — directly pins the correctness invariant of the pushdown. The fuzzer found one false-negative during development (non-UTF-8 bytes fold to U+FFFD in `likeMatch` but remain byte-distinct in `HasPrefix`); restricted to valid-UTF-8 inputs to match the protobuf STRING column contract. 5-minute soak = 549M execs clean.
 - [ ] **Mutual recursion** — `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs are evaluated in declaration order; mutual refs bail. (Carried forward from dayshift-43.)
 - [ ] **Continuation resumption of partial recursive results** — for `maxRows: 1` pagination. Java's `RecursiveStateManager` uses TempTable cursors. (Carried forward from dayshift-43.)
 
@@ -598,8 +598,8 @@ ORDER BY elimination, LIMIT early-termination, 11-branch chain).
 - [ ] **ORDER BY dedup edge cases** — `ORDER BY b, B` (case-folded) and `ORDER BY a.b, b` (qualified-vs-bare resolving to the same column). Rides on a future identifier-folding pass. (Duplicate of the line-570 item; listed here for completeness.)
 - [ ] **GROUP BY (a+b) AS alias** — expression group keys can't be referenced via alias from the SELECT list because the rewrite path only handles bare-column group-by entries.
 - [ ] **Benchmark pushdown vs full scan** — no direct micro-benchmark. Existing `just bench` doesn't isolate the cursor-pick cost; a targeted bench would make the perf win observable and guard against regressions.
-- [ ] **One-element IN-list → equality** — `WHERE pk IN (5)` could fire the tighter equality pushdown instead of the IN-list sub-scan-of-one. Tiny perf.
-- [ ] **Pure-prefix composite-PK pushdown** — `WHERE a = 1 AND b = 10` on PK (a, b, c) currently bails to scan (no range col). A pure-prefix extractor could narrow to `[rtk, 1, 10]` with trailing-PK unconstrained (same decomposition as IN-list-of-one on c). Moderate effort.
+- [x] **One-element IN-list → equality** — ✅ nightshift-45 (PR #107): at the dispatcher for both SELECT and UPDATE/DELETE, a 1-element IN-list promotes to the equality path (PK and secondary). Drops the lazy-chain wrapper + unlocks `naturalOrder = pkCols` for ORDER BY elimination + LIMIT early-termination. Covers NULL-drop edge case (`pk IN (5, NULL)` → single-elem after NULL drop → equality). 4 new yamsql cases.
+- [x] **Pure-prefix composite-PK pushdown** — ✅ nightshift-45 (PR #107): new `tryPKCompositePrefixFromWhere` picks the longest leading prefix of PK equalities; narrows to `[rtk, eq_vals...]` as a tuple prefix, trailing cols stay post-filter. Placed as the LAST PK branch (tighter composite forms still win first). `pk_prefix_pushdown.go` + 13 new yamsql cases in `composite_pk_prefix_pushdown.yaml`. Secondary-index equivalent still pending — listed below under MEDIUM follow-ups.
 
 ### Cross-language SQL conformance — still the biggest hole
 
@@ -662,8 +662,8 @@ User direction: **"make sure 100% alignment with Java is given"**. Each item bel
 - [~] **Split `connection.go` + add Planner/Plan seam** — see RFC 021 (`rfcs/021-planner-seam-and-cascades.md`). Two legacy bullets merged into one tracked refactor.
   - [x] **Phase 1a** (PR #101, 2026-04-22): `pkg/relational/core/query/` with `Generator`/`Plan`/`Result`/`MultiPlan`/`PlanFunc` interfaces; `naiveGenerator` wraps today's exec methods as Plan closures; `ExecContext`/`QueryContext` route through the seam. Zero behaviour change.
   - [x] **Phase 1b** (PR #102, 2026-04-22): extracted `pkg/relational/core/session.Session` holding `DB`/`Catalog`/`Keyspace`/`Factory`/`DBPath`/`Schema`/`DefaultSchema`. `EmbeddedConnection` shrank by 7 fields + 63 internal refs re-pointed at `c.sess.X`. Zero behaviour change.
-  - [ ] **Phase 1c**: move `execSelectQueryFull` (950 lines), `execSelectJoin` (544), `aggregateMapRows` (484), `execSelectFromCTE` (255), `execUnion` (196), DML exec bodies (~600) out of `connection.go` into `pkg/relational/core/plan/physical/` as per-shape `Plan` implementations. Move `extractFromSimpleTable` (1024 lines) into `pkg/relational/core/query/visitors/`. Collapse the proto-path vs map-path evaluator divergence into a single evaluator over a uniform `Row` interface. Biggest PR of the refactor; 2–3 shifts of mechanical move + dedupe. RFC-021 §Phase 1.
-  - [ ] **Phase 1d**: move statement-scope state (`ctes`, `scalarSubqueryCache`, `statementTime`, `validQualifiers`, `outerScopes`, `currentSourceAliases`, `schemaCache`, `catalogReady`) from `EmbeddedConnection` to `Session`. Couldn't go in 1b because multiple `exec*` methods write to these fields in ways that would drift during the 1c move.
+  - [~] **Phase 1c** (nightshift-45, PR #107, 2026-04-23): SUBSTANTIAL progress — `connection.go` shrunk from ~11,880 → ~2,900 lines (75%). Every self-contained execution shape now lives in its own file inside `pkg/relational/core/embedded/`: `execSelectQueryFull` → `select_query_full.go`, `execSelectJoin` → `join.go`, `aggregateMapRows` → `aggregate.go`, `execSelectFromCTE` → `cte_scan.go`, `execUnion` → `union.go`, DML → `insert.go` + `update_delete.go`, `extractFromSimpleTable` + helpers → `select_parser.go`, plus pushdown shapes (`pk_pushdown.go`, `secondary_index_pushdown.go`, `pk_prefix_pushdown.go`), order-by elimination (`order_by.go`), scope stacks (`scope.go`), system tables (`system_tables.go` + `system_rows.go`), CTE/subquery helpers (`recursive_cte.go`, `scalar_subquery.go`), and utility clusters (`utilities.go`, `tri_bool.go`, `where_extractors.go`, `select_helpers.go`, `select_dispatch.go`, `stmt.go`). Still TODO: move these files from `core/embedded/` to their RFC-destined homes under `core/plan/physical/`, `core/query/visitors/`, `core/eval/`, `core/functions/`; collapse the proto-vs-map evaluator divergence behind a uniform `Row` interface; extract the expression evaluator (evalExpr / evalExprAtom / evalScalarFunctionCallCore family, ~1,500 lines remaining in connection.go) and the predicate evaluator (~700 lines). RFC-021 §Phase 1.
+  - [~] **Phase 1d** (nightshift-45, PR #107, 2026-04-23): PARTIAL — `SchemaCache`, `CatalogMu`, `CatalogReady`, `StatementTime` moved to Session. `EmbeddedConnection.statementNow()` / `beginStatement()` now forward to the session-hosted helpers. Remaining statement-scope state (`ctes`, `scalarSubqueryCache`, `validQualifiers`, `outerScopes`, `currentSourceAliases`) still lives on `EmbeddedConnection` — blocked on Phase 1c finishing the exec* moves before those fields can follow their callers.
   - [ ] **Phase 2 — Cascades optimizer** (6–8 shifts). `pkg/recordlayer/plan/cascades/` with memo + rules + cost. Second `query.Generator` implementation behind a feature flag. Today's 11-branch pushdown chain collapses into ~11 rules (plus additional shapes impossible to express in the hand-rolled chain). `canCoverIndex` / `naturalOrderSatisfies` / `earlyTermTarget` become plan properties propagated by the memo. swingshift-44's 94 yamsql scenarios are the regression spec. RFC-021 §Phase 2.
   - [ ] **Phase 3 — gRPC frontend as seam validation** (2 shifts). Add `pkg/relational/grpc/` implementing the `query.Generator` + `query.Plan` shapes over a network. If Phase 1 was clean, this is ~500 lines of proto + service wrapper + streaming result-set adapter; no execution code touched. If gRPC impl reaches into `embedded.Conn` private state, Phase 1 wasn't done. RFC-021 §Phase 3.
 - [~] **Break up `evalScalarFunctionCallCore`** (715-line switch). Split by family (`evalStringFns`, `evalMathFns`, `evalDateFns`, `evalCastFn`) via `map[string]FuncImpl` dispatch. Subsumed by RFC-021 Phase 1c — the functions registry lands as `pkg/relational/core/functions/` during the same move that empties `connection.go`.
@@ -853,6 +853,20 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 **This is ~104K LOC in Java, ~500 files. It will not fit in one shift. Break it into sub-phases and plan across many shifts.**
 
+**Staging / conformance ordering:** see `rfcs/022-cascades-conformance-staging.md`. The three sub-phases below (4.-1, 4.-0.5, 4.-0.25) run *before* 4.0 so the hardest conformance questions are answered up front rather than discovered after weeks of rule-porting. Rule porting in 4.5 is also re-ordered to start with the six rules that cover swingshift-44's existing 11-branch pushdown chain, so the plan-equivalence harness (4.-1) gets end-to-end coverage against the 94-scenario yamsql corpus early.
+
+- [ ] **4.-1 — Plan-equivalence harness (build FIRST)**
+  - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
+  - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
+  - [ ] Decide: live in `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner)? See RFC-022 open questions.
+- [ ] **4.-0.5 — Generics-vs-interfaces spike** (RFC 021 risk #3)
+  - [ ] Port `Value` + one `BindingMatcher` in shape (a): interfaces + `any`.
+  - [ ] Same in shape (b): generic structs + constraint interfaces.
+  - [ ] Measure compile-time safety, API friction on a 10-line predicate matcher, downstream impact on `Matcher[? extends Value]` patterns.
+  - [ ] Pick one. Document the call in RFC 022 or a follow-up RFC.
+- [ ] **4.-0.25 — Plan-cache-key compatibility spec**
+  - [ ] Sub-RFC answering: (a) are we targeting hash-identical cache keys with Java? (b) if yes, which Java version do we pin (currently 4.10.6.0 in MODULE.bazel)? (c) if no, what's the migration path for clients expecting cross-engine cache sharing?
+  - [ ] Answer decides whether 4.4 (cost model) chases Java parity or ships a simpler Go-native cost.
 - [ ] **4.0 — Foundation types**
   - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation
   - [ ] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes
@@ -876,19 +890,22 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [ ] Cardinality estimation hooks, `properties/` package (~25 classes)
 - [ ] **4.5 — Rules**
   - [ ] Rule base classes (`CascadesRule`, `CascadesRuleCall`)
-  - [ ] Data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`, `PrimaryScanRule`, index scan rules)
-  - [ ] Implementation rules (`ImplementFilterRule`, `ImplementSortRule`, `ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`, etc.)
-  - [ ] Decomposition rules (`InComparisonToExplodeRule`, `DecorrelateValuesRule`)
-  - [ ] Optimization rules (`MergeFetchIntoCoveringIndexRule`, `PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`, etc.)
-  - [ ] Finalization rules (`FinalizeExpressionsRule`)
+  - [ ] **Batch A (covers swingshift-44's 11-branch pushdown chain — port FIRST so 4.-1 harness gets end-to-end yamsql coverage):**
+    - `PrimaryScanRule`
+    - `ImplementFilterRule`
+    - `ImplementSortRule`
+    - `MergeFetchIntoCoveringIndexRule`
+    - Index-equality + index-range implementation rules
+    - `InComparisonToExplodeRule` (IN-list decomposition)
+  - [ ] **Batch B and beyond:** rest of data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`), implementation rules (`ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`…), decomposition (`DecorrelateValuesRule`), optimization (`PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`…), finalization (`FinalizeExpressionsRule`). Port in batches aligned to yamsql feature flags (JOIN, CTE, aggregate).
   - [ ] **~69 rules total.** Port in batches, pick representative tests from Java's rule test suite.
 - [ ] **4.6 — Planner driver**
   - [ ] `CascadesPlanner` — task stack, EXPLORE phase → OPTIMIZE phase
   - [ ] `PlannerEvent` debug hooks
   - [ ] Integration with `RecordMetaData` + index availability
-- [ ] **4.7 — Correctness tests**
-  - [ ] Port enough of Java's planner test suite to validate rule-by-rule equivalence
-  - [ ] Add a **plan equivalence harness**: run same SQL through Go and Java planners in a container, diff the plans.
+- [ ] **4.7 — Correctness tests** (rule-by-rule; plan-equivalence harness itself lands in 4.-1)
+  - [ ] Port enough of Java's planner test suite to validate rule-by-rule equivalence.
+  - [ ] Extend the 4.-1 harness as rules land: every new rule in 4.5 adds a batch of yamsql queries it's expected to fire on, with the Java-plan oracle as the diff target.
 
 #### Phase 5 — Query execution
 
@@ -946,7 +963,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 ### Java compatibility conformance (continuous)
 
 - [ ] **Catalog wire format** — extract a schema via Go, load with Java, run a SELECT. Round-trip.
-- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching).
+- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching). **Scope decision pending** — see `rfcs/022-cascades-conformance-staging.md` §4.-0.25. Depending on the answer this is either a hard conformance item (requires Java-tag pinning + cost-model parity) or a best-effort goal we commit to re-visit post-Cascades.
 - [ ] **System table contents** — `SELECT * FROM INFORMATION_SCHEMA.TABLES` returns byte-identical rows from Go and Java against the same store.
 - [ ] **SQL semantic equivalence** — feed the yamsql test corpus through both engines; require identical result sets for read queries.
 - [ ] **FRL perf comparison — Go vs Java** — we have a Go-vs-Java benchmark table for the record layer (see CLAUDE.md), but nothing yet for the relational / SQL layer. Once Phase 5 (embedded Connection) + Phase 3 (semantic analyzer) land enough to run a real SELECT, stand up the same comparison harness for common SQL workloads (simple SELECT, secondary-index SELECT, INSERT, aggregate, prepared statement with parameters). Drive both via the same `java-jdbc-connector` vs `database/sql` test rig; measure latency, allocs, throughput. Goal: parity or better, same posture as the record-layer numbers.
