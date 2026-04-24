@@ -502,5 +502,27 @@ func (p *ComparisonPredicate) Explain() string {
 	if p.Comparison.Type.IsUnary() {
 		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
-	return fmt.Sprintf("%s %s %v", operandText, p.Comparison.Type.Symbol(), p.Comparison.Operand)
+	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), formatCompareOperand(p.Comparison.Operand))
+}
+
+// formatCompareOperand renders the RHS of a binary comparison in a
+// form consistent with ExplainValue (strings quoted, []any rendered
+// as a paren list for IN). Falls back to fmt.Sprintf("%v", …) for
+// unfamiliar types so Explain never blows up on a surprise.
+func formatCompareOperand(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "NULL"
+	case string:
+		return "'" + x + "'"
+	case []any:
+		// IN-list: `(e1, e2, e3)` — same rendering style as SQL.
+		parts := make([]string, len(x))
+		for i, e := range x {
+			parts[i] = formatCompareOperand(e)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

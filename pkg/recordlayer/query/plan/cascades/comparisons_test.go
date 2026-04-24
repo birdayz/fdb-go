@@ -426,6 +426,69 @@ func TestComparisonPredicate_Explain_Unary(t *testing.T) {
 	}
 }
 
+// Binary-comparison Explain renders the RHS operand consistently
+// with ExplainValue: strings quoted, NULL rendered as NULL, IN-list
+// rendered as a paren list. Catches silent drift — the previous
+// `%v` fallback rendered `NAME = bob` without quotes, visually
+// indistinguishable from a column reference.
+func TestComparisonPredicate_Explain_Binary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want string
+	}{
+		{
+			name: "string RHS is quoted",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "name", Typ: TypeString},
+				Comparison{Type: ComparisonEquals, Operand: "bob"},
+			),
+			want: "name = 'bob'",
+		},
+		{
+			name: "int RHS is bare",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonGreaterThan, Operand: int64(5)},
+			),
+			want: "id > 5",
+		},
+		{
+			name: "NULL RHS (rare but possible via constant-fold)",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: nil},
+			),
+			want: "id = NULL",
+		},
+		{
+			name: "IN list with mixed types",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "role", Typ: TypeString},
+				Comparison{Type: ComparisonIn, Operand: []any{"admin", "owner", nil}},
+			),
+			want: "role IN ('admin', 'owner', NULL)",
+		},
+		{
+			name: "IN list of ints",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)}},
+			),
+			want: "id IN (1, 2, 3)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.pred.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // IsUnary flag is correct for each ComparisonType.
 func TestComparisonType_IsUnary(t *testing.T) {
 	t.Parallel()
