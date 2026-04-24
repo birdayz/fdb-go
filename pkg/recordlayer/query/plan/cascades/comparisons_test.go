@@ -779,6 +779,56 @@ func TestComparisonConstantSimplify_ConstantValueRHS_Folds(t *testing.T) {
 	}
 }
 
+// Non-constant RHS Explain — formatComparisonRHS routes to
+// ExplainValue when IsConstantValue(Operand) is false. Pins the
+// rendering for FieldValue / ArithmeticValue / CastValue RHS shapes
+// the Operand → Value migration unblocked.
+func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want string
+	}{
+		{
+			name: "FieldValue RHS",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "age", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+			),
+			want: "age = cutoff",
+		},
+		{
+			name: "Arithmetic RHS over fields",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "a", Typ: TypeInt},
+				Comparison{Type: ComparisonLessThan, Operand: &ArithmeticValue{
+					Op:    OpAdd,
+					Left:  &FieldValue{Field: "b", Typ: TypeInt},
+					Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+				}},
+			),
+			want: "a < (b + 1)",
+		},
+		{
+			name: "CastValue RHS",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: NewCastValue(&FieldValue{Field: "raw", Typ: TypeString}, TypeInt)},
+			),
+			want: "id = CAST(raw AS INT)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.pred.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // LiteralValue wraps Go-native literals in the matching Value
 // subtype. Pins: nil → NullValue, bool → BooleanValue (with the
 // bool-pointer contract), everything else → ConstantValue.
