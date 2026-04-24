@@ -102,6 +102,59 @@ func (a *Analyzer) ExpandStar(table Table) []Column {
 	return table.Columns()
 }
 
+// ExpandedColumn pairs a Column with the ScopeSource it came from.
+// The scope-aware star expander / qualified-star expander returns
+// these so downstream plan builders know which FROM source to
+// attribute each projected column to.
+type ExpandedColumn struct {
+	Column Column
+	Source ScopeSource
+}
+
+// ExpandScopeStar implements unqualified `SELECT *` against a Scope:
+// concatenates each source's columns in FROM-order. Ambiguity is
+// NOT flagged here — Java's SQL lets two sources expose same-named
+// columns through `SELECT *` (the output just gets two columns);
+// only bare *references* error. Downstream callers tag each
+// ExpandedColumn with its source so later projection rewrites can
+// qualify.
+func (a *Analyzer) ExpandScopeStar(scope *Scope) []ExpandedColumn {
+	if scope == nil {
+		return nil
+	}
+	var out []ExpandedColumn
+	for _, src := range scope.Sources() {
+		for _, c := range src.Table.Columns() {
+			out = append(out, ExpandedColumn{Column: c, Source: src})
+		}
+	}
+	return out
+}
+
+// ExpandQualifiedStar implements `SELECT alias.*` against a Scope:
+// looks up the named source, then its columns. Returns
+// SourceNotFoundError when no source matches.
+func (a *Analyzer) ExpandQualifiedStar(scope *Scope, qualifier Identifier) ([]ExpandedColumn, error) {
+	if scope == nil {
+		return nil, &SourceNotFoundError{Alias: qualifier}
+	}
+	for _, src := range scope.Sources() {
+		if src.Alias.EqualsIgnoreQuoting(qualifier) {
+			cols := src.Table.Columns()
+			out := make([]ExpandedColumn, len(cols))
+			for i, c := range cols {
+				out[i] = ExpandedColumn{Column: c, Source: src}
+			}
+			return out, nil
+		}
+	}
+	// Walk parent — correlated-star references are legal.
+	if scope.Parent() != nil {
+		return a.ExpandQualifiedStar(scope.Parent(), qualifier)
+	}
+	return nil, &SourceNotFoundError{Alias: qualifier}
+}
+
 // --- Errors ---------------------------------------------------------
 
 // TableNotFoundError is returned when ResolveTable can't find a

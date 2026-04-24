@@ -173,6 +173,73 @@ func TestAnalyzer_ExpandStar(t *testing.T) {
 	}
 }
 
+func TestAnalyzer_ExpandScopeStar(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	scope, _, _ := buildScope(t)
+
+	expanded := a.ExpandScopeStar(scope)
+	// users: id, name, age (3); orders: order_id, user_id (2). Total 5.
+	if len(expanded) != 5 {
+		t.Fatalf("expected 5 expanded columns, got %d", len(expanded))
+	}
+	// First three should come from users, last two from orders.
+	for i := 0; i < 3; i++ {
+		if expanded[i].Source.Alias.Name() != "U" {
+			t.Fatalf("expanded[%d] should come from users alias U, got %q",
+				i, expanded[i].Source.Alias.Name())
+		}
+	}
+	for i := 3; i < 5; i++ {
+		if expanded[i].Source.Alias.Name() != "O" {
+			t.Fatalf("expanded[%d] should come from orders alias O, got %q",
+				i, expanded[i].Source.Alias.Name())
+		}
+	}
+}
+
+func TestAnalyzer_ExpandScopeStar_NilScope(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	if got := a.ExpandScopeStar(nil); got != nil {
+		t.Fatalf("nil scope should produce nil, got %v", got)
+	}
+}
+
+func TestAnalyzer_ExpandQualifiedStar(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	scope, _, _ := buildScope(t)
+
+	cols, err := a.ExpandQualifiedStar(scope, NewUnquoted("u"))
+	if err != nil {
+		t.Fatalf("u.*: %v", err)
+	}
+	if len(cols) != 3 {
+		t.Fatalf("u.* should yield 3 columns, got %d", len(cols))
+	}
+	for _, c := range cols {
+		if c.Source.Alias.Name() != "U" {
+			t.Fatalf("all cols should have source U, got %q", c.Source.Alias.Name())
+		}
+	}
+}
+
+func TestAnalyzer_ExpandQualifiedStar_UnknownAlias(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	scope, _, _ := buildScope(t)
+
+	_, err := a.ExpandQualifiedStar(scope, NewUnquoted("unknown"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var snf *SourceNotFoundError
+	if !errors.As(err, &snf) {
+		t.Fatalf("expected SourceNotFoundError, got %T", err)
+	}
+}
+
 func TestAnalyzer_ExpandStar_NilTable(t *testing.T) {
 	t.Parallel()
 	a := NewAnalyzer(buildTestCatalog(), false)
