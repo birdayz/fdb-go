@@ -513,6 +513,11 @@ func formatCompareOperand(v any) string {
 	switch x := v.(type) {
 	case nil:
 		return "NULL"
+	case bool:
+		if x {
+			return "TRUE"
+		}
+		return "FALSE"
 	case string:
 		return "'" + x + "'"
 	case []any:

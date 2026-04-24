@@ -478,6 +478,22 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			),
 			want: "id IN (1, 2, 3)",
 		},
+		{
+			name: "bool RHS uppercased",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "active", Typ: TypeBool},
+				Comparison{Type: ComparisonEquals, Operand: true},
+			),
+			want: "active = TRUE",
+		},
+		{
+			name: "bool FALSE uppercased",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "active", Typ: TypeBool},
+				Comparison{Type: ComparisonNotEquals, Operand: false},
+			),
+			want: "active <> FALSE",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
