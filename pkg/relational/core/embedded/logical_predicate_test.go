@@ -6,6 +6,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
@@ -199,6 +200,57 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	}
 	if got := filter.Predicate.Explain(); got != "ORDER_ID = 1" {
 		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID = 1", got)
+	}
+}
+
+// upgradeFirstFilter returns true exactly when a LogicalFilter was
+// found on the unary spine. Pins the invariant the catalog-aware
+// builders rely on: the text builder always emits a Filter for any
+// WHERE-carrying shape. If a future builder change drops the
+// Filter, this test fires — and the catalog-aware builders would
+// silently swallow predicates without it.
+func TestUpgradeFirstFilter_Invariants(t *testing.T) {
+	t.Parallel()
+	// Every WHERE-carrying SELECT / DELETE / UPDATE shape the text
+	// builder emits today. Extend this list whenever a new shape
+	// lands that carries a WHERE through the logical builder.
+	cases := []string{
+		"SELECT * FROM t WHERE id > 5",
+		"SELECT id FROM t WHERE id > 5 ORDER BY id LIMIT 10",
+		"SELECT id, COUNT(*) FROM t WHERE id > 5 GROUP BY id",
+		"SELECT id FROM t WHERE id > 5 AND name = 'x'",
+	}
+	dummyPred := cascades.NewConstantPredicate(cascades.TriTrue)
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			op := buildLogicalPlanForSelect(parseSelect(t, sql))
+			if op == nil {
+				t.Fatalf("builder returned nil for %q", sql)
+			}
+			if !upgradeFirstFilter(op, dummyPred) {
+				t.Fatalf("expected Filter on unary spine for %q, got tree:\n%s", sql, op.Explain(""))
+			}
+		})
+	}
+
+	// DELETE + UPDATE: also have Filter on the spine (under
+	// LogicalDelete / LogicalUpdate).
+	del := parseDelete(t, "DELETE FROM t WHERE id > 5")
+	if op := buildLogicalPlanForDelete(del); op == nil || !upgradeFirstFilter(op, dummyPred) {
+		t.Fatal("DELETE WHERE missing Filter on spine")
+	}
+	upd := parseUpdate(t, "UPDATE t SET v = 1 WHERE id > 5")
+	if op := buildLogicalPlanForUpdate(upd); op == nil || !upgradeFirstFilter(op, dummyPred) {
+		t.Fatal("UPDATE WHERE missing Filter on spine")
+	}
+
+	// A WHERE-less shape has no Filter — upgradeFirstFilter returns
+	// false. This is the shape the catalog-aware builders pre-guard
+	// against via their sq.whereExpr==nil / del.WhereExpr()==nil gates.
+	op := buildLogicalPlanForSelect(parseSelect(t, "SELECT * FROM t"))
+	if upgradeFirstFilter(op, dummyPred) {
+		t.Fatal("expected false on WHERE-less shape (no Filter to upgrade)")
 	}
 }
 

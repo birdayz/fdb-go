@@ -103,26 +103,32 @@ func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.Recor
 	// Limit/Project wrappers, so we walk down the unary chain to find
 	// the first (and only) Filter. Structural guarantee of the text
 	// builder — if that invariant ever breaks we revisit.
-	upgradeFirstFilter(op, pred)
+	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op
 }
 
 // upgradeFirstFilter walks the single-child chain from op and, at
 // the first LogicalFilter, sets Predicate. Stops at the first
-// non-unary node or when the Filter is consumed — the text builder
-// never emits more than one Filter per SELECT.
-func upgradeFirstFilter(op logical.LogicalOperator, pred cascades.QueryPredicate) {
+// non-unary node. Returns true when a Filter was found and
+// upgraded; false when the walk terminated without seeing one.
+// Text builder's invariant is that a WHERE-carrying SELECT always
+// emits exactly one Filter on the unary spine, so a false return
+// signals the invariant broke — tests assert on it so a future
+// builder change that drops the Filter doesn't silently throw
+// away the predicate.
+func upgradeFirstFilter(op logical.LogicalOperator, pred cascades.QueryPredicate) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
 			f.Predicate = pred
-			return
+			return true
 		}
 		ch := cur.Children()
 		if len(ch) != 1 {
-			return
+			return false
 		}
 		cur = ch[0]
 	}
+	return false
 }
 
 // buildLogicalPlanForDeleteWithCatalog is the catalog-aware variant
@@ -150,7 +156,7 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if !ok {
 		return op
 	}
-	upgradeFirstFilter(op, pred)
+	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op
 }
 
@@ -177,6 +183,6 @@ func buildLogicalPlanForUpdateWithCatalog(
 	if !ok {
 		return op
 	}
-	upgradeFirstFilter(op, pred)
+	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op
 }

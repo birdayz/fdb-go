@@ -83,6 +83,7 @@ go_test(
         "//gen",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/parser",
