@@ -1,6 +1,9 @@
 package shapea
 
-import "sync/atomic"
+import (
+	"fmt"
+	"sync/atomic"
+)
 
 // PlannerBindings is an append-only multimap from matcher-identity
 // (pointer) to matched values. Mirrors Java's PlannerBindings,
@@ -50,6 +53,27 @@ func (b *PlannerBindings) Get(matcher BindingMatcher) any {
 // GetAll returns all values bound to matcher (possibly empty).
 func (b *PlannerBindings) GetAll(matcher BindingMatcher) []any {
 	return b.entries[matcher]
+}
+
+// Get is the generic retrieval helper RFC-023 §Changes item 5
+// promises for Phase 4.0. The matcher interface itself stays
+// non-generic (shape (a)); this free function lets rule bodies
+// retrieve the bound value as its concrete type without a `.(T)`
+// downcast at every call site. A type mismatch panics with a typed
+// message — rule authors see the problem immediately.
+//
+// Usage: `cv := Get[*ConstantValue](bindings, lhs)`.
+func Get[T any](b *PlannerBindings, matcher BindingMatcher) T {
+	vs := b.entries[matcher]
+	if len(vs) != 1 {
+		panic("Get: matcher has 0 or multiple bindings; use GetAll for multi")
+	}
+	v, ok := vs[0].(T)
+	if !ok {
+		var zero T
+		panic(fmt.Sprintf("Get: bound value %T is not assignable to %T", vs[0], zero))
+	}
+	return v
 }
 
 // BindingMatcher is the non-generic interface every shape-(a)

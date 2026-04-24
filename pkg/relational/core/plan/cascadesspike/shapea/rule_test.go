@@ -31,7 +31,8 @@ func TestShapeA_ConstPlusField(t *testing.T) {
 		t.Fatalf("expected 1 binding set, got %d", len(bindings))
 	}
 
-	// The rule-body pain point: every retrieval is `any` → concrete.
+	// Option 1: untyped Get + manual `.(T)` downcast (the shape-(a)
+	// baseline the RFC-023 writeup compares against).
 	b := bindings[0]
 	cv, ok := b.Get(lhs).(*ConstantValue)
 	if !ok {
@@ -47,6 +48,31 @@ func TestShapeA_ConstPlusField(t *testing.T) {
 	if fv.Field != "name" {
 		t.Fatalf("expected field=name, got %q", fv.Field)
 	}
+
+	// Option 2: generic Get[T] helper (RFC-023 §Changes item 5). Same
+	// compile-time safety envelope, less ceremony at every call site.
+	cv2 := Get[*ConstantValue](b, lhs)
+	fv2 := Get[*FieldValue](b, rhs)
+	if cv2 != cv || fv2 != fv {
+		t.Fatalf("Get[T] returned different values than untyped Get")
+	}
+}
+
+// Get[T] panics cleanly on a type mismatch — rule authors see the
+// problem immediately instead of silently retrieving nil.
+func TestShapeA_GetTypeMismatchPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on type mismatch, got none")
+		}
+	}()
+
+	lhs := NewConstantMatcher()
+	b := NewBindings().Bind(lhs, &ConstantValue{Value: int64(1), Typ: TypeInt})
+	// Ask for the wrong type — should panic.
+	_ = Get[*FieldValue](b, lhs)
 }
 
 // Mismatch on input type: matcher returns empty, no panic.
