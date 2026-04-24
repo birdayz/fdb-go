@@ -764,6 +764,31 @@ func TestWalkExpression_AggregateFunctions(t *testing.T) {
 	}
 }
 
+// End-to-end: a full WHERE clause → walker → simplifier → evaluate
+// with multiple constant folds + survivors.
+func TestWalker_E2E_SimplifyRichTree(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	// `WHERE (5 = 5 OR name IS NULL) AND id > 0 AND TRUE`
+	// Simplifier should:
+	//   - Fold `5 = 5` → TRUE → OR(TRUE, ...) → TRUE → drop from AND.
+	//   - Keep `id > 0` (opaque).
+	//   - Fold `TRUE` → drop from AND.
+	// Final: `id > 0`.
+	ctx := parseFirstWhereExpr(t,
+		"SELECT * FROM users WHERE (5 = 5 OR name IS NULL) AND id > 0 AND TRUE")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	if got, want := simplified.Explain(), "ID > 0"; got != want {
+		t.Fatalf("simplified: got %q, want %q", got, want)
+	}
+}
+
 // End-to-end integration: a compound WHERE walks through the
 // resolver, produces a predicate tree, and evaluates correctly.
 func TestWalker_E2E_Integration(t *testing.T) {

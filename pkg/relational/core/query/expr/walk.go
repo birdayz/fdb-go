@@ -288,6 +288,16 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	if err != nil {
 		return nil, err
 	}
+	// BooleanValue with a concrete TRUE/FALSE → ConstantPredicate,
+	// not ValuePredicate. This is what the simplifier's constant-
+	// fold rules expect to see; a ValuePredicate-wrapped boolean
+	// would be treated as opaque and not simplified.
+	if bv, ok := v.(*cascades.BooleanValue); ok && bv.Value != nil {
+		if *bv.Value {
+			return cascades.NewConstantPredicate(cascades.TriTrue), nil
+		}
+		return cascades.NewConstantPredicate(cascades.TriFalse), nil
+	}
 	return cascades.NewValuePredicate(v), nil
 }
 
@@ -641,6 +651,18 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, er
 	case *antlrgen.NullConstantContext:
 		_ = k
 		return r.ResolveConstant(nil)
+	case *antlrgen.BooleanConstantContext:
+		bl, ok := k.BooleanLiteral().(*antlrgen.BooleanLiteralContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("BooleanLiteral ctx %T", k.BooleanLiteral())}
+		}
+		switch {
+		case bl.TRUE() != nil:
+			return r.ResolveConstant(true)
+		case bl.FALSE() != nil:
+			return r.ResolveConstant(false)
+		}
+		return nil, &UnsupportedExpressionShapeError{Shape: "BooleanLiteral with no TRUE/FALSE"}
 	case *antlrgen.DecimalConstantContext:
 		text := k.GetText()
 		n, err := strconv.ParseInt(text, 10, 64)
