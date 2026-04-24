@@ -161,6 +161,43 @@ func TestSimplify_RecursesThroughNot(t *testing.T) {
 	}
 }
 
+// Simplify idempotence: running it a second time on its own output
+// is a no-op. This is the defining fixpoint property — if it fails,
+// a rule is non-reducing (loops on stable input) or the driver's
+// pointer-equality break-out is broken.
+func TestSimplify_Idempotent(t *testing.T) {
+	t.Parallel()
+	rules := DefaultSimplifyRules()
+	age := &FieldValue{Field: "age", Typ: TypeInt}
+	samples := []QueryPredicate{
+		// Fully simplifiable → collapses to a constant.
+		NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse)),
+		// Partially simplifiable → surviving field predicate.
+		NewAnd(
+			NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+			NewConstantPredicate(TriTrue),
+		),
+		// Exercises absorption: p AND (p OR q) → p.
+		func() QueryPredicate {
+			p := NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)})
+			q := NewComparisonPredicate(age, Comparison{Type: ComparisonLessThan, Operand: int64(65)})
+			return NewAnd(p, NewOr(p, q))
+		}(),
+		// NOT-rewrite: NOT(x = 1) → x <> 1.
+		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: int64(1)})),
+		// Opaque: should be identity.
+		NewValuePredicate(&FieldValue{Field: "flag", Typ: TypeBool}),
+	}
+	for _, s := range samples {
+		once := Simplify(s, rules)
+		twice := Simplify(once, rules)
+		if once != twice {
+			t.Fatalf("not idempotent for %s: once=%s twice=%s",
+				s.Explain(), once.Explain(), twice.Explain())
+		}
+	}
+}
+
 // Kleene 3VL defensive: constants mixed with UNKNOWN must never
 // collapse to FALSE/TRUE incorrectly. Regression cover for any future
 // edit to And/OrConstantSimplifyRule that would break SQL NULL
