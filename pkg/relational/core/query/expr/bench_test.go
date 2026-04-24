@@ -81,6 +81,31 @@ func BenchmarkWalkPredicate_AndChain(b *testing.B) {
 	}
 }
 
+// BenchmarkWalkExpression_Aggregate measures COUNT(*) resolution
+// through the walker. FunctionCatalog construction inside the
+// walker is the hot path we may want to amortise later by
+// threading a catalog through New().
+func BenchmarkWalkExpression_Aggregate(b *testing.B) {
+	a, s := buildScopeForBench(b)
+	r := expr.New(a, s)
+	ctx := parseWhereForBench(b, "SELECT * FROM users WHERE COUNT(*)")
+	for i := 0; i < b.N; i++ {
+		_, _ = r.WalkExpression(ctx)
+	}
+}
+
+// BenchmarkWalkPredicate_Between measures BETWEEN → AND(>=, <=)
+// desugar cost. Non-trivial because it builds two predicates +
+// an And.
+func BenchmarkWalkPredicate_Between(b *testing.B) {
+	a, s := buildScopeForBench(b)
+	r := expr.New(a, s)
+	ctx := parseWhereForBench(b, "SELECT * FROM users WHERE id BETWEEN 1 AND 10")
+	for i := 0; i < b.N; i++ {
+		_, _ = r.WalkPredicate(ctx)
+	}
+}
+
 func BenchmarkResolveComparison(b *testing.B) {
 	a, s := buildScopeForBench(b)
 	r := expr.New(a, s)
