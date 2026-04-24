@@ -1005,6 +1005,105 @@ func TestComparisonConstantSimplify_CompositeConstantLHS_Folds(t *testing.T) {
 	}
 }
 
+// LIKE with ESCAPE — pin the matcher's escape-handling truth
+// table. escape == 0 disables (regression check: original
+// semantics preserved). Non-zero escape makes the next char
+// literal. Trailing escape rune (no following char) is treated
+// as no-match — required by SQL semantics.
+func TestLikeMatch_Escape(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		pattern string
+		s       string
+		escape  rune
+		want    bool
+	}{
+		// escape=0 → no escape handling, original wildcard semantics.
+		{"no-escape: %% matches anything", "%", "a%b", 0, true},
+		// `\%` with escape `\` matches literal `%`.
+		{"escape blocks wildcard", `a\%b`, "a%b", '\\', true},
+		{"escape blocks wildcard, x rejected", `a\%b`, "axb", '\\', false},
+		// `\_` with escape `\` matches literal `_`.
+		{"escape blocks underscore wildcard", `a\_b`, "a_b", '\\', true},
+		{"escape blocks underscore, x rejected", `a\_b`, "axb", '\\', false},
+		// Custom escape character (`!` instead of `\`).
+		{"custom escape !", `a!%b`, "a%b", '!', true},
+		// Mixed wildcard + escaped: `a\%%c` = literal a, literal %, then anything-c.
+		{"escaped + wildcard", `a\%%c`, "a%xyzc", '\\', true},
+		{"escaped + wildcard, no leading %", `a\%%c`, "axyzc", '\\', false},
+		// Trailing escape with nothing after — pattern can't match
+		// (the escape-of-EOF is a malformed pattern; our impl
+		// rejects it rather than silently treating escape as literal).
+		{"trailing escape rejected", `a\`, "a", '\\', false},
+		// Escape preceding a non-meta character: implementation-
+		// defined per SQL standard. Our matcher consumes the escape
+		// and treats the next character as a literal regardless of
+		// meta-ness — so `a\b` matches `ab`, NOT `a\b`. Documents
+		// the chosen behavior.
+		{"escape over non-meta yields literal next char", `a\b`, "ab", '\\', true},
+		{"escape over non-meta does NOT match escape+next", `a\b`, `a\b`, '\\', false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := likeMatch(tc.pattern, tc.s, tc.escape); got != tc.want {
+				t.Fatalf("got %v, want %v (pattern=%q s=%q escape=%q)",
+					got, tc.want, tc.pattern, tc.s, tc.escape)
+			}
+		})
+	}
+}
+
+// LIKE+ESCAPE Explain renders the ESCAPE clause inline so the
+// output round-trips back to recognisable SQL.
+func TestComparisonPredicate_Explain_LikeEscape(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: LiteralValue(`a\%b`),
+			Escape:  '\\',
+		},
+	)
+	want := `name LIKE 'a\%b' ESCAPE '\'`
+	if got := pred.Explain(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// LIKE without ESCAPE doesn't emit a stray "ESCAPE ”" clause.
+func TestComparisonPredicate_Explain_LikeNoEscape(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{Type: ComparisonLike, Operand: LiteralValue("hel%")},
+	)
+	want := `name LIKE 'hel%'`
+	if got := pred.Explain(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Comparison.Eval with non-zero Escape evaluates LIKE through the
+// escape-aware matcher. Pin the round-trip from Comparison{Escape}
+// down to likeMatch.
+func TestComparison_Eval_LikeWithEscape(t *testing.T) {
+	t.Parallel()
+	c := Comparison{
+		Type:    ComparisonLike,
+		Operand: LiteralValue(`a\%b`),
+		Escape:  '\\',
+	}
+	if got := c.Eval("a%b"); got != TriTrue {
+		t.Errorf("a%%b: got %v, want TRUE", got)
+	}
+	if got := c.Eval("axb"); got != TriFalse {
+		t.Errorf("axb: got %v, want FALSE (escape blocked wildcard)", got)
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.
@@ -1029,7 +1128,7 @@ func FuzzLikeMatch(f *testing.F) {
 		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
 			t.Skip()
 		}
-		got := likeMatch(pattern, s)
+		got := likeMatch(pattern, s, 0)
 		want := likeMatchRegexOracle(pattern, s)
 		if got != want {
 			t.Fatalf("mismatch: pattern=%q s=%q got=%v want=%v",

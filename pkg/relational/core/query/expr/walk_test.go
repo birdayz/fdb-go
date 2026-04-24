@@ -659,15 +659,59 @@ func TestWalkPredicate_NotLike(t *testing.T) {
 	}
 }
 
-func TestWalkPredicate_Like_Escape_Unsupported(t *testing.T) {
+// LIKE with ESCAPE is now supported — verify the escape rune
+// reaches the ComparisonPredicate and the matcher honours it.
+// `'a\%b' ESCAPE '\'` matches the literal 3-char string `a%b`.
+func TestWalkPredicate_LikeEscape(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name LIKE 'a\\\\%b' ESCAPE '\\\\'")
+	// SQL: name LIKE 'a\%b' ESCAPE '\'  — Go raw string keeps the
+	// backslash: ESCAPE='\\' is the literal char `\` after the
+	// SQL string-literal unescape.
+	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name LIKE 'a\%b' ESCAPE '\'`)
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if cp.Comparison.Type != cascades.ComparisonLike {
+		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
+	}
+	if cp.Comparison.Escape != '\\' {
+		t.Fatalf("Escape: got %q, want %q", cp.Comparison.Escape, '\\')
+	}
 
-	_, err := r.WalkPredicate(ctx)
-	if err == nil {
-		t.Fatal("expected UnsupportedExpressionShapeError for LIKE with ESCAPE")
+	// Eval truth table — `\%` is a literal `%`, so the pattern
+	// matches `a%b` and rejects `axb` (the `\` did NOT mean wildcard).
+	cases := []struct {
+		s    string
+		want cascades.TriBool
+	}{
+		{"a%b", cascades.TriTrue},
+		{"axb", cascades.TriFalse}, // wildcard interpretation would say true; escape blocks it
+		{"a%bb", cascades.TriFalse},
+	}
+	for _, tc := range cases {
+		got := pred.Eval(map[string]any{"NAME": tc.s})
+		if got != tc.want {
+			t.Errorf("Eval(%q): got %v, want %v", tc.s, got, tc.want)
+		}
+	}
+}
+
+// Multi-character escape is invalid. The walker must reject
+// rather than silently consuming only the first char.
+func TestWalkPredicate_LikeEscape_MultiChar_Rejected(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name LIKE 'a%' ESCAPE 'XY'`)
+	if _, err := r.WalkPredicate(ctx); err == nil {
+		t.Fatal("expected error for multi-char ESCAPE")
 	}
 }
 

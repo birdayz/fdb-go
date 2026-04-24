@@ -539,15 +539,10 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		return inPred, nil
 	case *antlrgen.LikePredicateContext:
-		// `x LIKE 'pattern' [ESCAPE 'c']` — seed wires LIKE without
-		// ESCAPE (cascades.likeMatch doesn't take an escape rune
-		// yet). The grammar parses both, so the ESCAPE form errors
-		// with a specific message pointing at the companion work.
-		if p.ESCAPE() != nil {
-			return nil, &UnsupportedExpressionShapeError{
-				Shape: "LIKE with ESCAPE clause (cascades.likeMatch doesn't take escape rune yet)",
-			}
-		}
+		// `x LIKE 'pattern' [ESCAPE 'c']` — both forms wire through
+		// the cascades likeMatch's escape-aware path. ESCAPE='' or
+		// missing ESCAPE produces escape == 0, which disables
+		// escape handling.
 		lhsVal, err := r.walkAtom(atom)
 		if err != nil {
 			return nil, err
@@ -560,7 +555,22 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		if err != nil {
 			return nil, err
 		}
-		like, err := r.ResolveLike(lhsVal, patConst)
+		var escape rune
+		if p.ESCAPE() != nil {
+			escTok := p.GetEscape()
+			if escTok == nil {
+				return nil, &UnsupportedExpressionShapeError{Shape: "LIKE ESCAPE without escape token"}
+			}
+			escStr := stripStringLiteral(escTok.GetText())
+			runes := []rune(escStr)
+			if len(runes) != 1 {
+				return nil, &UnsupportedExpressionShapeError{
+					Shape: fmt.Sprintf("LIKE ESCAPE expects exactly one character; got %q", escStr),
+				}
+			}
+			escape = runes[0]
+		}
+		like, err := r.ResolveLikeWithEscape(lhsVal, patConst, escape)
 		if err != nil {
 			return nil, err
 		}

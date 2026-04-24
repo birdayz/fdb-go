@@ -141,9 +141,17 @@ func (c ComparisonType) Symbol() string {
 // uniformly with the LHS. Constant-RHS callers wrap via
 // NewLiteralComparison / LiteralValue. IN-list RHS is carried as a
 // ConstantValue whose Value is a `[]any` of evaluated literals.
+//
+// Escape is the LIKE-pattern escape rune (`LIKE 'a\%b' ESCAPE '\'`).
+// Zero (the default) means "no escape" — `%` and `_` retain their
+// SQL wildcard meaning everywhere in the pattern. Non-zero values
+// flip the next character after the escape from wildcard to
+// literal. Only Type==ComparisonLike consults Escape; other types
+// ignore it.
 type Comparison struct {
 	Type    ComparisonType
 	Operand Value
+	Escape  rune
 }
 
 // NewLiteralComparison is the common-case constructor for a binary
@@ -285,16 +293,16 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 		return TriFalse
 	}
 	// LIKE: SQL pattern with `%` (zero-or-more chars) and `_` (exactly
-	// one char). Escape handling (ESCAPE '\') is deferred to a
-	// follow-up — the embedded engine handles it separately; once
-	// parameter-bound Comparisons land we wire the escape rune in.
+	// one char). When c.Escape is non-zero, the rune preceding `%`
+	// or `_` makes the next character literal (`LIKE 'a\%b' ESCAPE '\'`
+	// matches `a%b`). Escape == 0 disables escape handling.
 	if c.Type == ComparisonLike {
 		ls, lok := left.(string)
 		ps, rok := right.(string)
 		if !lok || !rok {
 			return TriUnknown
 		}
-		if likeMatch(ps, ls) {
+		if likeMatch(ps, ls, c.Escape) {
 			return TriTrue
 		}
 		return TriFalse
@@ -331,36 +339,61 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 //   - `_` matches exactly one character (rune)
 //   - every other character matches itself
 //
+// When `escape` is non-zero, the rune in the pattern equal to
+// `escape` consumes the next pattern character and matches it
+// literally — e.g. with escape='\\', the pattern `'a\%b'` matches
+// the 3-character string `a%b` (the `%` is literal, not a
+// wildcard). Escape preceding any character — meta or not —
+// produces a literal match of that next character; the escape
+// itself is consumed and not part of the match. SQL standard
+// leaves escape-preceding-non-meta as implementation-defined; this
+// behavior is the "always-consume-next" interpretation.
+// A trailing escape (escape rune at the end of the pattern, no
+// following char) is treated as a malformed pattern — never
+// matches. escape == 0 disables escape handling entirely (matches
+// the pre-LIKE+ESCAPE behaviour).
+//
 // Character-level — matches SQL standard semantics (PostgreSQL /
 // MySQL / Java Record Layer). Multi-byte UTF-8 runes count as one
 // character.
 //
-// Greedy backtrack; O(|pattern| * |s|) worst case. No ESCAPE
-// handling yet (see ComparisonLike godoc). Returns true iff the
-// pattern matches the whole string (SQL LIKE is anchored on both
-// ends).
-func likeMatch(pattern, s string) bool {
+// Greedy backtrack; O(|pattern| * |s|) worst case. Returns true
+// iff the pattern matches the whole string (SQL LIKE is anchored
+// on both ends).
+func likeMatch(pattern, s string, escape rune) bool {
 	p := []rune(pattern)
 	str := []rune(s)
 	pi, si := 0, 0
 	starPi, starSi := -1, 0
 	for si < len(str) {
 		if pi < len(p) {
-			switch p[pi] {
-			case '%':
-				starPi = pi
-				starSi = si
-				pi++
-				continue
-			case '_':
-				pi++
-				si++
-				continue
-			default:
-				if p[pi] == str[si] {
+			// Escape: next char is literal. Out-of-range escape (last
+			// char in pattern) treats the escape rune as a literal
+			// itself — same fall-through as a non-meta character.
+			if escape != 0 && p[pi] == escape && pi+1 < len(p) {
+				lit := p[pi+1]
+				if lit == str[si] {
+					pi += 2
+					si++
+					continue
+				}
+			} else {
+				switch p[pi] {
+				case '%':
+					starPi = pi
+					starSi = si
+					pi++
+					continue
+				case '_':
 					pi++
 					si++
 					continue
+				default:
+					if p[pi] == str[si] {
+						pi++
+						si++
+						continue
+					}
 				}
 			}
 		}
@@ -372,7 +405,17 @@ func likeMatch(pattern, s string) bool {
 		}
 		return false
 	}
-	for pi < len(p) && p[pi] == '%' {
+	// Trailing wildcards still match. With escape, an escape-followed-
+	// by-meta at the trailing position is two characters and we
+	// already consumed all input — no match. A trailing %% sequence
+	// matches zero chars.
+	for pi < len(p) {
+		if escape != 0 && p[pi] == escape && pi+1 < len(p) {
+			return false // a trailing escape sequence requires unconsumed input
+		}
+		if p[pi] != '%' {
+			return false
+		}
 		pi++
 	}
 	return pi == len(p)
@@ -573,7 +616,14 @@ func (p *ComparisonPredicate) Explain() string {
 	if p.Comparison.Type.IsUnary() {
 		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
-	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), formatComparisonRHS(p.Comparison.Operand))
+	// LIKE with escape: append the ESCAPE clause so Explain output
+	// round-trips back to recognisable SQL. Plain LIKE elides the
+	// (default-zero) escape.
+	rhs := formatComparisonRHS(p.Comparison.Operand)
+	if p.Comparison.Type == ComparisonLike && p.Comparison.Escape != 0 {
+		return fmt.Sprintf("%s %s %s ESCAPE '%c'", operandText, p.Comparison.Type.Symbol(), rhs, p.Comparison.Escape)
+	}
+	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), rhs)
 }
 
 // formatComparisonRHS renders the RHS of a binary comparison.

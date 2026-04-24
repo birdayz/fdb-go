@@ -222,6 +222,14 @@ func (r *Resolver) ResolveIsNotNull(v cascades.Value) (cascades.QueryPredicate, 
 // constant string (parameter-bound patterns land with the
 // parameter-Comparison design).
 func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (cascades.QueryPredicate, error) {
+	return r.ResolveLikeWithEscape(lhs, pattern, 0)
+}
+
+// ResolveLikeWithEscape is the LIKE … ESCAPE form. escape == 0 is
+// equivalent to ResolveLike. Pattern must be a plan-time constant
+// string. The escape rune is carried verbatim on the resulting
+// Comparison.
+func (r *Resolver) ResolveLikeWithEscape(lhs cascades.Value, pattern cascades.Value, escape rune) (cascades.QueryPredicate, error) {
 	if lhs == nil || pattern == nil {
 		return nil, fmt.Errorf("expr.ResolveLike: operand is nil")
 	}
@@ -234,7 +242,9 @@ func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (casc
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
 	}
 	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-		Type: cascades.ComparisonLike, Operand: cascades.LiteralValue(s),
+		Type:    cascades.ComparisonLike,
+		Operand: cascades.LiteralValue(s),
+		Escape:  escape,
 	}), nil
 }
 
