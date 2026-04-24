@@ -174,6 +174,55 @@ func TestComparisonConstSimplify_Folds(t *testing.T) {
 	}
 }
 
+// ComparisonConstSimplify folds unary IS NULL / IS NOT NULL against
+// any known-constant operand (ConstantValue, NullValue, BooleanValue).
+// Cross-check with the unary comparisons landed alongside this rule.
+func TestComparisonConstSimplify_UnaryIsNull(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	cases := []struct {
+		name    string
+		operand Value
+		op      ComparisonType
+		want    TriBool
+	}{
+		{"NULL IS NULL → TRUE", NewNullValue(TypeInt), ComparisonIsNull, TriTrue},
+		{"NULL IS NOT NULL → FALSE", NewNullValue(TypeInt), ComparisonIsNotNull, TriFalse},
+		{"ConstantValue(5) IS NULL → FALSE", &ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonIsNull, TriFalse},
+		{"ConstantValue(5) IS NOT NULL → TRUE", &ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonIsNotNull, TriTrue},
+		{"ConstantValue(nil) IS NULL → TRUE", &ConstantValue{Value: nil, Typ: TypeInt}, ComparisonIsNull, TriTrue},
+		{"BooleanValue(true) IS NOT NULL → TRUE", NewBooleanValue(true), ComparisonIsNotNull, TriTrue},
+		{"BooleanValue(nil) IS NULL → TRUE", &BooleanValue{Value: nil}, ComparisonIsNull, TriTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(tc.operand, Comparison{Type: tc.op})
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok || cp.Value != tc.want {
+				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
+			}
+		})
+	}
+}
+
+// FieldValue operand still declines — can't fold without a row.
+func TestComparisonConstSimplify_FieldWithIsNullDeclines(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "middle_name", Typ: TypeString},
+		Comparison{Type: ComparisonIsNull},
+	)
+	if got := FireRule(rule, pred); len(got) != 0 {
+		t.Fatalf("expected 0 yields (field operand), got %d", len(got))
+	}
+}
+
 // Non-constant operand (FieldValue) — rule declines.
 func TestComparisonConstSimplify_FieldOperandDeclines(t *testing.T) {
 	t.Parallel()

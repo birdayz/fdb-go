@@ -363,15 +363,26 @@ func (r *ComparisonConstantSimplifyRule) Matcher() BindingMatcher { return r.mat
 
 func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 	cp := call.Bindings.Get(r.matcher).(*ComparisonPredicate)
-	// Only fold when the operand is a ConstantValue — anything else
-	// depends on a row context the simplifier can't provide.
-	cv, ok := cp.Operand.(*ConstantValue)
-	if !ok {
+	// Only fold when the operand's Evaluate is deterministic without
+	// a row context. Whitelist known-constant Value types rather than
+	// calling Evaluate(nil) — FieldValue.Evaluate(nil) also returns
+	// nil and would produce a false positive.
+	var lhs any
+	switch v := cp.Operand.(type) {
+	case *ConstantValue:
+		lhs = v.Value
+	case *NullValue:
+		lhs = nil
+	case *BooleanValue:
+		// Unwrap *bool so the typed-nil doesn't masquerade as
+		// non-NULL when Eval's NULL-guard checks `left == nil`.
+		if v.Value != nil {
+			lhs = *v.Value
+		}
+	default:
 		return
 	}
-	// Eval ComparisonPredicate with nil context — ConstantValue
-	// ignores it, and the Comparison's RHS is already a literal.
-	result := cp.Comparison.Eval(cv.Value)
+	result := cp.Comparison.Eval(lhs)
 	call.Yield(NewConstantPredicate(result))
 }
 
