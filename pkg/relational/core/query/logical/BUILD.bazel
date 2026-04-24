@@ -8,6 +8,7 @@ go_library(
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical",
     visibility = ["//visibility:public"],
+    deps = ["//pkg/recordlayer/query/plan/cascades"],
 )
 
 go_test(

@@ -3,6 +3,8 @@ package logical
 import (
 	"fmt"
 	"strings"
+
+	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 )
 
 // --- Leaf operators (no children) ----------------------------------
@@ -29,21 +31,45 @@ func (s *LogicalScan) Explain(indent string) string {
 
 // --- Unary operators (single child) --------------------------------
 
-// LogicalFilter applies a WHERE/HAVING predicate to its child. The
-// PredicateText carries the canonical source text of the predicate
-// until Phase 4.0 ports Value / QueryPredicate.
+// LogicalFilter applies a WHERE/HAVING predicate to its child.
+//
+// Predicate is the preferred representation — a cascades
+// QueryPredicate tree produced by the expr walker. When non-nil,
+// Explain renders it via Predicate.Explain(), which yields the
+// normalised form after simplification (tautology-folded, NOTs
+// pushed to leaves, operands tree-walked).
+//
+// PredicateText is the fallback: the canonical source text of the
+// WHERE expression. Used when the expression shape is out of the
+// walker's scope (UnsupportedExpressionShapeError) or when the
+// builder is constructed without a metadata-backed catalog (today's
+// naive_generator Explain path, which has no transaction in scope).
 type LogicalFilter struct {
 	Input         LogicalOperator
-	PredicateText string
+	Predicate     cascades.QueryPredicate // preferred when non-nil
+	PredicateText string                  // source-text fallback
 }
 
 func NewFilter(input LogicalOperator, pred string) *LogicalFilter {
 	return &LogicalFilter{Input: input, PredicateText: pred}
 }
 
+// NewFilterWithPredicate constructs a LogicalFilter whose predicate
+// is a cascades QueryPredicate tree. The text form is retained for
+// diagnostics so Explain output stays stable even when the
+// Predicate render differs from the source text (e.g. after
+// tautology-folding).
+func NewFilterWithPredicate(input LogicalOperator, pred cascades.QueryPredicate, text string) *LogicalFilter {
+	return &LogicalFilter{Input: input, Predicate: pred, PredicateText: text}
+}
+
 func (f *LogicalFilter) Children() []LogicalOperator { return []LogicalOperator{f.Input} }
 func (f *LogicalFilter) Explain(indent string) string {
-	return fmt.Sprintf("%sFilter(%s)\n%s", indent, f.PredicateText, f.Input.Explain(indent+"  "))
+	body := f.PredicateText
+	if f.Predicate != nil {
+		body = f.Predicate.Explain()
+	}
+	return fmt.Sprintf("%sFilter(%s)\n%s", indent, body, f.Input.Explain(indent+"  "))
 }
 
 // LogicalProject selects / renames columns and computes expressions.
