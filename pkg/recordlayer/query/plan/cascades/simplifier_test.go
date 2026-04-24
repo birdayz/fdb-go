@@ -101,3 +101,32 @@ func TestSimplify_CrossRuleCooperation(t *testing.T) {
 		t.Fatalf("expected TRUE, got %T %s", got, got.Explain())
 	}
 }
+
+// Comparison fold feeds into AND fold — end-to-end demonstration
+// that the Simplify driver's rule set cooperates across different
+// predicate types.
+func TestSimplify_ComparisonPlusAnd(t *testing.T) {
+	t.Parallel()
+	// (5 = 5) AND (3 > 1) AND (age >= 18) → after comparison
+	// folds: (TRUE AND TRUE AND age >= 18). AND identity-drop
+	// removes the TRUEs, leaving the surviving ComparisonPredicate.
+	agePred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	pred := NewAnd(
+		NewComparisonPredicate(
+			&ConstantValue{Value: int64(5), Typ: TypeInt},
+			Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		),
+		NewComparisonPredicate(
+			&ConstantValue{Value: int64(3), Typ: TypeInt},
+			Comparison{Type: ComparisonGreaterThan, Operand: int64(1)},
+		),
+		agePred,
+	)
+	got := Simplify(pred, DefaultSimplifyRules())
+	if got != QueryPredicate(agePred) {
+		t.Fatalf("expected the age predicate to survive, got %T %s", got, got.Explain())
+	}
+}
