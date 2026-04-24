@@ -457,6 +457,52 @@ func TestWalkPredicate_NotBetween(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_Like(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name LIKE 'hel%'")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonLike {
+		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
+	}
+	if cp.Comparison.Operand != "hel%" {
+		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
+	}
+}
+
+func TestWalkPredicate_NotLike(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name NOT LIKE 'hel%'")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if _, ok := pred.(*cascades.NotPredicate); !ok {
+		t.Fatalf("expected *NotPredicate, got %T", pred)
+	}
+}
+
+func TestWalkPredicate_Like_Escape_Unsupported(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name LIKE 'a\\\\%b' ESCAPE '\\\\'")
+
+	_, err := r.WalkPredicate(ctx)
+	if err == nil {
+		t.Fatal("expected UnsupportedExpressionShapeError for LIKE with ESCAPE")
+	}
+}
+
 func TestWalkPredicate_IsNull(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

@@ -327,6 +327,36 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			return r.ResolveIsNotNull(lhs)
 		}
 		return r.ResolveIsNull(lhs)
+	case *antlrgen.LikePredicateContext:
+		// `x LIKE 'pattern' [ESCAPE 'c']` — seed wires LIKE without
+		// ESCAPE (cascades.likeMatch doesn't take an escape rune
+		// yet). The grammar parses both, so the ESCAPE form errors
+		// with a specific message pointing at the companion work.
+		if p.ESCAPE() != nil {
+			return nil, &UnsupportedExpressionShapeError{
+				Shape: "LIKE with ESCAPE clause (cascades.likeMatch doesn't take escape rune yet)",
+			}
+		}
+		lhsVal, err := r.walkAtom(atom)
+		if err != nil {
+			return nil, err
+		}
+		patTok := p.GetPattern()
+		if patTok == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "LIKE without pattern token"}
+		}
+		patConst, err := r.ResolveConstant(stripStringLiteral(patTok.GetText()))
+		if err != nil {
+			return nil, err
+		}
+		like, err := r.ResolveLike(lhsVal, patConst)
+		if err != nil {
+			return nil, err
+		}
+		if p.NOT() != nil {
+			return r.ResolveNot(like), nil
+		}
+		return like, nil
 	case *antlrgen.BetweenComparisonPredicateContext:
 		// `x BETWEEN lo AND hi` → x >= lo AND x <= hi.
 		// `x NOT BETWEEN lo AND hi` → NOT (x >= lo AND x <= hi),
@@ -480,6 +510,18 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, er
 		return r.ResolveConstant(text)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", c)}
+}
+
+// stripStringLiteral removes the single-quote delimiters from a
+// STRING_LITERAL token's text and unescapes doubled quotes. Used
+// by the grammar-Predicate handlers that receive STRING_LITERAL
+// tokens directly (LikePredicate pattern) rather than going
+// through the ConstantExpressionAtom dispatch.
+func stripStringLiteral(text string) string {
+	if len(text) >= 2 && text[0] == '\'' && text[len(text)-1] == '\'' {
+		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")
+	}
+	return text
 }
 
 // UnsupportedExpressionShapeError signals a parse-tree shape the
