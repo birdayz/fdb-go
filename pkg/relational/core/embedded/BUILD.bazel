@@ -63,7 +63,10 @@ go_library(
 
 go_test(
     name = "embedded_test",
-    srcs = ["embedded_test.go"],
+    srcs = [
+        "embedded_test.go",
+        "order_by_test.go",
+    ],
     embed = [":embedded"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

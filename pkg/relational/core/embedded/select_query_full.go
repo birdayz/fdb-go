@@ -70,6 +70,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	// LIMIT early-termination logic treats the reverse-DESC match the
 	// same as a forward-ASC match.
 	var reverseScanApplied bool
+	// equatedCols holds the UPPER-CASE bare col names that the WHERE
+	// clause equates to a constant literal at the AND-conjunction top
+	// level. Declared outside the runInTx closure so the post-scan
+	// sort-skip check can use it; captured inside the closure so it
+	// reflects the current transaction's parse/eval.
+	var equatedCols map[string]bool
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
@@ -78,6 +84,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		naturalOrder = nil
 		naturalOrderAliases = nil
 		reverseScanApplied = false
+		equatedCols = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
@@ -168,6 +175,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// SELECT-list. The scan-setup block below overwrites this with
 		// the same value; hoisting is cheap.
 		naturalOrderAliases = buildOrderByAliases(sq)
+		// equatedCols: cols WHERE equates to a constant literal at
+		// AND-conjunction top level. Used by the ORDER BY eliminator
+		// to strip zero-width leading (and in-middle) natural-order
+		// dims: `WHERE a = 1 ORDER BY b, c` on PK (a, b, c) satisfies
+		// after stripping a from naturalOrder + matching (b, c). Same
+		// info drives reverse-scan direction selection. Captured to
+		// the outer scope so the post-tx sort-skip check sees it too.
+		equatedCols = collectEquatedCols(ctx, c, sq.whereExpr)
 		// pkScanProps carries the direction (forward/reverse) the PK
 		// branches pass into their cursor builders. Each branch sets
 		// this based on whether sq.orderBy is an all-DESC prefix of
@@ -175,7 +190,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// prefix (or empty orderBy), stays ForwardScan. naturalOrder
 		// is still recorded as pkCols — the sort eliminator downstream
 		// uses reverseApplied to accept either direction.
-		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, naturalOrderAliases)
+		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			// At-most-one row — direction is irrelevant for the record
 			// set, but forwarding pkScanProps keeps the branch uniform.
@@ -867,7 +882,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// full scan and sort later.
 		earlyTermTarget := int64(-1)
 		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 &&
-			(naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) || reverseScanApplied) {
+			(naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied) {
 			earlyTermTarget = sq.offset + sq.limit
 		}
 
@@ -1004,7 +1019,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//     placement (ASC + NULLS LAST, or DESC + NULLS FIRST).
 		//   - ORDER BY col not in naturalOrder prefix.
 		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
-			(naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) || reverseScanApplied)
+			(naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied)
 		if !sortSkippable {
 			sort.SliceStable(data, func(i, j int) bool {
 				for _, ob := range sq.orderBy {
