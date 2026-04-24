@@ -1,6 +1,8 @@
 package embedded
 
 import (
+	"strings"
+
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -35,7 +37,10 @@ func buildWherePredicateForTable(
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
-	tbl, err := analyzer.ResolveTable(semantic.FromSegments([]string{tableName}, false))
+	// Split on '.' so a schema-qualified table name like "schema.t"
+	// reaches FromSegments as ["schema", "t"] rather than as a single
+	// dotted segment that would never resolve in the catalog.
+	tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 	if err != nil {
 		return nil, false
 	}
