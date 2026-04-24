@@ -13,10 +13,11 @@ import (
 // A ComparisonPredicate carries an operand Value (left-hand side)
 // and a Comparison (operator + literal right-hand side value).
 //
-// Seed is intentionally narrow: just the six common comparison
-// operators, constant RHS only. Follow-up shifts add: parameter-
-// bound Comparison (RHS supplied at plan-cache lookup time),
-// `LIKE` / `STARTS_WITH`, the `ComparisonRange` aggregator.
+// Seed operators: =, <>, <, <=, >, >=, IS NULL, IS NOT NULL,
+// STARTS_WITH, IN, IS DISTINCT FROM, IS NOT DISTINCT FROM. Constant
+// RHS only. Follow-up shifts add: parameter-bound Comparison (RHS
+// supplied at plan-cache lookup time), LIKE pattern comparator,
+// TEXT_CONTAINS_*, the `ComparisonRange` aggregator.
 
 // ComparisonType is the operator carried by a Comparison. Enum
 // values match Java's
@@ -89,10 +90,11 @@ type Comparison struct {
 }
 
 // Eval compares left against c's operand per c's ComparisonType.
-// NULL (nil) on either side returns UNKNOWN per SQL 3VL. The
-// operand is compared via Go's comparable semantics — seed assumes
-// matching types; follow-up shifts add `CompareValues`-style
-// numeric promotion.
+// NULL (nil) on either side returns UNKNOWN per SQL 3VL for binary
+// comparators; unary (IS [NOT] NULL) and null-safe
+// (IS [NOT] DISTINCT FROM) types resolve even on NULL. Numeric
+// operands promote via cmpAny so mixed-width int/float pairs don't
+// degrade to UNKNOWN.
 func (c Comparison) Eval(left any) TriBool {
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
