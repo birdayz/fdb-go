@@ -8,16 +8,33 @@
 // keying, CascadesRule / CascadesRuleCall, the memo, cost model, and
 // the planner driver.
 //
-// The first two commits here (shipped in dayshift-46):
+// Dayshift-46 seed contents:
 //
-//   - values.go   — Value interface + 3 concrete values (Constant,
-//     Field, Arithmetic) + ValueType enum. A seed that
-//     establishes the shape RFC-023 committed to; real
-//     Value subtypes land in subsequent Phase 4.0
-//     shifts (77 in Java).
-//   - matcher.go  — BindingMatcher interface + PlannerBindings +
-//     AnyValue / Instance / ArithmeticMatcher + the
-//     generic Get[T] retrieval helper.
+//   - values.go       — Value interface (Children, Type, Name,
+//     Evaluate) + ValueType enum + 5 concrete values
+//     (Constant, Field, Arithmetic, Boolean, Cast).
+//   - matcher.go      — BindingMatcher interface + PlannerBindings
+//   - MergedWith + AnyValue / Instance /
+//     ArithmeticMatcher + the generic Get[T]
+//     retrieval helper.
+//   - combinators.go  — AllOf / AnyOf matcher combinators — the
+//     primary building blocks for real rule patterns.
+//   - predicates.go   — QueryPredicate interface + TriBool
+//     (Kleene 3VL) + Constant / And / Or / Not.
+//   - comparisons.go  — ComparisonType enum (6 operators) +
+//     Comparison value-pair + ComparisonPredicate
+//     wrapping a Value operand with SQL-3VL on NULL
+//     and type mismatch.
+//   - correlation.go  — CorrelationIdentifier value-type + Named
+//     / Unique factories + Correlated interface
+//     signature (Quantifier-tracking surface for
+//     rewrite rules).
+//
+// Establishes the shape RFC-023 committed to; real Value
+// subtypes (77 in Java), the rest of the matcher combinator
+// catalogue (~15 shapes), full QueryPredicate + Comparisons, and
+// the CascadesRule / CascadesRuleCall / memo / cost / planner
+// driver land in subsequent Phase 4.0 / 4.2-4.6 shifts.
 //
 // **Zero-size struct gotcha.** Go's spec allows two distinct
 // zero-size variables to share an address. `&AnyValue{}` +
