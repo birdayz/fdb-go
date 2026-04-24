@@ -106,6 +106,27 @@ func BenchmarkWalkPredicate_Between(b *testing.B) {
 	}
 }
 
+// BenchmarkFullStack measures the full parse → walk → simplify path
+// per WHERE clause. This is the cost-per-SQL-statement overhead
+// the future logical-builder integration will incur.
+func BenchmarkFullStack(b *testing.B) {
+	a, s := buildScopeForBench(b)
+	r := expr.New(a, s)
+	// Parse once (parsing is amortised across query planning in
+	// practice); just measure walk + simplify.
+	ctx := parseWhereForBench(b, "SELECT * FROM users WHERE id = 1 AND name = 'bob'")
+	rules := cascades.DefaultSimplifyRules()
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		pred, err := r.WalkPredicate(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = cascades.Simplify(pred, rules)
+	}
+}
+
 func BenchmarkResolveComparison(b *testing.B) {
 	a, s := buildScopeForBench(b)
 	r := expr.New(a, s)
