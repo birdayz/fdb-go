@@ -140,6 +140,54 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	}
 }
 
+// Non-constant RHS comparisons survive the fixpoint untouched —
+// they aren't foldable at plan time (RHS is a row-dependent Value).
+// Pins that ComparisonConstantSimplifyRule's IsConstantValue gate
+// declines correctly when RHS is a FieldValue.
+func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	)
+	got := Simplify(pred, DefaultSimplifyRules())
+	cp, ok := got.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate to survive, got %T: %s", got, got.Explain())
+	}
+	if got.Explain() != "age = cutoff" {
+		t.Fatalf("Explain: got %q, want %q", got.Explain(), "age = cutoff")
+	}
+	// Identity preserved — same pointer, no rewrite happened.
+	if cp != pred {
+		t.Errorf("expected predicate identity preserved through Simplify")
+	}
+}
+
+// NOT over a non-constant comparison still rewrites via
+// NotComparisonRewriteRule — Negate doesn't depend on RHS being
+// constant, only on the Type having a direct negation. Pins that
+// the rule fires on `NOT(a = b)` → `a <> b` even when `b` is a
+// FieldValue.
+func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
+	t.Parallel()
+	pred := NewNot(NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "b", Typ: TypeInt}},
+	))
+	got := Simplify(pred, DefaultSimplifyRules())
+	cp, ok := got.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected NOT to be pushed past comparison, got %T: %s", got, got.Explain())
+	}
+	if cp.Comparison.Type != ComparisonNotEquals {
+		t.Fatalf("Type: got %v, want NotEquals", cp.Comparison.Type)
+	}
+	if got.Explain() != "a <> b" {
+		t.Fatalf("Explain: got %q, want %q", got.Explain(), "a <> b")
+	}
+}
+
 // Simplify recurses through NotPredicate children too. Use a
 // ValuePredicate leaf (not a ComparisonPredicate) so the
 // NotComparisonRewrite rule declines — isolates the assertion to
