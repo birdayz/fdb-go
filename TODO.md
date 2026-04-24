@@ -871,18 +871,18 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [x] **Decision: hash-identical Java compatibility is NOT a goal.** Java's `RelationalPlanCache` is Caffeine-backed per-process in-memory; no wire format, no distributed deployment, no cross-engine contract to preserve. Phase 4.4 free to ship simpler Go-native cost. Go-internal hash stability + schema-version-sensitive keys + test fixtures still required — added as Phase 4.0 sub-items.
 - [~] **4.0 — Foundation types**
   - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values.go` — to be replaced.
-  - [~] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes. dayshift-46 seeded `Value` interface + 3 concrete types (Constant, Field, Arithmetic) at `pkg/recordlayer/query/plan/cascades/values.go`; rest follow.
-  - [ ] `QueryPredicate` hierarchy — `ComparisonPredicate`, `AndPredicate`, `OrPredicate`, `NotPredicate`, `ComparisonRange(s)`, `MatchesValue`
+  - [~] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes. dayshift-46 seeded `Value` interface (with `Evaluate`) + 5 concrete types (Constant, Field, Arithmetic, Boolean, Cast) at `pkg/recordlayer/query/plan/cascades/values.go`; rest follow.
+  - [~] `QueryPredicate` hierarchy — dayshift-46 seeded `QueryPredicate` interface + `TriBool` (Kleene 3VL) + `ConstantPredicate` + `AndPredicate` + `OrPredicate` + `NotPredicate` at `pkg/recordlayer/query/plan/cascades/predicates.go`. Remaining: `ValuePredicate`, `ComparisonRange(s)`, `MatchesValue`, `Placeholder`, `PredicateWithValueAndRanges`.
   - [ ] `Simplification` — value simplification, predicate simplification (~30 classes)
-  - [ ] `Comparisons` / `Comparison` — `Comparisons.Type`, `Comparisons.Comparison`, `Comparisons.SimpleComparison`, etc.
+  - [~] `Comparisons` / `Comparison` — dayshift-46 seeded `ComparisonType` enum (6 operators) + `Comparison` + `ComparisonPredicate` at `pkg/recordlayer/query/plan/cascades/comparisons.go`. Remaining: `Comparisons.SimpleComparison` parameter-bound variant, LIKE/STARTS_WITH/NULL comparators, cross-type numeric promotion (seed only handles matching types).
+  - [~] `Correlated<T>` + `CorrelationIdentifier` — dayshift-46 seeded `CorrelationIdentifier` value-type + `Named/Unique` factories + `Correlated` interface at `pkg/recordlayer/query/plan/cascades/correlation.go`. Concrete `Correlated` impls land as Values gain richer Quantifier references.
 - [ ] **4.1 — Relational expressions**
   - [ ] `RelationalExpression`, `RelationalExpressionWithChildren`, `RelationalExpressionWithPredicates`
   - [ ] Logical exprs: `LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, `LogicalTypeFilterExpression`, `LogicalUnionExpression`, `LogicalDistinctExpression`, `LogicalIntersectionExpression`, `SelectExpression`
   - [ ] DML exprs: `InsertExpression`, `UpdateExpression`, `DeleteExpression`, `TableFunctionExpression`
-- [ ] **4.2 — Matching engine**
-  - [ ] `BindingMatcher` DSL — structural pattern + constraints
-  - [ ] `graph/` matchers, `structure/` matchers
-  - [ ] `PlannerBindings`
+- [~] **4.2 — Matching engine**
+  - [~] `BindingMatcher` DSL — dayshift-46 seeded `BindingMatcher` interface + `PlannerBindings` + `MergedWith` + generic `Get[T]` retrieval helper + `AnyValue` + `Instance` + `ArithmeticMatcher` + `AllOfMatcher` + `AnyOfMatcher` at `pkg/recordlayer/query/plan/cascades/{matcher,combinators}.go`. Remaining: `TypedMatcherWithExtractAndDownstream`, `ListMatcher`, `CollectionMatcher`, `OptionalIfPresentMatcher`, `PartialMatchMatchers`, the `graph/` matchers.
+  - [x] `PlannerBindings` — dayshift-46.
 - [ ] **4.3 — Memo & references**
   - [ ] `Reference` (= Cascades "group") — equivalence class of `RelationalExpression`s
   - [ ] Implicit DAG via `Reference` pointers (no explicit memo)
@@ -890,8 +890,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **4.4 — Cost model**
   - [ ] `CascadesCostModel` — heuristic comparator matching Java
   - [ ] Cardinality estimation hooks, `properties/` package (~25 classes)
-- [ ] **4.5 — Rules**
-  - [ ] Rule base classes (`CascadesRule`, `CascadesRuleCall`)
+- [~] **4.5 — Rules**
+  - [~] Rule base classes (`CascadesRule`, `CascadesRuleCall`) — dayshift-46 seeded `CascadesRule` interface + `RuleCall` (with `Yield/Yielded`) + `FireRule` testing helper at `pkg/recordlayer/query/plan/cascades/rule.go`. Working example: `addConstantFoldRule` in the test file folds `Const + Const` → `Const`.
   - [ ] **Batch A (covers swingshift-44's 11-branch pushdown chain — port FIRST so 4.-1 harness gets end-to-end yamsql coverage):**
     - `PrimaryScanRule`
     - `ImplementFilterRule`
