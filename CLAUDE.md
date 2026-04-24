@@ -213,8 +213,10 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzPackIntoEquivalence` | `PackWithPrefixInto`/`Pack1Into`/`PackInt64Into`/`PackConcatInto` vs allocating equivalents | Clean |
 | `FuzzLikePrefixStrinc` | LIKE-prefix byte-level successor used by the SQL range-scan pushdown | Clean |
 | `FuzzLikePatternToPrefix` | LIKE-pattern prefix extractor (with ESCAPE handling) — cross-checked against likeMatch | Clean |
+| `FuzzLikeMatch` | likeMatch (no escape) vs regex oracle | Clean |
+| `FuzzLikeMatchEscape` | likeMatch (with escape rune) vs regex oracle | Trailing-escape bug found nightshift-48 (was matched as literal; fixed to "malformed → no match") |
 
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` are in `pkg/relational/core/embedded/embedded_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/comparisons_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
