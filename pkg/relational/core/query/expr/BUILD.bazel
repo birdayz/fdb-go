@@ -20,6 +20,7 @@ go_test(
     srcs = [
         "bench_test.go",
         "expr_test.go",
+        "fullstack_test.go",
         "walk_test.go",
     ],
     deps = [
