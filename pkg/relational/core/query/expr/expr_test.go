@@ -71,6 +71,54 @@ func TestResolver_ResolveIdentifier_Qualified(t *testing.T) {
 	}
 }
 
+// sqlTypeToCascadesValueType is exercised via ResolveIdentifier (it's
+// unexported). Pin the SQL-string → cascades.ValueType mapping so
+// any drift (including misses like the old BYTES→TypeInt lie) surfaces
+// at test time. Downstream comparators dispatch on ValueType; a bad
+// mapping would silently pick the wrong path.
+func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
+	t.Parallel()
+	tbl := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("MIXED", false),
+		TableColumns: []semantic.Column{
+			{Id: semantic.NewUnquoted("i"), Type: "INT"},
+			{Id: semantic.NewUnquoted("s"), Type: "STRING"},
+			{Id: semantic.NewUnquoted("e"), Type: "ENUM"},
+			{Id: semantic.NewUnquoted("b"), Type: "BOOL"},
+			{Id: semantic.NewUnquoted("f"), Type: "FLOAT"},
+			{Id: semantic.NewUnquoted("by"), Type: "BYTES"},
+			{Id: semantic.NewUnquoted("rec"), Type: "RECORD"},
+		},
+	}
+	cat := semantic.NewInMemoryCatalog(tbl)
+	a := semantic.NewAnalyzer(cat, false)
+	s := semantic.NewScope(nil)
+	if err := s.AddSource(semantic.ScopeSource{Table: tbl, Alias: semantic.NewUnquoted("m")}); err != nil {
+		t.Fatal(err)
+	}
+	r := expr.New(a, s)
+
+	cases := map[string]cascades.ValueType{
+		"i":   cascades.TypeInt,
+		"s":   cascades.TypeString,
+		"e":   cascades.TypeString,
+		"b":   cascades.TypeBool,
+		"f":   cascades.TypeUnknown, // no TypeFloat yet
+		"by":  cascades.TypeUnknown, // no TypeBytes yet — prior code lied and said TypeInt
+		"rec": cascades.TypeUnknown, // no struct/record type yet
+	}
+	for col, want := range cases {
+		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
+		if err != nil {
+			t.Fatalf("resolve %q: %v", col, err)
+		}
+		fv := v.(*cascades.FieldValue)
+		if fv.Typ != want {
+			t.Errorf("%s: got %v, want %v", col, fv.Typ, want)
+		}
+	}
+}
+
 func TestResolver_ResolveIdentifier_Missing(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

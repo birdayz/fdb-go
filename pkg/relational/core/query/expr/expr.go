@@ -385,15 +385,17 @@ func aggregateOpForName(name string, isStar bool) (cascades.AggregateOp, bool) {
 // Type hierarchy port.
 func sqlTypeToCascadesValueType(sqlType string) cascades.ValueType {
 	switch sqlType {
-	case "INT", "BYTES":
+	case "INT":
 		return cascades.TypeInt
 	case "STRING", "ENUM":
 		return cascades.TypeString
 	case "BOOL":
 		return cascades.TypeBool
-	case "FLOAT":
-		// Seed enum doesn't have Float yet; fall through to Unknown
-		// rather than lie about INT representation.
+	case "FLOAT", "BYTES", "RECORD":
+		// Seed enum lacks dedicated Float/Bytes/Record types. Fall
+		// through to Unknown rather than silently lie about INT / STRING
+		// representation — a mistyped column at the resolver boundary
+		// would cascade into wrong comparator picks downstream.
 		return cascades.TypeUnknown
 	}
 	return cascades.TypeUnknown
