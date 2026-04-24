@@ -183,6 +183,23 @@ func TestBuildLogicalPlan_BailsOnNoFrom(t *testing.T) {
 	}
 }
 
+// Derived table: FROM (SELECT ...) AS alias — builder recurses and
+// the inner plan surfaces as-is.
+func TestBuildLogicalPlan_DerivedTable(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT x FROM (SELECT id AS x FROM t WHERE id > 5) AS sub")
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	// Outer Project wraps the inner plan (which is Project on Filter
+	// on Scan). Seed: LogicalDerived doesn't exist yet; inner tree
+	// surfaces directly.
+	if got := op.Explain(""); !contains(got, "Scan(t)") || !contains(got, "Filter(id>5)") {
+		t.Fatalf("got %q, expected inner plan to contain Scan(t) and Filter(id>5)", got)
+	}
+}
+
 // Aliases carry through to the Scan node.
 func TestBuildLogicalPlan_AliasedTable(t *testing.T) {
 	t.Parallel()

@@ -45,18 +45,38 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq == nil {
 		return nil
 	}
-	// Bail for shapes the builder doesn't yet handle. The caller falls
-	// back to the canonical-SQL explain for these.
-	if sq.derivedQuery != nil {
-		return nil
-	}
-	if sq.tableName == "" {
+	if sq.tableName == "" && sq.derivedQuery == nil {
 		// SELECT without FROM — not a Scan; constant-row projection.
 		// Future: a ValuesOperator. For now, bail.
 		return nil
 	}
 
-	var op logical.LogicalOperator = logical.NewScan(sq.tableName, sq.tableAlias)
+	// Build the FROM-source subtree. Either a plain table scan or a
+	// derived table (subquery in FROM). For derived tables we
+	// recursively build the inner logical plan and wrap it in a
+	// LogicalScan stand-in carrying the alias as the "table name" —
+	// there's no dedicated LogicalDerived operator in the seed, so
+	// the inner plan surfaces as-is with the alias lost at the
+	// logical level. (A follow-up can add LogicalSubquery if rules
+	// need to distinguish.)
+	var op logical.LogicalOperator
+	if sq.derivedQuery != nil {
+		body := sq.derivedQuery.QueryExpressionBody()
+		if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
+			if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+				if inner, err := extractFromSimpleTable(simpleTable); err == nil {
+					op = buildLogicalPlanForSelect(inner)
+				}
+			}
+		}
+		if op == nil {
+			// Derived query is out of the inner builder's scope — bail
+			// rather than emit a misleading partial tree.
+			return nil
+		}
+	} else {
+		op = logical.NewScan(sq.tableName, sq.tableAlias)
+	}
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps
 	// the current op as Left and scans the joined table as Right.
