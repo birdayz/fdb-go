@@ -21,6 +21,7 @@ go_library(
         "pk_prefix_pushdown.go",
         "pk_pushdown.go",
         "recursive_cte.go",
+        "scalar_functions.go",
         "scalar_subquery.go",
         "scope.go",
         "secondary_index_pushdown.go",
