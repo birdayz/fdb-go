@@ -183,6 +183,11 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 					}
 				}
 				if ins := dml.InsertStatement(); ins != nil {
+					if md != nil {
+						if op := buildLogicalPlanForInsertWithCatalog(ins, md); op != nil {
+							return op.Explain("")
+						}
+					}
 					if op := buildLogicalPlanForInsert(ins); op != nil {
 						return op.Explain("")
 					}

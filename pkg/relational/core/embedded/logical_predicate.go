@@ -192,6 +192,57 @@ func buildLogicalPlanForUpdateWithCatalog(
 	return op
 }
 
+// buildLogicalPlanForInsertWithCatalog is the catalog-aware variant
+// of buildLogicalPlanForInsert. INSERT VALUES has no nested query so
+// it short-circuits to the text builder; INSERT … SELECT routes the
+// inner SELECT through the catalog-aware Select path so its WHERE
+// becomes a predicate tree when md is non-nil.
+func buildLogicalPlanForInsertWithCatalog(
+	ins antlrgen.IInsertStatementContext,
+	md *recordlayer.RecordMetaData,
+) logical.LogicalOperator {
+	if ins == nil {
+		return nil
+	}
+	if md == nil {
+		return buildLogicalPlanForInsert(ins)
+	}
+	op := buildLogicalPlanForInsert(ins)
+	if op == nil {
+		return op
+	}
+	insertOp, ok := op.(*logical.LogicalInsert)
+	if !ok || insertOp.Source == nil {
+		// VALUES form (no Source) — nothing to upgrade.
+		return op
+	}
+	// Re-run the inner SELECT through the catalog-aware path. We
+	// can't directly mutate the existing Source's filter without
+	// re-walking the SELECT, so just rebuild Source.
+	selCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueSelectContext)
+	if !ok {
+		return op
+	}
+	body := selCtx.QueryExpressionBody()
+	if body == nil {
+		return op
+	}
+	termDefault, ok := body.(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return op
+	}
+	simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok {
+		return op
+	}
+	sq, err := extractFromSimpleTable(simpleTable)
+	if err != nil {
+		return op
+	}
+	insertOp.Source = buildLogicalPlanForSelectWithCatalog(sq, md)
+	return insertOp
+}
+
 // buildLogicalPlanForQueryWithCatalog is the catalog-aware variant
 // of buildLogicalPlanForQuery. Recurses into CTE bodies and the
 // query body so WHERE clauses anywhere in the tree pick up the

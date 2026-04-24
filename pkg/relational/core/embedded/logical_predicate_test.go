@@ -302,6 +302,59 @@ func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
 	}
 }
 
+// INSERT … SELECT routes the inner SELECT's WHERE through the
+// catalog-aware path. INSERT VALUES (no nested SELECT) is identical
+// to the text builder's output.
+func TestBuildLogicalPlanWithCatalog_InsertSelectThreadsMd(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	ins := parseInsert(t,
+		"INSERT INTO Customer (customer_id, name) SELECT order_id, 'x' FROM Order WHERE price > 5")
+	op := buildLogicalPlanForInsertWithCatalog(ins, md)
+	insertOp, ok := op.(*logical.LogicalInsert)
+	if !ok {
+		t.Fatalf("expected LogicalInsert, got %T", op)
+	}
+	if insertOp.Source == nil {
+		t.Fatal("expected non-nil Source on INSERT … SELECT")
+	}
+	// The inner SELECT's filter should carry a Predicate.
+	var filter *logical.LogicalFilter
+	for cur := insertOp.Source; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("inner SELECT missing Filter:\n%s", insertOp.Source.Explain(""))
+	}
+	if filter.Predicate == nil {
+		t.Fatal("inner SELECT Filter missing Predicate (md not threaded?)")
+	}
+}
+
+// INSERT VALUES has no nested SELECT — the catalog-aware path
+// returns the same shape as the text builder (Source is nil).
+func TestBuildLogicalPlanWithCatalog_InsertValuesNoOp(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	ins := parseInsert(t, "INSERT INTO Customer (customer_id, name) VALUES (1, 'x')")
+	op := buildLogicalPlanForInsertWithCatalog(ins, md)
+	insertOp, ok := op.(*logical.LogicalInsert)
+	if !ok {
+		t.Fatalf("expected LogicalInsert, got %T", op)
+	}
+	if insertOp.Source != nil {
+		t.Fatalf("VALUES form should leave Source nil, got %T", insertOp.Source)
+	}
+}
+
 // upgradeFirstFilter returns true exactly when a LogicalFilter was
 // found on the unary spine. Pins the invariant the catalog-aware
 // builders rely on: the text builder always emits a Filter for any
