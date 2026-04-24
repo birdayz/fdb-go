@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "semantic",
+    srcs = ["identifier.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "semantic_test",
+    srcs = ["identifier_test.go"],
+    embed = [":semantic"],
+)
