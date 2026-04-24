@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
@@ -89,7 +90,7 @@ func TestBuildLogicalPlan_GroupBySum(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	// Project wraps the aggregate; keys list reflects the GROUP BY.
-	if got := op.Explain(""); !contains(got, "Aggregate(group=[dept], agg=[SUM(v)") {
+	if got := op.Explain(""); !strings.Contains(got, "Aggregate(group=[dept], agg=[SUM(v)") {
 		t.Fatalf("got %q, want Aggregate(group=[dept], agg=[SUM(v)...])", got)
 	}
 }
@@ -102,24 +103,9 @@ func TestBuildLogicalPlan_GroupByHaving(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	if got := op.Explain(""); !contains(got, "having=") {
+	if got := op.Explain(""); !strings.Contains(got, "having=") {
 		t.Fatalf("got %q, want having=... in aggregate node", got)
 	}
-}
-
-// Helper: string substring match for tests where exact canonical
-// text isn't stable enough across test rewrites.
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && findString(haystack, needle)
-}
-
-func findString(h, n string) bool {
-	for i := 0; i+len(n) <= len(h); i++ {
-		if h[i:i+len(n)] == n {
-			return true
-		}
-	}
-	return false
 }
 
 // INNER JOIN — builder emits a LogicalJoin.
@@ -195,7 +181,7 @@ func TestBuildLogicalPlan_DerivedTable(t *testing.T) {
 	// Outer Project wraps the inner plan (which is Project on Filter
 	// on Scan). Seed: LogicalDerived doesn't exist yet; inner tree
 	// surfaces directly.
-	if got := op.Explain(""); !contains(got, "Scan(t)") || !contains(got, "Filter(id>5)") {
+	if got := op.Explain(""); !strings.Contains(got, "Scan(t)") || !strings.Contains(got, "Filter(id>5)") {
 		t.Fatalf("got %q, expected inner plan to contain Scan(t) and Filter(id>5)", got)
 	}
 }
