@@ -19,6 +19,14 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 	return &wrappedCatalog{md: md}
 }
 
+// NewAnalyzer is the end-user convenience: given a RecordMetaData
+// and a case-sensitivity flag, wire up a ready-to-use
+// semantic.Analyzer. Saves callers a Wrap() + NewAnalyzer() boilerplate
+// pair.
+func NewAnalyzer(md *recordlayer.RecordMetaData, caseSensitive bool) *semantic.Analyzer {
+	return semantic.NewAnalyzer(Wrap(md), caseSensitive)
+}
+
 type wrappedCatalog struct {
 	md *recordlayer.RecordMetaData
 }

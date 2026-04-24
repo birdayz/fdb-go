@@ -110,6 +110,29 @@ func TestWrap_LookupColumn(t *testing.T) {
 	}
 }
 
+func TestNewAnalyzer(t *testing.T) {
+	t.Parallel()
+	md := buildMetaData(t)
+	a := rlcatalog.NewAnalyzer(md, false)
+
+	tbl, err := a.ResolveTable(semantic.ParseQualifiedName("order", false))
+	if err != nil {
+		t.Fatalf("resolve order: %v", err)
+	}
+	if tbl == nil {
+		t.Fatal("Order should resolve")
+	}
+
+	// Column resolution works through the analyzer.
+	col, err := a.ResolveColumn(tbl, semantic.NewUnquoted("order_id"))
+	if err != nil {
+		t.Fatalf("resolve order_id: %v", err)
+	}
+	if col.Type != "INT" {
+		t.Fatalf("Type: got %q, want INT", col.Type)
+	}
+}
+
 func TestWrap_NilMetaData(t *testing.T) {
 	t.Parallel()
 	cat := rlcatalog.Wrap(nil)
