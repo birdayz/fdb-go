@@ -101,3 +101,48 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 		_ = pattern.BindMatches(outer, cv)
 	}
 }
+
+// Fixed-point Simplify driver over a tree that exercises every rule
+// DefaultSimplifyRules ships (flatten + constant folds + dedup). Same
+// shape as TestSimplify_FullPipeline so regressions show up against a
+// known capstone.
+func BenchmarkSimplify_FullPipeline(b *testing.B) {
+	b.ReportAllocs()
+	agePred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	// Build fresh each iter — Simplify sees a pristine tree, not a
+	// memoised folded one.
+	rules := DefaultSimplifyRules()
+	for i := 0; i < b.N; i++ {
+		pred := NewAnd(
+			NewAnd(
+				NewComparisonPredicate(
+					&ConstantValue{Value: int64(5), Typ: TypeInt},
+					Comparison{Type: ComparisonEquals, Operand: int64(5)},
+				),
+				NewNot(NewNot(NewConstantPredicate(TriTrue))),
+			),
+			agePred,
+			agePred,
+			NewConstantPredicate(TriTrue),
+		)
+		_ = Simplify(pred, rules)
+	}
+}
+
+// Opaque-input baseline: the driver fires through every rule but
+// nothing yields. Measures the pure-dispatch overhead the planner
+// pays per predicate that can't be folded.
+func BenchmarkSimplify_NoOp(b *testing.B) {
+	b.ReportAllocs()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	rules := DefaultSimplifyRules()
+	for i := 0; i < b.N; i++ {
+		_ = Simplify(pred, rules)
+	}
+}
