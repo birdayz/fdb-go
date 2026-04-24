@@ -266,6 +266,55 @@ func TestComparisonConstSimplify_StartsWithAndIn(t *testing.T) {
 	}
 }
 
+// IS [NOT] DISTINCT FROM folds too when LHS is a known constant.
+// Because IS DISTINCT FROM never returns UNKNOWN, the fold collapses
+// to a definitive TRUE/FALSE even on NULL inputs.
+func TestComparisonConstSimplify_IsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	cases := []struct {
+		name    string
+		operand Value
+		cmp     Comparison
+		want    TriBool
+	}{
+		{
+			"NULL IS DISTINCT FROM NULL", NewNullValue(TypeInt),
+			Comparison{Type: ComparisonIsDistinctFrom, Operand: nil},
+			TriFalse,
+		},
+		{
+			"NULL IS NOT DISTINCT FROM NULL", NewNullValue(TypeInt),
+			Comparison{Type: ComparisonNotDistinctFrom, Operand: nil},
+			TriTrue,
+		},
+		{
+			"5 IS NOT DISTINCT FROM 5", &ConstantValue{Value: int64(5), Typ: TypeInt},
+			Comparison{Type: ComparisonNotDistinctFrom, Operand: int64(5)},
+			TriTrue,
+		},
+		{
+			"5 IS DISTINCT FROM NULL", &ConstantValue{Value: int64(5), Typ: TypeInt},
+			Comparison{Type: ComparisonIsDistinctFrom, Operand: nil},
+			TriTrue,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(tc.operand, tc.cmp)
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok || cp.Value != tc.want {
+				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
+			}
+		})
+	}
+}
+
 // FieldValue operand still declines — can't fold without a row.
 func TestComparisonConstSimplify_FieldWithIsNullDeclines(t *testing.T) {
 	t.Parallel()
