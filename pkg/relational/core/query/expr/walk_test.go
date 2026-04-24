@@ -158,6 +158,92 @@ func TestWalkExpression_MissingColumn(t *testing.T) {
 	}
 }
 
+// --- WalkPredicate --------------------------------------------------
+
+func TestWalkPredicate_Comparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = 1")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if cp.Comparison.Type != cascades.ComparisonEquals {
+		t.Fatalf("Type: got %v, want Equals", cp.Comparison.Type)
+	}
+	if cp.Comparison.Operand != int64(1) {
+		t.Fatalf("Operand: got %v, want 1", cp.Comparison.Operand)
+	}
+	// Evaluate.
+	if got := pred.Eval(map[string]any{"ID": int64(1)}); got != cascades.TriTrue {
+		t.Fatalf("1 = 1: got %v", got)
+	}
+}
+
+func TestWalkPredicate_ComparisonOperators(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	cases := []struct {
+		sql  string
+		want cascades.ComparisonType
+	}{
+		{"SELECT * FROM users WHERE id = 1", cascades.ComparisonEquals},
+		{"SELECT * FROM users WHERE id > 1", cascades.ComparisonGreaterThan},
+		{"SELECT * FROM users WHERE id < 1", cascades.ComparisonLessThan},
+		{"SELECT * FROM users WHERE id >= 1", cascades.ComparisonGreaterThanEq},
+		{"SELECT * FROM users WHERE id <= 1", cascades.ComparisonLessThanOrEq},
+		{"SELECT * FROM users WHERE id <> 1", cascades.ComparisonNotEquals},
+		{"SELECT * FROM users WHERE id != 1", cascades.ComparisonNotEquals},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, tc.sql)
+			pred, err := r.WalkPredicate(ctx)
+			if err != nil {
+				t.Fatalf("walk %q: %v", tc.sql, err)
+			}
+			cp := pred.(*cascades.ComparisonPredicate)
+			if cp.Comparison.Type != tc.want {
+				t.Fatalf("Type: got %v, want %v", cp.Comparison.Type, tc.want)
+			}
+		})
+	}
+}
+
+func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// Bare column predicate → ValuePredicate.
+	if _, ok := pred.(*cascades.ValuePredicate); !ok {
+		t.Fatalf("expected *ValuePredicate, got %T", pred)
+	}
+}
+
+func TestWalkPredicate_NilContext(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	if _, err := r.WalkPredicate(nil); err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
 func TestWalkExpression_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

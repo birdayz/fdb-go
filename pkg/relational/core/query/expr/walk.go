@@ -40,7 +40,12 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades.Val
 	return r.walkAtom(pred.ExpressionAtom())
 }
 
-// walkAtom dispatches concrete ExpressionAtom variants.
+// walkAtom dispatches concrete ExpressionAtom variants. Returns a
+// Value OR — for BinaryComparisonPredicate atoms — a
+// *cascades.ComparisonPredicate wrapped as a Value, since the
+// grammar treats binary comparisons as atoms but the analyzer
+// surfaces them as predicates. Callers should type-switch the
+// return to pick up both shapes.
 func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Value, error) {
 	if atom == nil {
 		return nil, fmt.Errorf("expr.walkAtom: nil atom")
@@ -52,6 +57,110 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		return r.walkConstant(a.Constant())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
+}
+
+// WalkPredicate is the dual of WalkExpression — returns a cascades
+// QueryPredicate for an expression that's semantically boolean. For
+// bare columns (`WHERE flag`) it wraps the resolved value in a
+// ValuePredicate; for binary comparisons (`WHERE id = 1`) it
+// produces a ComparisonPredicate via ResolveComparison.
+//
+// Seed scope matches WalkExpression's: PredicatedExpression only.
+// Binary comparisons dispatch via walkBinaryComparison; all other
+// predicate shapes (BETWEEN, IN, LIKE, IS NULL via grammar's
+// Predicate node) return UnsupportedExpressionShapeError.
+func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (cascades.QueryPredicate, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("expr.WalkPredicate: nil context")
+	}
+	pred, ok := ctx.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
+	}
+	if pred.Predicate() != nil {
+		// Grammar-level Predicate nodes (BETWEEN, IN, LIKE, IS NULL)
+		// not wired yet.
+		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with grammar Predicate"}
+	}
+	// The expression-atom may itself be a BinaryComparisonPredicate;
+	// dispatch here.
+	atom := pred.ExpressionAtom()
+	if bc, ok := atom.(*antlrgen.BinaryComparisonPredicateContext); ok {
+		return r.walkBinaryComparison(bc)
+	}
+	// Bare value atom → ValuePredicate.
+	v, err := r.walkAtom(atom)
+	if err != nil {
+		return nil, err
+	}
+	return cascades.NewValuePredicate(v), nil
+}
+
+// walkBinaryComparison converts `left OP right` into a
+// ComparisonPredicate via ResolveComparison. Operator dispatch
+// reads ComparisonOperator's terminal-token accessors — there's no
+// single GetText we can rely on since `!=`, `<>`, `>=` all span
+// two tokens.
+func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateContext) (cascades.QueryPredicate, error) {
+	op, err := comparisonOpFromCtx(bc.ComparisonOperator())
+	if err != nil {
+		return nil, err
+	}
+	left, err := r.walkAtom(bc.GetLeft())
+	if err != nil {
+		return nil, err
+	}
+	right, err := r.walkAtom(bc.GetRight())
+	if err != nil {
+		return nil, err
+	}
+	return r.ResolveComparison(op, left, right)
+}
+
+// comparisonOpFromCtx reads the terminal tokens on a
+// ComparisonOperator context to identify the operator. Mirrors
+// the grammar:
+//
+//	= | > | < | >= | <= | <> | != | IS [NOT] DISTINCT FROM
+func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (cascades.ComparisonType, error) {
+	if op == nil {
+		return cascades.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: nil operator")
+	}
+	c, ok := op.(*antlrgen.ComparisonOperatorContext)
+	if !ok {
+		return cascades.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: unexpected ctx %T", op)
+	}
+	hasEq := c.EQUAL_SYMBOL() != nil
+	hasGt := c.GREATER_SYMBOL() != nil
+	hasLt := c.LESS_SYMBOL() != nil
+	hasNot := c.EXCLAMATION_SYMBOL() != nil
+	// Spread multi-token operators. Token order matters — the
+	// grammar emits <= as '<' '=', not '=' '<'.
+	if c.IS() != nil && c.DISTINCT() != nil && c.FROM() != nil {
+		if c.NOT() != nil {
+			return cascades.ComparisonNotDistinctFrom, nil
+		}
+		return cascades.ComparisonIsDistinctFrom, nil
+	}
+	switch {
+	case hasEq && !hasGt && !hasLt && !hasNot:
+		return cascades.ComparisonEquals, nil
+	case hasNot && hasEq:
+		return cascades.ComparisonNotEquals, nil
+	case hasLt && hasGt: // <>
+		return cascades.ComparisonNotEquals, nil
+	case hasLt && hasEq:
+		return cascades.ComparisonLessThanOrEq, nil
+	case hasGt && hasEq:
+		return cascades.ComparisonGreaterThanEq, nil
+	case hasLt:
+		return cascades.ComparisonLessThan, nil
+	case hasGt:
+		return cascades.ComparisonGreaterThan, nil
+	}
+	return cascades.ComparisonEquals, &UnsupportedExpressionShapeError{
+		Shape: "ComparisonOperator: " + c.GetText(),
+	}
 }
 
 // walkColumnRef: an identifier from the parse tree → ResolveIdentifier.
