@@ -89,7 +89,7 @@ func (t *recordTypeTable) Columns() []semantic.Column {
 		out = append(out, semantic.Column{
 			Id:       semantic.NewUnquoted(string(f.Name())),
 			Type:     protoKindToSQL(f.Kind()),
-			Nullable: !isRepeated(f) && !f.HasDefault(),
+			Nullable: isNullable(f),
 		})
 	}
 	return out
@@ -110,7 +110,7 @@ func (t *recordTypeTable) LookupColumn(id semantic.Identifier) (semantic.Column,
 			return semantic.Column{
 				Id:       candidate,
 				Type:     protoKindToSQL(f.Kind()),
-				Nullable: !isRepeated(f) && !f.HasDefault(),
+				Nullable: isNullable(f),
 			}, true
 		}
 	}
@@ -135,6 +135,23 @@ func (t *recordTypeTable) Indexes() []string {
 // isRepeated reports whether the descriptor is a list-typed field.
 func isRepeated(f protoreflect.FieldDescriptor) bool {
 	return f.Cardinality() == protoreflect.Repeated
+}
+
+// isNullable reports whether a proto field can be absent (and thus
+// read as SQL NULL). A field is NOT nullable when it's a repeated
+// (list) field or declared as proto2 `required`. Everything else —
+// proto3 singular scalars, proto2 optional (with or without explicit
+// defaults), proto3 message fields — is nullable per SQL semantics.
+//
+// Review feedback caught an earlier bug here: `!f.HasDefault()` was
+// used as the nullability proxy, which flagged proto2 explicit-default
+// fields as NOT nullable. Cardinality is the right signal — required
+// is proto2-only; proto3 singular is Optional (and thus nullable).
+func isNullable(f protoreflect.FieldDescriptor) bool {
+	if isRepeated(f) {
+		return false
+	}
+	return f.Cardinality() != protoreflect.Required
 }
 
 // protoKindToSQL maps a proto field kind to the seed's string-valued
