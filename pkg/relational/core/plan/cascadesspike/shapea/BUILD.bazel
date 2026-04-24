@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "shapea",
+    srcs = [
+        "matcher.go",
+        "values.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/plan/cascadesspike/shapea",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "shapea_test",
+    srcs = ["rule_test.go"],
+    embed = [":shapea"],
+)
