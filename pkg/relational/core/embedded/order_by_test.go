@@ -314,6 +314,22 @@ func TestOrderByDedup_CaseInsensitive(t *testing.T) {
 			sql:     "SELECT id FROM t AS t ORDER BY t.id, T.ID",
 			wantErr: "duplicate",
 		},
+		{
+			// Direction is not part of the dedup key — `ORDER BY x
+			// ASC, x DESC` is still a duplicate column reference
+			// (can't sort the same col by two directions).
+			name:    "same col, different direction is still a dup",
+			sql:     "SELECT id FROM t ORDER BY id ASC, id DESC",
+			wantErr: "duplicate",
+		},
+		{
+			// Positional + named reference to the same column: ORDER
+			// BY 1 and ORDER BY id (where id is output col 1) fold
+			// to the same colName string, so dedup fires.
+			name:    "positional + named for same col",
+			sql:     "SELECT id FROM t ORDER BY 1, id",
+			wantErr: "duplicate",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
