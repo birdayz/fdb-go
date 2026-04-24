@@ -316,6 +316,13 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 	if _, ok := and.SubPredicates[1].(*cascades.NotPredicate); !ok {
 		t.Fatalf("second child: got %T, want *NotPredicate", and.SubPredicates[1])
 	}
+	// Pin the Explain output so Simplify / Explain-format regressions
+	// surface here. The desugared form is canonical for XOR — if a
+	// future XorPredicate type lands, update this.
+	const wantExplain = "((ACTIVE OR ADMIN) AND NOT (ACTIVE AND ADMIN))"
+	if got := pred.Explain(); got != wantExplain {
+		t.Fatalf("Explain:\n  got:  %q\n  want: %q", got, wantExplain)
+	}
 
 	type row = map[string]any
 	cases := []struct {
