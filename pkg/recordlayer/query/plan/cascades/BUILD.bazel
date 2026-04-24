@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "combinators.go",
         "matcher.go",
+        "predicates.go",
         "values.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades",
@@ -16,6 +17,7 @@ go_test(
     srcs = [
         "combinators_test.go",
         "matcher_test.go",
+        "predicates_test.go",
     ],
     embed = [":cascades"],
 )
