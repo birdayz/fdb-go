@@ -235,6 +235,31 @@ func IsConstantValue(v Value) bool {
 	return true
 }
 
+// EvaluateConstant attempts to fold v to a concrete literal at plan
+// time. Returns (literal, true) when v is constant (per
+// IsConstantValue); (nil, false) otherwise. Safe on nil (returns
+// (nil, false)). Useful for rules that want to pre-compute a
+// constant sub-expression without writing an `if isConstant { eval
+// and wrap }` dance every time.
+//
+// Panics during Evaluate are caught and translated to (nil, false)
+// — a constant-looking tree that panics (e.g. an AggregateValue
+// buried inside a Cast — IsConstantValue should exclude it, but
+// defence-in-depth) is better reported as "not foldable" than
+// bubbling up.
+func EvaluateConstant(v Value) (out any, ok bool) {
+	if v == nil || !IsConstantValue(v) {
+		return nil, false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			out = nil
+			ok = false
+		}
+	}()
+	return v.Evaluate(nil), true
+}
+
 // ContainsAggregate reports whether v has any AggregateValue in its
 // subtree. Common gate for rules that only apply to scalar
 // expressions — aggregates need the accumulator path, not per-row

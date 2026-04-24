@@ -700,3 +700,33 @@ func TestIsConstantValue(t *testing.T) {
 		})
 	}
 }
+
+// --- EvaluateConstant ---------------------------------------------
+
+func TestEvaluateConstant(t *testing.T) {
+	t.Parallel()
+
+	if got, ok := EvaluateConstant(&ConstantValue{Value: int64(5), Typ: TypeInt}); !ok || got != int64(5) {
+		t.Fatalf("ConstantValue: got (%v, %v), want (5, true)", got, ok)
+	}
+	if got, ok := EvaluateConstant(NewNullValue(TypeInt)); !ok || got != nil {
+		t.Fatalf("Null: got (%v, %v), want (nil, true)", got, ok)
+	}
+	// Composite: 1 + 2 → 3.
+	arith := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+	}
+	if got, ok := EvaluateConstant(arith); !ok || got != int64(3) {
+		t.Fatalf("1+2: got (%v, %v), want (3, true)", got, ok)
+	}
+	// Non-constant declines.
+	if _, ok := EvaluateConstant(&FieldValue{Field: "x", Typ: TypeInt}); ok {
+		t.Fatal("FieldValue should decline (not constant)")
+	}
+	// Nil safe.
+	if _, ok := EvaluateConstant(nil); ok {
+		t.Fatal("nil should decline")
+	}
+}
