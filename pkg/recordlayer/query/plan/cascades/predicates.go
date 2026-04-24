@@ -158,6 +158,8 @@ func fmtType(v Value) string {
 		return "bool"
 	case *CastValue:
 		return "cast"
+	case *NullValue:
+		return "null"
 	}
 	return "?"
 }
