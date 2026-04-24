@@ -69,6 +69,7 @@ go_test(
     srcs = [
         "embedded_test.go",
         "logical_builder_test.go",
+        "naive_generator_test.go",
         "order_by_test.go",
     ],
     embed = [":embedded"],
