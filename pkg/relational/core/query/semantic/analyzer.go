@@ -74,6 +74,26 @@ func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 	return c, nil
 }
 
+// ResolveColumnRef is the one-shot column-reference resolver: given
+// a qualifier (may be zero) and a column identifier, dispatch to
+// bare or qualified lookup against the provided scope. This is the
+// analyzer's top-level hook for every identifier reference the
+// expression resolver sees.
+//
+// - qualifier.IsZero() → Scope.ResolveColumn (bare).
+// - qualifier non-zero → Scope.ResolveQualifiedColumn.
+//
+// Returns the same typed errors as the underlying scope methods.
+func (a *Analyzer) ResolveColumnRef(scope *Scope, qualifier, id Identifier) (Column, ScopeSource, error) {
+	if scope == nil {
+		return Column{}, ScopeSource{}, &ColumnNotFoundError{Id: id}
+	}
+	if qualifier.IsZero() {
+		return scope.ResolveColumn(id)
+	}
+	return scope.ResolveQualifiedColumn(qualifier, id)
+}
+
 // ResolveTableRef is the parse-tree convenience wrapper over
 // ResolveTable. Reads the IFullIdContext (ANTLR's table reference
 // node), builds a QualifiedName with the analyzer's case-sensitivity,

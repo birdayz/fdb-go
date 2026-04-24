@@ -173,6 +173,45 @@ func TestAnalyzer_ExpandStar(t *testing.T) {
 	}
 }
 
+func TestAnalyzer_ResolveColumnRef(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	scope, _, _ := buildScope(t)
+
+	// Bare: qualifier zero.
+	col, src, err := a.ResolveColumnRef(scope, Identifier{}, NewUnquoted("name"))
+	if err != nil {
+		t.Fatalf("bare: %v", err)
+	}
+	if src.Alias.Name() != "U" {
+		t.Fatalf("bare: expected U, got %q", src.Alias.Name())
+	}
+	if col.Id.Name() != "NAME" {
+		t.Fatalf("bare col: got %q", col.Id.Name())
+	}
+
+	// Qualified.
+	col, src, err = a.ResolveColumnRef(scope, NewUnquoted("o"), NewUnquoted("order_id"))
+	if err != nil {
+		t.Fatalf("qualified: %v", err)
+	}
+	if src.Alias.Name() != "O" {
+		t.Fatalf("qualified: expected O, got %q", src.Alias.Name())
+	}
+	if col.Id.Name() != "ORDER_ID" {
+		t.Fatalf("qualified col: got %q", col.Id.Name())
+	}
+}
+
+func TestAnalyzer_ResolveColumnRef_NilScope(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	_, _, err := a.ResolveColumnRef(nil, Identifier{}, NewUnquoted("x"))
+	if err == nil {
+		t.Fatal("expected error for nil scope")
+	}
+}
+
 func TestAnalyzer_ExpandScopeStar(t *testing.T) {
 	t.Parallel()
 	a := NewAnalyzer(buildTestCatalog(), false)
