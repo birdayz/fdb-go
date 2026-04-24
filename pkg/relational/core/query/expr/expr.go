@@ -104,6 +104,74 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 	}), nil
 }
 
+// ResolveFunctionCall dispatches a function call against the given
+// catalogue. For known aggregates (COUNT/SUM/MIN/MAX/AVG) it returns
+// the corresponding cascades.AggregateValue. Scalar function support
+// comes once the scalar-function catalogue is wired in.
+//
+// isStar=true signals the argument was `*` (COUNT(*)) — args must be
+// empty in that case.
+func (r *Resolver) ResolveFunctionCall(
+	funcCatalog *semantic.FunctionCatalog,
+	name semantic.Identifier,
+	isStar bool,
+	args []cascades.Value,
+) (cascades.Value, error) {
+	if funcCatalog == nil {
+		return nil, fmt.Errorf("expr.ResolveFunctionCall: function catalog is nil")
+	}
+	spec, ok := funcCatalog.Lookup(name)
+	if !ok {
+		return nil, &semantic.FunctionNotFoundError{Name: name}
+	}
+	if isStar {
+		if !spec.AllowsStar {
+			return nil, fmt.Errorf("expr.ResolveFunctionCall: %s does not accept *", name)
+		}
+		if len(args) > 0 {
+			return nil, fmt.Errorf("expr.ResolveFunctionCall: star form takes no args; got %d", len(args))
+		}
+	} else {
+		if err := spec.ValidateArity(len(args)); err != nil {
+			return nil, err
+		}
+	}
+	if spec.Kind != semantic.FunctionAggregate {
+		return nil, fmt.Errorf("expr.ResolveFunctionCall: scalar function %s not supported in seed", name)
+	}
+	// Aggregate dispatch — seed knows the five SQL standards.
+	op, ok := aggregateOpForName(spec.Name, isStar)
+	if !ok {
+		return nil, fmt.Errorf("expr.ResolveFunctionCall: unknown aggregate %s", spec.Name)
+	}
+	if op == cascades.AggCountStar {
+		return cascades.NewAggregateValue(op, nil), nil
+	}
+	return cascades.NewAggregateValue(op, args[0]), nil
+}
+
+// aggregateOpForName maps a normalized aggregate function name +
+// star flag to the corresponding cascades.AggregateOp. Not exported
+// — called via ResolveFunctionCall.
+func aggregateOpForName(name string, isStar bool) (cascades.AggregateOp, bool) {
+	switch name {
+	case "COUNT":
+		if isStar {
+			return cascades.AggCountStar, true
+		}
+		return cascades.AggCount, true
+	case "SUM":
+		return cascades.AggSum, true
+	case "MIN":
+		return cascades.AggMin, true
+	case "MAX":
+		return cascades.AggMax, true
+	case "AVG":
+		return cascades.AggAvg, true
+	}
+	return cascades.AggInvalid, false
+}
+
 // sqlTypeToCascadesValueType maps the seed's string-valued SQL type
 // (from semantic.Column.Type) to cascades.ValueType. Coarse — the
 // seed ValueType enum has only Int / String / Bool; everything else

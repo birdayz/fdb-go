@@ -207,6 +207,109 @@ func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
 	}
 }
 
+func TestResolver_ResolveFunctionCall_CountStar(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	fc := semantic.NewFunctionCatalog()
+	fc.RegisterDefaults()
+
+	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("COUNT"), true, nil)
+	if err != nil {
+		t.Fatalf("COUNT(*): %v", err)
+	}
+	agg := v.(*cascades.AggregateValue)
+	if agg.Op != cascades.AggCountStar {
+		t.Fatalf("Op: got %v, want AggCountStar", agg.Op)
+	}
+	if agg.Operand != nil {
+		t.Fatal("COUNT(*) should have nil operand")
+	}
+}
+
+func TestResolver_ResolveFunctionCall_CountCol(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	fc := semantic.NewFunctionCatalog()
+	fc.RegisterDefaults()
+
+	arg, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("count"), false, []cascades.Value{arg})
+	if err != nil {
+		t.Fatalf("COUNT(id): %v", err)
+	}
+	agg := v.(*cascades.AggregateValue)
+	if agg.Op != cascades.AggCount {
+		t.Fatalf("Op: got %v, want AggCount", agg.Op)
+	}
+}
+
+func TestResolver_ResolveFunctionCall_Sum(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	fc := semantic.NewFunctionCatalog()
+	fc.RegisterDefaults()
+
+	arg, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("SUM"), false, []cascades.Value{arg})
+	if err != nil {
+		t.Fatalf("SUM(id): %v", err)
+	}
+	if v.(*cascades.AggregateValue).Op != cascades.AggSum {
+		t.Fatalf("Op mismatch")
+	}
+}
+
+func TestResolver_ResolveFunctionCall_StarOnNonStarFunc(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	fc := semantic.NewFunctionCatalog()
+	fc.RegisterDefaults()
+
+	_, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("SUM"), true, nil)
+	if err == nil {
+		t.Fatal("SUM(*) should error; only COUNT accepts star")
+	}
+}
+
+func TestResolver_ResolveFunctionCall_ArityMismatch(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	fc := semantic.NewFunctionCatalog()
+	fc.RegisterDefaults()
+
+	// SUM with 0 args.
+	_, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("SUM"), false, nil)
+	if err == nil {
+		t.Fatal("expected arity error")
+	}
+	var ae *semantic.FunctionArityError
+	if !errors.As(err, &ae) {
+		t.Fatalf("expected FunctionArityError, got %T", err)
+	}
+}
+
+func TestResolver_ResolveFunctionCall_UnknownFunc(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	fc := semantic.NewFunctionCatalog()
+	fc.RegisterDefaults()
+
+	_, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("UNKNOWN_FN"), false, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var nf *semantic.FunctionNotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("expected FunctionNotFoundError, got %T", err)
+	}
+}
+
 func TestResolver_Nil_InputPanics(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
