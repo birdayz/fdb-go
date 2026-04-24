@@ -105,6 +105,81 @@ func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
 // `functions.CompareValues` behavior so cross-width WHERE predicates
 // (e.g. `int32_col > 18` with a literal int64) don't degrade to
 // UNKNOWN.
+// Bool equality + ordering: used by the expression resolver's
+// `x IS TRUE` / `x IS FALSE` desugar. SQL orders FALSE < TRUE.
+func TestComparison_Eval_BoolEquality(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		l, r any
+		want TriBool
+	}{
+		{"TRUE = TRUE", ComparisonEquals, true, true, TriTrue},
+		{"FALSE = FALSE", ComparisonEquals, false, false, TriTrue},
+		{"TRUE = FALSE", ComparisonEquals, true, false, TriFalse},
+		{"TRUE <> FALSE", ComparisonNotEquals, true, false, TriTrue},
+		{"FALSE < TRUE", ComparisonLessThan, false, true, TriTrue},
+		{"TRUE > FALSE", ComparisonGreaterThan, true, false, TriTrue},
+		{"TRUE = 1: type mismatch", ComparisonEquals, true, int64(1), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Bytes are lexicographic (matches SQL BINARY and proto bytes).
+// Mixed bytes/string is a type mismatch → UNKNOWN, not a coerce.
+func TestComparison_Eval_BytesComparison(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		l, r any
+		want TriBool
+	}{
+		{"equal bytes", ComparisonEquals, []byte{0x01, 0x02}, []byte{0x01, 0x02}, TriTrue},
+		{"unequal bytes", ComparisonEquals, []byte{0x01, 0x02}, []byte{0x01, 0x03}, TriFalse},
+		{"lt shorter prefix", ComparisonLessThan, []byte{0x01, 0x02}, []byte{0x01, 0x02, 0x00}, TriTrue},
+		{"gt higher byte", ComparisonGreaterThan, []byte{0x02}, []byte{0x01, 0xff}, TriTrue},
+		{"empty vs non-empty", ComparisonLessThan, []byte{}, []byte{0x00}, TriTrue},
+		{"bytes vs string: UNKNOWN", ComparisonEquals, []byte("abc"), "abc", TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// IN-list of []byte — membership test through the same cmpAny
+	// path. Verifies the bytes branch also picks up set-membership
+	// semantics, not just pairwise comparators.
+	hit := Comparison{
+		Type:    ComparisonIn,
+		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}},
+	}.Eval([]byte{0x02, 0x03})
+	if hit != TriTrue {
+		t.Errorf("bytes IN list hit: got %v, want TRUE", hit)
+	}
+	miss := Comparison{
+		Type:    ComparisonIn,
+		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}},
+	}.Eval([]byte{0x99})
+	if miss != TriFalse {
+		t.Errorf("bytes IN list miss: got %v, want FALSE", miss)
+	}
+}
+
 func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -394,6 +469,101 @@ func TestComparisonPredicate_Explain_Unary(t *testing.T) {
 	)
 	if got, want := p2.Explain(), "email IS NOT NULL"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Binary-comparison Explain renders the RHS operand consistently
+// with ExplainValue: strings quoted, NULL rendered as NULL, IN-list
+// rendered as a paren list. Catches silent drift — the previous
+// `%v` fallback rendered `NAME = bob` without quotes, visually
+// indistinguishable from a column reference.
+func TestComparisonPredicate_Explain_Binary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want string
+	}{
+		{
+			name: "string RHS is quoted",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "name", Typ: TypeString},
+				Comparison{Type: ComparisonEquals, Operand: "bob"},
+			),
+			want: "name = 'bob'",
+		},
+		{
+			name: "int RHS is bare",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonGreaterThan, Operand: int64(5)},
+			),
+			want: "id > 5",
+		},
+		{
+			name: "NULL RHS (rare but possible via constant-fold)",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: nil},
+			),
+			want: "id = NULL",
+		},
+		{
+			name: "IN list with mixed types",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "role", Typ: TypeString},
+				Comparison{Type: ComparisonIn, Operand: []any{"admin", "owner", nil}},
+			),
+			want: "role IN ('admin', 'owner', NULL)",
+		},
+		{
+			name: "IN list of ints",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)}},
+			),
+			want: "id IN (1, 2, 3)",
+		},
+		{
+			name: "bool RHS uppercased",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "active", Typ: TypeBool},
+				Comparison{Type: ComparisonEquals, Operand: true},
+			),
+			want: "active = TRUE",
+		},
+		{
+			name: "bool FALSE uppercased",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "active", Typ: TypeBool},
+				Comparison{Type: ComparisonNotEquals, Operand: false},
+			),
+			want: "active <> FALSE",
+		},
+		{
+			name: "bytes as SQL hex literal",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "digest", Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: []byte{0x01, 0x02, 0xff}},
+			),
+			want: "digest = X'0102ff'",
+		},
+		{
+			name: "empty bytes literal",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "digest", Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: []byte{}},
+			),
+			want: "digest = X''",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.pred.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

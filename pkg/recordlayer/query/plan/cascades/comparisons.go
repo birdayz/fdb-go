@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -371,6 +372,34 @@ func cmpAny(a, b any) (int, bool) {
 			return 0, true
 		}
 	}
+	// Bool equality: FALSE < TRUE (following SQL's TRUE > FALSE
+	// convention). Used by `x = TRUE` / `x = FALSE` from the
+	// expression resolver's IS TRUE / IS FALSE desugar.
+	if av, ok := a.(bool); ok {
+		bv, ok2 := b.(bool)
+		if !ok2 {
+			return 0, false
+		}
+		switch {
+		case av == bv:
+			return 0, true
+		case !av && bv: // false < true
+			return -1, true
+		default: // av && !bv: true > false
+			return 1, true
+		}
+	}
+	// Bytes comparison is lexicographic — matches SQL's BINARY / VARBINARY
+	// collation and proto `bytes` semantics. Mixed bytes/string degrades
+	// to UNKNOWN (type mismatch) on purpose: "abc" (STRING) and
+	// []byte{0x61,0x62,0x63} (BYTES) are not interchangeable in SQL.
+	if av, ok := a.([]byte); ok {
+		bv, ok2 := b.([]byte)
+		if !ok2 {
+			return 0, false
+		}
+		return bytes.Compare(av, bv), true
+	}
 	return 0, false
 }
 
@@ -485,5 +514,44 @@ func (p *ComparisonPredicate) Explain() string {
 	if p.Comparison.Type.IsUnary() {
 		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
-	return fmt.Sprintf("%s %s %v", operandText, p.Comparison.Type.Symbol(), p.Comparison.Operand)
+	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), formatCompareOperand(p.Comparison.Operand))
+}
+
+// formatCompareOperand renders the RHS of a binary comparison in a
+// form consistent with ExplainValue (strings quoted, []any rendered
+// as a paren list for IN). Falls back to fmt.Sprintf("%v", …) for
+// unfamiliar types so Explain never blows up on a surprise.
+func formatCompareOperand(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "NULL"
+	case bool:
+		if x {
+			return "TRUE"
+		}
+		return "FALSE"
+	case string:
+		return "'" + x + "'"
+	case []byte:
+		// SQL hex-literal: `X'0102'` — matches BINARY/VARBINARY.
+		// Mirrors cmpAny's []byte branch (added this PR) so Explain
+		// is consistent with the comparator dispatch.
+		const hex = "0123456789abcdef"
+		buf := make([]byte, 0, 3+2*len(x))
+		buf = append(buf, 'X', '\'')
+		for _, b := range x {
+			buf = append(buf, hex[b>>4], hex[b&0xf])
+		}
+		buf = append(buf, '\'')
+		return string(buf)
+	case []any:
+		// IN-list: `(e1, e2, e3)` — same rendering style as SQL.
+		parts := make([]string, len(x))
+		for i, e := range x {
+			parts[i] = formatCompareOperand(e)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

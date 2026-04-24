@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "semantic",
+    srcs = [
+        "analyzer.go",
+        "catalog.go",
+        "functions.go",
+        "identifier.go",
+        "parse_bridge.go",
+        "qualified_name.go",
+        "scope.go",
+        "scope_build.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/relational/core/parser/gen"],
+)
+
+go_test(
+    name = "semantic_test",
+    srcs = [
+        "analyzer_test.go",
+        "benchmark_test.go",
+        "catalog_test.go",
+        "functions_test.go",
+        "identifier_test.go",
+        "integration_test.go",
+        "parse_bridge_test.go",
+        "qualified_name_test.go",
+        "scope_build_test.go",
+        "scope_test.go",
+    ],
+    embed = [":semantic"],
+    deps = [
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+    ],
+)

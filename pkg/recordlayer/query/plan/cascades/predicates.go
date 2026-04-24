@@ -355,7 +355,11 @@ func (p *ValuePredicate) Explain() string {
 	if p.Value == nil {
 		return "<nil-value>"
 	}
-	return p.Value.Name()
+	// Use the tree-walking ExplainValue for per-instance rendering.
+	// Value.Name() returns the KIND ("field", "constant", …) which
+	// isn't useful for explain output — e.g. a FieldValue would
+	// render as just `field` instead of the actual column name.
+	return ExplainValue(p.Value)
 }
 
 // --- NotPredicate --------------------------------------------------

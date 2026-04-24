@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rlcatalog",
+    srcs = ["rlcatalog.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer",
+        "//pkg/relational/core/query/semantic",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)
+
+go_test(
+    name = "rlcatalog_test",
+    srcs = ["rlcatalog_test.go"],
+    deps = [
+        ":rlcatalog",
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/relational/core/query/semantic",
+    ],
+)

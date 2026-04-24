@@ -226,6 +226,56 @@ func TestDDL_Explain(t *testing.T) {
 	}
 }
 
+// Children() is part of the LogicalOperator contract — any visitor
+// walking the plan tree relies on correct arity and identity. Check
+// every concrete operator and its nil-branch behaviour where one
+// exists. Caught nothing today, but guards against a silent regression
+// where (say) LogicalUpdate started returning Input twice.
+func TestChildren_Arity(t *testing.T) {
+	t.Parallel()
+	leafA := NewScan("a", "")
+	leafB := NewScan("b", "")
+
+	cases := []struct {
+		name     string
+		op       LogicalOperator
+		wantLen  int
+		wantKids []LogicalOperator // nil → skip identity check
+	}{
+		{"Scan", leafA, 0, nil},
+		{"Values", NewValues([]string{"1"}, nil), 0, nil},
+		{"Filter", NewFilter(leafA, "x"), 1, []LogicalOperator{leafA}},
+		{"Project", NewProject(leafA, []string{"id"}, []string{""}), 1, []LogicalOperator{leafA}},
+		{"Sort", NewSort(leafA, []SortKey{{Expr: "id", Dir: SortAsc}}), 1, []LogicalOperator{leafA}},
+		{"Limit", NewLimit(leafA, 10, 0), 1, []LogicalOperator{leafA}},
+		{"Aggregate", NewAggregate(leafA, nil, []string{"COUNT(*)"}, nil, ""), 1, []LogicalOperator{leafA}},
+		{"Join", NewJoin(leafA, leafB, JoinInner, "x=y"), 2, []LogicalOperator{leafA, leafB}},
+		{"Union", NewUnion([]LogicalOperator{leafA, leafB}, false), 2, []LogicalOperator{leafA, leafB}},
+		{"Insert-values (no source)", NewInsert("t", []string{"id"}, nil), 0, nil},
+		{"Insert-SELECT", NewInsert("t", nil, leafA), 1, []LogicalOperator{leafA}},
+		{"Update", NewUpdate("t", []Assignment{{Column: "v", Expr: "v+1"}}, leafA), 1, []LogicalOperator{leafA}},
+		{"Update (nil input)", NewUpdate("t", nil, nil), 0, nil},
+		{"Delete", NewDelete("t", leafA), 1, []LogicalOperator{leafA}},
+		{"Delete (nil input)", NewDelete("t", nil), 0, nil},
+		{"DDL", NewDDL("CREATE TABLE", "CREATE TABLE t (id BIGINT)"), 0, nil},
+		{"CTE", NewCTE("x", leafA, leafB, false), 2, []LogicalOperator{leafA, leafB}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			kids := tc.op.Children()
+			if len(kids) != tc.wantLen {
+				t.Fatalf("Children len: got %d, want %d", len(kids), tc.wantLen)
+			}
+			for i, want := range tc.wantKids {
+				if kids[i] != want {
+					t.Errorf("Children[%d]: got %p, want %p — pointer identity must round-trip", i, kids[i], want)
+				}
+			}
+		})
+	}
+}
+
 // Compose a realistic-ish tree and verify indentation propagates.
 func TestExplain_DeepTree(t *testing.T) {
 	t.Parallel()

@@ -37,9 +37,10 @@ func TestValuePredicate(t *testing.T) {
 	if got := (&ValuePredicate{}).Eval(nil); got != TriUnknown {
 		t.Fatalf("nil-Value predicate: got %v", got)
 	}
-	// Explain renders the Value's name.
+	// Explain renders the Value's per-instance form via ExplainValue
+	// — FieldValue produces its column name, not the kind string.
 	p = NewValuePredicate(&FieldValue{Field: "is_active", Typ: TypeBool})
-	if got := p.Explain(); got != "field" {
+	if got := p.Explain(); got != "is_active" {
 		t.Fatalf("Explain: got %q", got)
 	}
 }
