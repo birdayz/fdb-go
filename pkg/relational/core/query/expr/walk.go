@@ -132,12 +132,11 @@ func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (cascades.Quer
 }
 
 // walkPredicatedExpression handles the leaf case — a bare value or
-// a BinaryComparisonPredicate atom.
+// a BinaryComparisonPredicate atom, plus grammar Predicate shapes
+// (IS NULL / IS NOT NULL) that modify the preceding atom.
 func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionContext) (cascades.QueryPredicate, error) {
-	if pred.Predicate() != nil {
-		// Grammar-level Predicate nodes (BETWEEN, IN, LIKE, IS NULL)
-		// not wired yet.
-		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with grammar Predicate"}
+	if p := pred.Predicate(); p != nil {
+		return r.walkGrammarPredicate(pred.ExpressionAtom(), p)
 	}
 	atom := pred.ExpressionAtom()
 	if bc, ok := atom.(*antlrgen.BinaryComparisonPredicateContext); ok {
@@ -252,6 +251,32 @@ func flattenOr(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
 		}
 	}
 	return out
+}
+
+// walkGrammarPredicate handles PredicateContext shapes that modify
+// a preceding atom — IS [NOT] NULL today, BETWEEN / IN / LIKE in
+// follow-up commits.
+func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pred antlrgen.IPredicateContext) (cascades.QueryPredicate, error) {
+	if atom == nil {
+		return nil, fmt.Errorf("expr.walkGrammarPredicate: nil atom")
+	}
+	switch p := pred.(type) {
+	case *antlrgen.IsExpressionContext:
+		if p.NULL_LITERAL() == nil {
+			// `x IS TRUE` / `x IS FALSE` are legal but distinct
+			// semantics — not wired yet.
+			return nil, &UnsupportedExpressionShapeError{Shape: "IS expression without NULL literal"}
+		}
+		lhs, err := r.walkAtom(atom)
+		if err != nil {
+			return nil, err
+		}
+		if p.NOT() != nil {
+			return r.ResolveIsNotNull(lhs)
+		}
+		return r.ResolveIsNull(lhs)
+	}
+	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("grammar Predicate %T", pred)}
 }
 
 // walkBinaryComparison converts `left OP right` into a

@@ -398,6 +398,38 @@ func TestWalkPredicate_NotAndCombo(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_IsNull(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name IS NULL")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonIsNull {
+		t.Fatalf("Type: got %v, want IsNull", cp.Comparison.Type)
+	}
+}
+
+func TestWalkPredicate_IsNotNull(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name IS NOT NULL")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonIsNotNull {
+		t.Fatalf("Type: got %v, want IsNotNull", cp.Comparison.Type)
+	}
+}
+
 func TestWalkPredicate_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
