@@ -140,6 +140,48 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	}
 }
 
+// `(1 + 2) > 0` and `0 < (1 + 2)` both fold to TRUE end-to-end
+// through Simplify. Pins the EvaluateConstant fall-through path
+// for composite-constant operands on either side of a comparison.
+// Two halves: LHS-composite + RHS-leaf, then leaf + RHS-composite.
+func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
+	t.Parallel()
+	add12 := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+	}
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+	}{
+		{
+			name: "(1+2) > 0",
+			pred: NewComparisonPredicate(add12,
+				Comparison{Type: ComparisonGreaterThan, Operand: &ConstantValue{Value: int64(0), Typ: TypeInt}}),
+		},
+		{
+			name: "0 < (1+2)",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: int64(0), Typ: TypeInt},
+				Comparison{Type: ComparisonLessThan, Operand: add12}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Simplify(tc.pred, DefaultSimplifyRules())
+			cp, ok := got.(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T: %s", got, got.Explain())
+			}
+			if cp.Value != TriTrue {
+				t.Fatalf("got %v, want TRUE", cp.Value)
+			}
+		})
+	}
+}
+
 // Non-constant RHS comparisons survive the fixpoint untouched —
 // they aren't foldable at plan time (RHS is a row-dependent Value).
 // Pins that ComparisonConstantSimplifyRule's IsConstantValue gate
