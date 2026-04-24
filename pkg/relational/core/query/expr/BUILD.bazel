@@ -13,7 +13,10 @@ go_library(
 
 go_test(
     name = "expr_test",
-    srcs = ["expr_test.go"],
+    srcs = [
+        "bench_test.go",
+        "expr_test.go",
+    ],
     deps = [
         ":expr",
         "//pkg/recordlayer/query/plan/cascades",
