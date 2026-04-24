@@ -115,6 +115,61 @@ func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 }
 
+// --- NotConstantSimplifyRule + DoubleNegationRule ------------------
+
+// NotConstantSimplifyRule folds NOT over a constant child per Kleene
+// NOT (NOT TRUE=FALSE, NOT FALSE=TRUE, NOT UNKNOWN=UNKNOWN). Also
+// fires on NOT NOT x → x (double-negation elimination).
+type NotConstantSimplifyRule struct {
+	matcher BindingMatcher
+}
+
+// NewNotConstantSimplifyRule constructs the rule.
+func NewNotConstantSimplifyRule() *NotConstantSimplifyRule {
+	m := &NotConstantSimplifyRule{}
+	m.matcher = newNotPredicateMatcher()
+	return m
+}
+
+func (r *NotConstantSimplifyRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *NotConstantSimplifyRule) OnMatch(call *RuleCall) {
+	not := call.Bindings.Get(r.matcher).(*NotPredicate)
+	// NOT NOT x → x (double-negation elimination).
+	if inner, ok := not.Child.(*NotPredicate); ok {
+		call.Yield(inner.Child)
+		return
+	}
+	// NOT <constant> → constant with Kleene-negated value.
+	cp, ok := not.Child.(*ConstantPredicate)
+	if !ok {
+		return
+	}
+	switch cp.Value {
+	case TriTrue:
+		call.Yield(NewConstantPredicate(TriFalse))
+	case TriFalse:
+		call.Yield(NewConstantPredicate(TriTrue))
+	default:
+		call.Yield(NewConstantPredicate(TriUnknown))
+	}
+}
+
+var notPredicateMatcherCounter atomic.Uint64
+
+type notPredicateMatcher struct{ id uint64 }
+
+func newNotPredicateMatcher() *notPredicateMatcher {
+	return &notPredicateMatcher{id: notPredicateMatcherCounter.Add(1)}
+}
+func (*notPredicateMatcher) RootType() string { return "NotPredicate" }
+func (m *notPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
+	if _, ok := in.(*NotPredicate); !ok {
+		return nil
+	}
+	return []*PlannerBindings{outer.Bind(m, in)}
+}
+
 // --- Predicate matchers -------------------------------------------
 
 // andPredicateMatcher / orPredicateMatcher are minimal Instance-like

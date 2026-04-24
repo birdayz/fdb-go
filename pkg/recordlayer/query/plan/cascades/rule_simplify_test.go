@@ -5,7 +5,57 @@ import "testing"
 var (
 	_ CascadesRule = (*AndConstantSimplifyRule)(nil)
 	_ CascadesRule = (*OrConstantSimplifyRule)(nil)
+	_ CascadesRule = (*NotConstantSimplifyRule)(nil)
 )
+
+func TestNotSimplify_ConstantFold(t *testing.T) {
+	t.Parallel()
+	rule := NewNotConstantSimplifyRule()
+	cases := []struct {
+		in   TriBool
+		want TriBool
+	}{
+		{TriTrue, TriFalse},
+		{TriFalse, TriTrue},
+		{TriUnknown, TriUnknown},
+	}
+	for _, tc := range cases {
+		got := FireRule(rule, NewNot(NewConstantPredicate(tc.in)))
+		if len(got) != 1 {
+			t.Fatalf("%v: expected 1 replacement, got %d", tc.in, len(got))
+		}
+		cp, ok := got[0].(*ConstantPredicate)
+		if !ok || cp.Value != tc.want {
+			t.Fatalf("%v: got %v, want ConstantPredicate(%v)", tc.in, got[0], tc.want)
+		}
+	}
+}
+
+// NOT NOT x → x (double-negation elimination).
+func TestNotSimplify_DoubleNegation(t *testing.T) {
+	t.Parallel()
+	rule := NewNotConstantSimplifyRule()
+	inner := NewConstantPredicate(TriUnknown)
+	got := FireRule(rule, NewNot(NewNot(inner)))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 replacement, got %d", len(got))
+	}
+	if got[0] != QueryPredicate(inner) {
+		t.Fatalf("double-negation: expected inner predicate, got %T", got[0])
+	}
+}
+
+// NOT over a non-constant, non-NOT predicate — rule declines.
+func TestNotSimplify_NoChange(t *testing.T) {
+	t.Parallel()
+	rule := NewNotConstantSimplifyRule()
+	and := NewAnd(NewConstantPredicate(TriTrue))
+	// NewNot(AndPredicate) — inner is neither ConstantPredicate nor
+	// another NotPredicate, so NotConstantSimplifyRule declines.
+	if got := FireRule(rule, NewNot(and)); len(got) != 0 {
+		t.Fatalf("expected 0 yields, got %d", len(got))
+	}
+}
 
 // AndPredicate with all-TRUE children → TRUE.
 func TestAndSimplify_AllTrueToConstant(t *testing.T) {
