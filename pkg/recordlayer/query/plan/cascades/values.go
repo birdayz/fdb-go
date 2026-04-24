@@ -154,6 +154,26 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 	return row[f.Field]
 }
 
+// NullValue is the SQL NULL literal — evaluates to nil regardless
+// of context. Not collapsed into ConstantValue{Value: nil} because
+// having a dedicated type lets rule matchers check for NULL
+// specifically (without also matching `Value: nil` ConstantValues
+// that happen to represent a NULL literal in a non-type-annotated
+// way).
+type NullValue struct {
+	Typ ValueType // type NULL was cast to; TypeUnknown when unconstrained
+}
+
+// NewNullValue constructs a NullValue of the given type.
+func NewNullValue(typ ValueType) *NullValue {
+	return &NullValue{Typ: typ}
+}
+
+func (*NullValue) Children() []Value { return []Value{} }
+func (n *NullValue) Type() ValueType { return n.Typ }
+func (*NullValue) Name() string      { return "null" }
+func (*NullValue) Evaluate(any) any  { return nil }
+
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a
 // non-trivial matcher.
 type ArithmeticOp int

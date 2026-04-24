@@ -9,7 +9,29 @@ var (
 	_ Value = (*ArithmeticValue)(nil)
 	_ Value = (*BooleanValue)(nil)
 	_ Value = (*CastValue)(nil)
+	_ Value = (*NullValue)(nil)
 )
+
+func TestNullValue(t *testing.T) {
+	t.Parallel()
+	nv := NewNullValue(TypeInt)
+	if nv.Type() != TypeInt {
+		t.Fatal("Type should match constructor")
+	}
+	if nv.Name() != "null" {
+		t.Fatal("Name should be 'null'")
+	}
+	if got := nv.Evaluate(nil); got != nil {
+		t.Fatalf("Evaluate: expected nil, got %v", got)
+	}
+	// Any context — NULL is context-independent.
+	if got := nv.Evaluate(map[string]any{"x": 1}); got != nil {
+		t.Fatalf("Evaluate w/ ctx: expected nil, got %v", got)
+	}
+	if len(nv.Children()) != 0 {
+		t.Fatal("NullValue.Children: expected 0")
+	}
+}
 
 func TestConstantValue_Evaluate(t *testing.T) {
 	t.Parallel()
