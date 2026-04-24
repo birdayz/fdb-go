@@ -93,13 +93,15 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			},
 			UpdateFn: func() bool { return false },
 			ExplainFn: func() string {
-				// Try to render a real LogicalOperator tree. Falls
-				// back to canonical-SQL text for shapes
-				// buildLogicalPlanForSelect doesn't cover yet (JOIN,
-				// aggregate, CTE, derived, UNION).
-				if sq, err := extractSelectParts(sel); err == nil {
-					if op := buildLogicalPlanForSelect(sq); op != nil {
-						return op.Explain("")
+				// Route through the query-body builder which
+				// dispatches between simple SELECT and UNION. Only CTE
+				// and SELECT-without-FROM still fall back to canonical
+				// SQL text.
+				if q := sel.Query(); q != nil {
+					if body := q.QueryExpressionBody(); body != nil {
+						if op := buildLogicalPlanForQueryBody(body); op != nil {
+							return op.Explain("")
+						}
 					}
 				}
 				return explainStatement("SELECT", sel)

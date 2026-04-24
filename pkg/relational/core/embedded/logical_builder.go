@@ -8,6 +8,63 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
+// buildLogicalPlanForQueryBody is the general entry point that
+// handles both simple SELECT and UNION shapes. It mirrors
+// execQueryBodyRows' dispatch: QueryTermDefaultContext → simple
+// SELECT; SetQueryContext → UNION (N-ary via nested SetQuery). Called
+// from naive_generator's SELECT ExplainFn.
+func buildLogicalPlanForQueryBody(body antlrgen.IQueryExpressionBodyContext) logical.LogicalOperator {
+	if body == nil {
+		return nil
+	}
+	switch b := body.(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
+		if !ok {
+			return nil
+		}
+		sq, err := extractFromSimpleTable(simpleTable)
+		if err != nil {
+			return nil
+		}
+		return buildLogicalPlanForSelect(sq)
+	case *antlrgen.SetQueryContext:
+		return buildLogicalPlanForUnion(b)
+	}
+	return nil
+}
+
+// buildLogicalPlanForUnion walks a SetQueryContext (UNION ALL or
+// UNION DISTINCT) recursively, producing a LogicalUnion whose
+// Inputs hold the flattened left-and-right subtrees. The grammar
+// nests SetQuery(SetQuery(A, B), C) for A UNION B UNION C; we
+// flatten into [A, B, C] when all levels share the same quantifier
+// — makes the Explain output read left-to-right. Mixed quantifiers
+// keep the original nesting.
+func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOperator {
+	if setQ == nil {
+		return nil
+	}
+	distinct := true
+	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
+		distinct = false
+	}
+	left := buildLogicalPlanForQueryBody(setQ.GetLeft())
+	right := buildLogicalPlanForQueryBody(setQ.GetRight())
+	if left == nil || right == nil {
+		return nil
+	}
+	// Flatten nested UNIONs of the same quantifier. The grammar
+	// left-associates: A UNION B UNION C → SetQuery(SetQuery(A, B), C).
+	// When the inner and outer quantifiers match, lift C into the
+	// inner's Inputs list for a single LogicalUnion([A, B, C]).
+	inputs := []logical.LogicalOperator{left, right}
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
+	}
+	return logical.NewUnion(inputs, distinct)
+}
+
 // Phase 3 logical-plan builder — narrow-scope seed.
 //
 // Converts a parsed `*selectQuery` (the internal struct the embedded

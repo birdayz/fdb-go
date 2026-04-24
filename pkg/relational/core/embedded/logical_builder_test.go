@@ -169,6 +169,68 @@ func TestBuildLogicalPlan_BailsOnNoFrom(t *testing.T) {
 	}
 }
 
+// UNION ALL: two SELECTs, quantifier ALL.
+func TestBuildLogicalPlan_UnionAll(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT id FROM a UNION ALL SELECT id FROM b")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	op := buildLogicalPlanForQueryBody(sel.Query().QueryExpressionBody())
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "UnionAll\n  Project(id)\n    Scan(a)\n  Project(id)\n    Scan(b)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// UNION (implicit DISTINCT): no quantifier.
+func TestBuildLogicalPlan_UnionDistinct(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT id FROM a UNION SELECT id FROM b")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	op := buildLogicalPlanForQueryBody(sel.Query().QueryExpressionBody())
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	if !strings.Contains(op.Explain(""), "UnionDistinct") {
+		t.Fatalf("expected UnionDistinct, got %q", op.Explain(""))
+	}
+}
+
+// Three-way UNION: grammar left-associates as
+// SetQuery(SetQuery(A, B), C); builder flattens matching-quantifier
+// nested unions into a single UnionAll with 3 inputs.
+func TestBuildLogicalPlan_UnionThreeWay(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT id FROM a UNION ALL SELECT id FROM b UNION ALL SELECT id FROM c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	op := buildLogicalPlanForQueryBody(sel.Query().QueryExpressionBody())
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	got := op.Explain("")
+	// Flattened: should have 3 Scan leaves under a single UnionAll.
+	if strings.Count(got, "Scan(") != 3 {
+		t.Fatalf("expected 3 Scans, got %q", got)
+	}
+	if strings.Count(got, "UnionAll") != 1 {
+		t.Fatalf("expected 1 UnionAll (flattened), got %q", got)
+	}
+}
+
 // Derived table: FROM (SELECT ...) AS alias — builder recurses and
 // the inner plan surfaces as-is.
 func TestBuildLogicalPlan_DerivedTable(t *testing.T) {
