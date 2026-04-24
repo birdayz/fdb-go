@@ -86,6 +86,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
+        "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/logical",
