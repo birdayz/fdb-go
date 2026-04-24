@@ -27,13 +27,20 @@ type FunctionSpec struct {
 
 // FunctionKind enumerates the classes of function the analyzer
 // supports.
+//
+// Values are assigned explicitly (not via `iota`) so inserting a
+// new kind between existing ones doesn't renumber anything —
+// future serialized-plan formats can assume these values are
+// stable.
 type FunctionKind int
 
 const (
 	// FunctionScalar: per-row function (UPPER, LOWER, ABS, etc.).
-	FunctionScalar FunctionKind = iota
+	FunctionScalar FunctionKind = 1
 	// FunctionAggregate: spans multiple rows (COUNT, SUM, MIN, MAX, AVG).
-	FunctionAggregate
+	FunctionAggregate FunctionKind = 2
+	// Add new kinds with the next unused integer — do NOT renumber
+	// existing values.
 )
 
 // String returns the kind as a debug-friendly string.
