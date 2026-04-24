@@ -102,15 +102,13 @@ func TestComparison_Eval_Strings(t *testing.T) {
 func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	t.Parallel()
 	// Predicate: field `age >= 18` against a row represented as a
-	// map. The seed's EvalOperand closure adapts the Value to the
-	// row's value.
+	// map. FieldValue.Evaluate resolves the column; Value.Evaluate
+	// now drives the predicate — no more closure seam.
 	operand := &FieldValue{Field: "age", Typ: TypeInt}
 	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}
+	pred := NewComparisonPredicate(operand, cmp)
+
 	row := map[string]any{"age": int64(21)}
-	pred := NewComparisonPredicate(operand, cmp, func(ctx any) any {
-		r := ctx.(map[string]any)
-		return r[operand.Field]
-	})
 	if got := pred.Eval(row); got != TriTrue {
 		t.Fatalf("age=21 >= 18: got %v", got)
 	}
@@ -128,29 +126,27 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	}
 }
 
-func TestComparisonPredicate_NilEvalOperand(t *testing.T) {
+func TestComparisonPredicate_NilOperand(t *testing.T) {
 	t.Parallel()
 	pred := &ComparisonPredicate{
-		Operand:    &FieldValue{Field: "x", Typ: TypeInt},
+		// No Operand set — Eval degrades to UNKNOWN.
 		Comparison: Comparison{Type: ComparisonEquals, Operand: int64(1)},
-		// No EvalOperand set
 	}
 	if got := pred.Eval(nil); got != TriUnknown {
-		t.Fatalf("nil EvalOperand: got %v", got)
+		t.Fatalf("nil Operand: got %v", got)
 	}
 }
 
 func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	t.Parallel()
-	operand := &FieldValue{Field: "age", Typ: TypeInt}
 	row := map[string]any{"age": int64(21), "rank": int64(3)}
-	evalAge := func(ctx any) any { return ctx.(map[string]any)["age"] }
-	evalRank := func(ctx any) any { return ctx.(map[string]any)["rank"] }
 
 	// (age >= 18) AND (rank < 5)
 	tree := NewAnd(
-		NewComparisonPredicate(operand, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}, evalAge),
-		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt}, Comparison{Type: ComparisonLessThan, Operand: int64(5)}, evalRank),
+		NewComparisonPredicate(&FieldValue{Field: "age", Typ: TypeInt},
+			Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt},
+			Comparison{Type: ComparisonLessThan, Operand: int64(5)}),
 	)
 	if got := tree.Eval(row); got != TriTrue {
 		t.Fatalf("AND: got %v", got)
@@ -158,5 +154,30 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	row["rank"] = int64(7)
 	if got := tree.Eval(row); got != TriFalse {
 		t.Fatalf("AND with rank=7: got %v", got)
+	}
+}
+
+// ComparisonPredicate's operand can be an ArithmeticValue —
+// exercises Value.Evaluate recursion.
+func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
+	t.Parallel()
+	// (a + b) > 10
+	sum := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &FieldValue{Field: "a", Typ: TypeInt},
+		Right: &FieldValue{Field: "b", Typ: TypeInt},
+	}
+	pred := NewComparisonPredicate(sum,
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(10)})
+
+	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(7)}); got != TriTrue {
+		t.Fatalf("5+7=12 > 10: got %v", got)
+	}
+	if got := pred.Eval(map[string]any{"a": int64(3), "b": int64(4)}); got != TriFalse {
+		t.Fatalf("3+4=7 > 10: got %v", got)
+	}
+	// NULL propagation: a=NULL -> a+b=NULL -> UNKNOWN.
+	if got := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
+		t.Fatalf("a=NULL: got %v", got)
 	}
 }

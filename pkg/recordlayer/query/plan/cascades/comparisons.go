@@ -148,31 +148,27 @@ func cmpAny(a, b any) (int, bool) {
 }
 
 // ComparisonPredicate applies a Comparison to an operand `Value`.
-// The operand is evaluated against a row (the eval context) to
-// produce the left-hand side; the comparison's literal is the
-// right-hand side. Returns UNKNOWN when either side is NULL.
+// The operand is evaluated against a row (the eval context) via
+// Value.Evaluate to produce the left-hand side; the comparison's
+// literal is the right-hand side. Returns UNKNOWN when either side
+// is NULL (SQL 3VL).
 type ComparisonPredicate struct {
-	Operand    Value // seed: Cascades Value; Phase 4.0 wires evaluation
+	Operand    Value
 	Comparison Comparison
-	// EvalOperand is a seam for the seed: the operand Value doesn't
-	// have an Evaluate method yet (Phase 4.0 adds it), so during
-	// seed testing callers supply a resolver closure. Once Value
-	// gains Evaluate, this field goes away.
-	EvalOperand func(evalCtx any) any
 }
 
 // NewComparisonPredicate builds a ComparisonPredicate.
-func NewComparisonPredicate(operand Value, cmp Comparison, evalOperand func(any) any) *ComparisonPredicate {
-	return &ComparisonPredicate{Operand: operand, Comparison: cmp, EvalOperand: evalOperand}
+func NewComparisonPredicate(operand Value, cmp Comparison) *ComparisonPredicate {
+	return &ComparisonPredicate{Operand: operand, Comparison: cmp}
 }
 
 func (*ComparisonPredicate) Children() []QueryPredicate { return nil }
 
 func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
-	if p.EvalOperand == nil {
+	if p.Operand == nil {
 		return TriUnknown
 	}
-	left := p.EvalOperand(evalCtx)
+	left := p.Operand.Evaluate(evalCtx)
 	return p.Comparison.Eval(left)
 }
 
