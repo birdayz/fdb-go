@@ -890,11 +890,15 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 				return nil, posErr
 			}
 			if isPos {
-				if seenOrderCols[posName] {
+				// Dedup key is case-folded (SQL identifiers are
+				// case-insensitive): `ORDER BY 1, 1` is a dup regardless of
+				// case in any resolved column name.
+				key := strings.ToUpper(posName)
+				if seenOrderCols[key] {
 					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
 						"duplicate column %q in ORDER BY", posName)
 				}
-				seenOrderCols[posName] = true
+				seenOrderCols[key] = true
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: posName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
@@ -903,11 +907,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
-				if seenOrderCols[colName] {
+				// SQL identifiers are case-insensitive, so `ORDER BY b, B`
+				// is a dup. Dot-qualified names fold each segment the same
+				// way — `ORDER BY t.x, T.X` dups as well. Unqualified-vs-
+				// qualified (`ORDER BY t.x, x`) stay distinct because the
+				// strings differ — that matches Java's behavior (requires
+				// alias resolution for true dedup, which happens later).
+				key := strings.ToUpper(colName)
+				if seenOrderCols[key] {
 					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
 						"duplicate column %q in ORDER BY", colName)
 				}
-				seenOrderCols[colName] = true
+				seenOrderCols[key] = true
 				sq.orderBy = append(sq.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 			} else {
 				sq.orderBy = append(sq.orderBy, orderByClause{ascending: ascending, nullsFirst: nullsFirst, expr: obExpr.Expression(), rawExpr: obExpr.Expression()})

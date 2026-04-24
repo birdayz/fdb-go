@@ -2,7 +2,10 @@ package embedded
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 )
 
 // Unit tests for naturalOrderSatisfies / naturalOrderSatisfiesReverse /
@@ -270,6 +273,75 @@ func TestDedupeAny(t *testing.T) {
 			for i := range got {
 				if !valuesEqual(got[i], tc.want[i]) {
 					t.Fatalf("at %d: got %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// ORDER BY column dedup is case-insensitive: SQL identifiers fold
+// to the same key regardless of source casing.
+func TestOrderByDedup_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		sql      string
+		wantErr  string
+		wantCols []string
+	}{
+		{
+			name:    "different case, same col → duplicate",
+			sql:     "SELECT id FROM t ORDER BY id, ID",
+			wantErr: "duplicate",
+		},
+		{
+			name:    "mixed case, same col via positional",
+			sql:     "SELECT id, name FROM t ORDER BY ID, id",
+			wantErr: "duplicate",
+		},
+		{
+			name:     "different cols no dedup",
+			sql:      "SELECT id, name FROM t ORDER BY id, name",
+			wantCols: []string{"id", "name"},
+		},
+		{
+			name:     "qualified vs bare — NOT deduped (alias resolution is later)",
+			sql:      "SELECT t.id, t.id FROM t AS t ORDER BY t.id, id",
+			wantCols: []string{"t.id", "id"},
+		},
+		{
+			name:    "qualified same-case is a dup",
+			sql:     "SELECT id FROM t AS t ORDER BY t.id, T.ID",
+			wantErr: "duplicate",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := parser.Parse(tc.sql)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			stmt := root.Statements().AllStatement()[0].SelectStatement()
+			sq, err := extractSelectParts(stmt)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error %q, got nil (orderBy=%v)", tc.wantErr, sq.orderBy)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(sq.orderBy) != len(tc.wantCols) {
+				t.Fatalf("orderBy len: got %d, want %d", len(sq.orderBy), len(tc.wantCols))
+			}
+			for i, c := range tc.wantCols {
+				if sq.orderBy[i].colName != c {
+					t.Fatalf("orderBy[%d]: got %q, want %q", i, sq.orderBy[i].colName, c)
 				}
 			}
 		})
