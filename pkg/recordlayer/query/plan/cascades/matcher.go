@@ -54,6 +54,29 @@ func (b *PlannerBindings) GetAll(matcher BindingMatcher) []any {
 	return b.entries[matcher]
 }
 
+// MergedWith returns a new PlannerBindings containing every entry
+// from b plus every entry from other. Entries under the same matcher
+// are concatenated (both bindings' slices appear, in b-then-other
+// order). Used by the AllOf combinator to fold downstream matches.
+//
+// Mirrors Java's `PlannerBindings.mergedWith`. b is unchanged.
+func (b *PlannerBindings) MergedWith(other *PlannerBindings) *PlannerBindings {
+	if other == nil || len(other.entries) == 0 {
+		return b
+	}
+	if b == nil || len(b.entries) == 0 {
+		return other
+	}
+	out := &PlannerBindings{entries: make(map[BindingMatcher][]any, len(b.entries)+len(other.entries))}
+	for k, v := range b.entries {
+		out.entries[k] = append([]any{}, v...)
+	}
+	for k, v := range other.entries {
+		out.entries[k] = append(out.entries[k], v...)
+	}
+	return out
+}
+
 // Get is the generic retrieval helper RFC-023 §Changes item 5
 // promises for Phase 4.0. The matcher interface itself stays
 // non-generic (shape (a)); this free function lets rule bodies
