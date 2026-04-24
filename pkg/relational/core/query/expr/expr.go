@@ -104,6 +104,30 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 	}), nil
 }
 
+// ResolveIn builds a ComparisonPredicate{ComparisonIn} from a left
+// Value and a list of constant RHS values. Every RHS must be a
+// plan-time constant (per cascades.EvaluateConstant); non-constant
+// elements return an error so callers lift the expression-based
+// IN-list to the value-space form explicitly.
+//
+// The RHS Operand is a []any of evaluated literals.
+func (r *Resolver) ResolveIn(left cascades.Value, rhs []cascades.Value) (cascades.QueryPredicate, error) {
+	if left == nil {
+		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
+	}
+	list := make([]any, 0, len(rhs))
+	for i, v := range rhs {
+		lit, ok := cascades.EvaluateConstant(v)
+		if !ok {
+			return nil, fmt.Errorf("expr.ResolveIn: element %d is not constant (%T)", i, v)
+		}
+		list = append(list, lit)
+	}
+	return cascades.NewComparisonPredicate(left, cascades.Comparison{
+		Type: cascades.ComparisonIn, Operand: list,
+	}), nil
+}
+
 // ResolveAnd combines N predicates via Kleene AND. A single
 // predicate returns verbatim (no wrapping); empty list returns
 // ConstantPredicate(TRUE) — the AND identity.

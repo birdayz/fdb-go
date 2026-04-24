@@ -310,6 +310,64 @@ func TestResolver_ResolveFunctionCall_UnknownFunc(t *testing.T) {
 	}
 }
 
+func TestResolver_ResolveIn(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	one, _ := r.ResolveConstant(int64(1))
+	two, _ := r.ResolveConstant(int64(2))
+	three, _ := r.ResolveConstant(int64(3))
+
+	pred, err := r.ResolveIn(left, []cascades.Value{one, two, three})
+	if err != nil {
+		t.Fatalf("IN: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonIn {
+		t.Fatalf("Type: got %v, want ComparisonIn", cp.Comparison.Type)
+	}
+	list, ok := cp.Comparison.Operand.([]any)
+	if !ok || len(list) != 3 {
+		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
+	}
+	if list[0] != int64(1) || list[1] != int64(2) || list[2] != int64(3) {
+		t.Fatalf("list content: got %v", list)
+	}
+
+	// Eval against a row.
+	row := map[string]any{"ID": int64(2)}
+	if cp.Eval(row) != cascades.TriTrue {
+		t.Fatal("2 IN (1,2,3) should be TRUE")
+	}
+	row["ID"] = int64(9)
+	if cp.Eval(row) != cascades.TriFalse {
+		t.Fatal("9 IN (1,2,3) should be FALSE")
+	}
+}
+
+func TestResolver_ResolveIn_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	fieldRef, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	if _, err := r.ResolveIn(left, []cascades.Value{fieldRef}); err == nil {
+		t.Fatal("expected error for non-constant IN element")
+	}
+}
+
+func TestResolver_ResolveIn_NilLHS(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	if _, err := r.ResolveIn(nil, nil); err == nil {
+		t.Fatal("expected error for nil LHS")
+	}
+}
+
 func TestResolver_ResolveAnd(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
