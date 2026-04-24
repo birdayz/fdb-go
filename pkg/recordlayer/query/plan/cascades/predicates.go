@@ -184,6 +184,54 @@ func (p *OrPredicate) Explain() string {
 	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
+// --- ValuePredicate ------------------------------------------------
+
+// ValuePredicate wraps a boolean-typed Value as a predicate. The
+// Value evaluates to bool (or nil for UNKNOWN); ValuePredicate.Eval
+// maps that straight to TriBool. `SELECT ... WHERE is_active` where
+// `is_active` is a boolean column or expression goes through this
+// node after semantic analysis.
+//
+// Returns UNKNOWN when the Value evaluates to nil (NULL) or to any
+// non-bool type — the latter is a type-checking responsibility the
+// semantic analyzer should have already caught; falling through to
+// UNKNOWN keeps the runtime safe against analyzer gaps.
+type ValuePredicate struct {
+	Value Value
+}
+
+// NewValuePredicate constructs a ValuePredicate.
+func NewValuePredicate(v Value) *ValuePredicate {
+	return &ValuePredicate{Value: v}
+}
+
+func (*ValuePredicate) Children() []QueryPredicate { return []QueryPredicate{} }
+
+func (p *ValuePredicate) Eval(evalCtx any) TriBool {
+	if p.Value == nil {
+		return TriUnknown
+	}
+	v := p.Value.Evaluate(evalCtx)
+	if v == nil {
+		return TriUnknown
+	}
+	bv, ok := v.(bool)
+	if !ok {
+		return TriUnknown
+	}
+	if bv {
+		return TriTrue
+	}
+	return TriFalse
+}
+
+func (p *ValuePredicate) Explain() string {
+	if p.Value == nil {
+		return "<nil-value>"
+	}
+	return p.Value.Name()
+}
+
 // --- NotPredicate --------------------------------------------------
 
 // NotPredicate is the Kleene NOT of a single child. NOT UNKNOWN =

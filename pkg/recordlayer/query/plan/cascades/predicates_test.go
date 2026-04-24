@@ -8,7 +8,41 @@ var (
 	_ QueryPredicate = (*AndPredicate)(nil)
 	_ QueryPredicate = (*OrPredicate)(nil)
 	_ QueryPredicate = (*NotPredicate)(nil)
+	_ QueryPredicate = (*ValuePredicate)(nil)
 )
+
+func TestValuePredicate(t *testing.T) {
+	t.Parallel()
+	// Bare bool literal: TRUE → TriTrue.
+	p := NewValuePredicate(NewBooleanValue(true))
+	if got := p.Eval(nil); got != TriTrue {
+		t.Fatalf("bool(true): got %v", got)
+	}
+	// FALSE → TriFalse.
+	p = NewValuePredicate(NewBooleanValue(false))
+	if got := p.Eval(nil); got != TriFalse {
+		t.Fatalf("bool(false): got %v", got)
+	}
+	// NULL boolean literal → TriUnknown.
+	p = NewValuePredicate(&BooleanValue{Value: nil})
+	if got := p.Eval(nil); got != TriUnknown {
+		t.Fatalf("NULL bool: got %v", got)
+	}
+	// Non-boolean Value → TriUnknown (safety net against analyzer gaps).
+	p = NewValuePredicate(&ConstantValue{Value: int64(1), Typ: TypeInt})
+	if got := p.Eval(nil); got != TriUnknown {
+		t.Fatalf("int literal: got %v", got)
+	}
+	// Nil Value in the predicate itself.
+	if got := (&ValuePredicate{}).Eval(nil); got != TriUnknown {
+		t.Fatalf("nil-Value predicate: got %v", got)
+	}
+	// Explain renders the Value's name.
+	p = NewValuePredicate(&FieldValue{Field: "is_active", Typ: TypeBool})
+	if got := p.Explain(); got != "field" {
+		t.Fatalf("Explain: got %q", got)
+	}
+}
 
 func TestConstantPredicate(t *testing.T) {
 	t.Parallel()
