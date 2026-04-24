@@ -93,6 +93,13 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 	if fc == nil {
 		return nil, fmt.Errorf("expr.walkFunctionCall: nil")
 	}
+	// SpecificFunctionCall covers CAST / CONVERT (DataTypeFunctionCall),
+	// plus CASE / current_user / extract / etc. We only wire the
+	// data-type conversions here — anything else returns an
+	// UnsupportedExpressionShapeError so callers fall back cleanly.
+	if spec, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
+		return r.walkSpecificFunction(spec.SpecificFunction())
+	}
 	agg, ok := fc.(*antlrgen.AggregateFunctionCallContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("non-aggregate function call %T", fc)}
@@ -130,6 +137,73 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 		args = []cascades.Value{v}
 	}
 	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
+}
+
+// walkSpecificFunction dispatches the SpecificFunction subtypes.
+// Seed wires CAST / CONVERT data-type conversions; everything else
+// (CASE, current_user, EXTRACT, …) returns an
+// UnsupportedExpressionShapeError so the logical-builder text
+// fallback catches it.
+func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (cascades.Value, error) {
+	if sf == nil {
+		return nil, fmt.Errorf("expr.walkSpecificFunction: nil")
+	}
+	cast, ok := sf.(*antlrgen.DataTypeFunctionCallContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("SpecificFunction ctx %T", sf)}
+	}
+	// CAST and CONVERT share the ctx; both have Expression() +
+	// ConvertedDataType(). Differ only in surface syntax.
+	if cast.CAST() == nil && cast.CONVERT() == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "DataTypeFunctionCall with no CAST/CONVERT token"}
+	}
+	exprCtx := cast.Expression()
+	if exprCtx == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "CAST without Expression"}
+	}
+	inner, err := r.WalkExpression(exprCtx)
+	if err != nil {
+		return nil, err
+	}
+	dt := cast.ConvertedDataType()
+	if dt == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "CAST without ConvertedDataType"}
+	}
+	dtc, ok := dt.(*antlrgen.ConvertedDataTypeContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ConvertedDataType ctx %T", dt)}
+	}
+	pt := dtc.PrimitiveType()
+	if pt == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ConvertedDataType without PrimitiveType"}
+	}
+	target, ok := primitiveTypeToValueType(pt)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{
+			Shape: fmt.Sprintf("CAST target not in seed ValueType (INT/STRING/BOOL); got %q", pt.GetText()),
+		}
+	}
+	return r.ResolveCast(inner, target)
+}
+
+// primitiveTypeToValueType maps the PrimitiveType terminal to a
+// cascades.ValueType. FLOAT / DOUBLE / BYTES / UUID / VECTOR aren't
+// in the seed ValueType enum (Phase 4.0 Type hierarchy port) — they
+// return (_, false) so the walker declines.
+func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (cascades.ValueType, bool) {
+	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
+	if !ok {
+		return cascades.TypeUnknown, false
+	}
+	switch {
+	case ptc.INTEGER() != nil, ptc.BIGINT() != nil:
+		return cascades.TypeInt, true
+	case ptc.STRING() != nil:
+		return cascades.TypeString, true
+	case ptc.BOOLEAN() != nil:
+		return cascades.TypeBool, true
+	}
+	return cascades.TypeUnknown, false
 }
 
 // aggregateFunctionName reads which terminal is present on the

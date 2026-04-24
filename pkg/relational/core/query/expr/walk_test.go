@@ -989,3 +989,97 @@ func TestWalkExpression_NilContext(t *testing.T) {
 		t.Fatal("expected error for nil context")
 	}
 }
+
+// CAST(col AS INTEGER): walker produces a CastValue over the column
+// FieldValue. Target ValueType mirrors the primitive-type token. The
+// CAST shape is wired via SpecificFunction → DataTypeFunctionCall.
+func TestWalkExpression_CastInteger(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CAST(name AS INTEGER)")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cv, ok := v.(*cascades.CastValue)
+	if !ok {
+		t.Fatalf("expected *CastValue, got %T", v)
+	}
+	if cv.Target != cascades.TypeInt {
+		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
+	}
+	fv, ok := cv.Child.(*cascades.FieldValue)
+	if !ok || fv.Field != "NAME" {
+		t.Fatalf("Child: got %v", cv.Child)
+	}
+}
+
+// CAST to STRING + BOOLEAN also compose; BIGINT aliases INTEGER.
+func TestWalkExpression_CastTargets(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	cases := map[string]cascades.ValueType{
+		"CAST(name AS STRING)":  cascades.TypeString,
+		"CAST(name AS BOOLEAN)": cascades.TypeBool,
+		"CAST(name AS BIGINT)":  cascades.TypeInt,
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			cv := v.(*cascades.CastValue)
+			if cv.Target != want {
+				t.Fatalf("%q: got %v, want %v", sql, cv.Target, want)
+			}
+		})
+	}
+}
+
+// CAST to a type outside the seed ValueType — FLOAT / DOUBLE /
+// BYTES / UUID / VECTOR — returns UnsupportedExpressionShapeError.
+// Waits on the Phase 4.0 Type hierarchy port.
+func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	cases := []string{
+		"CAST(name AS FLOAT)",
+		"CAST(name AS DOUBLE)",
+		"CAST(name AS BYTES)",
+	}
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			if _, err := r.WalkExpression(ctx); err == nil {
+				t.Fatalf("expected UnsupportedExpressionShapeError for %q", sql)
+			}
+		})
+	}
+}
+
+// CAST inside a WHERE predicate — real-world shape. Walker resolves
+// the CAST into a CastValue then composes with ComparisonPredicate.
+func TestWalkPredicate_CastInComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CAST(name AS INTEGER) = 42")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if _, ok := cp.Operand.(*cascades.CastValue); !ok {
+		t.Fatalf("expected Operand to be *CastValue, got %T", cp.Operand)
+	}
+}

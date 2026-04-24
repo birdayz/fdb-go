@@ -45,13 +45,18 @@
 //
 // # Not handled (returns UnsupportedExpressionShapeError)
 //
-//   - XOR.
-//   - Scalar function calls.
+//   - Scalar function calls (UPPER, LOWER, LENGTH, …).
 //   - LIKE with ESCAPE.
 //   - IN with subquery / parameter / single-column.
-//   - CAST.
-//   - IS TRUE / IS FALSE.
+//   - CAST to FLOAT / DOUBLE / BYTES / UUID / VECTOR (seed
+//     ValueType only covers INT / STRING / BOOL — the full Type
+//     hierarchy port lands in Phase 4.0).
 //   - Multi-element or named-field record constructors.
+//
+// CAST and CONVERT to INT / BIGINT / STRING / BOOLEAN are wired
+// via DataTypeFunctionCall; XOR desugars to
+// (a OR b) AND NOT (a AND b); IS [NOT] TRUE / FALSE desugars via
+// the 2VL `(x IS NOT NULL) AND (x = literal)` shape.
 //
 // Callers catching UnsupportedExpressionShapeError can fall back to
 // the existing logical-builder path, which handles the full grammar
