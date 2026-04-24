@@ -124,6 +124,42 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	}
 }
 
+// IS [NOT] DISTINCT FROM: SQL null-safe (in)equality — always
+// resolves to TRUE/FALSE, never UNKNOWN. Two NULLs are NOT DISTINCT.
+func TestComparison_Eval_IsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		left any
+		rhs  any
+		want TriBool
+	}{
+		{"NULL IS DISTINCT FROM NULL", ComparisonIsDistinctFrom, nil, nil, TriFalse},
+		{"NULL IS NOT DISTINCT FROM NULL", ComparisonNotDistinctFrom, nil, nil, TriTrue},
+		{"NULL IS DISTINCT FROM 1", ComparisonIsDistinctFrom, nil, int64(1), TriTrue},
+		{"1 IS DISTINCT FROM NULL", ComparisonIsDistinctFrom, int64(1), nil, TriTrue},
+		{"1 IS NOT DISTINCT FROM NULL", ComparisonNotDistinctFrom, int64(1), nil, TriFalse},
+		{"1 IS DISTINCT FROM 1", ComparisonIsDistinctFrom, int64(1), int64(1), TriFalse},
+		{"1 IS NOT DISTINCT FROM 1", ComparisonNotDistinctFrom, int64(1), int64(1), TriTrue},
+		{"1 IS DISTINCT FROM 2", ComparisonIsDistinctFrom, int64(1), int64(2), TriTrue},
+		{"1 IS NOT DISTINCT FROM 2", ComparisonNotDistinctFrom, int64(1), int64(2), TriFalse},
+		// Numeric promotion works through the distinct-from path.
+		{"int32(5) NOT DISTINCT int64(5)", ComparisonNotDistinctFrom, int32(5), int64(5), TriTrue},
+		// Type mismatch without NULL → treated as distinct (not equal).
+		{"int NOT DISTINCT string", ComparisonNotDistinctFrom, int64(5), "5", TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: tc.op, Operand: tc.rhs}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // IN: membership test against a []any list. SQL semantics: empty
 // list → FALSE; match → TRUE; no match with no NULL element → FALSE;
 // no match but list contains NULL → UNKNOWN; NULL LHS → UNKNOWN.

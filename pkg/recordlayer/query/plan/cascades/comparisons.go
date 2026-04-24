@@ -26,16 +26,18 @@ import (
 type ComparisonType int
 
 const (
-	ComparisonEquals        ComparisonType = iota // =
-	ComparisonNotEquals                           // !=, <>
-	ComparisonLessThan                            // <
-	ComparisonLessThanOrEq                        // <=
-	ComparisonGreaterThan                         // >
-	ComparisonGreaterThanEq                       // >=
-	ComparisonIsNull                              // IS NULL (unary, LHS-only)
-	ComparisonIsNotNull                           // IS NOT NULL (unary, LHS-only)
-	ComparisonStartsWith                          // STARTS_WITH (string LHS, string RHS prefix)
-	ComparisonIn                                  // IN (LHS any, RHS is a []any membership list)
+	ComparisonEquals          ComparisonType = iota // =
+	ComparisonNotEquals                             // !=, <>
+	ComparisonLessThan                              // <
+	ComparisonLessThanOrEq                          // <=
+	ComparisonGreaterThan                           // >
+	ComparisonGreaterThanEq                         // >=
+	ComparisonIsNull                                // IS NULL (unary, LHS-only)
+	ComparisonIsNotNull                             // IS NOT NULL (unary, LHS-only)
+	ComparisonStartsWith                            // STARTS_WITH (string LHS, string RHS prefix)
+	ComparisonIn                                    // IN (LHS any, RHS is a []any membership list)
+	ComparisonIsDistinctFrom                        // IS DISTINCT FROM (null-safe !=)
+	ComparisonNotDistinctFrom                       // IS NOT DISTINCT FROM (null-safe =)
 )
 
 // IsUnary reports whether the comparison takes no RHS operand
@@ -68,6 +70,10 @@ func (c ComparisonType) Symbol() string {
 		return "STARTS_WITH"
 	case ComparisonIn:
 		return "IN"
+	case ComparisonIsDistinctFrom:
+		return "IS DISTINCT FROM"
+	case ComparisonNotDistinctFrom:
+		return "IS NOT DISTINCT FROM"
 	default:
 		return "?"
 	}
@@ -98,6 +104,33 @@ func (c Comparison) Eval(left any) TriBool {
 		return TriFalse
 	case ComparisonIsNotNull:
 		if left == nil {
+			return TriFalse
+		}
+		return TriTrue
+	}
+	// IS [NOT] DISTINCT FROM: SQL null-safe (in)equality — always
+	// resolves to TRUE/FALSE, even with NULL on either side. Two
+	// NULLs are NOT DISTINCT. One NULL + one non-NULL is DISTINCT.
+	switch c.Type {
+	case ComparisonIsDistinctFrom, ComparisonNotDistinctFrom:
+		bothNull := left == nil && c.Operand == nil
+		distinct := true
+		if bothNull {
+			distinct = false
+		} else if left != nil && c.Operand != nil {
+			cmp, ok := cmpAny(left, c.Operand)
+			if ok && cmp == 0 {
+				distinct = false
+			}
+			// Type mismatch keeps distinct=true (they're not equal).
+		}
+		if c.Type == ComparisonIsDistinctFrom {
+			if distinct {
+				return TriTrue
+			}
+			return TriFalse
+		}
+		if distinct {
 			return TriFalse
 		}
 		return TriTrue
