@@ -779,6 +779,69 @@ func TestComparisonConstantSimplify_ConstantValueRHS_Folds(t *testing.T) {
 	}
 }
 
+// LiteralValue wraps Go-native literals in the matching Value
+// subtype. Pins: nil → NullValue, bool → BooleanValue (with the
+// bool-pointer contract), everything else → ConstantValue.
+func TestLiteralValue(t *testing.T) {
+	t.Parallel()
+	// Nil literal becomes NullValue, NOT ConstantValue{Value: nil}.
+	// The simplifier distinguishes these — NullValue matches the
+	// constant-fold whitelist cleanly, ConstantValue with Value=nil
+	// would too but conflates with typed missing values.
+	if _, ok := LiteralValue(nil).(*NullValue); !ok {
+		t.Fatalf("nil → %T, want *NullValue", LiteralValue(nil))
+	}
+	// Bool → BooleanValue (not ConstantValue{Value: bool}). The
+	// IS TRUE / IS FALSE desugar + the constant-fold rule both
+	// match *BooleanValue specifically.
+	if _, ok := LiteralValue(true).(*BooleanValue); !ok {
+		t.Fatalf("true → %T, want *BooleanValue", LiteralValue(true))
+	}
+	// Everything else → ConstantValue with Value preserved verbatim.
+	cv, ok := LiteralValue(int64(42)).(*ConstantValue)
+	if !ok {
+		t.Fatalf("int64 → %T, want *ConstantValue", LiteralValue(int64(42)))
+	}
+	if cv.Value != int64(42) {
+		t.Fatalf("int64 Value: got %v, want 42", cv.Value)
+	}
+	// String preserved verbatim (no quoting in the stored Value).
+	cs := LiteralValue("hello").(*ConstantValue)
+	if cs.Value != "hello" {
+		t.Fatalf("string Value: got %v, want hello", cs.Value)
+	}
+	// []any stays []any — IN-list callers depend on this shape.
+	list := LiteralValue([]any{int64(1), int64(2), int64(3)}).(*ConstantValue)
+	arr, ok := list.Value.([]any)
+	if !ok || len(arr) != 3 {
+		t.Fatalf("[]any Value: got %v", list.Value)
+	}
+}
+
+// NewLiteralComparison is the common-case Comparison constructor.
+// It uses LiteralValue internally; the test pins that the wrapper
+// composes correctly (Type preserved, RHS wrapped).
+func TestNewLiteralComparison(t *testing.T) {
+	t.Parallel()
+	c := NewLiteralComparison(ComparisonGreaterThan, int64(18))
+	if c.Type != ComparisonGreaterThan {
+		t.Fatalf("Type: got %v", c.Type)
+	}
+	cv, ok := c.Operand.(*ConstantValue)
+	if !ok {
+		t.Fatalf("Operand: %T", c.Operand)
+	}
+	if cv.Value != int64(18) {
+		t.Fatalf("wrapped Value: %v", cv.Value)
+	}
+	// Unary types also accept a nil literal — Operand becomes
+	// NullValue (ignored at eval time for unary).
+	u := NewLiteralComparison(ComparisonIsNull, nil)
+	if _, ok := u.Operand.(*NullValue); !ok {
+		t.Fatalf("unary nil literal → %T, want *NullValue", u.Operand)
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.
