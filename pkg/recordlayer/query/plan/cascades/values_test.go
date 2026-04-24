@@ -471,3 +471,85 @@ func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
 	}()
 	_ = NewPromoteValue(&ConstantValue{Value: int64(1), Typ: TypeInt}, TypeUnknown)
 }
+
+// --- RecordConstructorValue ----------------------------------------
+
+var _ Value = (*RecordConstructorValue)(nil)
+
+func TestRecordConstructorValue_Shape(t *testing.T) {
+	t.Parallel()
+	r := NewRecordConstructorValue(
+		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: TypeInt}},
+		RecordConstructorField{Name: "doubled", Value: &ArithmeticValue{
+			Op:    OpMul,
+			Left:  &FieldValue{Field: "x", Typ: TypeInt},
+			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		}},
+	)
+
+	if got, want := r.Name(), "record"; got != want {
+		t.Fatalf("Name: got %q, want %q", got, want)
+	}
+	if r.Type() != TypeUnknown {
+		t.Fatal("seed RecordConstructor should have Type TypeUnknown")
+	}
+	if len(r.Children()) != 2 {
+		t.Fatalf("Children: got %d, want 2", len(r.Children()))
+	}
+}
+
+func TestRecordConstructorValue_Evaluate(t *testing.T) {
+	t.Parallel()
+	r := NewRecordConstructorValue(
+		RecordConstructorField{Name: "a", Value: &FieldValue{Field: "id", Typ: TypeInt}},
+		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
+	)
+	ctx := map[string]any{"id": int64(7)}
+	out, ok := r.Evaluate(ctx).(map[string]any)
+	if !ok {
+		t.Fatalf("Evaluate: expected map, got %T", r.Evaluate(ctx))
+	}
+	if got, want := out["a"], int64(7); got != want {
+		t.Fatalf("field a: got %v, want %v", got, want)
+	}
+	if got, want := out["b"], "hello"; got != want {
+		t.Fatalf("field b: got %v, want %v", got, want)
+	}
+}
+
+func TestRecordConstructorValue_Explain(t *testing.T) {
+	t.Parallel()
+	r := NewRecordConstructorValue(
+		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: TypeInt}},
+		RecordConstructorField{Name: "lit", Value: &ConstantValue{Value: int64(42), Typ: TypeInt}},
+	)
+	if got, want := ExplainValue(r), "{id: id, lit: 42}"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+func TestRecordConstructorValue_DuplicateFieldNamePanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on duplicate field name")
+		}
+	}()
+	_ = NewRecordConstructorValue(
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(2), Typ: TypeInt}},
+	)
+}
+
+func TestRecordConstructorValue_DefensiveCopy(t *testing.T) {
+	t.Parallel()
+	fields := []RecordConstructorField{
+		{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: TypeInt}},
+	}
+	r := NewRecordConstructorValue(fields...)
+	// Mutating the caller's slice must not change r.
+	fields[0].Name = "HACKED"
+	if r.Fields[0].Name != "a" {
+		t.Fatalf("defensive copy leaked: got %q", r.Fields[0].Name)
+	}
+}

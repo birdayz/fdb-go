@@ -11,10 +11,11 @@
 // Dayshift-46 seed contents:
 //
 //   - values.go          — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 9 concrete
+//     Evaluate) + ValueType enum + 10 concrete
 //     values (Constant, Field, Arithmetic, Boolean,
 //     Cast, Null, Aggregate, QuantifiedObject,
-//     Promote) + ExplainValue SQL-ish renderer.
+//     Promote, RecordConstructor) + ExplainValue
+//     SQL-ish renderer.
 //   - matcher.go         — BindingMatcher interface +
 //     PlannerBindings + MergedWith + AnyValue /
 //     Instance / ArithmeticMatcher + the generic
@@ -80,6 +81,8 @@
 // `cascades/matching/structure/` subpackages to mirror Java more
 // closely, once enough types exist to justify the split.
 package cascades
+
+import "strings"
 
 // ValueType is a stand-in for the full Cascades Type hierarchy. The
 // production port adds `Type` / `TypeRepository` / `Typed`, at which
@@ -202,6 +205,12 @@ func ExplainValue(v Value) string {
 		return "CAST(" + ExplainValue(cv.Child) + " AS " + cv.Target.String() + ")"
 	case *PromoteValue:
 		return "PROMOTE(" + ExplainValue(cv.Child) + " TO " + cv.Target.String() + ")"
+	case *RecordConstructorValue:
+		parts := make([]string, 0, len(cv.Fields))
+		for _, f := range cv.Fields {
+			parts = append(parts, f.Name+": "+ExplainValue(f.Value))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	case *NullValue:
 		return "NULL"
 	case *AggregateValue:
@@ -429,6 +438,73 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		}
 	}
 	return nil
+}
+
+// --- RecordConstructorValue ----------------------------------------
+
+// RecordConstructorField pairs a field name with the Value that
+// computes its contents. Named so the output has a struct shape
+// downstream consumers (projections, aggregations) can address by
+// name.
+type RecordConstructorField struct {
+	Name  string
+	Value Value
+}
+
+// RecordConstructorValue constructs a record (struct) from named
+// children. Used by the analyzer for SELECT projection output
+// (`SELECT a, b+1 AS c` → Record{a: a, c: b+1}) and anywhere a
+// tuple-of-values is needed (ORDER BY key groups, aggregate keys).
+//
+// Mirrors Java's `RecordConstructorValue`.
+type RecordConstructorValue struct {
+	Fields []RecordConstructorField
+}
+
+// NewRecordConstructorValue constructs a RecordConstructorValue.
+// Panics on duplicate field names — callers should rename via AS
+// before constructing.
+func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
+	seen := make(map[string]struct{}, len(fields))
+	for _, f := range fields {
+		if _, dup := seen[f.Name]; dup {
+			panic("NewRecordConstructorValue: duplicate field name: " + f.Name)
+		}
+		seen[f.Name] = struct{}{}
+	}
+	// Defensive copy so the caller can't mutate.
+	out := make([]RecordConstructorField, len(fields))
+	copy(out, fields)
+	return &RecordConstructorValue{Fields: out}
+}
+
+// Children returns each field's Value as a flat list, in field
+// declaration order. Lets WalkValue traverse the whole tree.
+func (r *RecordConstructorValue) Children() []Value {
+	out := make([]Value, len(r.Fields))
+	for i, f := range r.Fields {
+		out[i] = f.Value
+	}
+	return out
+}
+
+// Type returns TypeUnknown — record type is a struct shape which
+// the seed's flat ValueType enum can't express. The Type hierarchy
+// port replaces this with a real StructType.
+func (*RecordConstructorValue) Type() ValueType { return TypeUnknown }
+
+// Name returns the debug-print kind.
+func (*RecordConstructorValue) Name() string { return "record" }
+
+// Evaluate produces a map[string]any with each field evaluated.
+// Downstream consumers (projections, field-access) index into this
+// map by field name.
+func (r *RecordConstructorValue) Evaluate(evalCtx any) any {
+	out := make(map[string]any, len(r.Fields))
+	for _, f := range r.Fields {
+		out[f.Name] = f.Value.Evaluate(evalCtx)
+	}
+	return out
 }
 
 // --- PromoteValue --------------------------------------------------
