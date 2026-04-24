@@ -154,6 +154,118 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 	return row[f.Field]
 }
 
+// ExplainValue renders a Value as a readable expression string.
+// Free function rather than a Value-interface method so existing
+// third-party Value impls (once the port grows) don't have to
+// track another method. Walks children recursively for composite
+// values like ArithmeticValue / CastValue.
+//
+// Output style matches SQL-ish expression rendering:
+//
+//	ConstantValue     → the literal as %v
+//	FieldValue        → the field name
+//	ArithmeticValue   → (left OP right)
+//	BooleanValue      → TRUE / FALSE / NULL
+//	CastValue         → CAST(child AS TypeX)
+//	NullValue         → NULL
+func ExplainValue(v Value) string {
+	if v == nil {
+		return ""
+	}
+	switch cv := v.(type) {
+	case *ConstantValue:
+		if cv.Value == nil {
+			return "NULL"
+		}
+		if s, ok := cv.Value.(string); ok {
+			return "'" + s + "'"
+		}
+		return valueLiteralString(cv.Value)
+	case *FieldValue:
+		return cv.Field
+	case *ArithmeticValue:
+		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
+	case *BooleanValue:
+		if cv.Value == nil {
+			return "NULL"
+		}
+		if *cv.Value {
+			return "TRUE"
+		}
+		return "FALSE"
+	case *CastValue:
+		return "CAST(" + ExplainValue(cv.Child) + " AS " + cv.Target.String() + ")"
+	case *NullValue:
+		return "NULL"
+	}
+	return v.Name()
+}
+
+// String renders ValueType as a human-readable name (used by
+// ExplainValue for CAST rendering).
+func (t ValueType) String() string {
+	switch t {
+	case TypeInt:
+		return "INT"
+	case TypeString:
+		return "STRING"
+	case TypeBool:
+		return "BOOL"
+	}
+	return "UNKNOWN"
+}
+
+func (o ArithmeticOp) symbol() string {
+	switch o {
+	case OpAdd:
+		return "+"
+	case OpSub:
+		return "-"
+	case OpMul:
+		return "*"
+	case OpDiv:
+		return "/"
+	}
+	return "?"
+}
+
+func valueLiteralString(v any) string {
+	switch x := v.(type) {
+	case int64:
+		return intToDec(x)
+	case bool:
+		if x {
+			return "TRUE"
+		}
+		return "FALSE"
+	case string:
+		return "'" + x + "'"
+	}
+	return "?"
+}
+
+func intToDec(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
 // NullValue is the SQL NULL literal — evaluates to nil regardless
 // of context. Not collapsed into ConstantValue{Value: nil} because
 // having a dedicated type lets rule matchers check for NULL

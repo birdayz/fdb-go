@@ -12,6 +12,49 @@ var (
 	_ Value = (*NullValue)(nil)
 )
 
+func TestExplainValue(t *testing.T) {
+	t.Parallel()
+	if got := ExplainValue(nil); got != "" {
+		t.Fatalf("nil: got %q", got)
+	}
+	if got := ExplainValue(&ConstantValue{Value: int64(42), Typ: TypeInt}); got != "42" {
+		t.Fatalf("int const: got %q", got)
+	}
+	if got := ExplainValue(&ConstantValue{Value: "x", Typ: TypeString}); got != "'x'" {
+		t.Fatalf("string const: got %q", got)
+	}
+	if got := ExplainValue(&ConstantValue{Value: nil, Typ: TypeInt}); got != "NULL" {
+		t.Fatalf("NULL const: got %q", got)
+	}
+	if got := ExplainValue(&FieldValue{Field: "age", Typ: TypeInt}); got != "age" {
+		t.Fatalf("field: got %q", got)
+	}
+	arith := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &FieldValue{Field: "a", Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
+	}
+	if got := ExplainValue(arith); got != "(a + 5)" {
+		t.Fatalf("arith: got %q", got)
+	}
+	if got := ExplainValue(NewBooleanValue(true)); got != "TRUE" {
+		t.Fatalf("bool TRUE: got %q", got)
+	}
+	if got := ExplainValue(NewBooleanValue(false)); got != "FALSE" {
+		t.Fatalf("bool FALSE: got %q", got)
+	}
+	if got := ExplainValue(&BooleanValue{Value: nil}); got != "NULL" {
+		t.Fatalf("bool NULL: got %q", got)
+	}
+	if got := ExplainValue(NewNullValue(TypeString)); got != "NULL" {
+		t.Fatalf("NullValue: got %q", got)
+	}
+	cast := NewCastValue(&ConstantValue{Value: int64(1), Typ: TypeInt}, TypeString)
+	if got := ExplainValue(cast); got != "CAST(1 AS STRING)" {
+		t.Fatalf("cast: got %q", got)
+	}
+}
+
 func TestNullValue(t *testing.T) {
 	t.Parallel()
 	nv := NewNullValue(TypeInt)
