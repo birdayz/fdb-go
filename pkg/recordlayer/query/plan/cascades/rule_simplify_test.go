@@ -143,6 +143,14 @@ func TestComparisonConstSimplify_Folds(t *testing.T) {
 		{"5>3→TRUE", int64(5), ComparisonGreaterThan, int64(3), TriTrue},
 		{"1<2→TRUE", int64(1), ComparisonLessThan, int64(2), TriTrue},
 		{"NULL=1→UNKNOWN", nil, ComparisonEquals, int64(1), TriUnknown},
+		// Round out the operator matrix so every ComparisonType this
+		// package ships has a documented fold.
+		{"5<>3→TRUE", int64(5), ComparisonNotEquals, int64(3), TriTrue},
+		{"5<>5→FALSE", int64(5), ComparisonNotEquals, int64(5), TriFalse},
+		{"5>=5→TRUE", int64(5), ComparisonGreaterThanEq, int64(5), TriTrue},
+		{"5<=5→TRUE", int64(5), ComparisonLessThanOrEq, int64(5), TriTrue},
+		{"5<=3→FALSE", int64(5), ComparisonLessThanOrEq, int64(3), TriFalse},
+		{"1=NULL→UNKNOWN", int64(1), ComparisonEquals, nil, TriUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
