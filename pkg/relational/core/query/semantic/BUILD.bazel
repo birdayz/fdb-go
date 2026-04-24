@@ -8,6 +8,7 @@ go_library(
         "identifier.go",
         "parse_bridge.go",
         "qualified_name.go",
+        "scope.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic",
     visibility = ["//visibility:public"],
@@ -22,6 +23,7 @@ go_test(
         "identifier_test.go",
         "parse_bridge_test.go",
         "qualified_name_test.go",
+        "scope_test.go",
     ],
     embed = [":semantic"],
     deps = [

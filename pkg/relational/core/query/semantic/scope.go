@@ -1,0 +1,166 @@
+package semantic
+
+import "fmt"
+
+// Scope is the set of named resolutions visible at a point during
+// query analysis. A scope knows about the FROM-clause sources
+// (tables + their aliases) at that level and, via parent-chain,
+// inherits correlated sources from enclosing scopes (for nested
+// subqueries).
+//
+// Mirrors the subset of Java's `LogicalPlanFragment` + scope chain
+// the analyzer uses for identifier resolution.
+//
+// Construction: start with NewScope(parent) — parent nil means the
+// outermost query. Call AddSource to push each FROM source as the
+// analyzer walks FROM clauses left-to-right.
+//
+// Not concurrency-safe; the analyzer is single-threaded per query.
+type Scope struct {
+	parent  *Scope
+	sources []ScopeSource
+}
+
+// ScopeSource is one FROM-clause entry: a resolved Table plus the
+// alias it's visible under. Alias is always non-zero — when the
+// user doesn't write AS, the Table's own name fills in.
+type ScopeSource struct {
+	// Table is the resolved schema-level table.
+	Table Table
+	// Alias is the name used to reference this source in the
+	// enclosing query (column qualifier). For `FROM t AS x` → Alias
+	// is `x`; for `FROM t` with no alias → Alias is `t`.
+	Alias Identifier
+	// CorrelationName is the identifier the analyzer uses to tie
+	// this source back to a Quantifier when building
+	// QuantifiedObjectValue / FieldValue trees that reference it.
+	// Stored as a string so the semantic package doesn't take a
+	// dependency on cascades/CorrelationIdentifier — callers wrap
+	// this into a cascades.CorrelationIdentifier themselves.
+	CorrelationName string
+}
+
+// NewScope constructs a Scope inheriting from parent. parent may be
+// nil for the outermost query.
+func NewScope(parent *Scope) *Scope {
+	return &Scope{parent: parent}
+}
+
+// Parent returns the enclosing scope, or nil if this is the
+// outermost.
+func (s *Scope) Parent() *Scope { return s.parent }
+
+// Sources returns the FROM-clause sources at this scope level
+// (defensive copy, does NOT include parent sources).
+func (s *Scope) Sources() []ScopeSource {
+	if len(s.sources) == 0 {
+		return nil
+	}
+	out := make([]ScopeSource, len(s.sources))
+	copy(out, s.sources)
+	return out
+}
+
+// AddSource appends a FROM-clause source. Returns an error on
+// duplicate alias within the same scope (SQL forbids two sources
+// sharing an alias at the same level).
+func (s *Scope) AddSource(src ScopeSource) error {
+	for _, existing := range s.sources {
+		if existing.Alias.EqualsIgnoreQuoting(src.Alias) {
+			return &DuplicateAliasError{Alias: src.Alias}
+		}
+	}
+	s.sources = append(s.sources, src)
+	return nil
+}
+
+// ResolveColumn looks up a bare column reference (no qualifier)
+// against the scope's sources, following the parent chain if no
+// local match. Ambiguous matches within a single scope level
+// (multiple tables with a column of this name) return an error —
+// the caller should instruct the user to qualify.
+//
+// Mirrors Java's resolution: inner scopes shadow outer; within a
+// scope, ambiguity is a hard error.
+func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
+	// First pass at this level: collect matches. Ambiguity within
+	// one level is an error; we check before descending the parent
+	// chain.
+	var matches []struct {
+		col Column
+		src ScopeSource
+	}
+	for _, src := range s.sources {
+		if c, ok := src.Table.LookupColumn(id); ok {
+			matches = append(matches, struct {
+				col Column
+				src ScopeSource
+			}{c, src})
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0].col, matches[0].src, nil
+	case 0:
+		// No match here — walk parent chain.
+		if s.parent != nil {
+			return s.parent.ResolveColumn(id)
+		}
+		return Column{}, ScopeSource{}, &ColumnNotFoundError{Id: id}
+	default:
+		return Column{}, ScopeSource{}, &AmbiguousColumnError{Id: id, Matches: len(matches)}
+	}
+}
+
+// ResolveQualifiedColumn handles `alias.col` — looks up a source
+// whose Alias matches the qualifier, then the column on that
+// source's Table. Unlike ResolveColumn, a qualifier-matched source
+// is unambiguous; if the qualifier doesn't match any source in any
+// enclosing scope, returns SourceNotFoundError.
+func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, ScopeSource, error) {
+	for _, src := range s.sources {
+		if src.Alias.EqualsIgnoreQuoting(qualifier) {
+			c, ok := src.Table.LookupColumn(col)
+			if !ok {
+				return Column{}, ScopeSource{}, &ColumnNotFoundError{TableName: src.Table.Name(), Id: col}
+			}
+			return c, src, nil
+		}
+	}
+	if s.parent != nil {
+		return s.parent.ResolveQualifiedColumn(qualifier, col)
+	}
+	return Column{}, ScopeSource{}, &SourceNotFoundError{Alias: qualifier}
+}
+
+// AmbiguousColumnError is returned when a bare column reference
+// matches multiple sources at the same scope level. Carries the
+// conflicting identifier + count so error messages can be helpful.
+type AmbiguousColumnError struct {
+	Id      Identifier
+	Matches int
+}
+
+func (e *AmbiguousColumnError) Error() string {
+	return fmt.Sprintf("ambiguous column %s (matches %d sources)", e.Id, e.Matches)
+}
+
+// SourceNotFoundError is returned when a qualifier doesn't match
+// any FROM-clause alias in the scope chain.
+type SourceNotFoundError struct {
+	Alias Identifier
+}
+
+func (e *SourceNotFoundError) Error() string {
+	return fmt.Sprintf("no FROM source aliased as %s", e.Alias)
+}
+
+// DuplicateAliasError is returned by AddSource when the same alias
+// is already registered at this scope level.
+type DuplicateAliasError struct {
+	Alias Identifier
+}
+
+func (e *DuplicateAliasError) Error() string {
+	return fmt.Sprintf("duplicate alias %s in FROM clause", e.Alias)
+}
