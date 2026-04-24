@@ -36,12 +36,13 @@
 //     (Yield / Yielded) + FireRule testing driver.
 //     Example addConstantFoldRule folds
 //     `Const + Const` → `Const`.
-//   - rule_simplify.go   — Eight Phase 4.5 Batch A-style rules:
+//   - rule_simplify.go   — Ten Phase 4.5 Batch A-style rules:
 //     AndFlatten / OrFlatten (associative
 //     normalisation), AndConstantSimplify /
 //     OrConstantSimplify / NotConstantSimplify /
 //     ComparisonConstantSimplify (Kleene folds),
-//     AndDedup / OrDedup (structural dedup).
+//     AndDedup / OrDedup (structural dedup),
+//     AndAbsorbOr / OrAbsorbAnd (absorption).
 //   - simplifier.go      — Fixed-point Simplify driver + the
 //     DefaultSimplifyRules rule set. Pre-4.6 seed;
 //     real planner task-stack replaces this later.
