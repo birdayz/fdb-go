@@ -124,6 +124,38 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	}
 }
 
+// IN: membership test against a []any list. SQL semantics: empty
+// list → FALSE; match → TRUE; no match with no NULL element → FALSE;
+// no match but list contains NULL → UNKNOWN; NULL LHS → UNKNOWN.
+func TestComparison_Eval_In(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		left any
+		list []any
+		want TriBool
+	}{
+		{"5 IN (1,5,9)", int64(5), []any{int64(1), int64(5), int64(9)}, TriTrue},
+		{"5 IN (1,2,3)", int64(5), []any{int64(1), int64(2), int64(3)}, TriFalse},
+		{"5 IN ()", int64(5), []any{}, TriFalse},
+		{"NULL IN (1)", nil, []any{int64(1)}, TriUnknown},
+		{"5 IN (1,NULL) no match", int64(5), []any{int64(1), nil}, TriUnknown},
+		{"5 IN (5,NULL) match wins over NULL", int64(5), []any{int64(5), nil}, TriTrue},
+		{"mixed width: int32 vs int64", int32(5), []any{int64(1), int64(5)}, TriTrue},
+		{"'a' IN ('a','b')", "a", []any{"a", "b"}, TriTrue},
+		{"'z' IN ('a','b')", "z", []any{"a", "b"}, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: ComparisonIn, Operand: tc.list}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
 // non-string operands (matches numeric type-mismatch behavior).
 func TestComparison_Eval_StartsWith(t *testing.T) {

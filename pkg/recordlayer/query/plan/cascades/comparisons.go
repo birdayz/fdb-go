@@ -35,6 +35,7 @@ const (
 	ComparisonIsNull                              // IS NULL (unary, LHS-only)
 	ComparisonIsNotNull                           // IS NOT NULL (unary, LHS-only)
 	ComparisonStartsWith                          // STARTS_WITH (string LHS, string RHS prefix)
+	ComparisonIn                                  // IN (LHS any, RHS is a []any membership list)
 )
 
 // IsUnary reports whether the comparison takes no RHS operand
@@ -65,6 +66,8 @@ func (c ComparisonType) Symbol() string {
 		return "IS NOT NULL"
 	case ComparisonStartsWith:
 		return "STARTS_WITH"
+	case ComparisonIn:
+		return "IN"
 	default:
 		return "?"
 	}
@@ -98,6 +101,34 @@ func (c Comparison) Eval(left any) TriBool {
 			return TriFalse
 		}
 		return TriTrue
+	}
+	// IN accepts a list RHS; NULL LHS still degrades to UNKNOWN per
+	// SQL 3VL. Empty list never matches. One NULL element + no other
+	// match returns UNKNOWN (SQL: `x IN (1, NULL)` → UNKNOWN when
+	// x != 1) — covers the common "membership-checked against
+	// possibly-NULL-containing set" case.
+	if c.Type == ComparisonIn {
+		if left == nil {
+			return TriUnknown
+		}
+		list, ok := c.Operand.([]any)
+		if !ok {
+			return TriUnknown
+		}
+		sawNull := false
+		for _, elem := range list {
+			if elem == nil {
+				sawNull = true
+				continue
+			}
+			if cmp, ok := cmpAny(left, elem); ok && cmp == 0 {
+				return TriTrue
+			}
+		}
+		if sawNull {
+			return TriUnknown
+		}
+		return TriFalse
 	}
 	if left == nil || c.Operand == nil {
 		return TriUnknown
