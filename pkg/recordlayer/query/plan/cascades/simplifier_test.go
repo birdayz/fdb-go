@@ -140,6 +140,53 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	}
 }
 
+// IS NULL / IS NOT NULL fold at plan time when the LHS is a known
+// constant. Pin all three branches:
+//   - FieldValue LHS: NOT foldable (depends on row context), survives
+//   - NullValue LHS: IS NULL → TRUE
+//   - ConstantValue LHS: IS NOT NULL → TRUE
+//
+// Catches a future regression where the constant-fold rule narrows
+// its whitelist and stops recognising NullValue / BooleanValue LHS.
+func TestSimplify_IsNullVariants(t *testing.T) {
+	t.Parallel()
+	t.Run("FieldValue LHS survives", func(t *testing.T) {
+		t.Parallel()
+		pred := NewComparisonPredicate(
+			&FieldValue{Field: "name", Typ: TypeString},
+			Comparison{Type: ComparisonIsNull},
+		)
+		got := Simplify(pred, DefaultSimplifyRules())
+		if _, ok := got.(*ComparisonPredicate); !ok {
+			t.Fatalf("expected ComparisonPredicate to survive (LHS row-dependent), got %T: %s", got, got.Explain())
+		}
+	})
+	t.Run("NullValue LHS folds to TRUE", func(t *testing.T) {
+		t.Parallel()
+		pred := NewComparisonPredicate(
+			&NullValue{Typ: TypeUnknown},
+			Comparison{Type: ComparisonIsNull},
+		)
+		got := Simplify(pred, DefaultSimplifyRules())
+		cp, ok := got.(*ConstantPredicate)
+		if !ok || cp.Value != TriTrue {
+			t.Fatalf("got %T %s, want ConstantPredicate{TRUE}", got, got.Explain())
+		}
+	})
+	t.Run("ConstantValue LHS, IS NOT NULL folds to TRUE", func(t *testing.T) {
+		t.Parallel()
+		pred := NewComparisonPredicate(
+			&ConstantValue{Value: int64(5), Typ: TypeInt},
+			Comparison{Type: ComparisonIsNotNull},
+		)
+		got := Simplify(pred, DefaultSimplifyRules())
+		cp, ok := got.(*ConstantPredicate)
+		if !ok || cp.Value != TriTrue {
+			t.Fatalf("got %T %s, want ConstantPredicate{TRUE}", got, got.Explain())
+		}
+	})
+}
+
 // `(1 + 2) > 0` and `0 < (1 + 2)` both fold to TRUE end-to-end
 // through Simplify. Pins the EvaluateConstant fall-through path
 // for composite-constant operands on either side of a comparison.
