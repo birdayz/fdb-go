@@ -140,8 +140,11 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// literal content, so equal literals render equal; FieldValue
 		// renders its name; IN-lists (ConstantValue over []any)
 		// render element-wise. Same surface as the LHS Operand
-		// comparison on the next line.
+		// comparison on the next line. Escape rune is part of the
+		// Comparison's identity for LIKE — `LIKE 'x' ESCAPE '\'` and
+		// `LIKE 'x' ESCAPE '!'` are distinct predicates.
 		return ap.Comparison.Type == bp.Comparison.Type &&
+			ap.Comparison.Escape == bp.Comparison.Escape &&
 			valueNamesEqual(ap.Comparison.Operand, bp.Comparison.Operand) &&
 			valueNamesEqual(ap.Operand, bp.Operand)
 	}

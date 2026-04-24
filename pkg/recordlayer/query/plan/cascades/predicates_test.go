@@ -442,3 +442,34 @@ func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 		t.Fatal("different IN lists should be unequal")
 	}
 }
+
+// PredicateEquals must consider Comparison.Escape — two LIKE
+// predicates with the same LHS / pattern but different escape runes
+// are distinct. Pin both halves: same-escape → equal,
+// different-escape → unequal.
+func TestPredicateEquals_ComparisonLikeEscape(t *testing.T) {
+	t.Parallel()
+	field := &FieldValue{Field: "name", Typ: TypeString}
+	withBackslash := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"), Escape: '\\',
+	})
+	withBackslash2 := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"), Escape: '\\',
+	})
+	withBang := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"), Escape: '!',
+	})
+	noEscape := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"),
+	})
+
+	if !PredicateEquals(withBackslash, withBackslash2) {
+		t.Fatal("same escape should compare equal")
+	}
+	if PredicateEquals(withBackslash, withBang) {
+		t.Fatal("different escape rune should compare unequal")
+	}
+	if PredicateEquals(withBackslash, noEscape) {
+		t.Fatal("escape vs no-escape should compare unequal")
+	}
+}
