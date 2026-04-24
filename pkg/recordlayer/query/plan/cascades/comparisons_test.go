@@ -160,6 +160,24 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 			}
 		})
 	}
+
+	// IN-list of []byte — membership test through the same cmpAny
+	// path. Verifies the bytes branch also picks up set-membership
+	// semantics, not just pairwise comparators.
+	hit := Comparison{
+		Type:    ComparisonIn,
+		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}},
+	}.Eval([]byte{0x02, 0x03})
+	if hit != TriTrue {
+		t.Errorf("bytes IN list hit: got %v, want TRUE", hit)
+	}
+	miss := Comparison{
+		Type:    ComparisonIn,
+		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}},
+	}.Eval([]byte{0x99})
+	if miss != TriFalse {
+		t.Errorf("bytes IN list miss: got %v, want FALSE", miss)
+	}
 }
 
 func TestComparison_Eval_NumericPromotion(t *testing.T) {
