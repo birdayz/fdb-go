@@ -170,6 +170,61 @@ func (m *notPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*Pla
 	return []*PlannerBindings{outer.Bind(m, in)}
 }
 
+// --- ComparisonConstantSimplifyRule --------------------------------
+
+// ComparisonConstantSimplifyRule folds a ComparisonPredicate whose
+// operand is a ConstantValue — both sides of the comparison are
+// known at plan time, so the predicate evaluates to a constant.
+// Mirrors Java's `ValueSimplificationRuleSet` constant-predicate
+// short-circuits.
+//
+// Example: `5 = 3` → `FALSE`, `7 > 2` → `TRUE`, `NULL = 1` →
+// `UNKNOWN`. Only fires when the operand's Evaluate(nil) returns
+// non-context-dependent data — ConstantValue.Evaluate returns its
+// literal regardless of context, which is the only current seed
+// Value whose result is reproducible without an eval context.
+type ComparisonConstantSimplifyRule struct {
+	matcher BindingMatcher
+}
+
+// NewComparisonConstantSimplifyRule constructs the rule.
+func NewComparisonConstantSimplifyRule() *ComparisonConstantSimplifyRule {
+	m := &ComparisonConstantSimplifyRule{}
+	m.matcher = newComparisonPredicateMatcher()
+	return m
+}
+
+func (r *ComparisonConstantSimplifyRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
+	cp := call.Bindings.Get(r.matcher).(*ComparisonPredicate)
+	// Only fold when the operand is a ConstantValue — anything else
+	// depends on a row context the simplifier can't provide.
+	cv, ok := cp.Operand.(*ConstantValue)
+	if !ok {
+		return
+	}
+	// Eval ComparisonPredicate with nil context — ConstantValue
+	// ignores it, and the Comparison's RHS is already a literal.
+	result := cp.Comparison.Eval(cv.Value)
+	call.Yield(NewConstantPredicate(result))
+}
+
+var comparisonPredicateMatcherCounter atomic.Uint64
+
+type comparisonPredicateMatcher struct{ id uint64 }
+
+func newComparisonPredicateMatcher() *comparisonPredicateMatcher {
+	return &comparisonPredicateMatcher{id: comparisonPredicateMatcherCounter.Add(1)}
+}
+func (*comparisonPredicateMatcher) RootType() string { return "ComparisonPredicate" }
+func (m *comparisonPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
+	if _, ok := in.(*ComparisonPredicate); !ok {
+		return nil
+	}
+	return []*PlannerBindings{outer.Bind(m, in)}
+}
+
 // --- Predicate matchers -------------------------------------------
 
 // andPredicateMatcher / orPredicateMatcher are minimal Instance-like

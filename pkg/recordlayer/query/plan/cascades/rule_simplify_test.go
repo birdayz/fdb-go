@@ -6,7 +6,62 @@ var (
 	_ CascadesRule = (*AndConstantSimplifyRule)(nil)
 	_ CascadesRule = (*OrConstantSimplifyRule)(nil)
 	_ CascadesRule = (*NotConstantSimplifyRule)(nil)
+	_ CascadesRule = (*ComparisonConstantSimplifyRule)(nil)
 )
+
+// ComparisonConstantSimplify: both sides literal → constant
+// predicate. Covers true/false/unknown outcomes.
+func TestComparisonConstSimplify_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+
+	cases := []struct {
+		name string
+		lhs  any
+		op   ComparisonType
+		rhs  any
+		want TriBool
+	}{
+		{"5=5→TRUE", int64(5), ComparisonEquals, int64(5), TriTrue},
+		{"5=3→FALSE", int64(5), ComparisonEquals, int64(3), TriFalse},
+		{"5>3→TRUE", int64(5), ComparisonGreaterThan, int64(3), TriTrue},
+		{"1<2→TRUE", int64(1), ComparisonLessThan, int64(2), TriTrue},
+		{"NULL=1→UNKNOWN", nil, ComparisonEquals, int64(1), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(
+				&ConstantValue{Value: tc.lhs, Typ: TypeInt},
+				Comparison{Type: tc.op, Operand: tc.rhs},
+			)
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T", got[0])
+			}
+			if cp.Value != tc.want {
+				t.Fatalf("got %v, want %v", cp.Value, tc.want)
+			}
+		})
+	}
+}
+
+// Non-constant operand (FieldValue) — rule declines.
+func TestComparisonConstSimplify_FieldOperandDeclines(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	if got := FireRule(rule, pred); len(got) != 0 {
+		t.Fatalf("expected 0 yields (field operand), got %d", len(got))
+	}
+}
 
 func TestNotSimplify_ConstantFold(t *testing.T) {
 	t.Parallel()
