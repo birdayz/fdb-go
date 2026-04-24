@@ -134,6 +134,34 @@ func TestComparison_Eval_BoolEquality(t *testing.T) {
 	}
 }
 
+// Bytes are lexicographic (matches SQL BINARY and proto bytes).
+// Mixed bytes/string is a type mismatch → UNKNOWN, not a coerce.
+func TestComparison_Eval_BytesComparison(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		l, r any
+		want TriBool
+	}{
+		{"equal bytes", ComparisonEquals, []byte{0x01, 0x02}, []byte{0x01, 0x02}, TriTrue},
+		{"unequal bytes", ComparisonEquals, []byte{0x01, 0x02}, []byte{0x01, 0x03}, TriFalse},
+		{"lt shorter prefix", ComparisonLessThan, []byte{0x01, 0x02}, []byte{0x01, 0x02, 0x00}, TriTrue},
+		{"gt higher byte", ComparisonGreaterThan, []byte{0x02}, []byte{0x01, 0xff}, TriTrue},
+		{"empty vs non-empty", ComparisonLessThan, []byte{}, []byte{0x00}, TriTrue},
+		{"bytes vs string: UNKNOWN", ComparisonEquals, []byte("abc"), "abc", TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

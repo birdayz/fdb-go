@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -387,6 +388,17 @@ func cmpAny(a, b any) (int, bool) {
 		default: // av && !bv: true > false
 			return 1, true
 		}
+	}
+	// Bytes comparison is lexicographic — matches SQL's BINARY / VARBINARY
+	// collation and proto `bytes` semantics. Mixed bytes/string degrades
+	// to UNKNOWN (type mismatch) on purpose: "abc" (STRING) and
+	// []byte{0x61,0x62,0x63} (BYTES) are not interchangeable in SQL.
+	if av, ok := a.([]byte); ok {
+		bv, ok2 := b.([]byte)
+		if !ok2 {
+			return 0, false
+		}
+		return bytes.Compare(av, bv), true
 	}
 	return 0, false
 }
