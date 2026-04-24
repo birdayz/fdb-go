@@ -9,6 +9,7 @@ go_library(
         "cte_scan.go",
         "ddl.go",
         "eval_map.go",
+        "eval_predicate.go",
         "eval_proto.go",
         "in_list_pushdown.go",
         "insert.go",
