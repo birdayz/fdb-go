@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "combinators.go",
         "comparisons.go",
+        "correlation.go",
         "matcher.go",
         "predicates.go",
         "values.go",
@@ -18,6 +19,7 @@ go_test(
     srcs = [
         "combinators_test.go",
         "comparisons_test.go",
+        "correlation_test.go",
         "matcher_test.go",
         "predicates_test.go",
     ],
