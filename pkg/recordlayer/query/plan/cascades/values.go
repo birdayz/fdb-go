@@ -29,12 +29,12 @@
 //     PredicateSize + PredicateEquals (structural,
 //     handles IN-list slice operand and
 //     per-instance Value data).
-//   - comparisons.go     — ComparisonType enum (13 operators) +
-//     Comparison value-pair + ComparisonPredicate
-//     wrapping a Value operand with SQL-3VL on NULL
-//     and type mismatch + numeric promotion in cmpAny
-//   - rune-level LIKE matcher + IsEquality / Negate
-//     classification helpers.
+//   - comparisons.go     — 13-operator ComparisonType enum plus
+//     ComparisonPredicate, cmpAny with numeric
+//     promotion, rune-level LIKE matcher, and the
+//     IsEquality / Negate classification helpers. Ops:
+//     =, <>, <, <=, >, >=, IS [NOT] NULL, STARTS_WITH,
+//     IN, IS [NOT] DISTINCT FROM, LIKE.
 //   - correlation.go     — CorrelationIdentifier value-type +
 //     Named / Unique factories + Correlated
 //     interface signature (Quantifier-tracking
