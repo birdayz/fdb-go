@@ -88,6 +88,42 @@ func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
 	}
 }
 
+// Numeric promotion: mixed integer widths compare by int64-promoted
+// values, mixed int/float by float64-promoted values. Mirrors Java's
+// `functions.CompareValues` behavior so cross-width WHERE predicates
+// (e.g. `int32_col > 18` with a literal int64) don't degrade to
+// UNKNOWN.
+func TestComparison_Eval_NumericPromotion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		rhs  any
+		left any
+		want TriBool
+	}{
+		{"int32 vs int64 eq", ComparisonEquals, int64(18), int32(18), TriTrue},
+		{"int vs int64 lt", ComparisonLessThan, int64(10), int(5), TriTrue},
+		{"int8 vs int64 gt", ComparisonGreaterThan, int64(0), int8(7), TriTrue},
+		{"int16 vs int32 eq", ComparisonEquals, int32(42), int16(42), TriTrue},
+		{"float64 vs int64 gt", ComparisonGreaterThan, int64(10), float64(10.5), TriTrue},
+		{"int32 vs float64 lt", ComparisonLessThan, float64(10.5), int32(10), TriTrue},
+		{"float32 vs float64 eq", ComparisonEquals, float64(1.5), float32(1.5), TriTrue},
+		{"int64 vs float64 eq for whole", ComparisonEquals, float64(18), int64(18), TriTrue},
+		// Genuine mismatch still degrades.
+		{"int64 vs bool: UNKNOWN", ComparisonEquals, true, int64(1), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: tc.op, Operand: tc.rhs}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestComparison_Eval_Strings(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonLessThan, Operand: "b"}

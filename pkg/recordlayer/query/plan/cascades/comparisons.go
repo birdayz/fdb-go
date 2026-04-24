@@ -96,43 +96,41 @@ func (c Comparison) Eval(left any) TriBool {
 	return TriFalse
 }
 
-// cmpAny is a tiny total-order comparator over the types the seed
-// predicates exercise: int64, float64, string. Returns (cmp, ok);
-// ok=false signals type mismatch — the caller degrades to UNKNOWN
-// (SQL 3VL). The real port uses the embedded engine's
-// `functions.CompareValues` which handles numeric promotion; seed
-// stays minimal so the test surface is small.
+// cmpAny is a total-order comparator over the primitive types the
+// seed predicates exercise: signed-int{8,16,32,64}, int, float{32,64},
+// string. Returns (cmp, ok); ok=false signals a genuine type
+// mismatch (int vs string, bool, etc.) — the caller degrades to
+// UNKNOWN per SQL 3VL.
+//
+// Numeric promotion matches Java's `functions.CompareValues`: any
+// two numeric operands compare by promoting both to int64 (when all
+// integral) or float64 (when either side is floating). Keeps the
+// common WHERE `int32_col > 18` case from degrading to UNKNOWN just
+// because the literal arrived as int64.
 func cmpAny(a, b any) (int, bool) {
-	switch av := a.(type) {
-	case int64:
-		bv, ok := b.(int64)
-		if !ok {
-			return 0, false
-		}
+	if af, bf, ok := promoteFloat(a, b); ok {
 		switch {
-		case av < bv:
+		case af < bf:
 			return -1, true
-		case av > bv:
+		case af > bf:
 			return 1, true
 		default:
 			return 0, true
 		}
-	case float64:
-		bv, ok := b.(float64)
-		if !ok {
-			return 0, false
-		}
+	}
+	if ai, bi, ok := promoteInt(a, b); ok {
 		switch {
-		case av < bv:
+		case ai < bi:
 			return -1, true
-		case av > bv:
+		case ai > bi:
 			return 1, true
 		default:
 			return 0, true
 		}
-	case string:
-		bv, ok := b.(string)
-		if !ok {
+	}
+	if av, ok := a.(string); ok {
+		bv, ok2 := b.(string)
+		if !ok2 {
 			return 0, false
 		}
 		switch {
@@ -145,6 +143,81 @@ func cmpAny(a, b any) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// promoteInt returns (a,b) as int64 when both are integral. Signed
+// int types only — unsigned promotion needs overflow rules we'll add
+// when a concrete use case calls for it.
+func promoteInt(a, b any) (int64, int64, bool) {
+	ai, ok := toInt64(a)
+	if !ok {
+		return 0, 0, false
+	}
+	bi, ok := toInt64(b)
+	if !ok {
+		return 0, 0, false
+	}
+	return ai, bi, true
+}
+
+// promoteFloat returns (a,b) as float64 when at least one side is
+// floating and the other is floating or integral. Pure-integral
+// pairs return ok=false so the caller prefers the exact int path.
+func promoteFloat(a, b any) (float64, float64, bool) {
+	af, aFloat, aNum := toFloat64(a)
+	if !aNum {
+		return 0, 0, false
+	}
+	bf, bFloat, bNum := toFloat64(b)
+	if !bNum {
+		return 0, 0, false
+	}
+	if !aFloat && !bFloat {
+		return 0, 0, false
+	}
+	return af, bf, true
+}
+
+// toInt64 reports whether v is an integral type; returns the int64
+// promotion when so.
+func toInt64(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	case int16:
+		return int64(x), true
+	case int8:
+		return int64(x), true
+	}
+	return 0, false
+}
+
+// toFloat64 reports whether v is numeric (int-like or float) and
+// returns its float64 promotion. isFloat distinguishes native-float
+// inputs from integral ones promoted here — promoteFloat uses it to
+// prefer the int path when both sides are integral.
+func toFloat64(v any) (f float64, isFloat, numeric bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true, true
+	case float32:
+		return float64(x), true, true
+	case int64:
+		return float64(x), false, true
+	case int:
+		return float64(x), false, true
+	case int32:
+		return float64(x), false, true
+	case int16:
+		return float64(x), false, true
+	case int8:
+		return float64(x), false, true
+	}
+	return 0, false, false
 }
 
 // ComparisonPredicate applies a Comparison to an operand `Value`.
