@@ -442,3 +442,124 @@ func (m *orPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*Plan
 	}
 	return []*PlannerBindings{outer.Bind(m, in)}
 }
+
+// --- AbsorptionRule: AND-absorbs-OR and OR-absorbs-AND -------------
+//
+// Classical boolean absorption:
+//
+//	p AND (p OR q) ≡ p         (AndAbsorbOrRule)
+//	p OR  (p AND q) ≡ p        (OrAbsorbAndRule)
+//
+// Rewrites the enclosing AND/OR by dropping the redundant OR/AND
+// child when any of that child's operands is structurally equal to
+// any sibling in the enclosing connective. Mirrors Java's
+// `ValueSimplificationRuleSet` absorption pass.
+
+// AndAbsorbOrRule: inside an AND, any OR child that contains a
+// sibling is redundant — drop it. `AND(p, OR(p, q))` → `AND(p)` → `p`
+// once the constant-fold rules collapse the unary AND.
+type AndAbsorbOrRule struct {
+	matcher BindingMatcher
+}
+
+// NewAndAbsorbOrRule constructs the rule.
+func NewAndAbsorbOrRule() *AndAbsorbOrRule {
+	r := &AndAbsorbOrRule{}
+	r.matcher = newAndPredicateMatcher()
+	return r
+}
+
+func (r *AndAbsorbOrRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *AndAbsorbOrRule) OnMatch(call *RuleCall) {
+	and := call.Bindings.Get(r.matcher).(*AndPredicate)
+	kept := make([]QueryPredicate, 0, len(and.SubPredicates))
+	changed := false
+	for _, sp := range and.SubPredicates {
+		or, ok := sp.(*OrPredicate)
+		if !ok {
+			kept = append(kept, sp)
+			continue
+		}
+		// Drop the OR if any of its operands matches a sibling.
+		if anyMatchesAnother(or.SubPredicates, and.SubPredicates, sp) {
+			changed = true
+			continue
+		}
+		kept = append(kept, sp)
+	}
+	if !changed {
+		return
+	}
+	switch len(kept) {
+	case 0:
+		// Shouldn't happen — the matching OR still leaves its sibling.
+		call.Yield(NewConstantPredicate(TriTrue))
+	case 1:
+		call.Yield(kept[0])
+	default:
+		call.Yield(&AndPredicate{SubPredicates: kept})
+	}
+}
+
+// OrAbsorbAndRule: mirror. Inside an OR, any AND child that contains
+// a sibling is redundant — drop it. `OR(p, AND(p, q))` → `OR(p)` → `p`.
+type OrAbsorbAndRule struct {
+	matcher BindingMatcher
+}
+
+// NewOrAbsorbAndRule constructs the rule.
+func NewOrAbsorbAndRule() *OrAbsorbAndRule {
+	r := &OrAbsorbAndRule{}
+	r.matcher = newOrPredicateMatcher()
+	return r
+}
+
+func (r *OrAbsorbAndRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
+	or := call.Bindings.Get(r.matcher).(*OrPredicate)
+	kept := make([]QueryPredicate, 0, len(or.SubPredicates))
+	changed := false
+	for _, sp := range or.SubPredicates {
+		and, ok := sp.(*AndPredicate)
+		if !ok {
+			kept = append(kept, sp)
+			continue
+		}
+		if anyMatchesAnother(and.SubPredicates, or.SubPredicates, sp) {
+			changed = true
+			continue
+		}
+		kept = append(kept, sp)
+	}
+	if !changed {
+		return
+	}
+	switch len(kept) {
+	case 0:
+		call.Yield(NewConstantPredicate(TriFalse))
+	case 1:
+		call.Yield(kept[0])
+	default:
+		call.Yield(&OrPredicate{SubPredicates: kept})
+	}
+}
+
+// anyMatchesAnother reports whether any element of `candidates`
+// structurally equals any element of `siblings` other than `self`.
+// Used by the absorption rules to decide whether a child is made
+// redundant by a sibling.
+func anyMatchesAnother(candidates, siblings []QueryPredicate, self QueryPredicate) bool {
+	for _, c := range candidates {
+		for _, s := range siblings {
+			if s == self {
+				continue
+			}
+			if PredicateEquals(c, s) {
+				return true
+			}
+		}
+	}
+	return false
+}

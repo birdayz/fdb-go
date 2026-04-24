@@ -11,6 +11,8 @@ var (
 	_ CascadesRule = (*OrFlattenRule)(nil)
 	_ CascadesRule = (*AndDedupRule)(nil)
 	_ CascadesRule = (*OrDedupRule)(nil)
+	_ CascadesRule = (*AndAbsorbOrRule)(nil)
+	_ CascadesRule = (*OrAbsorbAndRule)(nil)
 )
 
 // AND(p, p, q, p) → AND(p, q).
@@ -488,5 +490,96 @@ func TestAndSimplify_WrongType(t *testing.T) {
 	or := NewOr(NewConstantPredicate(TriTrue))
 	if got := FireRule(rule, or); len(got) != 0 {
 		t.Fatalf("expected AND rule to not fire on OR, got %d yields", len(got))
+	}
+}
+
+// AndAbsorbOrRule: p AND (p OR q) → drop the OR, leaving just `p`.
+func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
+	t.Parallel()
+	rule := NewAndAbsorbOrRule()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+	)
+	and := NewAnd(p, NewOr(p, q))
+	got := FireRule(rule, and)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	if got[0] != QueryPredicate(p) {
+		t.Fatalf("expected p, got %T %v", got[0], got[0])
+	}
+}
+
+// AndAbsorbOrRule leaves AND alone when no OR child shares an
+// operand with a sibling.
+func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
+	t.Parallel()
+	rule := NewAndAbsorbOrRule()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+	)
+	r := NewComparisonPredicate(
+		&FieldValue{Field: "score", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(50)},
+	)
+	and := NewAnd(p, NewOr(q, r))
+	if got := FireRule(rule, and); len(got) != 0 {
+		t.Fatalf("expected rule to decline, got %d yields", len(got))
+	}
+}
+
+// OrAbsorbAndRule: p OR (p AND q) → drop the AND, leaving just `p`.
+func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
+	t.Parallel()
+	rule := NewOrAbsorbAndRule()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+	)
+	or := NewOr(p, NewAnd(p, q))
+	got := FireRule(rule, or)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	if got[0] != QueryPredicate(p) {
+		t.Fatalf("expected p, got %T %v", got[0], got[0])
+	}
+}
+
+// End-to-end through Simplify: a classic absorption plus flatten +
+// dedup cooperation.
+func TestSimplify_Absorption_EndToEnd(t *testing.T) {
+	t.Parallel()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+	)
+	// AND(p, OR(p, q), TRUE) → AND(p, TRUE) → p.
+	pred := NewAnd(
+		p,
+		NewOr(p, q),
+		NewConstantPredicate(TriTrue),
+	)
+	got := Simplify(pred, DefaultSimplifyRules())
+	if got != QueryPredicate(p) {
+		t.Fatalf("expected p to survive, got %T %s", got, got.Explain())
 	}
 }
