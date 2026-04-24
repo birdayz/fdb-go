@@ -140,6 +140,28 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	}
 }
 
+// Simplify recurses through NotPredicate children too. When the
+// inner tree folds to a non-constant leaf, the outer NOT must still
+// survive (only the child was rewritten) — regression cover for the
+// NotPredicate branch in Simplify's recursion switch.
+func TestSimplify_RecursesThroughNot(t *testing.T) {
+	t.Parallel()
+	leaf := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	// NOT(AND(TRUE, leaf)) → inner AND folds to leaf → NOT(leaf).
+	pred := NewNot(NewAnd(NewConstantPredicate(TriTrue), leaf))
+	got := Simplify(pred, DefaultSimplifyRules())
+	not, ok := got.(*NotPredicate)
+	if !ok {
+		t.Fatalf("expected NotPredicate, got %T: %s", got, got.Explain())
+	}
+	if not.Child != QueryPredicate(leaf) {
+		t.Fatalf("expected NOT(leaf), got NOT(%T): %s", not.Child, got.Explain())
+	}
+}
+
 // Kleene 3VL defensive: constants mixed with UNKNOWN must never
 // collapse to FALSE/TRUE incorrectly. Regression cover for any future
 // edit to And/OrConstantSimplifyRule that would break SQL NULL
