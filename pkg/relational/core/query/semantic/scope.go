@@ -148,7 +148,16 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 	if s.parent != nil {
 		return s.parent.ResolveQualifiedColumn(qualifier, col)
 	}
-	return Column{}, ScopeSource{}, &SourceNotFoundError{Alias: qualifier}
+	// Collect all visible aliases across the chain for a better
+	// error message.
+	all := s.AllSourcesRecursive()
+	avail := make([]Identifier, 0, len(all))
+	for _, src := range all {
+		avail = append(avail, src.Alias)
+	}
+	return Column{}, ScopeSource{}, &SourceNotFoundError{
+		Alias: qualifier, Available: avail,
+	}
 }
 
 // AmbiguousColumnError is returned when a bare column reference
@@ -195,13 +204,24 @@ func joinStrings(parts []string, sep string) string {
 }
 
 // SourceNotFoundError is returned when a qualifier doesn't match
-// any FROM-clause alias in the scope chain.
+// any FROM-clause alias in the scope chain. Carries the list of
+// available aliases (inner-first) so callers can render a "did you
+// mean?" suggestion.
 type SourceNotFoundError struct {
-	Alias Identifier
+	Alias     Identifier
+	Available []Identifier
 }
 
 func (e *SourceNotFoundError) Error() string {
-	return fmt.Sprintf("no FROM source aliased as %s", e.Alias)
+	if len(e.Available) == 0 {
+		return fmt.Sprintf("no FROM source aliased as %s", e.Alias)
+	}
+	names := make([]string, 0, len(e.Available))
+	for _, a := range e.Available {
+		names = append(names, a.Name())
+	}
+	return fmt.Sprintf("no FROM source aliased as %s (available: %s)",
+		e.Alias, joinStrings(names, ", "))
 }
 
 // DuplicateAliasError is returned by AddSource when the same alias

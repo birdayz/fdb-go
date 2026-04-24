@@ -128,6 +128,14 @@ func TestScope_ResolveQualifiedColumn_UnknownSource(t *testing.T) {
 	if !errors.As(err, &snf) {
 		t.Fatalf("expected SourceNotFoundError, got %T", err)
 	}
+	// Error should list available aliases for "did you mean?" UX.
+	if len(snf.Available) != 2 {
+		t.Fatalf("expected 2 available aliases, got %d", len(snf.Available))
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "available:") {
+		t.Fatalf("error should list available aliases; got %q", msg)
+	}
 }
 
 func TestScope_ResolveQualifiedColumn_UnknownColumn(t *testing.T) {
