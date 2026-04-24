@@ -1,10 +1,9 @@
 package embedded
 
 import (
-	"errors"
-
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -12,43 +11,37 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog"
 )
 
-// buildWherePredicate converts a WHERE expression context into a
-// cascades.QueryPredicate using the expr walker, with the scope
-// populated from the selectQuery's FROM table. Returns (nil, false)
-// on any shape the walker can't handle, on a catalog lookup miss,
-// or when metadata is nil. Callers use the (pred, true) branch to
-// attach a rich predicate to LogicalFilter; the (nil, false) branch
-// falls back to PredicateText (canonical source) so Explain still
-// renders something useful.
+// buildWherePredicateForTable converts a WHERE expression context
+// into a cascades.QueryPredicate using the expr walker, with a
+// single-source scope over the named table. Returns (nil, false) on
+// any shape the walker can't handle, on a catalog lookup miss, or
+// when metadata is nil.
 //
-// The scope has a single source — the primary table — matching the
-// walker's single-source compat shim. JOIN-backed multi-source
-// WHERE clauses still fall back to text since BuildScopeFromFromClause
-// refuses JOIN.
-func buildWherePredicate(
+// The (pred, true) branch is what callers attach to a LogicalFilter;
+// the (nil, false) branch is the signal to fall back to the
+// canonical source text. Error discrimination is intentionally
+// coarse — unsupported shape, catalog miss, nil metadata all land
+// in the same (nil, false) bucket — because every error at this
+// boundary has the same handling: use text.
+//
+// tableAlias may be empty; the table's own name fills in.
+func buildWherePredicateForTable(
 	md *recordlayer.RecordMetaData,
-	sq *selectQuery,
+	tableName, tableAlias string,
 	whereExpr antlrgen.IWhereExprContext,
 ) (cascades.QueryPredicate, bool) {
-	if md == nil || sq == nil || whereExpr == nil || whereExpr.Expression() == nil {
-		return nil, false
-	}
-	if sq.tableName == "" || sq.derivedQuery != nil || len(sq.joins) > 0 {
-		// Derived tables and joins aren't wired through this path yet
-		// — JOIN would need a multi-source scope and the walker's
-		// single-source shim removed. Derived tables need a nested
-		// logical plan as the source. Both are follow-ups.
+	if md == nil || tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
 		return nil, false
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
-	tbl, err := analyzer.ResolveTable(semantic.FromSegments([]string{sq.tableName}, false))
+	tbl, err := analyzer.ResolveTable(semantic.FromSegments([]string{tableName}, false))
 	if err != nil {
 		return nil, false
 	}
-	alias := semantic.NewUnquoted(sq.tableAlias)
-	if sq.tableAlias == "" {
-		alias = semantic.NewUnquoted(sq.tableName)
+	alias := semantic.NewUnquoted(tableAlias)
+	if tableAlias == "" {
+		alias = semantic.NewUnquoted(tableName)
 	}
 	scope := semantic.NewScope(nil)
 	if err := scope.AddSource(semantic.ScopeSource{
@@ -61,16 +54,23 @@ func buildWherePredicate(
 	resolver := expr.New(analyzer, scope)
 	pred, err := resolver.WalkPredicate(whereExpr.Expression())
 	if err != nil {
-		// UnsupportedExpressionShapeError (and any other walker
-		// error) degrades to the text fallback. The builder's
-		// contract is best-effort: no error is fatal here.
-		var unsupported *expr.UnsupportedExpressionShapeError
-		if errors.As(err, &unsupported) {
-			return nil, false
-		}
 		return nil, false
 	}
 	return pred, true
+}
+
+// buildWherePredicate is the selectQuery-shaped adapter over
+// buildWherePredicateForTable. Declines on derived tables and
+// joins since they need a multi-source scope (follow-up).
+func buildWherePredicate(
+	md *recordlayer.RecordMetaData,
+	sq *selectQuery,
+	whereExpr antlrgen.IWhereExprContext,
+) (cascades.QueryPredicate, bool) {
+	if sq == nil || sq.derivedQuery != nil || len(sq.joins) > 0 {
+		return nil, false
+	}
+	return buildWherePredicateForTable(md, sq.tableName, sq.tableAlias, whereExpr)
 }
 
 // buildLogicalPlanForSelectWithCatalog is the catalog-aware variant
@@ -123,4 +123,60 @@ func upgradeFirstFilter(op logical.LogicalOperator, pred cascades.QueryPredicate
 		}
 		cur = ch[0]
 	}
+}
+
+// buildLogicalPlanForDeleteWithCatalog is the catalog-aware variant
+// of buildLogicalPlanForDelete. If the WHERE walks cleanly through
+// the expr resolver, the emitted LogicalFilter carries a
+// QueryPredicate tree; otherwise the plan is identical to the
+// text-only builder.
+func buildLogicalPlanForDeleteWithCatalog(
+	del antlrgen.IDeleteStatementContext,
+	md *recordlayer.RecordMetaData,
+) logical.LogicalOperator {
+	op := buildLogicalPlanForDelete(del)
+	if op == nil || md == nil || del == nil {
+		return op
+	}
+	tableName := ""
+	if tn := del.TableName(); tn != nil && tn.FullId() != nil {
+		tableName = functions.FullIdToName(tn.FullId())
+	}
+	w := del.WhereExpr()
+	if w == nil || tableName == "" {
+		return op
+	}
+	pred, ok := buildWherePredicateForTable(md, tableName, "", w)
+	if !ok {
+		return op
+	}
+	upgradeFirstFilter(op, pred)
+	return op
+}
+
+// buildLogicalPlanForUpdateWithCatalog is the catalog-aware variant
+// of buildLogicalPlanForUpdate. Same shape as the Delete variant —
+// walker failure falls back to text form on LogicalFilter.
+func buildLogicalPlanForUpdateWithCatalog(
+	upd antlrgen.IUpdateStatementContext,
+	md *recordlayer.RecordMetaData,
+) logical.LogicalOperator {
+	op := buildLogicalPlanForUpdate(upd)
+	if op == nil || md == nil || upd == nil {
+		return op
+	}
+	tableName := ""
+	if tn := upd.TableName(); tn != nil && tn.FullId() != nil {
+		tableName = functions.FullIdToName(tn.FullId())
+	}
+	w := upd.WhereExpr()
+	if w == nil || tableName == "" {
+		return op
+	}
+	pred, ok := buildWherePredicateForTable(md, tableName, "", w)
+	if !ok {
+		return op
+	}
+	upgradeFirstFilter(op, pred)
+	return op
 }

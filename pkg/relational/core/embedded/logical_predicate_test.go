@@ -135,6 +135,73 @@ func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	}
 }
 
+// DELETE WHERE uses the catalog-aware path and emits a real
+// QueryPredicate. Same structural shape as SELECT: LogicalDelete
+// wraps Scan → Filter; the Filter carries the walked predicate.
+func TestBuildLogicalPlanWithCatalog_DeleteWhere(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	del := parseDelete(t, "DELETE FROM Order WHERE price > 5")
+	op := buildLogicalPlanForDeleteWithCatalog(del, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	var filter *logical.LogicalFilter
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
+	}
+	if filter.Predicate == nil {
+		t.Fatal("expected Predicate on DELETE WHERE")
+	}
+	if got := filter.Predicate.Explain(); got != "PRICE > 5" {
+		t.Fatalf("Predicate.Explain: got %q, want PRICE > 5", got)
+	}
+}
+
+// UPDATE WHERE — mirror of DELETE: catalog-aware variant attaches a
+// predicate to the LogicalFilter nested under LogicalUpdate.
+func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	upd := parseUpdate(t, "UPDATE Order SET price = 10 WHERE order_id = 1")
+	op := buildLogicalPlanForUpdateWithCatalog(upd, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	var filter *logical.LogicalFilter
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("expected LogicalFilter in UPDATE plan, got tree:\n%s", op.Explain(""))
+	}
+	if filter.Predicate == nil {
+		t.Fatal("expected Predicate on UPDATE WHERE")
+	}
+	if got := filter.Predicate.Explain(); got != "ORDER_ID = 1" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID = 1", got)
+	}
+}
+
 // JOINs aren't wired through buildWherePredicate yet. The builder
 // must notice and fall back to text rather than producing a broken
 // single-source predicate that ignores the right-hand source.
