@@ -446,11 +446,8 @@ func TestWalkPredicate_NotAndCombo(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	// NOT binds across an AND — `NOT (cond1 AND cond2)` requires
-	// parens in the grammar, but `NOT cond1 AND cond2` is parsed
-	// as `(NOT cond1) AND cond2`. Test the latter, simpler shape —
-	// parenthesised expressions surface as RecordConstructor atoms
-	// which need a separate walker dispatch (next-shift work).
+	// `NOT cond1 AND cond2` is left-associative in the grammar, parsed
+	// as `(NOT cond1) AND cond2`.
 	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NOT active AND id = 1")
 
 	pred, err := r.WalkPredicate(ctx)
@@ -467,6 +464,50 @@ func TestWalkPredicate_NotAndCombo(t *testing.T) {
 	// First child should be a NOT wrapping a ValuePredicate.
 	if _, ok := and.SubPredicates[0].(*cascades.NotPredicate); !ok {
 		t.Fatalf("first child: expected NotPredicate, got %T", and.SubPredicates[0])
+	}
+}
+
+// `NOT (a AND b)` parses via the NotExpression rule whose child is
+// the parenthesised LogicalExpression. WalkPredicate handles this
+// directly — the parens do NOT surface as a RecordConstructor atom
+// because NotExpression.Expression() returns the inner logical node.
+// Pins the wiring so a grammar shuffle doesn't silently fall back
+// to the unsupported-shape error path.
+func TestWalkPredicate_NotParenAnd(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NOT (id = 1 AND name = 'bob')")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	not, ok := pred.(*cascades.NotPredicate)
+	if !ok {
+		t.Fatalf("expected *NotPredicate, got %T", pred)
+	}
+	and, ok := not.Child.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("NOT.Child: expected *AndPredicate, got %T", not.Child)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("inner AND children: got %d, want 2", len(and.SubPredicates))
+	}
+	// Evaluate the truth table to pin semantics: NOT(TRUE AND TRUE) = FALSE,
+	// NOT(TRUE AND FALSE) = TRUE, NOT(FALSE AND _) = TRUE.
+	cases := []struct {
+		row  map[string]any
+		want cascades.TriBool
+	}{
+		{map[string]any{"ID": int64(1), "NAME": "bob"}, cascades.TriFalse},
+		{map[string]any{"ID": int64(1), "NAME": "eve"}, cascades.TriTrue},
+		{map[string]any{"ID": int64(2), "NAME": "bob"}, cascades.TriTrue},
+	}
+	for _, tc := range cases {
+		if got := pred.Eval(tc.row); got != tc.want {
+			t.Errorf("row %v: got %v, want %v", tc.row, got, tc.want)
+		}
 	}
 }
 
