@@ -1,5 +1,7 @@
 package shapeb
 
+import "sync/atomic"
+
 // PlannerBindings in shape (b): a typed lookup per matcher identity.
 //
 // The tension: bindings are heterogeneous — a rule pattern binds a
@@ -91,13 +93,13 @@ type InstanceMatcher[T Value] struct {
 	id uint64
 }
 
-var instanceMatcherCounter uint64
+// atomic so parallel test runs / pattern builds don't race.
+var instanceMatcherCounter atomic.Uint64
 
 // NewInstanceMatcher constructs a fresh InstanceMatcher[T] with a
 // unique identity so bindings don't collide.
 func NewInstanceMatcher[T Value]() *InstanceMatcher[T] {
-	instanceMatcherCounter++
-	return &InstanceMatcher[T]{id: instanceMatcherCounter}
+	return &InstanceMatcher[T]{id: instanceMatcherCounter.Add(1)}
 }
 
 func (m *InstanceMatcher[T]) BindMatchesSafely(outer *PlannerBindings, in T) []*PlannerBindings {
@@ -121,12 +123,12 @@ type AnyMatcher struct {
 	id uint64
 }
 
-var anyMatcherCounter uint64
+// atomic so parallel test runs / pattern builds don't race.
+var anyMatcherCounter atomic.Uint64
 
 // NewAnyMatcher constructs a fresh AnyMatcher with a unique identity.
 func NewAnyMatcher() *AnyMatcher {
-	anyMatcherCounter++
-	return &AnyMatcher{id: anyMatcherCounter}
+	return &AnyMatcher{id: anyMatcherCounter.Add(1)}
 }
 
 func (m *AnyMatcher) BindMatchesSafely(outer *PlannerBindings, in Value) []*PlannerBindings {

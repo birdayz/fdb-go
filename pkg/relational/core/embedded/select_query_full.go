@@ -167,7 +167,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//     9. composite leading-eq + IN-list    — N keys (covered)
 		//    10. range / BETWEEN / LIKE prefix     — (covered)
 		//    11. composite range with leading eq   — (covered)
-		//    12. full type scan (fallback)
+		//    12. composite pure-prefix             — equalities on a
+		//        leading subset of idx cols, no range / IN on trailing
+		//        cols — tuple-prefix scan (covered)
+		//    13. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		pkCols := extractPKUserFields(rt.PrimaryKey)
 		// Populate naturalOrderAliases early so each branch's reverse-

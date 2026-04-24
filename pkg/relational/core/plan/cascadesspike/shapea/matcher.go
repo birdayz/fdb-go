@@ -1,5 +1,7 @@
 package shapea
 
+import "sync/atomic"
+
 // PlannerBindings is an append-only multimap from matcher-identity
 // (pointer) to matched values. Mirrors Java's PlannerBindings,
 // compressed for the spike.
@@ -90,14 +92,15 @@ type AnyValue struct {
 	id uint64
 }
 
-var anyValueCounter uint64
+// atomic so parallel test runs (and parallel rule pattern builds
+// in production) don't race on the increment.
+var anyValueCounter atomic.Uint64
 
 // NewAnyValue constructs a fresh AnyValue matcher with a unique
 // identity so bindings can't collide. Rule authors MUST use this
 // rather than `&AnyValue{}`.
 func NewAnyValue() *AnyValue {
-	anyValueCounter++
-	return &AnyValue{id: anyValueCounter}
+	return &AnyValue{id: anyValueCounter.Add(1)}
 }
 
 func (*AnyValue) RootType() string { return "Value" }
