@@ -50,6 +50,10 @@ gh pr create --draft --title "{shift-name}: {one-line goal from handover priorit
 
 ## Step 4: Work
 
+**THE CADENCE: you work hard until 1 hour before shift end.** A shift is 8 hours. 7 of those are active build-ship-review work; the last 1 is wind-down (handover + review loop + merge — see Step 6). Treat the 1h-before-end mark as a hard floor on when NEW features stop. Before that mark, do not coast, do not wait, do not "save energy for later." Review response and verification are interleaved with new work throughout — they are not a reason to stop shipping.
+
+If you finish the handover's priorities early, keep working. See "When the main task is done, keep working" below. Idling until the shift clock runs out is a failure mode.
+
 Set up a 15-minute kick timer immediately:
 ```
 /loop 15m get back to work
