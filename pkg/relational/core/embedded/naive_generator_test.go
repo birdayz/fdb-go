@@ -46,7 +46,7 @@ func TestNaiveGenerator_Explain_SelectWhere(t *testing.T) {
 		"Project(id, name)",
 		"Limit(10)",
 		"Sort(id ASC)",
-		"Filter(active=TRUE)",
+		"Filter(active = TRUE)",
 		"Scan(users)",
 	} {
 		if !strings.Contains(got, want) {
@@ -59,7 +59,7 @@ func TestNaiveGenerator_Explain_JoinWithWhere(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "SELECT a.id FROM a INNER JOIN b ON a.id = b.a_id WHERE a.active = TRUE")
 	got := p.Explain()
-	for _, want := range []string{"Project(a.id)", "Filter(a.active=TRUE)", "InnerJoin(on a.id=b.a_id)", "Scan(a)", "Scan(b)"} {
+	for _, want := range []string{"Project(a.id)", "Filter(a.active = TRUE)", "InnerJoin(on a.id = b.a_id)", "Scan(a)", "Scan(b)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -70,7 +70,7 @@ func TestNaiveGenerator_Explain_Delete(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "DELETE FROM t WHERE id > 5")
 	got := p.Explain()
-	for _, want := range []string{"Delete(t)", "Filter(id>5)", "Scan(t)"} {
+	for _, want := range []string{"Delete(t)", "Filter(id > 5)", "Scan(t)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -84,7 +84,7 @@ func TestNaiveGenerator_Explain_Update(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "UPDATE users SET active = FALSE WHERE id = 5")
 	got := p.Explain()
-	for _, want := range []string{"Update(users SET active=FALSE)", "Filter(id=5)", "Scan(users)"} {
+	for _, want := range []string{"Update(users SET active=FALSE)", "Filter(id = 5)", "Scan(users)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}

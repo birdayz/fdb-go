@@ -3,6 +3,7 @@ package embedded
 import (
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -303,16 +304,34 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	return op
 }
 
-// canonicalTextOf renders an antlr context as whitespace-collapsed
-// source text. GetText() produces no-whitespace output (tokens
-// concatenated); this is the seed's placeholder until Phase 4.0
-// ports real QueryPredicates. Callers that need a more readable
-// render can post-process.
-func canonicalTextOf(ctx interface{ GetText() string }) string {
+// canonicalTextOf renders an antlr context as source text. When
+// possible (ctx is a ParserRuleContext with resolvable token
+// positions), returns the ORIGINAL source text with whitespace
+// intact — `WHERE id > 5` stays as `id > 5`, not `id>5`. Falls back
+// to `GetText()` (token concatenation, whitespace stripped) when
+// the context doesn't expose its token range.
+//
+// Until Phase 4.0 ports real QueryPredicates this is the surface
+// LogicalFilter.PredicateText etc. carry into the Explain tree.
+func canonicalTextOf(ctx any) string {
 	if ctx == nil {
 		return ""
 	}
-	return ctx.GetText()
+	// Fast path: parser rule context with start/stop tokens.
+	if prc, ok := ctx.(antlr.ParserRuleContext); ok {
+		start := prc.GetStart()
+		stop := prc.GetStop()
+		if start != nil && stop != nil && start.GetInputStream() != nil {
+			return start.GetInputStream().GetTextFromInterval(
+				antlr.NewInterval(start.GetStart(), stop.GetStop()),
+			)
+		}
+	}
+	// Fallback: GetText() concatenates tokens (no whitespace).
+	if gt, ok := ctx.(interface{ GetText() string }); ok {
+		return gt.GetText()
+	}
+	return ""
 }
 
 // buildLogicalPlanForDelete returns a LogicalDelete-rooted tree for

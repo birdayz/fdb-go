@@ -47,7 +47,7 @@ func TestBuildLogicalPlan_SelectStarWhere(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
-	want := "Filter(id>5)\n  Scan(t)"
+	want := "Filter(id > 5)\n  Scan(t)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -117,7 +117,7 @@ func TestBuildLogicalPlan_InnerJoin(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	want := "Project(a.id)\n" +
-		"  InnerJoin(on a.id=b.a_id)\n" +
+		"  InnerJoin(on a.id = b.a_id)\n" +
 		"    Scan(a)\n" +
 		"    Scan(b)"
 	if got := op.Explain(""); got != want {
@@ -133,7 +133,7 @@ func TestBuildLogicalPlan_LeftJoin(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "LeftJoin(on a.id=b.a_id)\n" +
+	want := "LeftJoin(on a.id = b.a_id)\n" +
 		"  Scan(a)\n" +
 		"  Scan(b)"
 	if got := op.Explain(""); got != want {
@@ -149,7 +149,7 @@ func TestBuildLogicalPlan_RightJoin(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "RightJoin(on a.id=b.a_id)\n" +
+	want := "RightJoin(on a.id = b.a_id)\n" +
 		"  Scan(a)\n" +
 		"  Scan(b)"
 	if got := op.Explain(""); got != want {
@@ -166,8 +166,8 @@ func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	// Left-nested: ((a JOIN b) JOIN c)
-	want := "InnerJoin(on b.id=c.b_id)\n" +
-		"  InnerJoin(on a.id=b.a_id)\n" +
+	want := "InnerJoin(on b.id = c.b_id)\n" +
+		"  InnerJoin(on a.id = b.a_id)\n" +
 		"    Scan(a)\n" +
 		"    Scan(b)\n" +
 		"  Scan(c)"
@@ -204,7 +204,7 @@ func TestBuildLogicalPlan_CTE(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	got := op.Explain("")
-	for _, want := range []string{"CTE(active_users)", "Filter(active=TRUE)", "Scan(users)", "Scan(active_users)"} {
+	for _, want := range []string{"CTE(active_users)", "Filter(active = TRUE)", "Scan(users)", "Scan(active_users)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -324,8 +324,8 @@ func TestBuildLogicalPlan_DerivedTable(t *testing.T) {
 	// Outer Project wraps the inner plan (which is Project on Filter
 	// on Scan). Seed: LogicalDerived doesn't exist yet; inner tree
 	// surfaces directly.
-	if got := op.Explain(""); !strings.Contains(got, "Scan(t)") || !strings.Contains(got, "Filter(id>5)") {
-		t.Fatalf("got %q, expected inner plan to contain Scan(t) and Filter(id>5)", got)
+	if got := op.Explain(""); !strings.Contains(got, "Scan(t)") || !strings.Contains(got, "Filter(id > 5)") {
+		t.Fatalf("got %q, expected inner plan to contain Scan(t) and Filter(id > 5)", got)
 	}
 }
 
@@ -396,7 +396,7 @@ func TestBuildLogicalPlan_Delete(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Delete(t)\n  Filter(id>5)\n    Scan(t)"
+	want := "Delete(t)\n  Filter(id > 5)\n    Scan(t)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -420,7 +420,7 @@ func TestBuildLogicalPlan_Update(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Update(t SET v=v+1)\n  Filter(id=5)\n    Scan(t)"
+	want := "Update(t SET v=v+1)\n  Filter(id = 5)\n    Scan(t)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -484,7 +484,7 @@ func TestBuildLogicalPlan_InsertSelect(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Insert(t(id))\n  Project(id)\n    Filter(id>5)\n      Scan(src)"
+	want := "Insert(t(id))\n  Project(id)\n    Filter(id > 5)\n      Scan(src)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
