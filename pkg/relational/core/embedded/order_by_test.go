@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"context"
 	"testing"
 )
 
@@ -228,5 +229,49 @@ func TestBuildOrderByAliases(t *testing.T) {
 	}
 	if _, has := got["ID"]; has {
 		t.Fatalf("unexpected alias for empty-alias projection: %v", got)
+	}
+}
+
+func TestCollectEquatedCols(t *testing.T) {
+	t.Parallel()
+	// Parsing WHERE expressions through the real SQL parser is
+	// heavy for a unit test; the inner flattenAndPredicates +
+	// extractColOpLiteral machinery is exercised by the yamsql
+	// order_by_elimination scenarios. Here we just pin the nil
+	// cases that callers rely on for a safe fallthrough.
+	if got := collectEquatedCols(context.TODO(), nil, nil); got != nil {
+		t.Fatalf("nil where: got non-nil map %v", got)
+	}
+}
+
+func TestDedupeAny(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   []any
+		want []any
+	}{
+		{"nil", nil, nil},
+		{"empty", []any{}, []any{}},
+		{"single", []any{int64(1)}, []any{int64(1)}},
+		{"all unique", []any{int64(1), int64(2), int64(3)}, []any{int64(1), int64(2), int64(3)}},
+		{"trailing dup", []any{int64(1), int64(1)}, []any{int64(1)}},
+		{"interleaved", []any{int64(2), int64(1), int64(2), int64(3), int64(1)}, []any{int64(2), int64(1), int64(3)}},
+		{"all same", []any{int64(5), int64(5), int64(5)}, []any{int64(5)}},
+		{"mixed types unique", []any{int64(1), "foo", int64(1)}, []any{int64(1), "foo"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := dedupeAny(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len mismatch: got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if !valuesEqual(got[i], tc.want[i]) {
+					t.Fatalf("at %d: got %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
