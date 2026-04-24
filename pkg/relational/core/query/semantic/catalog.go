@@ -27,6 +27,13 @@ type Catalog interface {
 	// surfaced separately because it's the common fast-path check
 	// in existence-gating rules.
 	TableExists(name QualifiedName) bool
+
+	// AllTableNames returns every registered table's qualified
+	// name. Order is unspecified; callers that need deterministic
+	// ordering should sort. Used for INFORMATION_SCHEMA-style
+	// reflection and for error messages that enumerate candidate
+	// tables.
+	AllTableNames() []QualifiedName
 }
 
 // Table is the analyzer's view of a single SQL table. Minimal for
@@ -98,6 +105,16 @@ func (c *InMemoryCatalog) LookupTable(name QualifiedName) (Table, bool) {
 func (c *InMemoryCatalog) TableExists(name QualifiedName) bool {
 	_, ok := c.tables[name.String()]
 	return ok
+}
+
+// AllTableNames implements Catalog. Iterates the map — order is
+// unspecified.
+func (c *InMemoryCatalog) AllTableNames() []QualifiedName {
+	out := make([]QualifiedName, 0, len(c.tables))
+	for _, t := range c.tables {
+		out = append(out, t.Name())
+	}
+	return out
 }
 
 // StaticTable is a test-friendly Table impl backing InMemoryCatalog.

@@ -71,6 +71,21 @@ func (w *wrappedCatalog) TableExists(name semantic.QualifiedName) bool {
 	return ok
 }
 
+// AllTableNames implements semantic.Catalog. Iterates the pre-built
+// folded index — order is unspecified (Go map iteration).
+func (w *wrappedCatalog) AllTableNames() []semantic.QualifiedName {
+	if w.md == nil {
+		return nil
+	}
+	out := make([]semantic.QualifiedName, 0, len(w.byFoldedName))
+	for name := range w.byFoldedName {
+		// Wrap as unqualified QualifiedName since Record Layer has
+		// no schemas.
+		out = append(out, semantic.FromSegments([]string{name}, false))
+	}
+	return out
+}
+
 // recordTypeTable adapts a RecordType to semantic.Table. Columns are
 // the proto fields; index names come from RecordType.GetIndexes().
 //

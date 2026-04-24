@@ -102,6 +102,26 @@ func TestStaticTable_ColumnsDefensiveCopy(t *testing.T) {
 	}
 }
 
+func TestInMemoryCatalog_AllTableNames(t *testing.T) {
+	t.Parallel()
+	c := buildTestCatalog()
+	names := c.AllTableNames()
+	if len(names) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(names))
+	}
+	// Order is unspecified; check both are present.
+	got := map[string]bool{}
+	for _, n := range names {
+		got[n.String()] = true
+	}
+	if !got["USERS"] {
+		t.Fatal("USERS missing from AllTableNames")
+	}
+	if !got["SCHEMA1.ORDERS"] {
+		t.Fatal("SCHEMA1.ORDERS missing from AllTableNames")
+	}
+}
+
 func TestStaticTable_IndexesDefensiveCopy(t *testing.T) {
 	t.Parallel()
 	c := buildTestCatalog()
