@@ -398,6 +398,65 @@ func TestWalkPredicate_NotAndCombo(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_Between(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id BETWEEN 1 AND 10")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("BETWEEN → AND(>=, <=): expected AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("AND children: got %d, want 2", len(and.SubPredicates))
+	}
+	// Eval.
+	for _, tc := range []struct {
+		id      int64
+		want    cascades.TriBool
+		comment string
+	}{
+		{1, cascades.TriTrue, "lower bound inclusive"},
+		{5, cascades.TriTrue, "middle"},
+		{10, cascades.TriTrue, "upper bound inclusive"},
+		{11, cascades.TriFalse, "above"},
+		{0, cascades.TriFalse, "below"},
+	} {
+		got := pred.Eval(map[string]any{"ID": tc.id})
+		if got != tc.want {
+			t.Fatalf("id=%d (%s): got %v, want %v", tc.id, tc.comment, got, tc.want)
+		}
+	}
+}
+
+func TestWalkPredicate_NotBetween(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id NOT BETWEEN 1 AND 10")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// NOT wraps the AND.
+	if _, ok := pred.(*cascades.NotPredicate); !ok {
+		t.Fatalf("expected NotPredicate wrapping, got %T", pred)
+	}
+	// Eval: id=5 is in [1,10] so NOT BETWEEN is FALSE.
+	if got := pred.Eval(map[string]any{"ID": int64(5)}); got != cascades.TriFalse {
+		t.Fatalf("5 NOT BETWEEN 1 AND 10: got %v, want FALSE", got)
+	}
+	if got := pred.Eval(map[string]any{"ID": int64(15)}); got != cascades.TriTrue {
+		t.Fatalf("15 NOT BETWEEN 1 AND 10: got %v, want TRUE", got)
+	}
+}
+
 func TestWalkPredicate_IsNull(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

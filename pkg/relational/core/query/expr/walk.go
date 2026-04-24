@@ -275,6 +275,35 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			return r.ResolveIsNotNull(lhs)
 		}
 		return r.ResolveIsNull(lhs)
+	case *antlrgen.BetweenComparisonPredicateContext:
+		// `x BETWEEN lo AND hi` → x >= lo AND x <= hi.
+		// `x NOT BETWEEN lo AND hi` → NOT (x >= lo AND x <= hi),
+		// which the NotComparisonRewrite rule will canonicalise.
+		lhsVal, err := r.walkAtom(atom)
+		if err != nil {
+			return nil, err
+		}
+		loVal, err := r.walkAtom(p.GetLeft())
+		if err != nil {
+			return nil, err
+		}
+		hiVal, err := r.walkAtom(p.GetRight())
+		if err != nil {
+			return nil, err
+		}
+		lowerBound, err := r.ResolveComparison(cascades.ComparisonGreaterThanEq, lhsVal, loVal)
+		if err != nil {
+			return nil, err
+		}
+		upperBound, err := r.ResolveComparison(cascades.ComparisonLessThanOrEq, lhsVal, hiVal)
+		if err != nil {
+			return nil, err
+		}
+		between := r.ResolveAnd(lowerBound, upperBound)
+		if p.NOT() != nil {
+			return r.ResolveNot(between), nil
+		}
+		return between, nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("grammar Predicate %T", pred)}
 }
