@@ -277,6 +277,32 @@ func TestAnalyzer_ExpandQualifiedStar_UnknownAlias(t *testing.T) {
 	if !errors.As(err, &snf) {
 		t.Fatalf("expected SourceNotFoundError, got %T", err)
 	}
+	// Error should list the scope's actual aliases so a human can
+	// see what they could have typed.
+	if len(snf.Available) != 2 {
+		t.Fatalf("expected 2 available aliases, got %d", len(snf.Available))
+	}
+}
+
+// Correlated-star reference: inner scope doesn't have the alias,
+// but the parent scope does. ExpandQualifiedStar walks the chain.
+func TestAnalyzer_ExpandQualifiedStar_Correlated(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	parent, _, _ := buildScope(t) // has aliases u, o
+	child := NewScope(parent)     // empty
+
+	cols, err := a.ExpandQualifiedStar(child, NewUnquoted("u"))
+	if err != nil {
+		t.Fatalf("correlated u.*: %v", err)
+	}
+	if len(cols) == 0 {
+		t.Fatal("expected columns from parent scope")
+	}
+	// First column should come from the U source in the parent scope.
+	if cols[0].Source.Alias.Name() != "U" {
+		t.Fatalf("source alias: got %q, want U", cols[0].Source.Alias.Name())
+	}
 }
 
 func TestAnalyzer_ExpandStar_NilTable(t *testing.T) {
