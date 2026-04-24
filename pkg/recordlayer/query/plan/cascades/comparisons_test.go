@@ -842,6 +842,35 @@ func TestNewLiteralComparison(t *testing.T) {
 	}
 }
 
+// Composite-constant LHS now folds at plan time. Before this
+// pass, constantLiteral only recognised *ConstantValue / *NullValue /
+// *BooleanValue and missed `CAST(5 AS STRING)` (a CastValue with a
+// constant child). Now constantLiteral falls through to
+// EvaluateConstant so composite-constant LHS like CAST / arithmetic
+// over literals folds correctly.
+func TestComparisonConstantSimplify_CompositeConstantLHS_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	// CAST(5 AS INT) is a composite constant — child ConstantValue is
+	// constant, so the whole CastValue evaluates without a row.
+	lhs := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeInt)
+	pred := NewComparisonPredicate(
+		lhs,
+		Comparison{Type: ComparisonEquals, Operand: &ConstantValue{Value: int64(5), Typ: TypeInt}},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield (composite-constant fold), got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("CAST(5 AS INT) = 5: got %v, want TRUE", cp.Value)
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.

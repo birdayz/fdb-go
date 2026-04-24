@@ -389,9 +389,14 @@ func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 // constantLiteral unwraps a known-constant Value to its Go-native
 // literal for plan-time folding. Reports ok=false for any Value
 // whose Evaluate depends on a row context (FieldValue, an
-// ArithmeticValue over row columns, …). Mirrors the whitelist the
-// rule used inline — factored out so both LHS and future RHS call
-// sites read the same way.
+// ArithmeticValue over row columns, …).
+//
+// Leaf constants (ConstantValue / NullValue / BooleanValue) hit
+// the fast path. Composites whose children are all constant —
+// `CAST(5 AS STRING)`, `1 + 2`, `CAST(1+2 AS BOOL)` — fold via
+// EvaluateConstant. The composite path is what lets
+// ComparisonConstantSimplifyRule fire on `CAST(5 AS STRING) = 'X'`
+// rather than leaving the whole predicate unsimplified.
 func constantLiteral(v Value) (any, bool) {
 	switch x := v.(type) {
 	case *ConstantValue:
@@ -407,7 +412,7 @@ func constantLiteral(v Value) (any, bool) {
 		}
 		return *x.Value, true
 	}
-	return nil, false
+	return EvaluateConstant(v)
 }
 
 var comparisonPredicateMatcherCounter atomic.Uint64
