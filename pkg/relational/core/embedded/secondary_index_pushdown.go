@@ -583,3 +583,135 @@ func secondaryIndexCompositeRangeScanCursor(
 		return ir.Record
 	})
 }
+
+// Composite pure-prefix secondary-index pushdown.
+//
+// `WHERE region = 'us' AND plan = 'pro'` on idx_region_plan(region,
+// plan) is a FULL equality — trySecondaryIndexFromWhere handles it.
+// `WHERE region = 'us'` alone narrows to the PREFIX `[region='us']`
+// of idx_region_plan; this branch covers the one-or-more-leading-
+// equalities-with-room-to-spare case that falls through the
+// full-equality check. Without it, a partial-prefix equality on a
+// composite index falls back to a full type scan — a real loss when
+// the leading equated col is selective.
+//
+// Mirrors tryPKCompositePrefixPushdown for PK cols. Tried LAST of
+// the secondary-index branches, after the tighter full-equality /
+// IN-list / range / composite-range forms have had a shot.
+//
+// Bail cases:
+//   - Single-col indexes (no composite structure).
+//   - No equality on the first index col (prefix would be empty).
+//   - Equality on every index col (full-equality path caught it).
+
+type secondaryIndexCompositePrefix struct {
+	indexName  string
+	prefixVals []any
+}
+
+// trySecondaryIndexCompositePrefixPushdown is the SELECT-gated variant
+// of trySecondaryIndexCompositePrefixFromWhere.
+func (c *EmbeddedConnection) trySecondaryIndexCompositePrefixPushdown(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositePrefix, bool) {
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		return secondaryIndexCompositePrefix{}, false
+	}
+	if sq.havingExpr != nil {
+		return secondaryIndexCompositePrefix{}, false
+	}
+	return c.trySecondaryIndexCompositePrefixFromWhere(ctx, store, sq.whereExpr, rt, md)
+}
+
+// trySecondaryIndexCompositePrefixFromWhere picks the first scannable
+// VALUE index whose leading index cols all have equalities in the
+// AND-chain WHERE, returning the longest leading prefix of equated
+// cols. Trailing non-equated (or non-indexed) leaves remain post-
+// filtered by the scan loop's evalPredicate.
+func (c *EmbeddedConnection) trySecondaryIndexCompositePrefixFromWhere(
+	ctx context.Context,
+	store *recordlayer.FDBRecordStore,
+	whereExpr antlrgen.IWhereExprContext,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+) (secondaryIndexCompositePrefix, bool) {
+	if whereExpr == nil {
+		return secondaryIndexCompositePrefix{}, false
+	}
+	leaves, lok := flattenAndPredicates(whereExpr.Expression())
+	if !lok {
+		return secondaryIndexCompositePrefix{}, false
+	}
+	// Collect bare col=literal equalities into a map.
+	equalities := make(map[string]any, len(leaves))
+	for _, leaf := range leaves {
+		col, val, leafOk := extractColEqualsLiteral(ctx, c, leaf)
+		if !leafOk {
+			continue
+		}
+		equalities[strings.ToUpper(col)] = val
+	}
+	if len(equalities) == 0 {
+		return secondaryIndexCompositePrefix{}, false
+	}
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) < 2 {
+			// Single-col indexes are handled by the equality / range /
+			// IN-list branches; skip.
+			continue
+		}
+		prefixVals := make([]any, 0, len(idxCols))
+		for _, col := range idxCols {
+			v, found := equalities[strings.ToUpper(col)]
+			if !found {
+				break
+			}
+			fd := rt.Descriptor.Fields().ByName(protoreflect.Name(col))
+			if fd == nil || !functions.LiteralMatchesPKKind(v, fd.Kind()) {
+				prefixVals = nil
+				break
+			}
+			prefixVals = append(prefixVals, v)
+		}
+		if len(prefixVals) == 0 {
+			continue
+		}
+		if len(prefixVals) == len(idxCols) {
+			// Full equality — trySecondaryIndexFromWhere caught it.
+			// Keep this branch non-overlapping.
+			continue
+		}
+		return secondaryIndexCompositePrefix{indexName: idx.Name, prefixVals: prefixVals}, true
+	}
+	return secondaryIndexCompositePrefix{}, false
+}
+
+// secondaryIndexCompositePrefixScanCursor builds a tuple-prefix scan
+// on a composite secondary index. Low = High = prefix tuple, inclusive
+// both — FDB expands this to every key starting with the prefix (pack
+// + 0xFF on the high side). The MapCursor adapts the indexed-record
+// stream to the stored-record stream the scan loop expects.
+func secondaryIndexCompositePrefixScanCursor(
+	store *recordlayer.FDBRecordStore,
+	cp secondaryIndexCompositePrefix,
+) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
+	// Reuse the equality range builder with a composite key tuple —
+	// it produces exactly the inclusive-inclusive prefix range we need.
+	keyTuple := secondaryIndexKeyTuple{values: cp.prefixVals}
+	inner := store.ScanIndexRecords(cp.indexName, buildSecondaryIndexEqualityTupleRange(keyTuple), nil, recordlayer.ForwardScan())
+	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
+		return ir.Record
+	})
+}

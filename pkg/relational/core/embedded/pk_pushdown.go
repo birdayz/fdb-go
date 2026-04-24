@@ -193,6 +193,9 @@ func pkPushdownCursor(
 	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexCompositeRangeScanCursor(store, sicr)
 	}
+	if sicp, ok := c.trySecondaryIndexCompositePrefixFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexCompositePrefixScanCursor(store, sicp)
+	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }
 

@@ -314,6 +314,24 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			if idx != nil {
 				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
 			}
+		} else if sicp, ok := c.trySecondaryIndexCompositePrefixPushdown(ctx, store, sq, rt, md); ok {
+			// Pure-prefix composite secondary: equalities on a leading
+			// subset of the index cols, no range / IN on trailing
+			// cols. Narrows to tuple-prefix scan [prefixVals...] on
+			// the index subspace; trailing cols stay post-filter via
+			// evalPredicate. Last secondary-index branch — any
+			// tighter form (full-equality, IN-list, range,
+			// composite-range) has already been tried.
+			idx := md.GetIndex(sicp.indexName)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
+					buildSecondaryIndexEqualityTupleRange(secondaryIndexKeyTuple{values: sicp.prefixVals}))
+			} else {
+				cursor = secondaryIndexCompositePrefixScanCursor(store, sicp)
+			}
+			if idx != nil {
+				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
 		} else {
 			// Full type scan emits in PK tuple order (record-type-key
 			// prefix keeps records of the same type contiguous). Use
