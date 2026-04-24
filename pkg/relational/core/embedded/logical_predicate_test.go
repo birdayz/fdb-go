@@ -534,6 +534,49 @@ func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FallsBackToText(t *tes
 	}
 }
 
+// 3-way JOIN — sq.joins carries two entries; buildWherePredicateForJoins
+// must add all three sources (primary + 2 joins). Walker resolves
+// qualified refs from any of the three.
+func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t,
+		"SELECT * FROM Order o "+
+			"JOIN Customer c ON o.order_id = c.customer_id "+
+			"JOIN TypedRecord t ON o.order_id = t.id "+
+			"WHERE o.price > 5 AND t.id > 0")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	var filter *logical.LogicalFilter
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
+	}
+	if filter.Predicate == nil {
+		t.Fatalf("expected resolved Predicate on 3-way JOIN; PredicateText=%q", filter.PredicateText)
+	}
+	got := filter.Predicate.Explain()
+	// Both branches of the AND should resolve.
+	if !strings.Contains(got, "PRICE > 5") {
+		t.Errorf("expected PRICE > 5, got %q", got)
+	}
+	if !strings.Contains(got, "ID > 0") {
+		t.Errorf("expected ID > 0 (from TypedRecord.id), got %q", got)
+	}
+}
+
 // JOIN with ambiguous bare column — `price` exists in both Order
 // and Customer. Walker correctly fails on AmbiguousColumnError;
 // builder falls back to text.
