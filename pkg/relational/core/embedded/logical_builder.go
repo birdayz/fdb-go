@@ -142,6 +142,56 @@ func buildLogicalPlanForDelete(del antlrgen.IDeleteStatementContext) logical.Log
 	return logical.NewDelete(tableName, scan)
 }
 
+// buildLogicalPlanForInsert returns a LogicalInsert-rooted tree for
+// an INSERT statement. Two INSERT shapes:
+//
+//  1. `INSERT INTO t VALUES (…)` — Source is nil (values are not
+//     represented as operators today). The rendered plan is just
+//     `Insert(t[(col, col, …)])`.
+//  2. `INSERT INTO t SELECT …` — Source is the nested SELECT's
+//     logical plan when buildLogicalPlanForSelect succeeds.
+//     Complex SELECT shapes (JOIN / CTE / …) cause the Source to
+//     be nil, but the Insert node itself still renders.
+//
+// Returns nil on a malformed parse.
+func buildLogicalPlanForInsert(ins antlrgen.IInsertStatementContext) logical.LogicalOperator {
+	if ins == nil || ins.TableName() == nil {
+		return nil
+	}
+	tableName := functions.FullIdToName(ins.TableName().FullId())
+
+	var cols []string
+	if colCtx := ins.UidListWithNestingsInParens(); colCtx != nil {
+		if ul := colCtx.UidListWithNestings(); ul != nil {
+			for _, uw := range ul.AllUidWithNestings() {
+				if uw == nil || uw.Uid() == nil {
+					continue
+				}
+				cols = append(cols, functions.StripIdentifierQuotes(uw.Uid().GetText()))
+			}
+		}
+	}
+
+	// INSERT … SELECT: try to build the inner SELECT's logical plan.
+	// If the SELECT shape is out of the builder's scope the inner
+	// plan is nil and the Insert renders without a Source subtree
+	// (same behaviour as VALUES).
+	var source logical.LogicalOperator
+	if selCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueSelectContext); ok {
+		if body := selCtx.QueryExpressionBody(); body != nil {
+			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
+				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+					if sq, err := extractFromSimpleTable(simpleTable); err == nil {
+						source = buildLogicalPlanForSelect(sq)
+					}
+				}
+			}
+		}
+	}
+
+	return logical.NewInsert(tableName, cols, source)
+}
+
 // buildLogicalPlanForUpdate returns a LogicalUpdate-rooted tree for
 // an UPDATE statement. SET assignments render as (col, expr-text)
 // pairs; WHERE wraps the scan in a LogicalFilter. Returns nil on a

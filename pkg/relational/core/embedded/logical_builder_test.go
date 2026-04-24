@@ -199,3 +199,55 @@ func TestBuildLogicalPlan_UpdateMultipleSets(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// parseInsert returns the parsed InsertStatementContext.
+func parseInsert(t *testing.T, sql string) antlrgen.IInsertStatementContext {
+	t.Helper()
+	root, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatalf("parse %q: %v", sql, err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	dml := stmt.DmlStatement()
+	if dml == nil {
+		t.Fatalf("not a DML statement: %q", sql)
+	}
+	return dml.InsertStatement()
+}
+
+func TestBuildLogicalPlan_InsertValues(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForInsert(parseInsert(t, "INSERT INTO t (id, v) VALUES (1, 2)"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	// VALUES form: no Source subtree at the logical level.
+	want := "Insert(t(id, v))"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildLogicalPlan_InsertValuesNoColumnList(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForInsert(parseInsert(t, "INSERT INTO t VALUES (1, 2, 3)"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Insert(t)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildLogicalPlan_InsertSelect(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForInsert(parseInsert(t, "INSERT INTO t (id) SELECT id FROM src WHERE id > 5"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Insert(t(id))\n  Project(id)\n    Filter(id>5)\n      Scan(src)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
