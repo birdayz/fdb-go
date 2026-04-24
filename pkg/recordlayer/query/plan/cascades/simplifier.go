@@ -98,6 +98,15 @@ func applyRulesOnce(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 // flattens run first so the constant-fold rules see a flat operand
 // list; then Comparison constants fold; then Not resolves; then the
 // And/Or identity-drop + absorbing-element rules.
+//
+// Rules NOT included (intentional — follow-up shifts):
+//   - De Morgan NOT-distribution (`NOT(AND(a,b))` → `OR(NOT a, NOT b)`).
+//     Kleene-safe and reducing, but Java applies this as a separate
+//     normalisation pass in `BooleanNormalizer`, not in
+//     `ValueSimplificationRuleSet`. Keep the seed aligned.
+//   - Tautology / contradiction folds that require NOT-NULL
+//     metadata (`x = x` → TRUE iff x is NOT NULL). Waits on Type
+//     nullability tracking.
 func DefaultSimplifyRules() []CascadesRule {
 	return []CascadesRule{
 		NewAndFlattenRule(),
