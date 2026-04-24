@@ -176,12 +176,17 @@ func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 	}
 }
 
-// SELECT without FROM — builder bails.
-func TestBuildLogicalPlan_BailsOnNoFrom(t *testing.T) {
+// SELECT without FROM → LogicalValues.
+func TestBuildLogicalPlan_ValuesNoFrom(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT 1 + 2")
-	if op := buildLogicalPlanForSelect(sq); op != nil {
-		t.Fatalf("expected nil for no-FROM, got %s", op.Explain(""))
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	got := op.Explain("")
+	if !strings.HasPrefix(got, "Values(") {
+		t.Fatalf("got %q, want Values(...)", got)
 	}
 }
 

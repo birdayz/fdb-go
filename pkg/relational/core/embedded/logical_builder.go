@@ -144,9 +144,23 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		return nil
 	}
 	if sq.tableName == "" && sq.derivedQuery == nil {
-		// SELECT without FROM — not a Scan; constant-row projection.
-		// Future: a ValuesOperator. For now, bail.
-		return nil
+		// SELECT without FROM — emit LogicalValues (single-row
+		// constant projection). Carries the projection expression
+		// text per column (future: real Value nodes per RFC-021
+		// Phase 2).
+		rows := make([]string, len(sq.projCols))
+		aliases := make([]string, len(sq.projCols))
+		for i, col := range sq.projCols {
+			expr := col
+			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
+				expr = strings.TrimSpace(sq.projExprs[i].GetText())
+			}
+			rows[i] = expr
+			if sq.projAliases != nil && i < len(sq.projAliases) {
+				aliases[i] = sq.projAliases[i]
+			}
+		}
+		return logical.NewValues(rows, aliases)
 	}
 
 	// Build the FROM-source subtree. Either a plain table scan or a

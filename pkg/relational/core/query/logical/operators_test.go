@@ -19,7 +19,20 @@ var (
 	_ LogicalOperator = (*LogicalDelete)(nil)
 	_ LogicalOperator = (*LogicalDDL)(nil)
 	_ LogicalOperator = (*LogicalCTE)(nil)
+	_ LogicalOperator = (*LogicalValues)(nil)
 )
+
+func TestValues_Explain(t *testing.T) {
+	t.Parallel()
+	v := NewValues([]string{"1+2", "'hello'"}, []string{"", "greeting"})
+	want := "Values(1+2, 'hello' AS greeting)"
+	if got := v.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if len(v.Children()) != 0 {
+		t.Fatalf("Values.Children: expected 0, got %d", len(v.Children()))
+	}
+}
 
 func TestCTE_Explain(t *testing.T) {
 	t.Parallel()

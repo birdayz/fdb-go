@@ -351,6 +351,41 @@ func (d *LogicalDelete) Explain(indent string) string {
 	return fmt.Sprintf("%s\n%s", header, d.Input.Explain(indent+"  "))
 }
 
+// --- LogicalValues (SELECT without FROM) ---------------------------
+
+// LogicalValues is a leaf operator that yields a single row of
+// constant/expression projections — the canonical target for a
+// SELECT without a FROM clause (`SELECT 1 + 2, 'hello'`). Rows is
+// a list of expression-texts per output column; Aliases is parallel
+// (empty string = no AS clause). The number of rows is always 1 in
+// this seed; a future VALUES (…), (…) literal table would extend to
+// multi-row. Java equivalent: a ConstantExpression flowing through
+// LogicalProjectionExpression.
+type LogicalValues struct {
+	Rows    []string
+	Aliases []string
+}
+
+// NewValues constructs a LogicalValues with per-column expression
+// text + parallel aliases.
+func NewValues(rows, aliases []string) *LogicalValues {
+	return &LogicalValues{Rows: rows, Aliases: aliases}
+}
+
+func (*LogicalValues) Children() []LogicalOperator { return []LogicalOperator{} }
+
+func (v *LogicalValues) Explain(indent string) string {
+	parts := make([]string, len(v.Rows))
+	for i, r := range v.Rows {
+		if i < len(v.Aliases) && v.Aliases[i] != "" {
+			parts[i] = fmt.Sprintf("%s AS %s", r, v.Aliases[i])
+		} else {
+			parts[i] = r
+		}
+	}
+	return fmt.Sprintf("%sValues(%s)", indent, strings.Join(parts, ", "))
+}
+
 // --- CTE -----------------------------------------------------------
 
 // LogicalCTE wraps a named Common Table Expression around a Main
