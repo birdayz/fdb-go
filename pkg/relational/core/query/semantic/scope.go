@@ -61,6 +61,18 @@ func (s *Scope) Sources() []ScopeSource {
 	return out
 }
 
+// AllSourcesRecursive returns sources from this scope and every
+// ancestor, inner-first. Useful for "did you mean?" error
+// suggestions when a qualifier misses — callers can enumerate all
+// visible aliases and suggest the closest.
+func (s *Scope) AllSourcesRecursive() []ScopeSource {
+	var out []ScopeSource
+	for cur := s; cur != nil; cur = cur.parent {
+		out = append(out, cur.sources...)
+	}
+	return out
+}
+
 // AddSource appends a FROM-clause source. Returns an error on
 // duplicate alias within the same scope (SQL forbids two sources
 // sharing an alias at the same level).

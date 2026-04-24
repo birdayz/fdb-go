@@ -180,6 +180,30 @@ func TestScope_ParentLookup(t *testing.T) {
 	}
 }
 
+func TestScope_AllSourcesRecursive(t *testing.T) {
+	t.Parallel()
+	c := buildTestCatalog()
+	users, _ := c.LookupTable(ParseQualifiedName("users", false))
+	orders, _ := c.LookupTable(ParseQualifiedName("schema1.orders", false))
+
+	parent := NewScope(nil)
+	_ = parent.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u")})
+	child := NewScope(parent)
+	_ = child.AddSource(ScopeSource{Table: orders, Alias: NewUnquoted("o")})
+
+	all := child.AllSourcesRecursive()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 sources across the chain, got %d", len(all))
+	}
+	// Inner-first: orders before users.
+	if all[0].Alias.Name() != "O" {
+		t.Fatalf("first source alias: got %q, want O (inner-first)", all[0].Alias.Name())
+	}
+	if all[1].Alias.Name() != "U" {
+		t.Fatalf("second source alias: got %q, want U", all[1].Alias.Name())
+	}
+}
+
 // Inner scope shadows outer — if both have the same column name,
 // inner wins.
 func TestScope_InnerShadowsOuter(t *testing.T) {
