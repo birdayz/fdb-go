@@ -115,4 +115,11 @@ func TestFullStack_Pipeline(t *testing.T) {
 		t.Fatalf("after simplify: expected 2 children (tautology dropped), got %d: %s",
 			len(and.SubPredicates), simplified.Explain())
 	}
+
+	// 9. Pin the Explain output so Simplify regressions or
+	// Explain-formatting changes surface here.
+	wantExplain := "(ID >= 18 AND (NAME IS NOT NULL OR ACTIVE))"
+	if got := simplified.Explain(); got != wantExplain {
+		t.Fatalf("Explain: got %q, want %q", got, wantExplain)
+	}
 }
