@@ -81,6 +81,12 @@ func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (cascades.Quer
 		return r.walkPredicatedExpression(c)
 	case *antlrgen.LogicalExpressionContext:
 		return r.walkLogicalExpression(c)
+	case *antlrgen.NotExpressionContext:
+		child, err := r.WalkPredicate(c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		return r.ResolveNot(child), nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 }

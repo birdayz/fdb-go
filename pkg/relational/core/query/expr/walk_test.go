@@ -314,6 +314,49 @@ func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_Not(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NOT active")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if _, ok := pred.(*cascades.NotPredicate); !ok {
+		t.Fatalf("expected *NotPredicate, got %T", pred)
+	}
+}
+
+func TestWalkPredicate_NotAndCombo(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	// NOT binds across an AND — `NOT (cond1 AND cond2)` requires
+	// parens in the grammar, but `NOT cond1 AND cond2` is parsed
+	// as `(NOT cond1) AND cond2`. Test the latter, simpler shape —
+	// parenthesised expressions surface as RecordConstructor atoms
+	// which need a separate walker dispatch (next-shift work).
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NOT active AND id = 1")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("AND children: got %d, want 2", len(and.SubPredicates))
+	}
+	// First child should be a NOT wrapping a ValuePredicate.
+	if _, ok := and.SubPredicates[0].(*cascades.NotPredicate); !ok {
+		t.Fatalf("first child: expected NotPredicate, got %T", and.SubPredicates[0])
+	}
+}
+
 func TestWalkPredicate_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
