@@ -1,0 +1,97 @@
+package cascades
+
+import "testing"
+
+// Micro-benchmarks for the Phase 4.0 cascades seed. These aren't
+// a performance gate today — they're here so subsequent shifts can
+// detect regressions as the real Value + predicate hierarchies
+// land.
+
+func BenchmarkConstantValue_Evaluate(b *testing.B) {
+	v := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	for i := 0; i < b.N; i++ {
+		_ = v.Evaluate(nil)
+	}
+}
+
+func BenchmarkFieldValue_Evaluate(b *testing.B) {
+	v := &FieldValue{Field: "age", Typ: TypeInt}
+	row := map[string]any{"age": int64(30)}
+	for i := 0; i < b.N; i++ {
+		_ = v.Evaluate(row)
+	}
+}
+
+func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
+	// (a + b) * (c - d)
+	v := &ArithmeticValue{
+		Op: OpMul,
+		Left: &ArithmeticValue{
+			Op:    OpAdd,
+			Left:  &FieldValue{Field: "a", Typ: TypeInt},
+			Right: &FieldValue{Field: "b", Typ: TypeInt},
+		},
+		Right: &ArithmeticValue{
+			Op:    OpSub,
+			Left:  &FieldValue{Field: "c", Typ: TypeInt},
+			Right: &FieldValue{Field: "d", Typ: TypeInt},
+		},
+	}
+	row := map[string]any{"a": int64(3), "b": int64(4), "c": int64(10), "d": int64(5)}
+	for i := 0; i < b.N; i++ {
+		_ = v.Evaluate(row)
+	}
+}
+
+func BenchmarkComparisonPredicate_Eval(b *testing.B) {
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	row := map[string]any{"age": int64(30)}
+	for i := 0; i < b.N; i++ {
+		_ = pred.Eval(row)
+	}
+}
+
+func BenchmarkKleeneAnd_Eval(b *testing.B) {
+	// (age >= 18) AND (rank < 5) AND (score > 50)
+	tree := NewAnd(
+		NewComparisonPredicate(&FieldValue{Field: "age", Typ: TypeInt},
+			Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt},
+			Comparison{Type: ComparisonLessThan, Operand: int64(5)}),
+		NewComparisonPredicate(&FieldValue{Field: "score", Typ: TypeInt},
+			Comparison{Type: ComparisonGreaterThan, Operand: int64(50)}),
+	)
+	row := map[string]any{"age": int64(30), "rank": int64(3), "score": int64(80)}
+	for i := 0; i < b.N; i++ {
+		_ = tree.Eval(row)
+	}
+}
+
+func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
+	// Match `ArithmeticValue(Add, ConstantValue, FieldValue)`.
+	lhs := NewConstantMatcher()
+	rhs := NewFieldMatcher()
+	matcher := &ArithmeticMatcher{Op: OpAdd, Left: lhs, Right: rhs}
+	expr := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(5), Typ: TypeInt},
+		Right: &FieldValue{Field: "x", Typ: TypeInt},
+	}
+	outer := NewBindings()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BindMatches(outer, expr)
+	}
+}
+
+func BenchmarkAllOf_BindMatches(b *testing.B) {
+	// AllOf(ConstantMatcher, AnyValue) against a ConstantValue.
+	pattern := NewAllOf("ConstantValue", NewConstantMatcher(), NewAnyValue())
+	cv := &ConstantValue{Value: int64(7), Typ: TypeInt}
+	outer := NewBindings()
+	for i := 0; i < b.N; i++ {
+		_ = pattern.BindMatches(outer, cv)
+	}
+}

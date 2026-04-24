@@ -17,6 +17,7 @@ go_library(
 go_test(
     name = "cascades_test",
     srcs = [
+        "benchmark_test.go",
         "combinators_test.go",
         "comparisons_test.go",
         "correlation_test.go",
