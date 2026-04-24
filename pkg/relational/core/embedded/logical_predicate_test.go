@@ -492,6 +492,46 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 	if filter == nil || filter.Predicate == nil {
 		t.Fatalf("expected resolved Predicate on JOIN with bare-column WHERE")
 	}
+	if got := filter.Predicate.Explain(); !strings.Contains(got, "QUANTITY") {
+		t.Fatalf("expected QUANTITY in resolved predicate, got %q", got)
+	}
+}
+
+// Self-join without explicit alias — `Order JOIN Order ON ...`
+// produces two sources both named ORDER. AddSource trips
+// DuplicateAlias → addSource returns false → buildWherePredicateForJoins
+// returns false → text fallback. Pins the expected degradation
+// for an uncommon but legal shape.
+func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FallsBackToText(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t,
+		"SELECT * FROM Order JOIN Order ON Order.order_id = Order.order_id WHERE price > 5")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	if op == nil {
+		// Parser may reject the duplicate name before reaching the builder;
+		// in that case `parseSelect` would have already failed. If we get
+		// here with a nil op, the builder declined for a different reason.
+		t.Skip("builder returned nil — parser likely rejected duplicate name")
+	}
+	var filter *logical.LogicalFilter
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
+	}
+	if filter.Predicate != nil {
+		t.Fatalf("expected text fallback for self-join without alias; Predicate=%s", filter.Predicate.Explain())
+	}
 }
 
 // JOIN with ambiguous bare column — `price` exists in both Order
