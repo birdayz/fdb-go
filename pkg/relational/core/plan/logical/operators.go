@@ -127,6 +127,11 @@ func NewLimit(input LogicalOperator, limit, offset int64) *LogicalLimit {
 
 func (l *LogicalLimit) Children() []LogicalOperator { return []LogicalOperator{l.Input} }
 func (l *LogicalLimit) Explain(indent string) string {
+	// Negative Limit means "no cap" — plan output reads better as
+	// Offset(N) than as Limit(-1 offset N).
+	if l.Limit < 0 {
+		return fmt.Sprintf("%sOffset(%d)\n%s", indent, l.Offset, l.Input.Explain(indent+"  "))
+	}
 	if l.Offset > 0 {
 		return fmt.Sprintf("%sLimit(%d offset %d)\n%s", indent, l.Limit, l.Offset, l.Input.Explain(indent+"  "))
 	}

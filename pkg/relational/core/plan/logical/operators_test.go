@@ -78,6 +78,12 @@ func TestLimit_Explain(t *testing.T) {
 	if got := lo.Explain(""); got != "Limit(10 offset 5)\n  Scan(t)" {
 		t.Fatalf("Limit.Explain with offset: got %q", got)
 	}
+	// Negative limit (pure offset) renders as Offset(N) for
+	// legibility — "Limit(-1 offset 5)" is unreadable plan output.
+	lp := NewLimit(NewScan("t", ""), -1, 5)
+	if got := lp.Explain(""); got != "Offset(5)\n  Scan(t)" {
+		t.Fatalf("Limit.Explain pure-offset: got %q", got)
+	}
 }
 
 func TestAggregate_Explain(t *testing.T) {
