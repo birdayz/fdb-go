@@ -123,3 +123,130 @@ func TestFullStack_Pipeline(t *testing.T) {
 		t.Fatalf("Explain: got %q, want %q", got, wantExplain)
 	}
 }
+
+// TestFullStack_RichPredicates exercises the parse → walk → simplify
+// → eval pipeline with predicate shapes that test_Pipeline doesn't
+// touch: BETWEEN, IN-list, LIKE, NOT, XOR. Gives us end-to-end
+// coverage for every walker branch the seed handles.
+func TestFullStack_RichPredicates(t *testing.T) {
+	t.Parallel()
+
+	users := &semantic.StaticTable{
+		TableName: semantic.ParseQualifiedName("USERS", false),
+		TableColumns: []semantic.Column{
+			{Id: semantic.NewUnquoted("id"), Type: "INT"},
+			{Id: semantic.NewUnquoted("name"), Type: "STRING", Nullable: true},
+			{Id: semantic.NewUnquoted("role"), Type: "STRING"},
+			{Id: semantic.NewUnquoted("active"), Type: "BOOL"},
+			{Id: semantic.NewUnquoted("admin"), Type: "BOOL", Nullable: true},
+		},
+	}
+	cat := semantic.NewInMemoryCatalog(users)
+	analyzer := semantic.NewAnalyzer(cat, false)
+
+	cases := []struct {
+		name string
+		sql  string
+		row  map[string]any
+		want cascades.TriBool
+	}{
+		{
+			name: "BETWEEN hit",
+			sql:  "SELECT * FROM users WHERE id BETWEEN 10 AND 20",
+			row:  map[string]any{"ID": int64(15)},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "BETWEEN upper exclusive? no — SQL BETWEEN is inclusive",
+			sql:  "SELECT * FROM users WHERE id BETWEEN 10 AND 20",
+			row:  map[string]any{"ID": int64(20)},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "BETWEEN miss",
+			sql:  "SELECT * FROM users WHERE id BETWEEN 10 AND 20",
+			row:  map[string]any{"ID": int64(5)},
+			want: cascades.TriFalse,
+		},
+		{
+			name: "IN list hit",
+			sql:  "SELECT * FROM users WHERE role IN ('admin', 'owner')",
+			row:  map[string]any{"ROLE": "owner"},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "IN list miss",
+			sql:  "SELECT * FROM users WHERE role IN ('admin', 'owner')",
+			row:  map[string]any{"ROLE": "viewer"},
+			want: cascades.TriFalse,
+		},
+		{
+			name: "LIKE prefix",
+			sql:  "SELECT * FROM users WHERE name LIKE 'al%'",
+			row:  map[string]any{"NAME": "alice"},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "LIKE with single-char wildcard",
+			sql:  "SELECT * FROM users WHERE name LIKE 'b_b'",
+			row:  map[string]any{"NAME": "bob"},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "NOT IN list",
+			sql:  "SELECT * FROM users WHERE role NOT IN ('banned', 'guest')",
+			row:  map[string]any{"ROLE": "admin"},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "XOR true/false",
+			sql:  "SELECT * FROM users WHERE active XOR admin",
+			row:  map[string]any{"ACTIVE": true, "ADMIN": false},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "XOR NULL propagates to UNKNOWN",
+			sql:  "SELECT * FROM users WHERE active XOR admin",
+			row:  map[string]any{"ACTIVE": true, "ADMIN": nil},
+			want: cascades.TriUnknown,
+		},
+		{
+			name: "BETWEEN combined with IS NOT NULL",
+			sql:  "SELECT * FROM users WHERE id BETWEEN 1 AND 100 AND name IS NOT NULL",
+			row:  map[string]any{"ID": int64(42), "NAME": "alice"},
+			want: cascades.TriTrue,
+		},
+		{
+			name: "NULL name breaks IS NOT NULL half",
+			sql:  "SELECT * FROM users WHERE id BETWEEN 1 AND 100 AND name IS NOT NULL",
+			row:  map[string]any{"ID": int64(42), "NAME": nil},
+			want: cascades.TriFalse,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := parser.Parse(tc.sql)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.sql, err)
+			}
+			sel := root.Statements().AllStatement()[0].SelectStatement()
+			body := sel.Query().QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+			simple := body.QueryTerm().(*antlrgen.SimpleTableContext)
+			fromCtx := simple.FromClause()
+			scope, err := analyzer.BuildScopeFromFromClause(nil, fromCtx)
+			if err != nil {
+				t.Fatalf("BuildScope: %v", err)
+			}
+			r := expr.New(analyzer, scope)
+			pred, err := r.WalkPredicate(fromCtx.WhereExpr().Expression())
+			if err != nil {
+				t.Fatalf("WalkPredicate: %v", err)
+			}
+			simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+			if got := simplified.Eval(tc.row); got != tc.want {
+				t.Errorf("got %v, want %v (pred: %s)", got, tc.want, simplified.Explain())
+			}
+		})
+	}
+}
