@@ -54,6 +54,25 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 	}
 }
 
+// Non-constant RHS exercises the second Operand.Evaluate(evalCtx)
+// call ComparisonPredicate.Eval grew this shift. Pin the cost
+// against the constant-RHS baseline so a future pessimisation
+// (extra alloc, redundant nil-guard, etc.) shows up in CI bench.
+//
+// The predicate is `age = cutoff` evaluated against a row carrying
+// both fields. Eval reads both LHS and RHS via map lookup before
+// EvalAgainst's int64 promotion and comparison.
+func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	)
+	row := map[string]any{"age": int64(18), "cutoff": int64(18)}
+	for i := 0; i < b.N; i++ {
+		_ = pred.Eval(row)
+	}
+}
+
 func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	// (age >= 18) AND (rank < 5) AND (score > 50)
 	tree := NewAnd(
