@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "expr",
+    srcs = ["expr.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/core/query/semantic",
+    ],
+)
+
+go_test(
+    name = "expr_test",
+    srcs = ["expr_test.go"],
+    deps = [
+        ":expr",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/core/query/semantic",
+    ],
+)
