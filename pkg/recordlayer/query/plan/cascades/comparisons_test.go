@@ -1140,12 +1140,29 @@ func FuzzLikeMatch(f *testing.F) {
 // likeMatchRegexOracle is a known-good reference impl that translates
 // the LIKE pattern to a Go regex and runs it anchored.
 func likeMatchRegexOracle(pattern, s string) bool {
+	return likeMatchRegexOracleWithEscape(pattern, s, 0)
+}
+
+// likeMatchRegexOracleWithEscape is the escape-aware oracle. When
+// escape != 0, the rune in the pattern equal to escape consumes the
+// next character and emits it as a regex-quoted literal — exactly
+// the contract likeMatch documents. A trailing escape (no following
+// char) is malformed: the oracle returns false uniformly, mirroring
+// likeMatch's malformed-pattern handling.
+func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
+	runes := []rune(pattern)
 	var b strings.Builder
-	// (?s) flag: . matches newlines too — matches SQL LIKE's
-	// byte-any semantics where `%` matches any character including
-	// \n / \r, not just printable chars.
 	b.WriteString("(?s)^")
-	for _, r := range pattern {
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if escape != 0 && r == escape {
+			if i+1 >= len(runes) {
+				return false // trailing escape — malformed
+			}
+			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
+			i++
+			continue
+		}
 		switch r {
 		case '%':
 			b.WriteString(".*")
@@ -1158,4 +1175,36 @@ func likeMatchRegexOracle(pattern, s string) bool {
 	b.WriteString("$")
 	re := regexp.MustCompile(b.String())
 	return re.MatchString(s)
+}
+
+// FuzzLikeMatchEscape — same regex-oracle cross-check as FuzzLikeMatch
+// but feeds a non-zero escape rune through both implementations.
+// Catches divergence between the matcher's escape handling and the
+// oracle on adversarial pattern/escape pairs.
+func FuzzLikeMatchEscape(f *testing.F) {
+	// Seeds covering the documented escape behaviors.
+	f.Add(`a\%b`, "a%b")
+	f.Add(`a\_b`, "a_b")
+	f.Add(`%\%`, "x%")
+	f.Add(`\%`, "%")
+	f.Add(`\`, "")
+	f.Fuzz(func(t *testing.T, pattern, s string) {
+		if len(pattern) > 128 || len(s) > 128 {
+			t.Skip()
+		}
+		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
+			t.Skip()
+		}
+		// Pin the escape rune to '\' for fuzz determinism — the
+		// matcher and oracle both vary it via the parameter, so
+		// this fixes one axis while the other (pattern + string)
+		// fuzzes freely.
+		const escape = '\\'
+		got := likeMatch(pattern, s, escape)
+		want := likeMatchRegexOracleWithEscape(pattern, s, escape)
+		if got != want {
+			t.Fatalf("mismatch: pattern=%q s=%q escape=%q got=%v want=%v",
+				pattern, s, escape, got, want)
+		}
+	})
 }

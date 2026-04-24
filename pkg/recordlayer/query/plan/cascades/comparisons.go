@@ -367,12 +367,14 @@ func likeMatch(pattern, s string, escape rune) bool {
 	starPi, starSi := -1, 0
 	for si < len(str) {
 		if pi < len(p) {
-			// Escape: next char is literal. Out-of-range escape (last
-			// char in pattern) treats the escape rune as a literal
-			// itself — same fall-through as a non-meta character.
-			if escape != 0 && p[pi] == escape && pi+1 < len(p) {
-				lit := p[pi+1]
-				if lit == str[si] {
+			if escape != 0 && p[pi] == escape {
+				// Trailing escape (no following char) is malformed —
+				// no match per the documented contract. Otherwise the
+				// rune at pi+1 must match the input literally.
+				if pi+1 >= len(p) {
+					return false
+				}
+				if p[pi+1] == str[si] {
 					pi += 2
 					si++
 					continue
@@ -405,13 +407,12 @@ func likeMatch(pattern, s string, escape rune) bool {
 		}
 		return false
 	}
-	// Trailing wildcards still match. With escape, an escape-followed-
-	// by-meta at the trailing position is two characters and we
-	// already consumed all input — no match. A trailing %% sequence
-	// matches zero chars.
+	// Trailing wildcards still match. With escape, anything other than
+	// `%` in the trailing position is a literal that requires
+	// unconsumed input — no match.
 	for pi < len(p) {
-		if escape != 0 && p[pi] == escape && pi+1 < len(p) {
-			return false // a trailing escape sequence requires unconsumed input
+		if escape != 0 && p[pi] == escape {
+			return false // trailing escape (or escape-sequence requiring more input)
 		}
 		if p[pi] != '%' {
 			return false
