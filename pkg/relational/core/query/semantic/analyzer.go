@@ -70,6 +70,21 @@ func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 	return c, nil
 }
 
+// ExpandStar implements the `SELECT *` rewrite — returns the full
+// column list of the given table in declared order. Each Column is
+// returned unchanged (same Id, Type, Nullable) so downstream plan
+// builders can wrap each into a ColumnReference / ProjectionItem.
+//
+// Mirrors the single-qualifier case of Java's
+// `SemanticAnalyzer.expandStar`. The multi-table / alias-qualified
+// cases (`SELECT t.* FROM t JOIN u`) come with the FROM-scope port.
+func (a *Analyzer) ExpandStar(table Table) []Column {
+	if table == nil {
+		return nil
+	}
+	return table.Columns()
+}
+
 // --- Errors ---------------------------------------------------------
 
 // TableNotFoundError is returned when ResolveTable can't find a

@@ -104,6 +104,32 @@ func TestAnalyzer_ResolveColumn_NilTable(t *testing.T) {
 	}
 }
 
+func TestAnalyzer_ExpandStar(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	tbl, _ := a.ResolveTable(ParseQualifiedName("users", false))
+
+	cols := a.ExpandStar(tbl)
+	if len(cols) != 3 {
+		t.Fatalf("users has 3 columns; got %d", len(cols))
+	}
+	names := []string{cols[0].Id.Name(), cols[1].Id.Name(), cols[2].Id.Name()}
+	wantNames := []string{"ID", "NAME", "AGE"}
+	for i, want := range wantNames {
+		if names[i] != want {
+			t.Fatalf("column %d: got %q, want %q (order matters)", i, names[i], want)
+		}
+	}
+}
+
+func TestAnalyzer_ExpandStar_NilTable(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+	if got := a.ExpandStar(nil); got != nil {
+		t.Fatalf("nil table should produce nil, got %v", got)
+	}
+}
+
 func TestAnalyzer_NilCatalogPanics(t *testing.T) {
 	t.Parallel()
 	defer func() {
