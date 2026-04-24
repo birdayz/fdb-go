@@ -173,9 +173,12 @@ func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
 }
 
 func (p *ComparisonPredicate) Explain() string {
-	operandName := "<unknown>"
+	operandText := "<unknown>"
 	if p.Operand != nil {
-		operandName = p.Operand.Name()
+		// Use the tree-walking ExplainValue for readable output —
+		// `age` / `(a + b)` / `CAST(1 AS STRING)` instead of the
+		// bare Value.Name() which returns "field" / "arith" / "cast".
+		operandText = ExplainValue(p.Operand)
 	}
-	return fmt.Sprintf("%s %s %v", operandName, p.Comparison.Type.Symbol(), p.Comparison.Operand)
+	return fmt.Sprintf("%s %s %v", operandText, p.Comparison.Type.Symbol(), p.Comparison.Operand)
 }

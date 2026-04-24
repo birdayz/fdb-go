@@ -121,7 +121,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 		t.Fatalf("age=NULL >= 18: got %v", got)
 	}
 
-	if got := pred.Explain(); got != "field >= 18" {
+	if got := pred.Explain(); got != "age >= 18" {
 		t.Fatalf("Explain: got %q", got)
 	}
 }
