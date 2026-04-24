@@ -160,6 +160,41 @@ func TestWrap_AllTableNames_PreservesCasing(t *testing.T) {
 	}
 }
 
+// Indexes returns single-type and multi-type indexes on a record
+// type; universal indexes intentionally stay out (different scope).
+func TestWrap_Indexes(t *testing.T) {
+	t.Parallel()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+
+	// Add a single-type VALUE index on Order.price.
+	priceIdx := recordlayer.NewIndex("order_price_idx", recordlayer.Field("price"))
+	b.AddIndex("Order", priceIdx)
+
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	cat := rlcatalog.Wrap(md)
+	tbl, ok := cat.LookupTable(semantic.ParseQualifiedName("order", false))
+	if !ok {
+		t.Fatal("Order should exist")
+	}
+	idxs := tbl.Indexes()
+	found := false
+	for _, name := range idxs {
+		if name == "order_price_idx" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected order_price_idx in Indexes; got %v", idxs)
+	}
+}
+
 func TestWrap_NilMetaData(t *testing.T) {
 	t.Parallel()
 	cat := rlcatalog.Wrap(nil)
