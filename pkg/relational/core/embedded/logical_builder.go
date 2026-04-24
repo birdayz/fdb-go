@@ -3,6 +3,8 @@ package embedded
 import (
 	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
@@ -122,4 +124,52 @@ func canonicalTextOf(ctx interface{ GetText() string }) string {
 		return ""
 	}
 	return ctx.GetText()
+}
+
+// buildLogicalPlanForDelete returns a LogicalDelete-rooted tree for
+// a DELETE statement. Input is the parse-tree context; output wraps
+// a LogicalScan(table) with an optional LogicalFilter (the WHERE).
+// Returns nil on a malformed parse (missing table).
+func buildLogicalPlanForDelete(del antlrgen.IDeleteStatementContext) logical.LogicalOperator {
+	if del == nil || del.TableName() == nil {
+		return nil
+	}
+	tableName := functions.FullIdToName(del.TableName().FullId())
+	var scan logical.LogicalOperator = logical.NewScan(tableName, "")
+	if w := del.WhereExpr(); w != nil {
+		scan = logical.NewFilter(scan, canonicalTextOf(w))
+	}
+	return logical.NewDelete(tableName, scan)
+}
+
+// buildLogicalPlanForUpdate returns a LogicalUpdate-rooted tree for
+// an UPDATE statement. SET assignments render as (col, expr-text)
+// pairs; WHERE wraps the scan in a LogicalFilter. Returns nil on a
+// malformed parse.
+func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.LogicalOperator {
+	if upd == nil || upd.TableName() == nil {
+		return nil
+	}
+	tableName := functions.FullIdToName(upd.TableName().FullId())
+	var scan logical.LogicalOperator = logical.NewScan(tableName, "")
+	if w := upd.WhereExpr(); w != nil {
+		scan = logical.NewFilter(scan, canonicalTextOf(w))
+	}
+	var sets []logical.Assignment
+	for _, el := range upd.AllUpdatedElement() {
+		if el == nil || el.FullColumnName() == nil || el.Expression() == nil {
+			continue
+		}
+		col := functions.FullIdToName(el.FullColumnName().FullId())
+		// Strip the table-qualifier if present — UPDATE SET uses bare
+		// col names at the logical level.
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			col = col[dot+1:]
+		}
+		sets = append(sets, logical.Assignment{
+			Column: col,
+			Expr:   strings.TrimSpace(el.Expression().GetText()),
+		})
+	}
+	return logical.NewUpdate(tableName, sets, scan)
 }

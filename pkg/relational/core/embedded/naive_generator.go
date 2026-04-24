@@ -137,8 +137,25 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			}
 			return query.Result{RowsAffected: n}, nil
 		},
-		UpdateFn:  func() bool { return true },
-		ExplainFn: func() string { return explainStatement(statementKind(stmt), stmt) },
+		UpdateFn: func() bool { return true },
+		ExplainFn: func() string {
+			// UPDATE / DELETE: emit a real LogicalOperator tree.
+			// Other DML / DDL / TX shapes fall back to canonical-SQL
+			// text (same Phase 1a placeholder as before).
+			if dml := stmt.DmlStatement(); dml != nil {
+				if del := dml.DeleteStatement(); del != nil {
+					if op := buildLogicalPlanForDelete(del); op != nil {
+						return op.Explain("")
+					}
+				}
+				if upd := dml.UpdateStatement(); upd != nil {
+					if op := buildLogicalPlanForUpdate(upd); op != nil {
+						return op.Explain("")
+					}
+				}
+			}
+			return explainStatement(statementKind(stmt), stmt)
+		},
 	}, nil
 }
 

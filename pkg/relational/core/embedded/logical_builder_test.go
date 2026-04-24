@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
 // parseSelect is a test helper that parses SQL and returns the
@@ -112,5 +113,89 @@ func TestBuildLogicalPlan_Nil(t *testing.T) {
 	t.Parallel()
 	if op := buildLogicalPlanForSelect(nil); op != nil {
 		t.Fatalf("expected nil for nil input, got %T", op)
+	}
+	if op := buildLogicalPlanForDelete(nil); op != nil {
+		t.Fatalf("expected nil for nil delete, got %T", op)
+	}
+	if op := buildLogicalPlanForUpdate(nil); op != nil {
+		t.Fatalf("expected nil for nil update, got %T", op)
+	}
+}
+
+// parseDelete returns the parsed DeleteStatementContext.
+func parseDelete(t *testing.T, sql string) antlrgen.IDeleteStatementContext {
+	t.Helper()
+	root, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatalf("parse %q: %v", sql, err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	dml := stmt.DmlStatement()
+	if dml == nil {
+		t.Fatalf("not a DML statement: %q", sql)
+	}
+	return dml.DeleteStatement()
+}
+
+// parseUpdate returns the parsed UpdateStatementContext.
+func parseUpdate(t *testing.T, sql string) antlrgen.IUpdateStatementContext {
+	t.Helper()
+	root, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatalf("parse %q: %v", sql, err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	dml := stmt.DmlStatement()
+	if dml == nil {
+		t.Fatalf("not a DML statement: %q", sql)
+	}
+	return dml.UpdateStatement()
+}
+
+func TestBuildLogicalPlan_Delete(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForDelete(parseDelete(t, "DELETE FROM t WHERE id > 5"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Delete(t)\n  Filter(id>5)\n    Scan(t)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildLogicalPlan_DeleteNoWhere(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForDelete(parseDelete(t, "DELETE FROM t"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Delete(t)\n  Scan(t)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildLogicalPlan_Update(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForUpdate(parseUpdate(t, "UPDATE t SET v = v + 1 WHERE id = 5"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Update(t SET v=v+1)\n  Filter(id=5)\n    Scan(t)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildLogicalPlan_UpdateMultipleSets(t *testing.T) {
+	t.Parallel()
+	op := buildLogicalPlanForUpdate(parseUpdate(t, "UPDATE t SET v = 1, name = 'x'"))
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Update(t SET v=1, name='x')\n  Scan(t)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
