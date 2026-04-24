@@ -210,6 +210,59 @@ func TestComparisonConstSimplify_UnaryIsNull(t *testing.T) {
 	}
 }
 
+// STARTS_WITH / IN fold through the same rule since their operand
+// is still a ConstantValue — the Comparison's Eval method knows how
+// to handle the special comparator types, so the rule needs no
+// special-casing.
+func TestComparisonConstSimplify_StartsWithAndIn(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	cases := []struct {
+		name string
+		lhs  any
+		cmp  Comparison
+		want TriBool
+	}{
+		{
+			"'hello' STARTS_WITH 'hel'", "hello",
+			Comparison{Type: ComparisonStartsWith, Operand: "hel"},
+			TriTrue,
+		},
+		{
+			"'world' STARTS_WITH 'hel'", "world",
+			Comparison{Type: ComparisonStartsWith, Operand: "hel"},
+			TriFalse,
+		},
+		{
+			"5 IN (1,5,9)", int64(5),
+			Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(5), int64(9)}},
+			TriTrue,
+		},
+		{
+			"5 IN (1,NULL)", int64(5),
+			Comparison{Type: ComparisonIn, Operand: []any{int64(1), nil}},
+			TriUnknown,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(
+				&ConstantValue{Value: tc.lhs, Typ: TypeString},
+				tc.cmp,
+			)
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok || cp.Value != tc.want {
+				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
+			}
+		})
+	}
+}
+
 // FieldValue operand still declines — can't fold without a row.
 func TestComparisonConstSimplify_FieldWithIsNullDeclines(t *testing.T) {
 	t.Parallel()
