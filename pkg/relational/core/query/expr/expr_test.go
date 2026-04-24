@@ -2,6 +2,7 @@ package expr_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -137,6 +138,27 @@ func TestResolver_ResolveConstant_Unsupported(t *testing.T) {
 	// A type the seed doesn't support.
 	if _, err := r.ResolveConstant([]int{1, 2}); err == nil {
 		t.Fatal("expected error for []int literal")
+	}
+}
+
+// float literals get a specific error pointing at the Type hierarchy
+// port, not a generic "unsupported" — helps future maintainers
+// know where to wire FLOAT support.
+func TestResolver_ResolveConstant_FloatSpecificError(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	_, err := r.ResolveConstant(float64(3.14))
+	if err == nil {
+		t.Fatal("expected error for float64")
+	}
+	if !strings.Contains(err.Error(), "TypeFloat") {
+		t.Fatalf("error should mention TypeFloat; got %q", err.Error())
+	}
+	_, err32 := r.ResolveConstant(float32(2.5))
+	if err32 == nil {
+		t.Fatal("expected error for float32")
 	}
 }
 

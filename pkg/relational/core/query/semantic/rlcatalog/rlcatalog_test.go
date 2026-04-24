@@ -133,6 +133,33 @@ func TestNewAnalyzer(t *testing.T) {
 	}
 }
 
+func TestWrap_AllTableNames_PreservesCasing(t *testing.T) {
+	t.Parallel()
+	md := buildMetaData(t)
+	cat := rlcatalog.Wrap(md)
+
+	names := cat.AllTableNames()
+	if len(names) == 0 {
+		t.Fatal("expected tables")
+	}
+	// Proto record types preserve source casing — not all-caps.
+	// Find "Order" (mixed case) among the names.
+	found := false
+	for _, n := range names {
+		if n.Name() == "Order" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		got := make([]string, 0, len(names))
+		for _, n := range names {
+			got = append(got, n.String())
+		}
+		t.Fatalf("expected original-casing 'Order' in AllTableNames; got %v", got)
+	}
+}
+
 func TestWrap_NilMetaData(t *testing.T) {
 	t.Parallel()
 	cat := rlcatalog.Wrap(nil)

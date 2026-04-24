@@ -54,6 +54,14 @@ func New(analyzer *semantic.Analyzer, scope *semantic.Scope) *Resolver {
 // builder, this will produce a FieldValue wrapping a
 // QuantifiedObjectValue to carry the source correlation.
 //
+// Row-key contract: FieldValue.Field is stored in the Identifier's
+// case-folded form (upper-case unless the source was quoted).
+// Callers feeding FieldValue.Evaluate a row map MUST key the map
+// with the same case-folded names — otherwise lookup silently
+// returns nil. The SQL executor's row-projection layer is
+// responsible for that normalisation. Documented explicitly here
+// because a subtle-lookup-fail is an easy trap when integrating.
+//
 // Returns the underlying semantic errors verbatim so callers can
 // match via errors.As.
 func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (cascades.Value, error) {
@@ -91,6 +99,12 @@ func (r *Resolver) ResolveArithmetic(op cascades.ArithmeticOp, left, right casca
 // non-constant RHS the current seed doesn't build a predicate
 // (returns an error) — the real Comparison type will take a Value
 // on the RHS in a later commit.
+//
+// Does NOT pre-fold even when both operands are constant. `5 = 5`
+// produces a real ComparisonPredicate; the fixpoint simplifier
+// folds it to TRUE via ComparisonConstantSimplifyRule. Eager
+// folding here would hide foldable shapes from rule matchers that
+// expect to see them.
 func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cascades.Value) (cascades.QueryPredicate, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
@@ -324,7 +338,9 @@ func sqlTypeToCascadesValueType(sqlType string) cascades.ValueType {
 //
 // Returns an error when the literal's runtime type doesn't map to
 // any seed ValueType — nil, int, int32, int64, string, bool are
-// supported.
+// supported. float32/float64 are explicitly flagged pending the
+// Type hierarchy port (cascades.TypeFloat doesn't exist yet; don't
+// silently pretend they're ints).
 func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
 	switch v := lit.(type) {
 	case nil:
@@ -339,6 +355,12 @@ func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
 		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeInt}, nil
 	case string:
 		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeString}, nil
+	case float32, float64:
+		// Pending cascades.TypeFloat in the Type hierarchy port.
+		// Specific error message so future maintainers know this is
+		// the companion site for FLOAT support.
+		return nil, fmt.Errorf(
+			"expr.ResolveConstant: float literals unsupported until cascades.TypeFloat lands (Phase 4.0 Type hierarchy); got %v", v)
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
 }

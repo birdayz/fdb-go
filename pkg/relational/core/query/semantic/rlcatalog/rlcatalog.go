@@ -71,17 +71,22 @@ func (w *wrappedCatalog) TableExists(name semantic.QualifiedName) bool {
 	return ok
 }
 
-// AllTableNames implements semantic.Catalog. Iterates the pre-built
-// folded index — order is unspecified (Go map iteration).
+// AllTableNames implements semantic.Catalog. Returns original
+// proto-casing names (not case-folded) so INFORMATION_SCHEMA
+// enumeration and 'available tables: …' error messages show the
+// user's preferred spelling, not UPPER-ed keys. Iterates
+// md.RecordTypes() rather than the folded index for that reason.
 func (w *wrappedCatalog) AllTableNames() []semantic.QualifiedName {
 	if w.md == nil {
 		return nil
 	}
-	out := make([]semantic.QualifiedName, 0, len(w.byFoldedName))
-	for name := range w.byFoldedName {
+	types := w.md.RecordTypes()
+	out := make([]semantic.QualifiedName, 0, len(types))
+	for rtName := range types {
 		// Wrap as unqualified QualifiedName since Record Layer has
-		// no schemas.
-		out = append(out, semantic.FromSegments([]string{name}, false))
+		// no schemas. FromSegments with caseSensitive=true
+		// preserves the source casing verbatim.
+		out = append(out, semantic.FromSegments([]string{rtName}, true))
 	}
 	return out
 }
