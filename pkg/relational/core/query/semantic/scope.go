@@ -141,10 +141,14 @@ func (s *Scope) ResolveQualifiedColumn(qualifier, col Identifier) (Column, Scope
 
 // AmbiguousColumnError is returned when a bare column reference
 // matches multiple sources at the same scope level. Carries the
-// conflicting identifier, the count, and the conflicting source
-// aliases so the user knows which tables to qualify against.
+// conflicting identifier and the conflicting source aliases so the
+// user knows which tables to qualify against.
 type AmbiguousColumnError struct {
-	Id      Identifier
+	Id Identifier
+	// Matches is always equal to len(Sources); exists as a
+	// convenience accessor for callers who don't need the full
+	// alias list. Future API tightening may remove it — prefer
+	// len(Sources) for new code.
 	Matches int
 	// Sources is the list of ScopeSource aliases that matched,
 	// allowing the user-facing message to suggest

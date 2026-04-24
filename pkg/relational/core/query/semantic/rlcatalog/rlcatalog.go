@@ -100,13 +100,14 @@ func (t *recordTypeTable) LookupColumn(id semantic.Identifier) (semantic.Column,
 	if t.rt.Descriptor == nil {
 		return semantic.Column{}, false
 	}
-	target := id.Name()
+	// Hoist the case-folded target outside the loop — it's constant
+	// across iterations; earlier version built it per-iteration.
+	targetFolded := semantic.NewUnquoted(id.Name())
 	fields := t.rt.Descriptor.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		f := fields.Get(i)
-		// Fields are identifier-like; case-fold for match.
 		candidate := semantic.NewUnquoted(string(f.Name()))
-		if candidate.EqualsIgnoreQuoting(semantic.NewUnquoted(target)) {
+		if candidate.EqualsIgnoreQuoting(targetFolded) {
 			return semantic.Column{
 				Id:       candidate,
 				Type:     protoKindToSQL(f.Kind()),
