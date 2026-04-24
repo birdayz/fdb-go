@@ -91,8 +91,19 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 				}
 				return query.Result{Rows: rows}, nil
 			},
-			UpdateFn:  func() bool { return false },
-			ExplainFn: func() string { return explainStatement("SELECT", sel) },
+			UpdateFn: func() bool { return false },
+			ExplainFn: func() string {
+				// Try to render a real LogicalOperator tree. Falls
+				// back to canonical-SQL text for shapes
+				// buildLogicalPlanForSelect doesn't cover yet (JOIN,
+				// aggregate, CTE, derived, UNION).
+				if sq, err := extractSelectParts(sel); err == nil {
+					if op := buildLogicalPlanForSelect(sq); op != nil {
+						return op.Explain("")
+					}
+				}
+				return explainStatement("SELECT", sel)
+			},
 		}, nil
 	}
 
