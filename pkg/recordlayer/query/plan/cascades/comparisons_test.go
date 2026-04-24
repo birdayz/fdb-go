@@ -124,6 +124,36 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	}
 }
 
+// STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
+// non-string operands (matches numeric type-mismatch behavior).
+func TestComparison_Eval_StartsWith(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		left any
+		rhs  any
+		want TriBool
+	}{
+		{"hello STARTS_WITH hel", "hello", "hel", TriTrue},
+		{"hello STARTS_WITH hello", "hello", "hello", TriTrue},
+		{"hello STARTS_WITH helloworld", "hello", "helloworld", TriFalse},
+		{"empty STARTS_WITH empty", "", "", TriTrue},
+		{"abc STARTS_WITH empty", "abc", "", TriTrue},
+		{"empty STARTS_WITH abc", "", "abc", TriFalse},
+		{"int LHS degrades", int64(5), "5", TriUnknown},
+		{"int RHS degrades", "5", int64(5), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: ComparisonStartsWith, Operand: tc.rhs}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // IS NULL / IS NOT NULL: unary SQL 2VL comparisons that resolve
 // definitively even on NULL input (unlike ordinary comparisons which
 // degrade to UNKNOWN).

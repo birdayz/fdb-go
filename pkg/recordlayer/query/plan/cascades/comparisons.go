@@ -1,6 +1,9 @@
 package cascades
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Comparisons — seed.
 //
@@ -31,6 +34,7 @@ const (
 	ComparisonGreaterThanEq                       // >=
 	ComparisonIsNull                              // IS NULL (unary, LHS-only)
 	ComparisonIsNotNull                           // IS NOT NULL (unary, LHS-only)
+	ComparisonStartsWith                          // STARTS_WITH (string LHS, string RHS prefix)
 )
 
 // IsUnary reports whether the comparison takes no RHS operand
@@ -59,6 +63,8 @@ func (c ComparisonType) Symbol() string {
 		return "IS NULL"
 	case ComparisonIsNotNull:
 		return "IS NOT NULL"
+	case ComparisonStartsWith:
+		return "STARTS_WITH"
 	default:
 		return "?"
 	}
@@ -95,6 +101,19 @@ func (c Comparison) Eval(left any) TriBool {
 	}
 	if left == nil || c.Operand == nil {
 		return TriUnknown
+	}
+	// STARTS_WITH needs string LHS + string RHS; typed-mismatch
+	// degrades to UNKNOWN per SQL 3VL like the numeric comparators.
+	if c.Type == ComparisonStartsWith {
+		ls, lok := left.(string)
+		rs, rok := c.Operand.(string)
+		if !lok || !rok {
+			return TriUnknown
+		}
+		if strings.HasPrefix(ls, rs) {
+			return TriTrue
+		}
+		return TriFalse
 	}
 	cmp, ok := cmpAny(left, c.Operand)
 	if !ok {
