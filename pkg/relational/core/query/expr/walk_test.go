@@ -704,6 +704,44 @@ func TestWalkExpression_AggregateFunctions(t *testing.T) {
 	}
 }
 
+// End-to-end integration: a compound WHERE walks through the
+// resolver, produces a predicate tree, and evaluates correctly.
+func TestWalker_E2E_Integration(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	// `WHERE id >= 1 AND id <= 10 AND name IS NOT NULL` — range +
+	// NOT NULL. Opaque-field predicates, simplifier leaves shape.
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id >= 1 AND id <= 10 AND name IS NOT NULL")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 3 {
+		t.Fatalf("children: got %d, want 3", len(and.SubPredicates))
+	}
+
+	// Evaluate against some rows.
+	row := map[string]any{"ID": int64(5), "NAME": "bob"}
+	if got := pred.Eval(row); got != cascades.TriTrue {
+		t.Fatalf("id=5, name=bob: got %v, want TRUE", got)
+	}
+	row["NAME"] = nil
+	if got := pred.Eval(row); got != cascades.TriFalse {
+		t.Fatalf("id=5, name=NULL: got %v, want FALSE", got)
+	}
+	row["NAME"] = "bob"
+	row["ID"] = int64(11)
+	if got := pred.Eval(row); got != cascades.TriFalse {
+		t.Fatalf("id=11, name=bob: got %v, want FALSE", got)
+	}
+}
+
 func TestWalkExpression_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
