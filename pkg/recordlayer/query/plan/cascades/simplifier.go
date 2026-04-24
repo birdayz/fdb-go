@@ -5,10 +5,10 @@ package cascades
 // Tiny fixed-point driver that applies a list of rules to a
 // QueryPredicate until no rule yields. Not a real planner (no memo,
 // no cost model, no task stack) — the Phase 4.6 CascadesPlanner
-// replaces this with a memo-based driver. Seed exists so the three
-// simplification rules shipped this shift (AndConstantSimplify,
-// OrConstantSimplify, NotConstantSimplify) have a working end-to-end
-// composition point, proving the full rule-driver loop works.
+// replaces this with a memo-based driver. Seed exists so the
+// simplification rules in DefaultSimplifyRules have a working
+// end-to-end composition point, proving the full rule-driver loop
+// works.
 
 // Simplify iterates the rules on `pred` until no rule produces a
 // rewrite, then returns the final form. Each iteration applies every
