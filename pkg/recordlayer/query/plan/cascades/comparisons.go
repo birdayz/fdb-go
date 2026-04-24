@@ -371,6 +371,23 @@ func cmpAny(a, b any) (int, bool) {
 			return 0, true
 		}
 	}
+	// Bool equality: FALSE < TRUE (following SQL's TRUE > FALSE
+	// convention). Used by `x = TRUE` / `x = FALSE` from the
+	// expression resolver's IS TRUE / IS FALSE desugar.
+	if av, ok := a.(bool); ok {
+		bv, ok2 := b.(bool)
+		if !ok2 {
+			return 0, false
+		}
+		switch {
+		case av == bv:
+			return 0, true
+		case !av && bv: // false < true
+			return -1, true
+		default: // av && !bv: true > false
+			return 1, true
+		}
+	}
 	return 0, false
 }
 

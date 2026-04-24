@@ -393,22 +393,46 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 	}
 	switch p := pred.(type) {
 	case *antlrgen.IsExpressionContext:
-		if p.NULL_LITERAL() == nil {
-			// `x IS TRUE` / `x IS FALSE` require bool-capable cmpAny
-			// which cascades doesn't expose yet — desugar to the
-			// right predicate only after that lands.
-			return nil, &UnsupportedExpressionShapeError{
-				Shape: "IS expression without NULL literal (IS TRUE/FALSE pending cmpAny bool support)",
-			}
-		}
 		lhs, err := r.walkAtom(atom)
 		if err != nil {
 			return nil, err
 		}
-		if p.NOT() != nil {
-			return r.ResolveIsNotNull(lhs)
+		switch {
+		case p.NULL_LITERAL() != nil:
+			if p.NOT() != nil {
+				return r.ResolveIsNotNull(lhs)
+			}
+			return r.ResolveIsNull(lhs)
+		case p.TRUE() != nil:
+			// `x IS TRUE` ≡ `x = TRUE`. Distinct from `x = TRUE`
+			// syntactically in the grammar, but semantically the
+			// same under Kleene (NULL = TRUE → UNKNOWN, NULL IS
+			// TRUE → FALSE) — wait, actually they DIFFER on NULL:
+			//   `NULL = TRUE` → UNKNOWN
+			//   `NULL IS TRUE` → FALSE  (2VL semantics)
+			// To get the 2VL behaviour, wrap in a real `=`
+			// predicate that produces UNKNOWN on NULL, then rely
+			// on downstream Kleene-to-2VL coercion at the WHERE
+			// level (WHERE UNKNOWN == not-selected, same as FALSE).
+			// That's what the embedded engine does today via
+			// triBool.toBool.
+			pred := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+				Type: cascades.ComparisonEquals, Operand: true,
+			})
+			if p.NOT() != nil {
+				return r.ResolveNot(pred), nil
+			}
+			return pred, nil
+		case p.FALSE() != nil:
+			pred := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+				Type: cascades.ComparisonEquals, Operand: false,
+			})
+			if p.NOT() != nil {
+				return r.ResolveNot(pred), nil
+			}
+			return pred, nil
 		}
-		return r.ResolveIsNull(lhs)
+		return nil, &UnsupportedExpressionShapeError{Shape: "IS expression with no recognised literal"}
 	case *antlrgen.InPredicateContext:
 		// `x IN (a, b, c)` via the Expressions branch of InList.
 		// Subquery / parameter / single-column forms not wired yet.

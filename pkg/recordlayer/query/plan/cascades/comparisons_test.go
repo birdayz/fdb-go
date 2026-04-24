@@ -105,6 +105,35 @@ func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
 // `functions.CompareValues` behavior so cross-width WHERE predicates
 // (e.g. `int32_col > 18` with a literal int64) don't degrade to
 // UNKNOWN.
+// Bool equality + ordering: used by the expression resolver's
+// `x IS TRUE` / `x IS FALSE` desugar. SQL orders FALSE < TRUE.
+func TestComparison_Eval_BoolEquality(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		l, r any
+		want TriBool
+	}{
+		{"TRUE = TRUE", ComparisonEquals, true, true, TriTrue},
+		{"FALSE = FALSE", ComparisonEquals, false, false, TriTrue},
+		{"TRUE = FALSE", ComparisonEquals, true, false, TriFalse},
+		{"TRUE <> FALSE", ComparisonNotEquals, true, false, TriTrue},
+		{"FALSE < TRUE", ComparisonLessThan, false, true, TriTrue},
+		{"TRUE > FALSE", ComparisonGreaterThan, true, false, TriTrue},
+		{"TRUE = 1: type mismatch", ComparisonEquals, true, int64(1), TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

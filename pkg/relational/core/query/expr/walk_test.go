@@ -582,6 +582,47 @@ func TestWalkPredicate_IsNull(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_IsTrue(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active IS TRUE")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonEquals {
+		t.Fatal("Type mismatch")
+	}
+	if cp.Comparison.Operand != true {
+		t.Fatalf("Operand: got %v, want true", cp.Comparison.Operand)
+	}
+	if got := cp.Eval(map[string]any{"ACTIVE": true}); got != cascades.TriTrue {
+		t.Fatalf("true IS TRUE: got %v", got)
+	}
+	if got := cp.Eval(map[string]any{"ACTIVE": false}); got != cascades.TriFalse {
+		t.Fatalf("false IS TRUE: got %v", got)
+	}
+}
+
+func TestWalkPredicate_IsFalse(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active IS FALSE")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Operand != false {
+		t.Fatalf("Operand: got %v, want false", cp.Comparison.Operand)
+	}
+}
+
 func TestWalkPredicate_IsNotNull(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
