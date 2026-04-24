@@ -153,7 +153,11 @@ func TestAndSimplify_FalseShortCircuit(t *testing.T) {
 func TestAndSimplify_DropTrueChildren(t *testing.T) {
 	t.Parallel()
 	rule := NewAndConstantSimplifyRule()
-	leaf := NewConstantPredicate(TriUnknown) // stands in for a non-constant predicate
+	// UNKNOWN is technically a ConstantPredicate too, but the And
+	// rule keeps it — only TRUE (identity-drop) and FALSE
+	// (absorbing) trigger folds. UNKNOWN-leaf stands in here for
+	// any predicate the rule treats as opaque.
+	leaf := NewConstantPredicate(TriUnknown)
 	and := NewAnd(
 		NewConstantPredicate(TriTrue),
 		leaf,
@@ -196,6 +200,39 @@ func TestOrSimplify_TrueShortCircuit(t *testing.T) {
 	cp, ok := got[0].(*ConstantPredicate)
 	if !ok || cp.Value != TriTrue {
 		t.Fatalf("expected ConstantPredicate(TRUE), got %v", got[0])
+	}
+}
+
+// Drop FALSE children from an OR, leaving the non-trivial children.
+// Symmetric to TestAndSimplify_DropTrueChildren.
+func TestOrSimplify_DropFalseChildren(t *testing.T) {
+	t.Parallel()
+	rule := NewOrConstantSimplifyRule()
+	leaf := NewConstantPredicate(TriUnknown)
+	or := NewOr(
+		NewConstantPredicate(TriFalse),
+		leaf,
+		NewConstantPredicate(TriFalse),
+	)
+	got := FireRule(rule, or)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 replacement, got %d", len(got))
+	}
+	if got[0] != QueryPredicate(leaf) {
+		t.Fatalf("expected the UNKNOWN leaf, got %T %v", got[0], got[0])
+	}
+}
+
+// No FALSE children → rule declines. Symmetric to
+// TestAndSimplify_NoChange.
+func TestOrSimplify_NoChange(t *testing.T) {
+	t.Parallel()
+	rule := NewOrConstantSimplifyRule()
+	leaf := NewConstantPredicate(TriUnknown)
+	or := NewOr(leaf, leaf)
+	got := FireRule(rule, or)
+	if len(got) != 0 {
+		t.Fatalf("expected rule to decline (0 yields), got %d", len(got))
 	}
 }
 
