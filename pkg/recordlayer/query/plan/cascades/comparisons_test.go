@@ -295,6 +295,7 @@ func TestComparisonType_Negate(t *testing.T) {
 		// No direct negation:
 		{ComparisonIn, ComparisonIn, false},
 		{ComparisonStartsWith, ComparisonStartsWith, false},
+		{ComparisonLike, ComparisonLike, false},
 	}
 	for _, tc := range cases {
 		got, ok := tc.in.Negate()
