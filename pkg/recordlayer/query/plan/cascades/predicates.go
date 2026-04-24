@@ -163,31 +163,14 @@ func valueNamesEqual(a, b Value) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	// Seed comparison: concrete type + Name(). Good enough for
-	// FieldValue / ConstantValue / ArithmeticValue; richer Value
-	// types (with embedded structure) will want a dedicated
-	// ValueEquals helper.
-	return fmtType(a) == fmtType(b) && a.Name() == b.Name()
-}
-
-func fmtType(v Value) string {
-	// Return the concrete type name as a string, without bringing in
-	// reflect for a seed-scale comparison.
-	switch v.(type) {
-	case *ConstantValue:
-		return "constant"
-	case *FieldValue:
-		return "field"
-	case *ArithmeticValue:
-		return "arith"
-	case *BooleanValue:
-		return "bool"
-	case *CastValue:
-		return "cast"
-	case *NullValue:
-		return "null"
-	}
-	return "?"
+	// Structural equality via the SQL-ish rendering ExplainValue
+	// already produces: `age`, `'hello'`, `(a + b)`, `CAST(...)`,
+	// `NULL`, etc. Values that render the same are equal for
+	// simplification purposes. Name() alone is wrong — it returns
+	// the *kind* ("field", "constant"), not the per-instance data.
+	// A dedicated structural ValueEquals can replace this once Values
+	// carry nullability / source info that Explain doesn't render.
+	return ExplainValue(a) == ExplainValue(b)
 }
 
 // QueryPredicate is the root of the predicate hierarchy. A

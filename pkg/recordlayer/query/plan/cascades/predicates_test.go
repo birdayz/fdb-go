@@ -327,6 +327,54 @@ func TestChildren_Walk(t *testing.T) {
 	}
 }
 
+// PredicateEquals must distinguish ComparisonPredicates on different
+// fields. Before the ExplainValue-based valueNamesEqual fix, two
+// FieldValues would compare equal by Name() alone (both return "field"
+// regardless of Field string), and AndDedup would incorrectly drop
+// predicates like `age = 5 AND rank = 5` as duplicates.
+func TestPredicateEquals_DifferentFieldsAreNotEqual(t *testing.T) {
+	t.Parallel()
+	age := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+	)
+	rank := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+	)
+	if PredicateEquals(age, rank) {
+		t.Fatal("age=5 and rank=5 should NOT be equal — different fields")
+	}
+	age2 := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+	)
+	if !PredicateEquals(age, age2) {
+		t.Fatal("two identical age=5 predicates should be equal")
+	}
+	age10 := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(10)},
+	)
+	if PredicateEquals(age, age10) {
+		t.Fatal("age=5 and age=10 should NOT be equal — different literals")
+	}
+}
+
+// ValuePredicate on different fields must also differ.
+func TestPredicateEquals_ValuePredicateDifferentFields(t *testing.T) {
+	t.Parallel()
+	a := NewValuePredicate(&FieldValue{Field: "is_active", Typ: TypeBool})
+	b := NewValuePredicate(&FieldValue{Field: "is_pending", Typ: TypeBool})
+	if PredicateEquals(a, b) {
+		t.Fatal("ValuePredicate on different fields should NOT be equal")
+	}
+	c := NewValuePredicate(&FieldValue{Field: "is_active", Typ: TypeBool})
+	if !PredicateEquals(a, c) {
+		t.Fatal("ValuePredicate on same field should be equal")
+	}
+}
+
 // PredicateEquals must handle IN's slice-valued Operand without
 // panicking. Before the reflect.DeepEqual fix, comparing two IN
 // ComparisonPredicates crashed with "comparing uncomparable type".
