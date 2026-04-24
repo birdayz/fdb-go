@@ -457,6 +457,53 @@ func TestWalkPredicate_NotBetween(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_In(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id IN (1, 2, 3)")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonIn {
+		t.Fatalf("Type: got %v, want In", cp.Comparison.Type)
+	}
+	list, ok := cp.Comparison.Operand.([]any)
+	if !ok || len(list) != 3 {
+		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
+	}
+	// Evaluate.
+	for id, want := range map[int64]cascades.TriBool{
+		1: cascades.TriTrue,
+		2: cascades.TriTrue,
+		3: cascades.TriTrue,
+		4: cascades.TriFalse,
+	} {
+		got := pred.Eval(map[string]any{"ID": id})
+		if got != want {
+			t.Fatalf("id=%d: got %v, want %v", id, got, want)
+		}
+	}
+}
+
+func TestWalkPredicate_NotIn(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id NOT IN (1, 2)")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if _, ok := pred.(*cascades.NotPredicate); !ok {
+		t.Fatalf("expected *NotPredicate, got %T", pred)
+	}
+}
+
 func TestWalkPredicate_Like(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

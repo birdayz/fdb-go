@@ -327,6 +327,45 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			return r.ResolveIsNotNull(lhs)
 		}
 		return r.ResolveIsNull(lhs)
+	case *antlrgen.InPredicateContext:
+		// `x IN (a, b, c)` via the Expressions branch of InList.
+		// Subquery / parameter / single-column forms not wired yet.
+		il := p.InList()
+		if il == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "InPredicate with nil InList"}
+		}
+		ilc, ok := il.(*antlrgen.InListContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("InList ctx %T", il)}
+		}
+		exprs := ilc.Expressions()
+		if exprs == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery/parameter/column (walker handles explicit list only)"}
+		}
+		ec, ok := exprs.(*antlrgen.ExpressionsContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("Expressions ctx %T", exprs)}
+		}
+		lhsVal, err := r.walkAtom(atom)
+		if err != nil {
+			return nil, err
+		}
+		list := make([]cascades.Value, 0, len(ec.AllExpression()))
+		for _, e := range ec.AllExpression() {
+			v, err := r.WalkExpression(e)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, v)
+		}
+		inPred, err := r.ResolveIn(lhsVal, list)
+		if err != nil {
+			return nil, err
+		}
+		if p.NOT() != nil {
+			return r.ResolveNot(inPred), nil
+		}
+		return inPred, nil
 	case *antlrgen.LikePredicateContext:
 		// `x LIKE 'pattern' [ESCAPE 'c']` — seed wires LIKE without
 		// ESCAPE (cascades.likeMatch doesn't take an escape rune
