@@ -191,6 +191,93 @@ func buildExplainTestMd(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
+// Direct unit tests for cachedMetaData — the read-only accessor
+// naive_generator's ExplainFn delegates to. Negative-path coverage
+// (nil session, missing key, wrong template type, nil schema) is
+// what guards against future refactors silently breaking the
+// "deterministic cold-cache fallback" contract.
+func TestCachedMetaData_NilSession(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{}
+	if md := conn.cachedMetaData(); md != nil {
+		t.Fatalf("expected nil on nil session, got %v", md)
+	}
+}
+
+func TestCachedMetaData_EmptyCache(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{sess: &session.Session{
+		DBPath:      "/main",
+		Schema:      "public",
+		SchemaCache: map[string]api.Schema{},
+	}}
+	if md := conn.cachedMetaData(); md != nil {
+		t.Fatalf("expected nil on empty cache, got %v", md)
+	}
+}
+
+func TestCachedMetaData_DifferentKey(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	tmpl, err := metadata.NewRecordLayerSchemaTemplate("public", md)
+	if err != nil {
+		t.Fatalf("template: %v", err)
+	}
+	// Cache populated for a different (dbPath, schema) — the active
+	// schema's lookup should miss.
+	conn := &EmbeddedConnection{sess: &session.Session{
+		DBPath: "/main",
+		Schema: "public",
+		SchemaCache: map[string]api.Schema{
+			session.SchemaCacheKey("/other", "elsewhere"): tmpl.GenerateSchema("/other", "elsewhere"),
+		},
+	}}
+	if got := conn.cachedMetaData(); got != nil {
+		t.Fatalf("expected nil on key miss, got %v", got)
+	}
+}
+
+func TestCachedMetaData_HappyPath(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	tmpl, err := metadata.NewRecordLayerSchemaTemplate("public", md)
+	if err != nil {
+		t.Fatalf("template: %v", err)
+	}
+	conn := &EmbeddedConnection{sess: &session.Session{
+		DBPath: "/main",
+		Schema: "public",
+		SchemaCache: map[string]api.Schema{
+			session.SchemaCacheKey("/main", "public"): tmpl.GenerateSchema("/main", "public"),
+		},
+	}}
+	got := conn.cachedMetaData()
+	if got == nil {
+		t.Fatal("expected non-nil RecordMetaData on warm cache")
+	}
+	// Identity check — the returned md should be the underlying one.
+	if got != md {
+		t.Errorf("expected returned md to be the same instance as the template's underlying")
+	}
+}
+
+// nil schema in cache must NOT panic and must return nil. The
+// accessor's nil-guard is defence-in-depth in case session
+// init-order ever lands a sentinel nil value.
+func TestCachedMetaData_NilSchemaInCache(t *testing.T) {
+	t.Parallel()
+	conn := &EmbeddedConnection{sess: &session.Session{
+		DBPath: "/main",
+		Schema: "public",
+		SchemaCache: map[string]api.Schema{
+			session.SchemaCacheKey("/main", "public"): nil,
+		},
+	}}
+	if got := conn.cachedMetaData(); got != nil {
+		t.Fatalf("expected nil on nil-schema entry, got %v", got)
+	}
+}
+
 // Warm-cache Explain — SELECT WHERE renders the predicate via
 // cascades.QueryPredicate.Explain() instead of canonical SQL text.
 // Pins the round-trip through naive_generator → cachedMetaData →
