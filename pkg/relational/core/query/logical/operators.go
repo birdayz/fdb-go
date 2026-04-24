@@ -351,6 +351,38 @@ func (d *LogicalDelete) Explain(indent string) string {
 	return fmt.Sprintf("%s\n%s", header, d.Input.Explain(indent+"  "))
 }
 
+// --- CTE -----------------------------------------------------------
+
+// LogicalCTE wraps a named Common Table Expression around a Main
+// query. The Body is the CTE's own plan; Main references Body via a
+// LogicalScan on Name. Recursive CTEs set Recursive=true — Body may
+// self-reference (the recursive evaluator lives at the executor
+// layer for now).
+type LogicalCTE struct {
+	Name      string
+	Body      LogicalOperator
+	Main      LogicalOperator
+	Recursive bool
+}
+
+// NewCTE constructs a LogicalCTE.
+func NewCTE(name string, body, main LogicalOperator, recursive bool) *LogicalCTE {
+	return &LogicalCTE{Name: name, Body: body, Main: main, Recursive: recursive}
+}
+
+func (c *LogicalCTE) Children() []LogicalOperator {
+	return []LogicalOperator{c.Body, c.Main}
+}
+
+func (c *LogicalCTE) Explain(indent string) string {
+	tag := "CTE"
+	if c.Recursive {
+		tag = "RecursiveCTE"
+	}
+	header := fmt.Sprintf("%s%s(%s)", indent, tag, c.Name)
+	return fmt.Sprintf("%s\n%s\n%s", header, c.Body.Explain(indent+"  "), c.Main.Explain(indent+"  "))
+}
+
 // --- DDL + passthrough ---------------------------------------------
 
 // LogicalDDL wraps a DDL statement that has no meaningful tree

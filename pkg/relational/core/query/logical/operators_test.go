@@ -18,7 +18,37 @@ var (
 	_ LogicalOperator = (*LogicalUpdate)(nil)
 	_ LogicalOperator = (*LogicalDelete)(nil)
 	_ LogicalOperator = (*LogicalDDL)(nil)
+	_ LogicalOperator = (*LogicalCTE)(nil)
 )
+
+func TestCTE_Explain(t *testing.T) {
+	t.Parallel()
+	body := NewFilter(NewScan("t", ""), "id > 0")
+	main := NewProject(NewScan("x", ""), []string{"id"}, []string{""})
+	c := NewCTE("x", body, main, false)
+	want := "CTE(x)\n" +
+		"  Filter(id > 0)\n" +
+		"    Scan(t)\n" +
+		"  Project(id)\n" +
+		"    Scan(x)"
+	if got := c.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if len(c.Children()) != 2 {
+		t.Fatalf("CTE.Children: expected 2, got %d", len(c.Children()))
+	}
+}
+
+func TestCTE_Recursive_Explain(t *testing.T) {
+	t.Parallel()
+	body := NewScan("seed", "")
+	main := NewScan("cte", "")
+	c := NewCTE("cte", body, main, true)
+	got := c.Explain("")
+	if len(got) < len("RecursiveCTE") || got[:len("RecursiveCTE")] != "RecursiveCTE" {
+		t.Fatalf("expected RecursiveCTE prefix, got %q", got)
+	}
+}
 
 func TestScan_ExplainChildren(t *testing.T) {
 	t.Parallel()
