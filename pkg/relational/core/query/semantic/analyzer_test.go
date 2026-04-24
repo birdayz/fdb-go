@@ -3,7 +3,26 @@ package semantic
 import (
 	"errors"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
+
+// parseTableFullId walks the parse tree for a SELECT and returns the
+// IFullIdContext of the first FROM table. Shared with parse_bridge_test.
+func parseTableFullId(t *testing.T, sql string) antlrgen.IFullIdContext {
+	t.Helper()
+	root, err := parser.Parse(sql)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := root.Statements().AllStatement()[0].SelectStatement()
+	body := sel.Query().QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	simple := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	srcBase := simple.FromClause().TableSources().AllTableSource()[0].(*antlrgen.TableSourceBaseContext)
+	atom := srcBase.TableSourceItem().(*antlrgen.AtomTableItemContext)
+	return atom.TableName().FullId()
+}
 
 func TestAnalyzer_ResolveTable(t *testing.T) {
 	t.Parallel()
@@ -101,6 +120,38 @@ func TestAnalyzer_ResolveColumn_NilTable(t *testing.T) {
 	}
 	if !cnf.TableName.IsZero() {
 		t.Fatal("ColumnNotFoundError.TableName should be zero when table is nil")
+	}
+}
+
+func TestAnalyzer_ResolveTableRef(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+
+	ctx := parseTableFullId(t, "SELECT * FROM Users")
+	tbl, err := a.ResolveTableRef(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := tbl.Name().String(), "USERS"; got != want {
+		t.Fatalf("resolved name: got %q, want %q", got, want)
+	}
+}
+
+func TestAnalyzer_ResolveTableRef_NotFound(t *testing.T) {
+	t.Parallel()
+	a := NewAnalyzer(buildTestCatalog(), false)
+
+	ctx := parseTableFullId(t, "SELECT * FROM no_such_table")
+	_, err := a.ResolveTableRef(ctx)
+	if err == nil {
+		t.Fatal("expected error for missing table")
+	}
+	var tnf *TableNotFoundError
+	if !errors.As(err, &tnf) {
+		t.Fatalf("expected TableNotFoundError, got %T", err)
+	}
+	if got, want := tnf.Name.Name(), "NO_SUCH_TABLE"; got != want {
+		t.Fatalf("TableNotFoundError.Name: got %q, want %q", got, want)
 	}
 }
 

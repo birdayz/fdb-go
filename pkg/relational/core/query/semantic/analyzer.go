@@ -1,6 +1,10 @@
 package semantic
 
-import "fmt"
+import (
+	"fmt"
+
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+)
 
 // Analyzer ties Catalog lookups + identifier normalization into
 // the resolution helpers that rule authors / logical-plan builders
@@ -68,6 +72,19 @@ func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 		return Column{}, &ColumnNotFoundError{TableName: table.Name(), Id: id}
 	}
 	return c, nil
+}
+
+// ResolveTableRef is the parse-tree convenience wrapper over
+// ResolveTable. Reads the IFullIdContext (ANTLR's table reference
+// node), builds a QualifiedName with the analyzer's case-sensitivity,
+// then looks it up in the catalog.
+//
+// Returns TableNotFoundError with the QualifiedName the caller
+// requested; callers preserve user-facing names through
+// `err.Name.String()`.
+func (a *Analyzer) ResolveTableRef(ctx antlrgen.IFullIdContext) (Table, error) {
+	name := FromFullIdContext(ctx, a.caseSensitive)
+	return a.ResolveTable(name)
 }
 
 // ExpandStar implements the `SELECT *` rewrite — returns the full
