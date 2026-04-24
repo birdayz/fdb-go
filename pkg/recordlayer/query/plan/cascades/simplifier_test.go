@@ -161,6 +161,26 @@ func TestSimplify_RecursesThroughNot(t *testing.T) {
 	}
 }
 
+// Triple-NOT collapse: NOT(NOT(NOT(x = 5))) → x <> 5. Exercises
+// NotConstantSimplifyRule's double-neg elimination + the new
+// NotComparisonRewriteRule cooperating across the fixpoint.
+func TestSimplify_TripleNotCollapses(t *testing.T) {
+	t.Parallel()
+	age := &FieldValue{Field: "age", Typ: TypeInt}
+	cp := NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: int64(5)})
+	got := Simplify(
+		NewNot(NewNot(NewNot(cp))),
+		DefaultSimplifyRules(),
+	)
+	out, ok := got.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected ComparisonPredicate, got %T %s", got, got.Explain())
+	}
+	if out.Comparison.Type != ComparisonNotEquals {
+		t.Fatalf("expected age <> 5, got %s", got.Explain())
+	}
+}
+
 // Simplify idempotence: running it a second time on its own output
 // is a no-op. This is the defining fixpoint property — if it fails,
 // a rule is non-reducing (loops on stable input) or the driver's
