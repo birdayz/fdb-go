@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "analyzer.go",
         "catalog.go",
+        "functions.go",
         "identifier.go",
         "parse_bridge.go",
         "qualified_name.go",
@@ -20,6 +21,7 @@ go_test(
     srcs = [
         "analyzer_test.go",
         "catalog_test.go",
+        "functions_test.go",
         "identifier_test.go",
         "integration_test.go",
         "parse_bridge_test.go",
