@@ -436,10 +436,10 @@ func TestUpgradeFirstFilter_Invariants(t *testing.T) {
 	}
 }
 
-// JOINs aren't wired through buildWherePredicate yet. The builder
-// must notice and fall back to text rather than producing a broken
-// single-source predicate that ignores the right-hand source.
-func TestBuildLogicalPlanWithCatalog_JoinFallsBackToText(t *testing.T) {
+// JOIN with qualified-column WHERE — multi-source scope picks up
+// both tables, and the walker resolves `Order.price` against the
+// JOIN's primary source. Predicate tree carried on LogicalFilter.
+func TestBuildLogicalPlanWithCatalog_JoinQualifiedColumn(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
@@ -461,7 +461,64 @@ func TestBuildLogicalPlanWithCatalog_JoinFallsBackToText(t *testing.T) {
 	if filter == nil {
 		t.Fatalf("expected LogicalFilter in plan, got tree:\n%s", op.Explain(""))
 	}
+	if filter.Predicate == nil {
+		t.Fatalf("expected Predicate on JOIN shape; PredicateText=%q", filter.PredicateText)
+	}
+	if got := filter.Predicate.Explain(); !strings.Contains(got, "PRICE > 5") {
+		t.Fatalf("expected PRICE > 5 in JOIN predicate, got %q", got)
+	}
+}
+
+// JOIN with bare column unique to one side — walker resolves
+// without ambiguity. `quantity` exists in Order only, not Customer.
+func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t,
+		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE quantity > 0")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	var filter *logical.LogicalFilter
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil || filter.Predicate == nil {
+		t.Fatalf("expected resolved Predicate on JOIN with bare-column WHERE")
+	}
+}
+
+// JOIN with ambiguous bare column — `price` exists in both Order
+// and Customer. Walker correctly fails on AmbiguousColumnError;
+// builder falls back to text.
+func TestBuildLogicalPlanWithCatalog_JoinAmbiguousBareColumn_FallsBackToText(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t,
+		"SELECT * FROM Order JOIN Customer ON Order.order_id = Customer.customer_id WHERE price > 5")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	var filter *logical.LogicalFilter
+	for cur := op; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
+	}
 	if filter.Predicate != nil {
-		t.Fatal("expected Predicate nil on JOIN shape — walker should have declined")
+		t.Fatalf("expected text fallback for ambiguous bare column; Predicate=%s", filter.Predicate.Explain())
 	}
 }

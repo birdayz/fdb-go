@@ -64,18 +64,75 @@ func buildWherePredicateForTable(
 	return pred, true
 }
 
-// buildWherePredicate is the selectQuery-shaped adapter over
-// buildWherePredicateForTable. Declines on derived tables and
-// joins since they need a multi-source scope (follow-up).
+// buildWherePredicate is the selectQuery-shaped adapter over the
+// walker. Single-table FROM uses buildWherePredicateForTable;
+// JOIN-shape FROM (sq.joins non-empty) builds a multi-source scope
+// — one ScopeSource per primary + JOIN. Derived tables still
+// decline (they need an inner-plan source, not a Table).
 func buildWherePredicate(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
 ) (cascades.QueryPredicate, bool) {
-	if sq == nil || sq.derivedQuery != nil || len(sq.joins) > 0 {
+	if sq == nil || sq.derivedQuery != nil {
 		return nil, false
 	}
-	return buildWherePredicateForTable(md, sq.tableName, sq.tableAlias, whereExpr)
+	if len(sq.joins) == 0 {
+		return buildWherePredicateForTable(md, sq.tableName, sq.tableAlias, whereExpr)
+	}
+	return buildWherePredicateForJoins(md, sq, whereExpr)
+}
+
+// buildWherePredicateForJoins handles the JOIN case: builds a scope
+// with one source per (primary table, joined tables) entry, then
+// runs the walker. Bare columns ambiguous across sources fail at
+// scope resolution → walker returns an error → fall back to text.
+// Qualified columns (`Order.price`) resolve via ScopeSource alias.
+//
+// Each source needs a Table from the catalog. A miss on any one
+// declines the whole predicate (the walker would have failed on
+// the missing-table column ref anyway).
+func buildWherePredicateForJoins(
+	md *recordlayer.RecordMetaData,
+	sq *selectQuery,
+	whereExpr antlrgen.IWhereExprContext,
+) (cascades.QueryPredicate, bool) {
+	if md == nil || sq == nil || sq.tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
+		return nil, false
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+
+	addSource := func(tableName, alias string) bool {
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err != nil {
+			return false
+		}
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		return scope.AddSource(semantic.ScopeSource{
+			Table:           tbl,
+			Alias:           aliasID,
+			CorrelationName: aliasID.Name(),
+		}) == nil
+	}
+	if !addSource(sq.tableName, sq.tableAlias) {
+		return nil, false
+	}
+	for _, j := range sq.joins {
+		if !addSource(j.tableName, j.alias) {
+			return nil, false
+		}
+	}
+	resolver := expr.New(analyzer, scope)
+	pred, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil {
+		return nil, false
+	}
+	return pred, true
 }
 
 // buildLogicalPlanForSelectWithCatalog is the catalog-aware variant
