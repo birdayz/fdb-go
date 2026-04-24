@@ -797,6 +797,37 @@ func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
 	}
 }
 
+// Deeply-nested constant trees fold end-to-end: a CastValue
+// wrapping a ConstantValue, inside an ArithmeticValue, on the RHS
+// of a constant-LHS comparison. Pins that constantLiteral's
+// fall-through to EvaluateConstant correctly recurses through
+// composites without bailing on intermediate non-leaf shapes.
+func TestComparisonConstantSimplify_DeeplyNestedConstants_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	// `5 = CAST(5 AS INT) + 0`
+	rhs := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeInt),
+		Right: &ConstantValue{Value: int64(0), Typ: TypeInt},
+	}
+	pred := NewComparisonPredicate(
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: rhs},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("5 = CAST(5 AS INT) + 0: got %v, want TRUE", cp.Value)
+	}
+}
+
 // Plan-time constant-fold fires when BOTH sides are constant. Pins
 // the Value-wrapped RHS variant: `5 = 5` folds to TRUE regardless
 // of whether the RHS is a raw literal or a ConstantValue.
