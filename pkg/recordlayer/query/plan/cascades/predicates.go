@@ -49,6 +49,27 @@ var (
 	TriUnknown TriBool = nil
 )
 
+// WalkPredicate applies visit to every node in p's subtree,
+// pre-order. If visit returns false, descent into that node's
+// children is skipped (but siblings + ancestors continue). Rule
+// authors use this for tree-wide searches (e.g. "does any
+// descendant reference the discarded correlation ID?").
+//
+// Safe on nil: returns immediately. Safe on cyclic trees: predicate
+// construction is non-cyclic by contract, so cycle detection is
+// unnecessary.
+func WalkPredicate(p QueryPredicate, visit func(QueryPredicate) bool) {
+	if p == nil {
+		return
+	}
+	if !visit(p) {
+		return
+	}
+	for _, c := range p.Children() {
+		WalkPredicate(c, visit)
+	}
+}
+
 // AsConstant returns (value, true) if p is a ConstantPredicate;
 // (_, false) otherwise. Rule bodies use this as the canonical
 // "is this a fold-able constant?" check, instead of open-coding

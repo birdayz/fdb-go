@@ -171,6 +171,41 @@ func TestPredicate_Composition(t *testing.T) {
 	}
 }
 
+// WalkPredicate pre-order traversal; skip-subtree on false.
+func TestWalkPredicate(t *testing.T) {
+	t.Parallel()
+	// Tree: AND(NOT(TRUE), OR(FALSE, UNKNOWN))
+	tree := NewAnd(
+		NewNot(NewConstantPredicate(TriTrue)),
+		NewOr(NewConstantPredicate(TriFalse), NewConstantPredicate(TriUnknown)),
+	)
+	// Visit all — expected count: AND + NOT + TRUE + OR + FALSE + UNKNOWN = 6.
+	count := 0
+	WalkPredicate(tree, func(QueryPredicate) bool {
+		count++
+		return true
+	})
+	if count != 6 {
+		t.Fatalf("visit all: expected 6, got %d", count)
+	}
+	// Skip-subtree: return false from the OR node, its children should
+	// be skipped — count 4 (AND, NOT, TRUE, OR).
+	count = 0
+	WalkPredicate(tree, func(p QueryPredicate) bool {
+		count++
+		_, isOr := p.(*OrPredicate)
+		return !isOr
+	})
+	if count != 4 {
+		t.Fatalf("skip OR subtree: expected 4, got %d", count)
+	}
+	// Nil-safe.
+	WalkPredicate(nil, func(QueryPredicate) bool {
+		t.Fatal("should not visit on nil")
+		return true
+	})
+}
+
 // AsConstant / PredicateSize helpers.
 func TestAsConstant(t *testing.T) {
 	t.Parallel()
