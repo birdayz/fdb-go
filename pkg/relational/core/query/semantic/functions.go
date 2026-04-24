@@ -18,6 +18,11 @@ type FunctionSpec struct {
 	// AllowsStar reports whether the function accepts `*` as its
 	// argument (currently only COUNT does).
 	AllowsStar bool
+	// AllowsDistinct reports whether the function accepts a leading
+	// DISTINCT modifier — e.g. `COUNT(DISTINCT col)`. All aggregates
+	// in the SQL standard accept DISTINCT; the flag exists here so
+	// future scalar extensions can opt out.
+	AllowsDistinct bool
 }
 
 // FunctionKind enumerates the classes of function the analyzer
@@ -67,11 +72,12 @@ func (c *FunctionCatalog) Register(spec FunctionSpec) error {
 		return fmt.Errorf("function %s already registered", spec.Name)
 	}
 	c.byName[key] = FunctionSpec{
-		Name:       key,
-		Kind:       spec.Kind,
-		MinArgs:    spec.MinArgs,
-		MaxArgs:    spec.MaxArgs,
-		AllowsStar: spec.AllowsStar,
+		Name:           key,
+		Kind:           spec.Kind,
+		MinArgs:        spec.MinArgs,
+		MaxArgs:        spec.MaxArgs,
+		AllowsStar:     spec.AllowsStar,
+		AllowsDistinct: spec.AllowsDistinct,
 	}
 	return nil
 }
@@ -97,11 +103,13 @@ func (c *FunctionCatalog) Contains(name Identifier) bool {
 func (c *FunctionCatalog) RegisterDefaults() {
 	// Panics on duplicate (caller misuse of double-registering);
 	// silent when the catalogue is empty (the expected state).
-	must(c.Register(FunctionSpec{Name: "COUNT", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1, AllowsStar: true}))
-	must(c.Register(FunctionSpec{Name: "SUM", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1}))
-	must(c.Register(FunctionSpec{Name: "MIN", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1}))
-	must(c.Register(FunctionSpec{Name: "MAX", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1}))
-	must(c.Register(FunctionSpec{Name: "AVG", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1}))
+	// All standard SQL aggregates accept DISTINCT. COUNT additionally
+	// accepts *.
+	must(c.Register(FunctionSpec{Name: "COUNT", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1, AllowsStar: true, AllowsDistinct: true}))
+	must(c.Register(FunctionSpec{Name: "SUM", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1, AllowsDistinct: true}))
+	must(c.Register(FunctionSpec{Name: "MIN", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1, AllowsDistinct: true}))
+	must(c.Register(FunctionSpec{Name: "MAX", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1, AllowsDistinct: true}))
+	must(c.Register(FunctionSpec{Name: "AVG", Kind: FunctionAggregate, MinArgs: 1, MaxArgs: 1, AllowsDistinct: true}))
 }
 
 func must(err error) {
@@ -114,6 +122,12 @@ func must(err error) {
 // Zero = no arguments. A MaxArgs of -1 is treated as "no upper
 // bound". Returns a typed error on mismatch so callers can build
 // user-facing messages without string-matching.
+//
+// Callers handling `*` (star-argument) functions should check
+// `AllowsStar` BEFORE calling ValidateArity and skip the arity check
+// for the star case. The star is syntactically 0 arguments, but
+// COUNT(*) is legal despite COUNT's MinArgs=1 — that's not a
+// contradiction the arity check should reason about.
 func (spec FunctionSpec) ValidateArity(argCount int) error {
 	if argCount < spec.MinArgs {
 		return &FunctionArityError{Function: spec.Name, Got: argCount, Min: spec.MinArgs, Max: spec.MaxArgs}

@@ -134,3 +134,17 @@ func TestFunctionCatalog_AllowsStar(t *testing.T) {
 		t.Fatal("SUM should NOT accept star")
 	}
 }
+
+func TestFunctionCatalog_AllowsDistinct(t *testing.T) {
+	t.Parallel()
+	c := NewFunctionCatalog()
+	c.RegisterDefaults()
+
+	// All standard SQL aggregates accept DISTINCT.
+	for _, name := range []string{"COUNT", "SUM", "MIN", "MAX", "AVG"} {
+		spec, _ := c.Lookup(NewUnquoted(name))
+		if !spec.AllowsDistinct {
+			t.Fatalf("%s should accept DISTINCT", name)
+		}
+	}
+}
