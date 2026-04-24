@@ -202,6 +202,39 @@ func ValueSize(v Value) int {
 	return n
 }
 
+// IsConstantValue reports whether v's Evaluate is row-context-
+// independent — its value is known at plan time. True for
+// ConstantValue, NullValue, BooleanValue, and any composite whose
+// children are all constants (`1 + 2`, `CAST(5 AS STRING)`). False
+// for FieldValue / QuantifiedObjectValue / AggregateValue and any
+// composite containing them.
+//
+// Used by rule matchers that only fire on fully-foldable operands
+// (e.g. ComparisonConstantSimplifyRule's whitelist).
+func IsConstantValue(v Value) bool {
+	if v == nil {
+		return false
+	}
+	switch v.(type) {
+	case *ConstantValue, *NullValue, *BooleanValue:
+		return true
+	case *FieldValue, *QuantifiedObjectValue, *AggregateValue:
+		return false
+	}
+	// Composite: all children must be constant.
+	children := v.Children()
+	if len(children) == 0 {
+		// Unknown leaf — conservatively not constant.
+		return false
+	}
+	for _, c := range children {
+		if !IsConstantValue(c) {
+			return false
+		}
+	}
+	return true
+}
+
 // ContainsAggregate reports whether v has any AggregateValue in its
 // subtree. Common gate for rules that only apply to scalar
 // expressions — aggregates need the accumulator path, not per-row

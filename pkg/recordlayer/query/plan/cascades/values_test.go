@@ -654,3 +654,49 @@ func TestContainsAggregate(t *testing.T) {
 		t.Fatal("nil should not contain aggregate")
 	}
 }
+
+// --- IsConstantValue ------------------------------------------------
+
+func TestIsConstantValue(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		v    Value
+		want bool
+	}{
+		{"ConstantValue", &ConstantValue{Value: int64(5), Typ: TypeInt}, true},
+		{"NullValue", NewNullValue(TypeInt), true},
+		{"BooleanValue true", NewBooleanValue(true), true},
+		{"BooleanValue nil", &BooleanValue{Value: nil}, true},
+		{"FieldValue", &FieldValue{Field: "x", Typ: TypeInt}, false},
+		{"QuantifiedObjectValue", NewQuantifiedObjectValue(NamedCorrelationIdentifier("t")), false},
+		{"AggregateValue", NewAggregateValue(AggSum, &ConstantValue{Value: int64(1), Typ: TypeInt}), false},
+
+		// Composite over all-constant children: true.
+		{"arith(1, 2)", &ArithmeticValue{
+			Op:    OpAdd,
+			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		}, true},
+		// Composite with one non-constant: false.
+		{"arith(field, 2)", &ArithmeticValue{
+			Op:    OpAdd,
+			Left:  &FieldValue{Field: "x", Typ: TypeInt},
+			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		}, false},
+		// Cast over constant: true.
+		{"cast(constant)", NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeString), true},
+		// Cast over field: false.
+		{"cast(field)", NewCastValue(&FieldValue{Field: "x", Typ: TypeInt}, TypeString), false},
+
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsConstantValue(tc.v); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
