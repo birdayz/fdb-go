@@ -11,20 +11,26 @@ import (
 )
 
 // WalkExpression is the parse-tree → cascades.Value entry point.
-// Dispatches by concrete ANTLR context type to the right Resolver
-// method.
+// For expressions that are semantically boolean predicates (bare
+// column comparisons, AND/OR/NOT), use WalkPredicate instead —
+// WalkExpression returns a Value, not a QueryPredicate.
 //
-// Seed scope — ONLY these shapes are handled:
+// Dispatches by concrete ANTLR context type:
 //
-//   - PredicatedExpression wrapping an ExpressionAtom (no predicate).
-//   - ExpressionAtom = FullColumnName → column reference.
-//   - ExpressionAtom = Constant (integer / string literal only).
+//   - PredicatedExpression wrapping an ExpressionAtom → walkAtom.
+//   - Anything with a grammar Predicate attached (BETWEEN, IN, LIKE,
+//     IS NULL) — those are predicates, not values; rejected here.
+//
+// walkAtom handles:
+//
+//   - FullColumnName → FieldValue (via ResolveIdentifier).
+//   - Constant (integer / string / NULL) → ConstantValue / NullValue.
+//   - MathExpression (+, -, *, /) → ArithmeticValue.
+//   - RecordConstructor (1-element unnamed, i.e. `(x)`) → unwrap.
+//   - FunctionCall (aggregate forms) → AggregateValue.
 //
 // Everything else returns UnsupportedExpressionShapeError so the
-// caller can fall back to the existing logical-builder path. The
-// full walker (arithmetic, logical AND/OR, comparisons, function
-// calls, nested subqueries) lands in follow-up commits; this seed
-// establishes the dispatch shape.
+// caller can fall back to the existing logical-builder path.
 func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
@@ -34,8 +40,7 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades.Val
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
 	}
 	if pred.Predicate() != nil {
-		// BETWEEN / IN / LIKE / IS NULL / ... predicates — not wired yet.
-		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with Predicate()"}
+		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with grammar Predicate (use WalkPredicate)"}
 	}
 	return r.walkAtom(pred.ExpressionAtom())
 }
