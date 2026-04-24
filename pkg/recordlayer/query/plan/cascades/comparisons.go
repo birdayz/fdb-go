@@ -619,10 +619,16 @@ func (p *ComparisonPredicate) Explain() string {
 	}
 	// LIKE with escape: append the ESCAPE clause so Explain output
 	// round-trips back to recognisable SQL. Plain LIKE elides the
-	// (default-zero) escape.
+	// (default-zero) escape. The escape rune is rendered SQL-escaped
+	// — single quote becomes '' inside the literal so `ESCAPE ''''`
+	// stays valid SQL, not `ESCAPE '''` (broken).
 	rhs := formatComparisonRHS(p.Comparison.Operand)
 	if p.Comparison.Type == ComparisonLike && p.Comparison.Escape != 0 {
-		return fmt.Sprintf("%s %s %s ESCAPE '%c'", operandText, p.Comparison.Type.Symbol(), rhs, p.Comparison.Escape)
+		escLit := string(p.Comparison.Escape)
+		if p.Comparison.Escape == '\'' {
+			escLit = "''"
+		}
+		return fmt.Sprintf("%s %s %s ESCAPE '%s'", operandText, p.Comparison.Type.Symbol(), rhs, escLit)
 	}
 	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), rhs)
 }

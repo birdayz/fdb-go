@@ -1118,6 +1118,26 @@ func TestComparisonPredicate_Explain_LikeEscape(t *testing.T) {
 	}
 }
 
+// LIKE+ESCAPE with single-quote as the escape character produces
+// valid SQL — the quote inside the literal is doubled per SQL
+// string-literal escaping. Without doubling, the output `ESCAPE ”'`
+// would be unbalanced and unparseable.
+func TestComparisonPredicate_Explain_LikeEscape_SingleQuoteEscape(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: LiteralValue("a%b"),
+			Escape:  '\'',
+		},
+	)
+	want := `name LIKE 'a%b' ESCAPE ''''`
+	if got := pred.Explain(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 // LIKE without ESCAPE doesn't emit a stray "ESCAPE ”" clause.
 func TestComparisonPredicate_Explain_LikeNoEscape(t *testing.T) {
 	t.Parallel()
