@@ -60,40 +60,115 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades
-// QueryPredicate for an expression that's semantically boolean. For
-// bare columns (`WHERE flag`) it wraps the resolved value in a
-// ValuePredicate; for binary comparisons (`WHERE id = 1`) it
-// produces a ComparisonPredicate via ResolveComparison.
+// QueryPredicate for an expression that's semantically boolean.
+// Handles:
 //
-// Seed scope matches WalkExpression's: PredicatedExpression only.
-// Binary comparisons dispatch via walkBinaryComparison; all other
-// predicate shapes (BETWEEN, IN, LIKE, IS NULL via grammar's
-// Predicate node) return UnsupportedExpressionShapeError.
+//   - LogicalExpression: `a AND b`, `a OR b` → And/Or predicate.
+//     NOT is a grammar-level unary-expression, handled separately.
+//   - PredicatedExpression with BinaryComparisonPredicate atom →
+//     ComparisonPredicate.
+//   - PredicatedExpression with a plain value atom → ValuePredicate
+//     (bare boolean column like `WHERE flag`).
+//
+// Other shapes (BETWEEN, IN, LIKE, IS NULL via grammar's Predicate
+// node; NOT; XOR) return UnsupportedExpressionShapeError.
 func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (cascades.QueryPredicate, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkPredicate: nil context")
 	}
-	pred, ok := ctx.(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
+	switch c := ctx.(type) {
+	case *antlrgen.PredicatedExpressionContext:
+		return r.walkPredicatedExpression(c)
+	case *antlrgen.LogicalExpressionContext:
+		return r.walkLogicalExpression(c)
 	}
+	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", ctx)}
+}
+
+// walkPredicatedExpression handles the leaf case — a bare value or
+// a BinaryComparisonPredicate atom.
+func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionContext) (cascades.QueryPredicate, error) {
 	if pred.Predicate() != nil {
 		// Grammar-level Predicate nodes (BETWEEN, IN, LIKE, IS NULL)
 		// not wired yet.
 		return nil, &UnsupportedExpressionShapeError{Shape: "PredicatedExpression with grammar Predicate"}
 	}
-	// The expression-atom may itself be a BinaryComparisonPredicate;
-	// dispatch here.
 	atom := pred.ExpressionAtom()
 	if bc, ok := atom.(*antlrgen.BinaryComparisonPredicateContext); ok {
 		return r.walkBinaryComparison(bc)
 	}
-	// Bare value atom → ValuePredicate.
 	v, err := r.walkAtom(atom)
 	if err != nil {
 		return nil, err
 	}
 	return cascades.NewValuePredicate(v), nil
+}
+
+// walkLogicalExpression builds a cascades And/Or predicate from a
+// LogicalExpression (`a AND b` / `a OR b`). Left-associative chains
+// in the grammar mean `a AND b AND c` nests as `(a AND b) AND c`;
+// we flatten on the fly when the LHS is already the same kind.
+func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) (cascades.QueryPredicate, error) {
+	op := le.LogicalOperator()
+	if op == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "LogicalExpression with nil operator"}
+	}
+	lo, ok := op.(*antlrgen.LogicalOperatorContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("LogicalOperator ctx %T", op)}
+	}
+	exprs := le.AllExpression()
+	if len(exprs) != 2 {
+		return nil, &UnsupportedExpressionShapeError{
+			Shape: fmt.Sprintf("LogicalExpression with %d children; expected 2", len(exprs)),
+		}
+	}
+	left, err := r.WalkPredicate(exprs[0])
+	if err != nil {
+		return nil, err
+	}
+	right, err := r.WalkPredicate(exprs[1])
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case lo.AND() != nil:
+		return r.ResolveAnd(flattenAnd(left, right)...), nil
+	case lo.OR() != nil:
+		return r.ResolveOr(flattenOr(left, right)...), nil
+	case lo.XOR() != nil:
+		return nil, &UnsupportedExpressionShapeError{Shape: "XOR"}
+	}
+	return nil, &UnsupportedExpressionShapeError{Shape: "LogicalOperator: " + lo.GetText()}
+}
+
+// flattenAnd/flattenOr collapse left-deep chains built by the
+// parser. `a AND b AND c` parses as (and (and a b) c) — here we
+// return [a b c] so ResolveAnd produces a single 3-child And
+// rather than nested pairs. AndFlattenRule in cascades would fix
+// it later anyway, but seeding the flat shape avoids fixpoint work.
+func flattenAnd(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
+	var out []cascades.QueryPredicate
+	for _, p := range preds {
+		if and, ok := p.(*cascades.AndPredicate); ok {
+			out = append(out, and.SubPredicates...)
+		} else {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func flattenOr(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
+	var out []cascades.QueryPredicate
+	for _, p := range preds {
+		if or, ok := p.(*cascades.OrPredicate); ok {
+			out = append(out, or.SubPredicates...)
+		} else {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // walkBinaryComparison converts `left OP right` into a

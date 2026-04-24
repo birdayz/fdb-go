@@ -235,6 +235,85 @@ func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_LogicalAnd(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = 1 AND name = 'bob'")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("AND children: got %d, want 2", len(and.SubPredicates))
+	}
+}
+
+func TestWalkPredicate_LogicalOr(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = 1 OR id = 2")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	or, ok := pred.(*cascades.OrPredicate)
+	if !ok {
+		t.Fatalf("expected *OrPredicate, got %T", pred)
+	}
+	if len(or.SubPredicates) != 2 {
+		t.Fatalf("OR children: got %d, want 2", len(or.SubPredicates))
+	}
+}
+
+// AND chain flattens — `a AND b AND c` produces a single 3-child
+// And rather than nested pairs.
+func TestWalkPredicate_AndChainFlattens(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = 1 AND name = 'bob' AND active")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 3 {
+		t.Fatalf("flattened AND children: got %d, want 3", len(and.SubPredicates))
+	}
+}
+
+// End-to-end: full expression walks through Simplify. `id = 1 AND
+// TRUE` → `id = 1` after the AndConstantSimplify rule drops TRUE.
+// Tests that the walker output is a first-class citizen of the
+// simplifier.
+func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = 1 AND 5 = 5")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	if got, want := simplified.Explain(), "ID = 1"; got != want {
+		t.Fatalf("simplified: got %q, want %q", got, want)
+	}
+}
+
 func TestWalkPredicate_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
