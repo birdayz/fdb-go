@@ -57,7 +57,11 @@ func (a *Analyzer) BuildScopeFromFromClause(parent *Scope, fromCtx antlrgen.IFro
 			// is zero; construct a fallback from the table string.
 			alias = New(tbl.Name().Name(), a.caseSensitive)
 		}
-		if atom.AS() != nil && atom.GetAlias() != nil {
+		// Grammar is `tableName (AS? alias=uid)?` — AS is optional.
+		// `atom.AS()` being nil does NOT mean no alias; check only
+		// `GetAlias() != nil`. Earlier version gated on both and
+		// silently dropped implicit aliases like `FROM t u`.
+		if atom.GetAlias() != nil {
 			alias = FromUidContext(atom.GetAlias(), a.caseSensitive)
 		}
 		if err := scope.AddSource(ScopeSource{

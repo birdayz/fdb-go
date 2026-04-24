@@ -43,6 +43,28 @@ func TestBuildScopeFromFromClause_SingleTable(t *testing.T) {
 	}
 }
 
+// Implicit alias: `FROM t u` (no AS). The grammar allows `AS?`
+// before the alias, so the parser produces a non-nil alias even
+// without AS. Previously the scope builder gated on `atom.AS() !=
+// nil` and silently dropped implicit aliases.
+func TestBuildScopeFromFromClause_ImplicitAlias(t *testing.T) {
+	t.Parallel()
+	a := buildAnalyzerWithUsersAndOrders(t)
+	from := parseFromClause(t, "SELECT * FROM users u")
+
+	scope, err := a.BuildScopeFromFromClause(nil, from)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	srcs := scope.Sources()
+	if len(srcs) != 1 {
+		t.Fatalf("expected 1 source, got %d", len(srcs))
+	}
+	if got, want := srcs[0].Alias.Name(), "U"; got != want {
+		t.Fatalf("implicit alias: got %q, want %q", got, want)
+	}
+}
+
 func TestBuildScopeFromFromClause_Aliased(t *testing.T) {
 	t.Parallel()
 	a := buildAnalyzerWithUsersAndOrders(t)
