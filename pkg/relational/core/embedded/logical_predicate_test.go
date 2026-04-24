@@ -339,6 +339,36 @@ func TestBuildLogicalPlanWithCatalog_InsertSelectThreadsMd(t *testing.T) {
 	}
 }
 
+// INSERT … SELECT without WHERE: catalog-aware path rebuilds Source
+// but there's no Filter to upgrade. Plan should still produce a
+// valid LogicalInsert with non-nil Source (the inner Scan).
+func TestBuildLogicalPlanWithCatalog_InsertSelect_NoWhere(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	ins := parseInsert(t,
+		"INSERT INTO Customer (customer_id, name) SELECT order_id, 'x' FROM Order")
+	op := buildLogicalPlanForInsertWithCatalog(ins, md)
+	insertOp, ok := op.(*logical.LogicalInsert)
+	if !ok {
+		t.Fatalf("expected LogicalInsert, got %T", op)
+	}
+	if insertOp.Source == nil {
+		t.Fatal("expected non-nil Source on INSERT … SELECT (no WHERE)")
+	}
+	// Inner SELECT has no WHERE — Source should be a Project / Scan
+	// chain with no Filter on the spine.
+	for cur := insertOp.Source; cur != nil; {
+		if _, ok := cur.(*logical.LogicalFilter); ok {
+			t.Fatalf("did not expect Filter when inner SELECT has no WHERE; tree:\n%s", insertOp.Source.Explain(""))
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+}
+
 // INSERT VALUES has no nested SELECT — the catalog-aware path
 // returns the same shape as the text builder (Source is nil).
 func TestBuildLogicalPlanWithCatalog_InsertValuesNoOp(t *testing.T) {
