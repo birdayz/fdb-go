@@ -1,0 +1,90 @@
+# in_subquery_decomposition.yaml
+#
+# Uncorrelated `col IN (SELECT ...)` is pre-evaluated before the
+# outer FDB transaction opens (see in_subquery.go), materialising
+# the subquery result as a value list that drives the existing
+# IN-list pushdown chain. Correlated / nested / unsupported
+# subqueries stay uncached and fall through to the runtime
+# IN-subquery evaluator — correctness is preserved either way;
+# these tests pin correctness + regression safety across the
+# push vs. fallback boundary.
+name: in_subquery_decomposition
+schema_template: |
+  CREATE TABLE t (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    name STRING,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX idx_v ON t (v)
+  CREATE TABLE tags (
+    id BIGINT NOT NULL,
+    t_id BIGINT,
+    label STRING,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO t VALUES (1, 30, 'a'), (2, 20, 'b'), (3, 10, 'c'), (4, 40, 'd'), (5, 15, 'e')
+  - INSERT INTO tags VALUES (1, 1, 'red'), (2, 3, 'blue'), (3, 4, 'red'), (4, 5, 'green')
+tests:
+  # PK IN (SELECT ...) — uncorrelated, single-col subquery result
+  # pre-evaluates to [1, 3, 4, 5] (the distinct t_id values from
+  # tags). Decomposes into PK point scans.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags) ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [4]
+      - [5]
+
+  # Filtered subquery — narrows the materialised list to ['red'
+  # tag t_ids] = [1, 4].
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'red') ORDER BY id
+    rows:
+      - [1]
+      - [4]
+
+  # Secondary-index IN (SELECT ...) — v IN (<list from subquery>).
+  # Pre-evaluated list drives the secondary-index IN-list pushdown.
+  # Red t_ids = [1, 4] → t_id * 10 = [10, 40] → v IN (10, 40).
+  - query: SELECT id, v FROM t WHERE v IN (SELECT t_id * 10 FROM tags WHERE label = 'red') ORDER BY v
+    rows:
+      - [3, 10]
+      - [4, 40]
+
+  # Empty subquery result → IN-list with 0 values → no rows match
+  # (SQL: x IN () is FALSE). extractColInList bails on empty, so
+  # we fall back to the runtime evaluator which returns FALSE.
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label = 'nonexistent')
+    rows: []
+
+  # NULL drop: IN-list's NULL elements contribute nothing. A
+  # subquery returning [1, NULL, 4] pre-evals to [1, 4].
+  # (Modelling: no NULL t_ids in the setup. Just pin that the
+  # subquery path produces the expected rows for a non-NULL list.)
+  - query: SELECT id FROM t WHERE id IN (SELECT t_id FROM tags WHERE label IN ('red', 'blue')) ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [4]
+
+  # Single-col arithmetic projection — pre-eval handles the full
+  # SELECT pipeline. Subquery result: [10, 30, 40, 50] (t_id * 10).
+  # Then v IN (10, 30, 40, 50) on idx_v.
+  - query: SELECT id, v FROM t WHERE v IN (SELECT t_id * 10 FROM tags) ORDER BY v
+    rows:
+      - [3, 10]
+      - [1, 30]
+      - [4, 40]
+
+  # Correlated IN-subquery — the inner references the outer. Today
+  # the pre-evaluator bails silently (executing the subquery
+  # without the outer scope errors with column-not-found). The
+  # runtime IN-subquery evaluator handles per-row. Correctness
+  # preserved.
+  - query: SELECT id FROM t WHERE id IN (SELECT tags.t_id FROM tags WHERE tags.t_id = t.id) ORDER BY id
+    rows:
+      - [1]
+      - [3]
+      - [4]
+      - [5]

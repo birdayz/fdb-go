@@ -85,7 +85,20 @@ func extractColInList(
 		return "", nil, false
 	}
 
-	if inPred.InList().QueryExpressionBody() != nil {
+	if body := inPred.InList().QueryExpressionBody(); body != nil {
+		// Uncorrelated pre-evaluated IN-subquery: if
+		// preEvaluateInSubqueries cached values for this body, treat
+		// the subquery result as a literal list and drive the existing
+		// push chain. Correlated / unsupported subqueries stay uncached
+		// and fall through to the runtime IN-subquery evaluator.
+		if c != nil && c.inSubqueryCache != nil {
+			if vals, ok := c.inSubqueryCache[body]; ok {
+				if len(vals) == 0 {
+					return "", nil, false
+				}
+				return colName, vals, true
+			}
+		}
 		return "", nil, false
 	}
 
@@ -133,7 +146,37 @@ func extractColInList(
 		// every row correctly.
 		return "", nil, false
 	}
-	return colName, vals, true
+	// Java-aligned SQL IN semantics: the list is a SET — duplicate
+	// values are equivalent to a single occurrence. Dedupe to prevent
+	// the IN-list pushdown from emitting the same record multiple
+	// times (point-scanning the same key twice). Preserve first-seen
+	// order so tests that rely on declared ordering still pass.
+	return colName, dedupeAny(vals), true
+}
+
+// dedupeAny preserves first-seen order while dropping equal repeats.
+// Used by extractColInList to enforce IN's set semantics (see Java's
+// PredicateSimplification which does the same). O(n²) is fine for
+// the small IN lists we see (point-scans cost far more than the
+// compare loop).
+func dedupeAny(in []any) []any {
+	if len(in) <= 1 {
+		return in
+	}
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		dup := false
+		for _, o := range out {
+			if valuesEqual(v, o) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // tryPKInListFromWhere reports whether the WHERE is an AND chain
