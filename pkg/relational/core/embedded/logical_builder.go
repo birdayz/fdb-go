@@ -50,12 +50,6 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq.derivedQuery != nil {
 		return nil
 	}
-	if len(sq.joins) > 0 {
-		return nil
-	}
-	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
-		return nil
-	}
 	if sq.tableName == "" {
 		// SELECT without FROM — not a Scan; constant-row projection.
 		// Future: a ValuesOperator. For now, bail.
@@ -64,10 +58,73 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 
 	var op logical.LogicalOperator = logical.NewScan(sq.tableName, sq.tableAlias)
 
+	// JOINs chain left-to-right from the primary scan. Each join wraps
+	// the current op as Left and scans the joined table as Right.
+	// Produces `InnerJoin(on ...) → LeftScan → RightScan` nested as
+	// the logical operator tree expects.
+	for _, j := range sq.joins {
+		right := logical.NewScan(j.tableName, j.alias)
+		var kind logical.JoinKind
+		switch j.joinType {
+		case "LEFT":
+			kind = logical.JoinLeft
+		case "RIGHT":
+			kind = logical.JoinRight
+		default:
+			kind = logical.JoinInner
+		}
+		onText := ""
+		if j.onExpr != nil {
+			onText = canonicalTextOf(j.onExpr)
+		}
+		op = logical.NewJoin(op, right, kind, onText)
+	}
+
 	if sq.whereExpr != nil {
 		// Carry the canonical WHERE text — renders in Explain as
 		// `Filter(<text>)`. Future: translate to QueryPredicate tree.
 		op = logical.NewFilter(op, canonicalTextOf(sq.whereExpr))
+	}
+
+	// Aggregate / GROUP BY. Three shapes collapse here:
+	//   - Bare COUNT(*): no group keys, single COUNT(*) aggregate.
+	//   - GROUP BY without aggregates: just the group keys.
+	//   - Mixed: aggCols carries both group-col and agg-function
+	//     entries with outName.
+	if sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 {
+		var aggs, aggAliases []string
+		var keys []string
+		if sq.countStar {
+			aggs = []string{"COUNT(*)"}
+			aggAliases = []string{sq.countStarAlias}
+		} else {
+			keys = append(keys, sq.groupBy...)
+			for _, ac := range sq.aggCols {
+				if ac.hidden || ac.sortOnly {
+					continue
+				}
+				if ac.aggFunc != "" {
+					arg := ac.aggArg
+					if arg == "" && ac.aggExpr != nil {
+						arg = canonicalTextOf(ac.aggExpr)
+					}
+					if arg == "" {
+						arg = "*"
+					}
+					distinctPfx := ""
+					if ac.aggDistinct {
+						distinctPfx = "DISTINCT "
+					}
+					aggs = append(aggs, ac.aggFunc+"("+distinctPfx+arg+")")
+					aggAliases = append(aggAliases, ac.outName)
+				}
+			}
+		}
+		having := ""
+		if sq.havingExpr != nil {
+			having = canonicalTextOf(sq.havingExpr)
+		}
+		op = logical.NewAggregate(op, keys, aggs, aggAliases, having)
 	}
 
 	if len(sq.orderBy) > 0 {

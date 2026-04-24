@@ -66,22 +66,111 @@ func TestBuildLogicalPlan_SelectColsOrderLimit(t *testing.T) {
 	}
 }
 
-// Aggregate / GROUP BY / COUNT — builder bails (returns nil). The
-// naive Generator falls back to canonical-SQL Explain.
-func TestBuildLogicalPlan_BailsOnAggregate(t *testing.T) {
+// Bare COUNT(*): single-aggregate no-group-by.
+func TestBuildLogicalPlan_CountStar(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT COUNT(*) FROM t")
-	if op := buildLogicalPlanForSelect(sq); op != nil {
-		t.Fatalf("expected nil for COUNT(*), got %s", op.Explain(""))
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Aggregate(group=[], agg=[COUNT(*)])\n  Scan(t)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
-// JOIN — builder bails.
-func TestBuildLogicalPlan_BailsOnJoin(t *testing.T) {
+// GROUP BY with aggregate.
+func TestBuildLogicalPlan_GroupBySum(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT dept, SUM(v) FROM t GROUP BY dept")
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	// Project wraps the aggregate; keys list reflects the GROUP BY.
+	if got := op.Explain(""); !contains(got, "Aggregate(group=[dept], agg=[SUM(v)") {
+		t.Fatalf("got %q, want Aggregate(group=[dept], agg=[SUM(v)...])", got)
+	}
+}
+
+// HAVING clause renders on the aggregate node.
+func TestBuildLogicalPlan_GroupByHaving(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT dept FROM t GROUP BY dept HAVING SUM(v) > 100")
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	if got := op.Explain(""); !contains(got, "having=") {
+		t.Fatalf("got %q, want having=... in aggregate node", got)
+	}
+}
+
+// Helper: string substring match for tests where exact canonical
+// text isn't stable enough across test rewrites.
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && findString(haystack, needle)
+}
+
+func findString(h, n string) bool {
+	for i := 0; i+len(n) <= len(h); i++ {
+		if h[i:i+len(n)] == n {
+			return true
+		}
+	}
+	return false
+}
+
+// INNER JOIN — builder emits a LogicalJoin.
+func TestBuildLogicalPlan_InnerJoin(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT a.id FROM a INNER JOIN b ON a.id = b.a_id")
-	if op := buildLogicalPlanForSelect(sq); op != nil {
-		t.Fatalf("expected nil for JOIN, got %s", op.Explain(""))
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "Project(a.id)\n" +
+		"  InnerJoin(on a.id=b.a_id)\n" +
+		"    Scan(a)\n" +
+		"    Scan(b)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// LEFT JOIN variant.
+func TestBuildLogicalPlan_LeftJoin(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT * FROM a LEFT JOIN b ON a.id = b.a_id")
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "LeftJoin(on a.id=b.a_id)\n" +
+		"  Scan(a)\n" +
+		"  Scan(b)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Multiple chained joins — two-level nesting.
+func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT * FROM a INNER JOIN b ON a.id = b.a_id INNER JOIN c ON b.id = c.b_id")
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	// Left-nested: ((a JOIN b) JOIN c)
+	want := "InnerJoin(on b.id=c.b_id)\n" +
+		"  InnerJoin(on a.id=b.a_id)\n" +
+		"    Scan(a)\n" +
+		"    Scan(b)\n" +
+		"  Scan(c)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
