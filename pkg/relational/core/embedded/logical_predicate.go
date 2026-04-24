@@ -239,7 +239,15 @@ func buildLogicalPlanForInsertWithCatalog(
 	if err != nil {
 		return op
 	}
-	insertOp.Source = buildLogicalPlanForSelectWithCatalog(sq, md)
+	// Defensive: only swap Source when the catalog-aware build
+	// produced a non-nil tree. Today buildLogicalPlanForSelectWithCatalog
+	// can't return nil while buildLogicalPlanForSelect returned non-nil
+	// (same ANTLR node, same extractFromSimpleTable contract), but
+	// pinning the invariant in code instead of in the comment guards
+	// against future divergence between the text and catalog paths.
+	if upgraded := buildLogicalPlanForSelectWithCatalog(sq, md); upgraded != nil {
+		insertOp.Source = upgraded
+	}
 	return insertOp
 }
 
