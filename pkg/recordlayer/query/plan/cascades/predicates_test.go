@@ -443,6 +443,34 @@ func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 	}
 }
 
+// PredicateEquals on unary comparisons (IS NULL / IS NOT NULL)
+// must ignore the Operand field — `IS NULL{Operand: nil}` and
+// `IS NULL{Operand: LiteralValue(nil)}` are semantically identical
+// (Eval skips Operand entirely on unary types) and must compare
+// equal even though their structural Operand differs.
+func TestPredicateEquals_UnaryIgnoresOperand(t *testing.T) {
+	t.Parallel()
+	field := &FieldValue{Field: "x", Typ: TypeInt}
+	nilOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull})
+	nullValueOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull, Operand: LiteralValue(nil)})
+	if !PredicateEquals(nilOp, nullValueOp) {
+		t.Fatalf("unary IS NULL with nil vs NullValue Operand should compare equal; got Explain a=%q b=%q",
+			nilOp.Explain(), nullValueOp.Explain())
+	}
+
+	// IS NOT NULL — same property.
+	notNilOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNotNull})
+	notNullValueOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNotNull, Operand: LiteralValue(int64(0))})
+	if !PredicateEquals(notNilOp, notNullValueOp) {
+		t.Fatalf("unary IS NOT NULL must ignore Operand for equality")
+	}
+
+	// Cross-Type: IS NULL vs IS NOT NULL still distinct.
+	if PredicateEquals(nilOp, notNilOp) {
+		t.Fatal("IS NULL vs IS NOT NULL should be unequal")
+	}
+}
+
 // PredicateEquals must consider Comparison.Escape — two LIKE
 // predicates with the same LHS / pattern but different escape runes
 // are distinct. Pin both halves: same-escape → equal,

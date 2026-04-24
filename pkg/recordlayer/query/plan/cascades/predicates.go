@@ -140,13 +140,23 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		// literal content, so equal literals render equal; FieldValue
 		// renders its name; IN-lists (ConstantValue over []any)
 		// render element-wise. Same surface as the LHS Operand
-		// comparison on the next line. Escape rune is part of the
+		// comparison below. Escape rune is part of the
 		// Comparison's identity for LIKE — `LIKE 'x' ESCAPE '\'` and
 		// `LIKE 'x' ESCAPE '!'` are distinct predicates.
-		return ap.Comparison.Type == bp.Comparison.Type &&
-			ap.Comparison.Escape == bp.Comparison.Escape &&
-			valueNamesEqual(ap.Comparison.Operand, bp.Comparison.Operand) &&
-			valueNamesEqual(ap.Operand, bp.Operand)
+		//
+		// Unary types (IS [NOT] NULL) ignore Operand at Eval time, so
+		// `IsNull{Operand: nil}` and `IsNull{Operand: LiteralValue(nil)}`
+		// are semantically equivalent and must compare equal even
+		// though their Operand fields differ structurally.
+		if ap.Comparison.Type != bp.Comparison.Type ||
+			ap.Comparison.Escape != bp.Comparison.Escape ||
+			!valueNamesEqual(ap.Operand, bp.Operand) {
+			return false
+		}
+		if ap.Comparison.Type.IsUnary() {
+			return true
+		}
+		return valueNamesEqual(ap.Comparison.Operand, bp.Comparison.Operand)
 	}
 	return false
 }
