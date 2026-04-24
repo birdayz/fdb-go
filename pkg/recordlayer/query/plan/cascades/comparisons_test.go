@@ -1,6 +1,11 @@
 package cascades
 
-import "testing"
+import (
+	"regexp"
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 var _ QueryPredicate = (*ComparisonPredicate)(nil)
 
@@ -499,4 +504,60 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	if got := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
 		t.Fatalf("a=NULL: got %v", got)
 	}
+}
+
+// FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
+// `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
+// anchored with `^...$`. Mismatch = likeMatch bug.
+func FuzzLikeMatch(f *testing.F) {
+	// Seed corpus: known-good patterns + strings.
+	f.Add("hello", "hello")
+	f.Add("h%o", "hello")
+	f.Add("h_llo", "hello")
+	f.Add("%", "")
+	f.Add("", "")
+	f.Add("a%b%c", "axbycxyc")
+	f.Add("__", "ab")
+	f.Fuzz(func(t *testing.T, pattern, s string) {
+		// Cap runaway inputs — the matcher is O(n*m); want fuzz to
+		// fail fast on pathological seeds rather than burn CPU.
+		if len(pattern) > 128 || len(s) > 128 {
+			t.Skip()
+		}
+		// Oracle iterates runes; byte-level LIKE-matcher diverges
+		// on invalid UTF-8 (replacement-char substitution). SQL
+		// strings should be valid UTF-8, so constrain the corpus.
+		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
+			t.Skip()
+		}
+		got := likeMatch(pattern, s)
+		want := likeMatchRegexOracle(pattern, s)
+		if got != want {
+			t.Fatalf("mismatch: pattern=%q s=%q got=%v want=%v",
+				pattern, s, got, want)
+		}
+	})
+}
+
+// likeMatchRegexOracle is a known-good reference impl that translates
+// the LIKE pattern to a Go regex and runs it anchored.
+func likeMatchRegexOracle(pattern, s string) bool {
+	var b strings.Builder
+	// (?s) flag: . matches newlines too — matches SQL LIKE's
+	// byte-any semantics where `%` matches any character including
+	// \n / \r, not just printable chars.
+	b.WriteString("(?s)^")
+	for _, r := range pattern {
+		switch r {
+		case '%':
+			b.WriteString(".*")
+		case '_':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	b.WriteString("$")
+	re := regexp.MustCompile(b.String())
+	return re.MatchString(s)
 }

@@ -274,22 +274,26 @@ func (c Comparison) Eval(left any) TriBool {
 }
 
 // likeMatch implements SQL LIKE pattern matching against `s`:
-//   - `%` matches zero or more characters
-//   - `_` matches exactly one character
+//   - `%` matches zero or more characters (runes)
+//   - `_` matches exactly one character (rune)
 //   - every other character matches itself
 //
-// Greedy backtrack; O(len(pattern) * len(s)) worst case. No ESCAPE
+// Character-level — matches SQL standard semantics (PostgreSQL /
+// MySQL / Java Record Layer). Multi-byte UTF-8 runes count as one
+// character.
+//
+// Greedy backtrack; O(|pattern| * |s|) worst case. No ESCAPE
 // handling yet (see ComparisonLike godoc). Returns true iff the
 // pattern matches the whole string (SQL LIKE is anchored on both
 // ends).
 func likeMatch(pattern, s string) bool {
-	// Iterative matcher with a single backtrack point (the most
-	// recent `%`). Standard approach — matches SQLite's likeCompare.
+	p := []rune(pattern)
+	str := []rune(s)
 	pi, si := 0, 0
 	starPi, starSi := -1, 0
-	for si < len(s) {
-		if pi < len(pattern) {
-			switch pattern[pi] {
+	for si < len(str) {
+		if pi < len(p) {
+			switch p[pi] {
 			case '%':
 				starPi = pi
 				starSi = si
@@ -300,7 +304,7 @@ func likeMatch(pattern, s string) bool {
 				si++
 				continue
 			default:
-				if pattern[pi] == s[si] {
+				if p[pi] == str[si] {
 					pi++
 					si++
 					continue
@@ -315,11 +319,10 @@ func likeMatch(pattern, s string) bool {
 		}
 		return false
 	}
-	// Trailing `%`s in the pattern are fine; anything else means no match.
-	for pi < len(pattern) && pattern[pi] == '%' {
+	for pi < len(p) && p[pi] == '%' {
 		pi++
 	}
-	return pi == len(pattern)
+	return pi == len(p)
 }
 
 // cmpAny is a total-order comparator over the primitive types the
