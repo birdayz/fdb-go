@@ -425,3 +425,45 @@ tests:
       - [1, 10, 100]
       - [1, 30, 130]
       - [1, 20, 150]
+
+  # -------------------------------------------------------------------
+  # Secondary-index reverse scan (dayshift-46): DESC on the first
+  # index column now uses reverse scan instead of in-memory sort.
+  # -------------------------------------------------------------------
+
+  # Single-col secondary index: idx_v on t(v). naturalOrder=(v, id).
+  # ORDER BY v DESC is an all-DESC prefix → reverse scan applies.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC
+    rows:
+      - [4, 40]
+      - [1, 30]
+      - [2, 20]
+      - [5, 15]
+      - [3, 10]
+
+  # Same with LIMIT — early termination should work under reverse scan.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
+    rows:
+      - [4, 40]
+      - [1, 30]
+
+  # Composite secondary index range: idx_region_plan ordering is
+  # (region, plan, id). ORDER BY plan DESC under a pure-prefix
+  # pushdown with region equated: effective naturalOrder after
+  # equated strip is (plan, id). Reverse scan emits (region DESC,
+  # plan DESC, id DESC). Within region='us' and plan='pro' (two
+  # rows), id=3 comes before id=1 under reverse; then region='us'
+  # + plan='free' trails.
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+    rows:
+      - [3, 'us', 'pro']
+      - [1, 'us', 'pro']
+      - [2, 'us', 'free']
+
+  # Equated leading + DESC on trailing non-equated col: relaxation
+  # strips region from naturalOrder, leaving (plan, id). ORDER BY
+  # plan DESC is all-DESC prefix of that. Reverse scan under a
+  # pure-prefix composite pushdown.
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
+    rows:
+      - [4]

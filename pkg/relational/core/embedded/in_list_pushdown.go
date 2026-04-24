@@ -601,9 +601,9 @@ func (c *secondaryIndexCompositeInListCursor) OnNext(ctx context.Context) (recor
 		}
 		if c.coveringIdx != nil {
 			c.current = coveringIndexRangeScanCursor(c.store, c.coveringRT, c.coveringIdx,
-				buildSecondaryIndexCompositeRangeTupleRange(cr))
+				buildSecondaryIndexCompositeRangeTupleRange(cr), recordlayer.ForwardScan())
 		} else {
-			c.current = secondaryIndexCompositeRangeScanCursor(c.store, cr)
+			c.current = secondaryIndexCompositeRangeScanCursor(c.store, cr, recordlayer.ForwardScan())
 		}
 	}
 }
@@ -782,9 +782,9 @@ func (c *secondaryIndexInListCursor) OnNext(ctx context.Context) (recordlayer.Re
 		c.idx++
 		if c.coveringIdx != nil {
 			c.current = coveringIndexRangeScanCursor(c.store, c.coveringRT, c.coveringIdx,
-				buildSecondaryIndexEqualityTupleRange(val))
+				buildSecondaryIndexEqualityTupleRange(val), recordlayer.ForwardScan())
 		} else {
-			c.current = secondaryIndexPushdownCursor(c.store, c.indexName, val)
+			c.current = secondaryIndexPushdownCursor(c.store, c.indexName, val, recordlayer.ForwardScan())
 		}
 	}
 }

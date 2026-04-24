@@ -251,16 +251,18 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// dynamicpb record from the IndexEntry. One FDB round-trip
 			// per row instead of two. See covering_index.go.
 			idx := md.GetIndex(idxName)
+			// Equality fixes idxCols; effective sort key is PKCols.
+			// Reverse scan applies when the user's ORDER BY is an
+			// all-DESC prefix of pkCols.
+			eqScanProps, eqReverse := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexEqualityTupleRange(idxVal))
+					buildSecondaryIndexEqualityTupleRange(idxVal), eqScanProps)
 			} else {
-				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal, eqScanProps)
 			}
-			// Index equality → rows emit in (idxCols..., PKCols...)
-			// tuple order. Equality fixes idxCols, so effective
-			// sort key is PKCols.
 			naturalOrder = pkCols
+			reverseScanApplied = eqReverse
 		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
 			// Covering also applies to IN-list: each sub-scan can skip
 			// the by-PK fetch when the index covers every referenced
@@ -272,13 +274,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// to drop the lazy-chain wrapper and enable ORDER BY
 				// elimination on (idxCols..., PKCols...) = PKCols (with
 				// idxCols fixed).
+				eqScanProps, eqReverse := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
 				if idx != nil && canCoverIndex(sq, idx, rt) {
 					cursor = coveringIndexRangeScanCursor(store, rt, idx,
-						buildSecondaryIndexEqualityTupleRange(sil.values[0]))
+						buildSecondaryIndexEqualityTupleRange(sil.values[0]), eqScanProps)
 				} else {
-					cursor = secondaryIndexPushdownCursor(store, sil.indexName, sil.values[0])
+					cursor = secondaryIndexPushdownCursor(store, sil.indexName, sil.values[0], eqScanProps)
 				}
 				naturalOrder = pkCols
+				reverseScanApplied = eqReverse
 			} else if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = secondaryIndexInListScanCursor(store, sil, rt, idx)
 			} else {
@@ -293,26 +297,39 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			idx := md.GetIndex(sir.indexName)
+			// Index range → (idxCol ASC, PKCols ASC). Reverse scan
+			// applies when ORDER BY is an all-DESC prefix of that.
+			var idxNaturalOrder []string
+			if idx != nil {
+				idxNaturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
+			rngScanProps, rngReverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexRangeTupleRange(sir.bounds))
+					buildSecondaryIndexRangeTupleRange(sir.bounds), rngScanProps)
 			} else {
-				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds, rngScanProps)
 			}
-			// Index range → (idxCol ASC, PKCols ASC).
 			if idx != nil {
-				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+				naturalOrder = idxNaturalOrder
+				reverseScanApplied = rngReverse
 			}
 		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
 			idx := md.GetIndex(sicr.indexName)
+			var idxNaturalOrder []string
+			if idx != nil {
+				idxNaturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
+			crScanProps, crReverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexCompositeRangeTupleRange(sicr))
+					buildSecondaryIndexCompositeRangeTupleRange(sicr), crScanProps)
 			} else {
-				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
+				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr, crScanProps)
 			}
 			if idx != nil {
-				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+				naturalOrder = idxNaturalOrder
+				reverseScanApplied = crReverse
 			}
 		} else if sicp, ok := c.trySecondaryIndexCompositePrefixPushdown(ctx, store, sq, rt, md); ok {
 			// Pure-prefix composite secondary: equalities on a leading
@@ -323,14 +340,20 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// tighter form (full-equality, IN-list, range,
 			// composite-range) has already been tried.
 			idx := md.GetIndex(sicp.indexName)
+			var idxNaturalOrder []string
+			if idx != nil {
+				idxNaturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
+			cpScanProps, cpReverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexEqualityTupleRange(secondaryIndexKeyTuple{values: sicp.prefixVals}))
+					buildSecondaryIndexEqualityTupleRange(secondaryIndexKeyTuple{values: sicp.prefixVals}), cpScanProps)
 			} else {
-				cursor = secondaryIndexCompositePrefixScanCursor(store, sicp)
+				cursor = secondaryIndexCompositePrefixScanCursor(store, sicp, cpScanProps)
 			}
 			if idx != nil {
-				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+				naturalOrder = idxNaturalOrder
+				reverseScanApplied = cpReverse
 			}
 		} else {
 			// Full type scan emits in PK tuple order (record-type-key

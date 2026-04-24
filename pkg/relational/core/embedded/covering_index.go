@@ -314,8 +314,9 @@ func coveringIndexRangeScanCursor(
 	rt *recordlayer.RecordType,
 	idx *recordlayer.Index,
 	scanRange recordlayer.TupleRange,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	inner := store.ScanIndex(idx, scanRange, nil, recordlayer.ForwardScan())
+	inner := store.ScanIndex(idx, scanRange, nil, scanProps)
 	return &coveringCursor{
 		inner: inner,
 		rt:    rt,

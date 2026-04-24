@@ -182,8 +182,9 @@ func secondaryIndexPushdownCursor(
 	store *recordlayer.FDBRecordStore,
 	indexName string,
 	keyVal any,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexEqualityTupleRange(keyVal), nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexEqualityTupleRange(keyVal), nil, scanProps)
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -350,8 +351,9 @@ func secondaryIndexRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	indexName string,
 	bounds pkRangeBounds,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexRangeTupleRange(bounds), nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(indexName, buildSecondaryIndexRangeTupleRange(bounds), nil, scanProps)
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -577,8 +579,9 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositeRangeFromWhere(
 func secondaryIndexCompositeRangeScanCursor(
 	store *recordlayer.FDBRecordStore,
 	cr secondaryIndexCompositeRange,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
-	inner := store.ScanIndexRecords(cr.indexName, buildSecondaryIndexCompositeRangeTupleRange(cr), nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(cr.indexName, buildSecondaryIndexCompositeRangeTupleRange(cr), nil, scanProps)
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
@@ -706,11 +709,12 @@ func (c *EmbeddedConnection) trySecondaryIndexCompositePrefixFromWhere(
 func secondaryIndexCompositePrefixScanCursor(
 	store *recordlayer.FDBRecordStore,
 	cp secondaryIndexCompositePrefix,
+	scanProps recordlayer.ScanProperties,
 ) recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]] {
 	// Reuse the equality range builder with a composite key tuple —
 	// it produces exactly the inclusive-inclusive prefix range we need.
 	keyTuple := secondaryIndexKeyTuple{values: cp.prefixVals}
-	inner := store.ScanIndexRecords(cp.indexName, buildSecondaryIndexEqualityTupleRange(keyTuple), nil, recordlayer.ForwardScan())
+	inner := store.ScanIndexRecords(cp.indexName, buildSecondaryIndexEqualityTupleRange(keyTuple), nil, scanProps)
 	return recordlayer.MapCursor(inner, func(ir *recordlayer.FDBIndexedRecord) *recordlayer.FDBStoredRecord[proto.Message] {
 		return ir.Record
 	})
