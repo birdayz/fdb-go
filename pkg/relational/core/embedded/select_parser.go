@@ -814,15 +814,18 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// Grammar is `tableName (AS? alias=uid)?` — AS optional.
 		// Pick up implicit aliases via GetAlias() (was previously
 		// gated on AS being present, which lost `FROM Order o` etc).
-		// Special case: a NO-AS bare-uid alias equal to LEFT or
-		// RIGHT is the keywordsCanBeId grammar misparse for
+		// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
+		// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
 		// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
 		// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
-		// alias. The AS form (`FROM a AS LEFT JOIN ...`) is the
-		// user explicitly aliasing a as "LEFT" — keep that.
+		// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
+		// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
+		// literal alias.
 		if atomItem.GetAlias() != nil {
-			aliasTxt := functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
-			if atomItem.AS() == nil {
+			aliasRaw := atomItem.GetAlias().GetText()
+			aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
+			isQuoted := aliasRaw != aliasTxt
+			if atomItem.AS() == nil && !isQuoted {
 				up := strings.ToUpper(aliasTxt)
 				if up == "LEFT" || up == "RIGHT" {
 					promotedJoinType = up
