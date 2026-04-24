@@ -112,11 +112,14 @@ func NormalizeString(s string, caseSensitive bool) string {
 	return strings.ToUpper(s)
 }
 
-// isQuoted reports whether s starts and ends with quoteRune. Two-char
-// strings ("" and ”) do not count — there's nothing inside to be
-// an identifier.
+// isQuoted reports whether s starts and ends with quoteRune and has
+// at least one character between them. `""` and `”` (empty quoted
+// strings) do NOT count — otherwise New("”", false) would produce
+// an Identifier{name: "", wasQuoted: true} that's IsZero() == true
+// but != Identifier{} under value equality. Reject the empty-quoted
+// case up front.
 func isQuoted(s string, quoteRune byte) bool {
-	if len(s) < 2 {
+	if len(s) < 3 {
 		return false
 	}
 	return s[0] == quoteRune && s[len(s)-1] == quoteRune

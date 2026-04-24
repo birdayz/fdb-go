@@ -124,6 +124,11 @@ func TestNormalizeString_Semantics(t *testing.T) {
 		{"double-quoted case-sensitive", `"Name"`, true, "Name"},
 		{"mismatched quotes not treated as quoted", `"name'`, false, `"NAME'`},
 		{"lone quote char not quoted", `"`, false, `"`},
+		// Empty quoted strings: the delimiter pair has no content —
+		// reject as quoted so we don't manufacture a WasQuoted-true
+		// empty Identifier that compares unequal to Identifier{}.
+		{`"" not treated as quoted`, `""`, false, `""`},
+		{"'' not treated as quoted", `''`, false, `''`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
