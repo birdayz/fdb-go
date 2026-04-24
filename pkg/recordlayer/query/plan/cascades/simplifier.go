@@ -106,5 +106,7 @@ func DefaultSimplifyRules() []CascadesRule {
 		NewNotConstantSimplifyRule(),
 		NewAndConstantSimplifyRule(),
 		NewOrConstantSimplifyRule(),
+		NewAndDedupRule(),
+		NewOrDedupRule(),
 	}
 }

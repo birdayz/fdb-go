@@ -9,7 +9,73 @@ var (
 	_ CascadesRule = (*ComparisonConstantSimplifyRule)(nil)
 	_ CascadesRule = (*AndFlattenRule)(nil)
 	_ CascadesRule = (*OrFlattenRule)(nil)
+	_ CascadesRule = (*AndDedupRule)(nil)
+	_ CascadesRule = (*OrDedupRule)(nil)
 )
+
+// AND(p, p, q, p) → AND(p, q).
+func TestAndDedup_RemovesDuplicates(t *testing.T) {
+	t.Parallel()
+	rule := NewAndDedupRule()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "x", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(1)},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "y", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+	)
+	// Four children, two distinct: p and q.
+	and := NewAnd(p, p, q, p)
+	got := FireRule(rule, and)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	deduped, ok := got[0].(*AndPredicate)
+	if !ok || len(deduped.SubPredicates) != 2 {
+		t.Fatalf("expected AND with 2 children, got %v", got[0])
+	}
+}
+
+// AND(p, p) → p (single-child collapse).
+func TestAndDedup_AllSameCollapses(t *testing.T) {
+	t.Parallel()
+	rule := NewAndDedupRule()
+	p := NewConstantPredicate(TriUnknown)
+	and := NewAnd(p, p, p)
+	got := FireRule(rule, and)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	if got[0] != QueryPredicate(p) {
+		t.Fatalf("expected p, got %v", got[0])
+	}
+}
+
+// No duplicates → rule declines.
+func TestAndDedup_NoChange(t *testing.T) {
+	t.Parallel()
+	rule := NewAndDedupRule()
+	and := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	if got := FireRule(rule, and); len(got) != 0 {
+		t.Fatalf("expected rule to decline, got %d yields", len(got))
+	}
+}
+
+// OrDedupRule mirror.
+func TestOrDedup_RemovesDuplicates(t *testing.T) {
+	t.Parallel()
+	rule := NewOrDedupRule()
+	p := NewConstantPredicate(TriUnknown)
+	or := NewOr(p, p, p)
+	got := FireRule(rule, or)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	if got[0] != QueryPredicate(p) {
+		t.Fatalf("expected p, got %v", got[0])
+	}
+}
 
 // AndFlattenRule collapses nested AndPredicates into a single flat
 // list of operands.

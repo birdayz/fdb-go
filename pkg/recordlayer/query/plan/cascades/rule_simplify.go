@@ -250,6 +250,91 @@ func (m *notPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*Pla
 	return []*PlannerBindings{outer.Bind(m, in)}
 }
 
+// --- AndDedupRule / OrDedupRule ------------------------------------
+
+// AndDedupRule removes structurally-equal duplicate children from
+// an AndPredicate. `AND(p, p, q, p)` → `AND(p, q)`. Mirrors Java
+// `PredicateSimplification`'s dedup pass.
+type AndDedupRule struct {
+	matcher BindingMatcher
+}
+
+// NewAndDedupRule constructs the rule.
+func NewAndDedupRule() *AndDedupRule {
+	r := &AndDedupRule{}
+	r.matcher = newAndPredicateMatcher()
+	return r
+}
+
+func (r *AndDedupRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *AndDedupRule) OnMatch(call *RuleCall) {
+	and := call.Bindings.Get(r.matcher).(*AndPredicate)
+	deduped := dedupPredicates(and.SubPredicates)
+	if len(deduped) == len(and.SubPredicates) {
+		return
+	}
+	switch len(deduped) {
+	case 0:
+		call.Yield(NewConstantPredicate(TriTrue))
+	case 1:
+		call.Yield(deduped[0])
+	default:
+		call.Yield(&AndPredicate{SubPredicates: deduped})
+	}
+}
+
+// OrDedupRule: mirror of AndDedupRule.
+type OrDedupRule struct {
+	matcher BindingMatcher
+}
+
+// NewOrDedupRule constructs the rule.
+func NewOrDedupRule() *OrDedupRule {
+	r := &OrDedupRule{}
+	r.matcher = newOrPredicateMatcher()
+	return r
+}
+
+func (r *OrDedupRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *OrDedupRule) OnMatch(call *RuleCall) {
+	or := call.Bindings.Get(r.matcher).(*OrPredicate)
+	deduped := dedupPredicates(or.SubPredicates)
+	if len(deduped) == len(or.SubPredicates) {
+		return
+	}
+	switch len(deduped) {
+	case 0:
+		call.Yield(NewConstantPredicate(TriFalse))
+	case 1:
+		call.Yield(deduped[0])
+	default:
+		call.Yield(&OrPredicate{SubPredicates: deduped})
+	}
+}
+
+// dedupPredicates returns a new slice with duplicates (by
+// PredicateEquals) removed, preserving first-occurrence order.
+// O(n²) is fine for AND/OR operand counts the corpus exercises
+// (typically < 10 children).
+func dedupPredicates(in []QueryPredicate) []QueryPredicate {
+	out := make([]QueryPredicate, 0, len(in))
+	for _, p := range in {
+		dup := false
+		for _, o := range out {
+			if PredicateEquals(p, o) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // --- ComparisonConstantSimplifyRule --------------------------------
 
 // ComparisonConstantSimplifyRule folds a ComparisonPredicate whose
