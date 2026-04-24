@@ -394,9 +394,12 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 	switch p := pred.(type) {
 	case *antlrgen.IsExpressionContext:
 		if p.NULL_LITERAL() == nil {
-			// `x IS TRUE` / `x IS FALSE` are legal but distinct
-			// semantics — not wired yet.
-			return nil, &UnsupportedExpressionShapeError{Shape: "IS expression without NULL literal"}
+			// `x IS TRUE` / `x IS FALSE` require bool-capable cmpAny
+			// which cascades doesn't expose yet — desugar to the
+			// right predicate only after that lands.
+			return nil, &UnsupportedExpressionShapeError{
+				Shape: "IS expression without NULL literal (IS TRUE/FALSE pending cmpAny bool support)",
+			}
 		}
 		lhs, err := r.walkAtom(atom)
 		if err != nil {
