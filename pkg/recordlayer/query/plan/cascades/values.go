@@ -167,6 +167,57 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 	return row[f.Field]
 }
 
+// WalkValue applies visit to every node in v's subtree, pre-order.
+// If visit returns false, descent into that node's children is
+// skipped (siblings + ancestors continue). Rule authors use this
+// for tree-wide searches — e.g. "does any sub-expression reference
+// this correlation?" or "does this Value tree contain an aggregate?".
+//
+// Safe on nil: returns immediately. Mirrors WalkPredicate over the
+// Value side of the hierarchy.
+func WalkValue(v Value, visit func(Value) bool) {
+	if v == nil {
+		return
+	}
+	if !visit(v) {
+		return
+	}
+	for _, c := range v.Children() {
+		WalkValue(c, visit)
+	}
+}
+
+// ValueSize returns the total node count in v (v + all
+// descendants). Counterpart to PredicateSize for the Value tree.
+// Rule authors use this to gate expensive rewrites that would
+// otherwise explode tree size.
+func ValueSize(v Value) int {
+	if v == nil {
+		return 0
+	}
+	n := 1
+	for _, c := range v.Children() {
+		n += ValueSize(c)
+	}
+	return n
+}
+
+// ContainsAggregate reports whether v has any AggregateValue in its
+// subtree. Common gate for rules that only apply to scalar
+// expressions — aggregates need the accumulator path, not per-row
+// Evaluate.
+func ContainsAggregate(v Value) bool {
+	found := false
+	WalkValue(v, func(n Value) bool {
+		if _, ok := n.(*AggregateValue); ok {
+			found = true
+			return false // stop descent
+		}
+		return true
+	})
+	return found
+}
+
 // ExplainValue renders a Value as a readable expression string.
 // Free function rather than a Value-interface method so existing
 // third-party Value impls (once the port grows) don't have to

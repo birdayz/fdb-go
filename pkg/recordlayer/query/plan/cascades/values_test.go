@@ -553,3 +553,104 @@ func TestRecordConstructorValue_DefensiveCopy(t *testing.T) {
 		t.Fatalf("defensive copy leaked: got %q", r.Fields[0].Name)
 	}
 }
+
+// --- WalkValue / ValueSize / ContainsAggregate ---------------------
+
+func TestWalkValue_PreOrder(t *testing.T) {
+	t.Parallel()
+	// (a + b) * c — 5 nodes total.
+	tree := &ArithmeticValue{
+		Op: OpMul,
+		Left: &ArithmeticValue{
+			Op:    OpAdd,
+			Left:  &FieldValue{Field: "a", Typ: TypeInt},
+			Right: &FieldValue{Field: "b", Typ: TypeInt},
+		},
+		Right: &FieldValue{Field: "c", Typ: TypeInt},
+	}
+	var visited int
+	WalkValue(tree, func(Value) bool {
+		visited++
+		return true
+	})
+	if visited != 5 {
+		t.Fatalf("expected 5 visits, got %d", visited)
+	}
+}
+
+func TestWalkValue_SkipSubtree(t *testing.T) {
+	t.Parallel()
+	tree := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ArithmeticValue{Op: OpAdd, Left: &FieldValue{Field: "a"}, Right: &FieldValue{Field: "b"}},
+		Right: &FieldValue{Field: "c", Typ: TypeInt},
+	}
+	var visited int
+	WalkValue(tree, func(v Value) bool {
+		visited++
+		if _, ok := v.(*ArithmeticValue); ok && visited > 1 {
+			return false // skip sub-arith children
+		}
+		return true
+	})
+	// Visits: outer arith, left arith (skipped children), right field. = 3.
+	if visited != 3 {
+		t.Fatalf("expected 3 visits after skip, got %d", visited)
+	}
+}
+
+func TestWalkValue_NilSafe(t *testing.T) {
+	t.Parallel()
+	WalkValue(nil, func(Value) bool {
+		t.Fatal("nil input should not invoke visit")
+		return true
+	})
+}
+
+func TestValueSize(t *testing.T) {
+	t.Parallel()
+	leaf := &FieldValue{Field: "x", Typ: TypeInt}
+	if got := ValueSize(leaf); got != 1 {
+		t.Fatalf("leaf: got %d, want 1", got)
+	}
+	tree := &ArithmeticValue{
+		Op: OpMul,
+		Left: &ArithmeticValue{
+			Op:    OpAdd,
+			Left:  &FieldValue{Field: "a"},
+			Right: &FieldValue{Field: "b"},
+		},
+		Right: &FieldValue{Field: "c"},
+	}
+	if got := ValueSize(tree); got != 5 {
+		t.Fatalf("tree: got %d, want 5", got)
+	}
+	if got := ValueSize(nil); got != 0 {
+		t.Fatalf("nil: got %d, want 0", got)
+	}
+}
+
+func TestContainsAggregate(t *testing.T) {
+	t.Parallel()
+	plain := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &FieldValue{Field: "a", Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+	}
+	if ContainsAggregate(plain) {
+		t.Fatal("scalar tree should not contain aggregate")
+	}
+
+	withAgg := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt}),
+		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+	}
+	if !ContainsAggregate(withAgg) {
+		t.Fatal("tree with SUM should report aggregate")
+	}
+
+	if ContainsAggregate(nil) {
+		t.Fatal("nil should not contain aggregate")
+	}
+}
