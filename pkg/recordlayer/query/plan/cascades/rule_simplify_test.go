@@ -13,6 +13,7 @@ var (
 	_ CascadesRule = (*OrDedupRule)(nil)
 	_ CascadesRule = (*AndAbsorbOrRule)(nil)
 	_ CascadesRule = (*OrAbsorbAndRule)(nil)
+	_ CascadesRule = (*NotComparisonRewriteRule)(nil)
 )
 
 // AND(p, p, q, p) → AND(p, q).
@@ -581,5 +582,89 @@ func TestSimplify_Absorption_EndToEnd(t *testing.T) {
 	got := Simplify(pred, DefaultSimplifyRules())
 	if got != QueryPredicate(p) {
 		t.Fatalf("expected p to survive, got %T %s", got, got.Explain())
+	}
+}
+
+// NotComparisonRewriteRule: NOT(x = 5) → x <> 5.
+func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
+	t.Parallel()
+	rule := NewNotComparisonRewriteRule()
+	cp := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+	)
+	got := FireRule(rule, NewNot(cp))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	out, ok := got[0].(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected ComparisonPredicate, got %T", got[0])
+	}
+	if out.Comparison.Type != ComparisonNotEquals {
+		t.Fatalf("got %s, want <>", out.Comparison.Type.Symbol())
+	}
+	if out.Comparison.Operand != int64(5) {
+		t.Fatalf("operand changed: got %v", out.Comparison.Operand)
+	}
+}
+
+// NOT(x IS NULL) → x IS NOT NULL.
+func TestNotComparisonRewrite_NegatesIsNull(t *testing.T) {
+	t.Parallel()
+	rule := NewNotComparisonRewriteRule()
+	cp := NewComparisonPredicate(
+		&FieldValue{Field: "email", Typ: TypeString},
+		Comparison{Type: ComparisonIsNull},
+	)
+	got := FireRule(rule, NewNot(cp))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	out := got[0].(*ComparisonPredicate)
+	if out.Comparison.Type != ComparisonIsNotNull {
+		t.Fatalf("got %s, want IS NOT NULL", out.Comparison.Type.Symbol())
+	}
+}
+
+// NOT(x IN (...)) declines — IN has no direct-negation type, the
+// NOT must stay as a wrapper.
+func TestNotComparisonRewrite_InDeclines(t *testing.T) {
+	t.Parallel()
+	rule := NewNotComparisonRewriteRule()
+	cp := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(2)}},
+	)
+	if got := FireRule(rule, NewNot(cp)); len(got) != 0 {
+		t.Fatalf("expected rule to decline, got %d yields", len(got))
+	}
+}
+
+// NOT(<non-comparison>) declines — rule is comparison-specific.
+func TestNotComparisonRewrite_NonComparisonDeclines(t *testing.T) {
+	t.Parallel()
+	rule := NewNotComparisonRewriteRule()
+	inner := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	if got := FireRule(rule, NewNot(inner)); len(got) != 0 {
+		t.Fatalf("expected rule to decline on NOT(AND), got %d yields", len(got))
+	}
+}
+
+// End-to-end: NOT(age = 18) fixes up through the simplifier to
+// `age <> 18` and the outer NOT vanishes.
+func TestSimplify_NotComparisonEndToEnd(t *testing.T) {
+	t.Parallel()
+	age := &FieldValue{Field: "age", Typ: TypeInt}
+	got := Simplify(
+		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThan, Operand: int64(18)})),
+		DefaultSimplifyRules(),
+	)
+	cp, ok := got.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected ComparisonPredicate, got %T %s", got, got.Explain())
+	}
+	if cp.Comparison.Type != ComparisonLessThanOrEq {
+		t.Fatalf("expected age <= 18, got %s", got.Explain())
 	}
 }

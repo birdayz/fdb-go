@@ -110,5 +110,6 @@ func DefaultSimplifyRules() []CascadesRule {
 		NewOrDedupRule(),
 		NewAndAbsorbOrRule(),
 		NewOrAbsorbAndRule(),
+		NewNotComparisonRewriteRule(),
 	}
 }

@@ -443,6 +443,44 @@ func (m *orPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*Plan
 	return []*PlannerBindings{outer.Bind(m, in)}
 }
 
+// --- NotComparisonRewriteRule --------------------------------------
+
+// NotComparisonRewriteRule pushes a NOT past a ComparisonPredicate
+// whose comparison type has a direct negation: `NOT(x = 5)` →
+// `x <> 5`, `NOT(x IS NULL)` → `x IS NOT NULL`. Leaves
+// `NOT(x IN (...))` and `NOT(x STARTS_WITH 'pre')` alone — those
+// have no direct-negation comparison type.
+//
+// Mirrors Java's predicate-simplification passes that push NOT down
+// to leaves so downstream index-pushdown rules see a canonical
+// leaf-level predicate and don't have to also handle NOT wrappers.
+type NotComparisonRewriteRule struct {
+	matcher BindingMatcher
+}
+
+// NewNotComparisonRewriteRule constructs the rule.
+func NewNotComparisonRewriteRule() *NotComparisonRewriteRule {
+	return &NotComparisonRewriteRule{matcher: newNotPredicateMatcher()}
+}
+
+func (r *NotComparisonRewriteRule) Matcher() BindingMatcher { return r.matcher }
+
+func (r *NotComparisonRewriteRule) OnMatch(call *RuleCall) {
+	not := call.Bindings.Get(r.matcher).(*NotPredicate)
+	cp, ok := not.Child.(*ComparisonPredicate)
+	if !ok {
+		return
+	}
+	negated, ok := cp.Comparison.Type.Negate()
+	if !ok {
+		return
+	}
+	call.Yield(&ComparisonPredicate{
+		Operand:    cp.Operand,
+		Comparison: Comparison{Type: negated, Operand: cp.Comparison.Operand},
+	})
+}
+
 // --- AbsorptionRule: AND-absorbs-OR and OR-absorbs-AND -------------
 //
 // Classical boolean absorption:

@@ -140,16 +140,15 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	}
 }
 
-// Simplify recurses through NotPredicate children too. When the
-// inner tree folds to a non-constant leaf, the outer NOT must still
-// survive (only the child was rewritten) — regression cover for the
-// NotPredicate branch in Simplify's recursion switch.
+// Simplify recurses through NotPredicate children too. Use a
+// ValuePredicate leaf (not a ComparisonPredicate) so the
+// NotComparisonRewrite rule declines — isolates the assertion to
+// the "recursion visits the NOT body" property. Without recursion,
+// the inner AND-fold wouldn't happen and the final tree would still
+// be `NOT(AND(TRUE, leaf))` instead of `NOT(leaf)`.
 func TestSimplify_RecursesThroughNot(t *testing.T) {
 	t.Parallel()
-	leaf := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
-	)
+	leaf := NewValuePredicate(&FieldValue{Field: "is_active", Typ: TypeBool})
 	// NOT(AND(TRUE, leaf)) → inner AND folds to leaf → NOT(leaf).
 	pred := NewNot(NewAnd(NewConstantPredicate(TriTrue), leaf))
 	got := Simplify(pred, DefaultSimplifyRules())
