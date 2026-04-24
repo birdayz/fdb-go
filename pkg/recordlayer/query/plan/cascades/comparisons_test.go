@@ -21,6 +21,13 @@ func TestComparisonType_Symbol(t *testing.T) {
 		{ComparisonLessThanOrEq, "<="},
 		{ComparisonGreaterThan, ">"},
 		{ComparisonGreaterThanEq, ">="},
+		{ComparisonIsNull, "IS NULL"},
+		{ComparisonIsNotNull, "IS NOT NULL"},
+		{ComparisonStartsWith, "STARTS_WITH"},
+		{ComparisonIn, "IN"},
+		{ComparisonIsDistinctFrom, "IS DISTINCT FROM"},
+		{ComparisonNotDistinctFrom, "IS NOT DISTINCT FROM"},
+		{ComparisonLike, "LIKE"},
 		{ComparisonType(999), "?"},
 	}
 	for _, tc := range cases {
