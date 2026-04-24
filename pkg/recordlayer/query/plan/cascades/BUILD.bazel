@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "cascades",
+    srcs = [
+        "combinators.go",
+        "comparisons.go",
+        "correlation.go",
+        "matcher.go",
+        "predicates.go",
+        "rule.go",
+        "rule_simplify.go",
+        "simplifier.go",
+        "values.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "cascades_test",
+    srcs = [
+        "benchmark_test.go",
+        "combinators_test.go",
+        "comparisons_test.go",
+        "correlation_test.go",
+        "matcher_test.go",
+        "predicates_test.go",
+        "rule_simplify_test.go",
+        "rule_test.go",
+        "simplifier_test.go",
+        "values_test.go",
+    ],
+    embed = [":cascades"],
+)

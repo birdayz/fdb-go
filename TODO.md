@@ -587,7 +587,10 @@ ORDER BY elimination, LIMIT early-termination, 11-branch chain).
 
 **MEDIUM — complement the landed pushdown chain**
 
-- [x] **ORDER BY DESC via reverse scan** — ✅ nightshift-45 (PR #107): added `naturalOrderSatisfiesReverse` (DESC-prefix counterpart to the ASC check) + `scanPropsForOrder` direction selector. PK branches (equality / range / composite-range / composite-prefix / full-scan) now build their cursor with `ReverseScan()` when ORDER BY is an all-DESC prefix of `pkCols`. Secondary-index reverse scan still pending — scope-controlled follow-up. `order_by_elimination.yaml` pins 9 new cases.
+- [x] **ORDER BY DESC via reverse scan (PK)** — ✅ nightshift-45 (PR #107): added `naturalOrderSatisfiesReverse` (DESC-prefix counterpart to the ASC check) + `scanPropsForOrder` direction selector. PK branches (equality / range / composite-range / composite-prefix / full-scan) now build their cursor with `ReverseScan()` when ORDER BY is an all-DESC prefix of `pkCols`. `order_by_elimination.yaml` pins 9 new cases.
+- [x] **ORDER BY equality-prefix relaxation** — ✅ dayshift-46 (PR #108): `collectEquatedCols` identifies WHERE cols equated to a constant literal at AND-conjunction top level; `naturalOrderSatisfiesDir` strips equated cols from both naturalOrder AND orderBy clauses (direction / NULLS on a constant is a no-op). `WHERE a = 1 ORDER BY b, c` on PK (a, b, c) now eliminates the sort. Handles leading AND non-leading equated cols. 31 new unit tests + 7 new yamsql scenarios.
+- [x] **Secondary-index reverse scan** — ✅ dayshift-46 (PR #108): ScanProperties plumbed through `secondaryIndexPushdownCursor`, `secondaryIndexRangeScanCursor`, `secondaryIndexCompositeRangeScanCursor`, `secondaryIndexCompositePrefixScanCursor`, and `coveringIndexRangeScanCursor`. Each SELECT-path branch picks direction via `scanPropsForOrder` using its branch-specific naturalOrder. `WHERE v > 0 ORDER BY v DESC` on `idx_v(v)` now reverses instead of sorting. IN-list lazy chains keep forward scan (sub-scan order is IN-list declared order, reverse wouldn't help).
+- [x] **Pure-prefix composite-secondary-index pushdown** — ✅ dayshift-46 (PR #108): new `trySecondaryIndexCompositePrefixFromWhere` matches the longest leading prefix of a composite index's cols with equalities in WHERE; narrows to tuple-prefix scan on the index subspace. Covering-index variant piggybacks on `buildSecondaryIndexEqualityTupleRange` + `secondaryIndexKeyTuple`. Last secondary branch in the dispatcher — tighter forms win first. 11 new yamsql scenarios in `composite_secondary_index_prefix_pushdown.yaml`.
 - [ ] **IN-list via subquery decomposition** — `WHERE col IN (SELECT …)` currently bails. If the subquery is small (pre-evaluated to a literal list via the existing `preEvaluateScalarSubqueries` path), decompose into N point scans like literal IN-list. Scalar subqueries already pre-evaluate; rows-result subqueries don't yet.
 - [x] **Fuzz corpus with string dimension** — ✅ nightshift-45 (PR #107): `FuzzLikePatternToPrefix` now takes `(pattern, escape, s)`. When the harness finds `likeMatch(pattern, s, escape) && ok` it asserts `strings.HasPrefix(s, prefix)` — directly pins the correctness invariant of the pushdown. The fuzzer found one false-negative during development (non-UTF-8 bytes fold to U+FFFD in `likeMatch` but remain byte-distinct in `HasPrefix`); restricted to valid-UTF-8 inputs to match the protobuf STRING column contract. 5-minute soak = 549M execs clean.
 - [ ] **Mutual recursion** — `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs are evaluated in declaration order; mutual refs bail. (Carried forward from dayshift-43.)
@@ -845,7 +848,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
-- [ ] **Port `LogicalOperator` hierarchy** — SELECT, INSERT, UPDATE, DELETE, CTE, UNION, etc. Match Java names.
+- [~] **Port `LogicalOperator` hierarchy** — SELECT, INSERT, UPDATE, DELETE, CTE, UNION, etc. dayshift-46 seeded the target shape at `pkg/relational/core/query/logical/` with 12 operators (Scan, Filter, Project, Sort, Limit, Aggregate, Join, Union, Insert, Update, Delete, DDL) + indented Explain rendering + Java-alignment doc. Follow-up: wire the SemanticAnalyzer below to emit these, and a translator to feed today's executor.
 - [ ] **Port `SemanticAnalyzer`** — ANTLR visitor that walks parse tree, resolves identifiers against catalog, infers types, produces `LogicalOperator` tree. Also extracts prepared-statement parameters.
 - [ ] **Error surfacing** — column-not-found, type-mismatch, ambiguous-ref, etc. Match Java `ErrorCode`s.
 
@@ -859,28 +862,27 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
   - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
   - [ ] Decide: live in `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner)? See RFC-022 open questions.
-- [ ] **4.-0.5 — Generics-vs-interfaces spike** (RFC 021 risk #3)
-  - [ ] Port `Value` + one `BindingMatcher` in shape (a): interfaces + `any`.
-  - [ ] Same in shape (b): generic structs + constraint interfaces.
-  - [ ] Measure compile-time safety, API friction on a 10-line predicate matcher, downstream impact on `Matcher[? extends Value]` patterns.
-  - [ ] Pick one. Document the call in RFC 022 or a follow-up RFC.
-- [ ] **4.-0.25 — Plan-cache-key compatibility spec**
-  - [ ] Sub-RFC answering: (a) are we targeting hash-identical cache keys with Java? (b) if yes, which Java version do we pin (currently 4.10.6.0 in MODULE.bazel)? (c) if no, what's the migration path for clients expecting cross-engine cache sharing?
-  - [ ] Answer decides whether 4.4 (cost model) chases Java parity or ships a simpler Go-native cost.
-- [ ] **4.0 — Foundation types**
-  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation
-  - [ ] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes
-  - [ ] `QueryPredicate` hierarchy — `ComparisonPredicate`, `AndPredicate`, `OrPredicate`, `NotPredicate`, `ComparisonRange(s)`, `MatchesValue`
+- [x] **4.-0.5 — Generics-vs-interfaces decision** (RFC 021 risk #3) — dayshift-46.
+  - [x] Implemented `Value` + `BindingMatcher` in both candidate shapes, measured compile-time safety, API friction on a 10-line predicate matcher, downstream impact on heterogeneous children.
+  - [x] **Decision: shape (a) — non-generic `BindingMatcher` + `any` + free-function `Get[T]` retrieval helper.** See `rfcs/023-cascades-generics-decision.md`. Zero-size-struct identity gotcha documented — all matcher structs carry a nonce + atomic-counter factory.
+  - [x] Winning shape shipped to production at `pkg/recordlayer/query/plan/cascades/` (Java-aligned: mirrors `com.apple.foundationdb.record.query.plan.cascades`). Losing shape deleted. Real Phase 4.0 seed; extended in subsequent shifts.
+- [x] **4.-0.25 — Plan-cache-key compatibility spec** — dayshift-46.
+  - [x] Sub-RFC: `rfcs/024-plan-cache-compat.md`.
+  - [x] **Decision: hash-identical Java compatibility is NOT a goal.** Java's `RelationalPlanCache` is Caffeine-backed per-process in-memory; no wire format, no distributed deployment, no cross-engine contract to preserve. Phase 4.4 free to ship simpler Go-native cost. Go-internal hash stability + schema-version-sensitive keys + test fixtures still required — added as Phase 4.0 sub-items.
+- [~] **4.0 — Foundation types**
+  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values.go` — to be replaced.
+  - [~] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes. dayshift-46 seeded `Value` interface (with `Evaluate`) + 5 concrete types (Constant, Field, Arithmetic, Boolean, Cast) at `pkg/recordlayer/query/plan/cascades/values.go`; rest follow.
+  - [~] `QueryPredicate` hierarchy — dayshift-46 seeded `QueryPredicate` interface + `TriBool` (Kleene 3VL) + `ConstantPredicate` + `AndPredicate` + `OrPredicate` + `NotPredicate` at `pkg/recordlayer/query/plan/cascades/predicates.go`. Remaining: `ValuePredicate`, `ComparisonRange(s)`, `MatchesValue`, `Placeholder`, `PredicateWithValueAndRanges`.
   - [ ] `Simplification` — value simplification, predicate simplification (~30 classes)
-  - [ ] `Comparisons` / `Comparison` — `Comparisons.Type`, `Comparisons.Comparison`, `Comparisons.SimpleComparison`, etc.
+  - [~] `Comparisons` / `Comparison` — dayshift-46 seeded `ComparisonType` enum (6 operators) + `Comparison` + `ComparisonPredicate` at `pkg/recordlayer/query/plan/cascades/comparisons.go`. Remaining: `Comparisons.SimpleComparison` parameter-bound variant, LIKE/STARTS_WITH/NULL comparators, cross-type numeric promotion (seed only handles matching types).
+  - [~] `Correlated<T>` + `CorrelationIdentifier` — dayshift-46 seeded `CorrelationIdentifier` value-type + `Named/Unique` factories + `Correlated` interface at `pkg/recordlayer/query/plan/cascades/correlation.go`. Concrete `Correlated` impls land as Values gain richer Quantifier references.
 - [ ] **4.1 — Relational expressions**
   - [ ] `RelationalExpression`, `RelationalExpressionWithChildren`, `RelationalExpressionWithPredicates`
   - [ ] Logical exprs: `LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, `LogicalTypeFilterExpression`, `LogicalUnionExpression`, `LogicalDistinctExpression`, `LogicalIntersectionExpression`, `SelectExpression`
   - [ ] DML exprs: `InsertExpression`, `UpdateExpression`, `DeleteExpression`, `TableFunctionExpression`
-- [ ] **4.2 — Matching engine**
-  - [ ] `BindingMatcher` DSL — structural pattern + constraints
-  - [ ] `graph/` matchers, `structure/` matchers
-  - [ ] `PlannerBindings`
+- [~] **4.2 — Matching engine**
+  - [~] `BindingMatcher` DSL — dayshift-46 seeded `BindingMatcher` interface + `PlannerBindings` + `MergedWith` + generic `Get[T]` retrieval helper + `AnyValue` + `Instance` + `ArithmeticMatcher` + `AllOfMatcher` + `AnyOfMatcher` at `pkg/recordlayer/query/plan/cascades/{matcher,combinators}.go`. Remaining: `TypedMatcherWithExtractAndDownstream`, `ListMatcher`, `CollectionMatcher`, `OptionalIfPresentMatcher`, `PartialMatchMatchers`, the `graph/` matchers.
+  - [x] `PlannerBindings` — dayshift-46.
 - [ ] **4.3 — Memo & references**
   - [ ] `Reference` (= Cascades "group") — equivalence class of `RelationalExpression`s
   - [ ] Implicit DAG via `Reference` pointers (no explicit memo)
@@ -888,8 +890,8 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - [ ] **4.4 — Cost model**
   - [ ] `CascadesCostModel` — heuristic comparator matching Java
   - [ ] Cardinality estimation hooks, `properties/` package (~25 classes)
-- [ ] **4.5 — Rules**
-  - [ ] Rule base classes (`CascadesRule`, `CascadesRuleCall`)
+- [~] **4.5 — Rules**
+  - [~] Rule base classes (`CascadesRule`, `CascadesRuleCall`) — dayshift-46 seeded `CascadesRule` interface + `RuleCall` (with `Yield/Yielded`) + `FireRule` testing helper at `pkg/recordlayer/query/plan/cascades/rule.go`. Working example: `addConstantFoldRule` in the test file folds `Const + Const` → `Const`.
   - [ ] **Batch A (covers swingshift-44's 11-branch pushdown chain — port FIRST so 4.-1 harness gets end-to-end yamsql coverage):**
     - `PrimaryScanRule`
     - `ImplementFilterRule`

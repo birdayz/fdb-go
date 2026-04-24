@@ -1,8 +1,14 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "query",
     srcs = ["plan.go"],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query",
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "query_test",
+    srcs = ["plan_test.go"],
+    embed = [":query"],
 )

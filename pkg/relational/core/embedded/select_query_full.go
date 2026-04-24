@@ -70,6 +70,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	// LIMIT early-termination logic treats the reverse-DESC match the
 	// same as a forward-ASC match.
 	var reverseScanApplied bool
+	// equatedCols holds the UPPER-CASE bare col names that the WHERE
+	// clause equates to a constant literal at the AND-conjunction top
+	// level. Declared outside the runInTx closure so the post-scan
+	// sort-skip check can use it; captured inside the closure so it
+	// reflects the current transaction's parse/eval.
+	var equatedCols map[string]bool
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
@@ -78,6 +84,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		naturalOrder = nil
 		naturalOrderAliases = nil
 		reverseScanApplied = false
+		equatedCols = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
@@ -160,7 +167,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//     9. composite leading-eq + IN-list    — N keys (covered)
 		//    10. range / BETWEEN / LIKE prefix     — (covered)
 		//    11. composite range with leading eq   — (covered)
-		//    12. full type scan (fallback)
+		//    12. composite pure-prefix             — equalities on a
+		//        leading subset of idx cols, no range / IN on trailing
+		//        cols — tuple-prefix scan (covered)
+		//    13. full type scan (fallback)
 		var cursor recordlayer.RecordCursor[*recordlayer.FDBStoredRecord[proto.Message]]
 		pkCols := extractPKUserFields(rt.PrimaryKey)
 		// Populate naturalOrderAliases early so each branch's reverse-
@@ -168,6 +178,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// SELECT-list. The scan-setup block below overwrites this with
 		// the same value; hoisting is cheap.
 		naturalOrderAliases = buildOrderByAliases(sq)
+		// equatedCols: cols WHERE equates to a constant literal at
+		// AND-conjunction top level. Used by the ORDER BY eliminator
+		// to strip zero-width leading (and in-middle) natural-order
+		// dims: `WHERE a = 1 ORDER BY b, c` on PK (a, b, c) satisfies
+		// after stripping a from naturalOrder + matching (b, c). Same
+		// info drives reverse-scan direction selection. Captured to
+		// the outer scope so the post-tx sort-skip check sees it too.
+		equatedCols = collectEquatedCols(ctx, c, sq.whereExpr)
 		// pkScanProps carries the direction (forward/reverse) the PK
 		// branches pass into their cursor builders. Each branch sets
 		// this based on whether sq.orderBy is an all-DESC prefix of
@@ -175,7 +193,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// prefix (or empty orderBy), stays ForwardScan. naturalOrder
 		// is still recorded as pkCols — the sort eliminator downstream
 		// uses reverseApplied to accept either direction.
-		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, naturalOrderAliases)
+		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
 		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
 			// At-most-one row — direction is irrelevant for the record
 			// set, but forwarding pkScanProps keeps the branch uniform.
@@ -236,16 +254,18 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// dynamicpb record from the IndexEntry. One FDB round-trip
 			// per row instead of two. See covering_index.go.
 			idx := md.GetIndex(idxName)
+			// Equality fixes idxCols; effective sort key is PKCols.
+			// Reverse scan applies when the user's ORDER BY is an
+			// all-DESC prefix of pkCols.
+			eqScanProps, eqReverse := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexEqualityTupleRange(idxVal))
+					buildSecondaryIndexEqualityTupleRange(idxVal), eqScanProps)
 			} else {
-				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal)
+				cursor = secondaryIndexPushdownCursor(store, idxName, idxVal, eqScanProps)
 			}
-			// Index equality → rows emit in (idxCols..., PKCols...)
-			// tuple order. Equality fixes idxCols, so effective
-			// sort key is PKCols.
 			naturalOrder = pkCols
+			reverseScanApplied = eqReverse
 		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
 			// Covering also applies to IN-list: each sub-scan can skip
 			// the by-PK fetch when the index covers every referenced
@@ -257,13 +277,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// to drop the lazy-chain wrapper and enable ORDER BY
 				// elimination on (idxCols..., PKCols...) = PKCols (with
 				// idxCols fixed).
+				eqScanProps, eqReverse := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
 				if idx != nil && canCoverIndex(sq, idx, rt) {
 					cursor = coveringIndexRangeScanCursor(store, rt, idx,
-						buildSecondaryIndexEqualityTupleRange(sil.values[0]))
+						buildSecondaryIndexEqualityTupleRange(sil.values[0]), eqScanProps)
 				} else {
-					cursor = secondaryIndexPushdownCursor(store, sil.indexName, sil.values[0])
+					cursor = secondaryIndexPushdownCursor(store, sil.indexName, sil.values[0], eqScanProps)
 				}
 				naturalOrder = pkCols
+				reverseScanApplied = eqReverse
 			} else if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = secondaryIndexInListScanCursor(store, sil, rt, idx)
 			} else {
@@ -278,26 +300,63 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
 			idx := md.GetIndex(sir.indexName)
+			// Index range → (idxCol ASC, PKCols ASC). Reverse scan
+			// applies when ORDER BY is an all-DESC prefix of that.
+			var idxNaturalOrder []string
+			if idx != nil {
+				idxNaturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
+			rngScanProps, rngReverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexRangeTupleRange(sir.bounds))
+					buildSecondaryIndexRangeTupleRange(sir.bounds), rngScanProps)
 			} else {
-				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+				cursor = secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds, rngScanProps)
 			}
-			// Index range → (idxCol ASC, PKCols ASC).
 			if idx != nil {
-				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+				naturalOrder = idxNaturalOrder
+				reverseScanApplied = rngReverse
 			}
 		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
 			idx := md.GetIndex(sicr.indexName)
+			var idxNaturalOrder []string
+			if idx != nil {
+				idxNaturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
+			crScanProps, crReverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
 			if idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
-					buildSecondaryIndexCompositeRangeTupleRange(sicr))
+					buildSecondaryIndexCompositeRangeTupleRange(sicr), crScanProps)
 			} else {
-				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr)
+				cursor = secondaryIndexCompositeRangeScanCursor(store, sicr, crScanProps)
 			}
 			if idx != nil {
-				naturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+				naturalOrder = idxNaturalOrder
+				reverseScanApplied = crReverse
+			}
+		} else if sicp, ok := c.trySecondaryIndexCompositePrefixPushdown(ctx, store, sq, rt, md); ok {
+			// Pure-prefix composite secondary: equalities on a leading
+			// subset of the index cols, no range / IN on trailing
+			// cols. Narrows to tuple-prefix scan [prefixVals...] on
+			// the index subspace; trailing cols stay post-filter via
+			// evalPredicate. Last secondary-index branch — any
+			// tighter form (full-equality, IN-list, range,
+			// composite-range) has already been tried.
+			idx := md.GetIndex(sicp.indexName)
+			var idxNaturalOrder []string
+			if idx != nil {
+				idxNaturalOrder = append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			}
+			cpScanProps, cpReverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
+			if idx != nil && canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
+					buildSecondaryIndexEqualityTupleRange(secondaryIndexKeyTuple{values: sicp.prefixVals}), cpScanProps)
+			} else {
+				cursor = secondaryIndexCompositePrefixScanCursor(store, sicp, cpScanProps)
+			}
+			if idx != nil {
+				naturalOrder = idxNaturalOrder
+				reverseScanApplied = cpReverse
 			}
 		} else {
 			// Full type scan emits in PK tuple order (record-type-key
@@ -867,7 +926,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// full scan and sort later.
 		earlyTermTarget := int64(-1)
 		if sq.limit >= 0 && !sq.distinct && !sq.countStar && len(sq.aggCols) == 0 &&
-			(naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) || reverseScanApplied) {
+			(naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied) {
 			earlyTermTarget = sq.offset + sq.limit
 		}
 
@@ -1004,7 +1063,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//     placement (ASC + NULLS LAST, or DESC + NULLS FIRST).
 		//   - ORDER BY col not in naturalOrder prefix.
 		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
-			(naturalOrderSatisfies(sq.orderBy, naturalOrder, naturalOrderAliases) || reverseScanApplied)
+			(naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied)
 		if !sortSkippable {
 			sort.SliceStable(data, func(i, j int) bool {
 				for _, ob := range sq.orderBy {

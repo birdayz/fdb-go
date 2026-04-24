@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
@@ -45,7 +46,8 @@ func (g *naiveGenerator) Plan(ctx context.Context, sql string) (query.Plan, erro
 			ExecFn: func(_ context.Context) (query.Result, error) {
 				return query.Result{RowsAffected: 0}, nil
 			},
-			UpdateFn: func() bool { return true },
+			UpdateFn:  func() bool { return true },
+			ExplainFn: func() string { return "empty" },
 		}, nil
 	}
 
@@ -90,6 +92,18 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 				return query.Result{Rows: rows}, nil
 			},
 			UpdateFn: func() bool { return false },
+			ExplainFn: func() string {
+				// Route through the top-level builder which handles
+				// WITH (CTE) + UNION + simple SELECT + JOIN + aggregate
+				// + derived. Only SELECT-without-FROM still falls back
+				// to canonical SQL text.
+				if q := sel.Query(); q != nil {
+					if op := buildLogicalPlanForQuery(q); op != nil {
+						return op.Explain("")
+					}
+				}
+				return explainStatement("SELECT", sel)
+			},
 		}, nil
 	}
 
@@ -104,7 +118,8 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 					}
 					return query.Result{Rows: rows}, nil
 				},
-				UpdateFn: func() bool { return false },
+				UpdateFn:  func() bool { return false },
+				ExplainFn: func() string { return explainStatement("SHOW", show) },
 			}, nil
 		}
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -123,7 +138,81 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			return query.Result{RowsAffected: n}, nil
 		},
 		UpdateFn: func() bool { return true },
+		ExplainFn: func() string {
+			// INSERT / UPDATE / DELETE: emit a real LogicalOperator
+			// tree. Other DDL / TX shapes fall back to canonical-SQL
+			// text (same Phase 1a placeholder as before).
+			if dml := stmt.DmlStatement(); dml != nil {
+				if del := dml.DeleteStatement(); del != nil {
+					if op := buildLogicalPlanForDelete(del); op != nil {
+						return op.Explain("")
+					}
+				}
+				if upd := dml.UpdateStatement(); upd != nil {
+					if op := buildLogicalPlanForUpdate(upd); op != nil {
+						return op.Explain("")
+					}
+				}
+				if ins := dml.InsertStatement(); ins != nil {
+					if op := buildLogicalPlanForInsert(ins); op != nil {
+						return op.Explain("")
+					}
+				}
+			}
+			return explainStatement(statementKind(stmt), stmt)
+		},
 	}, nil
+}
+
+// explainStatement returns a trivial textual description of a parsed
+// statement: the kind (SELECT / INSERT / UPDATE / DELETE / DDL / SHOW)
+// followed by its source text.
+//
+// This is the Phase 1a seed of the plan-explain surface; the Cascades
+// port will replace it with a structured plan tree for the RFC-022
+// §4.-1 plan-equivalence harness to diff against Java's. Today's
+// naive Generator has no plan tree — it goes straight from parse
+// tree to execution — so the best we can produce without false
+// precision is the canonical source text.
+func explainStatement(kind string, node interface {
+	GetText() string
+},
+) string {
+	txt := ""
+	if node != nil {
+		txt = node.GetText()
+	}
+	if txt == "" {
+		return kind
+	}
+	return fmt.Sprintf("%s: %s", kind, txt)
+}
+
+// statementKind returns a short human-readable tag for a parsed top-
+// level statement. Used only for the Phase 1a Explain surface; once
+// Cascades lands, this becomes structural plan-tree rendering.
+func statementKind(stmt antlrgen.IStatementContext) string {
+	if stmt == nil {
+		return "STATEMENT"
+	}
+	if ddl := stmt.DdlStatement(); ddl != nil {
+		return "DDL"
+	}
+	if dml := stmt.DmlStatement(); dml != nil {
+		switch {
+		case dml.InsertStatement() != nil:
+			return "INSERT"
+		case dml.DeleteStatement() != nil:
+			return "DELETE"
+		case dml.UpdateStatement() != nil:
+			return "UPDATE"
+		}
+		return "DML"
+	}
+	if stmt.TransactionStatement() != nil {
+		return "TX"
+	}
+	return "STATEMENT"
 }
 
 // rowsOrEmpty returns `rows` or a non-nil empty driver.Rows when rows

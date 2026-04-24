@@ -13,9 +13,11 @@ go_library(
         "eval_predicate_map.go",
         "eval_proto.go",
         "in_list_pushdown.go",
+        "in_subquery.go",
         "insert.go",
         "join.go",
         "like_prefix_pushdown.go",
+        "logical_builder.go",
         "naive_generator.go",
         "order_by.go",
         "pk_prefix_pushdown.go",
@@ -53,6 +55,7 @@ go_library(
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query",
+        "//pkg/relational/core/query/logical",
         "//pkg/relational/core/session",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@org_golang_google_protobuf//proto",
@@ -63,13 +66,20 @@ go_library(
 
 go_test(
     name = "embedded_test",
-    srcs = ["embedded_test.go"],
+    srcs = [
+        "embedded_test.go",
+        "logical_builder_test.go",
+        "naive_generator_test.go",
+        "order_by_test.go",
+    ],
     embed = [":embedded"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/session",
     ],
 )

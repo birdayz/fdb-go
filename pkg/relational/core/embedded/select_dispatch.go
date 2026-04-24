@@ -125,6 +125,12 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		return nil, err
 	}
 
+	// Pre-evaluate uncorrelated `col IN (SELECT ...)` leaves of the
+	// top-level WHERE AND-chain. Best-effort: correlated / nested
+	// subqueries stay uncached and fall through to the runtime
+	// IN-subquery evaluator. See in_subquery.go.
+	c.preEvaluateInSubqueries(ctx, sq)
+
 	// SELECT without FROM: evaluate projExprs as constants and return one row.
 	if sq.tableName == "" {
 		cols := make([]string, len(sq.projCols))

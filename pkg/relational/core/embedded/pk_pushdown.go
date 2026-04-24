@@ -179,7 +179,7 @@ func pkPushdownCursor(
 		return pkPushdownScanCursor(store, rt, cp.prefixVals, recordlayer.ForwardScan())
 	}
 	if idxName, idxVal, ok := c.trySecondaryIndexFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexPushdownCursor(store, idxName, idxVal)
+		return secondaryIndexPushdownCursor(store, idxName, idxVal, recordlayer.ForwardScan())
 	}
 	if sil, ok := c.trySecondaryIndexInListFromWhere(ctx, store, whereExpr, rt, md); ok {
 		return secondaryIndexInListScanCursor(store, sil, nil, nil)
@@ -188,10 +188,13 @@ func pkPushdownCursor(
 		return secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
 	}
 	if sir, ok := c.trySecondaryIndexRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds)
+		return secondaryIndexRangeScanCursor(store, sir.indexName, sir.bounds, recordlayer.ForwardScan())
 	}
 	if sicr, ok := c.trySecondaryIndexCompositeRangeFromWhere(ctx, store, whereExpr, rt, md); ok {
-		return secondaryIndexCompositeRangeScanCursor(store, sicr)
+		return secondaryIndexCompositeRangeScanCursor(store, sicr, recordlayer.ForwardScan())
+	}
+	if sicp, ok := c.trySecondaryIndexCompositePrefixFromWhere(ctx, store, whereExpr, rt, md); ok {
+		return secondaryIndexCompositePrefixScanCursor(store, sicp, recordlayer.ForwardScan())
 	}
 	return store.ScanRecordsByType(tableName, nil, recordlayer.ForwardScan())
 }

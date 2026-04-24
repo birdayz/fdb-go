@@ -355,11 +355,115 @@ tests:
       - [4]
       - [3]
 
-  # ORDER BY DESC on a non-leading naturalOrder col — can't apply
-  # reverse scan (naturalOrderSatisfiesReverse requires a prefix
-  # match). Falls back to in-memory sort; correctness preserved.
+  # ORDER BY DESC on a non-leading naturalOrder col, but the leading
+  # col is equated in WHERE. Equality-prefix relaxation: a is constant
+  # in the emission (a=1 for every row), so naturalOrder strips to
+  # [b] and ORDER BY b DESC matches the all-DESC prefix → reverse
+  # scan is applied, post-sort is skipped.
   - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY b DESC
     rows:
       - [1, 30]
       - [1, 20]
       - [1, 10]
+
+  # -------------------------------------------------------------------
+  # Equality-prefix relaxation: leading equated cols strip from
+  # naturalOrder, ORDER BY matches the stripped remainder.
+  # -------------------------------------------------------------------
+
+  # Leading PK col equated, ORDER BY on next PK col ASC.
+  # naturalOrder=[a,b] (pkCols), equatedCols={a} → effective
+  # naturalOrder=[b]. orderBy=[b ASC] matches → sort eliminated.
+  - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC
+    rows:
+      - [2, 10]
+      - [2, 20]
+
+  # Leading PK col equated + LIMIT early-termination must still be
+  # correct. Forward scan emits (a=2,b=10) then (a=2,b=20); LIMIT 1
+  # should stop after first match.
+  - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
+    rows:
+      - [2, 10]
+
+  # ORDER BY includes the equated col followed by a non-equated col.
+  # `ORDER BY a DESC, b DESC` with a equated — a's direction is
+  # irrelevant (constant), only b DESC drives the decision. Reverse
+  # scan applies.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC, b DESC
+    rows:
+      - [1, 30]
+      - [1, 20]
+      - [1, 10]
+
+  # ORDER BY on the equated col alone — every row has a=1, direction
+  # is a no-op. Forward scan + sort eliminated.
+  - query: SELECT a, b FROM ab WHERE a = 1 ORDER BY a DESC
+    rows:
+      - [1, 10]
+      - [1, 20]
+      - [1, 30]
+
+  # Secondary-index path: region is equated, ORDER BY plan ASC. The
+  # idx_region_plan natural order is (region, plan, id). With region
+  # equated, effective naturalOrder is (plan, id). ORDER BY plan
+  # matches → sort eliminated. Note: reverse scan on secondary
+  # indexes is not yet plumbed through, so DESC variants would still
+  # sort — that's a separate follow-up.
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
+    rows:
+      - [2, 'us', 'free']
+      - [1, 'us', 'pro']
+      - [3, 'us', 'pro']
+
+  # Bail case: ORDER BY on a non-PK value col. c isn't in naturalOrder
+  # (which is (a, b) = pkCols) and isn't equated, so stripping leaves
+  # the orderBy unchanged with orderBy[0]=c ≠ na[0]=b → falls through
+  # to in-memory sort. Rows come out sorted by c ASC.
+  - query: SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
+    rows:
+      - [1, 10, 100]
+      - [1, 30, 130]
+      - [1, 20, 150]
+
+  # -------------------------------------------------------------------
+  # Secondary-index reverse scan (dayshift-46): DESC on the first
+  # index column now uses reverse scan instead of in-memory sort.
+  # -------------------------------------------------------------------
+
+  # Single-col secondary index: idx_v on t(v). naturalOrder=(v, id).
+  # ORDER BY v DESC is an all-DESC prefix → reverse scan applies.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC
+    rows:
+      - [4, 40]
+      - [1, 30]
+      - [2, 20]
+      - [5, 15]
+      - [3, 10]
+
+  # Same with LIMIT — early termination should work under reverse scan.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
+    rows:
+      - [4, 40]
+      - [1, 30]
+
+  # Composite secondary index range: idx_region_plan ordering is
+  # (region, plan, id). ORDER BY plan DESC under a pure-prefix
+  # pushdown with region equated: effective naturalOrder after
+  # equated strip is (plan, id). Reverse scan emits (region DESC,
+  # plan DESC, id DESC). Within region='us' and plan='pro' (two
+  # rows), id=3 comes before id=1 under reverse; then region='us'
+  # + plan='free' trails.
+  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+    rows:
+      - [3, 'us', 'pro']
+      - [1, 'us', 'pro']
+      - [2, 'us', 'free']
+
+  # Equated leading + DESC on trailing non-equated col: relaxation
+  # strips region from naturalOrder, leaving (plan, id). ORDER BY
+  # plan DESC is all-DESC prefix of that. Reverse scan under a
+  # pure-prefix composite pushdown.
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
+    rows:
+      - [4]
