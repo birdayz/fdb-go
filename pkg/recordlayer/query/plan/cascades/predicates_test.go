@@ -171,6 +171,67 @@ func TestPredicate_Composition(t *testing.T) {
 	}
 }
 
+// PredicateEquals: structural-equality across predicate shapes.
+func TestPredicateEquals(t *testing.T) {
+	t.Parallel()
+	// Constant equality
+	if !PredicateEquals(NewConstantPredicate(TriTrue), NewConstantPredicate(TriTrue)) {
+		t.Fatal("TRUE == TRUE should be true")
+	}
+	if PredicateEquals(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse)) {
+		t.Fatal("TRUE != FALSE")
+	}
+	// Type mismatch: ConstantPredicate vs AndPredicate.
+	if PredicateEquals(NewConstantPredicate(TriTrue),
+		NewAnd(NewConstantPredicate(TriTrue))) {
+		t.Fatal("const != and")
+	}
+	// AndPredicate structural
+	a := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	b := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	if !PredicateEquals(a, b) {
+		t.Fatal("structurally identical AND should be equal")
+	}
+	// AndPredicate different children.
+	c := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriTrue))
+	if PredicateEquals(a, c) {
+		t.Fatal("different AND children should not be equal")
+	}
+	// NotPredicate inner match
+	n1 := NewNot(NewConstantPredicate(TriTrue))
+	n2 := NewNot(NewConstantPredicate(TriTrue))
+	if !PredicateEquals(n1, n2) {
+		t.Fatal("NOT TRUE should equal NOT TRUE")
+	}
+	// ComparisonPredicate structural (same operand name + same op + same literal)
+	c1 := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+	)
+	c2 := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+	)
+	if !PredicateEquals(c1, c2) {
+		t.Fatal("same comparison should be equal")
+	}
+	// Different op.
+	c3 := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonLessThan, Operand: int64(5)},
+	)
+	if PredicateEquals(c1, c3) {
+		t.Fatal("different ops should not be equal")
+	}
+	// nil
+	if !PredicateEquals(nil, nil) {
+		t.Fatal("nil == nil should be true")
+	}
+	if PredicateEquals(nil, NewConstantPredicate(TriTrue)) {
+		t.Fatal("nil != predicate")
+	}
+}
+
 // Children walks: a structural visitor (future simplification
 // rules) relies on Children() for recursion. Pin it here.
 func TestChildren_Walk(t *testing.T) {

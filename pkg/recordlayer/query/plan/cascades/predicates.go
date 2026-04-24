@@ -49,6 +49,93 @@ var (
 	TriUnknown TriBool = nil
 )
 
+// PredicateEquals reports structural equality between two
+// QueryPredicates. Two predicates are equal when their concrete
+// Go types match AND their children + carried data match
+// recursively. Constants compare by TriBool identity; ComparisonPredicate
+// compares by operand Name + Comparison (Type + Operand literal);
+// ValuePredicate compares by wrapped Value Name.
+//
+// Used by future dedup rules (e.g. `AND(p, p)` → `p`,
+// `OR(x, NOT x)` → TRUE). Seed doesn't ship those rules yet, but the
+// equality helper belongs with the predicate types themselves so
+// rule authors don't roll their own.
+func PredicateEquals(a, b QueryPredicate) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	switch ap := a.(type) {
+	case *ConstantPredicate:
+		bp, ok := b.(*ConstantPredicate)
+		return ok && ap.Value == bp.Value
+	case *AndPredicate:
+		bp, ok := b.(*AndPredicate)
+		return ok && predicateListsEqual(ap.SubPredicates, bp.SubPredicates)
+	case *OrPredicate:
+		bp, ok := b.(*OrPredicate)
+		return ok && predicateListsEqual(ap.SubPredicates, bp.SubPredicates)
+	case *NotPredicate:
+		bp, ok := b.(*NotPredicate)
+		return ok && PredicateEquals(ap.Child, bp.Child)
+	case *ValuePredicate:
+		bp, ok := b.(*ValuePredicate)
+		if !ok {
+			return false
+		}
+		return valueNamesEqual(ap.Value, bp.Value)
+	case *ComparisonPredicate:
+		bp, ok := b.(*ComparisonPredicate)
+		if !ok {
+			return false
+		}
+		return ap.Comparison.Type == bp.Comparison.Type &&
+			ap.Comparison.Operand == bp.Comparison.Operand &&
+			valueNamesEqual(ap.Operand, bp.Operand)
+	}
+	return false
+}
+
+func predicateListsEqual(a, b []QueryPredicate) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !PredicateEquals(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func valueNamesEqual(a, b Value) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	// Seed comparison: concrete type + Name(). Good enough for
+	// FieldValue / ConstantValue / ArithmeticValue; richer Value
+	// types (with embedded structure) will want a dedicated
+	// ValueEquals helper.
+	return fmtType(a) == fmtType(b) && a.Name() == b.Name()
+}
+
+func fmtType(v Value) string {
+	// Return the concrete type name as a string, without bringing in
+	// reflect for a seed-scale comparison.
+	switch v.(type) {
+	case *ConstantValue:
+		return "constant"
+	case *FieldValue:
+		return "field"
+	case *ArithmeticValue:
+		return "arith"
+	case *BooleanValue:
+		return "bool"
+	case *CastValue:
+		return "cast"
+	}
+	return "?"
+}
+
 // QueryPredicate is the root of the predicate hierarchy. A
 // QueryPredicate is a tree of boolean expressions with 3-valued
 // logic semantics.
