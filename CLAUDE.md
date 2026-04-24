@@ -572,5 +572,5 @@ See `TODO.md` for full gap analysis. Summary:
 - **Test counts**: 2817 Ginkgo specs + 438 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 81.0% overall. `just coverage` generates HTML report.
 - **Race detector**: CI runs race detector on all 5 FDB test targets. Locally: `just race-all`.
-- **Fuzz targets**: 26 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix)
+- **Fuzz targets**: 28 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix + FuzzLikeMatch + FuzzLikeMatchEscape)
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.
