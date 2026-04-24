@@ -152,27 +152,35 @@ func (a *Analyzer) ExpandScopeStar(scope *Scope) []ExpandedColumn {
 }
 
 // ExpandQualifiedStar implements `SELECT alias.*` against a Scope:
-// looks up the named source, then its columns. Returns
-// SourceNotFoundError when no source matches.
+// looks up the named source, then its columns. Walks the parent
+// chain for correlated-star references. Returns SourceNotFoundError
+// (with the Available alias list populated from every visible
+// scope for "did you mean?" rendering) when no source matches.
 func (a *Analyzer) ExpandQualifiedStar(scope *Scope, qualifier Identifier) ([]ExpandedColumn, error) {
 	if scope == nil {
 		return nil, &SourceNotFoundError{Alias: qualifier}
 	}
-	for _, src := range scope.Sources() {
-		if src.Alias.EqualsIgnoreQuoting(qualifier) {
-			cols := src.Table.Columns()
-			out := make([]ExpandedColumn, len(cols))
-			for i, c := range cols {
-				out[i] = ExpandedColumn{Column: c, Source: src}
+	// Iterate the scope chain non-recursively so we can collect all
+	// visible aliases if the qualifier misses entirely.
+	for cur := scope; cur != nil; cur = cur.Parent() {
+		for _, src := range cur.sources {
+			if src.Alias.EqualsIgnoreQuoting(qualifier) {
+				cols := src.Table.Columns()
+				out := make([]ExpandedColumn, len(cols))
+				for i, c := range cols {
+					out[i] = ExpandedColumn{Column: c, Source: src}
+				}
+				return out, nil
 			}
-			return out, nil
 		}
 	}
-	// Walk parent — correlated-star references are legal.
-	if scope.Parent() != nil {
-		return a.ExpandQualifiedStar(scope.Parent(), qualifier)
+	// Chain exhausted — collect every visible alias for the error.
+	all := scope.AllSourcesRecursive()
+	avail := make([]Identifier, 0, len(all))
+	for _, src := range all {
+		avail = append(avail, src.Alias)
 	}
-	return nil, &SourceNotFoundError{Alias: qualifier}
+	return nil, &SourceNotFoundError{Alias: qualifier, Available: avail}
 }
 
 // --- Errors ---------------------------------------------------------
