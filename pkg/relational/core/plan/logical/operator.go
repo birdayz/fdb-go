@@ -34,6 +34,32 @@
 // lets them land incrementally without churning all of the pkg/
 // relational tree at once.
 //
+// **Java alignment.** Most operators map 1:1 to a Java counterpart:
+//
+//	LogicalFilter    ↔ LogicalFilter / QueryPredicate-carrying child
+//	LogicalProject   ↔ LogicalProjectionExpression
+//	LogicalSort      ↔ LogicalSortExpression
+//	LogicalAggregate ↔ GroupByExpression
+//	LogicalUnion     ↔ LogicalUnionExpression
+//	LogicalInsert    ↔ InsertExpression
+//	LogicalUpdate    ↔ UpdateExpression
+//	LogicalDelete    ↔ DeleteExpression
+//
+// Two deliberate divergences:
+//
+//  1. `LogicalScan` does not exist in Java-Cascades; Java represents
+//     a FROM-source as a Cascades `FullUnorderedScanExpression`
+//     wrapped by a `Quantifier`. RFC-022 argues that Phase 3 should
+//     own a pure logical-plan representation distinct from Cascades;
+//     LogicalScan is the scan-stand-in at the logical level.
+//  2. `LogicalJoin` does not exist in Java-Cascades as a discrete
+//     type; Java encodes joins via a `SelectExpression` binding
+//     multiple `Quantifier`s. Same rationale: keeping join as an
+//     explicit logical operator separates Phase 3 tree-building
+//     from Phase 4 Cascades translation.
+//
+// Both divergences are documented in RFC-023 / TODO Phase 3+4.
+//
 // Explicit predicate / expression representation is deferred. For
 // now LogicalFilter / LogicalProject etc. carry parse-tree handles
 // (antlr IExpressionContext). RFC-021 Phase 2 replaces those with
