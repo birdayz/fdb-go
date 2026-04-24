@@ -102,6 +102,44 @@ func TestSimplify_CrossRuleCooperation(t *testing.T) {
 	}
 }
 
+// Full-pipeline test: Flatten + ComparisonFold + Not + AndDedup +
+// AndConstant all cooperating. The input tree exercises every rule
+// the seed ships. End-to-end predicate simplification.
+func TestSimplify_FullPipeline(t *testing.T) {
+	t.Parallel()
+	// Input:
+	//   AND(
+	//     AND(                  ← nested AND (flatten fires)
+	//       5 = 5,              ← ComparisonConstant fires → TRUE
+	//       NOT NOT TRUE        ← NotConstant fires → TRUE
+	//     ),
+	//     age >= 18,            ← opaque
+	//     age >= 18,            ← duplicate (AndDedup fires)
+	//     TRUE                  ← AndConstant drops identity
+	//   )
+	// After simplification: just `age >= 18`.
+	agePred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+	)
+	pred := NewAnd(
+		NewAnd(
+			NewComparisonPredicate(
+				&ConstantValue{Value: int64(5), Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: int64(5)},
+			),
+			NewNot(NewNot(NewConstantPredicate(TriTrue))),
+		),
+		agePred,
+		agePred,
+		NewConstantPredicate(TriTrue),
+	)
+	got := Simplify(pred, DefaultSimplifyRules())
+	if got != QueryPredicate(agePred) {
+		t.Fatalf("expected agePred to survive, got %T %s", got, got.Explain())
+	}
+}
+
 // Comparison fold feeds into AND fold — end-to-end demonstration
 // that the Simplify driver's rule set cooperates across different
 // predicate types.
