@@ -719,8 +719,18 @@ func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 //
 //   - map[CorrelationIdentifier]map[string]any — multi-source shape,
 //     returns the nested map for this correlation (nil if missing).
-//   - map[string]any — single-source shape, returned verbatim.
+//   - map[string]any — single-source compat shim: IGNORES q.Correlation
+//     and returns the whole map. Safe only when there's one
+//     QuantifiedObjectValue in play; multi-source callers MUST use
+//     the per-correlation shape or two quantifiers with different
+//     correlations silently evaluate to the same row.
 //   - anything else — nil.
+//
+// The single-source shim exists so existing single-table tests /
+// callers that feed a bare row map keep working while the eval
+// path migrates. New callers MUST NOT rely on it — thread the
+// per-correlation shape end-to-end. The shim is scheduled for
+// removal once no caller needs it.
 //
 // Downstream FieldValue / nested-field resolvers then index into the
 // returned map to pick a specific column.
