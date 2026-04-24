@@ -74,11 +74,11 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 // tree instead of canonical SQL text, for the query shapes this
 // builder recognises.
 //
-// **Scope (deliberately narrow):** single-table SELECT only. Returns
-// nil for JOIN, derived-table, CTE, aggregate, GROUP BY, UNION, or
-// DML. Those paths fall through to the canonical-SQL explain (the
-// pre-existing Phase 1a placeholder). As the analyzer ports more
-// shapes, this builder extends.
+// **Scope.** SELECT (single-table / JOIN / aggregate+GROUP BY+HAVING
+// / derived table / UNION) and all DML (INSERT VALUES / INSERT SELECT
+// / UPDATE / DELETE). Returns nil for CTE (WITH …) and SELECT
+// without FROM. Nil shapes fall through to the canonical-SQL explain
+// (the pre-existing Phase 1a placeholder).
 //
 // Predicates + expressions are carried as canonical source text for
 // now (LogicalFilter.PredicateText, LogicalProject.Projections).
@@ -87,17 +87,19 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 // a translation pass from antlrgen.IExpressionContext to Value /
 // QueryPredicate.
 //
-// Output tree shape (from innermost to outermost):
+// Output tree shape (innermost to outermost):
 //
-//	LogicalScan
-//	  → LogicalFilter  (if WHERE)
-//	    → LogicalSort  (if ORDER BY)
-//	      → LogicalLimit (if LIMIT)
-//	        → LogicalProject (unless SELECT *)
+//	LogicalScan (or derived subtree)
+//	  → LogicalFilter    (if WHERE)
+//	    → LogicalJoin*   (if joins; chained left-to-right)
+//	      → LogicalAggregate (if GROUP BY / aggregates / HAVING)
+//	        → LogicalSort    (if ORDER BY)
+//	          → LogicalLimit (if LIMIT or OFFSET)
+//	            → LogicalProject (unless SELECT *)
 
 // buildLogicalPlanForSelect returns a LogicalOperator tree for the
 // parsed selectQuery, or nil when the shape is out of current scope
-// (JOIN / derived / CTE / aggregate / GROUP BY).
+// (SELECT without FROM; derived-table builds that recursively fail).
 func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq == nil {
 		return nil

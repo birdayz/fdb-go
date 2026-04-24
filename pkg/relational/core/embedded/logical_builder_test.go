@@ -141,6 +141,22 @@ func TestBuildLogicalPlan_LeftJoin(t *testing.T) {
 	}
 }
 
+// RIGHT JOIN variant.
+func TestBuildLogicalPlan_RightJoin(t *testing.T) {
+	t.Parallel()
+	sq := parseSelect(t, "SELECT * FROM a RIGHT JOIN b ON a.id = b.a_id")
+	op := buildLogicalPlanForSelect(sq)
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	want := "RightJoin(on a.id=b.a_id)\n" +
+		"  Scan(a)\n" +
+		"  Scan(b)"
+	if got := op.Explain(""); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 // Multiple chained joins — two-level nesting.
 func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 	t.Parallel()
@@ -273,6 +289,9 @@ func TestBuildLogicalPlan_Nil(t *testing.T) {
 	}
 	if op := buildLogicalPlanForUpdate(nil); op != nil {
 		t.Fatalf("expected nil for nil update, got %T", op)
+	}
+	if op := buildLogicalPlanForInsert(nil); op != nil {
+		t.Fatalf("expected nil for nil insert, got %T", op)
 	}
 }
 
