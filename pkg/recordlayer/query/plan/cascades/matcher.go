@@ -1,4 +1,4 @@
-package shapea
+package cascades
 
 import (
 	"fmt"
@@ -6,8 +6,7 @@ import (
 )
 
 // PlannerBindings is an append-only multimap from matcher-identity
-// (pointer) to matched values. Mirrors Java's PlannerBindings,
-// compressed for the spike.
+// (pointer) to matched values. Mirrors Java's PlannerBindings.
 //
 // Identity keying: two separate `Instance[ConstantValue]` matchers
 // that happen to look identical still bind separately, since rule
@@ -15,7 +14,7 @@ import (
 // operand" matches. A pointer key (or the matcher's own identity)
 // preserves that.
 type PlannerBindings struct {
-	// For the spike, a slice-per-matcher is enough. A real impl
+	// A slice-per-matcher is the minimal impl; a production cache
 	// would use a Multimap with stable iteration.
 	entries map[BindingMatcher][]any
 }
@@ -87,7 +86,7 @@ func Get[T any](b *PlannerBindings, matcher BindingMatcher) T {
 // downstream-bind behaviour for free.
 //
 // Return shape: []*PlannerBindings rather than iterator/stream.
-// The spike doesn't care about laziness; a real port would use
+// Not yet lazy; a later shift will port to
 // iter.Seq or a callback.
 type BindingMatcher interface {
 	// RootType identifies what concrete type this matcher can
@@ -105,7 +104,7 @@ type BindingMatcher interface {
 
 // AnyValue matches any Value. Bound value is the Value itself.
 //
-// **Spike finding:** zero-size matcher structs COLLIDE as map keys.
+// **Zero-size-struct gotcha:** zero-size matcher structs COLLIDE as map keys.
 // `&AnyValue{}` + `&AnyValue{}` share an address under Go's
 // zero-size-type optimisation, so two distinct `AnyValue` matchers
 // would bind to the same identity in PlannerBindings and the rule
@@ -150,7 +149,7 @@ type Instance struct {
 // NewConstantMatcher produces a matcher that only matches *ConstantValue.
 // There's one constructor per concrete type — no generics, so every
 // type that wants a matcher carries a corresponding hand-written
-// factory. For the spike I write three.
+// factory — one per concrete type we want a matcher for.
 func NewConstantMatcher() *Instance {
 	return &Instance{rootType: "ConstantValue", matches: func(in any) bool {
 		_, ok := in.(*ConstantValue)

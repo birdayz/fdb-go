@@ -848,7 +848,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 
 #### Phase 3 — Semantic analysis (parse tree → logical plan)
 
-- [ ] **Port `LogicalOperator` hierarchy** — SELECT, INSERT, UPDATE, DELETE, CTE, UNION, etc. Match Java names.
+- [~] **Port `LogicalOperator` hierarchy** — SELECT, INSERT, UPDATE, DELETE, CTE, UNION, etc. dayshift-46 seeded the target shape at `pkg/relational/core/query/logical/` with 12 operators (Scan, Filter, Project, Sort, Limit, Aggregate, Join, Union, Insert, Update, Delete, DDL) + indented Explain rendering + Java-alignment doc. Follow-up: wire the SemanticAnalyzer below to emit these, and a translator to feed today's executor.
 - [ ] **Port `SemanticAnalyzer`** — ANTLR visitor that walks parse tree, resolves identifiers against catalog, infers types, produces `LogicalOperator` tree. Also extracts prepared-statement parameters.
 - [ ] **Error surfacing** — column-not-found, type-mismatch, ambiguous-ref, etc. Match Java `ErrorCode`s.
 
@@ -862,17 +862,16 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
   - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
   - [ ] Decide: live in `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner)? See RFC-022 open questions.
-- [x] **4.-0.5 — Generics-vs-interfaces spike** (RFC 021 risk #3) — dayshift-46.
-  - [x] Port `Value` + one `BindingMatcher` in shape (a): interfaces + `any` (`pkg/relational/core/plan/cascadesspike/shapea/`).
-  - [x] Same in shape (b): generic structs + constraint interfaces (`pkg/relational/core/plan/cascadesspike/shapeb/`).
-  - [x] Measure compile-time safety, API friction on a 10-line predicate matcher, downstream impact on heterogeneous children.
-  - [x] **Decision: shape (a).** See `rfcs/023-cascades-generics-decision.md`. Spike packages stay in-tree until Phase 4.0 lands; removed in that shift. Zero-size-struct identity gotcha documented — all matcher structs need a nonce field + factory constructor.
+- [x] **4.-0.5 — Generics-vs-interfaces decision** (RFC 021 risk #3) — dayshift-46.
+  - [x] Implemented `Value` + `BindingMatcher` in both candidate shapes, measured compile-time safety, API friction on a 10-line predicate matcher, downstream impact on heterogeneous children.
+  - [x] **Decision: shape (a) — non-generic `BindingMatcher` + `any` + free-function `Get[T]` retrieval helper.** See `rfcs/023-cascades-generics-decision.md`. Zero-size-struct identity gotcha documented — all matcher structs carry a nonce + atomic-counter factory.
+  - [x] Winning shape shipped to production at `pkg/recordlayer/query/plan/cascades/` (Java-aligned: mirrors `com.apple.foundationdb.record.query.plan.cascades`). Losing shape deleted. Real Phase 4.0 seed; extended in subsequent shifts.
 - [x] **4.-0.25 — Plan-cache-key compatibility spec** — dayshift-46.
   - [x] Sub-RFC: `rfcs/024-plan-cache-compat.md`.
   - [x] **Decision: hash-identical Java compatibility is NOT a goal.** Java's `RelationalPlanCache` is Caffeine-backed per-process in-memory; no wire format, no distributed deployment, no cross-engine contract to preserve. Phase 4.4 free to ship simpler Go-native cost. Go-internal hash stability + schema-version-sensitive keys + test fixtures still required — added as Phase 4.0 sub-items.
-- [ ] **4.0 — Foundation types**
-  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation
-  - [ ] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes
+- [~] **4.0 — Foundation types**
+  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values.go` — to be replaced.
+  - [~] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes. dayshift-46 seeded `Value` interface + 3 concrete types (Constant, Field, Arithmetic) at `pkg/recordlayer/query/plan/cascades/values.go`; rest follow.
   - [ ] `QueryPredicate` hierarchy — `ComparisonPredicate`, `AndPredicate`, `OrPredicate`, `NotPredicate`, `ComparisonRange(s)`, `MatchesValue`
   - [ ] `Simplification` — value simplification, predicate simplification (~30 classes)
   - [ ] `Comparisons` / `Comparison` — `Comparisons.Type`, `Comparisons.Comparison`, `Comparisons.SimpleComparison`, etc.

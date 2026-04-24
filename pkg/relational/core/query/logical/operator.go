@@ -71,10 +71,10 @@
 // Explicit predicate / expression representation is deferred. For
 // now LogicalFilter / LogicalProject etc. carry parse-tree handles
 // (antlr IExpressionContext). RFC-021 Phase 2 replaces those with
-// `Value` nodes from the Cascades Value hierarchy — the cascades
-// spike explored the shape; RFC-023 committed to non-generic
-// interfaces + `any`. Phase 4.0 will land the real Value types and
-// this package will migrate.
+// `Value` nodes from the Cascades Value hierarchy. RFC-023
+// committed to non-generic interfaces + `any`; the seed lives in
+// `pkg/recordlayer/query/plan/cascades/`. As that package grows
+// this one will migrate its text-handle predicates to real Values.
 package logical
 
 // LogicalOperator is the root interface every logical operator

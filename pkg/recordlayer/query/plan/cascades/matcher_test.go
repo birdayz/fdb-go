@@ -1,10 +1,10 @@
-package shapea
+package cascades
 
 import (
 	"testing"
 )
 
-// The 10-line predicate matcher the RFC-022 spike asks for:
+// The 10-line predicate matcher pattern RFC-023 commits to:
 //
 // Match `ArithmeticValue(Add, ConstantValue, FieldValue)` and pull
 // out the constant + field name from the bindings for the rule body.
@@ -12,7 +12,7 @@ import (
 // In shape (a) the rule body pays the `any → *ConstantValue` downcast
 // tax every time it touches a bound value. The matcher definition is
 // short; the retrieval is where the cost lands.
-func TestShapeA_ConstPlusField(t *testing.T) {
+func TestCascades_ConstPlusField(t *testing.T) {
 	t.Parallel()
 	// Build the pattern.
 	lhs := NewConstantMatcher()
@@ -60,7 +60,7 @@ func TestShapeA_ConstPlusField(t *testing.T) {
 
 // Get[T] panics cleanly on a type mismatch — rule authors see the
 // problem immediately instead of silently retrieving nil.
-func TestShapeA_GetTypeMismatchPanics(t *testing.T) {
+func TestCascades_GetTypeMismatchPanics(t *testing.T) {
 	t.Parallel()
 	defer func() {
 		r := recover()
@@ -76,7 +76,7 @@ func TestShapeA_GetTypeMismatchPanics(t *testing.T) {
 }
 
 // Mismatch on input type: matcher returns empty, no panic.
-func TestShapeA_MismatchEmpty(t *testing.T) {
+func TestCascades_MismatchEmpty(t *testing.T) {
 	t.Parallel()
 	matcher := &ArithmeticMatcher{
 		Op:    OpAdd,
@@ -92,7 +92,7 @@ func TestShapeA_MismatchEmpty(t *testing.T) {
 
 // Sub-shape mismatch: arith on the left, but the rule wants a
 // constant on the left.
-func TestShapeA_SubShapeMismatch(t *testing.T) {
+func TestCascades_SubShapeMismatch(t *testing.T) {
 	t.Parallel()
 	matcher := &ArithmeticMatcher{
 		Op:    OpAdd,
@@ -111,7 +111,7 @@ func TestShapeA_SubShapeMismatch(t *testing.T) {
 
 // Spike finding: zero-size matcher structs collide as map keys.
 // Pins the reason NewAnyValue exists.
-func TestShapeA_ZeroSizeStructIdentityCollision(t *testing.T) {
+func TestCascades_ZeroSizeStructIdentityCollision(t *testing.T) {
 	t.Parallel()
 	// Hypothetical "identity collapses" — two separate `&AnyValue{}`
 	// values point to the same address because the struct is
@@ -121,12 +121,12 @@ func TestShapeA_ZeroSizeStructIdentityCollision(t *testing.T) {
 	// map can't distinguish the two matchers, and rule bodies
 	// retrieve the WRONG bound value.
 	//
-	// The fix baked into the spike: AnyValue carries a nonce field
+	// The fix: AnyValue carries a nonce field
 	// (the counter in NewAnyValue) so the pointer-to-struct
 	// compares unique even though the logical matcher is identical.
 	//
 	// This test ensures two NewAnyValue() calls produce distinct
-	// identities so the test in TestShapeA_AnyDownstream is not a
+	// identities so the test in TestCascades_AnyDownstream is not a
 	// false positive.
 	a := NewAnyValue()
 	b := NewAnyValue()
@@ -139,7 +139,7 @@ func TestShapeA_ZeroSizeStructIdentityCollision(t *testing.T) {
 // is the equivalent of Java's `BindingMatcher<? super Value>` — in
 // shape (a) there's no wildcard; AnyValue returns the same type the
 // rule body gets regardless.
-func TestShapeA_AnyDownstream(t *testing.T) {
+func TestCascades_AnyDownstream(t *testing.T) {
 	t.Parallel()
 	any1 := NewAnyValue()
 	any2 := NewAnyValue()

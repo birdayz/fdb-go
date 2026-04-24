@@ -16,7 +16,9 @@ interface BindingMatcher<T> {
 }
 ```
 
-Go generics don't have wildcard bounds. `BindingMatcher<? super T>` isn't expressible. The spike (pkg/relational/core/plan/cascadesspike/) implements the same tiny matcher — `ArithmeticMatcher(Add, Constant, Field)` — in two shapes and measures the friction.
+Go generics don't have wildcard bounds. `BindingMatcher<? super T>` isn't expressible. Before committing to a shape we implemented the same tiny matcher — `ArithmeticMatcher(Add, Constant, Field)` — in two shapes and measured the friction.
+
+The winning shape shipped to its production home at `pkg/recordlayer/query/plan/cascades/` (committed in dayshift-46). The losing shape was deleted; the seed code there is the real Phase 4.0 foundation, extended in later shifts.
 
 ## Shapes under test
 
@@ -122,8 +124,8 @@ Rationale:
 
 ## Artifacts
 
-- Spike packages: `pkg/relational/core/plan/cascadesspike/shapea` + `shapeb` — stay in the tree until Phase 4.0 lands the production shape, then removed in the same shift.
-- Spike tests: 4 per shape, pinning matcher semantics + zero-size-struct finding.
+- Production package: `pkg/recordlayer/query/plan/cascades/` — committed Phase 4.0 seed (dayshift-46). Port was done during the comparison; once the decision landed we deleted the losing shape and moved the winner to its Java-aligned home, dropping the "spike" framing.
+- Tests: `matcher_test.go` in the same package, pinning matcher semantics + zero-size-struct finding + the `Get[T]` retrieval helper.
 
 ## Open questions
 
