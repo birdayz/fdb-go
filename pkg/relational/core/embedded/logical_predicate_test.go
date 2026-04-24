@@ -7,8 +7,26 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
+
+// parseQueryFromSelect parses SQL and returns the IQueryContext from
+// the first SELECT statement. Used by Query-level builder tests.
+func parseQueryFromSelect(t *testing.T, sql string) (antlrgen.IQueryContext, error) {
+	t.Helper()
+	root, err := parser.Parse(sql)
+	if err != nil {
+		return nil, err
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	if sel == nil {
+		t.Fatalf("not a SELECT statement: %q", sql)
+	}
+	return sel.Query(), nil
+}
 
 // buildTestMetaData returns a minimal RecordMetaData with the demo
 // record types registered. Used by the catalog-aware builder tests
@@ -200,6 +218,87 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	}
 	if got := filter.Predicate.Explain(); got != "ORDER_ID = 1" {
 		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID = 1", got)
+	}
+}
+
+// buildLogicalPlanForQueryWithCatalog threads metadata through the
+// top-level Query / QueryBody / Union recursion. UNION-of-SELECTs
+// each get their own catalog-aware Filter when the WHERE walks
+// cleanly. Pins that the recursion doesn't drop md somewhere.
+func TestBuildLogicalPlanWithCatalog_UnionThreadsMd(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"SELECT order_id FROM Order WHERE price > 5 UNION ALL SELECT order_id FROM Order WHERE price < 100")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan")
+	}
+	union, ok := op.(*logical.LogicalUnion)
+	if !ok {
+		t.Fatalf("expected LogicalUnion, got %T", op)
+	}
+	if len(union.Inputs) != 2 {
+		t.Fatalf("expected 2 inputs, got %d", len(union.Inputs))
+	}
+	for i, branch := range union.Inputs {
+		var filter *logical.LogicalFilter
+		for cur := branch; cur != nil; {
+			if f, ok := cur.(*logical.LogicalFilter); ok {
+				filter = f
+				break
+			}
+			ch := cur.Children()
+			if len(ch) != 1 {
+				break
+			}
+			cur = ch[0]
+		}
+		if filter == nil {
+			t.Fatalf("union branch %d missing Filter:\n%s", i, branch.Explain(""))
+		}
+		if filter.Predicate == nil {
+			t.Fatalf("union branch %d missing Predicate (md not threaded?)", i)
+		}
+	}
+}
+
+// CTE bodies thread md too — WHERE inside `WITH c AS (SELECT ... WHERE ...)`
+// also walks through the catalog-aware path.
+func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH c AS (SELECT order_id FROM Order WHERE price > 5) SELECT * FROM c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	cte, ok := op.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("expected LogicalCTE root, got %T", op)
+	}
+	// The CTE body's filter should carry a Predicate.
+	var bodyFilter *logical.LogicalFilter
+	for cur := cte.Body; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			bodyFilter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if bodyFilter == nil {
+		t.Fatalf("CTE body missing Filter:\n%s", cte.Body.Explain(""))
+	}
+	if bodyFilter.Predicate == nil {
+		t.Fatal("CTE body Filter missing Predicate (md not threaded?)")
 	}
 }
 

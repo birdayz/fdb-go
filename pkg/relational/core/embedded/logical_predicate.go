@@ -191,3 +191,94 @@ func buildLogicalPlanForUpdateWithCatalog(
 	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op
 }
+
+// buildLogicalPlanForQueryWithCatalog is the catalog-aware variant
+// of buildLogicalPlanForQuery. Recurses into CTE bodies and the
+// query body so WHERE clauses anywhere in the tree pick up the
+// metadata when available. md=nil collapses to the text builder.
+func buildLogicalPlanForQueryWithCatalog(
+	q antlrgen.IQueryContext,
+	md *recordlayer.RecordMetaData,
+) logical.LogicalOperator {
+	if q == nil {
+		return nil
+	}
+	if md == nil {
+		return buildLogicalPlanForQuery(q)
+	}
+	main := buildLogicalPlanForQueryBodyWithCatalog(q.QueryExpressionBody(), md)
+	if main == nil {
+		return nil
+	}
+	ctesCtx := q.Ctes()
+	if ctesCtx == nil {
+		return main
+	}
+	recursive := ctesCtx.RECURSIVE() != nil
+	ctes := ctesCtx.AllNamedQuery()
+	for i := len(ctes) - 1; i >= 0; i-- {
+		nq := ctes[i]
+		name := functions.FullIdToName(nq.GetName())
+		var body logical.LogicalOperator
+		if inner := nq.Query(); inner != nil {
+			body = buildLogicalPlanForQueryBodyWithCatalog(inner.QueryExpressionBody(), md)
+		}
+		if body == nil {
+			return nil
+		}
+		main = logical.NewCTE(name, body, main, recursive)
+	}
+	return main
+}
+
+// buildLogicalPlanForQueryBodyWithCatalog dispatches simple SELECT
+// vs UNION, threading md through both arms. Mirrors the text
+// builder's QueryTermDefault / SetQuery split.
+func buildLogicalPlanForQueryBodyWithCatalog(
+	body antlrgen.IQueryExpressionBodyContext,
+	md *recordlayer.RecordMetaData,
+) logical.LogicalOperator {
+	if body == nil {
+		return nil
+	}
+	switch b := body.(type) {
+	case *antlrgen.QueryTermDefaultContext:
+		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
+		if !ok {
+			return nil
+		}
+		sq, err := extractFromSimpleTable(simpleTable)
+		if err != nil {
+			return nil
+		}
+		return buildLogicalPlanForSelectWithCatalog(sq, md)
+	case *antlrgen.SetQueryContext:
+		return buildLogicalPlanForUnionWithCatalog(b, md)
+	}
+	return nil
+}
+
+// buildLogicalPlanForUnionWithCatalog mirrors buildLogicalPlanForUnion
+// — same flattening logic, threads md to each branch.
+func buildLogicalPlanForUnionWithCatalog(
+	setQ *antlrgen.SetQueryContext,
+	md *recordlayer.RecordMetaData,
+) logical.LogicalOperator {
+	if setQ == nil {
+		return nil
+	}
+	distinct := true
+	if q := setQ.GetQuantifier(); q != nil && strings.EqualFold(q.GetText(), "ALL") {
+		distinct = false
+	}
+	left := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetLeft(), md)
+	right := buildLogicalPlanForQueryBodyWithCatalog(setQ.GetRight(), md)
+	if left == nil || right == nil {
+		return nil
+	}
+	inputs := []logical.LogicalOperator{left, right}
+	if innerUnion, ok := left.(*logical.LogicalUnion); ok && innerUnion.Distinct == distinct {
+		inputs = append(append([]logical.LogicalOperator(nil), innerUnion.Inputs...), right)
+	}
+	return logical.NewUnion(inputs, distinct)
+}

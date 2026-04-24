@@ -97,7 +97,20 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 				// WITH (CTE) + UNION + simple SELECT + JOIN + aggregate
 				// + derived. Only SELECT-without-FROM still falls back
 				// to canonical SQL text.
+				//
+				// When the session schema cache already holds the
+				// active schema, route through the catalog-aware
+				// builder so WHERE clauses become real
+				// cascades.QueryPredicate trees in the Explain
+				// output. Cold cache → text builder (deterministic
+				// fallback, never blocks on a catalog fetch).
 				if q := sel.Query(); q != nil {
+					md := c.cachedMetaData()
+					if md != nil {
+						if op := buildLogicalPlanForQueryWithCatalog(q, md); op != nil {
+							return op.Explain("")
+						}
+					}
 					if op := buildLogicalPlanForQuery(q); op != nil {
 						return op.Explain("")
 					}
@@ -142,13 +155,29 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			// INSERT / UPDATE / DELETE: emit a real LogicalOperator
 			// tree. Other DDL / TX shapes fall back to canonical-SQL
 			// text (same Phase 1a placeholder as before).
+			//
+			// DELETE / UPDATE route through the catalog-aware
+			// builder when the schema cache is warm so WHERE
+			// clauses become predicate trees instead of source text.
+			// Cold cache → text builder (deterministic fallback).
+			md := c.cachedMetaData()
 			if dml := stmt.DmlStatement(); dml != nil {
 				if del := dml.DeleteStatement(); del != nil {
+					if md != nil {
+						if op := buildLogicalPlanForDeleteWithCatalog(del, md); op != nil {
+							return op.Explain("")
+						}
+					}
 					if op := buildLogicalPlanForDelete(del); op != nil {
 						return op.Explain("")
 					}
 				}
 				if upd := dml.UpdateStatement(); upd != nil {
+					if md != nil {
+						if op := buildLogicalPlanForUpdateWithCatalog(upd, md); op != nil {
+							return op.Explain("")
+						}
+					}
 					if op := buildLogicalPlanForUpdate(upd); op != nil {
 						return op.Explain("")
 					}

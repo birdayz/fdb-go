@@ -16,6 +16,7 @@ import (
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
@@ -185,6 +186,34 @@ func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schem
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	c.sess.InvalidateSchema(dbPath, schemaName)
+}
+
+// cachedMetaData returns the RecordMetaData for the connection's
+// current (DBPath, Schema) if the session schema cache already
+// holds it, or nil otherwise. Read-only and synchronous — no
+// transaction, no IO. Used by ExplainFn paths that opportunistically
+// upgrade text-only logical plans to predicate-tree form when
+// metadata is cheap; cold-cache lookups produce nil rather than
+// blocking on a catalog fetch, so Explain stays fast and side-
+// effect-free.
+//
+// Returns nil when: cache miss, schema template isn't a
+// RecordLayerSchemaTemplate, or the underlying RecordMetaData is
+// itself nil. Callers fall back to the text builder on nil.
+func (c *EmbeddedConnection) cachedMetaData() *recordlayer.RecordMetaData {
+	if c.sess == nil {
+		return nil
+	}
+	key := session.SchemaCacheKey(c.sess.DBPath, c.sess.Schema)
+	schema, ok := c.sess.SchemaCache[key]
+	if !ok || schema == nil {
+		return nil
+	}
+	tmpl, ok := schema.SchemaTemplate().(*metadata.RecordLayerSchemaTemplate)
+	if !ok {
+		return nil
+	}
+	return tmpl.Underlying()
 }
 
 // New returns a ready-to-use embedded connection.
