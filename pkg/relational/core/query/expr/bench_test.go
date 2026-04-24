@@ -4,9 +4,26 @@ import (
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
+
+// parseWhereForBench is the benchmark-side analogue of
+// parseFirstWhereExpr — takes *testing.B and fails via b.Fatal.
+func parseWhereForBench(b *testing.B, sql string) antlrgen.IExpressionContext {
+	b.Helper()
+	root, err := parser.Parse(sql)
+	if err != nil {
+		b.Fatal(err)
+	}
+	sel := root.Statements().AllStatement()[0].SelectStatement()
+	body := sel.Query().QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	simple := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	where := simple.FromClause().WhereExpr()
+	return where.Expression()
+}
 
 func buildScopeForBench(b *testing.B) (*semantic.Analyzer, *semantic.Scope) {
 	b.Helper()
@@ -40,6 +57,27 @@ func BenchmarkResolveConstant_Int64(b *testing.B) {
 	r := expr.New(a, s)
 	for i := 0; i < b.N; i++ {
 		_, _ = r.ResolveConstant(int64(42))
+	}
+}
+
+// BenchmarkWalkPredicate_Comparison measures the full parse-tree →
+// cascades.ComparisonPredicate path on a representative WHERE clause.
+func BenchmarkWalkPredicate_Comparison(b *testing.B) {
+	a, s := buildScopeForBench(b)
+	r := expr.New(a, s)
+	ctx := parseWhereForBench(b, "SELECT * FROM users WHERE id = 1")
+	for i := 0; i < b.N; i++ {
+		_, _ = r.WalkPredicate(ctx)
+	}
+}
+
+// BenchmarkWalkPredicate_AndChain measures an AND with 3 children.
+func BenchmarkWalkPredicate_AndChain(b *testing.B) {
+	a, s := buildScopeForBench(b)
+	r := expr.New(a, s)
+	ctx := parseWhereForBench(b, "SELECT * FROM users WHERE id = 1 AND name = 'bob' AND id = 1")
+	for i := 0; i < b.N; i++ {
+		_, _ = r.WalkPredicate(ctx)
 	}
 }
 
