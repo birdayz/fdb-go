@@ -171,6 +171,50 @@ func TestPredicate_Composition(t *testing.T) {
 	}
 }
 
+// NotPredicate.Explain wraps non-connective children in parens so
+// the SQL-like output is unambiguous. AndPredicate / OrPredicate
+// already wrap themselves; avoid double-parenthesizing.
+func TestNotPredicate_ExplainParens(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   *NotPredicate
+		want string
+	}{
+		{
+			name: "NOT(AndPredicate) — no double parens",
+			in:   NewNot(NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))),
+			want: "NOT (TRUE AND FALSE)",
+		},
+		{
+			name: "NOT(OrPredicate) — no double parens",
+			in:   NewNot(NewOr(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))),
+			want: "NOT (TRUE OR FALSE)",
+		},
+		{
+			name: "NOT(ComparisonPredicate) — wraps",
+			in: NewNot(NewComparisonPredicate(
+				&FieldValue{Field: "age", Typ: TypeInt},
+				Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+			)),
+			want: "NOT (age >= 18)",
+		},
+		{
+			name: "NOT(ConstantPredicate) — wraps",
+			in:   NewNot(NewConstantPredicate(TriTrue)),
+			want: "NOT (TRUE)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.in.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // WalkPredicate pre-order traversal; skip-subtree on false.
 func TestWalkPredicate(t *testing.T) {
 	t.Parallel()

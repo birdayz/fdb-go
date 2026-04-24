@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 )
@@ -386,5 +385,13 @@ func (p *NotPredicate) Eval(evalCtx any) TriBool {
 }
 
 func (p *NotPredicate) Explain() string {
-	return fmt.Sprintf("NOT %s", p.Child.Explain())
+	// Wrap non-connective children so `NOT age >= 18` reads
+	// unambiguously as `NOT (age >= 18)`. AndPredicate / OrPredicate
+	// already wrap themselves — avoid double-parenthesizing them.
+	child := p.Child.Explain()
+	switch p.Child.(type) {
+	case *AndPredicate, *OrPredicate:
+		return "NOT " + child
+	}
+	return "NOT (" + child + ")"
 }
