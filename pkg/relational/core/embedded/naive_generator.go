@@ -93,15 +93,13 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			},
 			UpdateFn: func() bool { return false },
 			ExplainFn: func() string {
-				// Route through the query-body builder which
-				// dispatches between simple SELECT and UNION. Only CTE
-				// and SELECT-without-FROM still fall back to canonical
-				// SQL text.
+				// Route through the top-level builder which handles
+				// WITH (CTE) + UNION + simple SELECT + JOIN + aggregate
+				// + derived. Only SELECT-without-FROM still falls back
+				// to canonical SQL text.
 				if q := sel.Query(); q != nil {
-					if body := q.QueryExpressionBody(); body != nil {
-						if op := buildLogicalPlanForQueryBody(body); op != nil {
-							return op.Explain("")
-						}
+					if op := buildLogicalPlanForQuery(q); op != nil {
+						return op.Explain("")
 					}
 				}
 				return explainStatement("SELECT", sel)

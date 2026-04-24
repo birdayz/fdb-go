@@ -185,6 +185,66 @@ func TestBuildLogicalPlan_BailsOnNoFrom(t *testing.T) {
 	}
 }
 
+// WITH (CTE) — builder wraps the main query in a LogicalCTE.
+func TestBuildLogicalPlan_CTE(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("WITH active_users AS (SELECT id FROM users WHERE active = TRUE) SELECT id FROM active_users")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	op := buildLogicalPlanForQuery(sel.Query())
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	got := op.Explain("")
+	for _, want := range []string{"CTE(active_users)", "Filter(active=TRUE)", "Scan(users)", "Scan(active_users)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("explain %q missing %q", got, want)
+		}
+	}
+}
+
+// WITH RECURSIVE — tag flips to RecursiveCTE.
+func TestBuildLogicalPlan_RecursiveCTE(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("WITH RECURSIVE tree AS (SELECT id FROM base UNION ALL SELECT id FROM tree WHERE id > 0) SELECT id FROM tree")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	op := buildLogicalPlanForQuery(sel.Query())
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	if !strings.Contains(op.Explain(""), "RecursiveCTE(tree)") {
+		t.Fatalf("expected RecursiveCTE, got %q", op.Explain(""))
+	}
+}
+
+// Multi-CTE WITH — outermost CTE sits at the root, innermost nests
+// deepest in Main.
+func TestBuildLogicalPlan_MultiCTE(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("WITH a AS (SELECT id FROM x), b AS (SELECT id FROM y) SELECT id FROM b")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	op := buildLogicalPlanForQuery(sel.Query())
+	if op == nil {
+		t.Fatal("expected non-nil")
+	}
+	// First CTE (`a`) is the outer wrap; second CTE (`b`) nests inside.
+	got := op.Explain("")
+	if strings.Index(got, "CTE(a)") > strings.Index(got, "CTE(b)") {
+		t.Fatalf("expected CTE(a) before CTE(b), got %q", got)
+	}
+}
+
 // UNION ALL: two SELECTs, quantifier ALL.
 func TestBuildLogicalPlan_UnionAll(t *testing.T) {
 	t.Parallel()

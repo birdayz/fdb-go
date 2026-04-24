@@ -8,6 +8,45 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
+// buildLogicalPlanForQuery is the outer-most builder entry point.
+// It handles WITH (CTE) wrapping, then delegates the main query
+// body to buildLogicalPlanForQueryBody. Each CTE in the WITH list
+// wraps the result in a LogicalCTE; the outermost CTE ends up at
+// the root.
+func buildLogicalPlanForQuery(q antlrgen.IQueryContext) logical.LogicalOperator {
+	if q == nil {
+		return nil
+	}
+	main := buildLogicalPlanForQueryBody(q.QueryExpressionBody())
+	if main == nil {
+		return nil
+	}
+	ctesCtx := q.Ctes()
+	if ctesCtx == nil {
+		return main
+	}
+	recursive := ctesCtx.RECURSIVE() != nil
+	// Wrap each named CTE around the accumulated main. Reverse
+	// iteration so the first-declared CTE ends up at the root (read
+	// top-down in Explain output, matching the SQL text order).
+	ctes := ctesCtx.AllNamedQuery()
+	for i := len(ctes) - 1; i >= 0; i-- {
+		nq := ctes[i]
+		name := functions.FullIdToName(nq.GetName())
+		var body logical.LogicalOperator
+		if inner := nq.Query(); inner != nil {
+			body = buildLogicalPlanForQueryBody(inner.QueryExpressionBody())
+		}
+		if body == nil {
+			// CTE body out of builder scope — bail rather than emit
+			// a partial tree.
+			return nil
+		}
+		main = logical.NewCTE(name, body, main, recursive)
+	}
+	return main
+}
+
 // buildLogicalPlanForQueryBody is the general entry point that
 // handles both simple SELECT and UNION shapes. It mirrors
 // execQueryBodyRows' dispatch: QueryTermDefaultContext → simple

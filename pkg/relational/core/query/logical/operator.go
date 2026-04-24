@@ -25,15 +25,8 @@
 //   - LogicalUpdate      — `UPDATE tbl SET col = expr WHERE …`
 //   - LogicalDelete      — `DELETE FROM tbl WHERE …`
 //   - LogicalDDL         — `CREATE / DROP` passthrough (no tree shape)
-//
-// CTE (`WITH name AS (…)`) isn't a discrete LogicalOperator today
-// — the executor already handles CTE materialisation in
-// `cte_scan.go` / `recursive_cte.go` and the target shape can
-// model a CTE-backed FROM as a `LogicalScan` over a synthesised
-// CTE name. If Phase 4 rule porting needs a first-class CTE node
-// (e.g. to match Java's `TempTableScanExpression`), add it then;
-// until then avoid introducing shape we won't immediately
-// populate.
+//   - LogicalCTE         — `WITH name AS (…) SELECT …`
+//     (non-recursive + recursive)
 //
 // **Phase 3 scope:** this package is the TARGET SHAPE only. The
 // semantic analyzer that translates parse tree → LogicalOperator
