@@ -21,6 +21,7 @@ go_test(
     name = "semantic_test",
     srcs = [
         "analyzer_test.go",
+        "benchmark_test.go",
         "catalog_test.go",
         "functions_test.go",
         "identifier_test.go",
