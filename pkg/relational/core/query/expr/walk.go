@@ -55,8 +55,48 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		return r.walkColumnRef(a.FullColumnName().FullId())
 	case *antlrgen.ConstantExpressionAtomContext:
 		return r.walkConstant(a.Constant())
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		// A parenthesised single expression `(x)` surfaces as a
+		// RecordConstructor with exactly one child. Unwrap and
+		// recurse. Multi-element or named-field record constructors
+		// need dedicated support (RecordConstructorValue in cascades)
+		// and aren't wired yet.
+		return r.walkRecordConstructor(a.RecordConstructor())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
+}
+
+// walkRecordConstructor unwraps a single-element, unnamed-field,
+// un-typed record constructor — the parser's shape for
+// parenthesised expressions `(expr)`. Multi-element or annotated
+// record constructors require dedicated cascades.RecordConstructorValue
+// support, not wired yet.
+func (r *Resolver) walkRecordConstructor(rc antlrgen.IRecordConstructorContext) (cascades.Value, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("expr.walkRecordConstructor: nil")
+	}
+	rcc, ok := rc.(*antlrgen.RecordConstructorContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("RecordConstructor ctx %T", rc)}
+	}
+	exprs := rcc.AllExpressionWithOptionalName()
+	if len(exprs) != 1 {
+		return nil, &UnsupportedExpressionShapeError{
+			Shape: fmt.Sprintf("RecordConstructor with %d elements; walker handles 1-elem (paren expr) only", len(exprs)),
+		}
+	}
+	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", exprs[0])}
+	}
+	if ewon.Uid() != nil {
+		// Named field — real record constructor, not a paren-wrap.
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with named field"}
+	}
+	if rcc.OfTypeClause() != nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with OfType"}
+	}
+	return r.WalkExpression(ewon.Expression())
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades
@@ -103,11 +143,48 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	if bc, ok := atom.(*antlrgen.BinaryComparisonPredicateContext); ok {
 		return r.walkBinaryComparison(bc)
 	}
+	// Parenthesised predicate: `(cond)` surfaces as a RecordConstructor
+	// atom with one unnamed child. Try the predicate-form recursion
+	// first; if it turns out not to be predicate-shaped (just a bare
+	// paren-wrapped value), fall through to the value path.
+	if rc, ok := atom.(*antlrgen.RecordConstructorExpressionAtomContext); ok {
+		if inner, err := r.unwrapParenPredicate(rc.RecordConstructor()); err == nil {
+			return inner, nil
+		}
+		// Otherwise fall through — rc might be a bare paren-wrapped
+		// value (unusual in WHERE but legal syntactically).
+	}
 	v, err := r.walkAtom(atom)
 	if err != nil {
 		return nil, err
 	}
 	return cascades.NewValuePredicate(v), nil
+}
+
+// unwrapParenPredicate recurses WalkPredicate on a single-element
+// parenthesised expression. Returns error if the RecordConstructor
+// shape isn't a simple paren-wrap (multi-element, named field,
+// OfType clause).
+func (r *Resolver) unwrapParenPredicate(rc antlrgen.IRecordConstructorContext) (cascades.QueryPredicate, error) {
+	if rc == nil {
+		return nil, fmt.Errorf("unwrapParenPredicate: nil")
+	}
+	rcc, ok := rc.(*antlrgen.RecordConstructorContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("RecordConstructor ctx %T", rc)}
+	}
+	exprs := rcc.AllExpressionWithOptionalName()
+	if len(exprs) != 1 || rcc.OfTypeClause() != nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor not a 1-elem paren-wrap"}
+	}
+	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", exprs[0])}
+	}
+	if ewon.Uid() != nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with named field"}
+	}
+	return r.WalkPredicate(ewon.Expression())
 }
 
 // walkLogicalExpression builds a cascades And/Or predicate from a

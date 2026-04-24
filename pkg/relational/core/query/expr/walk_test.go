@@ -329,6 +329,47 @@ func TestWalkPredicate_Not(t *testing.T) {
 	}
 }
 
+func TestWalkPredicate_ParenWrappedComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE (id = 1)")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("parens should unwrap: expected *ComparisonPredicate, got %T", pred)
+	}
+	if cp.Comparison.Type != cascades.ComparisonEquals {
+		t.Fatal("Type mismatch")
+	}
+}
+
+func TestWalkPredicate_NotParenComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NOT (id = 1)")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	// Through the simplifier: NOT(id = 1) → id <> 1 via
+	// NotComparisonRewriteRule.
+	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	cp, ok := simplified.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate after simplify, got %T", simplified)
+	}
+	if cp.Comparison.Type != cascades.ComparisonNotEquals {
+		t.Fatalf("expected <>, got %v", cp.Comparison.Type)
+	}
+}
+
 func TestWalkPredicate_NotAndCombo(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
