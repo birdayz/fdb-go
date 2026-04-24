@@ -1074,7 +1074,13 @@ func TestLikeMatch_Escape(t *testing.T) {
 		// Trailing escape with nothing after — pattern can't match
 		// (the escape-of-EOF is a malformed pattern; our impl
 		// rejects it rather than silently treating escape as literal).
-		{"trailing escape rejected", `a\`, "a", '\\', false},
+		{"trailing escape, all input consumed", `a\`, "a", '\\', false},
+		// Lone trailing escape with input still to match — also
+		// rejected. Same malformed-pattern contract: an escape with
+		// no following char is never a valid match, regardless of
+		// whether input remains. (Fixed by the fuzz-found bug; this
+		// row pins the symmetric behavior.)
+		{"trailing escape, input still remaining", `a\`, `a\`, '\\', false},
 		// Escape preceding a non-meta character: implementation-
 		// defined per SQL standard. Our matcher consumes the escape
 		// and treats the next character as a literal regardless of
@@ -1218,27 +1224,36 @@ func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
 
 // FuzzLikeMatchEscape — same regex-oracle cross-check as FuzzLikeMatch
 // but feeds a non-zero escape rune through both implementations.
+// The escape rune itself is fuzzed via an int8 parameter (mapped to
+// printable ASCII) so adversarial cases like escape=='%' or '_'
+// (escape character collides with a wildcard) get coverage too.
+//
 // Catches divergence between the matcher's escape handling and the
-// oracle on adversarial pattern/escape pairs.
+// oracle on adversarial pattern/escape combinations.
 func FuzzLikeMatchEscape(f *testing.F) {
-	// Seeds covering the documented escape behaviors.
-	f.Add(`a\%b`, "a%b")
-	f.Add(`a\_b`, "a_b")
-	f.Add(`%\%`, "x%")
-	f.Add(`\%`, "%")
-	f.Add(`\`, "")
-	f.Fuzz(func(t *testing.T, pattern, s string) {
+	// Seeds covering the documented escape behaviors. The third
+	// parameter is the escape-char index — we map it to a printable
+	// ASCII rune below so the fuzzer explores `\\`, `!`, `%`, `_`,
+	// etc. without invalid-UTF-8 noise.
+	f.Add(`a\%b`, "a%b", int8(0)) // escape='\\'
+	f.Add(`a\_b`, "a_b", int8(0)) // escape='\\'
+	f.Add(`%\%`, "x%", int8(0))   // escape='\\'
+	f.Add(`\%`, "%", int8(0))     // escape='\\'
+	f.Add(`\`, "", int8(0))       // escape='\\'
+	f.Add(`a!%b`, "a%b", int8(1)) // escape='!'
+	f.Add(`%%%`, "abc", int8(2))  // escape='%' — collides with wildcard
+	f.Fuzz(func(t *testing.T, pattern, s string, escIdx int8) {
 		if len(pattern) > 128 || len(s) > 128 {
 			t.Skip()
 		}
 		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
 			t.Skip()
 		}
-		// Pin the escape rune to '\' for fuzz determinism — the
-		// matcher and oracle both vary it via the parameter, so
-		// this fixes one axis while the other (pattern + string)
-		// fuzzes freely.
-		const escape = '\\'
+		// Map the int8 index to a printable rune. Using a small set
+		// keeps the fuzz space tractable while still hitting the
+		// adversarial escape-equals-wildcard cases.
+		escapeChars := []rune{'\\', '!', '%', '_', '#', '@'}
+		escape := escapeChars[(int(escIdx)%len(escapeChars)+len(escapeChars))%len(escapeChars)]
 		got := likeMatch(pattern, s, escape)
 		want := likeMatchRegexOracleWithEscape(pattern, s, escape)
 		if got != want {
