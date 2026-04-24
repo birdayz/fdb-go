@@ -11,9 +11,10 @@
 // Dayshift-46 seed contents:
 //
 //   - values.go          — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 6 concrete
+//     Evaluate) + ValueType enum + 7 concrete
 //     values (Constant, Field, Arithmetic, Boolean,
-//     Cast, Null) + ExplainValue SQL-ish renderer.
+//     Cast, Null, Aggregate) + ExplainValue SQL-ish
+//     renderer.
 //   - matcher.go         — BindingMatcher interface +
 //     PlannerBindings + MergedWith + AnyValue /
 //     Instance / ArithmeticMatcher + the generic
@@ -201,6 +202,11 @@ func ExplainValue(v Value) string {
 		return "CAST(" + ExplainValue(cv.Child) + " AS " + cv.Target.String() + ")"
 	case *NullValue:
 		return "NULL"
+	case *AggregateValue:
+		if cv.Op == AggCountStar {
+			return "COUNT(*)"
+		}
+		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
 	}
 	return v.Name()
 }
@@ -419,4 +425,110 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		}
 	}
 	return nil
+}
+
+// --- AggregateValue -----------------------------------------------
+
+// AggregateOp identifies an aggregate function. Mirrors the subset
+// of Java's `AggregateValue` that the embedded engine currently
+// lowers to a Record Layer aggregate-index query.
+type AggregateOp int
+
+// Enum of aggregate operators the seed supports. Ordered to match
+// Java's bi-map so serialised plans round-trip.
+const (
+	AggInvalid   AggregateOp = iota // unassigned — rejects if ever evaluated
+	AggCount                        // COUNT(expr)
+	AggCountStar                    // COUNT(*)
+	AggSum                          // SUM(expr)
+	AggMin                          // MIN(expr)
+	AggMax                          // MAX(expr)
+	AggAvg                          // AVG(expr) — seed: rejects at Evaluate, no streaming impl
+)
+
+// Symbol returns the canonical SQL function name.
+func (op AggregateOp) Symbol() string {
+	switch op {
+	case AggCount:
+		return "COUNT"
+	case AggCountStar:
+		return "COUNT(*)"
+	case AggSum:
+		return "SUM"
+	case AggMin:
+		return "MIN"
+	case AggMax:
+		return "MAX"
+	case AggAvg:
+		return "AVG"
+	default:
+		return "?AGG?"
+	}
+}
+
+// AggregateValue represents an aggregate function application —
+// `COUNT(*)`, `SUM(col)`, `MIN(expr)`, etc. The Operand is the
+// argument (nil for COUNT(*)); the Op identifies which aggregate.
+//
+// AggregateValue does NOT implement per-row Evaluate — aggregates
+// span rows and need an accumulator. Evaluate returns nil to make
+// the ignore-of-row-context explicit; rule code identifies
+// AggregateValues by type-assertion and routes them to the aggregate
+// operator (hash-agg, streaming-agg, index-backed agg) at build
+// time.
+type AggregateValue struct {
+	Op      AggregateOp
+	Operand Value // nil iff Op == AggCountStar
+}
+
+// NewAggregateValue constructs an AggregateValue. Panics on
+// inconsistent op/operand combos (AggCountStar with operand,
+// non-CountStar without operand) — these are static programmer
+// errors, not runtime data problems.
+func NewAggregateValue(op AggregateOp, operand Value) *AggregateValue {
+	if op == AggCountStar && operand != nil {
+		panic("NewAggregateValue: COUNT(*) takes no operand")
+	}
+	if op != AggCountStar && op != AggInvalid && operand == nil {
+		panic("NewAggregateValue: aggregate requires an operand (use COUNT(*) for star)")
+	}
+	return &AggregateValue{Op: op, Operand: operand}
+}
+
+// Children returns the operand as a single child (empty for
+// COUNT(*)). Lets WalkValue traverse aggregate arguments.
+func (a *AggregateValue) Children() []Value {
+	if a.Operand == nil {
+		return []Value{}
+	}
+	return []Value{a.Operand}
+}
+
+// Type returns the SQL type the aggregate produces. COUNT / COUNT(*)
+// always produce int; SUM / MIN / MAX inherit from the operand
+// (seed assumes int — grows with the Type hierarchy port); AVG
+// stays int in the seed even though true SQL AVG returns a rational.
+func (a *AggregateValue) Type() ValueType {
+	switch a.Op {
+	case AggCount, AggCountStar:
+		return TypeInt
+	case AggSum, AggMin, AggMax, AggAvg:
+		if a.Operand != nil {
+			return a.Operand.Type()
+		}
+		return TypeInt
+	}
+	return TypeUnknown
+}
+
+// Name returns the debug-print kind.
+func (*AggregateValue) Name() string { return "agg" }
+
+// Evaluate panics — aggregates are multi-row and don't have a
+// single-row Evaluate semantics. Rule / plan code type-asserts
+// AggregateValue and routes it to an accumulator instead of calling
+// Evaluate. The panic message is loud so nobody silently returns nil
+// and debugs for an hour.
+func (a *AggregateValue) Evaluate(any) any {
+	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
 }

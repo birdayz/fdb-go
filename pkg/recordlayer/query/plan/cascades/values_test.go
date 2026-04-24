@@ -229,3 +229,98 @@ func TestCastValue(t *testing.T) {
 		t.Fatal("cast.Type should be Target")
 	}
 }
+
+// --- AggregateValue ------------------------------------------------
+
+var _ Value = (*AggregateValue)(nil)
+
+func TestAggregateOp_Symbol(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		op   AggregateOp
+		want string
+	}{
+		{AggCount, "COUNT"},
+		{AggCountStar, "COUNT(*)"},
+		{AggSum, "SUM"},
+		{AggMin, "MIN"},
+		{AggMax, "MAX"},
+		{AggAvg, "AVG"},
+		{AggregateOp(999), "?AGG?"},
+	}
+	for _, tc := range cases {
+		if got := tc.op.Symbol(); got != tc.want {
+			t.Fatalf("op=%d: got %q, want %q", tc.op, got, tc.want)
+		}
+	}
+}
+
+func TestAggregateValue_Shape(t *testing.T) {
+	t.Parallel()
+	sum := NewAggregateValue(AggSum, &FieldValue{Field: "amount", Typ: TypeInt})
+	if got := sum.Type(); got != TypeInt {
+		t.Fatalf("SUM(int) Type: got %v, want TypeInt", got)
+	}
+	if len(sum.Children()) != 1 {
+		t.Fatalf("SUM children: expected 1, got %d", len(sum.Children()))
+	}
+	if got, want := sum.Name(), "agg"; got != want {
+		t.Fatalf("Name: got %q, want %q", got, want)
+	}
+	if got, want := ExplainValue(sum), "SUM(amount)"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+
+	// COUNT(*) — no operand.
+	cstar := NewAggregateValue(AggCountStar, nil)
+	if got, want := cstar.Type(), TypeInt; got != want {
+		t.Fatalf("COUNT(*) Type: got %v, want %v", got, want)
+	}
+	if len(cstar.Children()) != 0 {
+		t.Fatalf("COUNT(*) children: expected 0, got %d", len(cstar.Children()))
+	}
+	if got, want := ExplainValue(cstar), "COUNT(*)"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+
+	// MIN inherits operand type.
+	minAge := NewAggregateValue(AggMin, &FieldValue{Field: "age", Typ: TypeInt})
+	if minAge.Type() != TypeInt {
+		t.Fatal("MIN should inherit operand type")
+	}
+}
+
+// COUNT(*) + explicit operand is a programmer error.
+func TestAggregateValue_CountStarWithOperandPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	_ = NewAggregateValue(AggCountStar, &FieldValue{Field: "x", Typ: TypeInt})
+}
+
+// Non-COUNT(*) without operand is also a programmer error.
+func TestAggregateValue_MissingOperandPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	_ = NewAggregateValue(AggSum, nil)
+}
+
+// Evaluate panics — aggregates are multi-row. The panic message
+// tells the caller which aggregator they should be using.
+func TestAggregateValue_EvaluatePanics(t *testing.T) {
+	t.Parallel()
+	sum := NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt})
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic from AggregateValue.Evaluate")
+		}
+	}()
+	_ = sum.Evaluate(map[string]any{"x": int64(5)})
+}
