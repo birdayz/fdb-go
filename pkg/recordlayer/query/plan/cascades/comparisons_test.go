@@ -194,6 +194,72 @@ func TestComparison_Eval_In(t *testing.T) {
 
 // STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
 // non-string operands (matches numeric type-mismatch behavior).
+func TestComparisonType_IsEquality(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    ComparisonType
+		want bool
+	}{
+		{ComparisonEquals, true},
+		{ComparisonIn, true},
+		{ComparisonIsNull, true},
+		{ComparisonNotDistinctFrom, true},
+		{ComparisonNotEquals, false},
+		{ComparisonLessThan, false},
+		{ComparisonGreaterThanEq, false},
+		{ComparisonStartsWith, false},
+		{ComparisonIsDistinctFrom, false},
+	}
+	for _, tc := range cases {
+		if got := tc.t.IsEquality(); got != tc.want {
+			t.Fatalf("%s: got %v, want %v", tc.t.Symbol(), got, tc.want)
+		}
+	}
+}
+
+func TestComparisonType_Negate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   ComparisonType
+		want ComparisonType
+		ok   bool
+	}{
+		{ComparisonEquals, ComparisonNotEquals, true},
+		{ComparisonNotEquals, ComparisonEquals, true},
+		{ComparisonLessThan, ComparisonGreaterThanEq, true},
+		{ComparisonLessThanOrEq, ComparisonGreaterThan, true},
+		{ComparisonGreaterThan, ComparisonLessThanOrEq, true},
+		{ComparisonGreaterThanEq, ComparisonLessThan, true},
+		{ComparisonIsNull, ComparisonIsNotNull, true},
+		{ComparisonIsNotNull, ComparisonIsNull, true},
+		{ComparisonIsDistinctFrom, ComparisonNotDistinctFrom, true},
+		{ComparisonNotDistinctFrom, ComparisonIsDistinctFrom, true},
+		// No direct negation:
+		{ComparisonIn, ComparisonIn, false},
+		{ComparisonStartsWith, ComparisonStartsWith, false},
+	}
+	for _, tc := range cases {
+		got, ok := tc.in.Negate()
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: got (%s, %v), want (%s, %v)",
+				tc.in.Symbol(), got.Symbol(), ok, tc.want.Symbol(), tc.ok)
+		}
+	}
+	// Negate is an involution for the types that have a direct
+	// negation: Negate(Negate(t)) == t.
+	for _, tc := range cases {
+		if !tc.ok {
+			continue
+		}
+		negated, _ := tc.in.Negate()
+		back, _ := negated.Negate()
+		if back != tc.in {
+			t.Fatalf("Negate(Negate(%s)) = %s, want %s",
+				tc.in.Symbol(), back.Symbol(), tc.in.Symbol())
+		}
+	}
+}
+
 func TestComparison_Eval_StartsWith(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

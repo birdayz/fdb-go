@@ -48,6 +48,53 @@ func (c ComparisonType) IsUnary() bool {
 	return c == ComparisonIsNull || c == ComparisonIsNotNull
 }
 
+// IsEquality reports whether the comparison semantically tests for
+// (null-safe or null-aware) equality. Mirrors Java's
+// `Comparisons.Type.isEquality()` — useful for index-pushdown
+// decisions (equality predicates can use point-lookups; inequality
+// needs ranges).
+func (c ComparisonType) IsEquality() bool {
+	switch c {
+	case ComparisonEquals, ComparisonIn, ComparisonIsNull, ComparisonNotDistinctFrom:
+		return true
+	}
+	return false
+}
+
+// Negate returns the comparison type whose truth table is the logical
+// negation of this one, plus a flag indicating whether a negation is
+// known. `!(a = b)` → `a <> b`, `!(a IS NULL)` → `a IS NOT NULL`,
+// etc. Used by the NOT-over-Comparison rewrite rules when pushing
+// NOTs down past a leaf comparison.
+//
+// IN / STARTS_WITH have no direct negation operator — the caller
+// should wrap in NotPredicate.
+func (c ComparisonType) Negate() (ComparisonType, bool) {
+	switch c {
+	case ComparisonEquals:
+		return ComparisonNotEquals, true
+	case ComparisonNotEquals:
+		return ComparisonEquals, true
+	case ComparisonLessThan:
+		return ComparisonGreaterThanEq, true
+	case ComparisonLessThanOrEq:
+		return ComparisonGreaterThan, true
+	case ComparisonGreaterThan:
+		return ComparisonLessThanOrEq, true
+	case ComparisonGreaterThanEq:
+		return ComparisonLessThan, true
+	case ComparisonIsNull:
+		return ComparisonIsNotNull, true
+	case ComparisonIsNotNull:
+		return ComparisonIsNull, true
+	case ComparisonIsDistinctFrom:
+		return ComparisonNotDistinctFrom, true
+	case ComparisonNotDistinctFrom:
+		return ComparisonIsDistinctFrom, true
+	}
+	return c, false
+}
+
 // Symbol returns the SQL-text form of the operator.
 func (c ComparisonType) Symbol() string {
 	switch c {
