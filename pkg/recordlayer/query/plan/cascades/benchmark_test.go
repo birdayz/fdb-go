@@ -132,6 +132,28 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	}
 }
 
+// Absorption workload: p AND (p OR q) OR r — sees the absorption
+// rule fire plus dedup + constant-fold. Baseline for the 11-rule
+// rule set vs 8-rule (absorption + NotComparisonRewrite added this
+// shift post-compaction).
+func BenchmarkSimplify_Absorption(b *testing.B) {
+	b.ReportAllocs()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(1)},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "b", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: int64(2)},
+	)
+	rules := DefaultSimplifyRules()
+	for i := 0; i < b.N; i++ {
+		// Fresh per-iteration so we don't memoise.
+		pred := NewAnd(p, NewOr(p, q))
+		_ = Simplify(pred, rules)
+	}
+}
+
 // Opaque-input baseline: the driver fires through every rule but
 // nothing yields. Measures the pure-dispatch overhead the planner
 // pays per predicate that can't be folded.
