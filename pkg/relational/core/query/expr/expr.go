@@ -28,21 +28,48 @@ import (
 // needs a Scope (to resolve identifiers) and an Analyzer (to run
 // column-reference lookup). Stateless beyond those inputs — one
 // Resolver per analyzer is fine.
+//
+// The FunctionCatalog is built lazily on first aggregate-function
+// lookup (to keep the construction path cheap when the resolver
+// never sees a function call) and reused thereafter. Callers that
+// want a custom catalog (scalar extensions, overridden defaults)
+// can pass one via NewWithFunctionCatalog.
 type Resolver struct {
 	analyzer *semantic.Analyzer
 	scope    *semantic.Scope
+	funcCat  *semantic.FunctionCatalog
 }
 
 // New constructs a Resolver bound to a scope. Nil analyzer or nil
 // scope panics — the resolver has nothing to do without either.
+// Function-call resolution uses the seed defaults
+// (COUNT/SUM/MIN/MAX/AVG).
 func New(analyzer *semantic.Analyzer, scope *semantic.Scope) *Resolver {
+	return NewWithFunctionCatalog(analyzer, scope, nil)
+}
+
+// NewWithFunctionCatalog is the New variant that lets callers
+// plug in a pre-built FunctionCatalog — used when scalar functions
+// or user-registered aggregates need to be resolvable.
+// Passing nil uses the seed defaults on first demand.
+func NewWithFunctionCatalog(analyzer *semantic.Analyzer, scope *semantic.Scope, fc *semantic.FunctionCatalog) *Resolver {
 	if analyzer == nil {
 		panic("expr.New: analyzer is nil")
 	}
 	if scope == nil {
 		panic("expr.New: scope is nil")
 	}
-	return &Resolver{analyzer: analyzer, scope: scope}
+	return &Resolver{analyzer: analyzer, scope: scope, funcCat: fc}
+}
+
+// functionCatalog returns the resolver's FunctionCatalog, lazily
+// building the defaults on first use when none was supplied to New.
+func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
+	if r.funcCat == nil {
+		r.funcCat = semantic.NewFunctionCatalog()
+		r.funcCat.RegisterDefaults()
+	}
+	return r.funcCat
 }
 
 // ResolveIdentifier produces a cascades Value for a bare or

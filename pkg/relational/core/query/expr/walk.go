@@ -86,10 +86,9 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 // functions are wired today (COUNT/SUM/MIN/MAX/AVG); scalar function
 // dispatch waits on the scalar-function catalogue port.
 //
-// The Resolver is constructed without a FunctionCatalog in its
-// seed form — we build a fresh one with the defaults inline so the
-// walker stays self-contained. Future: thread the catalog through
-// New() so callers can register scalar extensions.
+// Uses the Resolver's cached FunctionCatalog (built lazily on first
+// use, or provided via NewWithFunctionCatalog) so the walker
+// amortises catalog construction across calls.
 func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.Value, error) {
 	if fc == nil {
 		return nil, fmt.Errorf("expr.walkFunctionCall: nil")
@@ -110,8 +109,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: "AggregateWindowedFunction with unknown operator"}
 	}
-	fcat := semantic.NewFunctionCatalog()
-	fcat.RegisterDefaults()
+	fcat := r.functionCatalog()
 	// COUNT(*) — the `STAR()` accessor, which I cross-checked earlier.
 	isStar := awfc.STAR() != nil
 	var args []cascades.Value
