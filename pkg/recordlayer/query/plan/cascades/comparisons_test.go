@@ -192,6 +192,52 @@ func TestComparison_Eval_In(t *testing.T) {
 	}
 }
 
+// LIKE: SQL pattern matching with `%` / `_`. Anchored both ends.
+// No ESCAPE support yet.
+func TestComparison_Eval_Like(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		pattern string
+		s       string
+		want    TriBool
+	}{
+		{"exact match", "hello", "hello", TriTrue},
+		{"wildcard prefix", "hel%", "hello", TriTrue},
+		{"wildcard suffix", "%llo", "hello", TriTrue},
+		{"wildcard middle", "h%o", "hello", TriTrue},
+		{"only %", "%", "anything", TriTrue},
+		{"empty pattern, empty string", "", "", TriTrue},
+		{"underscore one char", "h_llo", "hello", TriTrue},
+		{"underscore wrong length", "h_llo", "hllo", TriFalse},
+		{"no match", "hel", "hello", TriFalse},
+		{"no match anchored suffix", "llo", "hello", TriFalse},
+		{"multi-wildcard backtrack", "a%b%c", "axbycxyc", TriTrue},
+		{"unmatched literal", "abc", "abd", TriFalse},
+		{"trailing % matches all remaining", "a%", "a", TriTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Comparison{Type: ComparisonLike, Operand: tc.pattern}.Eval(tc.s)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// LIKE type mismatch degrades to UNKNOWN.
+func TestComparison_Eval_Like_TypeMismatch(t *testing.T) {
+	t.Parallel()
+	if got := (Comparison{Type: ComparisonLike, Operand: "abc"}).Eval(int64(5)); got != TriUnknown {
+		t.Fatalf("got %v", got)
+	}
+	if got := (Comparison{Type: ComparisonLike, Operand: int64(5)}).Eval("abc"); got != TriUnknown {
+		t.Fatalf("got %v", got)
+	}
+}
+
 // STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
 // non-string operands (matches numeric type-mismatch behavior).
 func TestComparisonType_IsEquality(t *testing.T) {

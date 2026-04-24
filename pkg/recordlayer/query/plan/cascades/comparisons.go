@@ -39,6 +39,7 @@ const (
 	ComparisonIn                                    // IN (LHS any, RHS is a []any membership list)
 	ComparisonIsDistinctFrom                        // IS DISTINCT FROM (null-safe !=)
 	ComparisonNotDistinctFrom                       // IS NOT DISTINCT FROM (null-safe =)
+	ComparisonLike                                  // LIKE (string LHS, SQL pattern RHS: % / _)
 )
 
 // IsUnary reports whether the comparison takes no RHS operand
@@ -122,6 +123,8 @@ func (c ComparisonType) Symbol() string {
 		return "IS DISTINCT FROM"
 	case ComparisonNotDistinctFrom:
 		return "IS NOT DISTINCT FROM"
+	case ComparisonLike:
+		return "LIKE"
 	default:
 		return "?"
 	}
@@ -228,6 +231,21 @@ func (c Comparison) Eval(left any) TriBool {
 		}
 		return TriFalse
 	}
+	// LIKE: SQL pattern with `%` (zero-or-more chars) and `_` (exactly
+	// one char). Escape handling (ESCAPE '\') is deferred to a
+	// follow-up — the embedded engine handles it separately; once
+	// parameter-bound Comparisons land we wire the escape rune in.
+	if c.Type == ComparisonLike {
+		ls, lok := left.(string)
+		ps, rok := c.Operand.(string)
+		if !lok || !rok {
+			return TriUnknown
+		}
+		if likeMatch(ps, ls) {
+			return TriTrue
+		}
+		return TriFalse
+	}
 	cmp, ok := cmpAny(left, c.Operand)
 	if !ok {
 		return TriUnknown
@@ -253,6 +271,55 @@ func (c Comparison) Eval(left any) TriBool {
 		return TriTrue
 	}
 	return TriFalse
+}
+
+// likeMatch implements SQL LIKE pattern matching against `s`:
+//   - `%` matches zero or more characters
+//   - `_` matches exactly one character
+//   - every other character matches itself
+//
+// Greedy backtrack; O(len(pattern) * len(s)) worst case. No ESCAPE
+// handling yet (see ComparisonLike godoc). Returns true iff the
+// pattern matches the whole string (SQL LIKE is anchored on both
+// ends).
+func likeMatch(pattern, s string) bool {
+	// Iterative matcher with a single backtrack point (the most
+	// recent `%`). Standard approach — matches SQLite's likeCompare.
+	pi, si := 0, 0
+	starPi, starSi := -1, 0
+	for si < len(s) {
+		if pi < len(pattern) {
+			switch pattern[pi] {
+			case '%':
+				starPi = pi
+				starSi = si
+				pi++
+				continue
+			case '_':
+				pi++
+				si++
+				continue
+			default:
+				if pattern[pi] == s[si] {
+					pi++
+					si++
+					continue
+				}
+			}
+		}
+		if starPi >= 0 {
+			pi = starPi + 1
+			starSi++
+			si = starSi
+			continue
+		}
+		return false
+	}
+	// Trailing `%`s in the pattern are fine; anything else means no match.
+	for pi < len(pattern) && pattern[pi] == '%' {
+		pi++
+	}
+	return pi == len(pattern)
 }
 
 // cmpAny is a total-order comparator over the primitive types the
