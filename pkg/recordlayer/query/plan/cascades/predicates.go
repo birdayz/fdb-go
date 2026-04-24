@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"reflect"
 	"strings"
 )
 
@@ -135,12 +134,15 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		if !ok {
 			return false
 		}
-		// Comparison.Operand is `any`; for ComparisonIn it's `[]any`,
-		// which panics under ==. reflect.DeepEqual handles both the
-		// hashable-literal case (EQ/LT/... with int/string/etc.) and
-		// the slice case uniformly.
+		// Comparison.Operand is a Value; structural equality goes
+		// through valueNamesEqual, which compares via ExplainValue.
+		// ConstantValue / NullValue / BooleanValue render their
+		// literal content, so equal literals render equal; FieldValue
+		// renders its name; IN-lists (ConstantValue over []any)
+		// render element-wise. Same surface as the LHS Operand
+		// comparison on the next line.
 		return ap.Comparison.Type == bp.Comparison.Type &&
-			reflect.DeepEqual(ap.Comparison.Operand, bp.Comparison.Operand) &&
+			valueNamesEqual(ap.Comparison.Operand, bp.Comparison.Operand) &&
 			valueNamesEqual(ap.Operand, bp.Operand)
 	}
 	return false

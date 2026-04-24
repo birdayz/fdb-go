@@ -546,7 +546,7 @@ func (r *Resolver) resolveIsBoolean(lhs cascades.Value, literal, negated bool) (
 		return nil, err
 	}
 	eq := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-		Type: cascades.ComparisonEquals, Operand: literal,
+		Type: cascades.ComparisonEquals, Operand: cascades.NewBooleanValue(literal),
 	})
 	isBool := r.ResolveAnd(notNull, eq)
 	if negated {

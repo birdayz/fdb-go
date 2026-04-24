@@ -363,27 +363,51 @@ func (r *ComparisonConstantSimplifyRule) Matcher() BindingMatcher { return r.mat
 
 func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 	cp := call.Bindings.Get(r.matcher).(*ComparisonPredicate)
-	// Only fold when the operand's Evaluate is deterministic without
-	// a row context. Whitelist known-constant Value types rather than
+	// Only fold when BOTH sides are deterministic without a row
+	// context. Whitelist known-constant Value types rather than
 	// calling Evaluate(nil) — FieldValue.Evaluate(nil) also returns
 	// nil and would produce a false positive.
-	var lhs any
-	switch v := cp.Operand.(type) {
-	case *ConstantValue:
-		lhs = v.Value
-	case *NullValue:
-		lhs = nil
-	case *BooleanValue:
-		// Unwrap *bool so the typed-nil doesn't masquerade as
-		// non-NULL when Eval's NULL-guard checks `left == nil`.
-		if v.Value != nil {
-			lhs = *v.Value
-		}
-	default:
+	lhs, lok := constantLiteral(cp.Operand)
+	if !lok {
 		return
+	}
+	// Binary comparisons require a known-constant RHS too. Unary
+	// (IS [NOT] NULL) ignores the RHS entirely and is always
+	// foldable once the LHS is known-constant.
+	if !cp.Comparison.Type.IsUnary() {
+		if cp.Comparison.Operand == nil {
+			return
+		}
+		if !IsConstantValue(cp.Comparison.Operand) {
+			return
+		}
 	}
 	result := cp.Comparison.Eval(lhs)
 	call.Yield(NewConstantPredicate(result))
+}
+
+// constantLiteral unwraps a known-constant Value to its Go-native
+// literal for plan-time folding. Reports ok=false for any Value
+// whose Evaluate depends on a row context (FieldValue, an
+// ArithmeticValue over row columns, …). Mirrors the whitelist the
+// rule used inline — factored out so both LHS and future RHS call
+// sites read the same way.
+func constantLiteral(v Value) (any, bool) {
+	switch x := v.(type) {
+	case *ConstantValue:
+		return x.Value, true
+	case *NullValue:
+		return nil, true
+	case *BooleanValue:
+		// Unwrap *bool so the typed-nil doesn't masquerade as a
+		// non-NULL bool when downstream Eval NULL-guards on
+		// `left == nil`. A BooleanValue with Value==nil is SQL NULL.
+		if x.Value == nil {
+			return nil, true
+		}
+		return *x.Value, true
+	}
+	return nil, false
 }
 
 var comparisonPredicateMatcherCounter atomic.Uint64

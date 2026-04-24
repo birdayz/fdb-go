@@ -162,11 +162,12 @@ func (r *Resolver) ResolveArithmetic(op cascades.ArithmeticOp, left, right casca
 // ComparisonPredicate. Mirrors the analyzer's job of lifting
 // `a > b` from a parse-tree comparison node to a predicate node.
 //
-// The Comparison's Operand is set from right.Evaluate(nil) when
-// right is constant (per cascades.IsConstantValue); for
-// non-constant RHS the current seed doesn't build a predicate
-// (returns an error) — the real Comparison type will take a Value
-// on the RHS in a later commit.
+// Both LHS and RHS are carried as Values — non-constant RHS
+// (`a = b`, `a < b + 1`, `a = CAST(col AS INT)`) composes uniformly
+// with constant RHS. Plan-time folding (`5 = 5` → TRUE) happens in
+// ComparisonConstantSimplifyRule when both sides are constant;
+// row-context evaluation (FieldValue RHS) runs through
+// ComparisonPredicate.Eval.
 //
 // Does NOT pre-fold even when both operands are constant. `5 = 5`
 // produces a real ComparisonPredicate; the fixpoint simplifier
@@ -177,12 +178,8 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
-	rhs, ok := cascades.EvaluateConstant(right)
-	if !ok {
-		return nil, fmt.Errorf("expr.ResolveComparison: RHS must be a constant in the seed; got %T", right)
-	}
 	return cascades.NewComparisonPredicate(left, cascades.Comparison{
-		Type: op, Operand: rhs,
+		Type: op, Operand: right,
 	}), nil
 }
 
@@ -231,7 +228,9 @@ func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (casc
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
 	}
-	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{Type: cascades.ComparisonLike, Operand: s}), nil
+	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+		Type: cascades.ComparisonLike, Operand: cascades.LiteralValue(s),
+	}), nil
 }
 
 // ResolveStartsWith builds `lhs STARTS_WITH prefix`. Prefix must be
@@ -248,7 +247,9 @@ func (r *Resolver) ResolveStartsWith(lhs cascades.Value, prefix cascades.Value) 
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveStartsWith: prefix must be a string; got %T", lit)
 	}
-	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{Type: cascades.ComparisonStartsWith, Operand: s}), nil
+	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+		Type: cascades.ComparisonStartsWith, Operand: cascades.LiteralValue(s),
+	}), nil
 }
 
 // ResolveIn builds a ComparisonPredicate{ComparisonIn} from a left
@@ -271,7 +272,8 @@ func (r *Resolver) ResolveIn(left cascades.Value, rhs []cascades.Value) (cascade
 		list = append(list, lit)
 	}
 	return cascades.NewComparisonPredicate(left, cascades.Comparison{
-		Type: cascades.ComparisonIn, Operand: list,
+		Type:    cascades.ComparisonIn,
+		Operand: &cascades.ConstantValue{Value: list, Typ: cascades.TypeUnknown},
 	}), nil
 }
 

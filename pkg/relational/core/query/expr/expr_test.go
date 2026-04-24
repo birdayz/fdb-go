@@ -261,11 +261,17 @@ func TestResolver_ResolveComparison(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonEquals {
 		t.Fatalf("Type: got %v", cp.Comparison.Type)
 	}
-	if cp.Comparison.Operand != int64(5) {
+	rhsLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || rhsLit != int64(5) {
 		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
 	}
 }
 
+// ResolveComparison accepts non-constant RHS — `a = b`, `a < b + 1` —
+// and preserves the Value tree on the Comparison. The simplifier
+// only folds when BOTH sides are known-constant; row-context
+// evaluation through ComparisonPredicate.Eval reads the RHS from
+// the same evalCtx as the LHS.
 func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -273,8 +279,16 @@ func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
 
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
-	if _, err := r.ResolveComparison(cascades.ComparisonEquals, left, rhs); err == nil {
-		t.Fatal("expected error for non-constant RHS (seed limitation)")
+	pred, err := r.ResolveComparison(cascades.ComparisonEquals, left, rhs)
+	if err != nil {
+		t.Fatalf("ResolveComparison: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if cp.Comparison.Operand != rhs {
+		t.Fatalf("Operand: got %v, want %v", cp.Comparison.Operand, rhs)
 	}
 }
 
@@ -460,7 +474,8 @@ func TestResolver_ResolveLike(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonLike {
 		t.Fatal("Type mismatch")
 	}
-	if cp.Comparison.Operand != "hel%" {
+	patLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || patLit != "hel%" {
 		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
 	}
 
@@ -486,7 +501,8 @@ func TestResolver_ResolveStartsWith(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonStartsWith {
 		t.Fatal("Type mismatch")
 	}
-	if cp.Comparison.Operand != "hel" {
+	pfxLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || pfxLit != "hel" {
 		t.Fatalf("prefix: got %v", cp.Comparison.Operand)
 	}
 }
@@ -509,7 +525,11 @@ func TestResolver_ResolveIn(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonIn {
 		t.Fatalf("Type: got %v, want ComparisonIn", cp.Comparison.Type)
 	}
-	list, ok := cp.Comparison.Operand.([]any)
+	lit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok {
+		t.Fatalf("Operand not constant: %v", cp.Comparison.Operand)
+	}
+	list, ok := lit.([]any)
 	if !ok || len(list) != 3 {
 		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
 	}

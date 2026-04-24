@@ -196,7 +196,7 @@ func TestNotPredicate_ExplainParens(t *testing.T) {
 			name: "NOT(ComparisonPredicate) — wraps",
 			in: NewNot(NewComparisonPredicate(
 				&FieldValue{Field: "age", Typ: TypeInt},
-				Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+				Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 			)),
 			want: "NOT (age >= 18)",
 		},
@@ -328,11 +328,11 @@ func TestPredicateEquals(t *testing.T) {
 	// ComparisonPredicate structural (same operand name + same op + same literal)
 	c1 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	c2 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	if !PredicateEquals(c1, c2) {
 		t.Fatal("same comparison should be equal")
@@ -340,7 +340,7 @@ func TestPredicateEquals(t *testing.T) {
 	// Different op.
 	c3 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonLessThan, Operand: int64(5)},
+		Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(5))},
 	)
 	if PredicateEquals(c1, c3) {
 		t.Fatal("different ops should not be equal")
@@ -381,25 +381,25 @@ func TestPredicateEquals_DifferentFieldsAreNotEqual(t *testing.T) {
 	t.Parallel()
 	age := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	rank := NewComparisonPredicate(
 		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	if PredicateEquals(age, rank) {
 		t.Fatal("age=5 and rank=5 should NOT be equal — different fields")
 	}
 	age2 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	if !PredicateEquals(age, age2) {
 		t.Fatal("two identical age=5 predicates should be equal")
 	}
 	age10 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(10)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(10))},
 	)
 	if PredicateEquals(age, age10) {
 		t.Fatal("age=5 and age=10 should NOT be equal — different literals")
@@ -427,13 +427,13 @@ func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 	t.Parallel()
 	field := &FieldValue{Field: "x", Typ: TypeInt}
 	pIn1 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)},
+		Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	})
 	pIn2 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)},
+		Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	})
 	pIn3 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonIn, Operand: []any{int64(1), int64(2)},
+		Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2)}),
 	})
 	if !PredicateEquals(pIn1, pIn2) {
 		t.Fatal("same IN lists should be equal")

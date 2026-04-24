@@ -193,7 +193,8 @@ func TestWalkPredicate_Comparison(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonEquals {
 		t.Fatalf("Type: got %v, want Equals", cp.Comparison.Type)
 	}
-	if cp.Comparison.Operand != int64(1) {
+	rhsLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || rhsLit != int64(1) {
 		t.Fatalf("Operand: got %v, want 1", cp.Comparison.Operand)
 	}
 	// Evaluate.
@@ -586,7 +587,11 @@ func TestWalkPredicate_In(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonIn {
 		t.Fatalf("Type: got %v, want In", cp.Comparison.Type)
 	}
-	list, ok := cp.Comparison.Operand.([]any)
+	lit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok {
+		t.Fatalf("Operand not constant: %v", cp.Comparison.Operand)
+	}
+	list, ok := lit.([]any)
 	if !ok || len(list) != 3 {
 		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
 	}
@@ -633,7 +638,8 @@ func TestWalkPredicate_Like(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonLike {
 		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
 	}
-	if cp.Comparison.Operand != "hel%" {
+	patLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || patLit != "hel%" {
 		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
 	}
 }

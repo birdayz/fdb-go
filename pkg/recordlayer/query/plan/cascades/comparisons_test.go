@@ -39,7 +39,7 @@ func TestComparisonType_Symbol(t *testing.T) {
 
 func TestComparison_Eval_Integers(t *testing.T) {
 	t.Parallel()
-	c := func(ct ComparisonType, rhs any) Comparison { return Comparison{Type: ct, Operand: rhs} }
+	c := func(ct ComparisonType, rhs any) Comparison { return Comparison{Type: ct, Operand: LiteralValue(rhs)} }
 
 	cases := []struct {
 		name string
@@ -80,11 +80,11 @@ func TestComparison_Eval_Integers(t *testing.T) {
 
 func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 	t.Parallel()
-	c := Comparison{Type: ComparisonEquals, Operand: int64(5)}
+	c := Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))}
 	if got := c.Eval(nil); got != TriUnknown {
 		t.Fatalf("left=NULL: got %v", got)
 	}
-	c2 := Comparison{Type: ComparisonEquals, Operand: nil}
+	c2 := Comparison{Type: ComparisonEquals, Operand: LiteralValue(nil)}
 	if got := c2.Eval(int64(5)); got != TriUnknown {
 		t.Fatalf("right=NULL: got %v", got)
 	}
@@ -92,7 +92,7 @@ func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 
 func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
 	t.Parallel()
-	c := Comparison{Type: ComparisonEquals, Operand: int64(5)}
+	c := Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))}
 	// String vs int: types don't match, cmpAny returns (0, false),
 	// Eval degrades to UNKNOWN per SQL 3VL.
 	if got := c.Eval("5"); got != TriUnknown {
@@ -126,7 +126,7 @@ func TestComparison_Eval_BoolEquality(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.r)}.Eval(tc.l)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -154,7 +154,7 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.r)}.Eval(tc.l)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -166,14 +166,14 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 	// semantics, not just pairwise comparators.
 	hit := Comparison{
 		Type:    ComparisonIn,
-		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}},
+		Operand: LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}}),
 	}.Eval([]byte{0x02, 0x03})
 	if hit != TriTrue {
 		t.Errorf("bytes IN list hit: got %v, want TRUE", hit)
 	}
 	miss := Comparison{
 		Type:    ComparisonIn,
-		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}},
+		Operand: LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}}),
 	}.Eval([]byte{0x99})
 	if miss != TriFalse {
 		t.Errorf("bytes IN list miss: got %v, want FALSE", miss)
@@ -203,7 +203,7 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.rhs}.Eval(tc.left)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -239,7 +239,7 @@ func TestComparison_Eval_IsDistinctFrom(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.rhs}.Eval(tc.left)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -271,7 +271,7 @@ func TestComparison_Eval_In(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonIn, Operand: tc.list}.Eval(tc.left)
+			got := Comparison{Type: ComparisonIn, Operand: LiteralValue(tc.list)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -306,7 +306,7 @@ func TestComparison_Eval_Like(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonLike, Operand: tc.pattern}.Eval(tc.s)
+			got := Comparison{Type: ComparisonLike, Operand: LiteralValue(tc.pattern)}.Eval(tc.s)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -317,10 +317,10 @@ func TestComparison_Eval_Like(t *testing.T) {
 // LIKE type mismatch degrades to UNKNOWN.
 func TestComparison_Eval_Like_TypeMismatch(t *testing.T) {
 	t.Parallel()
-	if got := (Comparison{Type: ComparisonLike, Operand: "abc"}).Eval(int64(5)); got != TriUnknown {
+	if got := (Comparison{Type: ComparisonLike, Operand: LiteralValue("abc")}).Eval(int64(5)); got != TriUnknown {
 		t.Fatalf("got %v", got)
 	}
-	if got := (Comparison{Type: ComparisonLike, Operand: int64(5)}).Eval("abc"); got != TriUnknown {
+	if got := (Comparison{Type: ComparisonLike, Operand: LiteralValue(int64(5))}).Eval("abc"); got != TriUnknown {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -414,7 +414,7 @@ func TestComparison_Eval_StartsWith(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonStartsWith, Operand: tc.rhs}.Eval(tc.left)
+			got := Comparison{Type: ComparisonStartsWith, Operand: LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -488,7 +488,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "string RHS is quoted",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "name", Typ: TypeString},
-				Comparison{Type: ComparisonEquals, Operand: "bob"},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue("bob")},
 			),
 			want: "name = 'bob'",
 		},
@@ -496,7 +496,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "int RHS is bare",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
-				Comparison{Type: ComparisonGreaterThan, Operand: int64(5)},
+				Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(5))},
 			),
 			want: "id > 5",
 		},
@@ -504,7 +504,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "NULL RHS (rare but possible via constant-fold)",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: nil},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue(nil)},
 			),
 			want: "id = NULL",
 		},
@@ -512,7 +512,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "IN list with mixed types",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "role", Typ: TypeString},
-				Comparison{Type: ComparisonIn, Operand: []any{"admin", "owner", nil}},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{"admin", "owner", nil})},
 			),
 			want: "role IN ('admin', 'owner', NULL)",
 		},
@@ -520,7 +520,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "IN list of ints",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
-				Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)}},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)})},
 			),
 			want: "id IN (1, 2, 3)",
 		},
@@ -528,7 +528,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "bool RHS uppercased",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "active", Typ: TypeBool},
-				Comparison{Type: ComparisonEquals, Operand: true},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue(true)},
 			),
 			want: "active = TRUE",
 		},
@@ -536,7 +536,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "bool FALSE uppercased",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "active", Typ: TypeBool},
-				Comparison{Type: ComparisonNotEquals, Operand: false},
+				Comparison{Type: ComparisonNotEquals, Operand: LiteralValue(false)},
 			),
 			want: "active <> FALSE",
 		},
@@ -544,7 +544,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "bytes as SQL hex literal",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "digest", Typ: TypeUnknown},
-				Comparison{Type: ComparisonEquals, Operand: []byte{0x01, 0x02, 0xff}},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{0x01, 0x02, 0xff})},
 			),
 			want: "digest = X'0102ff'",
 		},
@@ -552,7 +552,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "empty bytes literal",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "digest", Typ: TypeUnknown},
-				Comparison{Type: ComparisonEquals, Operand: []byte{}},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{})},
 			),
 			want: "digest = X''",
 		},
@@ -592,7 +592,7 @@ func TestComparisonType_IsUnary(t *testing.T) {
 
 func TestComparison_Eval_Strings(t *testing.T) {
 	t.Parallel()
-	c := Comparison{Type: ComparisonLessThan, Operand: "b"}
+	c := Comparison{Type: ComparisonLessThan, Operand: LiteralValue("b")}
 	if got := c.Eval("a"); got != TriTrue {
 		t.Fatalf("a < b: got %v", got)
 	}
@@ -607,7 +607,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	// map. FieldValue.Evaluate resolves the column; Value.Evaluate
 	// now drives the predicate — no more closure seam.
 	operand := &FieldValue{Field: "age", Typ: TypeInt}
-	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}
+	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}
 	pred := NewComparisonPredicate(operand, cmp)
 
 	row := map[string]any{"age": int64(21)}
@@ -632,7 +632,7 @@ func TestComparisonPredicate_NilOperand(t *testing.T) {
 	t.Parallel()
 	pred := &ComparisonPredicate{
 		// No Operand set — Eval degrades to UNKNOWN.
-		Comparison: Comparison{Type: ComparisonEquals, Operand: int64(1)},
+		Comparison: Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))},
 	}
 	if got := pred.Eval(nil); got != TriUnknown {
 		t.Fatalf("nil Operand: got %v", got)
@@ -646,9 +646,9 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	// (age >= 18) AND (rank < 5)
 	tree := NewAnd(
 		NewComparisonPredicate(&FieldValue{Field: "age", Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+			Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}),
 		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt},
-			Comparison{Type: ComparisonLessThan, Operand: int64(5)}),
+			Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(5))}),
 	)
 	if got := tree.Eval(row); got != TriTrue {
 		t.Fatalf("AND: got %v", got)
@@ -670,7 +670,7 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 		Right: &FieldValue{Field: "b", Typ: TypeInt},
 	}
 	pred := NewComparisonPredicate(sum,
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(10)})
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(10))})
 
 	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(7)}); got != TriTrue {
 		t.Fatalf("5+7=12 > 10: got %v", got)
@@ -681,6 +681,101 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	// NULL propagation: a=NULL -> a+b=NULL -> UNKNOWN.
 	if got := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
 		t.Fatalf("a=NULL: got %v", got)
+	}
+}
+
+// Non-constant RHS: `a = b` evaluates both sides against the row
+// context and dispatches through EvalAgainst. Verifies the
+// symmetric-eval path that the Comparison.Operand → Value change
+// unblocks. Before that change the RHS was a plan-time literal —
+// `a = b` couldn't compose at all.
+func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	// age = rank_cutoff (both FieldValues)
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	)
+
+	cases := []struct {
+		name string
+		row  map[string]any
+		want TriBool
+	}{
+		{"equal", map[string]any{"age": int64(18), "cutoff": int64(18)}, TriTrue},
+		{"unequal", map[string]any{"age": int64(21), "cutoff": int64(18)}, TriFalse},
+		{"lhs NULL", map[string]any{"age": nil, "cutoff": int64(18)}, TriUnknown},
+		{"rhs NULL", map[string]any{"age": int64(18), "cutoff": nil}, TriUnknown},
+		{"both NULL", map[string]any{"age": nil, "cutoff": nil}, TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pred.Eval(tc.row); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// `a = b + 1`: RHS is an ArithmeticValue over row columns. Proves
+// arbitrary Value trees compose as RHS, not just FieldValue.
+func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{
+			Type: ComparisonEquals,
+			Operand: &ArithmeticValue{
+				Op:    OpAdd,
+				Left:  &FieldValue{Field: "b", Typ: TypeInt},
+				Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+			},
+		},
+	)
+	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(4)}); got != TriTrue {
+		t.Fatalf("5 = 4+1: got %v", got)
+	}
+	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(5)}); got != TriFalse {
+		t.Fatalf("5 = 5+1: got %v", got)
+	}
+}
+
+// Plan-time constant-fold must NOT fire when the RHS is non-constant
+// — `col = field` cannot be decided at plan time. The simplifier
+// rule gates on IsConstantValue(RHS) per the Value migration.
+func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "col", Typ: TypeInt}},
+	)
+	if got := FireRule(rule, pred); len(got) != 0 {
+		t.Fatalf("expected no yield (non-constant RHS), got %d", len(got))
+	}
+}
+
+// Plan-time constant-fold fires when BOTH sides are constant. Pins
+// the Value-wrapped RHS variant: `5 = 5` folds to TRUE regardless
+// of whether the RHS is a raw literal or a ConstantValue.
+func TestComparisonConstantSimplify_ConstantValueRHS_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &ConstantValue{Value: int64(5), Typ: TypeInt}},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("5=5 should be TRUE, got %v", cp.Value)
 	}
 }
 

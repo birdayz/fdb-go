@@ -120,13 +120,13 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	// After simplification: just `age >= 18`.
 	agePred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	pred := NewAnd(
 		NewAnd(
 			NewComparisonPredicate(
 				&ConstantValue{Value: int64(5), Typ: TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: int64(5)},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 			),
 			NewNot(NewNot(NewConstantPredicate(TriTrue))),
 		),
@@ -167,7 +167,7 @@ func TestSimplify_RecursesThroughNot(t *testing.T) {
 func TestSimplify_TripleNotCollapses(t *testing.T) {
 	t.Parallel()
 	age := &FieldValue{Field: "age", Typ: TypeInt}
-	cp := NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: int64(5)})
+	cp := NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))})
 	got := Simplify(
 		NewNot(NewNot(NewNot(cp))),
 		DefaultSimplifyRules(),
@@ -194,17 +194,17 @@ func TestSimplify_Idempotent(t *testing.T) {
 		NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse)),
 		// Partially simplifiable → surviving field predicate.
 		NewAnd(
-			NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+			NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}),
 			NewConstantPredicate(TriTrue),
 		),
 		// Exercises absorption: p AND (p OR q) → p.
 		func() QueryPredicate {
-			p := NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)})
-			q := NewComparisonPredicate(age, Comparison{Type: ComparisonLessThan, Operand: int64(65)})
+			p := NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))})
+			q := NewComparisonPredicate(age, Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(65))})
 			return NewAnd(p, NewOr(p, q))
 		}(),
 		// NOT-rewrite: NOT(x = 1) → x <> 1.
-		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: int64(1)})),
+		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))})),
 		// Opaque: should be identity.
 		NewValuePredicate(&FieldValue{Field: "flag", Typ: TypeBool}),
 	}
@@ -259,16 +259,16 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	// removes the TRUEs, leaving the surviving ComparisonPredicate.
 	agePred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	pred := NewAnd(
 		NewComparisonPredicate(
 			&ConstantValue{Value: int64(5), Typ: TypeInt},
-			Comparison{Type: ComparisonEquals, Operand: int64(5)},
+			Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 		),
 		NewComparisonPredicate(
 			&ConstantValue{Value: int64(3), Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThan, Operand: int64(1)},
+			Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(1))},
 		),
 		agePred,
 	)

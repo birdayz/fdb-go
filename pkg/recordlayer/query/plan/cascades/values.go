@@ -379,6 +379,14 @@ func valueLiteralString(v any) string {
 	switch x := v.(type) {
 	case int64:
 		return intToDec(x)
+	case int:
+		return intToDec(int64(x))
+	case int32:
+		return intToDec(int64(x))
+	case int16:
+		return intToDec(int64(x))
+	case int8:
+		return intToDec(int64(x))
 	case bool:
 		if x {
 			return "TRUE"
@@ -386,6 +394,36 @@ func valueLiteralString(v any) string {
 		return "FALSE"
 	case string:
 		return "'" + x + "'"
+	case []byte:
+		// SQL hex-literal form — matches formatCompareOperand, so
+		// the Explain and the RHS renderer agree. Also makes
+		// ExplainValue-based equality injective over byte slices:
+		// `X'0102'` ≠ `X'0103'`.
+		const hex = "0123456789abcdef"
+		buf := make([]byte, 0, 3+2*len(x))
+		buf = append(buf, 'X', '\'')
+		for _, b := range x {
+			buf = append(buf, hex[b>>4], hex[b&0xf])
+		}
+		buf = append(buf, '\'')
+		return string(buf)
+	case []any:
+		// Paren list so different element-counts / elements render
+		// differently — required for structural equality via
+		// ExplainValue. Matches formatCompareOperand's IN-list form.
+		parts := make([]string, len(x))
+		for i, e := range x {
+			if e == nil {
+				parts[i] = "NULL"
+				continue
+			}
+			if s, ok := e.(string); ok {
+				parts[i] = "'" + s + "'"
+				continue
+			}
+			parts[i] = valueLiteralString(e)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
 	}
 	return "?"
 }

@@ -131,22 +131,74 @@ func (c ComparisonType) Symbol() string {
 	}
 }
 
-// Comparison pairs a ComparisonType with a literal right-hand side
-// value. The operand (left-hand side) lives on the parent
-// ComparisonPredicate so `a = 1 AND a > 0` shares the operand
-// while each Comparison carries its own (Type, Value) pair.
+// Comparison pairs a ComparisonType with a right-hand side `Value`.
+// The LHS lives on the parent ComparisonPredicate; each Comparison
+// carries its own (Type, RHS-Value) pair. Unary comparisons
+// (IS [NOT] NULL) leave Operand nil — Eval ignores it.
+//
+// The RHS is a Value (not a raw literal) so non-constant RHS shapes
+// — `a = b`, `a < b + 1`, `a = CAST(col AS INT)` — compose
+// uniformly with the LHS. Constant-RHS callers wrap via
+// NewLiteralComparison / LiteralValue. IN-list RHS is carried as a
+// ConstantValue whose Value is a `[]any` of evaluated literals.
 type Comparison struct {
 	Type    ComparisonType
-	Operand any // seed: Go-native literal; real port wraps in a Value
+	Operand Value
 }
 
-// Eval compares left against c's operand per c's ComparisonType.
+// NewLiteralComparison is the common-case constructor for a binary
+// Comparison whose RHS is a plan-time literal. Wraps lit in the
+// appropriate Value subtype (NullValue for nil, BooleanValue for
+// bool, ConstantValue otherwise). For unary types callers should
+// set Operand to nil directly: `Comparison{Type: ComparisonIsNull}`.
+func NewLiteralComparison(typ ComparisonType, lit any) Comparison {
+	return Comparison{Type: typ, Operand: LiteralValue(lit)}
+}
+
+// LiteralValue wraps a Go-native literal in the matching Value
+// subtype: nil → NullValue, bool → BooleanValue, otherwise a
+// ConstantValue. Typ defaults to TypeUnknown; the simplifier does
+// not depend on the type tag today — it inspects the wrapped Value
+// subtype.
+func LiteralValue(lit any) Value {
+	if lit == nil {
+		return &NullValue{Typ: TypeUnknown}
+	}
+	if b, ok := lit.(bool); ok {
+		return NewBooleanValue(b)
+	}
+	return &ConstantValue{Value: lit, Typ: TypeUnknown}
+}
+
+// Eval compares left against c's (plan-time-evaluated) RHS per c's
+// ComparisonType. The RHS is produced by c.Operand.Evaluate(nil) —
+// i.e. RHS evaluation without a row context. Constant-RHS callers
+// (the common case, and the only shape that can fold at plan time)
+// get their literal back. Non-constant RHS — a FieldValue or an
+// ArithmeticValue over row columns — evaluates to nil here and
+// degrades to UNKNOWN, which is the right answer when no row is in
+// scope. For row-aware evaluation use ComparisonPredicate.Eval,
+// which evaluates both sides against the given eval context.
+//
 // NULL (nil) on either side returns UNKNOWN per SQL 3VL for binary
 // comparators; unary (IS [NOT] NULL) and null-safe
 // (IS [NOT] DISTINCT FROM) types resolve even on NULL. Numeric
 // operands promote via cmpAny so mixed-width int/float pairs don't
 // degrade to UNKNOWN.
 func (c Comparison) Eval(left any) TriBool {
+	var right any
+	if c.Operand != nil && !c.Type.IsUnary() {
+		right = c.Operand.Evaluate(nil)
+	}
+	return c.EvalAgainst(left, right)
+}
+
+// EvalAgainst is the pure dispatch: given already-evaluated LHS and
+// RHS Go-natives, return the Kleene truth value. ComparisonPredicate
+// evaluates both sides against the row's eval context and calls
+// EvalAgainst — separating eval from dispatch is what lets a
+// non-constant RHS (`a = b + 1`) work row-by-row.
+func (c Comparison) EvalAgainst(left, right any) TriBool {
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
 	switch c.Type {
@@ -166,12 +218,12 @@ func (c Comparison) Eval(left any) TriBool {
 	// NULLs are NOT DISTINCT. One NULL + one non-NULL is DISTINCT.
 	switch c.Type {
 	case ComparisonIsDistinctFrom, ComparisonNotDistinctFrom:
-		bothNull := left == nil && c.Operand == nil
+		bothNull := left == nil && right == nil
 		distinct := true
 		if bothNull {
 			distinct = false
-		} else if left != nil && c.Operand != nil {
-			cmp, ok := cmpAny(left, c.Operand)
+		} else if left != nil && right != nil {
+			cmp, ok := cmpAny(left, right)
 			if ok && cmp == 0 {
 				distinct = false
 			}
@@ -197,7 +249,7 @@ func (c Comparison) Eval(left any) TriBool {
 		if left == nil {
 			return TriUnknown
 		}
-		list, ok := c.Operand.([]any)
+		list, ok := right.([]any)
 		if !ok {
 			return TriUnknown
 		}
@@ -216,14 +268,14 @@ func (c Comparison) Eval(left any) TriBool {
 		}
 		return TriFalse
 	}
-	if left == nil || c.Operand == nil {
+	if left == nil || right == nil {
 		return TriUnknown
 	}
 	// STARTS_WITH needs string LHS + string RHS; typed-mismatch
 	// degrades to UNKNOWN per SQL 3VL like the numeric comparators.
 	if c.Type == ComparisonStartsWith {
 		ls, lok := left.(string)
-		rs, rok := c.Operand.(string)
+		rs, rok := right.(string)
 		if !lok || !rok {
 			return TriUnknown
 		}
@@ -238,7 +290,7 @@ func (c Comparison) Eval(left any) TriBool {
 	// parameter-bound Comparisons land we wire the escape rune in.
 	if c.Type == ComparisonLike {
 		ls, lok := left.(string)
-		ps, rok := c.Operand.(string)
+		ps, rok := right.(string)
 		if !lok || !rok {
 			return TriUnknown
 		}
@@ -247,7 +299,7 @@ func (c Comparison) Eval(left any) TriBool {
 		}
 		return TriFalse
 	}
-	cmp, ok := cmpAny(left, c.Operand)
+	cmp, ok := cmpAny(left, right)
 	if !ok {
 		return TriUnknown
 	}
@@ -500,7 +552,14 @@ func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
 		return TriUnknown
 	}
 	left := p.Operand.Evaluate(evalCtx)
-	return p.Comparison.Eval(left)
+	var right any
+	if p.Comparison.Operand != nil && !p.Comparison.Type.IsUnary() {
+		// Evaluate RHS against the same row context. For constant
+		// RHS this reduces to the literal; for a FieldValue or
+		// arithmetic over row columns this reads the current row.
+		right = p.Comparison.Operand.Evaluate(evalCtx)
+	}
+	return p.Comparison.EvalAgainst(left, right)
 }
 
 func (p *ComparisonPredicate) Explain() string {
@@ -514,10 +573,34 @@ func (p *ComparisonPredicate) Explain() string {
 	if p.Comparison.Type.IsUnary() {
 		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
-	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), formatCompareOperand(p.Comparison.Operand))
+	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), formatComparisonRHS(p.Comparison.Operand))
 }
 
-// formatCompareOperand renders the RHS of a binary comparison in a
+// formatComparisonRHS renders the RHS of a binary comparison. When
+// the RHS is a constant Value (ConstantValue / NullValue /
+// BooleanValue) it unwraps to a Go-native literal and runs it
+// through formatCompareOperand for the SQL-ish literal form
+// (quoted strings, X'…' for bytes, paren-list for IN). For
+// non-constant RHS (a FieldValue, an ArithmeticValue, …) the
+// rendering falls back to ExplainValue which walks the Value tree.
+//
+// The nil case handles the IS [NOT] NULL / IS [NOT] DISTINCT FROM
+// NULL shape where Operand is genuinely missing — callers only reach
+// here from the binary-comparison branch so "NULL" is the right
+// text for a nil RHS Value.
+func formatComparisonRHS(v Value) string {
+	if v == nil {
+		return "NULL"
+	}
+	if IsConstantValue(v) {
+		if lit, ok := EvaluateConstant(v); ok {
+			return formatCompareOperand(lit)
+		}
+	}
+	return ExplainValue(v)
+}
+
+// formatCompareOperand renders a Go-native RHS literal in a
 // form consistent with ExplainValue (strings quoted, []any rendered
 // as a paren list for IN). Falls back to fmt.Sprintf("%v", …) for
 // unfamiliar types so Explain never blows up on a surprise.
