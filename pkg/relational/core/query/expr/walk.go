@@ -420,33 +420,9 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			}
 			return r.ResolveIsNull(lhs)
 		case p.TRUE() != nil:
-			// `x IS TRUE` ≡ `x = TRUE`. Distinct from `x = TRUE`
-			// syntactically in the grammar, but semantically the
-			// same under Kleene (NULL = TRUE → UNKNOWN, NULL IS
-			// TRUE → FALSE) — wait, actually they DIFFER on NULL:
-			//   `NULL = TRUE` → UNKNOWN
-			//   `NULL IS TRUE` → FALSE  (2VL semantics)
-			// To get the 2VL behaviour, wrap in a real `=`
-			// predicate that produces UNKNOWN on NULL, then rely
-			// on downstream Kleene-to-2VL coercion at the WHERE
-			// level (WHERE UNKNOWN == not-selected, same as FALSE).
-			// That's what the embedded engine does today via
-			// triBool.toBool.
-			pred := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-				Type: cascades.ComparisonEquals, Operand: true,
-			})
-			if p.NOT() != nil {
-				return r.ResolveNot(pred), nil
-			}
-			return pred, nil
+			return r.resolveIsBoolean(lhs, true, p.NOT() != nil)
 		case p.FALSE() != nil:
-			pred := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-				Type: cascades.ComparisonEquals, Operand: false,
-			})
-			if p.NOT() != nil {
-				return r.ResolveNot(pred), nil
-			}
-			return pred, nil
+			return r.resolveIsBoolean(lhs, false, p.NOT() != nil)
 		}
 		return nil, &UnsupportedExpressionShapeError{Shape: "IS expression with no recognised literal"}
 	case *antlrgen.InPredicateContext:
@@ -549,6 +525,34 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		return between, nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("grammar Predicate %T", pred)}
+}
+
+// resolveIsBoolean desugars `x IS [NOT] TRUE` and `x IS [NOT] FALSE`
+// into the 2VL-correct form `(x IS NOT NULL) AND (x = literal)` (and
+// NOT-wrapped for the negated form). The naive `x = TRUE` differs
+// from SQL's `x IS TRUE` on NULL inputs:
+//
+//	NULL = TRUE  → UNKNOWN   (Kleene 3VL)
+//	NULL IS TRUE → FALSE     (SQL 2VL — definite)
+//
+// The difference is invisible at the WHERE top level (UNKNOWN is
+// treated as not-selected, same as FALSE) but diverges once the
+// predicate is nested under NOT, OR, or any downstream expression
+// that distinguishes UNKNOWN from FALSE. The explicit null-check
+// forces the correct 2VL outcome.
+func (r *Resolver) resolveIsBoolean(lhs cascades.Value, literal, negated bool) (cascades.QueryPredicate, error) {
+	notNull, err := r.ResolveIsNotNull(lhs)
+	if err != nil {
+		return nil, err
+	}
+	eq := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+		Type: cascades.ComparisonEquals, Operand: literal,
+	})
+	isBool := r.ResolveAnd(notNull, eq)
+	if negated {
+		return r.ResolveNot(isBool), nil
+	}
+	return isBool, nil
 }
 
 // walkBinaryComparison converts `left OP right` into a

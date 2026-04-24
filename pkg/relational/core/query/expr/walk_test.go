@@ -631,28 +631,36 @@ func TestWalkPredicate_IsNull(t *testing.T) {
 	}
 }
 
+// `x IS TRUE` desugars into `(x IS NOT NULL) AND (x = TRUE)` so
+// NULL inputs collapse to FALSE (2VL) instead of UNKNOWN (3VL).
+// Verify shape + truth table including the nested-NOT case where
+// the naive `x = TRUE` form would have diverged.
 func TestWalkPredicate_IsTrue(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active IS TRUE")
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE admin IS TRUE")
 
 	pred, err := r.WalkPredicate(ctx)
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonEquals {
-		t.Fatal("Type mismatch")
+	if _, ok := pred.(*cascades.AndPredicate); !ok {
+		t.Fatalf("expected *AndPredicate (IS-NOT-NULL AND =literal), got %T", pred)
 	}
-	if cp.Comparison.Operand != true {
-		t.Fatalf("Operand: got %v, want true", cp.Comparison.Operand)
+	cases := []struct {
+		in   any
+		want cascades.TriBool
+	}{
+		{true, cascades.TriTrue},
+		{false, cascades.TriFalse},
+		{nil, cascades.TriFalse}, // 2VL: NULL IS TRUE → FALSE
 	}
-	if got := cp.Eval(map[string]any{"ACTIVE": true}); got != cascades.TriTrue {
-		t.Fatalf("true IS TRUE: got %v", got)
-	}
-	if got := cp.Eval(map[string]any{"ACTIVE": false}); got != cascades.TriFalse {
-		t.Fatalf("false IS TRUE: got %v", got)
+	for _, tc := range cases {
+		got := pred.Eval(map[string]any{"ADMIN": tc.in})
+		if got != tc.want {
+			t.Errorf("(%v) IS TRUE: got %v, want %v", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -660,15 +668,49 @@ func TestWalkPredicate_IsFalse(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active IS FALSE")
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE admin IS FALSE")
 
 	pred, err := r.WalkPredicate(ctx)
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Operand != false {
-		t.Fatalf("Operand: got %v, want false", cp.Comparison.Operand)
+	cases := []struct {
+		in   any
+		want cascades.TriBool
+	}{
+		{false, cascades.TriTrue},
+		{true, cascades.TriFalse},
+		{nil, cascades.TriFalse}, // 2VL: NULL IS FALSE → FALSE
+	}
+	for _, tc := range cases {
+		got := pred.Eval(map[string]any{"ADMIN": tc.in})
+		if got != tc.want {
+			t.Errorf("(%v) IS FALSE: got %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// NULL under NOT — the prior `x = TRUE` desugar flipped UNKNOWN to
+// UNKNOWN here, diverging from SQL. The new `(IS NOT NULL) AND (=)`
+// desugar produces FALSE, making `NOT (NULL IS TRUE)` → TRUE.
+func TestWalkPredicate_IsTrue_NegatedNull(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NOT (admin IS TRUE)")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if got := pred.Eval(map[string]any{"ADMIN": nil}); got != cascades.TriTrue {
+		t.Errorf("NOT (NULL IS TRUE): got %v, want TRUE", got)
+	}
+	if got := pred.Eval(map[string]any{"ADMIN": true}); got != cascades.TriFalse {
+		t.Errorf("NOT (TRUE IS TRUE): got %v, want FALSE", got)
+	}
+	if got := pred.Eval(map[string]any{"ADMIN": false}); got != cascades.TriTrue {
+		t.Errorf("NOT (FALSE IS TRUE): got %v, want TRUE", got)
 	}
 }
 
