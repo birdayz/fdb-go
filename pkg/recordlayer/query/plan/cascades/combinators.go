@@ -57,21 +57,22 @@ func NewAllOf(rootType string, downstreams ...BindingMatcher) *AllOfMatcher {
 func (a *AllOfMatcher) RootType() string { return a.rootType }
 
 func (a *AllOfMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
-	// Seed with one empty binding set so the first downstream's
-	// matches land unaltered. Subsequent downstreams extend each
-	// existing partial via MergedWith (Cartesian product).
-	current := []*PlannerBindings{NewBindings()}
+	// Seed with `outer` — matches Java's stream-reduce semantics
+	// where each downstream sees the accumulated context. Each
+	// downstream receives the current partial (not the original
+	// outer), so bindings produced by downstream N−1 are visible
+	// to downstream N, and outer's entries appear exactly once in
+	// each result.
+	current := []*PlannerBindings{outer}
 	for _, d := range a.downstreams {
-		matches := d.BindMatches(outer, in)
-		if len(matches) == 0 {
+		next := make([]*PlannerBindings, 0, len(current))
+		for _, partial := range current {
+			matches := d.BindMatches(partial, in)
+			next = append(next, matches...)
+		}
+		if len(next) == 0 {
 			// AND: any empty downstream collapses the result.
 			return nil
-		}
-		next := make([]*PlannerBindings, 0, len(current)*len(matches))
-		for _, partial := range current {
-			for _, m := range matches {
-				next = append(next, partial.MergedWith(m))
-			}
 		}
 		current = next
 	}

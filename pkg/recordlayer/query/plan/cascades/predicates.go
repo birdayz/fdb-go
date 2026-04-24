@@ -79,7 +79,7 @@ func NewConstantPredicate(v TriBool) *ConstantPredicate {
 	return &ConstantPredicate{Value: v}
 }
 
-func (*ConstantPredicate) Children() []QueryPredicate { return nil }
+func (*ConstantPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 func (p *ConstantPredicate) Eval(any) TriBool         { return p.Value }
 func (p *ConstantPredicate) Explain() string {
 	switch {

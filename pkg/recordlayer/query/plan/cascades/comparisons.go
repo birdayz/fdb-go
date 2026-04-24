@@ -162,7 +162,7 @@ func NewComparisonPredicate(operand Value, cmp Comparison) *ComparisonPredicate 
 	return &ComparisonPredicate{Operand: operand, Comparison: cmp}
 }
 
-func (*ComparisonPredicate) Children() []QueryPredicate { return nil }
+func (*ComparisonPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 
 func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
 	if p.Operand == nil {

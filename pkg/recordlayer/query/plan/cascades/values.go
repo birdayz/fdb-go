@@ -109,7 +109,7 @@ type ConstantValue struct {
 	Typ   ValueType
 }
 
-func (c *ConstantValue) Children() []Value { return nil }
+func (c *ConstantValue) Children() []Value { return []Value{} }
 func (c *ConstantValue) Type() ValueType   { return c.Typ }
 func (c *ConstantValue) Name() string      { return "constant" }
 func (c *ConstantValue) Evaluate(any) any  { return c.Value }
@@ -122,7 +122,7 @@ type FieldValue struct {
 	Typ   ValueType
 }
 
-func (f *FieldValue) Children() []Value { return nil }
+func (f *FieldValue) Children() []Value { return []Value{} }
 func (f *FieldValue) Type() ValueType   { return f.Typ }
 func (f *FieldValue) Name() string      { return "field" }
 
@@ -204,7 +204,7 @@ func NewBooleanValue(v bool) *BooleanValue {
 	return &BooleanValue{Value: &b}
 }
 
-func (*BooleanValue) Children() []Value { return nil }
+func (*BooleanValue) Children() []Value { return []Value{} }
 func (*BooleanValue) Type() ValueType   { return TypeBool }
 func (*BooleanValue) Name() string      { return "bool" }
 
