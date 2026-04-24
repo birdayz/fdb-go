@@ -1064,6 +1064,27 @@ func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
 	}
 }
 
+// CONVERT(expr, type) is the alternate surface for the same
+// DataTypeFunctionCall production. Walker shares one path so the
+// resulting CastValue is identical to CAST(expr AS type).
+func TestWalkExpression_ConvertSyntax(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CONVERT(name, INTEGER)")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cv, ok := v.(*cascades.CastValue)
+	if !ok {
+		t.Fatalf("expected *CastValue, got %T", v)
+	}
+	if cv.Target != cascades.TypeInt {
+		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
+	}
+}
+
 // CAST inside a WHERE predicate — real-world shape. Walker resolves
 // the CAST into a CastValue then composes with ComparisonPredicate.
 func TestWalkPredicate_CastInComparison(t *testing.T) {
