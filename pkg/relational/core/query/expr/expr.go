@@ -11,10 +11,51 @@
 // into a typed Value tree with every identifier resolved against a
 // Scope.
 //
-// Swingshift-47 seed scope: bare column references + constant
-// literals. Operators (arithmetic, comparison), function calls, CAST,
-// NULL literals, IN lists, qualified references all land in follow-up
-// commits.
+// # API
+//
+// Two layers:
+//
+//   - Resolver.Resolve* primitives — programmatic construction of
+//     Value / Predicate trees from already-walked parts (caller
+//     supplies each argument). Useful for tests and for synthetic
+//     expressions the analyzer constructs from other inputs.
+//   - Resolver.WalkExpression / WalkPredicate — parse-tree driver.
+//     Dispatches ANTLR IExpressionContext variants to the right
+//     Resolve* method, recursing into child contexts.
+//
+// Call WalkExpression for Value-returning expressions (SELECT list
+// items, arithmetic operands). Call WalkPredicate for QueryPredicate-
+// returning expressions (WHERE / HAVING clauses).
+//
+// # Handled shapes (swingshift-47 seed)
+//
+//   - Columns: bare (`col`) and qualified (`t.col`).
+//   - Constants: integer, string, NULL. Float pending (see
+//     ResolveConstant).
+//   - Arithmetic: +, -, *, /.
+//   - Comparisons: =, <>, !=, <, <=, >, >=, IS [NOT] DISTINCT FROM.
+//   - Logical: AND / OR / NOT (with left-deep chain flattening).
+//   - Unary predicates: IS NULL / IS NOT NULL.
+//   - BETWEEN (desugars to AND(>=, <=)).
+//   - IN with explicit literal list.
+//   - LIKE (no ESCAPE).
+//   - Aggregate function calls: COUNT / COUNT(*) / SUM / MIN / MAX / AVG.
+//   - Parenthesised expressions (single-element RecordConstructor
+//     unwrap).
+//
+// # Not handled (returns UnsupportedExpressionShapeError)
+//
+//   - XOR.
+//   - Scalar function calls.
+//   - LIKE with ESCAPE.
+//   - IN with subquery / parameter / single-column.
+//   - CAST.
+//   - IS TRUE / IS FALSE.
+//   - Multi-element or named-field record constructors.
+//
+// Callers catching UnsupportedExpressionShapeError can fall back to
+// the existing logical-builder path, which handles the full grammar
+// surface at a less-structured level.
 package expr
 
 import (
