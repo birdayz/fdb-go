@@ -718,6 +718,47 @@ func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 	}
 }
 
+// `a IS [NOT] DISTINCT FROM b` with both sides as FieldValues —
+// pins the null-safe binary path through ComparisonPredicate.Eval.
+// EvalAgainst's IsDistinctFrom branch treats both sides as
+// already-resolved any-typed values, so a nil from FieldValue
+// (missing-field row) behaves identically to a literal nil.
+func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	dist := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonIsDistinctFrom, Operand: &FieldValue{Field: "b", Typ: TypeInt}},
+	)
+	notDist := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonNotDistinctFrom, Operand: &FieldValue{Field: "b", Typ: TypeInt}},
+	)
+
+	cases := []struct {
+		name        string
+		row         map[string]any
+		wantDist    TriBool
+		wantNotDist TriBool
+	}{
+		{"both NULL", map[string]any{"a": nil, "b": nil}, TriFalse, TriTrue},
+		{"a NULL b 5", map[string]any{"a": nil, "b": int64(5)}, TriTrue, TriFalse},
+		{"a 5 b NULL", map[string]any{"a": int64(5), "b": nil}, TriTrue, TriFalse},
+		{"both 5", map[string]any{"a": int64(5), "b": int64(5)}, TriFalse, TriTrue},
+		{"both 5 vs 6", map[string]any{"a": int64(5), "b": int64(6)}, TriTrue, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := dist.Eval(tc.row); got != tc.wantDist {
+				t.Errorf("IS DISTINCT FROM: got %v, want %v", got, tc.wantDist)
+			}
+			if got := notDist.Eval(tc.row); got != tc.wantNotDist {
+				t.Errorf("IS NOT DISTINCT FROM: got %v, want %v", got, tc.wantNotDist)
+			}
+		})
+	}
+}
+
 // `a = b + 1`: RHS is an ArithmeticValue over row columns. Proves
 // arbitrary Value trees compose as RHS, not just FieldValue.
 func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
