@@ -18,6 +18,7 @@ func buildScope(t *testing.T) (*semantic.Analyzer, *semantic.Scope) {
 			{Id: semantic.NewUnquoted("id"), Type: "INT"},
 			{Id: semantic.NewUnquoted("name"), Type: "STRING", Nullable: true},
 			{Id: semantic.NewUnquoted("active"), Type: "BOOL"},
+			{Id: semantic.NewUnquoted("admin"), Type: "BOOL", Nullable: true},
 		},
 	}
 	cat := semantic.NewInMemoryCatalog(users)

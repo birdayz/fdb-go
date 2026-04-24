@@ -289,6 +289,55 @@ func TestWalkPredicate_LogicalOr(t *testing.T) {
 	}
 }
 
+// XOR desugars into `(a OR b) AND NOT (a AND b)`. Verify:
+//
+//	(1) top-level is AND with two children (the OR and the NOT),
+//	(2) Kleene-3VL evaluation matches `a XOR b` truth table.
+func TestWalkPredicate_LogicalXor(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active XOR admin")
+
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate at root, got %T", pred)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("AND children: got %d, want 2", len(and.SubPredicates))
+	}
+	if _, ok := and.SubPredicates[0].(*cascades.OrPredicate); !ok {
+		t.Fatalf("first child: got %T, want *OrPredicate", and.SubPredicates[0])
+	}
+	if _, ok := and.SubPredicates[1].(*cascades.NotPredicate); !ok {
+		t.Fatalf("second child: got %T, want *NotPredicate", and.SubPredicates[1])
+	}
+
+	type row = map[string]any
+	cases := []struct {
+		active, admin any
+		want          cascades.TriBool
+	}{
+		{true, true, cascades.TriFalse},
+		{true, false, cascades.TriTrue},
+		{false, true, cascades.TriTrue},
+		{false, false, cascades.TriFalse},
+		{nil, true, cascades.TriUnknown},
+		{nil, false, cascades.TriUnknown},
+		{nil, nil, cascades.TriUnknown},
+	}
+	for _, tc := range cases {
+		got := pred.Eval(row{"ACTIVE": tc.active, "ADMIN": tc.admin})
+		if got != tc.want {
+			t.Errorf("XOR(%v, %v): got %v, want %v", tc.active, tc.admin, got, tc.want)
+		}
+	}
+}
+
 // AND chain flattens — `a AND b AND c` produces a single 3-child
 // And rather than nested pairs.
 func TestWalkPredicate_AndChainFlattens(t *testing.T) {
@@ -639,22 +688,29 @@ func TestWalkPredicate_IsNotNull(t *testing.T) {
 	}
 }
 
-// XOR is grammatically valid but maps to no cascades primitive.
-// Walker returns UnsupportedExpressionShapeError so callers can
-// fall back to the existing logical-builder path.
-func TestWalkPredicate_XOR_Unsupported(t *testing.T) {
+// `a XOR a` is a tautology for non-NULL inputs (always FALSE).
+// The walker desugars to `(a OR a) AND NOT (a AND a)` and the
+// simplifier could fold it, but the walker itself produces the
+// structural form — verify Eval returns FALSE for non-NULL and
+// UNKNOWN for NULL.
+func TestWalkPredicate_XOR_SelfIsFalse(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active XOR active")
 
-	_, err := r.WalkPredicate(ctx)
-	if err == nil {
-		t.Fatal("expected UnsupportedExpressionShapeError for XOR")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
 	}
-	var u *expr.UnsupportedExpressionShapeError
-	if !errors.As(err, &u) {
-		t.Fatalf("expected UnsupportedExpressionShapeError, got %T", err)
+	if got := pred.Eval(map[string]any{"ACTIVE": true}); got != cascades.TriFalse {
+		t.Errorf("true XOR true: got %v, want FALSE", got)
+	}
+	if got := pred.Eval(map[string]any{"ACTIVE": false}); got != cascades.TriFalse {
+		t.Errorf("false XOR false: got %v, want FALSE", got)
+	}
+	if got := pred.Eval(map[string]any{"ACTIVE": nil}); got != cascades.TriUnknown {
+		t.Errorf("NULL XOR NULL: got %v, want UNKNOWN", got)
 	}
 }
 

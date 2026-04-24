@@ -360,7 +360,13 @@ func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) 
 	case lo.OR() != nil:
 		return r.ResolveOr(flattenOr(left, right)...), nil
 	case lo.XOR() != nil:
-		return nil, &UnsupportedExpressionShapeError{Shape: "XOR"}
+		// Desugar `a XOR b` → `(a OR b) AND NOT (a AND b)`.
+		// This is exact under Kleene 3VL: both sides evaluate to
+		// UNKNOWN iff either input is UNKNOWN, which is the expected
+		// behaviour for NULL XOR x.
+		or := r.ResolveOr(flattenOr(left, right)...)
+		and := r.ResolveAnd(flattenAnd(left, right)...)
+		return r.ResolveAnd(or, r.ResolveNot(and)), nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: "LogicalOperator: " + lo.GetText()}
 }
