@@ -703,6 +703,50 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 	}
 }
 
+// NOT LIKE with ESCAPE — the round-6 reviewer noted this combo
+// wasn't pinned. The walker resolves the inner LIKE+ESCAPE then
+// wraps in a NotPredicate, so Eval should be the negation of the
+// LIKE+ESCAPE truth table.
+func TestWalkPredicate_NotLikeEscape(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name NOT LIKE 'a\%b' ESCAPE '\'`)
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	not, ok := pred.(*cascades.NotPredicate)
+	if !ok {
+		t.Fatalf("expected *NotPredicate, got %T", pred)
+	}
+	cp, ok := not.Child.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected NOT to wrap ComparisonPredicate, got %T", not.Child)
+	}
+	if cp.Comparison.Type != cascades.ComparisonLike {
+		t.Fatalf("inner Type: got %v, want Like", cp.Comparison.Type)
+	}
+	if cp.Comparison.Escape != '\\' {
+		t.Fatalf("inner Escape: got %q, want %q", cp.Comparison.Escape, '\\')
+	}
+	// NOT LIKE Eval: the literal `a%b` matches the pattern (so LIKE=TRUE)
+	// → NOT LIKE = FALSE; `axb` doesn't match (LIKE=FALSE) → NOT LIKE = TRUE.
+	cases := []struct {
+		s    string
+		want cascades.TriBool
+	}{
+		{"a%b", cascades.TriFalse},
+		{"axb", cascades.TriTrue}, // escape blocks wildcard, so axb is NOT a match for `a\%b`
+		{"a%bb", cascades.TriTrue},
+	}
+	for _, tc := range cases {
+		if got := pred.Eval(map[string]any{"NAME": tc.s}); got != tc.want {
+			t.Errorf("NOT LIKE Eval(%q): got %v, want %v", tc.s, got, tc.want)
+		}
+	}
+}
+
 // Multi-character escape is invalid. The walker must reject
 // rather than silently consuming only the first char.
 func TestWalkPredicate_LikeEscape_MultiChar_Rejected(t *testing.T) {
