@@ -1,0 +1,108 @@
+# map_path_predicate_kleene.yaml
+#
+# Pins the map-path (JOIN / CTE / HAVING) predicate evaluator's
+# Kleene 3-valued correctness, mirroring the tighter coverage the
+# proto-path already has.
+#
+# Two bugs the nightshift-45 round-5 review surfaced after the
+# proto-vs-map evaluator extraction made the divergence visible
+# side-by-side:
+#
+#   1. evalPredicateOnMapExprTri's LogicalExpressionContext used
+#      `op.AND() != nil` for AND and fell through unconditionally
+#      to triOr. That meant `a && b` (symbolic, op.AND() == nil)
+#      silently became OR, and XOR fell through to OR too.
+#   2. evalPredicateOnMapTri's BETWEEN handler short-circuited to
+#      triNull when either bound was NULL. SQL semantics for NOT
+#      BETWEEN with NULL bound: `0 NOT BETWEEN 1 AND NULL` is
+#      `(0 < 1) OR (0 > NULL)` = `TRUE OR UNKNOWN` = TRUE. Map
+#      path returned UNKNOWN and silently filtered the row out.
+#
+# Both bugs only manifest in map-path contexts — JOIN, CTE,
+# HAVING. Tests below force those paths via INNER JOIN.
+name: map_path_predicate_kleene
+schema_template: |
+  CREATE TABLE a (
+    id BIGINT NOT NULL,
+    v BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE TABLE b (
+    id BIGINT NOT NULL,
+    flag1 BOOLEAN,
+    flag2 BOOLEAN,
+    PRIMARY KEY (id)
+  )
+setup:
+  - INSERT INTO a VALUES (1, 0), (2, 5), (3, 10), (4, 15), (5, 100)
+  - INSERT INTO b VALUES
+      (1, true,  true),
+      (2, true,  false),
+      (3, false, true),
+      (4, false, false),
+      (5, true,  true)
+tests:
+  # -------------------------------------------------------------------
+  # NOT BETWEEN with NULL bound on JOIN WHERE — exercises the map-path
+  # BetweenComparisonPredicateContext branch.
+  #
+  # `v NOT BETWEEN 1 AND NULL` = `(v < 1) OR (v > NULL)`.
+  #   v=0 → (TRUE OR UNKNOWN) = TRUE → kept
+  #   v>0 → (FALSE OR UNKNOWN) = UNKNOWN → filtered
+  # Pre-fix the map-path short-circuited any-NULL bound to UNKNOWN
+  # uniformly, dropping the v=0 row too.
+  # -------------------------------------------------------------------
+
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v NOT BETWEEN 1 AND NULL ORDER BY a.id
+    rows:
+      - [1]
+
+  # Symmetric: `v NOT BETWEEN NULL AND 50` = `(v < NULL) OR (v > 50)`.
+  #   v=100 → (UNKNOWN OR TRUE) = TRUE → kept
+  #   v<=50 → (UNKNOWN OR FALSE) = UNKNOWN → filtered
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v NOT BETWEEN NULL AND 50 ORDER BY a.id
+    rows:
+      - [5]
+
+  # BETWEEN with both NULL bounds — UNKNOWN AND UNKNOWN = UNKNOWN,
+  # filtered out. Just confirms the AND case still behaves correctly
+  # post-fix.
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE a.v BETWEEN NULL AND NULL
+    rows: []
+
+  # -------------------------------------------------------------------
+  # Symbolic `&&` on JOIN WHERE — exercises the map-path
+  # LogicalExpressionContext AND branch. Pre-fix `&&` fell through to
+  # triOr (silent AND→OR misfire). Rows where flag1 AND flag2 are both
+  # true: (1, 5).
+  # -------------------------------------------------------------------
+
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE b.flag1 && b.flag2 ORDER BY a.id
+    rows:
+      - [1]
+      - [5]
+
+  # Compare against keyword AND — should be identical. If the keyword
+  # path stayed correct and `&&` was buggy, the two queries diverged
+  # silently before the fix.
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE b.flag1 AND b.flag2 ORDER BY a.id
+    rows:
+      - [1]
+      - [5]
+
+  # -------------------------------------------------------------------
+  # XOR on JOIN WHERE — exercises the map-path XOR branch (was
+  # previously falling through to triOr unconditionally). Rows where
+  # flag1 XOR flag2: id=2 (true, false) and id=3 (false, true).
+  # -------------------------------------------------------------------
+
+  - query: SELECT a.id FROM a INNER JOIN b ON a.id = b.id WHERE b.flag1 XOR b.flag2 ORDER BY a.id
+    rows:
+      - [2]
+      - [3]
+
+  # XOR with one operand NULL → UNKNOWN, filtered out. Set up via a
+  # third-table NULL boolean.
+  - query: SELECT COUNT(*) FROM a INNER JOIN b ON a.id = b.id WHERE b.flag1 XOR NULL
+    rows:
+      - [0]

@@ -344,9 +344,12 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		return triFromBool(matched), nil
 
 	case *antlrgen.BetweenComparisonPredicateContext:
-		if fieldVal == nil {
-			return triNull, nil
-		}
+		// Mirror evalBetweenPredicateTri's Kleene decomposition. The
+		// previous map-path version short-circuited on any-NULL bound
+		// to triNull, which is wrong for NOT BETWEEN: `0 NOT BETWEEN
+		// 1 AND NULL` is `(0 < 1) OR (0 > NULL)` = `(TRUE OR UNKNOWN)`
+		// = TRUE, but the short-circuit returned UNKNOWN and silently
+		// filtered the row out (round-5 review).
 		lo, loErr := evalExprAtomOnMap(ctx, conn, row, p.GetLeft())
 		if loErr != nil {
 			return triFalse, loErr
@@ -355,14 +358,29 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if hiErr != nil {
 			return triFalse, hiErr
 		}
-		if lo == nil || hi == nil {
-			return triNull, nil
+		// Cross-type bounds error consistently with the proto path.
+		if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, lo)
 		}
-		result := functions.CompareValues(fieldVal, lo) >= 0 && functions.CompareValues(fieldVal, hi) <= 0
+		if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, hi)
+		}
+		compareTri := func(a, b driver.Value, want func(int) bool) triBool {
+			if a == nil || b == nil {
+				return triNull
+			}
+			return triFromBool(want(functions.CompareValues(a, b)))
+		}
 		if p.NOT() != nil {
-			result = !result
+			lt := compareTri(fieldVal, lo, func(c int) bool { return c < 0 })
+			gt := compareTri(fieldVal, hi, func(c int) bool { return c > 0 })
+			return triOr(lt, gt), nil
 		}
-		return triFromBool(result), nil
+		geLo := compareTri(fieldVal, lo, func(c int) bool { return c >= 0 })
+		leHi := compareTri(fieldVal, hi, func(c int) bool { return c <= 0 })
+		return triAnd(geLo, leHi), nil
 
 	case *antlrgen.InPredicateContext:
 		if fieldVal == nil {
@@ -392,6 +410,12 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		}
 		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
+			// TODO: only PredicatedExpressionContext list elements are
+			// evaluated; arithmetic / function-call elements like
+			// `b IN (1+0, foo())` get silently skipped. The proto path
+			// (evalInPredicateTri) calls evalExpr on every element. Phase
+			// 1c unification picks this up — for now flagged so a future
+			// reader doesn't re-discover it.
 			ep, ok := inExpr.(*antlrgen.PredicatedExpressionContext)
 			if !ok {
 				continue
@@ -483,7 +507,18 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			return triFalse, err
 		}
 		op := e.LogicalOperator()
-		if op.AND() != nil {
+		// Grammar: AND | '&' '&' | XOR | OR | '|' '|'. op.AND()/OR()/XOR()
+		// are only non-nil for the keyword forms; the symbolic `&&` and
+		// `||` forms need text-based detection. Pre-fix this branch fell
+		// through to triOr unconditionally for `&&` (silent AND→OR misfire
+		// in JOIN/CTE WHERE) and ignored XOR — round-5 review caught the
+		// divergence from the proto path.
+		opText := strings.ReplaceAll(op.GetText(), " ", "")
+		isAnd := op.AND() != nil || opText == "&&"
+		isOr := op.OR() != nil || opText == "||"
+		isXor := op.XOR() != nil
+		switch {
+		case isAnd:
 			if left == triFalse {
 				return triFalse, nil
 			}
@@ -492,15 +527,28 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 				return triFalse, err
 			}
 			return triAnd(left, right), nil
+		case isOr:
+			if left == triTrue {
+				return triTrue, nil
+			}
+			right, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			return triOr(left, right), nil
+		case isXor:
+			// SQL XOR: any NULL operand → NULL (can't short-circuit
+			// without both concrete). Mirrors evalExprPredicateTri.
+			right, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(1))
+			if err != nil {
+				return triFalse, err
+			}
+			if left == triNull || right == triNull {
+				return triNull, nil
+			}
+			return triFromBool((left == triTrue) != (right == triTrue)), nil
 		}
-		if left == triTrue {
-			return triTrue, nil
-		}
-		right, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(1))
-		if err != nil {
-			return triFalse, err
-		}
-		return triOr(left, right), nil
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
 	case *antlrgen.NotExpressionContext:
 		v, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression())
 		if err != nil {
