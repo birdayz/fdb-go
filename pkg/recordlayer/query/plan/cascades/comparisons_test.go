@@ -1169,6 +1169,86 @@ func TestComparison_Eval_LikeWithEscape(t *testing.T) {
 	}
 }
 
+// LIKE / STARTS_WITH / IN with both sides constant fold all the way
+// to a ConstantPredicate end-to-end. Pins that the constant-fold
+// rule covers each comparison family — easy to silently break by
+// adding a new ComparisonType to the dispatch without wiring fold
+// support, and these checks would catch it.
+func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want TriBool
+	}{
+		{
+			name: "LIKE matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "hello", Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue("hel%")},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "LIKE doesn't match",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "foo", Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue("bar")},
+			),
+			want: TriFalse,
+		},
+		{
+			name: "LIKE+ESCAPE",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "a%b", Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue(`a\%b`), Escape: '\\'},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "STARTS_WITH matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "hello", Typ: TypeString},
+				Comparison{Type: ComparisonStartsWith, Operand: LiteralValue("hel")},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "IN matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: int64(5), Typ: TypeInt},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(5), int64(9)})},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "IN doesn't match",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: int64(99), Typ: TypeInt},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2)})},
+			),
+			want: TriFalse,
+		},
+	}
+	rule := NewComparisonConstantSimplifyRule()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := FireRule(rule, tc.pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T", got[0])
+			}
+			if cp.Value != tc.want {
+				t.Fatalf("got %v, want %v", cp.Value, tc.want)
+			}
+		})
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.
