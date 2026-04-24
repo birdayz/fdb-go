@@ -608,6 +608,9 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, er
 		return nil, fmt.Errorf("expr.walkConstant: nil Constant")
 	}
 	switch k := c.(type) {
+	case *antlrgen.NullConstantContext:
+		_ = k
+		return r.ResolveConstant(nil)
 	case *antlrgen.DecimalConstantContext:
 		text := k.GetText()
 		n, err := strconv.ParseInt(text, 10, 64)

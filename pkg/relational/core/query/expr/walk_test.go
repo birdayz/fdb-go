@@ -105,6 +105,22 @@ func TestWalkExpression_StringLiteral(t *testing.T) {
 	}
 }
 
+// NULL literal → NullValue.
+func TestWalkExpression_NullLiteral(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE NULL")
+
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if _, ok := v.(*cascades.NullValue); !ok {
+		t.Fatalf("expected *NullValue, got %T", v)
+	}
+}
+
 // Escaped single-quote within a string literal.
 func TestWalkExpression_StringLiteral_EscapedQuote(t *testing.T) {
 	t.Parallel()
