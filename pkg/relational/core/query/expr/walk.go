@@ -267,6 +267,11 @@ func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticO
 		return cascades.OpMul, nil
 	case mo.DIVIDE() != nil:
 		return cascades.OpDiv, nil
+	case mo.MOD() != nil, mo.MODULE() != nil:
+		// MOD / MODULE / `%` all map to OpMod. The grammar treats
+		// `MOD` as a keyword and `MODULE` as the synonym, plus `%`
+		// as the operator (covered by mo.MODULE() in this grammar).
+		return cascades.OpMod, nil
 	}
 	return cascades.OpAdd, &UnsupportedExpressionShapeError{Shape: "MathOperator: " + mo.GetText()}
 }

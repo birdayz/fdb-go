@@ -129,6 +129,8 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 		{OpSub, 10, 3, int64(7)},
 		{OpMul, 6, 7, int64(42)},
 		{OpDiv, 20, 4, int64(5)},
+		{OpMod, 20, 7, int64(6)},
+		{OpMod, -20, 7, int64(-6)}, // Go truncated-toward-zero, matches MySQL/PostgreSQL
 	}
 	for _, tc := range cases {
 		av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
@@ -142,6 +144,12 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	divZ := &ArithmeticValue{Op: OpDiv, Left: a, Right: b}
 	if got := divZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); got != nil {
 		t.Fatalf("div by zero: got %v", got)
+	}
+
+	// MOD by zero same nil-on-zero contract as Div.
+	modZ := &ArithmeticValue{Op: OpMod, Left: a, Right: b}
+	if got := modZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); got != nil {
+		t.Fatalf("mod by zero: got %v", got)
 	}
 
 	// NULL propagation.

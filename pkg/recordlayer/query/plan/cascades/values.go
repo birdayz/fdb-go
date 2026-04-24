@@ -361,6 +361,12 @@ func (t ValueType) String() string {
 	return "UNKNOWN"
 }
 
+// Symbol returns the SQL-text form of the arithmetic operator.
+// Exposed for callers that want to render the op without going
+// through ExplainValue (e.g. error messages, plan diagnostics).
+// Lower-case `symbol` continues to be the package-internal alias.
+func (o ArithmeticOp) Symbol() string { return o.symbol() }
+
 func (o ArithmeticOp) symbol() string {
 	switch o {
 	case OpAdd:
@@ -371,6 +377,8 @@ func (o ArithmeticOp) symbol() string {
 		return "*"
 	case OpDiv:
 		return "/"
+	case OpMod:
+		return "%"
 	}
 	return "?"
 }
@@ -479,6 +487,7 @@ const (
 	OpSub
 	OpMul
 	OpDiv
+	OpMod
 )
 
 // ArithmeticValue is a binary arithmetic over two child Values.
@@ -519,6 +528,14 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 			return nil
 		}
 		return li / ri
+	case OpMod:
+		// SQL: `a MOD 0` is undefined / NULL. Match Div's nil-on-zero
+		// guard. Sign of result matches Go's `%` (truncated toward
+		// zero) — matches MySQL / PostgreSQL semantics.
+		if ri == 0 {
+			return nil
+		}
+		return li % ri
 	}
 	return nil
 }

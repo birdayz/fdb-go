@@ -1078,6 +1078,37 @@ func TestWalkExpression_NilContext(t *testing.T) {
 	}
 }
 
+// MOD operator — walker produces an ArithmeticValue with Op=OpMod
+// for both `a % b` and `a MOD b` syntactic forms. Eval returns
+// truncated-toward-zero modulo (Go's `%`); MOD by zero returns nil
+// (NULL-at-Value-layer).
+func TestWalkExpression_ModuloOperator(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	for _, sql := range []string{"id % 7", "id MOD 7"} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			av, ok := v.(*cascades.ArithmeticValue)
+			if !ok {
+				t.Fatalf("expected *ArithmeticValue, got %T", v)
+			}
+			if av.Op != cascades.OpMod {
+				t.Fatalf("Op: got %v, want OpMod", av.Op)
+			}
+			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(2) {
+				t.Errorf("23 %% 7: got %v, want 2", got)
+			}
+		})
+	}
+}
+
 // CAST(col AS INTEGER): walker produces a CastValue over the column
 // FieldValue. Target ValueType mirrors the primitive-type token. The
 // CAST shape is wired via SpecificFunction → DataTypeFunctionCall.
