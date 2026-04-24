@@ -326,3 +326,26 @@ func TestChildren_Walk(t *testing.T) {
 		t.Fatalf("NOT children: expected 1, got %d", len(got))
 	}
 }
+
+// PredicateEquals must handle IN's slice-valued Operand without
+// panicking. Before the reflect.DeepEqual fix, comparing two IN
+// ComparisonPredicates crashed with "comparing uncomparable type".
+func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
+	t.Parallel()
+	field := &FieldValue{Field: "x", Typ: TypeInt}
+	pIn1 := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)},
+	})
+	pIn2 := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)},
+	})
+	pIn3 := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonIn, Operand: []any{int64(1), int64(2)},
+	})
+	if !PredicateEquals(pIn1, pIn2) {
+		t.Fatal("same IN lists should be equal")
+	}
+	if PredicateEquals(pIn1, pIn3) {
+		t.Fatal("different IN lists should be unequal")
+	}
+}

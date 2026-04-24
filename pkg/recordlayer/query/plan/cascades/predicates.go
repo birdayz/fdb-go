@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -135,8 +136,12 @@ func PredicateEquals(a, b QueryPredicate) bool {
 		if !ok {
 			return false
 		}
+		// Comparison.Operand is `any`; for ComparisonIn it's `[]any`,
+		// which panics under ==. reflect.DeepEqual handles both the
+		// hashable-literal case (EQ/LT/... with int/string/etc.) and
+		// the slice case uniformly.
 		return ap.Comparison.Type == bp.Comparison.Type &&
-			ap.Comparison.Operand == bp.Comparison.Operand &&
+			reflect.DeepEqual(ap.Comparison.Operand, bp.Comparison.Operand) &&
 			valueNamesEqual(ap.Operand, bp.Operand)
 	}
 	return false
