@@ -639,6 +639,25 @@ func TestWalkPredicate_IsNotNull(t *testing.T) {
 	}
 }
 
+// XOR is grammatically valid but maps to no cascades primitive.
+// Walker returns UnsupportedExpressionShapeError so callers can
+// fall back to the existing logical-builder path.
+func TestWalkPredicate_XOR_Unsupported(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active XOR active")
+
+	_, err := r.WalkPredicate(ctx)
+	if err == nil {
+		t.Fatal("expected UnsupportedExpressionShapeError for XOR")
+	}
+	var u *expr.UnsupportedExpressionShapeError
+	if !errors.As(err, &u) {
+		t.Fatalf("expected UnsupportedExpressionShapeError, got %T", err)
+	}
+}
+
 func TestWalkPredicate_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
