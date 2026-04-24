@@ -1229,6 +1229,22 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 			),
 			want: TriFalse,
 		},
+		{
+			name: "bytes equality matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: []byte{0x01, 0x02}, Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{0x01, 0x02})},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "bytes equality differs",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: []byte{0x01}, Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{0x02})},
+			),
+			want: TriFalse,
+		},
 	}
 	rule := NewComparisonConstantSimplifyRule()
 	for _, tc := range cases {
