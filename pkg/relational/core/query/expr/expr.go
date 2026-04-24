@@ -104,6 +104,41 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 	}), nil
 }
 
+// ResolveAnd combines N predicates via Kleene AND. A single
+// predicate returns verbatim (no wrapping); empty list returns
+// ConstantPredicate(TRUE) — the AND identity.
+func (r *Resolver) ResolveAnd(preds ...cascades.QueryPredicate) cascades.QueryPredicate {
+	switch len(preds) {
+	case 0:
+		return cascades.NewConstantPredicate(cascades.TriTrue)
+	case 1:
+		return preds[0]
+	}
+	return cascades.NewAnd(preds...)
+}
+
+// ResolveOr combines N predicates via Kleene OR. Empty list returns
+// ConstantPredicate(FALSE) — the OR identity. Single predicate
+// returns verbatim.
+func (r *Resolver) ResolveOr(preds ...cascades.QueryPredicate) cascades.QueryPredicate {
+	switch len(preds) {
+	case 0:
+		return cascades.NewConstantPredicate(cascades.TriFalse)
+	case 1:
+		return preds[0]
+	}
+	return cascades.NewOr(preds...)
+}
+
+// ResolveNot wraps a predicate in a Kleene NOT. Nil child returns
+// ConstantPredicate(UNKNOWN) — the only sensible interpretation.
+func (r *Resolver) ResolveNot(pred cascades.QueryPredicate) cascades.QueryPredicate {
+	if pred == nil {
+		return cascades.NewConstantPredicate(cascades.TriUnknown)
+	}
+	return cascades.NewNot(pred)
+}
+
 // ResolveFunctionCall dispatches a function call against the given
 // catalogue. For known aggregates (COUNT/SUM/MIN/MAX/AVG) it returns
 // the corresponding cascades.AggregateValue. Scalar function support

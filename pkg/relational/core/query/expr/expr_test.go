@@ -310,6 +310,66 @@ func TestResolver_ResolveFunctionCall_UnknownFunc(t *testing.T) {
 	}
 }
 
+func TestResolver_ResolveAnd(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	// Empty → TRUE (AND identity).
+	p := r.ResolveAnd()
+	cp, ok := p.(*cascades.ConstantPredicate)
+	if !ok || cp.Value != cascades.TriTrue {
+		t.Fatalf("empty AND: got %T %v, want TRUE", p, p)
+	}
+
+	// Single predicate returns verbatim (no And wrapping).
+	inner := cascades.NewConstantPredicate(cascades.TriFalse)
+	if p := r.ResolveAnd(inner); p != cascades.QueryPredicate(inner) {
+		t.Fatal("single-element AND should return the predicate verbatim")
+	}
+
+	// Multi wraps.
+	multi := r.ResolveAnd(
+		cascades.NewConstantPredicate(cascades.TriTrue),
+		cascades.NewConstantPredicate(cascades.TriFalse),
+	)
+	if _, ok := multi.(*cascades.AndPredicate); !ok {
+		t.Fatalf("multi AND: got %T, want *AndPredicate", multi)
+	}
+}
+
+func TestResolver_ResolveOr(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	p := r.ResolveOr()
+	cp, ok := p.(*cascades.ConstantPredicate)
+	if !ok || cp.Value != cascades.TriFalse {
+		t.Fatalf("empty OR: got %T %v, want FALSE", p, p)
+	}
+}
+
+func TestResolver_ResolveNot(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	// Nil → UNKNOWN.
+	p := r.ResolveNot(nil)
+	cp, ok := p.(*cascades.ConstantPredicate)
+	if !ok || cp.Value != cascades.TriUnknown {
+		t.Fatalf("nil NOT: got %T %v, want UNKNOWN", p, p)
+	}
+
+	// Wrapping.
+	inner := cascades.NewConstantPredicate(cascades.TriTrue)
+	wrapped := r.ResolveNot(inner)
+	if _, ok := wrapped.(*cascades.NotPredicate); !ok {
+		t.Fatalf("expected NotPredicate, got %T", wrapped)
+	}
+}
+
 // Integration: build a bigger expression from primitives and verify
 // it evaluates correctly. Exercises the full resolver stack — column
 // ref → field value, constants → literal values, arithmetic → op,
