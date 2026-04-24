@@ -10,6 +10,7 @@ go_library(
         "ddl.go",
         "eval_map.go",
         "eval_predicate.go",
+        "eval_predicate_map.go",
         "eval_proto.go",
         "in_list_pushdown.go",
         "insert.go",
