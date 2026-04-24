@@ -151,16 +151,25 @@ func (t *recordTypeTable) LookupColumn(id semantic.Identifier) (semantic.Column,
 }
 
 func (t *recordTypeTable) Indexes() []string {
+	// Include single-type AND multi-type indexes defined on this
+	// record type. Universal indexes (defined on every type) are
+	// not included here — they're a RecordMetaData-level concept
+	// and belong on a future Catalog.UniversalIndexes() accessor.
 	idxs := t.rt.GetIndexes()
-	if len(idxs) == 0 {
+	multi := t.rt.GetMultiTypeIndexes()
+	if len(idxs)+len(multi) == 0 {
 		return []string{}
 	}
-	out := make([]string, 0, len(idxs))
+	out := make([]string, 0, len(idxs)+len(multi))
 	for _, idx := range idxs {
-		if idx == nil {
-			continue
+		if idx != nil {
+			out = append(out, idx.Name)
 		}
-		out = append(out, idx.Name)
+	}
+	for _, idx := range multi {
+		if idx != nil {
+			out = append(out, idx.Name)
+		}
 	}
 	return out
 }
