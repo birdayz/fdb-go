@@ -25,11 +25,16 @@
 //     patterns.
 //   - predicates.go      — QueryPredicate interface + TriBool
 //     (Kleene 3VL) + Constant / And / Or / Not /
-//     ValuePredicate.
-//   - comparisons.go     — ComparisonType enum (6 operators) +
+//     ValuePredicate + WalkPredicate + AsConstant +
+//     PredicateSize + PredicateEquals (structural,
+//     handles IN-list slice operand and
+//     per-instance Value data).
+//   - comparisons.go     — ComparisonType enum (13 operators) +
 //     Comparison value-pair + ComparisonPredicate
 //     wrapping a Value operand with SQL-3VL on NULL
-//     and type mismatch.
+//     and type mismatch + numeric promotion in cmpAny
+//   - rune-level LIKE matcher + IsEquality / Negate
+//     classification helpers.
 //   - correlation.go     — CorrelationIdentifier value-type +
 //     Named / Unique factories + Correlated
 //     interface signature (Quantifier-tracking
