@@ -129,13 +129,23 @@ bench-one NAME:
     timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
         -test.run='^$' -test.bench='{{NAME}}' -test.benchtime=3s -test.benchmem --ginkgo.skip='.*'
 
-# Run benchmarks for CI — record layer + wire types, benchtime=1s, results to bench-results.txt
+# Run benchmarks for CI — record layer + wire types, benchtime=1s, results to bench-results.txt.
+#
+# Individual BenchmarkXxx failures (FDB context-deadline timeouts etc.)
+# are surfaced via the GitHub step summary + bench-raw.txt, but don't
+# turn CI red — they're frequently FDB-load-dependent flakes and
+# blocking on them would make every PR a dice roll. A bench BINARY
+# crash (exit != 0 / timeout) IS reported in the run log via the
+# `!!! ...` sentinel so it's still visible.
 bench-ci:
     #!/usr/bin/env bash
-    set -euo pipefail
+    # No -e: we WANT to keep running when a bench binary fails so all
+    # benches produce output. Track exit codes manually.
+    set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
     bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
+    fail_count=0
     {
         echo "=== Running benchmarks: //pkg/recordlayer:recordlayer_test ==="
         timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
@@ -143,18 +153,47 @@ bench-ci:
             -test.bench=. \
             -test.benchmem \
             -test.benchtime=1s \
-            --ginkgo.skip='.*' 2>&1 || true
+            --ginkgo.skip='.*' 2>&1
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "!!! recordlayer_test bench binary exited with $rc (124 = timeout)"
+            fail_count=$((fail_count + 1))
+        fi
         echo "=== Running benchmarks: //pkg/fdbgo/wire/types:types_test ==="
         timeout 60 "$BAZEL_BIN/pkg/fdbgo/wire/types/types_test_/types_test" \
             -test.run='^$' \
             -test.bench=. \
             -test.benchmem \
-            -test.benchtime=1s 2>&1 || true
+            -test.benchtime=1s 2>&1
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "!!! wire/types bench binary exited with $rc (124 = timeout)"
+            fail_count=$((fail_count + 1))
+        fi
+        echo "=== bench-ci summary: $fail_count bench binary failure(s) ==="
     } | tee bench-raw.txt
     # Extract benchmark lines for bench-report.
     grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' bench-raw.txt > bench-results.txt || true
-    NRESULTS=$(grep -c '^Benchmark' bench-results.txt || echo 0)
+    # grep -c prints "0" AND exits 1 on no-match, so `... || echo 0`
+    # appends a second "0" — hence the awkward `; true` pattern to
+    # keep the count string clean.
+    NRESULTS=$(grep -c '^Benchmark' bench-results.txt 2>/dev/null; true)
+    # Surface individual BenchmarkXxx failures — the bench binary may
+    # exit 0 even if one Benchmark inside it failed. Previously
+    # invisible: `--- FAIL: BenchmarkXxx` lines got silenced by the
+    # original `|| true`.
+    FAILED_BENCHES=$(grep -cE '^--- FAIL: Benchmark' bench-raw.txt 2>/dev/null; true)
     echo "Benchmarks: $NRESULTS results → bench-results.txt"
+    echo "Failing benchmarks: $FAILED_BENCHES (see bench-raw.txt for details)"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ "$FAILED_BENCHES" -gt 0 ]; then
+        {
+            echo "### Benchmark failures (${FAILED_BENCHES})"
+            echo ""
+            echo '```'
+            grep -E '^--- FAIL: Benchmark' bench-raw.txt
+            echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+    fi
 
 # Compare benchmark results: just bench-report old.txt new.txt
 bench-report old new:
