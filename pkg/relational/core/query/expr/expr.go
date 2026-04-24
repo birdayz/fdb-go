@@ -104,6 +104,71 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 	}), nil
 }
 
+// ResolveCast wraps v in a CastValue with the target type. Rejects
+// nil child (programmer error) and TypeUnknown target (use the
+// direct Value if the target is genuinely unknown).
+func (r *Resolver) ResolveCast(v cascades.Value, target cascades.ValueType) (cascades.Value, error) {
+	if v == nil {
+		return nil, fmt.Errorf("expr.ResolveCast: child is nil")
+	}
+	if target == cascades.TypeUnknown {
+		return nil, fmt.Errorf("expr.ResolveCast: target TypeUnknown")
+	}
+	return cascades.NewCastValue(v, target), nil
+}
+
+// ResolveIsNull builds `v IS NULL`. Unary — Comparison.Operand is
+// nil (Eval ignores it for unary types).
+func (r *Resolver) ResolveIsNull(v cascades.Value) (cascades.QueryPredicate, error) {
+	if v == nil {
+		return nil, fmt.Errorf("expr.ResolveIsNull: operand is nil")
+	}
+	return cascades.NewComparisonPredicate(v, cascades.Comparison{Type: cascades.ComparisonIsNull}), nil
+}
+
+// ResolveIsNotNull builds `v IS NOT NULL`. Unary.
+func (r *Resolver) ResolveIsNotNull(v cascades.Value) (cascades.QueryPredicate, error) {
+	if v == nil {
+		return nil, fmt.Errorf("expr.ResolveIsNotNull: operand is nil")
+	}
+	return cascades.NewComparisonPredicate(v, cascades.Comparison{Type: cascades.ComparisonIsNotNull}), nil
+}
+
+// ResolveLike builds `lhs LIKE pattern`. Pattern must be a plan-time
+// constant string (parameter-bound patterns land with the
+// parameter-Comparison design).
+func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (cascades.QueryPredicate, error) {
+	if lhs == nil || pattern == nil {
+		return nil, fmt.Errorf("expr.ResolveLike: operand is nil")
+	}
+	lit, ok := cascades.EvaluateConstant(pattern)
+	if !ok {
+		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a constant in the seed; got %T", pattern)
+	}
+	s, ok := lit.(string)
+	if !ok {
+		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
+	}
+	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{Type: cascades.ComparisonLike, Operand: s}), nil
+}
+
+// ResolveStartsWith builds `lhs STARTS_WITH prefix`. Prefix must be
+// a constant string.
+func (r *Resolver) ResolveStartsWith(lhs cascades.Value, prefix cascades.Value) (cascades.QueryPredicate, error) {
+	if lhs == nil || prefix == nil {
+		return nil, fmt.Errorf("expr.ResolveStartsWith: operand is nil")
+	}
+	lit, ok := cascades.EvaluateConstant(prefix)
+	if !ok {
+		return nil, fmt.Errorf("expr.ResolveStartsWith: prefix must be a constant in the seed; got %T", prefix)
+	}
+	s, ok := lit.(string)
+	if !ok {
+		return nil, fmt.Errorf("expr.ResolveStartsWith: prefix must be a string; got %T", lit)
+	}
+	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{Type: cascades.ComparisonStartsWith, Operand: s}), nil
+}
+
 // ResolveIn builds a ComparisonPredicate{ComparisonIn} from a left
 // Value and a list of constant RHS values. Every RHS must be a
 // plan-time constant (per cascades.EvaluateConstant); non-constant

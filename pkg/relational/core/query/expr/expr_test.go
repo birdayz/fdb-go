@@ -310,6 +310,116 @@ func TestResolver_ResolveFunctionCall_UnknownFunc(t *testing.T) {
 	}
 }
 
+func TestResolver_ResolveCast(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	v, err := r.ResolveCast(id, cascades.TypeString)
+	if err != nil {
+		t.Fatalf("CAST: %v", err)
+	}
+	cv := v.(*cascades.CastValue)
+	if cv.Target != cascades.TypeString {
+		t.Fatalf("Target: got %v, want TypeString", cv.Target)
+	}
+
+	// Unknown target rejected.
+	if _, err := r.ResolveCast(id, cascades.TypeUnknown); err == nil {
+		t.Fatal("expected error for TypeUnknown target")
+	}
+	// Nil child rejected.
+	if _, err := r.ResolveCast(nil, cascades.TypeInt); err == nil {
+		t.Fatal("expected error for nil child")
+	}
+}
+
+func TestResolver_ResolveIsNull(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	pred, err := r.ResolveIsNull(id)
+	if err != nil {
+		t.Fatalf("IS NULL: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonIsNull {
+		t.Fatalf("Type: got %v, want IsNull", cp.Comparison.Type)
+	}
+
+	// Evaluate.
+	if cp.Eval(map[string]any{"NAME": nil}) != cascades.TriTrue {
+		t.Fatal("NULL IS NULL should be TRUE")
+	}
+	if cp.Eval(map[string]any{"NAME": "foo"}) != cascades.TriFalse {
+		t.Fatal("'foo' IS NULL should be FALSE")
+	}
+}
+
+func TestResolver_ResolveIsNotNull(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	pred, err := r.ResolveIsNotNull(id)
+	if err != nil {
+		t.Fatalf("IS NOT NULL: %v", err)
+	}
+	if pred.(*cascades.ComparisonPredicate).Comparison.Type != cascades.ComparisonIsNotNull {
+		t.Fatal("Type mismatch")
+	}
+}
+
+func TestResolver_ResolveLike(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	pat, _ := r.ResolveConstant("hel%")
+	pred, err := r.ResolveLike(id, pat)
+	if err != nil {
+		t.Fatalf("LIKE: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonLike {
+		t.Fatal("Type mismatch")
+	}
+	if cp.Comparison.Operand != "hel%" {
+		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
+	}
+
+	// Non-string pattern rejected.
+	intPat, _ := r.ResolveConstant(int64(1))
+	if _, err := r.ResolveLike(id, intPat); err == nil {
+		t.Fatal("expected error for non-string pattern")
+	}
+}
+
+func TestResolver_ResolveStartsWith(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	pfx, _ := r.ResolveConstant("hel")
+	pred, err := r.ResolveStartsWith(id, pfx)
+	if err != nil {
+		t.Fatalf("STARTS_WITH: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	if cp.Comparison.Type != cascades.ComparisonStartsWith {
+		t.Fatal("Type mismatch")
+	}
+	if cp.Comparison.Operand != "hel" {
+		t.Fatalf("prefix: got %v", cp.Comparison.Operand)
+	}
+}
+
 func TestResolver_ResolveIn(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
