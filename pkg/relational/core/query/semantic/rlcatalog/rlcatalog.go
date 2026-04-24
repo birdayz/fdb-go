@@ -5,6 +5,8 @@
 package rlcatalog
 
 import (
+	"sync"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -71,51 +73,66 @@ func (w *wrappedCatalog) TableExists(name semantic.QualifiedName) bool {
 
 // recordTypeTable adapts a RecordType to semantic.Table. Columns are
 // the proto fields; index names come from RecordType.GetIndexes().
+//
+// LookupColumn builds a folded-name → field index on first access
+// (via sync.Once) so repeated column lookups on the same table are
+// O(1). The per-table cost is one map allocation; amortised across
+// every column reference in a query, worth it.
 type recordTypeTable struct {
 	rt   *recordlayer.RecordType
 	name semantic.QualifiedName
+
+	// Column cache: built once per table on first access. Keyed by
+	// case-folded column name. Values are fully-materialised
+	// semantic.Columns so repeated lookups don't re-allocate
+	// Identifier / Column values per call.
+	colIndexOnce sync.Once
+	colIndex     map[string]semantic.Column
+	colOrdered   []semantic.Column
+}
+
+func (t *recordTypeTable) ensureColumnIndex() {
+	t.colIndexOnce.Do(func() {
+		if t.rt.Descriptor == nil {
+			t.colIndex = map[string]semantic.Column{}
+			return
+		}
+		fields := t.rt.Descriptor.Fields()
+		t.colIndex = make(map[string]semantic.Column, fields.Len())
+		t.colOrdered = make([]semantic.Column, 0, fields.Len())
+		for i := 0; i < fields.Len(); i++ {
+			f := fields.Get(i)
+			id := semantic.NewUnquoted(string(f.Name()))
+			col := semantic.Column{
+				Id:       id,
+				Type:     protoKindToSQL(f.Kind()),
+				Nullable: isNullable(f),
+			}
+			t.colIndex[id.Name()] = col
+			t.colOrdered = append(t.colOrdered, col)
+		}
+	})
 }
 
 func (t *recordTypeTable) Name() semantic.QualifiedName { return t.name }
 
 func (t *recordTypeTable) Columns() []semantic.Column {
-	if t.rt.Descriptor == nil {
+	t.ensureColumnIndex()
+	if len(t.colOrdered) == 0 {
 		return []semantic.Column{}
 	}
-	fields := t.rt.Descriptor.Fields()
-	out := make([]semantic.Column, 0, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		f := fields.Get(i)
-		out = append(out, semantic.Column{
-			Id:       semantic.NewUnquoted(string(f.Name())),
-			Type:     protoKindToSQL(f.Kind()),
-			Nullable: isNullable(f),
-		})
-	}
+	// Defensive copy: callers may mutate the returned slice (tests
+	// do). The underlying Column values are value-types, so a flat
+	// copy is sufficient.
+	out := make([]semantic.Column, len(t.colOrdered))
+	copy(out, t.colOrdered)
 	return out
 }
 
 func (t *recordTypeTable) LookupColumn(id semantic.Identifier) (semantic.Column, bool) {
-	// Case-insensitive lookup against the descriptor's fields.
-	if t.rt.Descriptor == nil {
-		return semantic.Column{}, false
-	}
-	// Hoist the case-folded target outside the loop — it's constant
-	// across iterations; earlier version built it per-iteration.
-	targetFolded := semantic.NewUnquoted(id.Name())
-	fields := t.rt.Descriptor.Fields()
-	for i := 0; i < fields.Len(); i++ {
-		f := fields.Get(i)
-		candidate := semantic.NewUnquoted(string(f.Name()))
-		if candidate.EqualsIgnoreQuoting(targetFolded) {
-			return semantic.Column{
-				Id:       candidate,
-				Type:     protoKindToSQL(f.Kind()),
-				Nullable: isNullable(f),
-			}, true
-		}
-	}
-	return semantic.Column{}, false
+	t.ensureColumnIndex()
+	col, ok := t.colIndex[id.Name()]
+	return col, ok
 }
 
 func (t *recordTypeTable) Indexes() []string {
