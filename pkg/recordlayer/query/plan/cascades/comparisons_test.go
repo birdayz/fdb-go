@@ -124,6 +124,79 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	}
 }
 
+// IS NULL / IS NOT NULL: unary SQL 2VL comparisons that resolve
+// definitively even on NULL input (unlike ordinary comparisons which
+// degrade to UNKNOWN).
+func TestComparison_Eval_IsNullIsNotNull(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		op   ComparisonType
+		left any
+		want TriBool
+	}{
+		{"NULL IS NULL", ComparisonIsNull, nil, TriTrue},
+		{"5 IS NULL", ComparisonIsNull, int64(5), TriFalse},
+		{"'' IS NULL", ComparisonIsNull, "", TriFalse},
+		{"NULL IS NOT NULL", ComparisonIsNotNull, nil, TriFalse},
+		{"5 IS NOT NULL", ComparisonIsNotNull, int64(5), TriTrue},
+		{"0 IS NOT NULL", ComparisonIsNotNull, int64(0), TriTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Operand deliberately nil — unary comparisons must
+			// ignore it (no UNKNOWN degradation).
+			got := Comparison{Type: tc.op}.Eval(tc.left)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Explain of a unary predicate has no RHS literal.
+func TestComparisonPredicate_Explain_Unary(t *testing.T) {
+	t.Parallel()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "middle_name", Typ: TypeString},
+		Comparison{Type: ComparisonIsNull},
+	)
+	if got, want := p.Explain(), "middle_name IS NULL"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	p2 := NewComparisonPredicate(
+		&FieldValue{Field: "email", Typ: TypeString},
+		Comparison{Type: ComparisonIsNotNull},
+	)
+	if got, want := p2.Explain(), "email IS NOT NULL"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// IsUnary flag is correct for each ComparisonType.
+func TestComparisonType_IsUnary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    ComparisonType
+		want bool
+	}{
+		{ComparisonEquals, false},
+		{ComparisonNotEquals, false},
+		{ComparisonLessThan, false},
+		{ComparisonLessThanOrEq, false},
+		{ComparisonGreaterThan, false},
+		{ComparisonGreaterThanEq, false},
+		{ComparisonIsNull, true},
+		{ComparisonIsNotNull, true},
+	}
+	for _, tc := range cases {
+		if got := tc.t.IsUnary(); got != tc.want {
+			t.Fatalf("%v: got %v, want %v", tc.t.Symbol(), got, tc.want)
+		}
+	}
+}
+
 func TestComparison_Eval_Strings(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonLessThan, Operand: "b"}

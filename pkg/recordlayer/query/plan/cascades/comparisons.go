@@ -29,7 +29,16 @@ const (
 	ComparisonLessThanOrEq                        // <=
 	ComparisonGreaterThan                         // >
 	ComparisonGreaterThanEq                       // >=
+	ComparisonIsNull                              // IS NULL (unary, LHS-only)
+	ComparisonIsNotNull                           // IS NOT NULL (unary, LHS-only)
 )
+
+// IsUnary reports whether the comparison takes no RHS operand
+// (IS NULL / IS NOT NULL). Callers use this to skip Operand-based
+// folding / plumbing for unary predicates.
+func (c ComparisonType) IsUnary() bool {
+	return c == ComparisonIsNull || c == ComparisonIsNotNull
+}
 
 // Symbol returns the SQL-text form of the operator.
 func (c ComparisonType) Symbol() string {
@@ -46,6 +55,10 @@ func (c ComparisonType) Symbol() string {
 		return ">"
 	case ComparisonGreaterThanEq:
 		return ">="
+	case ComparisonIsNull:
+		return "IS NULL"
+	case ComparisonIsNotNull:
+		return "IS NOT NULL"
 	default:
 		return "?"
 	}
@@ -66,6 +79,20 @@ type Comparison struct {
 // matching types; follow-up shifts add `CompareValues`-style
 // numeric promotion.
 func (c Comparison) Eval(left any) TriBool {
+	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
+	// even when the LHS is NULL, and ignore Operand entirely.
+	switch c.Type {
+	case ComparisonIsNull:
+		if left == nil {
+			return TriTrue
+		}
+		return TriFalse
+	case ComparisonIsNotNull:
+		if left == nil {
+			return TriFalse
+		}
+		return TriTrue
+	}
 	if left == nil || c.Operand == nil {
 		return TriUnknown
 	}
@@ -252,6 +279,9 @@ func (p *ComparisonPredicate) Explain() string {
 		// `age` / `(a + b)` / `CAST(1 AS STRING)` instead of the
 		// bare Value.Name() which returns "field" / "arith" / "cast".
 		operandText = ExplainValue(p.Operand)
+	}
+	if p.Comparison.Type.IsUnary() {
+		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
 	return fmt.Sprintf("%s %s %v", operandText, p.Comparison.Type.Symbol(), p.Comparison.Operand)
 }
