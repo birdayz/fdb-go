@@ -23,10 +23,13 @@ import (
 //   - ConstantPredicate — literal true / false / UNKNOWN.
 //   - AndPredicate / OrPredicate — Kleene AND/OR over children.
 //   - NotPredicate — Kleene NOT.
+//   - ValuePredicate — bare boolean Value used as predicate.
 //
-// Follow-up shifts add: ComparisonPredicate (wraps a Value +
-// Comparisons.Type + Value), ValuePredicate (bare boolean Value),
-// ComparisonRange, Placeholder.
+// Follow-up shifts add: ComparisonRange (see Java's
+// `ComparisonRange` aggregator), `Placeholder` (rule-match
+// parameter binding), `PredicateWithValueAndRanges`.
+// ComparisonPredicate lives in comparisons.go (paired with the
+// Comparison / ComparisonType carriers).
 
 // TriBool is the SQL 3-valued logic result. A nil pointer is
 // UNKNOWN; otherwise the bool value is true or false. Chose a
