@@ -4,6 +4,7 @@ go_library(
     name = "cascades",
     srcs = [
         "combinators.go",
+        "comparisons.go",
         "matcher.go",
         "predicates.go",
         "values.go",
@@ -16,6 +17,7 @@ go_test(
     name = "cascades_test",
     srcs = [
         "combinators_test.go",
+        "comparisons_test.go",
         "matcher_test.go",
         "predicates_test.go",
     ],
