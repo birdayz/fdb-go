@@ -266,6 +266,39 @@ func TestComparisonConstSimplify_StartsWithAndIn(t *testing.T) {
 	}
 }
 
+// LIKE folds when LHS is a known-constant string.
+func TestComparisonConstSimplify_Like(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	cases := []struct {
+		name    string
+		s       string
+		pattern string
+		want    TriBool
+	}{
+		{"'hello' LIKE 'h_llo'", "hello", "h_llo", TriTrue},
+		{"'hello' LIKE 'w%d'", "hello", "w%d", TriFalse},
+		{"'hello' LIKE '%ll%'", "hello", "%ll%", TriTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(
+				&ConstantValue{Value: tc.s, Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: tc.pattern},
+			)
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok || cp.Value != tc.want {
+				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
+			}
+		})
+	}
+}
+
 // IS [NOT] DISTINCT FROM folds too when LHS is a known constant.
 // Because IS DISTINCT FROM never returns UNKNOWN, the fold collapses
 // to a definitive TRUE/FALSE even on NULL inputs.
