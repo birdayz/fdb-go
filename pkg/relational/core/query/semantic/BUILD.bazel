@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "semantic",
     srcs = [
+        "catalog.go",
         "identifier.go",
         "parse_bridge.go",
         "qualified_name.go",
@@ -15,6 +16,7 @@ go_library(
 go_test(
     name = "semantic_test",
     srcs = [
+        "catalog_test.go",
         "identifier_test.go",
         "parse_bridge_test.go",
         "qualified_name_test.go",
