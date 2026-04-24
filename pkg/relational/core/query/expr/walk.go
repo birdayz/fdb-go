@@ -649,7 +649,6 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, er
 	}
 	switch k := c.(type) {
 	case *antlrgen.NullConstantContext:
-		_ = k
 		return r.ResolveConstant(nil)
 	case *antlrgen.BooleanConstantContext:
 		bl, ok := k.BooleanLiteral().(*antlrgen.BooleanLiteralContext)
