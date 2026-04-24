@@ -140,6 +140,37 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	}
 }
 
+// Kleene 3VL defensive: constants mixed with UNKNOWN must never
+// collapse to FALSE/TRUE incorrectly. Regression cover for any future
+// edit to And/OrConstantSimplifyRule that would break SQL NULL
+// semantics. Expectations trace directly from Kleene truth tables.
+func TestSimplify_Kleene3VLConstants(t *testing.T) {
+	t.Parallel()
+	u := NewConstantPredicate(TriUnknown)
+	T := NewConstantPredicate(TriTrue)
+	F := NewConstantPredicate(TriFalse)
+	rules := DefaultSimplifyRules()
+
+	// AND(TRUE, UNKNOWN) → UNKNOWN (TRUE is identity, UNKNOWN survives).
+	if got := Simplify(NewAnd(T, u), rules); got != QueryPredicate(u) {
+		t.Fatalf("AND(T,U): got %T %s", got, got.Explain())
+	}
+	// AND(FALSE, UNKNOWN) → FALSE (short-circuit).
+	got := Simplify(NewAnd(F, u), rules)
+	if cp, ok := got.(*ConstantPredicate); !ok || cp.Value != TriFalse {
+		t.Fatalf("AND(F,U): got %T %s", got, got.Explain())
+	}
+	// OR(TRUE, UNKNOWN) → TRUE (short-circuit).
+	got = Simplify(NewOr(T, u), rules)
+	if cp, ok := got.(*ConstantPredicate); !ok || cp.Value != TriTrue {
+		t.Fatalf("OR(T,U): got %T %s", got, got.Explain())
+	}
+	// OR(FALSE, UNKNOWN) → UNKNOWN (FALSE is identity).
+	if got := Simplify(NewOr(F, u), rules); got != QueryPredicate(u) {
+		t.Fatalf("OR(F,U): got %T %s", got, got.Explain())
+	}
+}
+
 // Comparison fold feeds into AND fold — end-to-end demonstration
 // that the Simplify driver's rule set cooperates across different
 // predicate types.
