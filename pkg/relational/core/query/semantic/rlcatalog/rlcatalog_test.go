@@ -195,6 +195,63 @@ func TestWrap_Indexes(t *testing.T) {
 	}
 }
 
+// protoKindToSQL mapping is a wire-compat-adjacent contract — any
+// drift between proto Kind and SQL Type string would break downstream
+// planner rules that dispatch on Type. TypedRecord covers every kind
+// we map, plus the repeated + message cases on Order.
+func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
+	t.Parallel()
+	md := buildMetaData(t)
+	cat := rlcatalog.Wrap(md)
+	typed, ok := cat.LookupTable(semantic.ParseQualifiedName("TypedRecord", false))
+	if !ok {
+		t.Fatal("TypedRecord should exist")
+	}
+
+	want := map[string]string{
+		"id":           "INT",
+		"val_int32":    "INT",
+		"val_int64":    "INT",
+		"val_sint32":   "INT",
+		"val_sint64":   "INT",
+		"val_sfixed32": "INT",
+		"val_sfixed64": "INT",
+		"val_float":    "FLOAT",
+		"val_double":   "FLOAT",
+		"val_bool":     "BOOL",
+		"val_string":   "STRING",
+		"val_bytes":    "BYTES",
+		"val_enum":     "ENUM",
+	}
+	for colName, wantType := range want {
+		col, ok := typed.LookupColumn(semantic.NewUnquoted(colName))
+		if !ok {
+			t.Errorf("column %q not found on TypedRecord", colName)
+			continue
+		}
+		if col.Type != wantType {
+			t.Errorf("%s.Type: got %q, want %q", colName, col.Type, wantType)
+		}
+	}
+
+	// Message-typed + repeated fields on Order:
+	//   flower → RECORD   (nested message)
+	//   tags   → STRING   (repeated scalars still map by Kind; the
+	//                       list-ness surfaces via Nullable=false)
+	order, _ := cat.LookupTable(semantic.ParseQualifiedName("Order", false))
+	flower, _ := order.LookupColumn(semantic.NewUnquoted("flower"))
+	if flower.Type != "RECORD" {
+		t.Errorf("flower.Type: got %q, want RECORD", flower.Type)
+	}
+	tags, _ := order.LookupColumn(semantic.NewUnquoted("tags"))
+	if tags.Type != "STRING" {
+		t.Errorf("tags.Type: got %q, want STRING", tags.Type)
+	}
+	if tags.Nullable {
+		t.Error("tags is repeated → should report Nullable=false")
+	}
+}
+
 func TestWrap_NilMetaData(t *testing.T) {
 	t.Parallel()
 	cat := rlcatalog.Wrap(nil)
