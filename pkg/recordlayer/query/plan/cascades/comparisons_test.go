@@ -811,12 +811,24 @@ func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
 			want: "a < (b + 1)",
 		},
 		{
-			name: "CastValue RHS",
+			name: "CastValue RHS over field",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
 				Comparison{Type: ComparisonEquals, Operand: NewCastValue(&FieldValue{Field: "raw", Typ: TypeString}, TypeInt)},
 			),
 			want: "id = CAST(raw AS INT)",
+		},
+		{
+			// Composite constant RHS (CAST over literal) — Explain
+			// preserves the user-written shape rather than collapsing
+			// to the folded literal. The simplifier handles the fold;
+			// rendering doesn't.
+			name: "CastValue RHS over constant preserves shape",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "x", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeInt)},
+			),
+			want: "x = CAST(5 AS INT)",
 		},
 	}
 	for _, tc := range cases {

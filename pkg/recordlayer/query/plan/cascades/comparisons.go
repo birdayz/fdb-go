@@ -576,13 +576,16 @@ func (p *ComparisonPredicate) Explain() string {
 	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), formatComparisonRHS(p.Comparison.Operand))
 }
 
-// formatComparisonRHS renders the RHS of a binary comparison. When
-// the RHS is a constant Value (ConstantValue / NullValue /
-// BooleanValue) it unwraps to a Go-native literal and runs it
-// through formatCompareOperand for the SQL-ish literal form
-// (quoted strings, X'…' for bytes, paren-list for IN). For
-// non-constant RHS (a FieldValue, an ArithmeticValue, …) the
-// rendering falls back to ExplainValue which walks the Value tree.
+// formatComparisonRHS renders the RHS of a binary comparison.
+//
+// Only LEAF constants (ConstantValue / NullValue / BooleanValue)
+// unwrap to a Go-native literal and route through
+// formatCompareOperand for the SQL-ish literal form (quoted
+// strings, X'…' for bytes, paren-list for IN). Composite values —
+// `CAST(5 AS INT)`, `1 + 2`, `CAST(name AS STRING)` — render via
+// ExplainValue so the user-written shape survives in Explain even
+// when IsConstantValue would say it's foldable. Folding happens at
+// the simplifier level, not in the rendering layer.
 //
 // The nil case handles the IS [NOT] NULL / IS [NOT] DISTINCT FROM
 // NULL shape where Operand is genuinely missing — callers only reach
@@ -592,7 +595,8 @@ func formatComparisonRHS(v Value) string {
 	if v == nil {
 		return "NULL"
 	}
-	if IsConstantValue(v) {
+	switch v.(type) {
+	case *ConstantValue, *NullValue, *BooleanValue:
 		if lit, ok := EvaluateConstant(v); ok {
 			return formatCompareOperand(lit)
 		}
