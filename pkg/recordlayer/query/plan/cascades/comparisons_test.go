@@ -453,6 +453,45 @@ func TestComparison_Eval_IsNullIsNotNull(t *testing.T) {
 	}
 }
 
+// IS NULL / IS NOT NULL with FieldValue LHS — exercise the
+// ComparisonPredicate.Eval path with a row context. Unary
+// comparisons short-circuit the RHS evaluation (Operand stays nil
+// and is never read), so the only signal is the LHS-from-row
+// resolution. Pin the truth table for present-and-non-NULL,
+// present-and-NULL, and missing-from-row.
+func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
+	t.Parallel()
+	isNull := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{Type: ComparisonIsNull},
+	)
+	isNotNull := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{Type: ComparisonIsNotNull},
+	)
+	cases := []struct {
+		name        string
+		row         map[string]any
+		wantNull    TriBool
+		wantNotNull TriBool
+	}{
+		{"present non-NULL", map[string]any{"name": "bob"}, TriFalse, TriTrue},
+		{"present NULL", map[string]any{"name": nil}, TriTrue, TriFalse},
+		{"missing from row", map[string]any{}, TriTrue, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isNull.Eval(tc.row); got != tc.wantNull {
+				t.Errorf("IS NULL: got %v, want %v", got, tc.wantNull)
+			}
+			if got := isNotNull.Eval(tc.row); got != tc.wantNotNull {
+				t.Errorf("IS NOT NULL: got %v, want %v", got, tc.wantNotNull)
+			}
+		})
+	}
+}
+
 // Explain of a unary predicate has no RHS literal.
 func TestComparisonPredicate_Explain_Unary(t *testing.T) {
 	t.Parallel()
