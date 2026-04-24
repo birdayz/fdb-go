@@ -10,25 +10,42 @@
 //
 // Dayshift-46 seed contents:
 //
-//   - values.go       — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 5 concrete values
-//     (Constant, Field, Arithmetic, Boolean, Cast).
-//   - matcher.go      — BindingMatcher interface + PlannerBindings
-//   - MergedWith + AnyValue / Instance /
-//     ArithmeticMatcher + the generic Get[T]
-//     retrieval helper.
-//   - combinators.go  — AllOf / AnyOf matcher combinators — the
-//     primary building blocks for real rule patterns.
-//   - predicates.go   — QueryPredicate interface + TriBool
-//     (Kleene 3VL) + Constant / And / Or / Not.
-//   - comparisons.go  — ComparisonType enum (6 operators) +
+//   - values.go          — Value interface (Children, Type, Name,
+//     Evaluate) + ValueType enum + 5 concrete
+//     values (Constant, Field, Arithmetic, Boolean,
+//     Cast).
+//   - matcher.go         — BindingMatcher interface +
+//     PlannerBindings + MergedWith + AnyValue /
+//     Instance / ArithmeticMatcher + the generic
+//     Get[T] retrieval helper.
+//   - combinators.go     — AllOf / AnyOf matcher combinators —
+//     primary building blocks for real rule
+//     patterns.
+//   - predicates.go      — QueryPredicate interface + TriBool
+//     (Kleene 3VL) + Constant / And / Or / Not /
+//     ValuePredicate.
+//   - comparisons.go     — ComparisonType enum (6 operators) +
 //     Comparison value-pair + ComparisonPredicate
 //     wrapping a Value operand with SQL-3VL on NULL
 //     and type mismatch.
-//   - correlation.go  — CorrelationIdentifier value-type + Named
-//     / Unique factories + Correlated interface
-//     signature (Quantifier-tracking surface for
-//     rewrite rules).
+//   - correlation.go     — CorrelationIdentifier value-type +
+//     Named / Unique factories + Correlated
+//     interface signature (Quantifier-tracking
+//     surface for rewrite rules).
+//   - rule.go            — CascadesRule interface + RuleCall
+//     (Yield / Yielded) + FireRule testing driver.
+//     Example addConstantFoldRule folds
+//     `Const + Const` → `Const`.
+//   - rule_simplify.go   — Four Phase 4.5 Batch A-style rules:
+//     AndConstantSimplify / OrConstantSimplify /
+//     NotConstantSimplify /
+//     ComparisonConstantSimplify.
+//   - simplifier.go      — Fixed-point Simplify driver + the
+//     DefaultSimplifyRules rule set. Pre-4.6 seed;
+//     real planner task-stack replaces this later.
+//   - benchmark_test.go  — 7 micro-benchmarks covering Value
+//     evaluation, predicate evaluation, and
+//     matcher dispatch.
 //
 // Establishes the shape RFC-023 committed to; real Value
 // subtypes (77 in Java), the rest of the matcher combinator
