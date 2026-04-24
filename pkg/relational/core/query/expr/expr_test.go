@@ -310,6 +310,49 @@ func TestResolver_ResolveFunctionCall_UnknownFunc(t *testing.T) {
 	}
 }
 
+// Integration: build a bigger expression from primitives and verify
+// it evaluates correctly. Exercises the full resolver stack — column
+// ref → field value, constants → literal values, arithmetic → op,
+// comparison → predicate — and checks the resulting tree evaluates
+// to the expected TriBool against a sample row.
+func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	// Expression: id + 1 > 5
+	idRef, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, _ := r.ResolveConstant(int64(1))
+	sum, err := r.ResolveArithmetic(cascades.OpAdd, idRef, one)
+	if err != nil {
+		t.Fatal(err)
+	}
+	five, _ := r.ResolveConstant(int64(5))
+	pred, err := r.ResolveComparison(cascades.ComparisonGreaterThan, sum, five)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	row := map[string]any{"ID": int64(7)} // id+1 = 8 > 5 → TRUE
+	got := pred.Eval(row)
+	if got != cascades.TriTrue {
+		t.Fatalf("8 > 5: expected TRUE, got %v", got)
+	}
+	row["ID"] = int64(2) // 2+1 = 3 > 5 → FALSE
+	got = pred.Eval(row)
+	if got != cascades.TriFalse {
+		t.Fatalf("3 > 5: expected FALSE, got %v", got)
+	}
+
+	// Explain output should read cleanly.
+	if got, want := pred.Explain(), "(ID + 1) > 5"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
 func TestResolver_Nil_InputPanics(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
