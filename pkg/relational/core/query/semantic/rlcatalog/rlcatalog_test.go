@@ -140,3 +140,54 @@ func TestWrap_NilMetaData(t *testing.T) {
 		t.Fatal("nil metadata should report no tables")
 	}
 }
+
+// --- Benchmarks ----------------------------------------------------
+
+func BenchmarkWrap_LookupTable_Hit(b *testing.B) {
+	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bldr.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	bldr.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	bldr.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := bldr.Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+	cat := rlcatalog.Wrap(md)
+	target := semantic.ParseQualifiedName("Order", false)
+	for i := 0; i < b.N; i++ {
+		_, _ = cat.LookupTable(target)
+	}
+}
+
+func BenchmarkWrap_LookupTable_Miss(b *testing.B) {
+	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bldr.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	bldr.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	bldr.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := bldr.Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+	cat := rlcatalog.Wrap(md)
+	target := semantic.ParseQualifiedName("nonexistent", false)
+	for i := 0; i < b.N; i++ {
+		_, _ = cat.LookupTable(target)
+	}
+}
+
+func BenchmarkWrap_LookupColumn(b *testing.B) {
+	bldr := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	bldr.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	bldr.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	bldr.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := bldr.Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+	cat := rlcatalog.Wrap(md)
+	tbl, _ := cat.LookupTable(semantic.ParseQualifiedName("Order", false))
+	target := semantic.NewUnquoted("order_id")
+	for i := 0; i < b.N; i++ {
+		_, _ = tbl.LookupColumn(target)
+	}
+}
