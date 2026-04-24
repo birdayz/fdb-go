@@ -498,6 +498,67 @@ func TestWalkPredicate_NilContext(t *testing.T) {
 	}
 }
 
+// Arithmetic atoms: `a + b`, `a * b`, etc.
+func TestWalkExpression_Arithmetic(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	cases := []struct {
+		sql string
+		op  cascades.ArithmeticOp
+	}{
+		{"SELECT * FROM users WHERE id + 1", cascades.OpAdd},
+		{"SELECT * FROM users WHERE id - 1", cascades.OpSub},
+		{"SELECT * FROM users WHERE id * 2", cascades.OpMul},
+		{"SELECT * FROM users WHERE id / 2", cascades.OpDiv},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, tc.sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			av, ok := v.(*cascades.ArithmeticValue)
+			if !ok {
+				t.Fatalf("expected *ArithmeticValue, got %T", v)
+			}
+			if av.Op != tc.op {
+				t.Fatalf("Op: got %v, want %v", av.Op, tc.op)
+			}
+		})
+	}
+}
+
+// Nested arithmetic: `(a + 1) * 2` — parens wrap the inner sum.
+func TestWalkExpression_Arithmetic_Nested(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE (id + 1) * 2")
+
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	outer, ok := v.(*cascades.ArithmeticValue)
+	if !ok {
+		t.Fatalf("expected *ArithmeticValue, got %T", v)
+	}
+	if outer.Op != cascades.OpMul {
+		t.Fatalf("outer Op: got %v, want OpMul", outer.Op)
+	}
+	inner, ok := outer.Left.(*cascades.ArithmeticValue)
+	if !ok {
+		t.Fatalf("inner: expected *ArithmeticValue, got %T", outer.Left)
+	}
+	if inner.Op != cascades.OpAdd {
+		t.Fatalf("inner Op: got %v, want OpAdd", inner.Op)
+	}
+}
+
 func TestWalkExpression_NilContext(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

@@ -62,8 +62,60 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		// need dedicated support (RecordConstructorValue in cascades)
 		// and aren't wired yet.
 		return r.walkRecordConstructor(a.RecordConstructor())
+	case *antlrgen.MathExpressionAtomContext:
+		// `a + b`, `a * b`, etc. Recurse on both operands and
+		// resolve via ResolveArithmetic. MOD / DIV / MODULE +
+		// integer div are not wired yet — cascades.ArithmeticOp
+		// doesn't expose them.
+		return r.walkMathExpression(a)
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
+}
+
+// walkMathExpression walks an arithmetic atom (`a + b`, `a * b`)
+// into a cascades.ArithmeticValue. Operator resolution reads the
+// MathOperator context's terminal tokens. MOD / MODULE / DIV
+// (integer division) aren't mapped to cascades.ArithmeticOp yet —
+// the cascades enum covers +, -, *, / and grows with the Type
+// hierarchy port.
+func (r *Resolver) walkMathExpression(m *antlrgen.MathExpressionAtomContext) (cascades.Value, error) {
+	op, err := arithmeticOpFromCtx(m.MathOperator())
+	if err != nil {
+		return nil, err
+	}
+	left, err := r.walkAtom(m.GetLeft())
+	if err != nil {
+		return nil, err
+	}
+	right, err := r.walkAtom(m.GetRight())
+	if err != nil {
+		return nil, err
+	}
+	return r.ResolveArithmetic(op, left, right)
+}
+
+// arithmeticOpFromCtx reads the MathOperator terminal tokens.
+// Returns UnsupportedExpressionShapeError for operators not yet
+// present in cascades.ArithmeticOp.
+func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticOp, error) {
+	if op == nil {
+		return cascades.OpAdd, fmt.Errorf("arithmeticOpFromCtx: nil")
+	}
+	mo, ok := op.(*antlrgen.MathOperatorContext)
+	if !ok {
+		return cascades.OpAdd, fmt.Errorf("arithmeticOpFromCtx: unexpected ctx %T", op)
+	}
+	switch {
+	case mo.PLUS() != nil:
+		return cascades.OpAdd, nil
+	case mo.MINUS() != nil:
+		return cascades.OpSub, nil
+	case mo.STAR() != nil:
+		return cascades.OpMul, nil
+	case mo.DIVIDE() != nil:
+		return cascades.OpDiv, nil
+	}
+	return cascades.OpAdd, &UnsupportedExpressionShapeError{Shape: "MathOperator: " + mo.GetText()}
 }
 
 // walkRecordConstructor unwraps a single-element, unnamed-field,
