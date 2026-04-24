@@ -171,6 +171,48 @@ func TestPredicate_Composition(t *testing.T) {
 	}
 }
 
+// AsConstant / PredicateSize helpers.
+func TestAsConstant(t *testing.T) {
+	t.Parallel()
+	if v, ok := AsConstant(NewConstantPredicate(TriTrue)); !ok || v != TriTrue {
+		t.Fatalf("const TRUE: got (%v, %v)", v, ok)
+	}
+	if _, ok := AsConstant(NewAnd(NewConstantPredicate(TriTrue))); ok {
+		t.Fatal("AND: should not be a constant")
+	}
+	if _, ok := AsConstant(nil); ok {
+		t.Fatal("nil: should not be a constant")
+	}
+}
+
+func TestPredicateSize(t *testing.T) {
+	t.Parallel()
+	if n := PredicateSize(nil); n != 0 {
+		t.Fatalf("nil: got %d", n)
+	}
+	if n := PredicateSize(NewConstantPredicate(TriTrue)); n != 1 {
+		t.Fatalf("leaf: got %d, want 1", n)
+	}
+	// NOT over a leaf: 2 nodes.
+	if n := PredicateSize(NewNot(NewConstantPredicate(TriTrue))); n != 2 {
+		t.Fatalf("NOT leaf: got %d, want 2", n)
+	}
+	// AND(a, b, c) → 4 nodes (AND + 3 leaves)
+	and := NewAnd(
+		NewConstantPredicate(TriTrue),
+		NewConstantPredicate(TriFalse),
+		NewConstantPredicate(TriUnknown),
+	)
+	if n := PredicateSize(and); n != 4 {
+		t.Fatalf("AND(a,b,c): got %d, want 4", n)
+	}
+	// NOT (AND(a, b)) → 4 nodes
+	tree := NewNot(NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse)))
+	if n := PredicateSize(tree); n != 4 {
+		t.Fatalf("NOT(AND(a,b)): got %d, want 4", n)
+	}
+}
+
 // PredicateEquals: structural-equality across predicate shapes.
 func TestPredicateEquals(t *testing.T) {
 	t.Parallel()

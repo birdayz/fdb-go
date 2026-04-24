@@ -49,6 +49,32 @@ var (
 	TriUnknown TriBool = nil
 )
 
+// AsConstant returns (value, true) if p is a ConstantPredicate;
+// (_, false) otherwise. Rule bodies use this as the canonical
+// "is this a fold-able constant?" check, instead of open-coding
+// type assertions.
+func AsConstant(p QueryPredicate) (TriBool, bool) {
+	if cp, ok := p.(*ConstantPredicate); ok {
+		return cp.Value, true
+	}
+	return nil, false
+}
+
+// PredicateSize returns the total node count in p (p + all
+// descendants). Rule authors use this to gate expensive
+// transformations (e.g. De Morgan expansion that would double the
+// size). Constant-time-per-node; cycle-free by construction.
+func PredicateSize(p QueryPredicate) int {
+	if p == nil {
+		return 0
+	}
+	n := 1
+	for _, c := range p.Children() {
+		n += PredicateSize(c)
+	}
+	return n
+}
+
 // PredicateEquals reports structural equality between two
 // QueryPredicates. Two predicates are equal when their concrete
 // Go types match AND their children + carried data match
