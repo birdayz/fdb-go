@@ -335,6 +335,8 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 		{false, false, cascades.TriFalse},
 		{nil, true, cascades.TriUnknown},
 		{nil, false, cascades.TriUnknown},
+		{true, nil, cascades.TriUnknown},
+		{false, nil, cascades.TriUnknown},
 		{nil, nil, cascades.TriUnknown},
 	}
 	for _, tc := range cases {

@@ -258,6 +258,7 @@ func TestChildren_Arity(t *testing.T) {
 		{"Delete", NewDelete("t", leafA), 1, []LogicalOperator{leafA}},
 		{"Delete (nil input)", NewDelete("t", nil), 0, nil},
 		{"DDL", NewDDL("CREATE TABLE", "CREATE TABLE t (id BIGINT)"), 0, nil},
+		{"CTE", NewCTE("x", leafA, leafB, false), 2, []LogicalOperator{leafA, leafB}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

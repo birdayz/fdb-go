@@ -532,6 +532,18 @@ func formatCompareOperand(v any) string {
 		return "FALSE"
 	case string:
 		return "'" + x + "'"
+	case []byte:
+		// SQL hex-literal: `X'0102'` — matches BINARY/VARBINARY.
+		// Mirrors cmpAny's []byte branch (added this PR) so Explain
+		// is consistent with the comparator dispatch.
+		const hex = "0123456789abcdef"
+		buf := make([]byte, 0, 3+2*len(x))
+		buf = append(buf, 'X', '\'')
+		for _, b := range x {
+			buf = append(buf, hex[b>>4], hex[b&0xf])
+		}
+		buf = append(buf, '\'')
+		return string(buf)
 	case []any:
 		// IN-list: `(e1, e2, e3)` — same rendering style as SQL.
 		parts := make([]string, len(x))

@@ -540,6 +540,22 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			),
 			want: "active <> FALSE",
 		},
+		{
+			name: "bytes as SQL hex literal",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "digest", Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: []byte{0x01, 0x02, 0xff}},
+			),
+			want: "digest = X'0102ff'",
+		},
+		{
+			name: "empty bytes literal",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "digest", Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: []byte{}},
+			),
+			want: "digest = X''",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
