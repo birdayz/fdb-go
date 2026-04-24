@@ -147,6 +147,15 @@ func (c *ConstantValue) Evaluate(any) any  { return c.Value }
 // FieldValue references a column by name. Evaluate expects a
 // `map[string]any` eval context and returns the field's value
 // (nil if absent — SQL NULL semantics).
+//
+// Field-name contract: callers constructing FieldValue via the SQL
+// resolver (expr.ResolveIdentifier) receive the case-folded (upper-
+// case) form, matching Identifier.Name(). Downstream row producers
+// MUST normalise their map keys to the same form — a row with
+// lowercase keys against an UPPER-case FieldValue silently returns
+// nil for every lookup. This is intentional: SQL identifier
+// resolution is case-insensitive by default, so there has to be a
+// single canonical casing at the evaluation boundary.
 type FieldValue struct {
 	Field string
 	Typ   ValueType
