@@ -538,6 +538,36 @@ func TestResolver_ResolveNot(t *testing.T) {
 	}
 }
 
+// End-to-end: expr-built predicates run cleanly through the cascades
+// Simplify driver. Builds `(5 = 5) AND (id > 0)` and confirms Simplify
+// folds the tautology to just `id > 0`.
+func TestResolver_FeedsCascadesSimplify(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	// (5 = 5)
+	five1, _ := r.ResolveConstant(int64(5))
+	five2, _ := r.ResolveConstant(int64(5))
+	tautology, _ := r.ResolveComparison(cascades.ComparisonEquals, five1, five2)
+
+	// (id > 0)
+	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	zero, _ := r.ResolveConstant(int64(0))
+	nonFold, _ := r.ResolveComparison(cascades.ComparisonGreaterThan, id, zero)
+
+	// Combined AND.
+	combined := r.ResolveAnd(tautology, nonFold)
+
+	// Run through the simplifier.
+	simplified := cascades.Simplify(combined, cascades.DefaultSimplifyRules())
+
+	// Tautology should fold; `id > 0` survives alone.
+	if got, want := simplified.Explain(), "ID > 0"; got != want {
+		t.Fatalf("Simplify: got %q, want %q", got, want)
+	}
+}
+
 // Integration: build a bigger expression from primitives and verify
 // it evaluates correctly. Exercises the full resolver stack — column
 // ref → field value, constants → literal values, arithmetic → op,
