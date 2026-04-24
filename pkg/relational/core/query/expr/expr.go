@@ -67,6 +67,43 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (cascade
 	}, nil
 }
 
+// ResolveArithmetic wraps left/right Values in a cascades
+// ArithmeticValue with the given operator. Used when the parser
+// produces an arithmetic expression node — the analyzer resolves
+// each operand recursively, then pairs them here.
+//
+// Operand types aren't cross-checked in the seed (both assumed
+// int); real type inference replaces this when the Type hierarchy
+// port lands.
+func (r *Resolver) ResolveArithmetic(op cascades.ArithmeticOp, left, right cascades.Value) (cascades.Value, error) {
+	if left == nil || right == nil {
+		return nil, fmt.Errorf("expr.ResolveArithmetic: operand is nil")
+	}
+	return &cascades.ArithmeticValue{Op: op, Left: left, Right: right}, nil
+}
+
+// ResolveComparison wraps left/right Values in a cascades
+// ComparisonPredicate. Mirrors the analyzer's job of lifting
+// `a > b` from a parse-tree comparison node to a predicate node.
+//
+// The Comparison's Operand is set from right.Evaluate(nil) when
+// right is constant (per cascades.IsConstantValue); for
+// non-constant RHS the current seed doesn't build a predicate
+// (returns an error) — the real Comparison type will take a Value
+// on the RHS in a later commit.
+func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cascades.Value) (cascades.QueryPredicate, error) {
+	if left == nil || right == nil {
+		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
+	}
+	rhs, ok := cascades.EvaluateConstant(right)
+	if !ok {
+		return nil, fmt.Errorf("expr.ResolveComparison: RHS must be a constant in the seed; got %T", right)
+	}
+	return cascades.NewComparisonPredicate(left, cascades.Comparison{
+		Type: op, Operand: rhs,
+	}), nil
+}
+
 // sqlTypeToCascadesValueType maps the seed's string-valued SQL type
 // (from semantic.Column.Type) to cascades.ValueType. Coarse — the
 // seed ValueType enum has only Int / String / Bool; everything else

@@ -140,6 +140,73 @@ func TestResolver_ResolveConstant_Unsupported(t *testing.T) {
 	}
 }
 
+func TestResolver_ResolveArithmetic(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	right, _ := r.ResolveConstant(int64(1))
+	v, err := r.ResolveArithmetic(cascades.OpAdd, left, right)
+	if err != nil {
+		t.Fatalf("arith: %v", err)
+	}
+	av, ok := v.(*cascades.ArithmeticValue)
+	if !ok {
+		t.Fatalf("expected *ArithmeticValue, got %T", v)
+	}
+	if av.Op != cascades.OpAdd {
+		t.Fatalf("Op: got %v, want OpAdd", av.Op)
+	}
+	if av.Left == nil || av.Right == nil {
+		t.Fatal("operands should be non-nil")
+	}
+}
+
+func TestResolver_ResolveArithmetic_NilOperand(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	if _, err := r.ResolveArithmetic(cascades.OpAdd, nil, nil); err == nil {
+		t.Fatal("expected error for nil operands")
+	}
+}
+
+func TestResolver_ResolveComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	right, _ := r.ResolveConstant(int64(5))
+	pred, err := r.ResolveComparison(cascades.ComparisonEquals, left, right)
+	if err != nil {
+		t.Fatalf("cmp: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if cp.Comparison.Type != cascades.ComparisonEquals {
+		t.Fatalf("Type: got %v", cp.Comparison.Type)
+	}
+	if cp.Comparison.Operand != int64(5) {
+		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
+	}
+}
+
+func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
+	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
+	if _, err := r.ResolveComparison(cascades.ComparisonEquals, left, rhs); err == nil {
+		t.Fatal("expected error for non-constant RHS (seed limitation)")
+	}
+}
+
 func TestResolver_Nil_InputPanics(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
