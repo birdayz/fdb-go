@@ -15,8 +15,20 @@ import (
 // Returns a Catalog that looks up tables by name against
 // md.RecordTypes(). Nil metadata → empty catalog (every lookup
 // returns false; matches the "no schema yet" stub case).
+//
+// Pre-builds a folded-name index at construction so LookupTable is
+// O(1) instead of scanning all record types every call. RecordMetaData
+// is effectively immutable post-Build (callers re-wrap on rebuild),
+// so caching is safe.
 func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
-	return &wrappedCatalog{md: md}
+	c := &wrappedCatalog{md: md}
+	if md != nil {
+		c.byFoldedName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
+		for rtName, rt := range md.RecordTypes() {
+			c.byFoldedName[semantic.NewUnquoted(rtName).Name()] = rt
+		}
+	}
+	return c
 }
 
 // NewAnalyzer is the end-user convenience: given a RecordMetaData
@@ -29,13 +41,14 @@ func NewAnalyzer(md *recordlayer.RecordMetaData, caseSensitive bool) *semantic.A
 
 type wrappedCatalog struct {
 	md *recordlayer.RecordMetaData
+	// byFoldedName indexes RecordTypes by case-folded key for O(1)
+	// LookupTable — computed once at Wrap time.
+	byFoldedName map[string]*recordlayer.RecordType
 }
 
 // LookupTable implements semantic.Catalog. RecordMetaData has no
-// schema qualifier — qualified names don't match anything. Record
-// Layer record-type names preserve source casing (they're proto
-// message names), so the lookup is a case-insensitive scan rather
-// than a direct map hit.
+// schema qualifier — qualified names don't match anything. Hits the
+// pre-built case-folded index so lookup is O(1).
 func (w *wrappedCatalog) LookupTable(name semantic.QualifiedName) (semantic.Table, bool) {
 	if w.md == nil {
 		return nil, false
@@ -43,13 +56,11 @@ func (w *wrappedCatalog) LookupTable(name semantic.QualifiedName) (semantic.Tabl
 	if name.IsQualified() {
 		return nil, false
 	}
-	target := semantic.NewUnquoted(name.Name())
-	for rtName, rt := range w.md.RecordTypes() {
-		if semantic.NewUnquoted(rtName).EqualsIgnoreQuoting(target) {
-			return &recordTypeTable{rt: rt, name: name}, true
-		}
+	rt, ok := w.byFoldedName[name.Name()]
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	return &recordTypeTable{rt: rt, name: name}, true
 }
 
 // TableExists implements semantic.Catalog.
