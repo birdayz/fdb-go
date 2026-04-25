@@ -72,6 +72,80 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	}
 }
 
+// TestArithmeticValue_OverflowReturnsNil pins the overflow-decline
+// contract added alongside the embedded.functions.ApplyMathOp parity:
+// MAX+1, MIN-1, MIN/-1, MIN*-1, MAX*MAX all decline with nil so the
+// runtime executor surfaces the 22003 NUMERIC_VALUE_OUT_OF_RANGE
+// rather than the fold silently producing a wrapped value.
+//
+// JAVA-PARITY: Java's ArithmeticValue uses Math.addExact / subtractExact
+// / multiplyExact which throw ArithmeticException on overflow.
+// Cascades' fold-time evaluator returns nil (UNKNOWN) instead so the
+// rule-driven simplifier doesn't mid-pipeline produce a Constant
+// with a value the executor would reject.
+func TestArithmeticValue_OverflowReturnsNil(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	b := &FieldValue{Field: "b", Typ: TypeInt}
+	cases := []struct {
+		name string
+		op   ArithmeticOp
+		l, r int64
+	}{
+		{"add MAX+1", OpAdd, math.MaxInt64, 1},
+		{"add MIN+(-1)", OpAdd, math.MinInt64, -1},
+		{"add MAX+MAX", OpAdd, math.MaxInt64, math.MaxInt64},
+		{"sub MIN-1", OpSub, math.MinInt64, 1},
+		{"sub MAX-(-1)", OpSub, math.MaxInt64, -1},
+		{"mul MAX*2", OpMul, math.MaxInt64, 2},
+		{"mul MIN*-1", OpMul, math.MinInt64, -1},
+		{"mul -1*MIN", OpMul, -1, math.MinInt64},
+		{"div MIN/-1", OpDiv, math.MinInt64, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
+			got := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			if got != nil {
+				t.Fatalf("op %v %d %d should overflow → nil, got %v", tc.op, tc.l, tc.r, got)
+			}
+		})
+	}
+}
+
+// TestArithmeticValue_OverflowBoundaries pins that VALUES AT the
+// overflow boundary still succeed — the inequality is strict.
+// Asymmetric for sub: MAX - (-1) overflows, but MAX - 1 = MAX-1.
+func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	b := &FieldValue{Field: "b", Typ: TypeInt}
+	cases := []struct {
+		name string
+		op   ArithmeticOp
+		l, r int64
+		want any
+	}{
+		{"add MAX+0", OpAdd, math.MaxInt64, 0, int64(math.MaxInt64)},
+		{"add MIN+0", OpAdd, math.MinInt64, 0, int64(math.MinInt64)},
+		{"sub MIN-0", OpSub, math.MinInt64, 0, int64(math.MinInt64)},
+		{"mul MAX*1", OpMul, math.MaxInt64, 1, int64(math.MaxInt64)},
+		{"mul MIN*1", OpMul, math.MinInt64, 1, int64(math.MinInt64)},
+		{"mul 0*MAX", OpMul, 0, math.MaxInt64, int64(0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
+			got := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			if got != tc.want {
+				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestArithmeticValue_NullPropagation_Deep pins NULL-propagation
 // through nested arithmetic — Java's test stresses this because the
 // Cascades simplifier folds NULL holes at multiple depths.

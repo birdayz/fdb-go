@@ -1261,13 +1261,34 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	}
 	switch a.Op {
 	case OpAdd:
-		return li + ri
+		// Overflow-checked: matches Java ArithmeticValue.AddFn /
+		// embedded.functions.AddInt64Checked. Cascades returns nil
+		// (UNKNOWN) on overflow so the runtime executor surfaces
+		// the 22003 NUMERIC_VALUE_OUT_OF_RANGE error rather than the
+		// fold silently producing a wrapped value.
+		out, ok := addInt64Checked(li, ri)
+		if !ok {
+			return nil
+		}
+		return out
 	case OpSub:
-		return li - ri
+		out, ok := subInt64Checked(li, ri)
+		if !ok {
+			return nil
+		}
+		return out
 	case OpMul:
-		return li * ri
+		out, ok := mulInt64Checked(li, ri)
+		if !ok {
+			return nil
+		}
+		return out
 	case OpDiv:
 		if ri == 0 {
+			return nil
+		}
+		// MinInt64 / -1 overflows (abs value doesn't fit in int64).
+		if li == math.MinInt64 && ri == -1 {
 			return nil
 		}
 		return li / ri
@@ -1281,6 +1302,47 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		return li % ri
 	}
 	return nil
+}
+
+// addInt64Checked / subInt64Checked / mulInt64Checked mirror
+// embedded.functions.{Add,Sub,Mul}Int64Checked. Re-implemented in
+// cascades to keep the value-layer arithmetic free of cross-package
+// imports (the package-structure goal in RFC-025).
+//
+// Add/Sub overflow: signed-overflow detection via the standard
+// "different sign" check (well-defined under int64 wrap semantics).
+// Mul: defer to math/bits to avoid the full multiword arithmetic
+// inline.
+func addInt64Checked(a, b int64) (int64, bool) {
+	r := a + b
+	if (a > 0 && b > 0 && r < a) || (a < 0 && b < 0 && r > a) {
+		return 0, false
+	}
+	return r, true
+}
+
+func subInt64Checked(a, b int64) (int64, bool) {
+	r := a - b
+	if (b > 0 && r > a) || (b < 0 && r < a) {
+		return 0, false
+	}
+	return r, true
+}
+
+func mulInt64Checked(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	r := a * b
+	// Reverse-divide to detect overflow. The MinInt64 * -1 case is
+	// the one a/b == 1 wouldn't catch — handle explicitly.
+	if a == math.MinInt64 && b == -1 || b == math.MinInt64 && a == -1 {
+		return 0, false
+	}
+	if r/b != a {
+		return 0, false
+	}
+	return r, true
 }
 
 // --- BooleanValue + CastValue -------------------------------------
