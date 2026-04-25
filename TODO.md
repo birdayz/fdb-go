@@ -71,7 +71,7 @@ Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope i
 ### SQL feature gaps (significant)
 
 - [ ] **DDL types** — `DATE` / `TIMESTAMP` / `ARRAY` / `JSON` column types. Today's `CREATE TABLE` accepts only BIGINT / INTEGER / DOUBLE / FLOAT / STRING / BYTES / BOOLEAN. Java has all of these.
-- [ ] **EXPLAIN / ANALYZE** — no plan introspection. Useful for users; required for Cascades-era debug-loop.
+- [~] **EXPLAIN / ANALYZE** — swingshift-50 wired `EXPLAIN <query|insert|update|delete>` through naiveGenerator. Returns a 1-row driver.Rows with column `PLAN` carrying the rendered logical-operator tree (catalog-aware path on warm-cache, text-builder fallback on cold). Matches fdb-relational's PLAN column shape. Remaining: ANALYZE (statistics-aware planning), `EXPLAIN FOR CONNECTION`, `EXPLAIN <continuation>`, plus EXPLAIN format options (FORMAT=JSON / DOT / GML).
 - [ ] **Mutual recursion in CTE** — `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs evaluated in declaration order; mutual refs bail.
 - [ ] **Continuation resumption of partial recursive results** — for `maxRows: 1` pagination. Java's `RecursiveStateManager` uses TempTable cursors.
 - [ ] **Intermingled schema type-filter wrapper** — re-enable PK pushdown on `FieldKeyExpression` PKs (intermingled tables) by wrapping the narrowed cursor with a type-filtering predicate. Blocker: `INTERMINGLE_TABLES` exists in lexer/parser grammar but isn't wired through DDL.
