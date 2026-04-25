@@ -1,172 +1,138 @@
-# fdb-record-layer-go TODO
+# TODOs
 
-Restructured 2026-04-13 (nightshift-9). Previous version: `git show 036697a:TODO.md`.
-Correctness audit performed 2026-04-13 against C++ NativeAPI.actor.cpp.
+Authoritative priority list for fdb-record-layer-go. Strict precedence: **CRITICAL > HIGH > MEDIUM > LOW**. Pick work from the highest unchecked bucket. Shift handover follow-ups are context, not priority — see CLAUDE.md "Priority discipline at shift start".
 
 Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 
+Restructured 2026-04-25 (swingshift-50). Previous structure: `git show <commit-before-restructure>:TODO.md`.
+
 ---
 
-## frl CLI
+## CRITICAL
 
-Operator/developer CLI for the Go Record Layer. Lives at `./cmd/frl` as a **separate Go module** (own `go.mod`) so library users don't inherit CLI deps. Root `go.work` ties both modules together for local dev. Config uses [`github.com/birdayz/protobuf-ecosystem/protoconfig`](https://github.com/birdayz/protobuf-ecosystem/tree/main/protoconfig) (YAML + proto + env overlay). UX framework: `github.com/charmbracelet/fang` wrapping `spf13/cobra`. Command hierarchy is kubectl/kaf-style (NOUN VERB). Branch: `worktree-cli`.
+These block the Cascades port (`fdb-relational` Phase 2) or cross-language SQL compatibility verification. Per RFC-022, 4.-1 must land before 4.0 rule porting, otherwise we burn shifts on rules we'd later need to redo when plan divergence shows up. Per the dayshift-34 audit, Java↔Go SQL conformance is the single largest unverified surface.
 
-### Phase A — skeleton (no commands yet)
+- [ ] **4.-1 — Plan-equivalence harness (build FIRST, per RFC-022)**
+  - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
+  - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
+  - [ ] Decide location: `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner). See RFC-022 open questions.
+- [ ] **Java↔Go SQL conformance harness Phase B** — wire fdb-relational maven deps into Bazel; extend `conformance_server.java` with `SqlSteps` to drive the same SQL through both engines and diff result sets. Single biggest test-coverage improvement; yamsql currently is the only oracle and we KNOW it's incomplete because every probe finds bugs. ~4–6h.
+- [ ] **Catalog wire format Go↔Java round-trip** — extract a schema via Go, load with Java, run a SELECT. And the reverse. Would have caught the catalog subspace bug fixed in swingshift-35. (Subset of conformance harness above; pinned separately because of historical scar.)
+- [ ] **SQL semantic equivalence** — feed the yamsql execution corpus (1587 statements) through both engines; require identical result sets for read queries. Today only parsing is verified.
 
-- [x] **go.work + cmd/frl module** — `go.work` at root with `use (. ./cmd/frl)`. `cmd/frl/go.mod` declares `github.com/birdayz/fdb-record-layer-go/cmd/frl`, `require`s the root module + `replace` to `../..`. `go.work` is now committed (un-gitignored) so every contributor and CI sees the same workspace.
-- [x] **Self-contained buf config** — `cmd/frl/buf.yaml` + `cmd/frl/buf.gen.yaml` living inside the CLI module. Generates into `cmd/frl/gen/` (separate from root `gen/`). Library codegen stays untouched.
-- [x] **Config proto** — `cmd/frl/proto/frl/config/v1/config.proto` with `Config { string current_context; repeated Context contexts; }` + `Context { string name; }`. Fields filled in as commands are designed.
-- [x] **Cobra + fang entrypoint** — `cmd/frl/main.go` calls `fang.Execute(ctx, rootCmd)`. Cobra tree under `cmd/frl/internal/cmd/` (root.go, version.go, config.go). `version` proves cross-module import works (packs a sample tuple via `pkg/fdbgo/fdb/tuple`); `config schema` proves the generated proto package works (prints empty Config as JSON).
-- [x] **Bazel wiring** — `MODULE.bazel` gets a second `go_deps.from_file(go_mod = "//cmd/frl:go.mod")` via `use_extension(..., isolate = True)` (`go_deps_frl`) + `--experimental_isolated_extension_usages` in `.bazelrc`. `bazel mod tidy` settled `use_repo` entries. Gazelle walks the nested module correctly — BUILD files auto-generated across both modules in one pass.
-- [x] **Justfile recipes** — `just generate-frl` (buf generate inside cmd/frl, output `cmd/frl/gen/`), folded into `just generate`. `just frl <args>` convenience wrapper for `bazelisk run //cmd/frl --`.
-- [x] **Verify** — `just generate-frl && just gazelle && just build` all green. `bazelisk build //...` passes (80 targets). `just frl version` + `just frl config schema` work end-to-end. Known limitation: `frl version` via Bazel reports "build info unavailable" (rules_go strips build info from binaries by default; works via `go run .`). Fix later if needed.
+---
 
-_Commit: worktree-cli branch. Deps pulled in by CLI: cobra v1.10.1, fang/v2 v2.0.1 (published as charm.land/fang/v2 — repo is github.com/charmbracelet/fang)._
+## HIGH
 
-### Phase A.5 — metadata loading (two sources)
+### Cascades planner port (Phase 4.x)
 
-**Design evolution.** Earlier drafts (scrapped) mandated `FDBMetaDataStore` and a separate proto-descriptor registry (BSR/protocompile/descriptor sources, merge policy, clash rules). Sifting Apple's official docs (`fdb-record-layer/docs/sphinx/source/Overview.md`, `GettingStarted.md`, `SchemaEvolution.md`, `FDBMetaDataStore` Javadoc lines 57–64) revealed that **Apple treats programmatic metadata as the documented default**. `FDBMetaDataStore` is framed as an advanced feature for cross-instance coordination, not the norm. Real-world evidence: `channelmind-ai` (and likely most Java shops) uses programmatic-only metadata with no persistence.
+Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope is visible.
 
-Mandating `FDBMetaDataStore` would have diverged from Apple's guidance and forced every target app to adopt a feature they don't need. Revised.
+- [~] **4.0 — Foundation types**
+  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values.go` — to be replaced.
+  - [~] `Value` hierarchy — dayshift-46 seeded `Value` interface (with `Evaluate`) + 5 concrete types (Constant, Field, Arithmetic, Boolean, Cast). nightshift-48 + dayshift-49 added Promote, Null, Aggregate, QuantifiedObject, RecordConstructor, ParameterValue, ScalarFunctionValue. Remaining: ~67 of Java's 77 value classes.
+  - [~] `QueryPredicate` hierarchy — Constant / And / Or / Not / Value / Comparison ported. Remaining: `ComparisonRange(s)`, `MatchesValue`, `Placeholder`, `PredicateWithValueAndRanges`.
+  - [~] `Simplification` — dayshift-49 added `SimplifyValue` (constant-fold over standalone Values). swingshift-50 added `SimplifyPredicateValues` (folds Value operands inside QueryPredicates). Phase 4.6 brings the full `ValueSimplificationRuleSet` and the rule-driven driver retires the seed.
+  - [~] `Comparisons` / `Comparison` — 13 operators + `Comparison.Operand` as `Value` + `LiteralValue` / `NewLiteralComparison` helpers + `ParameterValue`-bound variant. Remaining: real binder plumbing through Evaluate (`ParameterBinder` interface seeded but no runtime callers).
+  - [~] `Correlated<T>` + `CorrelationIdentifier` — dayshift-46 seeded interface + Named/Unique factories. Concrete `Correlated` impls land as Values gain richer Quantifier references.
+- [ ] **4.1 — Relational expressions** — `RelationalExpression`, `RelationalExpressionWithChildren`, `RelationalExpressionWithPredicates` + Logical exprs (`LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, `LogicalTypeFilterExpression`, `LogicalUnionExpression`, `LogicalDistinctExpression`, `LogicalIntersectionExpression`, `SelectExpression`) + DML (`InsertExpression`, `UpdateExpression`, `DeleteExpression`, `TableFunctionExpression`).
+- [~] **4.2 — Matching engine**
+  - [~] `BindingMatcher` DSL — dayshift-46 seeded interface + `PlannerBindings` + `MergedWith` + generic `Get[T]` retrieval helper + `AnyValue` + `Instance` + `ArithmeticMatcher` + `AllOfMatcher` + `AnyOfMatcher`. Remaining: `TypedMatcherWithExtractAndDownstream`, `ListMatcher`, `CollectionMatcher`, `OptionalIfPresentMatcher`, `PartialMatchMatchers`, the `graph/` matchers.
+  - [x] `PlannerBindings` — dayshift-46.
+- [ ] **4.3 — Memo & references** — `Reference` (= Cascades "group"), implicit DAG via `Reference` pointers, `PlanContext`, `CascadesRuleCall`.
+- [ ] **4.4 — Cost model** — `CascadesCostModel` heuristic comparator matching Java; cardinality estimation hooks; `properties/` package (~25 classes). Per RFC-024, hash-identical Java compatibility is NOT a goal — free to ship simpler Go-native cost.
+- [~] **4.5 — Rules**
+  - [~] Rule base classes (`CascadesRule`, `CascadesRuleCall`) — seeded dayshift-46.
+  - [ ] **Batch A (port FIRST per RFC-022 — covers swingshift-44's existing 11-branch pushdown chain so 4.-1 harness gets end-to-end yamsql coverage):** `PrimaryScanRule`, `ImplementFilterRule`, `ImplementSortRule`, `MergeFetchIntoCoveringIndexRule`, index-equality + index-range implementation rules, `InComparisonToExplodeRule`.
+  - [ ] **Batch B and beyond** — rest of data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`), implementation rules (`ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`…), decomposition (`DecorrelateValuesRule`), optimization (`PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`…), finalization (`FinalizeExpressionsRule`). ~69 rules total. Port in batches aligned to yamsql feature flags (JOIN, CTE, aggregate).
+- [ ] **4.6 — Planner driver** — `CascadesPlanner` task stack (EXPLORE → OPTIMIZE), `PlannerEvent` debug hooks, integration with `RecordMetaData` + index availability.
+- [ ] **4.7 — Correctness tests** — port enough of Java's planner test suite to validate rule-by-rule equivalence; extend the 4.-1 harness as rules land.
 
-**Two first-class metadata sources. Both v1.**
+### Cross-language conformance & infra
 
-```go
-// cmd/frl/internal/meta
-type Source interface {
-    Name() string
-    Load(ctx context.Context) (*recordlayer.RecordMetaData, error)
-}
+- [ ] **System table contents byte-equivalence** — `SELECT * FROM INFORMATION_SCHEMA.TABLES` returns byte-identical rows from Go and Java against the same store.
+- [ ] **FRL perf comparison — Go vs Java SQL** — once Phase 5 lands enough to run a real SELECT, stand up the same comparison harness for SQL workloads (simple SELECT, secondary-index SELECT, INSERT, aggregate, prepared statement). Go-vs-Java table for relational layer mirroring the record-layer numbers in CLAUDE.md.
 
-// Programmatic-metadata apps: app dumps meta.pb at deploy/build time;
-// frl reads the file. Matches Apple's documented norm.
-type FileSource struct { Path string }
+### Security / robustness
 
-// FDBMetaDataStore apps: frl reads metadata straight from FDB at the
-// configured keyspace path. Zero app-side tooling, mandatory FDBMetaDataStore.
-type FDBStoreSource struct {
-    DB           *recordlayer.FDBDatabase
-    KeySpacePath keyspace.Path
-}
-```
+- [ ] **ANTLR parser exponential-time on unclosed parens (DoS)** — 4-min FuzzParse run (swingshift-35) surfaced a 3.4KB `CASE WHEN x IS NULL T((((...` input that takes ~8.7s to parse. Same grammar as Java so the vulnerability exists there too. Corpus entry `a1c9802306691af3` pinned as regression. Real fix likely needs grammar tweaks or a parse-time limit in both Go and Java. Upstream ticket worthwhile before Go-only hardening.
 
-Both return the same `*RecordMetaData`. `frl` never needs to know which source produced it. Proto descriptors travel with the metadata — `RecordMetaData.records` is a `FileDescriptorProto`, `RecordMetaData.dependencies` is the transitive closure. No separate descriptor registry needed.
+### SQL feature gaps (significant)
 
-**`.proto` options source deferred.** Could work by running `protocompile` on user-provided `.proto` files, extracting options (`(schema)`, `(record)`, `(field)`), and building a `RecordMetaData`. But Apple's own docs de-emphasize proto options (*"generally preferred to define indexes in our application code"*), and options can't express RANK/TEXT/VECTOR/RANK/FormerIndex/UniversalIndex. High implementation cost, partial coverage, low real-world return. Skip.
+- [ ] **DDL types** — `DATE` / `TIMESTAMP` / `ARRAY` / `JSON` column types. Today's `CREATE TABLE` accepts only BIGINT / INTEGER / DOUBLE / FLOAT / STRING / BYTES / BOOLEAN. Java has all of these.
+- [ ] **EXPLAIN / ANALYZE** — no plan introspection. Useful for users; required for Cascades-era debug-loop.
+- [ ] **Mutual recursion in CTE** — `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs evaluated in declaration order; mutual refs bail.
+- [ ] **Continuation resumption of partial recursive results** — for `maxRows: 1` pagination. Java's `RecursiveStateManager` uses TempTable cursors.
+- [ ] **Intermingled schema type-filter wrapper** — re-enable PK pushdown on `FieldKeyExpression` PKs (intermingled tables) by wrapping the narrowed cursor with a type-filtering predicate. Blocker: `INTERMINGLE_TABLES` exists in lexer/parser grammar but isn't wired through DDL.
+- [ ] **`MetaDataEvolutionValidator` wiring** — exists in `recordlayer` but not wired into `SaveSchemaTemplate` / `CreateTemplate`. swingshift-35 audit: Java's equivalent flow also skips. Adding Go-side validation unilaterally would reject evolutions Java accepts → divergence. Needs upstream discussion before Go-side enforcement.
+- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash. Per RFC-024 decision: NOT a hard goal (Java cache is per-process Caffeine, no wire format), but Go-internal stability + schema-version-sensitive keys still required.
 
-**Config shape (revised `Context`):**
+### frl CLI — pre-v1 release blockers
 
-```proto
-message Context {
-  string name = 1;
-  string cluster_file = 2;
-  string keyspace_path = 3;          // where the record store lives
-  MetadataSource metadata = 4;       // how to load its RecordMetaData
-}
+- [ ] **Phase A.5 — metadata loading (file + FDB store sources)**
+  - [ ] Add `MetadataSource` + fields to `cmd/frl/proto/frl/config/v1/config.proto`; regenerate.
+  - [ ] `cmd/frl/internal/meta/{source.go,file.go,fdbstore.go}` with unit tests (missing file, corrupt .pb, missing FDBMetaDataStore, FDBMetaDataStore with empty `records`).
+  - [ ] `pkg/recordlayer/metadata_export.go` + `WriteRecordMetaData` helper.
+  - [ ] Wire `--meta-file` global flag + context field resolution.
+  - [ ] First consumers: `frl store info` then `frl meta get`.
+- [ ] **Phase A.6 — operator guide (Go + Java, blocking v1 release)** — `docs/operator-guide.md`. Without it, both metadata sources are silently inaccessible to users.
 
-message MetadataSource {
-  oneof source {
-    // File on disk containing a serialized com.apple.foundationdb.record.RecordMetaDataProto.MetaData
-    // message. App exports once per deploy using a small helper.
-    string meta_file = 1;
+### Pure Go FDB Client
 
-    // KeySpace path of an FDBMetaDataStore. frl reads metadata in the same way
-    // the app does — via FDBMetaDataStore.LoadRecordMetaData().
-    string meta_store_keyspace = 2;
-  }
-}
-```
+- [ ] **C++ ConnectionID dedup** — C++ FlowTransport deduplicates bidirectional connections via ConnectionID exchange in ConnectPacket. Not needed as a pure client (we never accept incoming connections). Implement only if we add server-side functionality.
 
-**CLI override:** `--meta-file <path>` takes precedence over `Context.metadata`. Useful for ad-hoc operator sessions against a store whose metadata landed via handover rather than config.
+---
 
-**Helper we ship in the library** (for programmatic-metadata apps to export meta.pb):
+## MEDIUM
 
-```go
-// pkg/recordlayer/metadata_export.go (new)
-func WriteRecordMetaData(meta *RecordMetaData, w io.Writer) error {
-    bytes, err := proto.Marshal(meta.ToProto())
-    if err != nil { return err }
-    _, err = w.Write(bytes)
-    return err
-}
-```
+### Cascades port — already-seeded follow-ups (defer until 4.-1 lands)
 
-Apps wire a 10-line `cmd/dump-meta/main.go` that builds their metadata, calls this, emits to stdout. Make target → `meta.pb`. Operator uses `frl --meta-file ./meta.pb`.
+- [ ] **`ParameterBinder` caller plumbing** — eval-context capability seeded (`cascades.ParameterValue.Evaluate` checks for it) but no runtime caller exists. The embedded executor textually substitutes `?` via `substituteParams` BEFORE parsing, so cascades never sees a `ParameterValue` at runtime. A real wire-in needs the embedded executor to evaluate cascades.Value at runtime — bigger than half-shift sized. Unblocks runtime prepared-statement plan-cache reuse.
+- [ ] **Wire `SimplifyValue` more places** — swingshift-50 wired projection (proto + map paths) and WHERE predicate-tree Value operands. Other callers: aggregate `aggExpr` / `outExpr`, ORDER BY expression keys, INSERT VALUES expressions.
+- [ ] **More walker scalar functions** — embedded.scalar_functions.go has SIGN, MOD, IFNULL, IF/IIF, GREATEST/LEAST, EXP/LN/LOG, REVERSE, POSITION, LEFT, RIGHT, date functions etc. Each is a few lines once the seed shows the pattern (swingshift-50 added the first batch: ABS, FLOOR, CEIL, CEILING, ROUND, SQRT, POWER, POW, COALESCE, NULLIF, TRIM, LTRIM, RTRIM, CONCAT, SUBSTRING, SUBSTR, REPLACE).
+- [ ] **Derived-table WHERE in catalog-aware builder** — buildWherePredicate currently declines on `sq.derivedQuery != nil`. Needs a virtual-Table source built from the derived query's projection schema; type inference for computed columns; ScopeSource extension. Multi-shift effort.
+- [ ] **Multi-source scope for JOIN in cascades walker** — buildWherePredicateForJoins handles JOIN; further parity with Java's scope semantics needed as more rules land.
 
-**Implementation tasks:**
+### SQL feature gaps (smaller)
 
-- [ ] Add `MetadataSource` + fields to `cmd/frl/proto/frl/config/v1/config.proto`; regenerate.
-- [ ] `cmd/frl/internal/meta/{source.go,file.go,fdbstore.go}` with unit tests (missing file, corrupt .pb, missing FDBMetaDataStore, FDBMetaDataStore with empty `records`).
-- [ ] `pkg/recordlayer/metadata_export.go` + a `WriteRecordMetaData` helper (lib-side, not CLI-side).
-- [ ] Wire `--meta-file` global flag + context field resolution.
-- [ ] First consumer: `frl store info` (doesn't need metadata yet, but exercises context plumbing) followed by `frl meta get` (dumps the loaded `RecordMetaData` as proto/JSON).
+- [ ] **IN-list via subquery decomposition** — `WHERE col IN (SELECT …)` currently bails on the pushdown path. If subquery is small (already pre-evaluated by `preEvaluateScalarSubqueries`), decompose into N point scans like literal IN-list. Scalar subqueries already pre-evaluate; rows-result subqueries don't yet.
+- [ ] **GROUP BY (a+b) AS alias** — expression group keys can't be referenced via alias from the SELECT list because the rewrite path only handles bare-column group-by entries.
+- [ ] **ORDER BY dedup edge cases** — `ORDER BY b, B` (case-folded identifiers — we don't normalize, Java does) and `ORDER BY a.b, b` (qualified-vs-bare resolving to the same column). Rides on a future identifier-folding pass.
+- [ ] **INFORMATION_SCHEMA case-insensitive TABLE_NAME filter** — works today for exact-case match. Real fix is upstream identifier-normalisation, not a system-tables handler patch. Workaround: `WHERE UPPER(TABLE_NAME) = 'EMP'`.
+- [ ] **Parser rejects unquoted `FROM INFORMATION_SCHEMA.TABLES`** — `TABLES` / `COLUMNS` / `INDEXES` / `SCHEMATA` are reserved keywords. Workaround: quote (`FROM "INFORMATION_SCHEMA"."TABLES"`). Proper fix: extend grammar to allow these identifiers in qualified-table position.
 
-### Phase A.6 — operator guide (Go + Java, blocking v1 release)
+### Phase 5 — Query execution
 
-`frl` is useless without a clear "how do I wire my app for this?" guide. Target audiences: Go apps using our port, Java apps using Apple's Record Layer.
+- [ ] **`PlanGenerator`** — `LogicalOperator → RelationalExpression` adapter.
+- [ ] **`QueryExecutor`** — executes a `RecordQueryPlan` against a `FDBRecordStore`, returns `RecordCursor`.
+- [ ] **`RecordLayerResultSet`** — wraps cursor, implements `api.ResultSet`.
+- [ ] **Continuation support** — cursor continuation → SQL-level cursor state; match Java encoding.
+- [ ] **Prepared parameter binding** — `PreparedParams` substitutes `?` at evaluation time (replaces today's textual `substituteParams`).
 
-**Deliverable:** `docs/operator-guide.md` (and/or Markdown under `cmd/frl/docs/`) covering both metadata sources in both languages.
+### Phase 6 — DDL completion
 
-**Outline:**
+- [ ] Individual actions: `CreateTableAction`, `CreateIndexAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
+- [ ] Integration with online indexer (CREATE INDEX triggers background build).
 
-1. **When do I need to do anything?** — Concrete: *if your app uses `FDBRecordStore`, you already have a store; to make frl work, you need to expose its RecordMetaData somehow.*
-2. **Path A — dump meta.pb (recommended for most apps).**
-   - Go: `pkg/recordlayer.WriteRecordMetaData(meta, w)` in a small `cmd/dump-meta/main.go`. Makefile integration. Ship `meta.pb` alongside binaries.
-   - Java: `RecordMetaDataProto.MetaData proto = meta.toProto(); proto.writeTo(out);` in a small main class. Maven/Gradle integration. Same artifact workflow.
-3. **Path B — use `FDBMetaDataStore`.**
-   - Go: `recordlayer.NewFDBMetaDataStore(ctx, metaPath).SaveRecordMetaData(meta)` at deploy-time init.
-   - Java: `new FDBMetaDataStore(ctx, metaPath).saveRecordMetaData(meta).join();` same.
-   - Note: this is Apple's framed "multi-instance coordination" feature. Overkill for single-deploy apps. Recommend Path A unless you actually need coordinated schema rollouts.
-4. **Schema evolution.** Both paths — how to upgrade metadata. Reference `MetaDataEvolutionValidator` for both.
-5. **Pitfalls.** `MetaData.records` must be populated (empty → frl fails with a specific error). Version number must increment. etc.
-6. **FAQ.** "Why not auto-discover?" "Why must I opt in at all?" "What if my app is Java and frl is Go?" (answer: proto wire format is identical; meta.pb from Java works with frl.)
+### Phase 7 — Plan cache
 
-Doc is part of the v1 deliverable — shipping `frl` without this guide makes both options silently inaccessible to users. Write docs alongside code.
+- [ ] Port `RelationalPlanCache` — 3-tier (primary/secondary/tertiary) with per-tier TTL + max-entries.
+- [ ] `QueryCacheKey` — SQL + param types + catalog version.
+- [ ] `PhysicalPlanEquivalence` — deduplicates semantically identical plans.
+- [ ] Async eviction.
 
-### Phase B — command tree
+### Phase 8 — `database/sql/driver` adapter
 
-**Style:** kaf-style **NOUN VERB**. Noun-verb scales past CRUDL — verbs like `build`, `rebuild`, `lock`, `truncate`, `destroy`, `evolve-check` have no natural verb-noun form.
+- [ ] **`Stmt`** implementing `driver.Stmt`, `driver.StmtExecContext`, `driver.StmtQueryContext`, `driver.NamedValueChecker`.
+- [ ] **`Rows`** implementing `driver.Rows` + `driver.RowsColumnTypeDatabaseTypeName` / `Nullable` / `Length` / `PrecisionScale` / `ScanType`.
+- [ ] **`Result`** — `LastInsertId` is always an error (FDB has no auto-inc; match Postgres driver convention).
+- [ ] **`Tx`** implementing `driver.Tx`.
+- [ ] **Value conversion** — `driver.Value` ⇄ `api.DataType` values, including structs and arrays.
+- [ ] **Custom scanner/valuer** — `Struct`, `Array`, `Versionstamp`, `Continuation`.
+- [ ] **Integration test matrix** — `db.BeginTx` + Commit/Rollback; context cancellation mid-query; concurrent connections from shared `sql.DB`.
 
-**Seven nouns total** (down from eight — `protos` cut with Phase A.5's proto-registry redesign; metadata now carries descriptors):
+### frl CLI — Phase B.3 writes (deferred pending UX design)
 
-`record`, `index`, `store`, `meta`, `config`, `keyspace`, `tx`.
-
-#### B.1 — v1 minimum (shipped on PR #86)
-
-- [x] `config use-context <name>` — Context switch
-- [x] `config view` — Effective context as YAML
-- [x] `store info` — Format version, metadata version, user version, cacheable, record count state, lock state, user fields. Also supports `-o json` for scriptable output.
-- [x] `record get <pk>` — Single record by primary key (int64 or string)
-- [x] `record scan [--type T] [--limit N]` — Cursor-backed newline-delimited JSON scan
-- [x] `index ls [--no-fdb] [-o json]` — Lists indexes + state; `--no-fdb` renders from metadata only
-
-#### B.2 — implemented read-only follow-ups (shipped on PR #86)
-
-**Data — wave 2**
-- [x] `record count [--type T]` — Store-level or per-type count via atomic ADD indexes
-- [x] `index describe <name>` — Full definition from metadata (no FDB needed)
-- [x] `index scan <name> [--reverse] [--limit N]` — Cursor across index entries
-
-**Store introspection — wave 4 (subset)**
-- [x] `store dump [--limit N]` — Tuple-decoded forensic view with subspace labels
-
-**Meta — wave 5**
-- [x] `meta get` — Dump RecordMetaData as JSON (file sources only)
-- [x] `meta types ls [-o json]` — Record types + PK fields
-- [x] `meta types describe <name>` — Per-type PK, record-type key, proto msg, indexes
-- [x] `meta validate --file <f>` — Standalone file validation
-- [x] `meta evolve-check --old <f> --new <f>` — MetaDataEvolutionValidator gate
-- [x] `meta diff <old> <new>` — Human-readable diff (added/removed/changed types + indexes + version)
-
-**Navigation / escape — wave 6 (subset)**
-- [x] `config current-context` — Active context name
-- [x] `config get-contexts [-o json]` — List all, mark active with `*` (or `active: true` in JSON)
-- [x] `keyspace resolve <path>` — Logical path → FDB byte prefix
-- [x] `tx read-version` — Current GRV (+ cluster connectivity smoke test)
-
-#### B.3 — not yet implemented (writes + advanced scans)
-
-Writes deferred pending UX design (confirmation, dry-run defaults):
 - [ ] `record put --file <file>`
 - [ ] `record delete <pk>`
 - [ ] `meta set / apply` — deferred, dangerous without dry-run
@@ -181,559 +147,178 @@ Writes deferred pending UX design (confirmation, dry-run defaults):
 - [ ] `keyspace ls <path>` / `keyspace tree <path>` — FDB directory layer reads
 - [ ] `tx run` — ad-hoc transaction wrapping
 
-**Global flags (current)**
-```
---context <name>                 # all store-touching commands
---meta-file <path>               # overrides Context.metadata for this call
--o|--output text|json            # store info, index ls, meta types ls, config get-contexts
---no-fdb                         # index ls only — metadata-only render
-```
+### frl CLI — small follow-ups
 
-Root-level `--cluster-file` / `--keyspace-path` not wired yet (contexts cover the case for now).
+- [ ] **`frl sql -o json`** output mode for `-c` / `-f` (NDJSON rows). Current output is the styled table only.
+- [ ] **`frl sql` tab-completion** on table / column names resolved from the catalog.
+- [ ] **`frl sql` BEGIN / COMMIT / ROLLBACK** explicit handling (currently autocommit per statement).
+- [ ] **`frl sql` EXPLAIN formatting** when the Cascades planner can surface a plan tree.
+- [ ] **Auto-detect relational catalog path** in existing commands: if `meta_file` isn't configured but the catalog subspace has entries, fall back to the relational source instead of erroring with "no metadata source". Low priority — explicit `meta catalog get` is clearer.
 
-**Testing:** `//go:build integration` suite in `cmd/frl/internal/cmd/integration_test.go` drives every read-only command end-to-end against an FDB testcontainer. Opt-in via `go test -tags=integration ./cmd/frl/internal/cmd/...`.
+### Architecture / refactor (in progress)
 
-### Phase C — web UI (parked, future)
-
-`frl web` — serves a local web UI for browsing records/indexes/metadata. Not designed. Not scheduled. Revisit after Phase B commands land and we know what the CLI already handles well.
-
-### Phase D — relational catalog discovery (shipped)
-
-Relational clusters expose their schemas at a fixed subspace `tuple(nil, nil, 0)` (`__SYS/__SYS/CATALOG`), which contains a regular FDB record store with three record types: `SCHEMAS`, `DATABASES`, `TEMPLATES`. The actual user-table `RecordMetaData` proto lives in `TEMPLATES.META_DATA`. Context: [PR #86 comment](https://github.com/birdayz/fdb-record-layer-go/pull/86#issuecomment-4281199904).
-
-Shipped under `frl meta catalog`:
-- [x] **`frl meta catalog databases`** — enumerate every database URI on a relational cluster.
-- [x] **`frl meta catalog schemas [--database <id>]`** — enumerate schemas with their template + version, optionally narrowed to one database.
-- [x] **`frl meta catalog templates`** — list every `(template_name, version)` tuple.
-- [x] **`frl meta catalog get <template> [--version N]`** — render a template's `RecordMetaData` proto as protojson / protoyaml, matching `meta get`'s shape.
-- [x] Clear "no relational catalog on this cluster" error for plain-core clusters (catalog subspace empty); suggests falling back to `--meta-file`.
-
-Still open:
-- [ ] Auto-detect path in existing commands: if `meta_file` isn't configured but the catalog subspace has entries, fall back to the relational source instead of erroring with "no metadata source". (Low priority — explicit `meta catalog get` is clearer.)
-
-**Constraints honored:**
-- Never writes to `__SYS/CATALOG` — `meta catalog` is read-only. Documented in the noun's `Long`.
-- Plain-core apps with their own metadata directory should keep carving out a separate subspace; `__SYS` belongs to the relational layer.
-
-### Phase E — `frl sql` (psql-style REPL, shipped)
-
-Interactive SQL against a relational cluster. `pkg/relational/sqldriver` is registered as `"fdbsql"` (`database/sql` compatible); the REPL opens via `sql.Open("fdbsql", dsn)`.
-
-Shipped:
-- [x] **`frl sql --database <uri> [--schema <name>] [--context <n>]`** — psql-style REPL. DSN = `fdbsql:///PATH?cluster_file=...&schema=...`. Cluster_file lifted from the context.
-- [x] **Non-interactive alternatives**: `-c "SELECT 1"` and `-f migrations/001.sql` for shell scripts / CI.
-- [x] **Line editor**: `chzyer/readline` — history at `~/.frl/sql_history`, arrow keys, Ctrl-R reverse search, Ctrl-C mid-statement clears the buffer, Ctrl-D exits.
-- [x] **Multi-line input**: accumulates until a line ends with `;`; continuation prompt mirrors psql's `  -> `.
-- [x] **psql-style meta-commands**: `\?`, `\q`, `\d` / `\dt` (via `information_schema.tables`), `\c <schema>`, `\i <file>`, `\e` (opens `$EDITOR` on a temp file, runs the buffer on save).
-- [x] **Styling**: `charm.land/lipgloss/v2` for the prompt (colored `frl>` / `frl(schema)>`), tabled result sets with header + row separator, muted NULL rendering, bold errors.
-- [x] **Statement-type inference**: SELECT/WITH/EXPLAIN/SHOW/VALUES/DESCRIBE go through `QueryContext` + table render; everything else via `ExecContext` + rows-affected footer.
-- [x] **Clear error on plain-core clusters** — first query fails through the driver with an operator-readable message.
-
-Still open:
-- [ ] `-o json` output mode for `-c` / `-f` (NDJSON rows). Current output is the styled table only.
-- [ ] Tab-completion on table / column names resolved from the catalog.
-- [ ] Explicit `BEGIN` / `COMMIT` / `ROLLBACK` handling (currently autocommit per statement).
-- [ ] `EXPLAIN` formatting when the Cascades planner can surface a plan tree.
-
----
-
-## Pure Go FDB Client (`pkg/fdbgo/`)
-
-### Bugs
-
-- [x] **getKey selector resolution across shard boundaries** — Go sent ONE request and returned the reply key, ignoring `orEqual` and `offset` fields from the `KeySelector` in the reply. C++ loops until `offset==0 && orEqual==true`. In multi-shard clusters, selectors crossing shard boundaries returned wrong keys. Fixed: full resolution loop matching C++. Not caught by tests (single-shard testcontainers).
-- [x] **hot_shard/range_locked backoff cap** — Go used `DEFAULT_MAX_BACKOFF` (1s) for `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242). C++ uses `RESOURCE_CONSTRAINED_MAX_BACKOFF` (30s). Caused over-aggressive retry under hot-shard conditions. Fixed: moved to resource-constrained group.
-
-- [x] **RYW getRange: limit=0 (unlimited) skipped slow path** — `remaining := limit` with `limit=0` caused `for remaining > 0` to never execute. Fixed: `if remaining <= 0 { remaining = math.MaxInt }` matching `readpath.go`. Discovered dayshift-10 multi-shard test.
-- [x] **Data race in ensureReadVersion + tx.state** — 44 races: `tx.hasReadVersion` and `tx.state` read by Watch goroutines concurrently with writes from Commit→postCommitReset. Fixed: `readVersionMu` mutex for hasReadVersion/readVersion, `atomic.Int32` for state. Found by race detector (`--@rules_go//go/config:race`). dayshift-14.
-- [x] **Data race in Watch vs postCommitReset on conflict slices** — Watch() goroutine calls AddReadConflictKey() (under conflictMu) while Commit()→postCommitReset() clears readConflicts/writeConflicts WITHOUT conflictMu. Fixed: hold conflictMu in postCommitReset() and reset() when clearing conflict slices; also protect self-conflicting copy+append in OnError(). Found by race detector. swingshift-15.
-- [x] **getRange `more` flag incorrect across shard boundaries** — When limit is exactly met across multiple shards, `more` was taken from last shard's response (could be `false` even though subsequent shards have data). C++ sets `more = (data.size() == limit)` — always true when limit reached. Fixed: return `more=true` when `remaining <= 0`. Only affects multi-shard clusters. swingshift-15.
-- [x] **Wire reader panic on malformed responses** — `Reader.ReadBytes` and 8 similar RelativeOffset-based methods (ReadVectorInt32, ReadVectorUint64, ReadNestedReader, etc.) checked `off < 4` but not `off + 4 > len(r.object)`. Crafted vtable offsets caused out-of-bounds slice panic. Fixed: add upper bounds check to all 9 methods. Found by fuzzing `FuzzParseGetKeyValuesReply`. swingshift-15.
-- [x] **OOM amplification from crafted wire count fields** — `ParseKeyValueRefStringVector` and `ReadVectorCount` used raw `uint32` count from wire data in `make([]T, 0, count)`. Crafted `count=0xFFFFFFFF` → 206GB allocation → OOM. Fixed: cap allocation to physical buffer bounds (`bufferSize / minElementSize`). Protects all 37 generated vector parsers + hand-written KV parser. swingshift-15.
-
-- [x] **Connection pool same-port aliasing broke multi-node clusters** — `getOrDialConn` reused an existing TCP connection for any address with the same port number, regardless of IP. In multi-node clusters (3 processes on 10.0.1.10-12:4500), the coordinator connection was returned for GRV proxy and commit proxy requests, sending frames to the wrong process where the endpoint token didn't match → silent drop → GRV timeout. C++ FlowTransport creates one Peer per unique NetworkAddress with no aliasing. Fixed: removed same-port matching and coordinator dial fallback entirely. PR #61.
-
-_Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
-
-### Features
-
-#### HIGH
-
-- [ ] **C++ ConnectionID dedup** — C++ FlowTransport deduplicates bidirectional connections via ConnectionID exchange in ConnectPacket. When two processes connect to each other simultaneously, the lower-priority connection is dropped. Not needed as a pure client (we never accept incoming connections), but should be implemented if we ever add server-side functionality.
-
-- [x] **`proxyTagThrottledDuration` send path** — Investigated: C++ `CommitProxyInterface.h:318` comments "Not serialized, because this field does not need to be sent to master." The field is reply-only (proxy→client), accumulated correctly in Go. No send path needed. Resolved dayshift-10.
-
-#### LOW
-
-- [ ] **Tenant groups** — Metacluster-only. `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. Not needed for standalone clusters.
-- [ ] **Tenant tombstones** — Metacluster data cluster feature. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
-- [ ] **Tenant ID prefix** — Multi-cluster ID partitioning. `tenantIdPrefix` shifts prefix into upper 2 bytes of 8-byte ID. Standalone clusters use prefix=0.
-- [ ] **Multi-version client** — Plugin loading for older client protocol versions.
-- [ ] **FDB status JSON parsing** — Cluster status monitoring via `\xff\xff/status/json`.
-- [ ] **Version vector support** — Causal consistency optimization for multi-region deployments.
+- [~] **RFC-021 Phase 1c — exec move + path normalisation** — connection.go shrunk from ~11,880 → ~2,900 lines (75%) by nightshift-45. Still TODO: move from `core/embedded/` to RFC-destined homes under `core/plan/physical/`, `core/query/visitors/`, `core/eval/`, `core/functions/`; collapse proto-vs-map evaluator divergence behind a uniform `Row` interface; extract expression evaluator (`evalExpr` / `evalExprAtom` / `evalScalarFunctionCallCore`, ~1,500 lines remaining) and predicate evaluator (~700 lines).
+- [~] **RFC-021 Phase 1d — Session migration** — `SchemaCache`, `CatalogMu`, `CatalogReady`, `StatementTime` moved to Session. Remaining statement-scope state (`ctes`, `scalarSubqueryCache`, `validQualifiers`, `outerScopes`, `currentSourceAliases`) still lives on `EmbeddedConnection` — blocked on Phase 1c finishing the exec* moves before those fields can follow their callers.
+- [~] **Break up `evalScalarFunctionCallCore`** (715-line switch) — split by family (`evalStringFns`, `evalMathFns`, `evalDateFns`, `evalCastFn`) via `map[string]FuncImpl` dispatch. Subsumed by RFC-021 Phase 1c.
+- [ ] **Typed enums for `joinType` / `aggFunc`** (currently magic strings).
 
 ### Performance
 
-#### MEDIUM
-
-- [x] **RYW SnapshotCache** — Sorted interval map caches server reads for reuse within a transaction. Repeated getRange/get calls hit cache instead of server. nightshift-12. 22 tests.
-- [x] **Pool read conflict buffers** — `addReadConflictForKey`/`addReadConflict` used `make()` per call. Now use shared `conflictBuf` via extracted `conflictBufAlloc` helper (same pool as write conflicts). SaveRecord 101→97, LoadRecord 84→81, DeleteRecord 94→91 allocs. swingshift-18.
-- [x] **Pool frame read buffers** — Won't-fix. `ReadFrame` allocates `make([]byte, payloadLen)` per response. Consumers hold slices into the buffer (zero-copy design), so pooling requires copying every slice back out, negating the pool benefit. Investigated dayshift-6c, confirmed dayshift-20.
-- [x] **Speculative second request** — All three read paths (sendGetValue, sendGetKey, sendGetRange) now hedge: send to best, timer max(10ms, 2×latency), send to second-best, race. swingshift-11. Primitives in `hedge.go`, QueueModel extensions in `loadbalance.go`.
-- [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
-
-#### LOW
-
-- [ ] **`net.Buffers` (writev)** — Scatter-gather I/O for frame writes. Low impact now that write coalescing works.
-- [ ] **LRU eviction for location cache** — Currently random eviction. Works well enough at 600K entries.
-- [ ] **Pre-allocate prefixed keys** — Commit path tenant prefix allocation. Not on read hot path.
-
-### Tests
-
-#### MEDIUM
-
-- [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
-- [x] **Multi-shard watch survival** — 4 tests: basic, multi-shard concurrent, heavy-write load, cross-shard ClearRange. All across 51 shards. swingshift-11.
-- [x] **Multi-shard concurrent writes during DD** — 8 goroutines × 25 ops write large values across 51 shards. Point read + scan cross-check verifies no data loss. nightshift-12.
-- [x] **RYW adversarial tests** — 44 tests exercising all 12 atomic mutation types through RYW path, comparing client-side resolution against committed FDB values. Chained atomics, ClearRange+Get, getRange with local writes/atomics (forward+reverse). 0 divergences. swingshift-15.
-- [x] **RYW fuzz expanded** — FuzzRYWCache now covers all 12 atomic types (was only Add). 3.7M executions in 60s, 0 failures. swingshift-15.
-- [x] **Directory partition tests** — 4 tests for directoryPartition.go (was 0% coverage). Create, child dirs, namespace isolation, data read/write, removal, panic behavior. swingshift-15.
-- [x] **Retry/OnError adversarial tests** — Self-conflicting on commit_unknown_result, all 16 retryable error codes, resource-constrained backoff, intersectConflictRanges edge cases. swingshift-15.
-- [x] **Concurrent stress tests** — 5 tests: concurrent RYW reads, read-modify-write counter (20 goroutines × 5), concurrent AtomicAdd (20 × 10), parallel range+write, Clear vs Get race. swingshift-15.
-- [x] **Full race detector verification** — All 5 test targets clean with `--@rules_go//go/config:race` after fixing Watch/postCommitReset race. swingshift-15.
-- [x] **C++ completeness audit (5 subsystems)** — readpath, commitpath, transaction, RYW, GRV+database. All pass. No missing code paths, error codes correct, wire protocol correct, atomic implementations match C++ Atomic.h. swingshift-15.
-
-#### HIGH (client test gaps from C++ audit, swingshift-11)
-
-- [x] **Tenant isolation tests** — Already covered in `fdb/tenant_test.go`: TestTenantCRUD (CRUD lifecycle) + TestTenantIsolation (cross-tenant key invisibility, shared key name different values, range scoping).
-- [x] **Watch edge cases** — 3 tests: timeout via context deadline, atomic mutation triggers watch, cancellation. swingshift-11d.
-- [x] **Snapshot read isolation (extensive)** — 5 tests: GetAfterClear, GetRangeAfterClearRange, GetRangeDoesNotConflict, GetAfterAtomicAdd, ConflictAsymmetry. swingshift-11d. Still TODO: fuzz target.
-- [x] **Transaction retry with RYW** — 4 tests: OnError resets RYW, new read version after OnError, conflict detection across retry, Transact automatic retry. swingshift-11d. Still TODO: fuzz target.
-- [x] **Watch + atomic mutations** — TestWatchFiresOnAtomicMutation verifies AtomicAdd triggers watch. swingshift-11d.
-
-### Behavioral Divergences from C++ (audit 2026-04-13, updated swingshift-18)
-
-| # | Area | Type | Description |
-|---|---|---|---|
-| 1 | ~~`future_version` backoff~~ | ~~BEHAVIOR~~ FIXED | ~~C++ uses `min(FUTURE_VERSION_RETRY_DELAY, maxBackoff)`.~~ Fixed: Go now respects user's `maxRetryDelay`. |
-| 2 | ~~`makeSelfConflicting`~~ | ~~BEHAVIOR~~ FIXED | ~~Go used `writeConflicts[0].Begin` in `commitDummyTransaction`.~~ Fixed: `intersectConflictRanges()` matches C++ `intersects()` — picks a key from the overlap of write+read conflict ranges. Falls back to `writes[0].Begin` if no intersection. |
-| 3 | ~~Watch cancellation on Reset~~ | ~~MISSING~~ FIXED | ~~C++ cancels pending watches on reset.~~ Fixed: `cancelWatches()` on Reset/Cancel/reset via lazy `watchCtx`. |
-| 4 | ~~GRV cache ratekeeper per-priority~~ | ~~BEHAVIOR~~ FIXED | ~~C++ checks per-priority.~~ Fixed: BATCH checks `lastRkBatch`, DEFAULT checks `lastRkDefault`. |
-| 5 | ~~RYW SnapshotCache~~ | ~~BEHAVIOR~~ FIXED | ~~C++ caches server reads for reuse within a transaction.~~ Fixed: `snapshotCache` sorted interval map in `ryw_snapshot_cache.go`. nightshift-12. |
-| 6 | Auto-reset after commit | DESIGN | C++ no auto-reset at API >= 410. Go `postCommitReset()` clears for reuse. |
-| 7 | `getRange` RYW merge | DESIGN | C++ segment-tree `RYWIterator`. Go iterative fetch+merge loop. Functionally equivalent. |
-| 8 | QueueModel key | COSMETIC | C++ `endpoint.token.first()`. Go address string. Same identity. |
-| 9 | ~~Load balance secondDelay~~ | ~~PERF~~ FIXED | ~~C++ speculative second request. Go sequential.~~ Fixed: `sendFrameWithHedge()` in `hedge.go`. All 3 read paths hedge. swingshift-11. |
-| 10 | `FLAG_FIRST_IN_BATCH` | COSMETIC | Not exposed. No behavioral gap. |
-| 11 | ~~`reset()` stale flags~~ | ~~BEHAVIOR~~ FIXED | ~~`userSetReadVersion` and `nextWriteNoConflict` not cleared by `reset()`. C++ creates fresh state.~~ Fixed: both cleared in `reset()`. swingshift-18. |
-| 12 | ~~`tryCache` SYSTEM_IMMEDIATE~~ | ~~MAINTENANCE~~ FIXED | ~~Dead code fell through to DEFAULT throttle check.~~ Fixed: explicit rejection. swingshift-18. |
-| 13 | ~~`commitDummyTransaction` no Set mutation~~ | ~~COSMETIC~~ FIXED | ~~Go only adds conflict ranges.~~ Fixed: now calls `Set(key, "")` matching C++. swingshift-18. |
-| 14 | ~~`commitDummyTransaction` fixed backoff~~ | ~~PERF~~ FIXED | ~~Go uses fixed 10ms.~~ Fixed: exponential backoff (10ms → 2x → cap 1s) matching C++ `onError`. swingshift-18. |
-| 15 | ~~`commitDummyTransaction` no `CAUSAL_WRITE_RISKY`~~ | ~~PERF~~ FIXED | ~~Go doesn't set CAUSAL_WRITE_RISKY on dummy.~~ Fixed: `causalReadRisky = true` for faster GRV. swingshift-18. |
-| 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
-| 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
-| 18 | Wrong-shard retry cap | CONSERVATIVE | Go caps at `MaxWrongShardRetries=50`. C++ loops unbounded (relies on 5s tx timeout). Go returns error earlier under extreme shard movement. |
-| 19 | GRV background refresh | PERF | Go refreshes at fixed 50ms. C++ uses adaptive delay `(grvDelay + latency)/2` (1ms-100ms range). Go is more aggressive (2x more RPCs under low load). |
-| 20 | ~~Server selection~~ | ~~PERF/SCALE~~ FIXED | ~~Go selects deterministic min-metric. C++ uses randomized best-of-two.~~ Fixed: "power of two random choices" — pick 2 random candidates, select lower metric. Matches C++ `LOAD_BALANCE_USE_BEST_OF_TWO_RANDOM`. dayshift-20. |
-| 21 | Frame checksum | COSMETIC | Go uses XXH3-64. C++ uses CRC32. Both valid, same security properties. |
-
-### Missing C API Surface (audit 2026-04-13)
-
-All data-path functions implemented. Missing are observability/admin only:
-
-| C Function | Category | Assessment |
-|---|---|---|
-| `fdb_transaction_get_mapped_range` | Niche | Server-side index join. Record Layer doesn't use it. |
-| ~~`fdb_transaction_get_tag_throttled_duration`~~ | ~~Observability~~ | ~~Returns cumulative tag-throttle delay.~~ Implemented as `GetTagThrottledDuration()` (dayshift-10). |
-| `fdb_transaction_get_total_cost` | Observability | Estimated transaction cost for rate limiting. |
-| `fdb_database_force_recovery_with_data_loss` | Admin | DR operation. |
-| `fdb_database_create_snapshot` | Admin | Disk-level backup. |
-| `fdb_database_get_main_thread_busyness` | N/A | Go has no network thread. |
-| `fdb_database_get_server_protocol` | Niche | Multi-version client coordination. |
-
----
-
-## Record Layer (`pkg/recordlayer/`)
-
-### Bugs
-
-- [x] **AutoContinuingCursor transaction_timed_out not retried** — Error 1031 escaped as non-retryable, killing large scans when FDB's 5-second timeout hit mid-page. Fixed: `isRetryableForContinuation()` treats 1031 as retryable in cursor context (creates new transaction from saved continuation). Java has the same gap. swingshift-18.
-
-- [x] **ensureStoreStateLoaded error swallowing (partial)** — Errors now captured in `stateLoadErr` and propagated from 5 error-returning callers (validateRecordUpdateAllowed, updateSecondaryIndexes, 3 batch methods). 7 no-error methods (GetIndexState, GetUserVersion, etc.) still use fallback — changing their signatures is a breaking API change. nightshift-21.
-
-- [x] **DeleteRecordsWhere leaked index clears to non-target types** — `findMatchingRecordTypes()` only checked PK column count, not type key value. Customer-only indexes were incorrectly cleared when deleting Orders. Fixed: filter by type key VALUE when PKs have RecordTypeKey prefix. swingshift-23.
-
-- [x] **computeIndexDeletePrefix uses arbitrary sample PK** — now uses first matching type from `matchingTypeNames` instead of arbitrary map iteration. Fallback to any type preserved for edge cases. swingshift-23.
-
-### Features
-
-#### OUT OF SCOPE (query planner prerequisites)
-
-These features are only used by the query planner / SQL layer, not by core CRUD:
-
-- [ ] **Synthetic record types** — `JoinedRecordType` (equi-join), `UnnestedRecordType` (repeated message fan-out). Proto fields 12-13 in MetaData. 11+ Java classes. Large feature.
-- [ ] **Views** — `PView` in MetaData proto (field 15). SQL layer concept.
-- [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto (field 14). SQL layer concept.
-- [ ] **AggregateCursor** — Accumulator-based aggregation over cursor results.
-- [ ] **ComparatorCursor** — Custom comparator ordering.
-- [ ] **UnorderedUnionCursor** — Union without order preservation.
-- [ ] **MapPipelinedCursor** — Async pipelined map (no Go equivalent of CompletableFuture).
-- [ ] **ProbableIntersectionCursor** — Bloom filter intersection.
-- [ ] **SizeStatisticsGroupingCursor** — Key/value size tracking.
-- [ ] **RecordCursorVisitor pattern** — Cursor tree inspection.
-
-#### MEDIUM
-
-- [x] **MetaDataEvolutionValidator gaps vs Java** — All Java checks implemented. (1) Index record type scope validation. (2) Type rename map. (3) Full IndexValidatorRegistry (TEXT, RANK, PERMUTED, VECTOR, MULTIDIMENSIONAL + base). (4) Former index addedVersion edge case (when old index doesn't exist, validate addedVersion > old metadata version). 27 tests total.
-
-#### LOW
-
-- [x] **`isClosed()` on cursor** — `IsClosed() bool` added to `RecordCursor[T]` interface. All 38 cursor types implement it. swingshift-23.
-- [ ] **FDBReverseDirectoryCache** — Reverse prefix→name caching (~496 lines Java).
-- [ ] **KeySpace/KeySpacePath** — Phase 1 done (core types, path nav, reverse resolution, range queries, 11 tests in `pkg/recordlayer/keyspace/`). Phase 2: LocatableResolver + ScopedDirectoryLayer. Phase 3: FDBReverseDirectoryCache. See `docs/design-keyspace.md`. swingshift-23.
-- [ ] **Extension options processing** — Advanced FDBMetaDataStore feature for proto extension options.
-- [ ] **Schema validation cross-language** — Needs Java conformance server additions for cross-language error comparison.
-
-### Performance
-
-_Go wins 5/8 benchmarks vs Java Record Layer. LoadRecord 0.61x, ScanRecords 0.73x, StoreOpen 0.85x._
-
-#### MEDIUM
-
-- [ ] **Pool proto messages in deserializeAndDiscover** — `rt.newMessage()` allocates via reflection per record (77.5MB / 564K allocs in BenchmarkScanRecords, ~9%). BUT: messages escape to user code via `FDBStoredRecord.Record`, so pooling isn't safe without API changes (copy-on-return or explicit release). Only viable if scan API returns copies or if users opt-in. Low priority given the constraint.
-- [x] **Pre-allocate tuple in fastDecodeTuple** — Pre-allocate with `make(tuple.Tuple, 0, len(b)/5)`. BenchmarkScanIndex: 815 → 715 allocs/op (-12.3%). nightshift-16.
-
-### Tests
-
-_Comprehensive: 2307 Ginkgo + 429 conformance + 50 chaos + 7 fuzz targets._
-
-No open test items.
-
----
-
-## Infrastructure / CI
-
-- [x] **Hetzner Object Storage upload `continue-on-error`** — Added nightshift-9. Outages no longer block PR merges.
-- [x] **Benchmark CI with PR comparison** — RFC 018. `cmd/bench-report` Go tool + `just bench-ci` recipe + CI workflow. Master pushes upload baseline to S3, PRs get benchstat-style comparison posted as PR comment (edit-in-place via marker comment). nightshift-12.
-- [x] **CI test cache invalidation fix** — bench-ci step used `bazelisk test` with different flags, overwriting test action cache. Fixed: bench recipes use `bazelisk run` (build + execute directly). Test step: 50s → 4.7s on cached runs. dayshift-14.
-- [x] **Bench-report false positive reduction** — Raised threshold from 5% to 10%. Only flags timing regressions when allocs/bytes also changed (timing-only deltas = VM noise). dayshift-14.
-- [x] **FDBMetaDataStore conformance test** — 3 specs: Go→Java, Java→Go, history cross-language. Uses non-tenant mode with unique subspace prefixes. dayshift-14.
-- [x] **govulncheck in CI** — `govulncheck ./...` step after build/test (informational, continue-on-error). Current findings: 2 vulns in github.com/docker/docker (testcontainers transitive dep, no fix available). `just vulncheck` for local use. swingshift-18.
-- [x] **Multi-node cluster test** — 3-container FDB cluster regression test (172.16.1.{2,3,4}:4500) with Go client CRUD. Verifies connection pool correctness for multi-node clusters. swingshift-18.
-- [x] **Binding stress testcontainers migration** — Replaced raw Docker CLI calls with testcontainers module. Eliminates manual polling, 3s sleeps, and fragile container lifecycle. swingshift-18.
-- [x] **Binding stress cluster file path fix** — Testcontainers migration (swingshift-18) used relative cluster file path, but Python binding tester runs with `cmd.Dir=/tmp/bt-run`. Relative path resolved wrong → error 1515 on all seeds. Fixed: `filepath.Abs()`. nightshift-19.
-- [ ] **Throughput benchmarks fail on single-node testcontainer** — `BenchmarkThroughputInsertBatchConcurrent128` overwhelms the FDB testcontainer (128 goroutines × concurrent transactions). Two issues: (1) GRV cache staleness causes "record store does not exist" on first goroutines after setup; fix: `InvalidateGRVCache()` after store creation. (2) FDB 5-second transaction timeout under load causes "context deadline exceeded". Fix: either skip in `just bench` or use a larger cluster. `just bench-ci` excludes throughput benchmarks and works fine.
-- [x] **CI Node.js 20 deprecation** — Updated nightshift-21: checkout v4→v5, upload-artifact v4→v7 across all 4 workflows. All actions now Node.js 24 compatible. GitHub deadline: 2026-06-02.
-- [x] **Evaluate nilaway nogo linter** — Evaluated nightshift-21. 4 findings, all false positives (nil slice `[0:]`, map iteration over own keys). Core library clean. Already run `nilness` from x/tools. Not adding — poor signal/noise ratio.
-
----
-
-## Relational / SQL Layer (`pkg/relational/`)
-
-**Started nightshift-24 (2026-04-18).** Port of Java's `fdb-relational-*` modules. Goal: full SQL over FoundationDB, wire-compatible with Java.
-
-### Status quo — Phase 0-2 quality assessment (dayshift-34, 2026-04-19)
-
-**What we have that's solid**
-
-- 13,238 lines of relational test code, 34 test files, ~200 integration tests hitting real FDB
-- 1587/1587 real SQL statements from Java's yamsql corpus parse cleanly — strong signal the grammar is the same
-- Parser is literally the Java grammar vendored verbatim (`RelationalLexer.g4` + `RelationalParser.g4`) — no translation risk
-- 22 files in `pkg/relational/` actually import `pkg/recordlayer` — real wiring, not a parallel universe
-- `metadata` wraps `recordlayer.RecordMetaData`, `catalog` is FDB-backed via `recordlayer.FDBRecordStore`, `embedded.execInsert/Update/Delete` call `SaveRecord`/`DeleteRecord` directly. INSERT round-trips a dynamic protobuf through the actual record-layer store.
-- 52 `// matching Java` / `// ported from Java` markers in the code trace the lineage
-- Catalog subspace layout matches Java's `SystemTableRegistry`
-
-**What's weak / fragile**
-
-1. **Zero cross-language conformance tests for SQL.** `conformance/` has Java↔Go round-trips for record-layer operations (18 conformance files), but nothing for the SQL layer. We have no proof that `SELECT ... FROM t` returns byte-identical rows from Go and Java. We only test Go → Go.
-2. **The yamsql corpus test only verifies that statements *parse*** — nothing verifies that they execute identically. Parsing is the easy half.
-3. **NULL semantics were silently broken in 7 places until dayshift-34.** `UPPER(NULL)` returned `''`, `NULL > 5` returned true, `NULL + 5` errored. Caught only because a dedicated NULL test was written. Raises the question: what else is silently wrong that we haven't stumbled into?
-4. **No SQL-level fuzz testing.** Record-layer parsers have 24 fuzz targets; SQL has zero.
-5. **`connection.go` was 12,000 lines.** Half the execution engine in one file. Refactor underway per RFC 021 — Phase 1a (query.Generator/Plan seam) + Phase 1b (Session extraction) landed 2026-04-22; Phase 1c (actually moving the exec* bodies out) is the next big PR.
-6. **Hand-rolled plans, not Cascades.** Execution paths (proto scan, CTE, JOIN) have three diverging evaluators that were near-duplicates until the scalar function cores were unified dayshift-34. Anything else that diverges is latent inconsistency. RFC 021 Phase 2 replaces this with Cascades.
-7. **No cascading index scan planning. Partially addressed swingshift-44:** the SQL layer now has an 11-branch pushdown chain (covering-index, IN-list × 4, LIKE prefix × 4 + ESCAPE, ORDER BY elimination, LIMIT early-term) so it no longer *always* does table scan + filter. But this is hand-rolled pattern-matching, not cost-based planning. Java's Cascades does cost-based selection across many more shapes. Closing the remaining gap is RFC 021 Phase 2.
-
-**Concrete Java-alignment gaps worth testing before trusting**
-
-- [ ] Feed the yamsql **execution** corpus (not just parse) through both engines and diff result sets — "SQL semantic equivalence" below is the unchecked item.
-- [ ] Run Go's `INSERT INTO t ...` then read it back via Java's JDBC connector. Run the reverse. Both unchecked.
-- [ ] Plan cache key stability (Go hash == Java hash) is unchecked. Doesn't block correctness but blocks shared RPC caching.
-
-**Wiring with core FDB layer — this part is solid**
-
-- `recordlayer.RecordMetaData` / `recordlayer.FDBRecordStore` are the only paths to FDB. No shadow storage, no mocks.
-- Dynamic proto messages built at `CREATE TABLE` via `dynamicpb` go through the same `SaveRecord` path as static proto records — same wire format, same split handling, same index maintainers.
-- Catalog uses `recordlayer.NewStoreBuilder()` like any other consumer.
-- Same FDB transaction model (`db.Run`, `ctx.Transact`), same conflict resolution.
-
-**Bottom line:** the integration with core FDB is real and correct. The Java behavioral equivalence is asserted by construction (same grammar, same wire format, ported code patterns) but not *verified* end-to-end. For something we want bidirectional Java interop on, that's the biggest gap to close — and it's straightforward to do with a Java JDBC round-trip harness in `conformance/`.
-
-### Next-shift priority list — 5-agent QA audit (dayshift-34)
-
-Parallel audits across conformance / Go style / testing / correctness / architecture surfaced these. Ordered roughly by impact.
-
-**HIGH — correctness / Java conformance bugs**
-
-- [x] **`NOT` of UNKNOWN returns TRUE.** `evalExprPredicate` NotExpression does `!v` on a bool that already collapsed NULL→false, so `NOT (x = NULL)` → TRUE. Same pattern in `NOT LIKE NULL`, `NOT BETWEEN NULL`. ✅ swingshift-35: introduced `triBool` Kleene type; all predicate evaluators now have Tri variants that preserve UNKNOWN. Bool wrappers collapse at filter boundary.
-- [x] **Div/0 divergence between evaluator paths.** ✅ swingshift-35: unified on SQL-standard error. `applyArithmeticOp` now delegates to `applyMathOp` — one canonical implementation.
-- [x] **`%` operator missing in proto path.** ✅ swingshift-35: added to `applyMathOp`.
-- [x] **`COUNT(col)` counts NULLs.** ✅ swingshift-35: increment moved inside non-null check; `COUNT(*)` still counts every row (special-cased by `aggArg == ""`).
-- [x] **`SUM`/`AVG` of empty-or-all-NULL group returns 0, not NULL.** ✅ swingshift-35: use `counts[i] > 0` as "non-null seen" gate; synth empty-set row added for ungrouped queries.
-- [x] **`SUM` silently treats string columns as 0.** ✅ swingshift-35: `toFloat64` result now checked; non-numeric → `ErrCodeInvalidParameter`.
-- [x] **Mixed-type equality via stringification.** ✅ swingshift-35: `valuesEqual` + `compareValues` reject cross-type comparisons; only numeric↔numeric coercion preserved.
-- [x] **Catalog subspace incompatible with Java.** ✅ swingshift-35: `DefaultCatalogSubspace()` now packs tuple `(NULL, NULL, int64(0))` = `0x000014` matching Java's `KeySpaceDirectory(SYS, NULL) → (SYS, NULL) → (CATALOG, LONG, 0L)`. Byte-prefix pinned in `TestDefaultCatalogSubspaceBytes`.
-
-**MEDIUM**
-
-- [x] `CAST(NULL AS <type>)` ✅ swingshift-35: early-return `nil, nil` in `castValue`.
-- [x] `ABS(math.MinInt64)` overflow ✅ swingshift-35: return `ErrCodeInvalidParameter` rather than wrap.
-- [x] `LEFT` / `RIGHT` / `SUBSTRING` float length arg ✅ swingshift-35: `toIntegerArg` helper accepts int64 and whole-valued float64, rejects fractional/non-numeric.
-- [x] `ResetSession` leaks ✅ swingshift-35: now rolls back activeTx, clears ctes + schemaCache, restores defaultSchema.
-- [x] Nested SELECT / derived-table write to the same `ctes` map without a scope stack ✅ swingshift-35: `pushCTEScope()` returns a pop closure; each CTE-introducing entry point uses `defer c.pushCTEScope()()` so inner CTE names never leak to the outer scope, and a nested WITH no longer wipes the enclosing scope's CTEs.
-- [x] **Production `fmt.Errorf` sites dropping `ErrorCode`** ✅ swingshift-35: ~30 sites across metadata/catalog/embedded/keyspace/ddl swept to `api.NewErrorf`/`api.WrapErrorf`. Added `api.WrapErrorf` helper for the `%w`-wrapping idiom.
-- [~] **8 panics in `api/datatype_*.go`** — swingshift-35 audit: checked against Java `DataType.java`. Java *also* throws unchecked RuntimeExceptions for these exact cases (`NULL.withNullable(false)` throws `RelationalException.toUncheckedWrappedException()`; `@Nonnull` parameters throw NullPointerException on null). Go's `panic(api.NewError(...))` is the direct analogue — converting to returned errors would **diverge from Java**. The EnumType empty-name/empty-values panics are slightly stricter than Java (Java silently accepts), but defensive: empty-name enum is undefined behaviour. Keeping as-is for Java parity. CLAUDE.md's "no panic" rule gives way to the Java-conformance-first principle here.
-- [ ] `MetaDataEvolutionValidator` exists in `recordlayer` but is **not wired** into `SaveSchemaTemplate` / `CreateTemplate`. **swingshift-35 note**: initially wired into Go's `CreateTemplate`, then reverted after verifying Java's `RecordLayerStoreSchemaTemplateCatalog.createTemplate()` also skips validation (Java only validates inside `FDBMetaDataStore.saveAndSetCurrent`, which is a record-layer-level path not reached by the relational createTemplate flow). Adding validation in Go would reject evolutions Java accepts → a divergence. The audit's original concern is legitimate but applies equally to both codebases; needs an upstream discussion before unilateral Go-side enforcement.
-- [x] **DISTINCT aggregate accumulation** ✅ swingshift-35: the DISTINCT branch in both proto and map paths now dispatches on aggFunc on each first-seen value, accumulating into sums/avgs/mins/maxes symmetrically. `SUM(DISTINCT n)`, `AVG(DISTINCT n)`, `MIN(DISTINCT n)`, `MAX(DISTINCT n)` all work. Test `TestFDB_DistinctAggregates` pins the expected values against {10, 10, 20, 30, NULL, 30} — distinct-non-null set {10, 20, 30} → SUM=60, AVG=20, MIN=10, MAX=30, COUNT=3; all-NULL group → NULL.
-- [x] **Subquery IN + NULL rows** ✅ swingshift-35: `matchSubqueryIN` now returns `triBool` and tracks a `hadNull` flag; when no concrete match is found and any subquery row contributed NULL, returns triNull. SQL §8.4 compliant. Test `TestFDB_SubqueryInNullRow` pins both the IN (id=1 still matches) and NOT IN (everything UNKNOWN → 0 rows) cases.
-- [ ] **ANTLR parser exponential-time on unclosed parens (DoS)** — 4-min FuzzParse run (swingshift-35) surfaced a 3.4KB `CASE WHEN x IS NULL T((((...` input that takes ~8.7s to parse. Same grammar as Java so the vulnerability exists there too. Corpus entry `a1c9802306691af3` pinned as regression; a real fix likely requires grammar tweaks or a parse-time limit in both Go and Java. Upstream ticket worthwhile before Go-only hardening.
-- [x] **rebuildFileDescriptor stack-overflow on cyclic proto deps** ✅ swingshift-35: FuzzDeserializeTemplate surfaced a 4-byte crafted proto (`J\x02\x1a\x00`) whose dependency list cycles; old resolver recursed until the goroutine stack exhausted. Now uses an `inProgress` set + defer-delete for cycle detection, returns `cyclic proto dependency involving X`. Corpus entry `74aaaf17fcdce445` pinned. DoS vector closed.
-- [x] **splitFromProto panic on splitSize=0** ✅ swingshift-35: FuzzKeyExpressionFromProto surfaced a crafted KeyExpression with Split.split_size=0 that tripped Split()'s invariant panic. Now validates before calling Split, returns typed error. Corpus entry `36ef8208aeb1dffd` pinned.
-- [x] **keyWithValueFromProto split_point OOB** ✅ swingshift-35: same defensive pattern — split_point < 0 or > inner.ColumnSize() now errors at deserialisation rather than propagating into downstream slicing.
-- [x] **KeyExpressionFromProto depth limit** ✅ swingshift-35: threaded a depth counter through every recursive helper; cap at 128 levels. Test `TestKeyExpressionFromProtoErrors/depth_limit` builds a Nesting chain of cap+10 layers and asserts the limit trips cleanly (no panic).
-- [x] **messageTypeFromDescriptor stack-overflow on self-referential proto message (divergence from Java)** ✅ swingshift-35: `pkg/relational/core/metadata/proto_types.go` now threads a `visited` set through `protoFieldToDataType` / `messageTypeFromDescriptor` / `protoScalarToDataTypeWithNullability`; re-entering an in-progress message returns `UnresolvedType(fullName)` instead of recursing forever on shapes like `message Tree { repeated Tree children = 1; }`. **Java divergence**: Java's equivalent `Type.fromProtoType → Record.fromDescriptor → Field.fromDescriptor → Type.fromProtoType` has no cycle guard and would throw `StackOverflowError` on the same input. SQL DDL can't express self-reference so Java's production path never hits it, but a proto-rebuilt RecordMetaData can legally carry one. Go now returns a typed placeholder; semantic divergence is zero (SQL can't query recursive columns either way) but crash-safety is strictly better. Worth an upstream issue. Cost: one map alloc per top-level column at schema-load time — negligible, not on query hot path. Covered by `TestMessageTypeFromDescriptor_RecursiveMessageTerminates` + `FuzzMessageTypeFromDescriptor` (33M execs clean).
-- [x] **Explicit `NULLS FIRST`/`NULLS LAST`** ✅ nightshift-36: `orderByClause` now carries a `nullsFirst *bool` override; `extractOrderBy` reads `OrderClauseContext.NULLS() + FIRST()/LAST()` and sets the flag. Added `orderByLess(a, b, ob)` helper that handles both the override and the Java-default (ASC→FIRST, DESC→LAST), called by all three sort sites. Pinned by `order_by_nulls.yaml` (now covers ASC NULLS LAST and DESC NULLS FIRST in addition to the default-direction tests).
-
-**Surfaced by the nightshift-36 conformance harness:**
-
-- [x] **`BIGINT / BIGINT` returned FLOAT (`10/3 = 3.333...`).** Java `ArithmeticValue.PhysicalOperator.DIV_LL` is literal `long / long` (truncation toward zero). Our `applyMathOp` promoted both to float64 before the division. ✅ nightshift-36: fast-path int64÷int64 and int64%%int64 through Go's native operators which match Java exactly. `MUL_LL` / `ADD_LL` / `SUB_LL` now also preserve int64 (no inconsistent int-vs-float output depending on whether the mathematical result happens to be a whole number).
-- [x] **Multi-CTE cross-join returned 1 row instead of |lo|*|hi|.** ✅ nightshift-36: `execSelectQuery` short-circuited to `execSelectFromCTE` whenever the primary source name resolved to a CTE — but that path materialises only one CTE's rows and never looked at `sq.joins`, silently dropping the rhs of `FROM lo, hi`. Fixed by gating the short-circuit on `len(sq.joins) == 0`; with joins we fall through to `execSelectQueryFull` → `execSelectJoin` whose `scanTableToMaps` already resolves CTE names. Pinned by the multi-CTE cross-join case in `cte.yaml`.
-- [~] **INFORMATION_SCHEMA query gaps.** Three issues — one fixed dayshift-37, one partial, one pending:
-  - ✅ **SELECT list dropped on projection.** `SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"` returned all 10 TABLES columns instead of just TABLE_NAME. dayshift-37: `projectSystemRows` helper applies the full SELECT-list projection, aliases, ORDER BY, and LIMIT/OFFSET to rows returned by system-table handlers. Case-insensitive column matching; unknown column raises 42703; computed expressions rejected with a clear error. Pinned by `information_schema.yaml`.
-  - [~] **Case mismatch on TABLE_NAME filter.** The nightshift-36 repro used uppercase `'EMP'` against a table stored as uppercase; today's testing shows `CREATE TABLE` preserves identifier case (so `CREATE TABLE emp` is stored as `emp`, and `WHERE TABLE_NAME = 'emp'` works). The pre-existing sqldriver tests using uppercase literals don't actually create uppercase-named tables, so the original 0-rows claim may have been incidental. Leave as "works today for exact-case match" — if users want case-insensitive TABLE_NAME comparison, `WHERE UPPER(TABLE_NAME) = 'EMP'` is the workaround. Real fix (if any) is upstream in the DDL identifier-normalisation rule, not in the system-tables handler.
-  - [ ] **Parser rejects unquoted `FROM INFORMATION_SCHEMA.TABLES`.** `TABLES` / `COLUMNS` / `INDEXES` / `SCHEMATA` are reserved keywords in the grammar. Workaround: quote the identifiers (`FROM "INFORMATION_SCHEMA"."TABLES"`). Proper fix: extend the grammar to allow these identifiers in qualified-table position (after `INFORMATION_SCHEMA.`). Non-trivial parser work — no scenario yet until grammar is touched.
-- [x] **`SELECT tbl.*` qualified-star.** ✅ dayshift-37: `projQualifier` now plumbed through `selectQuery`; at execution time the JOIN / comma-join path resolves the qualifier against `tableAlias` / `joins[i].alias`, pulls the matching source's column list from the record type descriptor (or CTE column list for CTE sources), and prefers the `"alias.col"` row key for lookups so overlapping unqualified names don't collide. The single-source (full / CTE / no-FROM) paths validate the qualifier matches this source's alias or table name and otherwise raise SQLSTATE 42F01 (undefined_table). Pinned by `qualified_star.yaml` (single-source, comma-join a.* / b.*, aliased source, wrong-qualifier errors on both single- and multi-source). ✅ swingshift-38 extended: mixed `SELECT a.*, b.label` (qualifier-star alongside explicit columns) now works too. Parser records a parallel `projStarQualifiers` slice; a new `expandStarSlots` helper runs at the top of `execSelectJoin` / `execSelectQueryFull` and replaces each star slot with its resolved alias-qualified columns. Pinned by 6 new scenarios (mixed order, two-star, star + WHERE, wrong-qualifier rejection, explicit INNER JOIN path).
-- [x] **Parenthesised boolean expressions in WHERE / HAVING / JOIN** ✅ nightshift-36: grammar parses `WHERE NOT (x = y)` as a `RecordConstructorExpressionAtom` with a single unnamed field. Added unwrap case across all three evaluators: `evalExprAtom` (proto WHERE), `evalExprAtomOnMap` (JOIN WHERE / ON, CTE WHERE), and `evalHavingTri` (HAVING). Boolean inners route through the appropriate tri-state evaluator so NULL-comparisons return tri-state NULL (encoded as `nil` in the value evaluators) rather than collapsing to FALSE — which kept `NOT (b = NULL)` returning UNKNOWN (filtered) instead of wrongly flipping to TRUE. Multi-field / named constructors still error. Pinned by `boolean.yaml`, `having.yaml`, and the JOIN case in `join_null_key.yaml`.
-- [x] **`AVG()` return type.** Verified nightshift-36: both proto (execSelectByIndex) and map (aggregateMapRows) paths divide through `float64(count)`, so `AVG(bigint_col)` returns DOUBLE matching Java's `AggregateValue`. Pinned by `avg.yaml`.
-- [x] **Outer-join conformance scenarios.** ✅ nightshift-36: added `outer_join.yaml` with LEFT OUTER JOIN NULL-padding for unmatched left rows, and RIGHT OUTER JOIN. Deeper combinations (OUTER + WHERE + GROUP BY, NULL-vs-NULL in join key) remain a follow-up.
-- [x] **RIGHT OUTER JOIN double ON-evaluation (pre-existing, flagged dayshift-37 review).** ✅ dayshift-37: allocate `matchedRight` once at the top of the jc loop, set `matchedRight[ri] = true` during the main matching pass whenever the ON predicate passes, drop the second nested loop entirely. O(n*m) ON evaluations, down from 2*O(n*m). Pinned by the existing RIGHT OUTER JOIN tests in `outer_join.yaml`.
-- [x] **ORDER BY / LIMIT / OFFSET on UNION apply to combined result.** ✅ swingshift-38: `execUnion` now parses the right side directly via `extractFromQueryTerm`, strips `orderBy` / `limit` / `offset` off the parsed `selectQuery` before executing, and applies them to the combined row set post-concatenate-and-dedupe. Column lookup is against the left SELECT's result schema (SQL-standard: left names win); right-only columns error 22023. Expression-based ORDER BY on a union rejected since the combined row set has no backing map/message. Pinned by 5 new scenarios in `union_columns.yaml`: multi-column positional ORDER BY, ORDER BY DESC LIMIT, right-only column error, OFFSET+LIMIT combined, UNION DISTINCT + ORDER BY with dedup before sort.
-- [x] **Aggregate over arithmetic expression.** ✅ swingshift-38: `extractAggFunc` now classifies the FunctionArg as either a bare column ref (keeps proto-path field-descriptor fast path) or an arbitrary expression (stored in `aggSelectCol.aggExpr`, evaluated per row/message via `evalExpr`/`evalExprOnMap`). Covers SUM/AVG/MIN/MAX/COUNT and their DISTINCT forms; NULL propagation and empty-group semantics match SQL standard on both paths. Pinned by 11 new positive assertions in `aggregate_expr.yaml` (bare-column + expression interleaving, ORDER BY on grouped aggregate-over-expression, COUNT(DISTINCT expr), empty-input NULL, non-numeric CASE error).
-- [x] **GROUP BY on expressions.** ✅ swingshift-38: `selectQuery` gained a parallel `groupByExprs []IExpressionContext` slice; when `columnNameFromExpr` rejects a GROUP BY item, the raw expression is captured and evaluated per row/message to derive the group key value. Both aggregation paths (map-row JOIN/CTE and proto single-table) widened symmetrically. Pinned by 3 new assertions in `group_by_multi.yaml` (integer-division bucketing, boolean expression grouping, GROUP BY expression + HAVING).
-- [x] **UNION column-count mismatch silently accepted.** dayshift-37: `execUnion` now compares `len(leftCols)` vs `len(rightCols)` and rejects with SQLSTATE 42601. Previously the executor would stitch together rows of different widths, producing undefined results (driver panic or wrong answers downstream). Pinned by `union_columns.yaml`.
-- [x] **RIGHT OUTER JOIN: unqualified column from unmatched right row.** ✅ nightshift-36 fix: when materialising the NULL-left row, sample a left row's keys (prefer `leftRows[0]` — pure left — and fall back to `joined[0]` if a is empty) and explicitly set any qualified left-side keys (e.g. `a.id`) to NULL in the combined map, skipping keys that also exist on the right (unqualified `'id'` legitimately takes the right's value). Fixes `SELECT a.id FROM a RIGHT OUTER JOIN b ON a.k = b.k` returning b.id instead of NULL for unmatched-right rows. Pinned by the third row in `outer_join.yaml`'s RIGHT OUTER JOIN test. ✅ dayshift-37 extended: left-side keys now derived from metadata (record type descriptor / CTE column list) via a `collectLeftJoinKeys` helper + a `leftSources` slice threaded through the join loop, so the NULL-padding works even when the left table is entirely empty (no runtime row to sample). Pinned by the `a_empty` RIGHT OUTER JOIN case in `outer_join.yaml`.
-- [x] **Arithmetic overflow SQLSTATE.** ✅ nightshift-36: added `ErrCodeNumericValueOutOfRange = "22003"` to `api/errcode.go`, switched arithmetic-overflow sites (`applyMathOp`, `ABS(MinInt64)`, `CAST float-to-int range`) from 22023 to 22003. Java's `fdb-relational-core` doesn't catch `ArithmeticException` explicitly (it propagates as an unchecked exception with no SQLSTATE), so strictly we're more informative than Java here. Scenarios + `ABS` test updated to expect 22003.
-- [x] **INSERT with duplicate PRIMARY KEY silently REPLACES.** ✅ nightshift-36: INSERT paths (execInsert + execInsertSelect) now call `store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)`; the resulting `*recordlayer.RecordAlreadyExistsError` flows through `wrapSaveRecordError` to SQLSTATE 23505. UPDATE continues to use plain `SaveRecord` since it legitimately overwrites. Pinned by `unique_violation.yaml` (now asserts that a failed-duplicate INSERT leaves the original row untouched).
-- [x] **Integer overflow silent wrap (`+` / `-` / `*`).** Java uses `Math.addExact / subtractExact / multiplyExact` which throw `ArithmeticException`; our `applyMathOp` integer fast-path used Go's native operators which silently wrap on overflow (e.g. `MAX_INT + 1 → MIN_INT`). ✅ nightshift-36: added `addInt64Checked`/`subInt64Checked`/`mulInt64Checked` helpers with Hacker's-Delight overflow tests (sign-bit XOR for +/-, divide-back for *). MinInt64/-1 for `/` also caught (abs value doesn't fit). SQLSTATE `22003` NUMERIC_VALUE_OUT_OF_RANGE (added in this shift) — SQL-standard class-22 code for this exception class. `ABS(MinInt64)` and `CAST(float_overflow AS BIGINT)` also switched to 22003 for consistency. Pinned by `overflow.yaml` + updated `cast.yaml` + updated `ABS(MinInt64)` sqldriver test.
-
-### Java-aligned bugs fixed in nightshift-39 (2026-04-21)
-
-The probe-against-Java-tests strategy surfaced and fixed 13 real Java-alignment bugs:
-
-- [x] **Cross-type comparison** errors 22000 (9b55d469, ad558bcf): Java's `PromoteValue.isPromotionNeeded` → `SemanticException(INCOMPATIBLE_TYPE)` → `CANNOT_CONVERT_TYPE`. Both `=/!=/<>/<>` and IN-list paths.
-- [x] **NULL comparison projection** returns NULL not FALSE (e460afec): `SELECT b = true FROM lb` for b=NULL now surfaces NULL.
-- [x] **IN-list accepts arbitrary expressions** (ad558bcf): `WHERE b IN (1+0, 3+0)` now works (was "must be constant").
-- [x] **SELECT-list IS predicate evaluated** (3c1074e7): `SELECT b IS TRUE FROM lb` now returns the 2-valued result, not the raw column.
-- [x] **GREATEST/LEAST cross-type** errors 22000 (3c1074e7).
-- [x] **Boolean op projection** preserves UNKNOWN as NULL (d0f2a3a1): `SELECT b AND TRUE FROM lb` for b=NULL → NULL.
-- [x] **SELECT * + GROUP BY** errors 42803 (acff37b3): SQL §7.10 GR1 validation.
-- [x] **SELECT qualifier.* + GROUP BY** errors 42803 (1269dc6e).
-- [x] **INSERT column-count mismatch** errors 22000 (f1265c1a): was 22023.
-- [x] **CTE column rename** `WITH name(c1, c2) AS (...)` (bf0f05e8, b9f5ed38): grammar accepted but materializer ignored.
-- [x] **IS [NOT] DISTINCT FROM in JOIN WHERE** (9c24cbfc + 22313c04): both value-eval + tri-predicate paths were missing the null-safe branch.
-- [x] **GROUP BY with expression projection** (946eef1a): `SELECT a+b FROM t GROUP BY a, b` errored 'a+b not found'. Fixed.
-- [x] **GROUP BY without aggregate silently ignored** (946eef1a): `SELECT a FROM t GROUP BY a` returned every row. Fixed — now behaves like DISTINCT.
-- [x] **CAST to INTEGER range-check** (ad068502): `CAST(9223372036854775807 AS INTEGER)` now errors 22F3H (Java CastValue.LONG_TO_INT). Go was silently accepting LONG values beyond Integer.MAX_VALUE because castValue treated INTEGER and BIGINT identically.
-- [ ] **Ambiguous column reference in JOIN** (pinned by `ambiguous_column.yaml`): Java errors 42702 when an unqualified column name appears in multiple joined tables. Go silently picks right side via map-merge last-write-wins in `execSelectJoin`. `ErrCodeAmbiguousColumn` defined but no call sites. Needs: detect duplicate bare-keys during join-merge, surface 42702 on resolution.
-- [x] **UNION arity mismatch** (e882b918): now errors 42F64 (UNION_INCORRECT_COLUMN_COUNT, Java class-42) instead of generic 42601 SYNTAX_ERROR. ErrCodeUnionIncorrectColumnCount was defined but unused.
-- [x] **BETWEEN cross-type bounds** (c4d7c99d): `col BETWEEN 10 AND 'a'` now errors 22000 (CANNOT_CONVERT_TYPE) instead of returning silent empty result. valuesComparable check added to evalBetweenPredicateTri.
-- [x] **SQL §7.10 GR1 — bare col + aggregate without GROUP BY** (fca612f7): `SELECT id, COUNT(*) FROM t` now errors 42803 (grouping_error). Go previously silently reclassified bare columns as groupCol entries, producing nonsense output. Validation walks sq.aggCols for groupCol entries and column-referencing outExprs that lack aggregates, rejecting when sq.groupBy is empty.
-- [x] **CTE column-rename count mismatch** (98076b08): now errors 42F10 (INVALID_COLUMN_REFERENCE, Java class-42) instead of generic 22000.
-- [x] **Duplicate CTE name in WITH** (c82cbd03): `WITH c1 AS (...), c1 AS (...)` now errors 42712 (DUPLICATE_ALIAS). Go previously silently overwrote the first definition.
-- [x] **INSERT arity with explicit column list** (83951668, supersedes b742b250): explicit column list + arity mismatch (either direction) → 42601 SYNTAX_ERROR. Implicit list + too-few → 22000 CANNOT_CONVERT_TYPE. Matches Java's inserts-updates-deletes.yamsql.
-
-### Remaining SQL gaps — prioritized list (dayshift-40, 2026-04-21)
-
-**dayshift-40 landings**:
-- [x] Ambiguous unqualified column in JOIN errors 42702 (SELECT/WHERE/ON/ORDER BY). Sentinel `ambiguousColumnMarker` poisoned at JOIN merge time; detected at every lookup site. `ambiguous_column.yaml` flipped from divergence pin to assertion across 9 assertions.
-- [x] Wrong JOIN qualifier errors 42F01 (JOIN SELECT projection). Previously silently fell back to the bare-column lookup. `wrong_qualifier.yaml` pins 6 scenarios. Scope: projection only; WHERE/ON expr paths still silently resolve bare column — tracked as next-shift gap.
-- [x] `SELECT COUNT(*) AS alias FROM …` propagates through derived tables. countStarAlias captured at parse time; `countStarOutName()` helper emits the alias at all three countStar fast-path sites + the countStar→aggCols GROUP BY demotion preserves it. `nested_derived_table.yaml` covers fast-path / grouped / HAVING / SUM-alias regression guard.
-- [x] `SELECT id GROUP BY col1` errors 42803 in the proto path (previously silent NULL). `groupByNames` check fires after the fd-exists 42703 check so Java's error order is preserved. Scope: proto path only; JOIN map path still silent — tracked as next-shift gap.
-- [x] `overflow_mixed.yaml` probe confirmed no divergence on mixed int+float arithmetic (stale `feedback_next_shift_arithmetic_overflow` memory removed; nightshift-36 already fixed the int64+int64 path).
-- [x] Boolean Kleene `b AND NULL` / `b OR NULL` added to boolean.yaml.
-- [x] Duplicate column in ORDER BY errors 42701 (was silently accepted, Postgres-style). Aligned with Java's orderby.yamsql.
-- [x] Fractional float → integer column assignment errors 22000 (was 22023). Aligned with Java's case-when.yamsql.
-- [x] UNION (implicit DISTINCT) with arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED), distinct from UNION ALL's 42F64. Aligned with Java's union.yamsql.
-- [x] UNION with incompatible column types errors 42F65. Runtime probe samples the first non-NULL value from each side per column and requires `valuesComparable` (same shape as the mixed-type-equality fix). All-NULL columns skip — can't infer a type without a schema-typed plan. Narrower than Java's plan-time check but catches the common case.
-
-**Next-shift follow-ups (surfaced by dayshift-40 code review)**:
-- [ ] ORDER BY dedup edge cases (niche, pre-existing): `ORDER BY b, B` (case-folded identifiers — we don't normalize, Java does) and `ORDER BY a.b, b` (qualified-vs-bare resolving to the same column). Neither is deduped today. Fix would ride on a future identifier-folding pass.
-- [x] **Qualified vs bare GROUP BY / SELECT asymmetry** (nightshift-42): both directions now reconcile. `SELECT col1 FROM … GROUP BY x.col1` and `SELECT x.col1 FROM … GROUP BY col1` both emit the grouped column correctly (previously one side emitted NULL for every group). Fix: groupColIdx registers the bare last-segment alongside the qualified key, and the emit path falls back to the bare form when a qualified SELECT doesn't match an unqualified GROUP BY. Same symmetry applied in the map-path (aggregateMapRows) and proto-path aggregate emit sites. Java's groupby-tests.yamsql line 117 pattern pinned.
-- [x] **Derived-table + GROUP BY Java alignment** — addressed in swingshift-41. The extractFromSimpleTable derived-table branch previously returned early, dropping ORDER BY / LIMIT / OFFSET / GROUP BY / HAVING parse + GR1 validation. Refactored to fall through. Plus aggregateMapRows now seeds group-by values into the outExpr rowMap, validates aggregate args against source columns (42703), and detects ungrouped outExpr column refs (42803). `derived_table_group_by.yaml` pins 7 cases from Java's groupby-tests.yamsql (lines 136–185).
-  - [x] Remaining sub-item — addressed in swingshift-41 (commit d7df086c). `GROUP BY col AS x, col2 AS x` now errors 42702 (AMBIGUOUS_COLUMN). A single AS alias is accepted (Java's syntactic extension) but duplicates are rejected. **Alias as SELECT-list reference landed nightshift-42** (commit 8e2b8733): `SELECT x FROM t GROUP BY col1 AS x` now works via post-parse rewrite of projCols/aggCols that match a GROUP BY alias; the alias is preserved as the output column name. Alias-of-alias (`SELECT YY AS XX FROM t GROUP BY col1 AS YY`) also works.
-- [x] **SELECT \* on JOIN with shared CTE column**: addressed at the end of dayshift-40 — introduced a `collectCols` helper in the SELECT * expansion that reads CTE column lists when `md.GetRecordType` is nil, so `starColAliases` now carries the alias for CTE sources too. Pinned by a new case in `ambiguous_column.yaml`.
-- [x] **WHERE/ON with wrong qualifier**: addressed at the end of dayshift-40 — added `validQualifiers` as a query-scoped field on `EmbeddedConnection`, installed by `execSelectJoin` via `pushValidQualifiersScope`, consulted by `evalExprAtomOnMap` to reject qualified references whose qualifier isn't in scope (42F01). Pinned in `wrong_qualifier.yaml` for WHERE and INNER JOIN ON clauses.
-- [x] **Map-path 42803 for ungrouped projection**: addressed at end of dayshift-40 — `aggregateMapRows` now runs a pre-check that probes the first filtered row's keys to distinguish defined-but-ungrouped (→ 42803) from undefined (left for a future schema-threaded check). Skips on empty filtered (can't distinguish; preserves silent-NULL). JOIN+GROUP BY cases pinned in `group_by_validation.yaml`.
-
-### Pushdown / planner follow-ups (swingshift-44, 2026-04-22)
-
-Post-merge carry-overs from the swingshift-44 pushdown-saturation work
-(PR #98 landed covering-index, IN-list × 4, LIKE prefix × 4 + ESCAPE,
-ORDER BY elimination, LIMIT early-termination, 11-branch chain).
-
-**HIGH — still deferred from dayshift-43**
-
-- [ ] **Intermingled schema type-filter wrapper** — re-enable PK pushdown on `FieldKeyExpression` PKs (intermingled tables) by wrapping the narrowed cursor with a type-filtering predicate. **Blocker**: `INTERMINGLE_TABLES` exists in the lexer/parser grammar but isn't wired through DDL. Either wire DDL end-to-end first, or test via unit tests with hand-constructed metadata.
-
-**MEDIUM — complement the landed pushdown chain**
-
-- [x] **ORDER BY DESC via reverse scan (PK)** — ✅ nightshift-45 (PR #107): added `naturalOrderSatisfiesReverse` (DESC-prefix counterpart to the ASC check) + `scanPropsForOrder` direction selector. PK branches (equality / range / composite-range / composite-prefix / full-scan) now build their cursor with `ReverseScan()` when ORDER BY is an all-DESC prefix of `pkCols`. `order_by_elimination.yaml` pins 9 new cases.
-- [x] **ORDER BY equality-prefix relaxation** — ✅ dayshift-46 (PR #108): `collectEquatedCols` identifies WHERE cols equated to a constant literal at AND-conjunction top level; `naturalOrderSatisfiesDir` strips equated cols from both naturalOrder AND orderBy clauses (direction / NULLS on a constant is a no-op). `WHERE a = 1 ORDER BY b, c` on PK (a, b, c) now eliminates the sort. Handles leading AND non-leading equated cols. 31 new unit tests + 7 new yamsql scenarios.
-- [x] **Secondary-index reverse scan** — ✅ dayshift-46 (PR #108): ScanProperties plumbed through `secondaryIndexPushdownCursor`, `secondaryIndexRangeScanCursor`, `secondaryIndexCompositeRangeScanCursor`, `secondaryIndexCompositePrefixScanCursor`, and `coveringIndexRangeScanCursor`. Each SELECT-path branch picks direction via `scanPropsForOrder` using its branch-specific naturalOrder. `WHERE v > 0 ORDER BY v DESC` on `idx_v(v)` now reverses instead of sorting. IN-list lazy chains keep forward scan (sub-scan order is IN-list declared order, reverse wouldn't help).
-- [x] **Pure-prefix composite-secondary-index pushdown** — ✅ dayshift-46 (PR #108): new `trySecondaryIndexCompositePrefixFromWhere` matches the longest leading prefix of a composite index's cols with equalities in WHERE; narrows to tuple-prefix scan on the index subspace. Covering-index variant piggybacks on `buildSecondaryIndexEqualityTupleRange` + `secondaryIndexKeyTuple`. Last secondary branch in the dispatcher — tighter forms win first. 11 new yamsql scenarios in `composite_secondary_index_prefix_pushdown.yaml`.
-- [ ] **IN-list via subquery decomposition** — `WHERE col IN (SELECT …)` currently bails. If the subquery is small (pre-evaluated to a literal list via the existing `preEvaluateScalarSubqueries` path), decompose into N point scans like literal IN-list. Scalar subqueries already pre-evaluate; rows-result subqueries don't yet.
-- [x] **Fuzz corpus with string dimension** — ✅ nightshift-45 (PR #107): `FuzzLikePatternToPrefix` now takes `(pattern, escape, s)`. When the harness finds `likeMatch(pattern, s, escape) && ok` it asserts `strings.HasPrefix(s, prefix)` — directly pins the correctness invariant of the pushdown. The fuzzer found one false-negative during development (non-UTF-8 bytes fold to U+FFFD in `likeMatch` but remain byte-distinct in `HasPrefix`); restricted to valid-UTF-8 inputs to match the protobuf STRING column contract. 5-minute soak = 549M execs clean.
-- [ ] **Mutual recursion** — `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs are evaluated in declaration order; mutual refs bail. (Carried forward from dayshift-43.)
-- [ ] **Continuation resumption of partial recursive results** — for `maxRows: 1` pagination. Java's `RecursiveStateManager` uses TempTable cursors. (Carried forward from dayshift-43.)
-
-**LOW — niche / perf polish**
-
-- [ ] **ORDER BY dedup edge cases** — `ORDER BY b, B` (case-folded) and `ORDER BY a.b, b` (qualified-vs-bare resolving to the same column). Rides on a future identifier-folding pass. (Duplicate of the line-570 item; listed here for completeness.)
-- [ ] **GROUP BY (a+b) AS alias** — expression group keys can't be referenced via alias from the SELECT list because the rewrite path only handles bare-column group-by entries.
+- [ ] **Pool proto messages in `deserializeAndDiscover`** — `rt.newMessage()` allocates via reflection per record (77.5MB / 564K allocs in BenchmarkScanRecords, ~9%). BUT: messages escape to user code via `FDBStoredRecord.Record`, so pooling isn't safe without API changes (copy-on-return or explicit release). Only viable if scan API returns copies or users opt-in.
 - [ ] **Benchmark pushdown vs full scan** — no direct micro-benchmark. Existing `just bench` doesn't isolate the cursor-pick cost; a targeted bench would make the perf win observable and guard against regressions.
-- [x] **One-element IN-list → equality** — ✅ nightshift-45 (PR #107): at the dispatcher for both SELECT and UPDATE/DELETE, a 1-element IN-list promotes to the equality path (PK and secondary). Drops the lazy-chain wrapper + unlocks `naturalOrder = pkCols` for ORDER BY elimination + LIMIT early-termination. Covers NULL-drop edge case (`pk IN (5, NULL)` → single-elem after NULL drop → equality). 4 new yamsql cases.
-- [x] **Pure-prefix composite-PK pushdown** — ✅ nightshift-45 (PR #107): new `tryPKCompositePrefixFromWhere` picks the longest leading prefix of PK equalities; narrows to `[rtk, eq_vals...]` as a tuple prefix, trailing cols stay post-filter. Placed as the LAST PK branch (tighter composite forms still win first). `pk_prefix_pushdown.go` + 13 new yamsql cases in `composite_pk_prefix_pushdown.yaml`. Secondary-index equivalent still pending — listed below under MEDIUM follow-ups.
 
-### Cross-language SQL conformance — still the biggest hole
+### Testing
 
-See "Phase 0-2 quality assessment" (line 435) for the full assessment.
-The short version:
+- [ ] **Zero fuzz targets in `pkg/relational/`** (record-layer has 24). Add `FuzzParse(sql)`, `FuzzEvalExpr(tree)`, `FuzzContinuationToken`, `FuzzSchemaTemplateProto`.
+- [ ] **Error-path coverage ~0.2% in `pkg/relational/`** (2 error assertions vs 862 success in `embedded_fdb_test.go`). Add tests for type mismatch on INSERT, NOT NULL violation, missing schema, invalid SQL at execute time, duplicate CREATE DATABASE, PK conflict.
+- [ ] **Parser tree-shape conformance tests** (stretch) — feed the same SQL corpus through both parsers and diff trees, or pick representative corners. Requires JSON serialiser on both sides. Not a blocker for Phase 2 — semantic analyzer tests catch tree-shape regressions indirectly.
 
-- [ ] **Actually run the yamsql corpus through Java *and* Go and diff result sets.** The corpus (1587 statements) currently only verifies parsing; execution equivalence is asserted by construction, not tested. Seed candidate: `conformance/sql/` with fdb-relational maven deps wired into Bazel, a `just conformance-sql-java` target. This is the single highest-ROI unchecked item in the SQL layer.
-- [ ] **Write-in-Go → read-in-Java round-trip for INSERT / SELECT.** And the reverse. Would have caught the catalog subspace bug fixed in swingshift-35.
-- [ ] **Plan-cache key stability** (Go hash == Java hash) — blocks shared RPC caching but not correctness.
+### Infrastructure
 
-### Remaining SQL gaps — prioritized list (nightshift-39, 2026-04-21)
+- [ ] **Throughput benchmarks fail on single-node testcontainer** — `BenchmarkThroughputInsertBatchConcurrent128` overwhelms FDB testcontainer. Two issues: (1) GRV cache staleness causes "record store does not exist" on first goroutines after setup; fix: `InvalidateGRVCache()` after store creation. (2) FDB 5-second tx timeout under load → "context deadline exceeded". Fix: skip in `just bench` or use larger cluster. `just bench-ci` excludes throughput benchmarks and works fine.
 
-User direction: **"make sure 100% alignment with Java is given"**. Each item below MUST be cross-checked against `fdb-record-layer/fdb-relational-core/` source before implementing. The earlier "Java conformance always OK" memory is rescinded for net-new SQL features — for those we now verify Java behavior first.
+### Proto / metadata
 
-**HIGH — must-have for non-trivial SQL, ranked by impact**
+- [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages). Regenerate via `just generate`.
 
-- [x] **Correlated subqueries** — addressed in swingshift-41. EXISTS / NOT EXISTS / IN / NOT IN can now reference outer-row columns in both the proto-path (single-source outer) and map-path (JOIN outer) WHERE evaluators. Implementation: outer-row scope stack (`outerScopes []outerScope`) on `EmbeddedConnection`, pushed at each subquery entry point, consulted by `evalExprAtom` / `evalExprAtomOnMap` when inner resolution fails. SQL-level aliases are threaded through via `currentSourceAliases` (set by the proto scan loop) so `FROM emp AS e WHERE EXISTS (... WHERE id = e.id)` works. Pinned by `correlated_subquery_probes.yaml` (22 cases). Scalar subquery correlation stays unsupported — scalar subqueries pre-evaluate before the outer scan starts (to avoid nested FDB txns), which precludes per-row binding; pinned as 42703.
-- [x] **Cross-type comparison errors 22000** (nightshift-39 commit `9b55d469`): Java's PromoteValue.isPromotionNeeded → SemanticException(INCOMPATIBLE_TYPE) → CANNOT_CONVERT_TYPE (22000). Go now matches — both = / !=/ </> and IN-list paths.
-- [~] **PK pushdown — equality + range, single + composite** (nightshift-42, extended dayshift-43): equality pushdown covers `WHERE pk = lit` (single-col) and `WHERE pk1 = lit1 AND …` (composite, every PK column equated). Single-col range pushdown covers `>`/`>=`/`<`/`<=` plus bounded pairs. Composite range pushdown, **relaxed in dayshift-43**, now fires when the FIRST PK col carrying a range bound is preceded by equalities on every earlier PK col — no longer restricted to the LAST col. PK cols after the range col are ignored by the pushdown and re-applied as post-filter. Tuple construction uses the record-type-key prefix; endpoints via `EndpointTypeRangeInclusive`/`RangeExclusive`. AND chains with extra non-PK predicates push down; extras run as post-filter via scan's evalPredicate. All three cursor sites (SELECT, UPDATE, DELETE) use the shared `tryPKEqualityFromWhere` → `tryPKRangeFromWhere` → `tryPKCompositeRangeFromWhere` → scan fallback chain. Gated on: no aggregates/GROUP BY/HAVING/COUNT(*) (SELECT only), AND-only top level, type-matched literals, CompositeKeyExpression PK shape (intermingled-table bare-Field PK bails to scan for type-safety). `BETWEEN lo AND hi` pushdown added in dayshift-43 (inclusive both sides; NOT BETWEEN bails to scan). Symmetric (`lit OP col` flips operator), qualified refs, type mismatch surfaces 22000 via scan. Pinned by `pk_pushdown.yaml` — covers SELECT / UPDATE / DELETE × equality / range × single / composite PK, including first-col / middle-col ranges with trailing-col post-filter and BETWEEN. **Follow-up**: intermingled-schema type-filter wrapper.
-- [~] **Secondary-index pushdown** (nightshift-42, extended dayshift-43, covering + IN-list + LIKE prefix + composite-IN added swingshift-44): full pushdown chain now has 11 branches — single-col and composite VALUE index, equality / IN-list / range / composite-range / LIKE-prefix, with covering-index optimisation on every secondary-index branch. See execSelectQueryFull for the block comment listing the chain in order.
-  - **Single-col equality** (nightshift-42): `WHERE col = lit`.
-  - **Composite equality** (nightshift-42): `WHERE a = lit1 AND b = lit2 ...` — tuple-prefix equality.
-  - **Range predicates** (dayshift-43): single-col + composite `>`, `>=`, `<`, `<=`, bounded pairs, BETWEEN. Composite relaxed to "first varying col carries a bound, all earlier cols equated".
-  - **Covering-index optimisation** (swingshift-44 `b2260177`): on SELECT, when every referenced column is in (index cols, PK cols), synthesise the record from the IndexEntry and skip the by-PK fetch. One FDB round-trip per row instead of two. Applies uniformly to equality / IN-list / range / composite range / LIKE prefix sub-scans.
-  - **IN-list pushdown** (swingshift-44 `2323bb93` + `55277d19` + `4fafe11a`): single-col + composite, PK + secondary-index. `WHERE col IN (v1..vN)` decomposes into N sequential sub-scans (lazy chain — next sub-scan opens only after previous exhausts). Composite form: `WHERE a = lit AND b IN (...)`  with leading-eq on prior cols. NOT IN / subquery IN / NULL-only lists bail.
-  - **LIKE prefix pushdown** (swingshift-44 `0730e9fa` + `bcf10093` + `4f0a0184`): single-col + composite PK + composite secondary, with ESCAPE clause support. `WHERE col LIKE 'foo%'` narrows to `[prefix, strinc(prefix))`. ESCAPE char consumes the next char verbatim (including `%`, `_`, or escape itself). Interior wildcards / unescaped `_` / empty prefix / dangling escape bail to scan.
-  - **Fuzz**: FuzzLikePrefixStrinc pins the byte-level successor; FuzzLikePatternToPrefix cross-checks the extracted prefix against likeMatch for false-negative narrowing.
-  - Pinned by `secondary_index_pushdown.yaml`, `covering_index_pushdown.yaml` (23), `in_list_pushdown.yaml` (34), `like_prefix_pushdown.yaml` (37). `IsIndexScannable` guard is applied inside each helper's index-iteration loop (dayshift-43 fix 5e28f487); non-scannable indexes are skipped so a later scannable match can still be picked up.
-- [~] **Date scalar functions** (nightshift-39): CURRENT_TIMESTAMP / CURRENT_DATE / NOW / SYSDATE / CURDATE / CURTIME / UTC_TIMESTAMP / UTC_DATE / UTC_TIME + YEAR / MONTH / DAY / HOUR / MINUTE / SECOND / DAYOFWEEK / DAYOFYEAR all added. Within-statement timestamp consistency per SQL §6.32. Note: these are Go-only extensions — Java's fdb-relational-core doesn't have them; kept as they're harmless Postgres-style extensions useful to users.
-- [ ] **Date arithmetic** — `DATE_ADD`, `DATE_SUB`, `DATEDIFF`, `EXTRACT(YEAR FROM d)`. Java `DateAddValue` / `DateSubtractValue` / `ExtractValue` exist only as stubs; effectively absent from fdb-relational-core. Not on the Java alignment path.
-- [ ] **INTERVAL syntax** — `WHERE created > NOW() - INTERVAL '1 day'`. Grammar slot exists. Java `IntervalValue`. Big usability gap.
+---
 
-**MEDIUM — Java has these, we should align**
+## LOW
 
-- [x] **Recursive CTEs** (nightshift-42): `WITH RECURSIVE c AS (seed UNION [ALL] recursive) ...` works via semi-naive (level-order) or DFS (pre/post-order) evaluation. `TRAVERSAL ORDER pre_order | post_order | level_order` all supported — matches Java 4.7.1.0+ `RecursiveUnionCursor` DFS modes. Iteration / emit cap 10000 guards cyclic UNION ALL (errors 54F01). UNION DISTINCT converges naturally by filtering rows already seen. RECURSIVE-keyword-without-self-reference routes to the non-recursive path (Postgres-compatible). Column-rename `WITH RECURSIVE c(col1, col2) AS ...` propagates into the recursive branch binding. Pinned by `recursive_cte.yaml` (ancestor/descendant chains, counters, renames, arity mismatch 42F64, cycle safety via both UNION DISTINCT convergence + UNION ALL emit cap, all three traversal orders on both chain and branching tree data, multi-CTE WITH RECURSIVE, IN-subquery use, aggregate/LIMIT over recursive CTE). **Follow-up**: mutual recursion (multiple CTEs in one WITH RECURSIVE that reference each other), continuation-resumption of partial recursive results.
-- [x] **CASE WHEN inside aggregates** — verified swingshift-41. `SUM(CASE WHEN ...)`, `COUNT(CASE WHEN ...)`, `SUM(CASE) + GROUP BY` all work via `aggregate_expr.yaml`. Nested CASE + arithmetic-in-branches regression-pinned in `case_when.yaml`.
-- [x] **Qualified projection in CTE body** (nightshift-42): fixed on both ends. CTE materialisation strips projection qualifiers via `stripCTEColumnQualifiers` (applied in both non-recursive and recursive-seed paths). Single-source SELECT projection in `execSelectQueryFull` also strips a trivial alias qualifier (`d.id` where `d` matches `sq.tableName` or `sq.tableAlias`) before the proto field lookup — this was the underlying blocker. `WITH x AS (SELECT d.id FROM t AS d) SELECT id FROM x` now resolves end-to-end (matches Postgres).
+### Out of scope (Java doesn't have it OR explicitly deferred)
 
-**MEDIUM — Java does NOT have, do not add (per 2026-04-21 direction)**
+These are listed for visibility — DO NOT add them. Verified against Java source 2026-04-21.
 
-- ❌ **Window functions** — verified: zero `WindowedAggregateValue`/`WindowExpression` in Java's `fdb-record-layer-core`. Grammar accepts them, but evaluator errors 0A000 cleanly (regression-pinned in `window_function_probes.yaml`). Don't add.
-- ❌ **INTERSECT / EXCEPT** — verified: Java grammar only has UNION (same as ours, vendored verbatim). Don't add.
+- ❌ **Window functions** — verified zero `WindowedAggregateValue`/`WindowExpression` in Java's `fdb-record-layer-core`. Grammar accepts them; evaluator errors 0A000 cleanly. Don't add.
+- ❌ **INTERSECT / EXCEPT** — Java grammar only has UNION. Don't add.
 - ❌ **ANY / ALL with subquery** — verify Java first if revisited.
 - ❌ **GROUPING SETS / ROLLUP / CUBE** — verify Java first.
 - ❌ **LATERAL joins** — verify Java first.
 - ❌ **PIVOT / UNPIVOT** — Oracle/SQL Server idiom; Java unlikely to have.
-- ❌ **Date arithmetic (`DATE_ADD`/`DATE_SUB`/`DATEDIFF`/`EXTRACT`)** — verified: zero implementations in Java fdb-relational-core. Don't add.
+- ❌ **Date arithmetic** (`DATE_ADD`/`DATE_SUB`/`DATEDIFF`/`EXTRACT`) — verified zero implementations in Java fdb-relational-core. Don't add.
 - ❌ **INTERVAL syntax** — Java doesn't have. Don't add.
 
-**Infrastructure / quality**
+### Record Layer — out-of-scope query-planner prerequisites
 
-- [x] **CI cache invalidation on PR runs** (fixed swingshift-41). Root cause: the race detector step's `--@rules_go//go/config:race` flag poisoned the main Bazel server's action cache for 43 non-race actions (GoStdlib, rules_go SDK `_reset` symlinks, and all downstream GoCompilePkg). The first non-race invocation after each race run would re-execute those 43 actions (~2m) to re-populate the main cache with the non-race key, and CI always ran race between test steps. Fix: race now runs with `--output_base=$HOME/.cache/bazel/_race_output_base` so it has its own Bazel server + action cache, leaving the main output_base's non-race entries untouched. Validated: post-fix PR #93's "Build, lint & test" completed in **6 seconds** (vs 2m 5s – 3m 57s before). Diagnosis path via `--explain --verbose_explanations` on the runner — the smoking gun was "action changed since cached execution" on `Creating symlink .../pack_reset/pack.exe [for tool]` after a race/non-race switch.
-- [ ] **Java↔Go conformance harness Phase B** — wire fdb-relational maven deps into Bazel; extend conformance_server.java with `SqlSteps` to drive the same SQL through both engines and diff result sets. Single biggest test-coverage improvement; yamsql currently is the only oracle and we KNOW it's incomplete because every probe finds bugs. ~4-6h.
-- [ ] **Query planner** — no cost-based optimization. Joins are O(n·m) memory-resident map merge. Java cascades. Need `Planner` / `Plan` seam (already in TODO above) and a `NaivePlanner` wrapping today's code, then a real one.
-- [ ] **DDL types** — DATE / TIMESTAMP / ARRAY / JSON column types. Today's CREATE TABLE accepts only BIGINT / INTEGER / DOUBLE / FLOAT / STRING / BYTES / BOOLEAN. Java has all of these.
-- [ ] **EXPLAIN / ANALYZE** — no plan introspection. Useful for users.
+Only used by Java's query planner / SQL layer, not by core CRUD. Defer until Cascades work motivates them.
 
-**Architecture / design**
+- [ ] **Synthetic record types** — `JoinedRecordType` (equi-join), `UnnestedRecordType` (repeated message fan-out). Proto fields 12-13 in MetaData. 11+ Java classes. Large feature.
+- [ ] **Views** — `PView` in MetaData proto (field 15). SQL layer concept.
+- [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto (field 14). SQL layer concept.
+- [ ] **AggregateCursor** — accumulator-based aggregation over cursor results.
+- [ ] **ComparatorCursor** — custom comparator ordering.
+- [ ] **UnorderedUnionCursor** — union without order preservation.
+- [ ] **MapPipelinedCursor** — async pipelined map (no Go equivalent of CompletableFuture).
+- [ ] **ProbableIntersectionCursor** — Bloom filter intersection.
+- [ ] **SizeStatisticsGroupingCursor** — key/value size tracking.
+- [ ] **RecordCursorVisitor pattern** — cursor tree inspection.
 
-- [~] **Split `connection.go` + add Planner/Plan seam** — see RFC 021 (`rfcs/021-planner-seam-and-cascades.md`). Two legacy bullets merged into one tracked refactor.
-  - [x] **Phase 1a** (PR #101, 2026-04-22): `pkg/relational/core/query/` with `Generator`/`Plan`/`Result`/`MultiPlan`/`PlanFunc` interfaces; `naiveGenerator` wraps today's exec methods as Plan closures; `ExecContext`/`QueryContext` route through the seam. Zero behaviour change.
-  - [x] **Phase 1b** (PR #102, 2026-04-22): extracted `pkg/relational/core/session.Session` holding `DB`/`Catalog`/`Keyspace`/`Factory`/`DBPath`/`Schema`/`DefaultSchema`. `EmbeddedConnection` shrank by 7 fields + 63 internal refs re-pointed at `c.sess.X`. Zero behaviour change.
-  - [~] **Phase 1c** (nightshift-45, PR #107, 2026-04-23): SUBSTANTIAL progress — `connection.go` shrunk from ~11,880 → ~2,900 lines (75%). Every self-contained execution shape now lives in its own file inside `pkg/relational/core/embedded/`: `execSelectQueryFull` → `select_query_full.go`, `execSelectJoin` → `join.go`, `aggregateMapRows` → `aggregate.go`, `execSelectFromCTE` → `cte_scan.go`, `execUnion` → `union.go`, DML → `insert.go` + `update_delete.go`, `extractFromSimpleTable` + helpers → `select_parser.go`, plus pushdown shapes (`pk_pushdown.go`, `secondary_index_pushdown.go`, `pk_prefix_pushdown.go`), order-by elimination (`order_by.go`), scope stacks (`scope.go`), system tables (`system_tables.go` + `system_rows.go`), CTE/subquery helpers (`recursive_cte.go`, `scalar_subquery.go`), and utility clusters (`utilities.go`, `tri_bool.go`, `where_extractors.go`, `select_helpers.go`, `select_dispatch.go`, `stmt.go`). Still TODO: move these files from `core/embedded/` to their RFC-destined homes under `core/plan/physical/`, `core/query/visitors/`, `core/eval/`, `core/functions/`; collapse the proto-vs-map evaluator divergence behind a uniform `Row` interface; extract the expression evaluator (evalExpr / evalExprAtom / evalScalarFunctionCallCore family, ~1,500 lines remaining in connection.go) and the predicate evaluator (~700 lines). RFC-021 §Phase 1.
-  - [~] **Phase 1d** (nightshift-45, PR #107, 2026-04-23): PARTIAL — `SchemaCache`, `CatalogMu`, `CatalogReady`, `StatementTime` moved to Session. `EmbeddedConnection.statementNow()` / `beginStatement()` now forward to the session-hosted helpers. Remaining statement-scope state (`ctes`, `scalarSubqueryCache`, `validQualifiers`, `outerScopes`, `currentSourceAliases`) still lives on `EmbeddedConnection` — blocked on Phase 1c finishing the exec* moves before those fields can follow their callers.
-  - [ ] **Phase 2 — Cascades optimizer** (6–8 shifts). `pkg/recordlayer/plan/cascades/` with memo + rules + cost. Second `query.Generator` implementation behind a feature flag. Today's 11-branch pushdown chain collapses into ~11 rules (plus additional shapes impossible to express in the hand-rolled chain). `canCoverIndex` / `naturalOrderSatisfies` / `earlyTermTarget` become plan properties propagated by the memo. swingshift-44's 94 yamsql scenarios are the regression spec. RFC-021 §Phase 2.
-  - [ ] **Phase 3 — gRPC frontend as seam validation** (2 shifts). Add `pkg/relational/grpc/` implementing the `query.Generator` + `query.Plan` shapes over a network. If Phase 1 was clean, this is ~500 lines of proto + service wrapper + streaming result-set adapter; no execution code touched. If gRPC impl reaches into `embedded.Conn` private state, Phase 1 wasn't done. RFC-021 §Phase 3.
-- [~] **Break up `evalScalarFunctionCallCore`** (715-line switch). Split by family (`evalStringFns`, `evalMathFns`, `evalDateFns`, `evalCastFn`) via `map[string]FuncImpl` dispatch. Subsumed by RFC-021 Phase 1c — the functions registry lands as `pkg/relational/core/functions/` during the same move that empties `connection.go`.
-- [x] **Fix `api.Transaction` substitutability.** ✅ swingshift-35: added `Unwrap() any` to the Transaction interface; all five concrete-type assertions (unwrapFDB, checkOpenTxn, createFDBStore, deleteFDBStore, etc.) now go through `txn.Unwrap()` so a decorator or future remote/gRPC impl that forwards Unwrap continues to satisfy the assertion. Matches Java's `<T> T unwrap(Class<T>)` semantics.
-- [ ] Typed enums for `joinType` / `aggFunc` (currently magic strings).
+### Pure Go FDB Client — niche features
 
-**Testing gaps (highest ROI item first)**
+- [ ] **Tenant groups** — Metacluster-only. `tenantGroupTenantIndex`, `tenantGroupMap`, group cleanup on delete.
+- [ ] **Tenant tombstones** — Metacluster data cluster feature. Prevents tenant ID reuse.
+- [ ] **Tenant ID prefix** — Multi-cluster ID partitioning (`tenantIdPrefix` shifts prefix into upper 2 bytes of 8-byte ID). Standalone clusters use prefix=0.
+- [ ] **Multi-version client** — Plugin loading for older client protocol versions.
+- [ ] **FDB status JSON parsing** — Cluster status monitoring via `\xff\xff/status/json`.
+- [ ] **Version vector support** — Causal consistency optimization for multi-region deployments.
 
-- [~] **Java↔Go SQL conformance harness.** `conformance/sql/` directory with `.sql` + `.json` expected-output files; drive both Go (`sql.Open("fdbsql", ...)`) and Java (`EmbeddedRelationalConnection` via the Bazel-built conformance server) against the same inputs; diff result sets. Seed with the existing yamsql corpus (1587 statements already parse — just execute them and diff). Also run write-in-Go / read-in-Java round-trips (and reverse) to catch wire-format drift — would have caught the catalog subspace bug above. Opt-in target (`just conformance-sql`), gated behind `@manual` to stay out of default `bazelisk test //...`. **nightshift-36 status**: Go-side harness landed in `pkg/relational/conformance/yamsql/`. **38 seed scenarios** (~160 assertions) pinning swingshift-35 correctness fixes plus new ground covered this shift: three-valued NULL, aggregate NULLs, ORDER BY NULLs (incl. explicit NULLS FIRST/LAST override), mixed-type equality, CAST, GROUP BY NULL, IN/NOT IN (list and subquery) with NULL, NOT NULL violation, integer division, DISTINCT aggregates, BETWEEN Kleene, GREATEST/LEAST NULL, JOIN with NULL keys, string functions, UPDATE/DELETE, UNIQUE violation (PK + secondary), AVG DOUBLE return type, CTE (incl. multi-CTE cross-join), HAVING, LIKE, CASE WHEN, SELECT DISTINCT, composite PK, COUNT(DISTINCT), COALESCE/NULLIF, UNION/UNION ALL, LIMIT/OFFSET, BYTES literals, SELECT without FROM, multi-feature end-to-end, LEFT/RIGHT OUTER JOIN, TRIM/CONCAT/REPLACE, numeric-type mixing, subquery IN, overflow detection. Scenarios authored in YAML with explicit rows (not yamsql's ambiguous `{1, true}` flow-map). Java side (write-in-Go / read-in-Java round-trip) not yet — needs fdb-relational maven deps wired into the Bazel build.
-- [ ] **Zero fuzz targets in `pkg/relational/`** (record-layer has 24). Add `FuzzParse(sql)`, `FuzzEvalExpr(tree)`, `FuzzContinuationToken`, `FuzzSchemaTemplateProto`.
-- [ ] **Error-path coverage is ~0.2%** (2 error assertions vs 862 success in `embedded_fdb_test.go`). Add tests for type mismatch on INSERT, NOT NULL violation, missing schema, invalid SQL at execute time, duplicate CREATE DATABASE, PK conflict.
+### Pure Go FDB Client — niche perf
 
-### Core requirements
+- [ ] **`net.Buffers` (writev)** — scatter-gather I/O for frame writes. Low impact now that write coalescing works.
+- [ ] **LRU eviction for location cache** — currently random eviction. Works well at 600K entries.
+- [ ] **Pre-allocate prefixed keys** — commit path tenant prefix allocation. Not on read hot path.
 
-1. **1:1 aligned with Java.** Package names, class/struct names, behavior, wire format — mirror Java unless there is a very good reason. Catalog storage, plan cache keys, protobuf encodings, SQL dialect must be bit-compatible.
-2. **Usable from `database/sql`.** Primary public entry is a `database/sql/driver.Driver` registered under name `fdbsql`. Users write `sql.Open("fdbsql", dsn)`. Non-negotiable.
-3. **Embedded first.** Start with in-process execution (equivalent to Java's `EmbeddedRelationalConnection`). gRPC remote / standalone server comes later.
-4. **Keep the parser dialect identical.** Use the same `RelationalLexer.g4` / `RelationalParser.g4` grammar files; regenerate with `antlr4-go/antlr4`. No dialect drift.
+### Record Layer — niche
 
-### Scope map (Java → Go)
+- [ ] **FDBReverseDirectoryCache** — reverse prefix→name caching (~496 lines Java).
+- [ ] **KeySpace/KeySpacePath Phase 2/3** — Phase 1 done (core types, path nav, reverse resolution, range queries, 11 tests). Phase 2: `LocatableResolver` + `ScopedDirectoryLayer`. Phase 3: `FDBReverseDirectoryCache`. See `docs/design-keyspace.md`.
+- [ ] **Extension options processing** — advanced FDBMetaDataStore feature for proto extension options.
+- [ ] **Schema validation cross-language** — needs Java conformance server additions.
+- [ ] **AtomKE** — Java interface only; no concrete consumers.
 
-| Java module | Go package | Role |
-|---|---|---|
-| `fdb-relational-api` | `pkg/relational/api` | Interfaces, options, error codes, type system (`DataType`), metadata types (`Table`, `Column`, `Index`, `Schema`, `SchemaTemplate`), struct/array helpers |
-| `fdb-record-layer-core/query/plan/cascades` | `pkg/recordlayer/plan/cascades` | **Cascades optimizer.** Expressions, Values, Predicates, Rules, Matching, Typing, Memo/References, Cost model. ~104K LOC in Java — by far the largest item. |
-| `fdb-record-layer-core/query/plan/plans` | `pkg/recordlayer/plan/plans` | Physical plan nodes (`RecordQueryPlan` subclasses). Some overlap with what we already have in `pkg/recordlayer/`. |
-| `fdb-relational-core/antlr/*.g4` | `pkg/relational/core/parser` | ANTLR4 lexer/parser (same `.g4` files, regenerated for Go) |
-| `fdb-relational-core/recordlayer/query` | `pkg/relational/core/query` | `SemanticAnalyzer`, `PlanGenerator`, `LogicalOperator`, `QueryExecutor` |
-| `fdb-relational-core/recordlayer/query/cache` | `pkg/relational/core/cache` | `RelationalPlanCache` (3-tier, TTL) |
-| `fdb-relational-core/recordlayer/catalog` | `pkg/relational/core/catalog` | `RecordLayerStoreCatalog`, system tables, schema versioning |
-| `fdb-relational-core/recordlayer/metadata` | `pkg/relational/core/metadata` | `RecordLayerSchemaTemplate`, `RecordLayerTable`, `RecordLayerIndex`, `RecordLayerColumn` |
-| `fdb-relational-core/recordlayer/ddl` | `pkg/relational/core/ddl` | `ConstantAction` pattern for CREATE/DROP/ALTER |
-| `fdb-relational-core/recordlayer/structuredsql` | `pkg/relational/core/structuredsql` | Fluent SQL AST (lower priority) |
-| `fdb-relational-core/recordlayer` (conn/stmt/resultset impls) | `pkg/relational/core/embedded` | `EmbeddedConnection`, `EmbeddedStatement`, `RecordLayerResultSet` |
-| `fdb-relational-jdbc` | `pkg/relational/sqldriver` | `database/sql/driver.Driver` adapter (embedded mode, and later gRPC client) |
-| `fdb-relational-grpc` | `pkg/relational/grpc` *(later)* | gRPC service stubs + protobuf wire |
-| `fdb-relational-server` | `cmd/frl-server` *(later)* | Standalone SQL server binary |
-| `fdb-relational-cli` | `cmd/frl` *(later)* | Interactive SQL shell |
+### Future phases (not needed for v1)
+
+- [ ] **Phase 9 — gRPC server + remote driver** — port `fdb-relational-grpc/` proto definitions; `cmd/frl-server` standalone binary with TLS + auth; remote `sqldriver` path: DSN host:port → gRPC client.
+- [ ] **Phase 10 — separate CLI** — `cmd/frl` SQL shell with EXPLAIN, formatted output. (Mostly subsumed by `frl sql` Phase E already shipped.)
+
+---
+
+## Recently shipped (last ~5 shifts)
+
+Trimmed history list for context. Older completions trimmed; full history in git log.
+
+### swingshift-50 (2026-04-25)
+
+- [x] **Wire `cascades.SimplifyValue` into projection path** — `SELECT 1+2 FROM t` folds at plan time. New `projection_fold.go` walks projExprs through `expr.WalkExpression` → `cascades.SimplifyValue` → `EvaluateConstant` and caches result; per-row consumers (proto + map paths) short-circuit `evalExpr` for cached slots.
+- [x] **`SimplifyPredicateValues` for QueryPredicate trees** — folds Value operands inside ComparisonPredicate / ValuePredicate so `WHERE name = 1+2` renders `NAME = 3` in EXPLAIN. Pointer-stable when nothing folds. `buildWherePredicate*` invokes after `WalkPredicate`.
+- [x] **First scalar-function batch in walker** — ABS, FLOOR, CEIL, CEILING, ROUND, SQRT, POWER, POW, COALESCE, NULLIF, TRIM, LTRIM, RTRIM, CONCAT, SUBSTRING, SUBSTR, REPLACE. Semantics mirror `embedded.scalar_functions.go`. 26 cascades-side tests + 18 walker tests + 1 EXPLAIN-pinning test + 1 integration test.
+- [x] **TODO.md restructure** — flat priority buckets (CRITICAL/HIGH/MEDIUM/LOW). CLAUDE.md priority discipline directive added.
+
+### dayshift-49 (2026-04-25)
+
+- [x] **`ParameterValue`** — `?` and `?name` walk to `cascades.ParameterValue`; positional ordinal counter on Resolver assigns 1-based ordinals matching `database/sql` `NamedValue.Ordinal`. Optional `ParameterBinder` eval-context capability seeded.
+- [x] **`ScalarFunctionValue`** — UPPER, LOWER, LENGTH / CHAR_LENGTH / CHARACTER_LENGTH, OCTET_LENGTH dispatch via `walkScalarFunction`.
+- [x] **`SimplifyValue`** — standalone-Value constant-fold for ArithmeticValue / CastValue / PromoteValue / ScalarFunctionValue.
+- [x] **`DIV` keyword** — shares OpDiv with `/` at the seed (Go's `/` on int64 already truncates).
+- [x] **Race-fix on Resolver.functionCatalog** — `sync.Once` lazy build hardened against concurrent first-use.
+
+### nightshift-48 (2026-04-25)
+
+- [x] **Cascades walker wired into logical builder** — `buildLogicalPlanFor{Select,Delete,Update}WithCatalog` attach `cascades.QueryPredicate` to LogicalFilter; text fallback on walker decline / catalog miss / JOIN.
+- [x] **Comparison.Operand promoted from `any` to `Value`** — unblocks `a = b`, `a < b + 1`, CAST/arithmetic RHS. `LiteralValue` / `NewLiteralComparison` helpers.
+- [x] **CAST/CONVERT to INT/STRING/BOOL** via DataTypeFunctionCall dispatch.
+- [x] **likeMatch trailing-escape malformed → no match** — fuzz finding.
+
+### swingshift-47 (2026-04-24)
+
+- [x] **`semantic.Analyzer` seed** — Identifier, QualifiedName, Catalog/Table/Column, Analyzer with ResolveTable/ResolveColumn/ExpandStar, Scope with ambiguity + correlation-chain detection, FunctionCatalog with COUNT/SUM/MIN/MAX/AVG.
+- [x] **`rlcatalog/` adapter** for RecordMetaData; `expr/` parse-tree → cascades walker covering binary comparisons, AND/OR/NOT, XOR (Kleene-exact desugar), IS [NOT] NULL/TRUE/FALSE (2VL), BETWEEN, IN, LIKE, parens, aggregate calls.
+- [x] **LogicalOperator hierarchy seed** — 12 operators (Scan, Filter, Project, Sort, Limit, Aggregate, Join, Union, Insert, Update, Delete, DDL) + indented Explain rendering.
+- [x] **Typed errors** — `TableNotFoundError`, `ColumnNotFoundError`, `AmbiguousColumnError`, `SourceNotFoundError`, `DuplicateAliasError`, `FunctionNotFoundError`, `FunctionArityError`, `UnsupportedFromShapeError`, `UnsupportedExpressionShapeError`.
+
+### dayshift-46 (2026-04-24)
+
+- [x] **4.-0.5 Generics-vs-interfaces decision** (RFC 023) — non-generic `BindingMatcher` + `any` + free-function `Get[T]`. Production seed at `pkg/recordlayer/query/plan/cascades/`.
+- [x] **4.-0.25 Plan-cache-key compatibility spec** (RFC 024) — hash-identical Java compatibility is NOT a goal.
+- [x] **Cascades Phase 4.0 seed** — Value (5 concrete types), QueryPredicate (4), Comparison/ComparisonPredicate (6 ops), CorrelationIdentifier, BindingMatcher DSL, AllOf/AnyOf, CascadesRule + RuleCall, eleven Phase 4.5 Batch A-style rules, Simplify driver, 7 micro-benchmarks.
+- [x] **ORDER BY equality-prefix relaxation** — `WHERE a = 1 ORDER BY b, c` on PK (a,b,c) eliminates the sort.
+- [x] **Secondary-index reverse scan** — `WHERE v > 0 ORDER BY v DESC` on `idx_v(v)` reverses instead of sorting.
+- [x] **Pure-prefix composite-secondary-index pushdown** — narrows to tuple-prefix scan on the index subspace.
+
+### nightshift-45 (2026-04-23)
+
+- [x] **RFC-021 Phase 1c substantial progress** — connection.go shrunk 11,880 → 2,900 lines (75%). Per-shape files: select_query_full.go, join.go, aggregate.go, cte_scan.go, union.go, insert.go, update_delete.go, select_parser.go, pushdown shapes, order_by.go, scope.go, system_tables.go + system_rows.go, recursive_cte.go, scalar_subquery.go, utilities.go, tri_bool.go, where_extractors.go, select_helpers.go, select_dispatch.go, stmt.go.
+- [x] **ORDER BY DESC via reverse scan (PK)** — `naturalOrderSatisfiesReverse` + `scanPropsForOrder`.
+- [x] **One-element IN-list → equality** — drops lazy-chain wrapper, unlocks `naturalOrder = pkCols`.
+- [x] **Pure-prefix composite-PK pushdown** — `tryPKCompositePrefixFromWhere`.
+- [x] **Fuzz corpus with string dimension** — `FuzzLikePatternToPrefix` now `(pattern, escape, s)`; asserts `strings.HasPrefix(s, prefix)` when `likeMatch` returns true.
+
+---
+
+## Reference
 
 ### Architectural decisions
 
-**Why a `database/sql/driver` adapter instead of building natively against `database/sql`:**
+**Why a `database/sql/driver` adapter instead of building natively against `database/sql`:** Java's API is JDBC-extending (`RelationalConnection extends java.sql.Connection`). Strict 1:1 means we keep an internal Go API mirroring Java's method surface, then wrap it with a thin `database/sql/driver` adapter. Users get both `sql.Open("fdbsql", ...)` for portability and direct access to the Go-native API via type assertion or a package-level `Open()` for FDB-specific features (options, struct/array types, continuations, fluent SQL).
 
-Java's API is JDBC-extending (`RelationalConnection extends java.sql.Connection`). Strict 1:1 means we keep an internal Go API that mirrors Java's method surface — then wrap it with a thin `database/sql/driver` adapter. Users get both: `sql.Open("fdbsql", ...)` for portability + direct access to the Go-native API via type assertion or a package-level `Open()` for FDB-specific features (options, struct/array types, continuations, fluent SQL).
-
-**Why the cascades planner lives in `pkg/recordlayer/plan/cascades`, not `pkg/relational/core`:**
-
-Matches Java's layout. Cascades is a planning framework over `RecordQuery`, reusable by anyone writing queries against the record layer — not intrinsic to SQL. The SQL layer *consumes* it.
+**Why the cascades planner lives in `pkg/recordlayer/query/plan/cascades`:** Matches Java's layout. Cascades is a planning framework over `RecordQuery`, reusable by anyone writing queries against the record layer — not intrinsic to SQL. The SQL layer *consumes* it.
 
 **DSN format:**
-
 ```
 fdbsql:///PATH                             # embedded, default cluster file
 fdbsql:///PATH?cluster_file=/etc/.../fdb.cluster
 fdbsql://HOST:PORT/PATH                    # remote gRPC (later)
 ```
 
-Matches JDBC URL shape. Path semantics match Java's `RelationalConnection.getPath()`.
+**Transaction model:** `sql.DB` auto-commit → each statement is its own FDB transaction. `sql.DB.BeginTx()` → explicit `FDBRecordContext` for the lifetime of the `sql.Tx`. Isolation level `sql.LevelSerializable` only. `context.Context` mandatory (5s FDB tx limit).
 
-**Transaction model:**
+**Generics decision (RFC-023):** Non-generic `BindingMatcher` + `any` + free-function `Get[T]` retrieval helper. Zero-size-struct identity gotcha — all matcher structs carry a nonce + atomic-counter factory. Rule authors MUST use factories, never bare struct literals.
 
-- `sql.DB` auto-commit → each statement is its own FDB transaction (matches Java `autoCommit=true` default).
-- `sql.DB.BeginTx()` → explicit `FDBRecordContext` for the lifetime of the `sql.Tx`.
-- Isolation level `sql.LevelSerializable` only (FDB semantics). Lower levels return `driver.ErrBadConn` or equivalent — do not silently downgrade.
-- `context.Context` propagation is mandatory (5 s FDB transaction limit; users must get `context.DeadlineExceeded` back).
+**Plan-cache-key compatibility (RFC-024):** Hash-identical Java compatibility is NOT a goal. Java's `RelationalPlanCache` is per-process Caffeine; no wire format to preserve. Phase 4.4 free to ship simpler Go-native cost. Go-internal hash stability + schema-version-sensitive keys + test fixtures still required.
 
-**Type mapping (`driver.Value`):**
+**Cascades conformance staging (RFC-022):** 4.-1 plan-equivalence harness builds FIRST. Rule porting in 4.5 starts with Batch A (covers swingshift-44's existing 11-branch pushdown chain) so the harness gets end-to-end yamsql coverage early. Semantic equivalence is hard-required; plan equivalence is separately scoped.
+
+### Type mapping (`driver.Value`)
 
 | SQL type | Go `driver.Value` | Notes |
 |---|---|---|
@@ -748,227 +333,67 @@ Matches JDBC URL shape. Path semantics match Java's `RelationalConnection.getPat
 | ARRAY | custom type | Same |
 | NULL | `nil` | |
 
-Versionstamps and continuations require custom types that users access via type assertion on `*sql.Rows` or a `pkg/relational` helper.
+Versionstamps and continuations require custom types accessed via type assertion on `*sql.Rows` or a `pkg/relational` helper.
 
-### Phases
+### Scope map (Java → Go)
 
-Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum viable SQL engine (CRUD against pre-existing stores via hand-written plans). Phase 4 is where the hard work is. Everything downstream of Phase 4 is straightforward.
+| Java module | Go package | Role |
+|---|---|---|
+| `fdb-relational-api` | `pkg/relational/api` | Interfaces, options, error codes, type system (`DataType`), metadata types, struct/array helpers |
+| `fdb-record-layer-core/query/plan/cascades` | `pkg/recordlayer/query/plan/cascades` | **Cascades optimizer.** Expressions, Values, Predicates, Rules, Matching, Typing, Memo/References, Cost model. ~104K LOC in Java. |
+| `fdb-record-layer-core/query/plan/plans` | `pkg/recordlayer/plan/plans` | Physical plan nodes (`RecordQueryPlan` subclasses). |
+| `fdb-relational-core/antlr/*.g4` | `pkg/relational/core/parser` | ANTLR4 lexer/parser (same `.g4` files, regenerated for Go) |
+| `fdb-relational-core/recordlayer/query` | `pkg/relational/core/query` | `SemanticAnalyzer`, `PlanGenerator`, `LogicalOperator`, `QueryExecutor` |
+| `fdb-relational-core/recordlayer/query/cache` | `pkg/relational/core/cache` | `RelationalPlanCache` (3-tier, TTL) |
+| `fdb-relational-core/recordlayer/catalog` | `pkg/relational/core/catalog` | `RecordLayerStoreCatalog`, system tables, schema versioning |
+| `fdb-relational-core/recordlayer/metadata` | `pkg/relational/core/metadata` | `RecordLayerSchemaTemplate`, `RecordLayerTable`, `RecordLayerIndex`, `RecordLayerColumn` |
+| `fdb-relational-core/recordlayer/ddl` | `pkg/relational/core/ddl` | `ConstantAction` pattern for CREATE/DROP/ALTER |
+| `fdb-relational-core/recordlayer/structuredsql` | `pkg/relational/core/structuredsql` | Fluent SQL AST (lower priority) |
+| `fdb-relational-core/recordlayer` (conn/stmt/resultset) | `pkg/relational/core/embedded` | `EmbeddedConnection`, `EmbeddedStatement`, `RecordLayerResultSet` |
+| `fdb-relational-jdbc` | `pkg/relational/sqldriver` | `database/sql/driver.Driver` adapter |
+| `fdb-relational-grpc` | `pkg/relational/grpc` *(later)* | gRPC service stubs + protobuf wire |
+| `fdb-relational-server` | `cmd/frl-server` *(later)* | Standalone SQL server binary |
+| `fdb-relational-cli` | `cmd/frl` | Operator/developer CLI |
 
-#### Phase 0 — Skeleton & foundations
+### Behavioral divergences from C++ FDB client (audit 2026-04-13, updated swingshift-18)
 
-- [x] **pkg/relational/api foundations** (nightshift-24):
-  - [x] `ErrorCode` — all 70 SQLSTATE codes from Java's enum, `Error` struct (code + message + cause + context), `errors.As` matching, `WithContext` immutable
-  - [x] `DataType` hierarchy — full port: `BooleanType`/`IntegerType`/`LongType`/`FloatType`/`DoubleType`/`StringType`/`BytesType`/`VersionType`/`UUIDType`/`NullType`/`UnknownType`/`VectorType`/`ArrayType`/`EnumType`/`StructType`/`UnresolvedType`; JDBC type-code mapping; singleton primitives
-  - [x] `Options` — 30-name map with parent chaining, immutable With/Builder, defaults mirroring Java's static block
-  - [x] `KeySet`, `Continuation` (+ Reason enum), `Row` (+ RowIterable)
-  - [x] `Metadata` base + `Visitor` + `Column`/`Table`/`Index`/`View`/`InvokedRoutine`/`SchemaTemplate`/`Schema` interfaces
-- [x] **pkg/relational/api Driver / Connection / Statement / ResultSet** (nightshift-24) — lean Go-idiomatic shape; ctx on every call; typed errors; WasNull + Continuation + ByName accessors; ColumnNullable constants pinned to JDBC values.
-- [x] **pkg/relational/api remaining interfaces** (nightshift-24) — `DatabaseMetaData`, `Array`, `Struct`, `ArrayMetaData`, `StructMetaData`, `DirectAccessStatement`, `ParseTreeInfo`, `WithMetadata`. All ported as lean Go-idiomatic shapes.
-- [x] **pkg/relational/api SqlTypeNamesSupport** (nightshift-24) — name ↔ JDBC code ↔ DataType mappings used by parser + ResultSetMetaData.
-- [ ] **pkg/relational/api/fluentsql** — (deferred; shell only until after Phase 7)
-- [x] **Interop with existing `pkg/recordlayer` types — decided** (nightshift-24): follow Java's layering.
-  - `pkg/recordlayer.RecordMetaData` = storage-engine schema (proto + indexes). Unchanged.
-  - `pkg/recordlayer.Index` = storage-engine index definition (root expression, subspace key, options). Unchanged.
-  - `pkg/relational/api.SchemaTemplate` / `api.Index` = interface-level metadata surface used by SQL machinery.
-  - Bridge impls (coming in Phase 2): `pkg/relational/core/metadata.RecordLayerSchemaTemplate` and `RecordLayerIndex` satisfy the `api.*` interfaces by wrapping `recordlayer.RecordMetaData` / `recordlayer.Index`. No circular dependencies — `recordlayer` is oblivious to the relational types.
-  - Matches Java's `fdb-relational-core.recordlayer.RecordLayerSchemaTemplate` wrapping `fdb-record-layer-core.RecordMetaData` 1:1.
-- [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages, etc.). Regenerate via `just generate`.
-- [x] **pkg/relational/sqldriver skeleton** (nightshift-24) — `sql.Register("fdbsql", …)`, DSN parser (embedded + remote shapes), `Driver`/`Connector` satisfying `driver.Driver`/`driver.DriverContext`/`driver.Connector`. Connect returns `ErrCodeUnsupportedOperation` (plumbing ready; embedded impl arrives in Phase 5).
+Three remaining acknowledged divergences (all judged acceptable):
 
-#### Phase 1 — Parser (ANTLR4)
+| # | Area | Type | Description |
+|---|---|---|---|
+| 6 | Auto-reset after commit | DESIGN | C++ no auto-reset at API >= 410. Go `postCommitReset()` clears for reuse. |
+| 18 | Wrong-shard retry cap | CONSERVATIVE | Go caps at `MaxWrongShardRetries=50`. C++ loops unbounded (relies on 5s tx timeout). Go returns error earlier under extreme shard movement. |
+| 19 | GRV background refresh | PERF | Go refreshes at fixed 50ms. C++ uses adaptive delay `(grvDelay + latency)/2` (1ms-100ms range). Go is more aggressive (2x more RPCs under low load). |
 
-- [x] **Vendor the grammar** (nightshift-24) — `RelationalLexer.g4` + `RelationalParser.g4` copied verbatim to `pkg/relational/core/parser/grammar/`. Package skeleton + regen instructions in `pkg/relational/core/parser/doc.go`.
-- [x] **Integrate antlr4-go** (dayshift-25) — `github.com/antlr4-go/antlr/v4@v4.13.1` pinned in `go.mod`, `use_repo` entry in `MODULE.bazel`. `just generate-parser` downloads the ANTLR 4.13.2 tool jar, runs lexer then parser with `-lib` to resolve `tokenVocab`, outputs to `pkg/relational/core/parser/gen/`. One-line patch to the lexer grammar (removed the Java-action-only `notifyListeners` call) with a NOTE comment for future re-sync.
-- [x] **Port QueryParser wrapper** (dayshift-25) — `parser.Parse(sql string) (IRootContext, error)` with collecting `ErrorListener` that turns every ANTLR syntax error into one "line:col: msg" line of an `*api.Error` with `ErrCodeSyntaxError`. `caseInsensitiveCharStream` wraps `antlr.InputStream` and upper-cases `LA()` while preserving original source for `GetText()`. 9 unit-test functions (happy paths across DDL/DML/transactions, mixed-case, single errors, line:col formatting, stray-char rejection, multi-error ordering, case-folding, EOF passthrough).
-- [x] **Parser corpus smoke test** (dayshift-25) — `just smoke-yamsql` walks the 178 `.yamsql` files in `fdb-record-layer/yaml-tests/src/test/resources/`, extracts every schema-template / query pair, skips yamsql-harness macros (`!! ... !!`), sentinels (`SHOULD ERROR`), and `error:`-marked expected-fail entries. **1587 / 1587 real statements parse cleanly.** Gated by the `yamsql` build tag so Bazel's sandbox doesn't need to see the Java submodule.
-- [ ] **Parser tree-shape conformance tests** — stretch goal. Feed the same SQL corpus through both parsers and diff the trees (or pick representative corners). Requires a JSON serialiser on both sides. Not a blocker for Phase 2 — semantic analyzer tests will catch tree-shape regressions indirectly.
+15 of 21 audit divergences fixed (see git history for resolution detail). Cosmetic differences (FLAG_FIRST_IN_BATCH, frame checksum CRC32 vs XXH3-64, QueueModel key) intentionally not aligned.
 
-#### Phase 2 — Type system + metadata storage
+### Missing C API surface
 
-- [x] Port `DataType` — done in Phase 0 (nightshift-24)
-- [x] Port `SchemaTemplate` / `Schema` / `Table` / `Column` / `Index` interfaces — done in Phase 0 (nightshift-24)
-- [x] **Concrete `SchemaTemplate` / `Table` / `Column` / `Index` structs** (dayshift-25) — `pkg/relational/core/metadata/` wraps `*recordlayer.RecordMetaData`. `NewRecordLayerSchemaTemplate` / `NewRecordLayerSchemaTemplateWithVersion` materialise tables + flat index-name list eagerly. Proto-to-DataType mapping mirrors Java's `fromProtoType` (including UUID short-circuit and `NullableArrayTypeUtils.describesWrappedArray` unwrap, proto2-label-based nullability). `Accept()` cascades through tables → indexes → columns → routines → views, matching Java's `RecordLayerSchemaTemplate.accept()`. `api.Schema` grew delegated `Tables`/`Views`/`Indexes`/`InvokedRoutines` methods (Go has no default methods). `IntermingleTables()` and `IsSparse()` (via predicate != nil) both match Java. No known Java divergences on the primary path.
-- [x] **Builder for SchemaTemplate** (nightshift-28) — `pkg/relational/core/metadata.Builder` builds `RecordLayerSchemaTemplate` from SQL-level table/column/PK definitions without a pre-compiled .proto file. Builds `FileDescriptorProto` dynamically (no union descriptor — sidesteps global proto registry for dynamically-created types). Wired into `CREATE SCHEMA TEMPLATE` SQL via `EmbeddedConnection.execCreateSchemaTemplate`.
-- [x] **VALUE index support in schema template builder** (nightshift-29) — `Builder.AddIndex()` + `buildIndexKeyExpression()`; `execCreateSchemaTemplate` handles `IndexOnSourceDefinition` clauses (two-pass: tables first, indexes second). `CREATE INDEX name ON table (cols)` wired end-to-end.
-- [x] **EmbeddedConnection optional driver interfaces** (nightshift-29) — `ConnBeginTx`, `SessionResetter`, `Validator`, `ConnPrepareContext`, `QueryerContext`; static checks for all. `embeddedStmt.Query` now delegates to `QueryContext`.
-- [x] **QueryContext with SHOW DATABASES + SHOW SCHEMA TEMPLATES** (nightshift-29) — `execShowDatabases`/`execShowSchemaTemplates` backed by catalog `ListDatabases`/`ListTemplates`. `staticRows` + `emptyRows` driver.Rows impls. FDB integration tests for both.
-- [x] **Catalog storage layer (interface + in-memory impl)** (swingshift-26) — `api.StoreCatalog` + `api.SchemaTemplateCatalog` + `api.Transaction` interfaces ported from Java; `InMemoryStoreCatalog` + `InMemorySchemaTemplateCatalog` + `InMemoryTransaction` in `pkg/relational/core/catalog/`. 5 Java-compliance fixes applied during self-audit + review (SaveSchema template-existence check, error-code disambiguation, LoadSchema UNDEFINED_SCHEMA collapse, CatalogValidator port, RepairSchema TOCTOU doc). 17 tests + 4 benchmarks. `CatalogDatabaseMetaData` JDBC-style introspection backed by StoreCatalog (Schemas / Tables / Columns / IndexInfo / PrimaryKeys, SQL LIKE patterns, JDBC column + sort orders). Gomock convention adopted in api/; `just generate` runs all codegen (proto + mocks + gazelle), CI diff-checks.
-- [x] **Catalog storage layer (FDB-backed)** (nightshift-27) — `RecordLayerStoreCatalog` + `RecordLayerStoreSchemaTemplateCatalog` + `FDBTransaction` in `pkg/relational/core/catalog/`. Mirrors Java's SystemTableRegistry subspace layout. Full CRUD + listing + RepairSchema + DeleteDatabase. 17 FDB integration tests + 3 DeleteDatabase tests.
-- [x] **INSERT INTO ... VALUES execution** (nightshift-29) — `execInsert`: literal-only VALUES (decimal, string, null, bool), `dynamicpb`-backed dynamic messages, schema loaded from catalog, record saved to FDB store. UnionDescriptor auto-generated in schema template builder; `metadata.Build()` falls back to `dynamicpb.NewMessage` for types not in global proto registry. `?schema=` DSN option wires `SetSchema`. 3 FDB integration tests.
-- [x] **SELECT * FROM table execution** (nightshift-29) — `execSelect`: navigates ANTLR SELECT parse tree to extract table name, calls `ScanRecordsByType`, buffers rows, converts proto fields to `driver.Value` via `protoValueToDriver`. `defaultSchema` field in `EmbeddedConnection` so `ResetSession` restores DSN-provided schema instead of clearing it. 1 FDB integration test (insert 2 rows + SELECT * verifies 2 rows returned).
-- [x] **DELETE FROM table [WHERE col = value] execution** (nightshift-29) — `execDelete`: scan+filter+DeleteRecord. `evalPredicate` handles simple `col = constant` equality. `evalConstant` factored out and shared with INSERT. 1 FDB integration test.
-- [x] **UPDATE table SET col = val [WHERE col = val] execution** (nightshift-29) — `execUpdate`: scan+filter+clone+set+SaveRecord. `evalExpr` for SET expressions. Full CRUD now implemented. 1 FDB integration test. — `execDelete`: scan+filter+DeleteRecord. `evalPredicate` handles simple `col = constant` equality. `evalConstant` factored out and shared with INSERT. `valuesEqual` normalises int64/float64. 1 FDB integration test. — `execSelect`: navigates ANTLR SELECT parse tree to extract table name, calls `ScanRecordsByType`, buffers rows, converts proto fields to `driver.Value` via `protoValueToDriver`. `defaultSchema` field in `EmbeddedConnection` so `ResetSession` restores DSN-provided schema instead of clearing it. 1 FDB integration test (insert 2 rows + SELECT * verifies 2 rows returned).
-- [x] **System tables** — `INFORMATION_SCHEMA.SCHEMATA`, `TABLES`, `COLUMNS`, `INDEXES` implemented (nightshift-30). Computed on-the-fly from catalog state via `execSysSchemata`, `execSysTables`, `execSysColumns`. Queries require double-quoted identifiers (`"INFORMATION_SCHEMA"."TABLES"`) due to ANTLR grammar keyword limitations. 3 FDB integration tests.
-- [x] **SELECT COUNT(*) aggregate** (nightshift-30) — `checkCountStar` detects the aggregate in SELECT list; `execSelect` scans + counts matching rows; returns single-row result with column `COUNT(*)`. Works with WHERE. 1 FDB integration test (count all, count with WHERE).
-- [x] **Compound WHERE (AND/OR/NOT + range comparisons)** (nightshift-30) — `evalExprPredicate` recursive dispatcher handles `LogicalExpressionContext` (AND/OR with short-circuit), `NotExpressionContext`, and `PredicatedExpressionContext`. `evalComparisonPredicate` handles `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`. 3 FDB integration tests (AND, OR, range).
-- [x] **ORDER BY + LIMIT in SELECT** (nightshift-30) — post-scan in-memory sort via `sort.SliceStable`; `compareValues` handles int64/float64/string/bool with NULL-sorts-last. `LIMIT n` truncates after sort. `extractSelectParts` refactored to return `*selectQuery` struct. 3 FDB integration tests (ASC, DESC, LIMIT).
-- [x] **SELECT DISTINCT** (nightshift-31) — `simpleTable.DISTINCT()` detection in `extractSelectParts`; `rowKey()` string-serializes rows for dedup; deduplicated before ORDER BY + LIMIT. 1 FDB integration test (4 rows → 2 distinct values).
-- [x] **WHERE col IN (val1, val2, ...) / NOT IN** (nightshift-31) — `evalInPredicate` handles InPredicateContext from Predicate() slot on PredicatedExpressionContext; evaluates each constant, short-circuits on first match; NOT IN negates. 2 FDB integration tests. **Known limitation**: `NULL NOT IN (...)` returns true (should be NULL/unknown per SQL standard — fixing requires 3-valued logic propagation).
-- [x] **WHERE col IS [NOT] NULL / IS TRUE / IS FALSE** (nightshift-31) — `evalIsNullPredicate` handles IsExpressionContext; uses `ProtoReflect().Has()` for proto2 optional presence (unset = NULL). 1 FDB integration test (IS NULL + IS NOT NULL).
-- [x] **WHERE LIKE / NOT LIKE** (nightshift-31) — `evalLikePredicate` + `likeMatchRunes` recursive % / _ pattern matching. `stripStringLiteralQuotes` for SQL string literal unescaping. 2 FDB integration tests (LIKE + NOT LIKE).
-- [x] **WHERE BETWEEN / NOT BETWEEN** (nightshift-31) — `evalBetweenPredicate` inclusive range via `compareValues`. 2 FDB integration tests (BETWEEN + NOT BETWEEN).
-- [x] **Schema evolution validator** — `RelationalSchemaEvolutionValidator` in `pkg/relational/core/ddl/`. Validates: no table removal, no column removal, no type changes, no column reordering; additions allowed. Wired into `SaveSchemaTemplateConstantAction.Execute()`. 6 unit tests. dayshift-32.
-- [x] **GROUP BY + aggregate functions** — `SELECT col, COUNT(*)/SUM/MIN/MAX/AVG FROM t GROUP BY col`; HAVING clause; ORDER BY on aggregates; bare aggregates without GROUP BY. 4 FDB integration tests. dayshift-32.
-- [x] **Scalar expressions in SELECT** — `SELECT id, amount * 2 AS doubled FROM t`; arithmetic / column references in projection via evalExpr. 1 FDB integration test. dayshift-32.
-- [x] **Catalog read conflict fix** — cachedLoadSchema reads catalog via separate auto-commit tx when inside explicit user transaction; prevents spurious FDB 1020 not_committed errors under parallel DDL. dayshift-32.
-- [x] **Arithmetic in UPDATE SET** — `evalExpr` extended with `MathExpressionAtomContext` + `FullColumnNameExpressionAtomContext`; `SET col = col + N` now works. 1 FDB integration test. dayshift-32.
-- [x] **GROUP BY + aggregate functions** — `SELECT col, COUNT(*)/SUM/MIN/MAX/AVG FROM t GROUP BY col`; in-memory grouping; mixed group-col + aggregate SELECT lists. 1 FDB integration test. dayshift-32.
-- [x] **LIMIT OFFSET** — `LIMIT n OFFSET m` via grammar GetLimit()/GetOffset(); applied post-sort/group. 1 FDB integration test. dayshift-32.
-- [x] **CASE WHEN THEN END** — searched CASE (conditions via evalExprPredicate) and simple CASE (compareValues). ELSE optional. 1 FDB integration test. dayshift-32.
-- [x] **String functions** — UPPER, LOWER, LENGTH/LEN, TRIM, ABS; nested calls chain. dayshift-32.
-- [x] **CONCAT, CONCAT_WS, NULLIF** — CONCAT(s1,s2,...), CONCAT_WS(sep,...), NULLIF(a,b). 1 FDB integration test. dayshift-32.
-- [x] **Generalized WHERE comparisons** — evalComparisonPredicate uses evalExprAtom on both sides; functions/arithmetic now allowed in WHERE (e.g., WHERE price * 2 > 50). 1 FDB integration test. dayshift-32.
-- [x] **INFORMATION_SCHEMA WHERE filtering** — filterSysRows helper reuses evalHaving on col→value map; applies to SCHEMATA, TABLES, COLUMNS, INDEXES. 1 FDB integration test. swingshift-33.
-- [x] **UNION ALL / UNION DISTINCT** — execQueryBodyRows + execUnion handle recursive UNION trees. execSelectQuery/execSelectQueryFull refactor splits routing from FDB scan. 2 FDB integration tests. swingshift-33.
-- [x] **INSERT INTO ... SELECT** — execInsertSelect evaluates QueryExpressionBody (incl. UNION), maps source→target columns via convertToProtoValue. 1 FDB integration test. swingshift-33.
-- [x] **CAST(expr AS type)** — DataTypeFunctionCallContext in evalSpecificFunction; castValue helper for BIGINT/INTEGER/FLOAT/DOUBLE/STRING/BOOLEAN. swingshift-33.
-- [x] **SUBSTRING/SUBSTR, REPLACE, IF/IIF** — string/conditional functions; BinaryComparisonPredicateContext now handled in evalExprAtom (comparisons as values). 1 integration test. swingshift-33.
-- [x] **FLOOR/CEIL/CEILING/ROUND/MOD/POWER/POW/SIGN** — math functions. 1 integration test. swingshift-33.
-- [x] **compound HAVING (AND/OR/NOT)** — logical operators in HAVING clause via evalHaving recursion. swingshift-33.
-- [x] **INNER JOIN and LEFT OUTER JOIN** — execSelectJoin: nested-loop join, ON condition via evalHaving on merged map, SELECT * across both tables, ORDER BY/LIMIT. Detects LEFT/RIGHT grammar ambiguity (keywords are in keywordsCanBeId). 2 integration tests. swingshift-33.
-- [x] **RIGHT OUTER JOIN** — correct unmatched-right-row detection via per-row matchedRight[] boolean slice. 1 integration test. swingshift-33.
-- [x] **JOIN + GROUP BY / aggregates** — GROUP BY with COUNT/SUM/MIN/MAX/AVG, COUNT(DISTINCT), HAVING all work in JOIN queries (map-based in-memory grouping). 1 integration test. swingshift-33.
-- [x] **COUNT(DISTINCT col)** — distinct-set tracking per group (map[string]struct{}); works with and without GROUP BY. 1 integration test. swingshift-33.
-- [x] **GREATEST/LEAST** — multi-argument GREATEST(a,b,c)/LEAST(a,b,c) scalar functions; NULL-argument skipping. 1 integration test. swingshift-33.
-- [x] **filterSysRows compound WHERE** — now routes through evalPredicateOnMapExpr so AND/OR/NOT/IS NULL/LIKE/IN/BETWEEN all work in INFORMATION_SCHEMA WHERE clauses. swingshift-33.
-- [x] **Subquery IN / NOT IN** — `WHERE col IN (SELECT ...)` / `WHERE col NOT IN (SELECT ...)`; proto path + map/JOIN path both supported; ctx+conn threaded through evalPredicate/evalExprPredicate/evalInPredicate. dayshift-34.
-- [x] **EXISTS / NOT EXISTS subquery** — `WHERE EXISTS (SELECT ...)` / `WHERE NOT EXISTS (SELECT ...)`; ExistsExpressionAtomContext handled at expression level. dayshift-34.
-- [x] **CTE (WITH clause)** — `WITH name AS (SELECT ...) SELECT ...`; CTEs materialized in order at execSelect start; chaining (CTE B references CTE A) works. dayshift-34.
-- [x] **SELECT without FROM** — `SELECT 1+2, 'hello'`; constant expression row, no catalog access. dayshift-34.
-- [x] **INSERT VALUES with expressions** — `INSERT INTO t VALUES (1+2, UPPER('foo'))`; evalExpr replaces evalLiteralExpr for INSERT value columns. dayshift-34.
-- [x] **Derived tables (subquery in FROM)** — `SELECT name FROM (SELECT id, name FROM t WHERE ...) AS alias`; materialised into temporary CTE slot. dayshift-34.
-- [x] **Scalar functions in map eval** — evalExprAtomOnMap now handles FunctionCallExpressionAtomContext via evalScalarFunctionCallOnMap; all scalar functions work in JOIN ON/WHERE, CTE WHERE/SELECT, derived table filters. CTE projection evaluates projExprs via evalExprOnMap. NULL NOT IN map path fixed (was returning true). EXISTS added to evalHaving. dayshift-34.
-- [x] **CASE WHEN + CAST in map eval** — evalSpecificFunctionOnMap mirrors evalSpecificFunction for CTE/JOIN/derived-table contexts. dayshift-34.
-- [x] **ctx+conn threading through evalExpr stack** — evalExpr/evalExprAtom/evalScalarFunctionCall/evalSpecificFunction/predicate helpers all take ctx+conn as first params. Enables subqueries inside CASE conditions and scalar function args. Removes three context.TODO() placeholders. dayshift-34.
-- [x] **Aggregates on CTEs + derived tables** — aggregateMapRows method extracted from execSelectJoin and reused in execSelectFromCTE. Also fixes latent bug: JOIN+GROUP BY+ORDER BY+LIMIT previously returned early, silently ignoring ORDER BY/LIMIT. dayshift-34.
-- [x] **Unify proto + map evaluators** — evalScalarFunctionCallCore + evalSpecificFunctionCore hold the full ~350-line dispatch, parameterised on an exprEvaluator adapter (and a predicateEvaluator for CASE WHEN). The four public functions are now thin wrappers. New scalar / CASE functions only need to be added once. dayshift-34.
-- [x] **Multi-table FROM (implicit cross join)** — `SELECT a.x, b.y FROM a, b WHERE a.id = b.id`. Extra comma-separated sources become INNER joinClause entries with no ON condition; WHERE provides the predicate. 1 integration test. dayshift-34.
-- [x] **JOIN on CTE** — confirmed working: `SELECT ... FROM T INNER JOIN cte ON T.id = cte.id` uses scanTableToMaps CTE shortcut. 1 integration test. dayshift-34.
-- [x] **ORDER BY expression (CTE / JOIN paths)** — `ORDER BY UPPER(name)`, `ORDER BY a + b`, etc. Parser stores the expression when it's not a plain column/aggregate; sort sites pre-compute expression keys from map rows and sort via indexes. The proto / single-table-scan path returns a clear error since msgs aren't retained past projection. 1 integration test. dayshift-34.
+All data-path functions implemented. Missing observability/admin only:
 
-#### Phase 3 — Semantic analysis (parse tree → logical plan)
+| C Function | Category | Assessment |
+|---|---|---|
+| `fdb_transaction_get_mapped_range` | Niche | Server-side index join. Record Layer doesn't use it. |
+| `fdb_transaction_get_total_cost` | Observability | Estimated transaction cost for rate limiting. |
+| `fdb_database_force_recovery_with_data_loss` | Admin | DR operation. |
+| `fdb_database_create_snapshot` | Admin | Disk-level backup. |
+| `fdb_database_get_main_thread_busyness` | N/A | Go has no network thread. |
+| `fdb_database_get_server_protocol` | Niche | Multi-version client coordination. |
 
-- [~] **Port `LogicalOperator` hierarchy** — SELECT, INSERT, UPDATE, DELETE, CTE, UNION, etc. dayshift-46 seeded the target shape at `pkg/relational/core/query/logical/` with 12 operators (Scan, Filter, Project, Sort, Limit, Aggregate, Join, Union, Insert, Update, Delete, DDL) + indented Explain rendering + Java-alignment doc. swingshift-47 added Children() arity + identity coverage (84.8% → 97.3%, LogicalCTE included). Follow-up: wire the SemanticAnalyzer below to emit these, and a translator to feed today's executor.
-- [~] **Port `SemanticAnalyzer`** — ANTLR visitor that walks parse tree, resolves identifiers against catalog, infers types, produces `LogicalOperator` tree. **swingshift-47 shipped the seed** at `pkg/relational/core/query/semantic/` (Identifier, QualifiedName, Catalog/Table/Column, Analyzer with ResolveTable/ResolveColumn/ExpandStar, Scope with ambiguity + correlation-chain detection, FunctionCatalog with COUNT/SUM/MIN/MAX/AVG, parse-tree bridges), plus `rlcatalog/` adapter for RecordMetaData and `expr/` parse-tree → cascades walker covering binary comparisons, AND/OR/NOT, XOR (Kleene-exact desugar), IS [NOT] NULL/TRUE/FALSE (2VL), BETWEEN, IN, LIKE, parens, aggregate calls. **nightshift-48 wired the walker into the logical-builder** (`buildLogicalPlanFor{Select,Delete,Update}WithCatalog` attach `cascades.QueryPredicate` to LogicalFilter; text fallback on walker decline / catalog miss / JOIN), promoted `cascades.Comparison.Operand` from `any` to `Value` (unblocks `a = b`, `a < b + 1`, CAST/arithmetic RHS), and added CAST/CONVERT to INT/STRING/BOOL via DataTypeFunctionCall dispatch. **dayshift-49** added `ParameterValue` (positional `?` with statement-scoped 1-based ordinal counter on Resolver, named `?foo`/`$bar` collapsing to one canonical form) + optional `ParameterBinder` eval-context capability; `ScalarFunctionValue` (UPPER/LOWER/LENGTH/CHAR_LENGTH/CHARACTER_LENGTH/OCTET_LENGTH dispatch via `walkScalarFunction`); `SimplifyValue` standalone-Value constant-fold (Arithmetic/Cast/Promote/ScalarFunction); `DIV` keyword on the math operator dispatch. Follow-up: plumb metadata into `naive_generator.ExplainFn`; multi-source scope for JOIN/derived-table WHERE; wire `SimplifyValue` into the embedded layer's projection path so `SELECT 1+2 FROM t` folds at plan time.
-- [~] **Error surfacing** — column-not-found, type-mismatch, ambiguous-ref, etc. swingshift-47 shipped typed errors: `TableNotFoundError`, `ColumnNotFoundError`, `AmbiguousColumnError` (with conflicting `Sources`), `SourceNotFoundError` (with `Available` aliases), `DuplicateAliasError`, `FunctionNotFoundError`, `FunctionArityError`, `UnsupportedFromShapeError`, `UnsupportedExpressionShapeError`. Still TODO: map to Java `ErrorCode`s / SQLSTATEs at the driver boundary.
+### Core SQL requirements
 
-#### Phase 4 — Cascades optimizer (the big one)
+1. **1:1 aligned with Java.** Package names, class/struct names, behavior, wire format. Catalog storage, plan cache keys, protobuf encodings, SQL dialect must be bit-compatible.
+2. **Usable from `database/sql`.** Primary public entry is `driver.Driver` registered as `fdbsql`. `sql.Open("fdbsql", dsn)` is non-negotiable.
+3. **Embedded first.** Start with in-process execution. gRPC remote / standalone server later.
+4. **Keep parser dialect identical.** Same `RelationalLexer.g4` / `RelationalParser.g4` grammar; regenerate with `antlr4-go/antlr4`. No dialect drift.
 
-**This is ~104K LOC in Java, ~500 files. It will not fit in one shift. Break it into sub-phases and plan across many shifts.**
+### Risks & open questions
 
-**Staging / conformance ordering:** see `rfcs/022-cascades-conformance-staging.md`. The three sub-phases below (4.-1, 4.-0.5, 4.-0.25) run *before* 4.0 so the hardest conformance questions are answered up front rather than discovered after weeks of rule-porting. Rule porting in 4.5 is also re-ordered to start with the six rules that cover swingshift-44's existing 11-branch pushdown chain, so the plan-equivalence harness (4.-1) gets end-to-end coverage against the 94-scenario yamsql corpus early.
-
-- [ ] **4.-1 — Plan-equivalence harness (build FIRST)**
-  - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
-  - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
-  - [ ] Decide: live in `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner)? See RFC-022 open questions.
-- [x] **4.-0.5 — Generics-vs-interfaces decision** (RFC 021 risk #3) — dayshift-46.
-  - [x] Implemented `Value` + `BindingMatcher` in both candidate shapes, measured compile-time safety, API friction on a 10-line predicate matcher, downstream impact on heterogeneous children.
-  - [x] **Decision: shape (a) — non-generic `BindingMatcher` + `any` + free-function `Get[T]` retrieval helper.** See `rfcs/023-cascades-generics-decision.md`. Zero-size-struct identity gotcha documented — all matcher structs carry a nonce + atomic-counter factory.
-  - [x] Winning shape shipped to production at `pkg/recordlayer/query/plan/cascades/` (Java-aligned: mirrors `com.apple.foundationdb.record.query.plan.cascades`). Losing shape deleted. Real Phase 4.0 seed; extended in subsequent shifts.
-- [x] **4.-0.25 — Plan-cache-key compatibility spec** — dayshift-46.
-  - [x] Sub-RFC: `rfcs/024-plan-cache-compat.md`.
-  - [x] **Decision: hash-identical Java compatibility is NOT a goal.** Java's `RelationalPlanCache` is Caffeine-backed per-process in-memory; no wire format, no distributed deployment, no cross-engine contract to preserve. Phase 4.4 free to ship simpler Go-native cost. Go-internal hash stability + schema-version-sensitive keys + test fixtures still required — added as Phase 4.0 sub-items.
-- [~] **4.0 — Foundation types**
-  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values.go` — to be replaced.
-  - [~] `Value` hierarchy — `AbstractValue`, `FieldValue`, `ConstantValue`, `ArithmeticValue`, `CastValue`, `BooleanValue`, `AggregateValue`, ~77 value classes. dayshift-46 seeded `Value` interface (with `Evaluate`) + 5 concrete types (Constant, Field, Arithmetic, Boolean, Cast) at `pkg/recordlayer/query/plan/cascades/values.go`; rest follow.
-  - [~] `QueryPredicate` hierarchy — dayshift-46 seeded `QueryPredicate` interface + `TriBool` (Kleene 3VL) + `ConstantPredicate` + `AndPredicate` + `OrPredicate` + `NotPredicate` at `pkg/recordlayer/query/plan/cascades/predicates.go`. Remaining: `ValuePredicate`, `ComparisonRange(s)`, `MatchesValue`, `Placeholder`, `PredicateWithValueAndRanges`.
-  - [~] `Simplification` — value simplification, predicate simplification (~30 classes). dayshift-49 added `SimplifyValue` (free-function constant-fold over standalone Values: Arithmetic / Cast / Promote / ScalarFunction; whitelist-based; pointer-equality stable). Phase 4.6 brings the full `ValueSimplificationRuleSet` and the rule-driven driver retires the seed.
-  - [~] `Comparisons` / `Comparison` — dayshift-46 seeded `ComparisonType` enum (6 operators) + `Comparison` + `ComparisonPredicate` at `pkg/recordlayer/query/plan/cascades/comparisons.go`. nightshift-48 promoted `Comparison.Operand` from `any` to `Value` (non-constant RHS works end-to-end via `EvalAgainst`); added `LiteralValue` / `NewLiteralComparison` helpers; extended `valueLiteralString` to render `[]any` / `[]byte` / signed-int widths; constant-fold rule recognises composite-constant LHS via `EvaluateConstant` fall-through. **dayshift-49** wired the `Comparisons.SimpleComparison` parameter-bound variant (ParameterValue with positional ordinal + named name; ExplainValue renders `?N` / `?name` as the plan-cache key seam). Remaining: real binder plumbing through Evaluate (ParameterBinder interface seeded but no callers yet).
-  - [~] `Correlated<T>` + `CorrelationIdentifier` — dayshift-46 seeded `CorrelationIdentifier` value-type + `Named/Unique` factories + `Correlated` interface at `pkg/recordlayer/query/plan/cascades/correlation.go`. Concrete `Correlated` impls land as Values gain richer Quantifier references.
-- [ ] **4.1 — Relational expressions**
-  - [ ] `RelationalExpression`, `RelationalExpressionWithChildren`, `RelationalExpressionWithPredicates`
-  - [ ] Logical exprs: `LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, `LogicalTypeFilterExpression`, `LogicalUnionExpression`, `LogicalDistinctExpression`, `LogicalIntersectionExpression`, `SelectExpression`
-  - [ ] DML exprs: `InsertExpression`, `UpdateExpression`, `DeleteExpression`, `TableFunctionExpression`
-- [~] **4.2 — Matching engine**
-  - [~] `BindingMatcher` DSL — dayshift-46 seeded `BindingMatcher` interface + `PlannerBindings` + `MergedWith` + generic `Get[T]` retrieval helper + `AnyValue` + `Instance` + `ArithmeticMatcher` + `AllOfMatcher` + `AnyOfMatcher` at `pkg/recordlayer/query/plan/cascades/{matcher,combinators}.go`. Remaining: `TypedMatcherWithExtractAndDownstream`, `ListMatcher`, `CollectionMatcher`, `OptionalIfPresentMatcher`, `PartialMatchMatchers`, the `graph/` matchers.
-  - [x] `PlannerBindings` — dayshift-46.
-- [ ] **4.3 — Memo & references**
-  - [ ] `Reference` (= Cascades "group") — equivalence class of `RelationalExpression`s
-  - [ ] Implicit DAG via `Reference` pointers (no explicit memo)
-  - [ ] `PlanContext`, `CascadesRuleCall`
-- [ ] **4.4 — Cost model**
-  - [ ] `CascadesCostModel` — heuristic comparator matching Java
-  - [ ] Cardinality estimation hooks, `properties/` package (~25 classes)
-- [~] **4.5 — Rules**
-  - [~] Rule base classes (`CascadesRule`, `CascadesRuleCall`) — dayshift-46 seeded `CascadesRule` interface + `RuleCall` (with `Yield/Yielded`) + `FireRule` testing helper at `pkg/recordlayer/query/plan/cascades/rule.go`. Working example: `addConstantFoldRule` in the test file folds `Const + Const` → `Const`.
-  - [ ] **Batch A (covers swingshift-44's 11-branch pushdown chain — port FIRST so 4.-1 harness gets end-to-end yamsql coverage):**
-    - `PrimaryScanRule`
-    - `ImplementFilterRule`
-    - `ImplementSortRule`
-    - `MergeFetchIntoCoveringIndexRule`
-    - Index-equality + index-range implementation rules
-    - `InComparisonToExplodeRule` (IN-list decomposition)
-  - [ ] **Batch B and beyond:** rest of data access rules (`AbstractDataAccessRule`, `AggregateDataAccessRule`), implementation rules (`ImplementDistinctRule`, `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`…), decomposition (`DecorrelateValuesRule`), optimization (`PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule`…), finalization (`FinalizeExpressionsRule`). Port in batches aligned to yamsql feature flags (JOIN, CTE, aggregate).
-  - [ ] **~69 rules total.** Port in batches, pick representative tests from Java's rule test suite.
-- [ ] **4.6 — Planner driver**
-  - [ ] `CascadesPlanner` — task stack, EXPLORE phase → OPTIMIZE phase
-  - [ ] `PlannerEvent` debug hooks
-  - [ ] Integration with `RecordMetaData` + index availability
-- [ ] **4.7 — Correctness tests** (rule-by-rule; plan-equivalence harness itself lands in 4.-1)
-  - [ ] Port enough of Java's planner test suite to validate rule-by-rule equivalence.
-  - [ ] Extend the 4.-1 harness as rules land: every new rule in 4.5 adds a batch of yamsql queries it's expected to fire on, with the Java-plan oracle as the diff target.
-
-#### Phase 5 — Query execution
-
-- [ ] **`PlanGenerator`** — `LogicalOperator → RelationalExpression` adapter
-- [ ] **`QueryExecutor`** — executes a `RecordQueryPlan` against a `FDBRecordStore`, returns `RecordCursor`
-- [ ] **`RecordLayerResultSet`** — wraps cursor, implements `api.ResultSet`
-- [ ] **Continuation support** — cursor continuation → SQL-level cursor state; match Java encoding
-- [ ] **Prepared parameter binding** — `PreparedParams` substitutes `?` at evaluation time
-
-#### Phase 6 — DDL
-
-- [x] **`ConstantAction`** base + executor (nightshift-27)
-- [x] **`MetadataOperationsFactory`** + `RecordLayerMetadataOperationsFactory` (nightshift-27) — full wiring: FDB store create/delete via `RelationalKeyspace`; CreateDatabase/DropDatabase/CreateSchema/DropSchema/SaveSchemaTemplate/DropSchemaTemplate; 12 unit tests + 3 FDB integration tests
-- [x] **`EmbeddedConnection` DDL execution** (nightshift-28) — SQL DDL (CREATE/DROP DATABASE/SCHEMA) parsed via ANTLR, dispatched to factory, executed in FDB auto-commit transactions; wired into `fdbsql` driver; 8 unit tests + 4 FDB integration tests
-- [ ] Individual actions: `CreateTableAction`, `CreateIndexAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc.
-- [ ] Integration with online indexer (CREATE INDEX triggers background build)
-
-#### Phase 7 — Plan cache
-
-- [ ] Port `RelationalPlanCache` — 3-tier (primary/secondary/tertiary) with per-tier TTL + max-entries
-- [ ] `QueryCacheKey` — SQL + param types + catalog version
-- [ ] `PhysicalPlanEquivalence` — deduplicates semantically identical plans
-- [ ] Async eviction
-
-#### Phase 8 — `database/sql/driver` adapter (`pkg/relational/sqldriver`)
-
-- [x] **`Driver`** — registered as `fdbsql`, parses DSN, constructs embedded `Connection` (nightshift-28)
-- [x] **`Connector`** — lazy-init, holds cluster client + options (nightshift-28)
-- [x] **`Conn`** `driver.Conn` (Prepare/Close/Begin), `driver.ExecerContext`, `driver.Pinger` — nightshift-28. `driver.ConnBeginTx`, `driver.ConnPrepareContext`, `driver.SessionResetter`, `driver.Validator` deferred (phase 8 complete path)
-- [ ] **`Stmt`** implementing `driver.Stmt`, `driver.StmtExecContext`, `driver.StmtQueryContext`, `driver.NamedValueChecker`
-- [ ] **`Rows`** implementing `driver.Rows`, `driver.RowsColumnTypeDatabaseTypeName`, `driver.RowsColumnTypeNullable`, `driver.RowsColumnTypeLength`, `driver.RowsColumnTypePrecisionScale`, `driver.RowsColumnTypeScanType`
-- [ ] **`Result`** implementing `driver.Result` (LastInsertId is always an error — FDB has no auto-inc; match Postgres driver convention)
-- [ ] **`Tx`** implementing `driver.Tx`
-- [ ] **Value conversion** — `driver.Value` ⇄ `api.DataType` values, including structs and arrays
-- [ ] **Custom scanner/valuer** — `Struct`, `Array`, `Versionstamp`, `Continuation`
-- [ ] **Integration test matrix**
-  - [x] `sql.Open("fdbsql", dsn)` + `db.Ping()` (nightshift-28)
-  - [x] `db.ExecContext` for DDL (CREATE DATABASE/SCHEMA/SCHEMA TEMPLATE + DROP) (nightshift-28)
-  - [x] `db.QueryContext` + `rows.Scan` for SELECT (nightshift-29: SELECT * FROM table via ScanRecordsByType)
-  - [x] `db.PrepareContext` + parameterized exec/query (nightshift-30) — `substituteParams()` replaces `?` positional placeholders before parsing. String escape (`''`→`'`) handled in both directions. 11 unit tests + 2 FDB integration tests (basic, apostrophe round-trip).
-  - [ ] `db.BeginTx` + Commit/Rollback
-  - [ ] Context cancellation mid-query
-  - [ ] Concurrent connections from shared `sql.DB`
-
-#### Phase 9 — gRPC server + remote driver *(later)*
-
-- [ ] Port `fdb-relational-grpc/` protobuf definitions
-- [ ] `cmd/frl-server` — standalone server binary, TLS, auth
-- [ ] Remote `sqldriver` path: DSN host:port → gRPC client
-
-#### Phase 10 — CLI *(later)*
-
-- [ ] `cmd/frl` SQL shell — history, EXPLAIN, formatted output. Use `liner` or `go-prompt`.
-
-### Java compatibility conformance (continuous)
-
-- [ ] **Catalog wire format** — extract a schema via Go, load with Java, run a SELECT. Round-trip.
-- [ ] **Plan cache key stability** — Java cache key hash = Go cache key hash (for RPC caching). **Scope decision pending** — see `rfcs/022-cascades-conformance-staging.md` §4.-0.25. Depending on the answer this is either a hard conformance item (requires Java-tag pinning + cost-model parity) or a best-effort goal we commit to re-visit post-Cascades.
-- [ ] **System table contents** — `SELECT * FROM INFORMATION_SCHEMA.TABLES` returns byte-identical rows from Go and Java against the same store.
-- [ ] **SQL semantic equivalence** — feed the yamsql test corpus through both engines; require identical result sets for read queries.
-- [ ] **FRL perf comparison — Go vs Java** — we have a Go-vs-Java benchmark table for the record layer (see CLAUDE.md), but nothing yet for the relational / SQL layer. Once Phase 5 (embedded Connection) + Phase 3 (semantic analyzer) land enough to run a real SELECT, stand up the same comparison harness for common SQL workloads (simple SELECT, secondary-index SELECT, INSERT, aggregate, prepared statement with parameters). Drive both via the same `java-jdbc-connector` vs `database/sql` test rig; measure latency, allocs, throughput. Goal: parity or better, same posture as the record-layer numbers.
+1. **Cascades port scope is enormous** (~104K LOC Java → 80K+ Go). Many shifts; needs sub-RFCs per rule family. Hand-rolled heuristic alternative rejected — would break plan-cache-key compat forever.
+2. **ANTLR-go performance.** Java's runtime is well-tuned; antlr4-go/antlr4 less mature. Parse-hot-path benchmarking required.
+3. **`database/sql` impedance mismatch.** `driver.Value` is closed (bool/int64/float64/string/[]byte/time.Time/nil). Struct/array/enum/versionstamp need custom `Scanner`/`Valuer` types; users opt in explicitly.
+4. **Catalog migration.** Wire format wrong → user data needs migration. Conformance tests for catalog read-back BEFORE writing.
+5. **Testing the planner.** No FDB call-site validates plan quality end-to-end beyond correctness. Need yamsql runner + EXPLAIN diff harness against Java (covered by 4.-1).
 
 ### Non-goals (explicit)
 
@@ -979,15 +404,16 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
 - Callable statements, holdable/scrollable result sets, savepoints — Java throws `SQLFeatureNotSupportedException`; we do the same
 - LOB types (`Blob`, `Clob`, `NClob`, `SQLXML`) — same, unsupported
 
-### Risks & open questions
+### Test coverage snapshot (current)
 
-1. **Cascades port scope is enormous.** 104K LOC Java → probably 80K+ Go after de-Java-isms. Many shifts; needs sub-RFCs for each rule family. Alternative considered and **rejected**: hand-rolled heuristic planner would break Java plan-cache-key compatibility and mean divergent optimizer behavior forever.
-2. **ANTLR-go performance.** Java's ANTLR runtime is well-tuned; antlr4-go/antlr4 is less mature. Parse-hot-path benchmarking required before Phase 1 sign-off.
-3. **Go generics vs. Java wildcards — decide before Phase 4.0.** Cascades is heavily generic (`Value<T>`, `RelationalExpression<T>`, `BindingMatcher<? extends T>`). The two candidate shapes for the Go port:
-   - (a) Interface hierarchies with `any` / explicit type assertions (matches how our current record layer handles index expressions). Lower compile-time safety, smaller API surface.
-   - (b) Generic structs + constraint interfaces. Higher safety, but Go generics do not have wildcard bounds — `Matcher[? extends Value]` becomes awkward. Requires rewriting the matcher DSL.
-   - **Decision:** go with (a) initially. Revisit in Phase 4.5 (rules) if the lack of compile-time type safety causes correctness bugs. Documenting here so Phase 4.0 foundation types don't drift.
-4. **`database/sql` impedance mismatch.** `driver.Value` is a closed set (bool/int64/float64/string/[]byte/time.Time/nil). Struct/array/enum/versionstamp need custom `Scanner`/`Valuer` types; users must opt in explicitly. Document in a `pkg/relational/sqldriver` package doc comment.
-5. **Catalog migration.** If we get the catalog wire format wrong once, users' production data needs migration. Write conformance tests for catalog read-back **before** writing the catalog writer.
-6. **Testing the planner.** No FDB call-site validates plan quality end-to-end beyond correctness. Need yamsql runner + an `EXPLAIN` diff harness against Java.
-7. **ANTLR grammar license.** Java's `RelationalLexer.g4` / `RelationalParser.g4` are MIT-licensed (original Positive Technologies MySQL grammar) with Apple copyright addition (Apache 2.0). Vendoring them into Go needs a `LICENSE` note in `pkg/relational/core/parser/grammar/`; both licenses are permissive and compatible.
+- 2817 Ginkgo specs + 438 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures)
+- Line coverage: 81.0% overall. `just coverage` generates HTML report
+- Race detector: CI runs on all 5 FDB test targets. Locally: `just race-all`
+- Fuzz targets: 28 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader parsers + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix + FuzzLikeMatch + FuzzLikeMatchEscape)
+- Performance: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%
+
+### Conformance status
+
+- **Record Layer:** CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types**, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, **OnlineIndexer** (BY_RECORDS, BY_INDEX, MULTI_TARGET, MUTUAL strategies), cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator (full IndexValidatorRegistry), commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore.
+- **FDB Client vs C:** 100% data-path API coverage. 18/21 C++ audit divergences fixed (3 remaining: auto-reset after commit, wrong-shard retry cap, GRV background refresh — all judged acceptable).
+- **SQL Layer:** parser (1587/1587 yamsql statements parse), CRUD, JOINs (INNER/LEFT/RIGHT OUTER), GROUP BY + HAVING, CTEs (incl. recursive with TRAVERSAL ORDER), UNION ALL/DISTINCT, derived tables, subqueries (IN/EXISTS scalar), CASE WHEN, scalar functions (~40), 11-branch pushdown chain (PK + secondary, equality + range + IN-list + LIKE prefix + composite, covering-index variants). Cross-language conformance NOT yet verified — see CRITICAL.

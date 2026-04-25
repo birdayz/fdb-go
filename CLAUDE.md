@@ -38,7 +38,17 @@ This project uses a Vollkonti (continuous 24/7) shift system. Run `/vollkonti` t
 
 ## Work tracking & workflow
 
-See `TODO.md` in repo root for tracked issues and improvements. Use checkbox format `- [x]` / `- [ ]` with severity levels.
+See `TODO.md` in repo root for tracked issues and improvements. **TODO.md is the authoritative priority list** — flat priority buckets `## CRITICAL > ## HIGH > ## MEDIUM > ## LOW`, items as `- [x]` / `- [ ]`.
+
+**Priority discipline at shift start:**
+
+1. Read the latest handover for shift state, last-PR feedback, and the next-shift follow-ups it lists.
+2. Read TODO.md and identify the **highest unchecked priority bucket that has open items** (CRITICAL first, then HIGH, then MEDIUM, then LOW).
+3. Pick work from THAT bucket. The handover's "Next-shift follow-ups" are *suggestions and context*, not the priority list. They are usually MEDIUM/LOW tactical clean-ups; finishing them is fine, but it is **never a substitute for unchecked CRITICAL/HIGH items**.
+4. If the handover's follow-ups happen to align with the highest-priority bucket — great, do them. If they're lower-priority than what's open in CRITICAL/HIGH, do the CRITICAL/HIGH item first.
+5. **When a CRITICAL or HIGH item is sitting unchecked, you do NOT get to spend a shift on MEDIUM follow-ups.** That's the failure mode this rule exists to prevent.
+
+**Order of operations within a shift:** CRITICAL > HIGH > MEDIUM > LOW. Finish what you start before climbing the priority ladder downward — a half-done CRITICAL item is worse than a finished HIGH one. But starting a fresh MEDIUM when CRITICAL is still open is wrong.
 
 **Working rhythm:** one thing at a time. Implement a feature, write tests, run `just test`, commit, move on. Don't batch multiple unrelated features into one commit.
 
