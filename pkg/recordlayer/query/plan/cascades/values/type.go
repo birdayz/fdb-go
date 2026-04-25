@@ -468,6 +468,74 @@ func (r *RecordType) GetField(ordinal int) (Field, bool) {
 	return r.Fields[ordinal], true
 }
 
+// --- ArrayType -----------------------------------------------------
+
+// ArrayType is the Type impl for ordered collections. Mirrors Java's
+// Array nested type. Carries an ElementType (the type of the array's
+// values) plus a Nullable flag (whether the array column itself can
+// be NULL).
+//
+// Two ArrayType instances are Equal iff their Nullable + ElementType
+// match. nil ElementType represents an array whose element type isn't
+// inferred yet (e.g. an empty array literal pre-type-inference) and
+// is equal only to another ArrayType with nil ElementType.
+type ArrayType struct {
+	// Nullable reports whether the array column allows NULL.
+	Nullable bool
+	// ElementType is the type of the array's values. May be nil
+	// when type inference hasn't filled it in (typically transient
+	// during plan-time analysis; runtime arrays always have a
+	// concrete element type by the time they're evaluated).
+	ElementType Type
+}
+
+// NewArrayType constructs an ArrayType. nil elementType is allowed
+// for the "type not yet inferred" case; callers can fill it in via
+// WithElementType once inference produces a concrete type.
+func NewArrayType(nullable bool, elementType Type) *ArrayType {
+	return &ArrayType{Nullable: nullable, ElementType: elementType}
+}
+
+// Code implements Type — always TypeCodeArray.
+func (*ArrayType) Code() TypeCode { return TypeCodeArray }
+
+// IsNullable implements Type.
+func (a *ArrayType) IsNullable() bool { return a.Nullable }
+
+// Equals implements Type. Structural — Nullable + ElementType.Equals.
+// Two ArrayTypes both with nil ElementType are equal; one nil + one
+// non-nil are not.
+func (a *ArrayType) Equals(other Type) bool {
+	if other == nil {
+		return false
+	}
+	oa, ok := other.(*ArrayType)
+	if !ok {
+		return false
+	}
+	if a.Nullable != oa.Nullable {
+		return false
+	}
+	if a.ElementType == nil || oa.ElementType == nil {
+		return a.ElementType == oa.ElementType
+	}
+	return a.ElementType.Equals(oa.ElementType)
+}
+
+// String implements Type. Renders as `ARRAY<INT NOT NULL> NULL` /
+// `ARRAY<?>` (when ElementType is nil).
+func (a *ArrayType) String() string {
+	elemStr := "?"
+	if a.ElementType != nil {
+		elemStr = a.ElementType.String()
+	}
+	suffix := " NOT NULL"
+	if a.Nullable {
+		suffix = " NULL"
+	}
+	return "ARRAY<" + elemStr + ">" + suffix
+}
+
 // ToValueType bridges the new Type back to the legacy ValueType.
 // LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
 // legacy enum doesn't distinguish widths). Structured types and

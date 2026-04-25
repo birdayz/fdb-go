@@ -423,6 +423,101 @@ func TestRecordType_DefensiveCopy(t *testing.T) {
 	}
 }
 
+// --- ArrayType tests ----------------------------------------------
+
+// TestArrayType_Shape pins the basic constructor + getters + Equals
+// over (nullable, elementType) variations.
+func TestArrayType_Shape(t *testing.T) {
+	t.Parallel()
+	a := NewArrayType(false, NotNullLong)
+	if a.Code() != TypeCodeArray {
+		t.Errorf("Code(): got %v, want ARRAY", a.Code())
+	}
+	if a.IsNullable() {
+		t.Errorf("IsNullable(): got true, want false")
+	}
+	if !a.ElementType.Equals(NotNullLong) {
+		t.Errorf("ElementType: got %v, want LONG NOT NULL", a.ElementType)
+	}
+	// Equals: same shape.
+	if !a.Equals(NewArrayType(false, NotNullLong)) {
+		t.Errorf("Equals: identical shape should be equal")
+	}
+	// Not equal: different nullability.
+	if a.Equals(NewArrayType(true, NotNullLong)) {
+		t.Errorf("Equals: different nullability should differ")
+	}
+	// Not equal: different element type.
+	if a.Equals(NewArrayType(false, NullableString)) {
+		t.Errorf("Equals: different element type should differ")
+	}
+	// Not equal: different element-type shape.
+	if a.Equals(NewArrayType(false, NullableLong)) {
+		t.Errorf("Equals: different element nullability should differ")
+	}
+}
+
+// TestArrayType_NilElementType pins the "type not yet inferred"
+// path. nil ElementType is legal; two ArrayTypes both with nil
+// ElementType are equal; one nil + one non-nil are not.
+func TestArrayType_NilElementType(t *testing.T) {
+	t.Parallel()
+	a := NewArrayType(true, nil)
+	if a.ElementType != nil {
+		t.Errorf("ElementType: got %v, want nil", a.ElementType)
+	}
+	if !a.Equals(NewArrayType(true, nil)) {
+		t.Errorf("Equals: two nil-element arrays should be equal")
+	}
+	if a.Equals(NewArrayType(true, NotNullLong)) {
+		t.Errorf("Equals: nil-element vs typed-element should not be equal")
+	}
+	if NewArrayType(true, NotNullLong).Equals(a) {
+		t.Errorf("Equals: typed-element vs nil-element should not be equal (symmetric)")
+	}
+}
+
+// TestArrayType_String pins the rendered form.
+func TestArrayType_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    Type
+		want string
+	}{
+		{NewArrayType(false, NotNullLong), "ARRAY<LONG NOT NULL> NOT NULL"},
+		{NewArrayType(true, NullableString), "ARRAY<STRING NULL> NULL"},
+		{NewArrayType(true, nil), "ARRAY<?> NULL"},
+		// Nested record-of-array.
+		{
+			NewArrayType(false, NewRecordType("Item", false, []Field{
+				{Name: "id", FieldType: NotNullLong, Ordinal: 0},
+			})),
+			"ARRAY<Item RECORD<id LONG NOT NULL> NOT NULL> NOT NULL",
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.t.String(); got != tc.want {
+			t.Errorf("String(): got %q, want %q", got, tc.want)
+		}
+	}
+}
+
+// TestArrayType_Nested pins composition: ARRAY<ARRAY<INT>> equals
+// itself; ARRAY<ARRAY<INT>> ≠ ARRAY<INT>.
+func TestArrayType_Nested(t *testing.T) {
+	t.Parallel()
+	innerA := NewArrayType(false, NotNullInt)
+	innerB := NewArrayType(false, NotNullInt)
+	outerA := NewArrayType(false, innerA)
+	outerB := NewArrayType(false, innerB)
+	if !outerA.Equals(outerB) {
+		t.Errorf("ARRAY<ARRAY<INT>>: shape-equal nested arrays should be equal")
+	}
+	if outerA.Equals(NewArrayType(false, NotNullInt)) {
+		t.Errorf("ARRAY<ARRAY<INT>> ≠ ARRAY<INT>")
+	}
+}
+
 // TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
 // invariant for the value types the legacy enum actually
 // represents. NotNull bit is inferable from the round-trip target
