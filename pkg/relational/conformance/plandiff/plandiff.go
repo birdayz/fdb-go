@@ -24,13 +24,18 @@
 package plandiff
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
@@ -363,20 +368,130 @@ func (goEngine) Plan(ctx context.Context, q Query) PlanResult {
 	return PlanResult{Engine: "go", Tree: tree, Hash: hashTree(tree)}
 }
 
-// javaEngine is the placeholder Java engine. Always returns
-// ErrJavaUnimplemented. Replace once `conformance/BUILD.bazel` gains
-// fdb-relational maven deps and `conformance_server.java` exposes a
-// SqlPlanSteps action.
-type javaEngine struct{}
+// javaEngine talks to the conformance Java server's `planSql` step
+// (see `conformance/sql_plan_steps.java`). The harness POSTs a JSON
+// payload to `baseURL/invoke` and reads the EXPLAIN PLAN column that
+// fdb-relational's planner produces.
+//
+// A nil baseURL surfaces ErrJavaUnimplemented for every call so a CI
+// gate that wants to be Go-only-tolerant can pass without a running
+// conformance server. NewJavaEngine() with no args returns this
+// nil-baseURL form; NewJavaEngineHTTP(url) returns the wired form.
+type javaEngine struct {
+	baseURL    string
+	httpClient *http.Client
+	// clusterFile is the FDB cluster-file content (NOT path) the Java
+	// step needs to open a database. Plumbed in at construction so
+	// each Plan() call doesn't have to thread it through Query.
+	clusterFile string
+}
 
-// NewJavaEngine returns the Java-side Engine stub. Until Bazel wires
-// fdb-relational deps every call returns ErrJavaUnimplemented; the
-// harness reports those as StatusJavaUnimplemented so a Go-only CI
-// gate can pass.
+// NewJavaEngine returns the unwired Java-side Engine. Every Plan()
+// call returns ErrJavaUnimplemented. Use this when running the Go
+// harness in isolation (no conformance server / FDB testcontainer
+// available). Reports as StatusJavaUnimplemented in the diff.
 func NewJavaEngine() Engine { return javaEngine{} }
 
-func (javaEngine) Plan(_ context.Context, _ Query) PlanResult {
-	return PlanResult{Engine: "java", Err: ErrJavaUnimplemented}
+// NewJavaEngineHTTP returns a Java-side Engine that drives the
+// conformance server at `baseURL` (e.g. `http://127.0.0.1:35451`)
+// against the FDB cluster whose cluster-file content is
+// `clusterFileContent` (the actual config text, not a path — the
+// Java step writes it to a file before opening the database, matching
+// the existing ConformanceBase pattern).
+//
+// Each Plan() call POSTs to `baseURL/invoke` with step="planSql" and
+// params={clusterFile, schemaTemplate, sql}. The Java step creates a
+// uniquely-named schema template + database + schema for the call,
+// runs `EXPLAIN <sql>`, returns the PLAN column, and tears the
+// schema down — see `conformance/sql_plan_steps.java`.
+func NewJavaEngineHTTP(baseURL, clusterFileContent string) Engine {
+	return javaEngine{
+		baseURL:     baseURL,
+		clusterFile: clusterFileContent,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (e javaEngine) Plan(ctx context.Context, q Query) PlanResult {
+	if e.baseURL == "" {
+		return PlanResult{Engine: "java", Err: ErrJavaUnimplemented}
+	}
+	tree, err := e.invokePlanSql(ctx, q)
+	if err != nil {
+		return PlanResult{Engine: "java", Err: err}
+	}
+	return PlanResult{Engine: "java", Tree: tree, Hash: hashTree(tree)}
+}
+
+// invokePlanSql is the per-call HTTP dance. Body shape mirrors the
+// existing JavaInvoker pattern in conformance/java_invoker_test.go —
+// kept inline here so plandiff doesn't depend on test-only code.
+func (e javaEngine) invokePlanSql(ctx context.Context, q Query) (string, error) {
+	type request struct {
+		Step   string         `json:"step"`
+		Params map[string]any `json:"params"`
+	}
+	type response struct {
+		Success            bool            `json:"success"`
+		Result             json.RawMessage `json:"result"`
+		Error              string          `json:"error"`
+		ExceptionClass     string          `json:"exceptionClass"`
+		ExceptionFullClass string          `json:"exceptionFullClass"`
+	}
+
+	reqBody, err := json.Marshal(request{
+		Step: "planSql",
+		Params: map[string]any{
+			"clusterFile":    e.clusterFile,
+			"schemaTemplate": q.SchemaTemplate,
+			"sql":            q.SQL,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("plandiff: marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", e.baseURL+"/invoke", bytes.NewReader(reqBody))
+	if err != nil {
+		return "", fmt.Errorf("plandiff: build HTTP request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := e.httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("plandiff: HTTP POST: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return "", fmt.Errorf("plandiff: read body: %w", err)
+	}
+	if httpResp.StatusCode != 200 {
+		return "", fmt.Errorf("plandiff: HTTP %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	var resp response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("plandiff: unmarshal response: %w (body=%q)", err, string(body))
+	}
+	if !resp.Success {
+		// Surface the Java exception class so the harness can
+		// distinguish planner errors (UNSUPPORTED_OPERATION,
+		// SYNTAX_ERROR) from infrastructure errors (cluster file
+		// missing, FDB unavailable).
+		if resp.ExceptionClass != "" {
+			return "", fmt.Errorf("plandiff: java %s: %s", resp.ExceptionClass, resp.Error)
+		}
+		return "", fmt.Errorf("plandiff: java error: %s", resp.Error)
+	}
+
+	// `planSql` returns a bare JSON string (the PLAN column text).
+	var plan string
+	if err := json.Unmarshal(resp.Result, &plan); err != nil {
+		return "", fmt.Errorf("plandiff: parse plan from result: %w (result=%q)", err, string(resp.Result))
+	}
+	return plan, nil
 }
 
 // noopEngine is the fallback when Run is called with a nil Engine. It

@@ -2,7 +2,10 @@ package plandiff
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -199,6 +202,126 @@ func TestFormatReport_AgreeNotExpanded(t *testing.T) {
 	}
 	if !strings.Contains(out, "diff text") {
 		t.Fatalf("DIVERGE detail missing: %q", out)
+	}
+}
+
+// TestJavaEngine_HappyPath pins the HTTP wire shape: the engine POSTs
+// to /invoke with step=planSql + params{clusterFile, schemaTemplate, sql},
+// reads back {success: true, result: "<plan tree>"}, and returns a
+// PlanResult with Tree + Hash populated.
+func TestJavaEngine_HappyPath(t *testing.T) {
+	t.Parallel()
+	const wantPlanText = "ISCAN(NAME_IDX <,>)\n  FetchRecords()"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/invoke" {
+			http.Error(w, "wrong path", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Step   string         `json:"step"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Step != "planSql" {
+			http.Error(w, "unexpected step "+req.Step, http.StatusBadRequest)
+			return
+		}
+		// Verify the harness threaded the right params through.
+		for _, k := range []string{"clusterFile", "schemaTemplate", "sql"} {
+			if _, ok := req.Params[k]; !ok {
+				http.Error(w, "missing param "+k, http.StatusBadRequest)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result":  wantPlanText,
+		})
+	}))
+	defer srv.Close()
+
+	eng := NewJavaEngineHTTP(srv.URL, "fake-cluster-file-content")
+	got := eng.Plan(context.Background(), Query{
+		Name:           "x",
+		SQL:            "SELECT * FROM t",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))",
+	})
+	if got.Err != nil {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	if got.Tree != wantPlanText {
+		t.Fatalf("Tree: got %q, want %q", got.Tree, wantPlanText)
+	}
+	if got.Hash == "" || len(got.Hash) != 64 {
+		t.Fatalf("Hash: got %q (len %d), want 64-hex", got.Hash, len(got.Hash))
+	}
+}
+
+// TestJavaEngine_JavaError pins the failure shape: when the Java
+// step returns {success: false, exceptionClass: "...", error: "..."},
+// the engine surfaces the exception class in the error message so
+// classify() can attribute the failure correctly.
+func TestJavaEngine_JavaError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":            false,
+			"error":              "Unsupported feature: window function",
+			"exceptionClass":     "RelationalException",
+			"exceptionFullClass": "com.apple.foundationdb.relational.api.exceptions.RelationalException",
+		})
+	}))
+	defer srv.Close()
+
+	eng := NewJavaEngineHTTP(srv.URL, "")
+	got := eng.Plan(context.Background(), Query{Name: "x", SQL: "SELECT ROW_NUMBER() OVER ()"})
+	if got.Err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(got.Err.Error(), "RelationalException") {
+		t.Fatalf("error message missing exception class: %v", got.Err)
+	}
+	if !strings.Contains(got.Err.Error(), "window function") {
+		t.Fatalf("error message missing original message: %v", got.Err)
+	}
+}
+
+// TestJavaEngine_HTTPNon200 pins that a non-200 response from the
+// server (e.g. step not registered, JSON parse error on Java side)
+// surfaces as a plandiff: HTTP <code> error.
+func TestJavaEngine_HTTPNon200(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "step not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	eng := NewJavaEngineHTTP(srv.URL, "")
+	got := eng.Plan(context.Background(), Query{Name: "x", SQL: "SELECT 1"})
+	if got.Err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(got.Err.Error(), "HTTP 404") {
+		t.Fatalf("expected HTTP 404 in error: %v", got.Err)
+	}
+}
+
+// TestJavaEngine_NilBaseURL pins the Go-only-CI fallback: the no-arg
+// constructor surfaces ErrJavaUnimplemented for every call so the
+// harness reports JAVA_UNIMPL rather than crashing.
+func TestJavaEngine_NilBaseURL(t *testing.T) {
+	t.Parallel()
+	eng := NewJavaEngine()
+	got := eng.Plan(context.Background(), Query{Name: "x", SQL: "SELECT 1"})
+	if !errors.Is(got.Err, ErrJavaUnimplemented) {
+		t.Fatalf("expected ErrJavaUnimplemented, got %v", got.Err)
 	}
 }
 

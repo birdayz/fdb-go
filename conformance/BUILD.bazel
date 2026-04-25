@@ -29,8 +29,10 @@ java_library(
         "@maven//:org_foundationdb_fdb_record_layer_core",
         # fdb-relational deps power the Java side of the
         # plan-equivalence harness (RFC-022 §4.-1 Phase 2) and the
-        # Java↔Go SQL conformance harness Phase B. Kept inert until
-        # SqlPlanSteps / SqlSteps land.
+        # Java↔Go SQL conformance harness Phase B. SqlPlanSteps wires
+        # in the EXPLAIN path; metrics-core comes along because
+        # RecordLayerEngine.makeEngine() takes a MetricRegistry.
+        "@maven//:io_dropwizard_metrics_metrics_core",
         "@maven//:org_foundationdb_fdb_relational_api",
         "@maven//:org_foundationdb_fdb_relational_core",
     ],
