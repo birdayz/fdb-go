@@ -80,6 +80,46 @@ func TestOrDedup_RemovesDuplicates(t *testing.T) {
 	}
 }
 
+// TestOrDedup_PartialDedupKeepsRemaining pins the OrDedup default
+// arm (len(deduped) > 1): NewOr(p1, p2, p1) dedups to NewOr(p1, p2),
+// not just p1. Symmetric to AndDedup_RemovesDuplicates which already
+// hit this branch on the AND side.
+func TestOrDedup_PartialDedupKeepsRemaining(t *testing.T) {
+	t.Parallel()
+	rule := NewOrDedupRule()
+	p1 := NewConstantPredicate(TriTrue)
+	p2 := NewConstantPredicate(TriFalse)
+	or := NewOr(p1, p2, p1) // p1 appears twice
+	got := FireRule(rule, or)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	out, ok := got[0].(*OrPredicate)
+	if !ok {
+		t.Fatalf("expected *OrPredicate, got %T", got[0])
+	}
+	if len(out.SubPredicates) != 2 {
+		t.Fatalf("expected 2 subpredicates after dedup, got %d", len(out.SubPredicates))
+	}
+	// First-occurrence order preserved.
+	if out.SubPredicates[0] != QueryPredicate(p1) || out.SubPredicates[1] != QueryPredicate(p2) {
+		t.Fatalf("dedup did not preserve first-occurrence order")
+	}
+}
+
+// TestOrDedup_NoChange pins the no-op pointer-identity behaviour:
+// when there are no duplicates, the rule does not yield (FireRule
+// gets an empty slice). Caller's pointer-equality fixpoint loop
+// breaks out without rebuilding the OR.
+func TestOrDedup_NoChange(t *testing.T) {
+	t.Parallel()
+	rule := NewOrDedupRule()
+	or := NewOr(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	if got := FireRule(rule, or); len(got) != 0 {
+		t.Fatalf("expected no yield (no dups), got %d", len(got))
+	}
+}
+
 // AndFlattenRule collapses nested AndPredicates into a single flat
 // list of operands.
 func TestAndFlatten_NestedBecomesFlat(t *testing.T) {
