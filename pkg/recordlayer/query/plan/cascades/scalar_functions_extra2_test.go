@@ -174,6 +174,90 @@ func TestEvalScalarFunction_GREATEST_LEAST(t *testing.T) {
 	}
 }
 
+// TestEvalScalarFunction_GREATEST_LEAST_AdditionalTypes drives the
+// compareScalar branches the happy-path test misses: bool-vs-bool
+// ordering (false < true), all-float64 path (no int promotion), and
+// cross-type bool-vs-int decline. Pinning these closes the
+// compareScalar coverage gap (was 48.5% before — bool + cross-type
+// branches weren't reached).
+func TestEvalScalarFunction_GREATEST_LEAST_AdditionalTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		args         []any
+		wantGreatest any
+		wantLeast    any
+	}{
+		// bool: false < true.
+		{"bool-only", []any{true, false, true}, true, false},
+		{"bool-only false-only", []any{false, false}, false, false},
+		{"bool-only true-only", []any{true, true}, true, true},
+
+		// all float64 (skip the int → float promotion arm).
+		{"float-only", []any{float64(1.5), float64(2.5), float64(0.5)}, float64(2.5), float64(0.5)},
+		{"float negatives", []any{float64(-1.5), float64(-2.5)}, float64(-1.5), float64(-2.5)},
+
+		// Cross-type declines: bool vs int, float vs string.
+		{"bool-int decline", []any{true, int64(1)}, nil, nil},
+		{"float-string decline", []any{float64(1.5), "a"}, nil, nil},
+		{"int-bool decline", []any{int64(0), false}, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotG := evalScalarFunction("GREATEST", tc.args)
+			if gotG != tc.wantGreatest {
+				t.Errorf("GREATEST(%v): got %v, want %v", tc.args, gotG, tc.wantGreatest)
+			}
+			gotL := evalScalarFunction("LEAST", tc.args)
+			if gotL != tc.wantLeast {
+				t.Errorf("LEAST(%v): got %v, want %v", tc.args, gotL, tc.wantLeast)
+			}
+		})
+	}
+}
+
+// TestEvalScalarFunction_NULLIF_AdditionalTypes drives nullifEqual
+// branches: bool, float-only equality, and the cross-type decline
+// (mixed types are NOT equal under NULLIF, so the surviving value is
+// the LHS). The happy-path test only hits int64 + string.
+func TestEvalScalarFunction_NULLIF_AdditionalTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a, b any
+		want any
+	}{
+		// bool equality.
+		{"bool-equal-true", true, true, nil},
+		{"bool-equal-false", false, false, nil},
+		{"bool-not-equal", true, false, true},
+
+		// all-float (no int promotion).
+		{"float-equal", float64(1.5), float64(1.5), nil},
+		{"float-not-equal", float64(1.5), float64(2.5), float64(1.5)},
+
+		// int64↔float64 promotion both ways.
+		{"int-vs-float-equal", int64(2), float64(2), nil},
+		{"float-vs-int-equal", float64(2), int64(2), nil},
+		{"int-vs-float-different", int64(2), float64(2.5), int64(2)},
+
+		// Cross-type — never equal, LHS survives.
+		{"bool-vs-int", true, int64(1), true},
+		{"int-vs-string", int64(1), "1", int64(1)},
+		{"string-vs-bool", "true", true, "true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := evalScalarFunction("NULLIF", []any{tc.a, tc.b})
+			if got != tc.want {
+				t.Errorf("NULLIF(%v, %v): got %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 // ----- EXP / LN / LOG ---------------------------------------------------
 
 func TestEvalScalarFunction_EXP(t *testing.T) {
