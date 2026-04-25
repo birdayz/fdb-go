@@ -293,6 +293,41 @@ func TestPredicateSize(t *testing.T) {
 	}
 }
 
+// TestAndPredicate_Explain_Empty / TestOrPredicate_Explain_Empty pin
+// the identity-element rendering for empty connectives:
+// And{} → "TRUE" (AND identity), Or{} → "FALSE" (OR identity).
+// These shapes appear when the simplifier drops every child of a
+// connective and the calling code rebuilds with an empty subpred
+// list (vs returning a concrete ConstantPredicate).
+func TestAndPredicate_Explain_Empty(t *testing.T) {
+	t.Parallel()
+	if got := (&AndPredicate{}).Explain(); got != "TRUE" {
+		t.Fatalf("And{}: got %q, want TRUE", got)
+	}
+}
+
+func TestOrPredicate_Explain_Empty(t *testing.T) {
+	t.Parallel()
+	if got := (&OrPredicate{}).Explain(); got != "FALSE" {
+		t.Fatalf("Or{}: got %q, want FALSE", got)
+	}
+}
+
+// TestValuePredicate_Children pins the leaf-shape contract:
+// ValuePredicate is a leaf, so Children returns an empty (non-nil)
+// slice. Walker code paths range over Children() and rely on the
+// non-nil contract.
+func TestValuePredicate_Children(t *testing.T) {
+	t.Parallel()
+	got := (&ValuePredicate{Value: &FieldValue{Field: "x", Typ: TypeBool}}).Children()
+	if got == nil {
+		t.Fatal("Children should be non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("Children should be empty for leaf, got %d entries", len(got))
+	}
+}
+
 // TestValuePredicate_Explain_NilValue pins the defensive branch:
 // ValuePredicate{Value: nil}.Explain returns "<nil-value>" rather
 // than panicking. Plan-tree rendering must stay total — a malformed
