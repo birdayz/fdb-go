@@ -281,6 +281,46 @@ func TestInstance_NewFieldMatcher_RejectsConstant(t *testing.T) {
 	}
 }
 
+// TestPredicateMatchers_DistinctIdentity is the regression sentinel
+// for the `_ bool` zero-size guard added in commits 67/68. Each of
+// the four predicate matchers (notPredicateMatcher,
+// comparisonPredicateMatcher, andPredicateMatcher,
+// orPredicateMatcher) is a 1-byte struct that MUST give distinct
+// pointer identities per allocation — otherwise PlannerBindings's
+// matcher → []any map collapses two distinct rule pattern instances
+// onto the same key.
+//
+// If a future cleanup mistakenly drops `_ bool` and leaves the
+// struct zero-size, two `new(...)` calls would alias under Go's
+// runtime.zerobase optimisation. This test catches that.
+func TestPredicateMatchers_DistinctIdentity(t *testing.T) {
+	t.Parallel()
+
+	notA := newNotPredicateMatcher()
+	notB := newNotPredicateMatcher()
+	if notA == notB {
+		t.Fatal("notPredicateMatcher: two allocations aliased — zero-size-struct hazard")
+	}
+
+	cmpA := newComparisonPredicateMatcher()
+	cmpB := newComparisonPredicateMatcher()
+	if cmpA == cmpB {
+		t.Fatal("comparisonPredicateMatcher: two allocations aliased")
+	}
+
+	andA := newAndPredicateMatcher()
+	andB := newAndPredicateMatcher()
+	if andA == andB {
+		t.Fatal("andPredicateMatcher: two allocations aliased")
+	}
+
+	orA := newOrPredicateMatcher()
+	orB := newOrPredicateMatcher()
+	if orA == orB {
+		t.Fatal("orPredicateMatcher: two allocations aliased")
+	}
+}
+
 // TestInstance_RootType identifies which Go type each Instance
 // matcher claims, used by combinator dispatch in shape (a).
 func TestInstance_RootType(t *testing.T) {
