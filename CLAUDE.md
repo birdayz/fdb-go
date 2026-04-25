@@ -225,8 +225,11 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzLikePatternToPrefix` | LIKE-pattern prefix extractor (with ESCAPE handling) — cross-checked against likeMatch | Clean |
 | `FuzzLikeMatch` | likeMatch (no escape) vs regex oracle | Clean |
 | `FuzzLikeMatchEscape` | likeMatch (with escape rune) vs regex oracle | Trailing-escape bug found nightshift-48 (was matched as literal; fixed to "malformed → no match") |
+| `FuzzSimplifyValue_ArithmeticTree` | cascades SimplifyValue on a 3-leaf arithmetic composite — no panic, idempotent, fully-folded result | Clean (22.5M execs/20s, swingshift-50) |
+| `FuzzSimplifyValue_CastChain` | cascades SimplifyValue on CAST(CAST(x AS X) AS Y) — no panic + idempotency | Clean (swingshift-50) |
+| `FuzzSimplify_PredicateTree` | cascades QueryPredicate-level Simplify driver under random AND/OR/NOT shapes — no panic + idempotent under both DefaultSimplifyRules and NormalizationRules | Clean (2.5M execs/15s, swingshift-50) |
 
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/comparisons_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/comparisons_test.go`, `FuzzSimplifyValue_ArithmeticTree` / `FuzzSimplifyValue_CastChain` / `FuzzSimplify_PredicateTree` are in `pkg/recordlayer/query/plan/cascades/values_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
@@ -582,5 +585,5 @@ See `TODO.md` for full gap analysis. Summary:
 - **Test counts**: 2817 Ginkgo specs + 438 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 81.0% overall. `just coverage` generates HTML report.
 - **Race detector**: CI runs race detector on all 5 FDB test targets. Locally: `just race-all`.
-- **Fuzz targets**: 28 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix + FuzzLikeMatch + FuzzLikeMatchEscape)
+- **Fuzz targets**: 31 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix + FuzzLikeMatch + FuzzLikeMatchEscape + FuzzSimplifyValue_ArithmeticTree + FuzzSimplifyValue_CastChain + FuzzSimplify_PredicateTree)
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.
