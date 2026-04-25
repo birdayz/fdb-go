@@ -1265,6 +1265,41 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 	}
 }
 
+// LIKE with FieldValue RHS — the Operand→Value migration unlocks
+// dynamic patterns sourced from the row. Each row's `pattern`
+// column drives the LIKE match against that same row's `name`.
+// Non-string operands degrade to UNKNOWN per SQL 3VL.
+func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: &FieldValue{Field: "pattern", Typ: TypeString},
+		},
+	)
+	cases := []struct {
+		row  map[string]any
+		want TriBool
+	}{
+		{map[string]any{"name": "hello", "pattern": "hel%"}, TriTrue},
+		{map[string]any{"name": "hello", "pattern": "world"}, TriFalse},
+		{map[string]any{"name": "hello", "pattern": "%"}, TriTrue},
+		{map[string]any{"name": "abc", "pattern": "_b_"}, TriTrue},
+		// NULL pattern → UNKNOWN per SQL 3VL.
+		{map[string]any{"name": "hello", "pattern": nil}, TriUnknown},
+		// NULL name → UNKNOWN.
+		{map[string]any{"name": nil, "pattern": "hel%"}, TriUnknown},
+		// Non-string pattern (numeric mismatch) → UNKNOWN.
+		{map[string]any{"name": "hello", "pattern": int64(5)}, TriUnknown},
+	}
+	for _, tc := range cases {
+		if got := pred.Eval(tc.row); got != tc.want {
+			t.Errorf("row=%v: got %v, want %v", tc.row, got, tc.want)
+		}
+	}
+}
+
 // FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
 // `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
 // anchored with `^...$`. Mismatch = likeMatch bug.
