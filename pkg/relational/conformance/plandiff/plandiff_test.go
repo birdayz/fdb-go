@@ -375,6 +375,50 @@ func TestJavaEngine_NilBaseURL(t *testing.T) {
 	}
 }
 
+// FuzzNormaliseTree pins the no-panic contract: any byte sequence
+// (including invalid UTF-8, embedded NULs, unbalanced whitespace)
+// fed as a tree must normalise without crashing the harness.
+func FuzzNormaliseTree(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"   ",
+		"a\nb",
+		"\n\n\n",
+		"\xff\xfe\xfd",    // invalid UTF-8
+		"  Scan(t)  \n\n", // leading/trailing whitespace
+		"a\r\nb",          // CRLF
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		// Should never panic regardless of input.
+		out := normaliseTree(in)
+		// Idempotency: normalise(normalise(x)) == normalise(x).
+		if normaliseTree(out) != out {
+			t.Fatalf("normaliseTree not idempotent on %q: got %q vs %q", in, out, normaliseTree(out))
+		}
+	})
+}
+
+// FuzzHashTree pins the same no-panic contract for hashTree, plus
+// the determinism invariant: the same input always produces the
+// same hash.
+func FuzzHashTree(f *testing.F) {
+	for _, seed := range []string{"", " ", "Scan(t)", "\xff\xfe", "a\nb"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		h1 := hashTree(in)
+		h2 := hashTree(in)
+		if h1 != h2 {
+			t.Fatalf("hashTree non-deterministic on %q: %q vs %q", in, h1, h2)
+		}
+		if len(h1) != 64 {
+			t.Fatalf("hashTree did not produce 64-hex on %q: got %d chars", in, len(h1))
+		}
+	})
+}
+
 // TestSeedCorpus_BaselineHash pins the corpus-wide regression key.
 // Any change to a query name, query SQL, or the naive planner's
 // Explain output for ANY query in the corpus changes this hash. The
