@@ -825,6 +825,36 @@ func TestEvaluateConstant(t *testing.T) {
 	}
 }
 
+// TestEvaluateConstant_PanicRecovers pins the defence-in-depth
+// recover() in EvaluateConstant. A Value whose IsConstantValue says
+// "yes" (composite with all-constant children) but whose Evaluate
+// panics must produce (nil, false), not an uncaught panic. Today
+// IsConstantValue rules out the panicky shapes (Aggregate inside Cast
+// is excluded), but the recover stays — this test makes sure
+// removing it would surface as a failure.
+func TestEvaluateConstant_PanicRecovers(t *testing.T) {
+	t.Parallel()
+	v := &panicValue{
+		child: &ConstantValue{Value: int64(1), Typ: TypeInt},
+	}
+	got, ok := EvaluateConstant(v)
+	if ok || got != nil {
+		t.Fatalf("EvaluateConstant on panicking value: got (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+// panicValue is a test-only Value that looks constant (has a single
+// ConstantValue child) but panics during Evaluate. Reproduces the
+// "defence-in-depth" path EvaluateConstant guards against.
+type panicValue struct {
+	child Value
+}
+
+func (p *panicValue) Children() []Value { return []Value{p.child} }
+func (p *panicValue) Evaluate(any) any  { panic("test-only: Evaluate must not run") }
+func (p *panicValue) Type() ValueType   { return TypeUnknown }
+func (p *panicValue) Name() string      { return "panic-value" }
+
 // --- ParameterValue -----------------------------------------------
 
 // fakeBinder implements ParameterBinder for tests. Maps positional
