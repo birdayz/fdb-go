@@ -258,6 +258,42 @@ func TestEvalScalarFunction_NULLIF_AdditionalTypes(t *testing.T) {
 	}
 }
 
+// TestScalarFnInt64Arg_AcceptsWholeFloat pins the scalarFnInt64Arg
+// fold path: a whole-valued float64 (e.g. 3.0) coerces to int64.
+// Reaches via SUBSTRING's pos arg — `SUBSTRING('hello', 2.0, 3.0)`
+// → 'ell'. The non-integer + out-of-range branches are exercised
+// by TestScalarFnInt64Arg_RejectsNonIntegerFloat below.
+func TestScalarFnInt64Arg_AcceptsWholeFloat(t *testing.T) {
+	t.Parallel()
+	got := evalScalarFunction("SUBSTRING", []any{"hello", float64(2), float64(3)})
+	if got != "ell" {
+		t.Fatalf("SUBSTRING with float positions: got %v, want 'ell'", got)
+	}
+}
+
+// TestScalarFnInt64Arg_RejectsNonIntegerFloat pins the strictness:
+// non-whole floats decline (return nil from the scalar fn so the
+// runtime can surface the conversion error). Mirrors
+// embedded.functions.ToIntegerArg's strictness.
+func TestScalarFnInt64Arg_RejectsNonIntegerFloat(t *testing.T) {
+	t.Parallel()
+	if got := evalScalarFunction("SUBSTRING", []any{"hello", float64(2.5), int64(3)}); got != nil {
+		t.Fatalf("SUBSTRING(_, 2.5, _) should decline: got %v", got)
+	}
+	if got := evalScalarFunction("LEFT", []any{"hello", float64(1.5)}); got != nil {
+		t.Fatalf("LEFT(_, 1.5) should decline: got %v", got)
+	}
+}
+
+// TestScalarFnInt64Arg_RejectsString pins the type-mismatch decline:
+// a string argument where an int is expected returns nil.
+func TestScalarFnInt64Arg_RejectsString(t *testing.T) {
+	t.Parallel()
+	if got := evalScalarFunction("LEFT", []any{"hello", "two"}); got != nil {
+		t.Fatalf("LEFT(_, 'two') should decline: got %v", got)
+	}
+}
+
 // ----- EXP / LN / LOG ---------------------------------------------------
 
 func TestEvalScalarFunction_EXP(t *testing.T) {

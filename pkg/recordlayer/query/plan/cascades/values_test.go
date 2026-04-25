@@ -825,6 +825,30 @@ func TestEvaluateConstant(t *testing.T) {
 	}
 }
 
+// TestValueType_String pins the SQL-text rendering for each
+// ValueType + the unknown fall-through. Used by ExplainValue's
+// CAST(_ AS X) renderer; if these strings change the plandiff
+// hash baseline shifts.
+func TestValueType_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    ValueType
+		want string
+	}{
+		{TypeInt, "INT"},
+		{TypeString, "STRING"},
+		{TypeBool, "BOOL"},
+		{TypeFloat, "FLOAT"},
+		{TypeUnknown, "UNKNOWN"},
+		{ValueType(99), "UNKNOWN"}, // out-of-range default arm
+	}
+	for _, tc := range cases {
+		if got := tc.t.String(); got != tc.want {
+			t.Fatalf("ValueType(%d).String() = %q, want %q", tc.t, got, tc.want)
+		}
+	}
+}
+
 // TestAggregateValue_Type_UnknownOpIsTypeUnknown pins the default
 // arm of AggregateValue.Type — a hand-constructed AggregateValue with
 // an out-of-range Op (e.g. AggInvalid or any future-but-unknown
