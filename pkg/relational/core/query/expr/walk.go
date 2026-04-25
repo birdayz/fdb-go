@@ -144,6 +144,9 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 	if spec, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
 		return r.walkSpecificFunction(spec.SpecificFunction())
 	}
+	if scalar, ok := fc.(*antlrgen.ScalarFunctionCallContext); ok {
+		return r.walkScalarFunction(scalar)
+	}
 	agg, ok := fc.(*antlrgen.AggregateFunctionCallContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("non-aggregate function call %T", fc)}
@@ -228,6 +231,64 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (c
 		}
 	}
 	return r.ResolveCast(inner, target)
+}
+
+// walkScalarFunction handles the seed scalar function set —
+// UPPER / LOWER / LENGTH / CHAR_LENGTH / CHARACTER_LENGTH /
+// OCTET_LENGTH. Unknown function names decline with
+// UnsupportedExpressionShapeError so the logical-builder text
+// fallback catches them; this keeps the walker conservative until
+// the full scalar function catalogue ports.
+//
+// Args walk through the standard WalkExpression dispatch so nested
+// expressions (`UPPER(name)`, `LENGTH(CAST(x AS STRING))`) compose
+// without further plumbing.
+func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (cascades.Value, error) {
+	if s == nil {
+		return nil, fmt.Errorf("expr.walkScalarFunction: nil")
+	}
+	if s.ScalarFunctionName() == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ScalarFunctionCall without ScalarFunctionName"}
+	}
+	name := strings.ToUpper(s.ScalarFunctionName().GetText())
+	typ, ok := scalarFunctionResultType(name)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
+	}
+	args := []cascades.Value{}
+	if fa := s.FunctionArgs(); fa != nil {
+		fac, ok := fa.(*antlrgen.FunctionArgsContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArgs ctx %T", fa)}
+		}
+		for _, arg := range fac.AllFunctionArg() {
+			argCtx, ok := arg.(*antlrgen.FunctionArgContext)
+			if !ok {
+				return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", arg)}
+			}
+			if argCtx.Expression() == nil {
+				return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
+			}
+			v, err := r.WalkExpression(argCtx.Expression())
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, v)
+		}
+	}
+	return cascades.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// scalarFunctionResultType returns the result type of a seed scalar
+// function. Unknown name → (_, false) so the walker declines.
+func scalarFunctionResultType(name string) (cascades.ValueType, bool) {
+	switch name {
+	case "UPPER", "LOWER":
+		return cascades.TypeString, true
+	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH":
+		return cascades.TypeInt, true
+	}
+	return cascades.TypeUnknown, false
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a

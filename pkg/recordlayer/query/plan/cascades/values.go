@@ -347,6 +347,12 @@ func ExplainValue(v Value) string {
 		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
 	case *QuantifiedObjectValue:
 		return cv.Correlation.Name()
+	case *ScalarFunctionValue:
+		parts := make([]string, len(cv.Args))
+		for i, a := range cv.Args {
+			parts[i] = ExplainValue(a)
+		}
+		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
 	case *ParameterValue:
 		// Render with the same `?` sigil the grammar accepts:
 		// `?` for plain positional, `?N` once an ordinal is assigned,
@@ -558,6 +564,129 @@ func (p *ParameterValue) Evaluate(evalCtx any) any {
 		return v
 	}
 	return nil
+}
+
+// ScalarFunctionValue is a row-scalar function call — `UPPER(name)`,
+// `LENGTH(str)`, etc. Args carries the evaluated sub-Values; Name is
+// the canonical (UPPER-CASE) function identifier as it appears in the
+// catalog. Children returns Args so IsConstantValue / WalkValue
+// recurse normally — `UPPER('foo')` is a constant composite and folds
+// via EvaluateConstant; `UPPER(name)` is non-constant because the
+// FieldValue arg is non-constant.
+//
+// Seed function set is intentionally narrow: UPPER, LOWER,
+// LENGTH/CHAR_LENGTH/CHARACTER_LENGTH (utf8 rune count),
+// OCTET_LENGTH (byte count). The full function catalog port is a
+// Phase 4.0 follow-up; the seam lives in evalScalarFunction so the
+// production registry can replace this switch without touching the
+// Value contract.
+type ScalarFunctionValue struct {
+	FuncName string
+	Args     []Value
+	Typ      ValueType
+}
+
+// NewScalarFunctionValue builds a ScalarFunctionValue. The function
+// name is upper-cased so callers can pass case-insensitive identifiers.
+func NewScalarFunctionValue(name string, typ ValueType, args ...Value) *ScalarFunctionValue {
+	return &ScalarFunctionValue{FuncName: strings.ToUpper(name), Args: args, Typ: typ}
+}
+
+func (s *ScalarFunctionValue) Children() []Value {
+	if len(s.Args) == 0 {
+		return []Value{}
+	}
+	return s.Args
+}
+func (s *ScalarFunctionValue) Type() ValueType { return s.Typ }
+func (*ScalarFunctionValue) Name() string      { return "scalarfn" }
+
+func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
+	args := make([]any, len(s.Args))
+	for i, a := range s.Args {
+		if a == nil {
+			return nil
+		}
+		args[i] = a.Evaluate(evalCtx)
+	}
+	return evalScalarFunction(s.FuncName, args)
+}
+
+// evalScalarFunction dispatches the seed scalar function set. NULL
+// argument propagates to NULL result (SQL standard). Unknown function
+// or wrong arg type returns nil — the seed errs on the side of
+// declining rather than erroring, so the embedded executor's richer
+// scalar_functions.go path remains the primary surface for now.
+func evalScalarFunction(name string, args []any) any {
+	switch name {
+	case "UPPER":
+		if len(args) != 1 || args[0] == nil {
+			return nilOrPropagate(args)
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.ToUpper(s)
+	case "LOWER":
+		if len(args) != 1 || args[0] == nil {
+			return nilOrPropagate(args)
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.ToLower(s)
+	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH":
+		// Rune count — matches embedded.scalar_functions.go's LENGTH
+		// (utf8.RuneCountInString) so plan-time fold and runtime eval
+		// agree. The seed coerces []byte the same way for symmetry
+		// with OCTET_LENGTH (byte count there, rune count here).
+		if len(args) != 1 || args[0] == nil {
+			return nilOrPropagate(args)
+		}
+		switch v := args[0].(type) {
+		case string:
+			return int64(utf8RuneCount(v))
+		case []byte:
+			return int64(utf8RuneCount(string(v)))
+		}
+		return nil
+	case "OCTET_LENGTH":
+		if len(args) != 1 || args[0] == nil {
+			return nilOrPropagate(args)
+		}
+		switch v := args[0].(type) {
+		case string:
+			return int64(len(v))
+		case []byte:
+			return int64(len(v))
+		}
+		return nil
+	}
+	return nil
+}
+
+// nilOrPropagate returns nil when any argument is NULL — used by the
+// scalar functions to short-circuit NULL propagation cleanly.
+func nilOrPropagate(args []any) any {
+	for _, a := range args {
+		if a == nil {
+			return nil
+		}
+	}
+	return nil
+}
+
+// utf8RuneCount mirrors utf8.RuneCountInString — kept inline to avoid
+// an extra import in this file (strings is already pulled in for
+// ToUpper / ToLower; unicode/utf8 lands when the seed grows further).
+func utf8RuneCount(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
 }
 
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a

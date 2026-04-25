@@ -1287,6 +1287,107 @@ func TestWalkPredicate_CastInComparison(t *testing.T) {
 	}
 }
 
+// UPPER / LOWER / LENGTH / CHAR_LENGTH / OCTET_LENGTH dispatch via
+// walkScalarFunction → ScalarFunctionValue. Verifies result type +
+// arg composition for each seed function.
+func TestWalkExpression_ScalarFunctions(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sql  string
+		fn   string
+		typ  cascades.ValueType
+		args int
+	}{
+		{"SELECT * FROM users WHERE UPPER(name)", "UPPER", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE LOWER(name)", "LOWER", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE LENGTH(name)", "LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE CHAR_LENGTH(name)", "CHAR_LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE CHARACTER_LENGTH(name)", "CHARACTER_LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE OCTET_LENGTH(name)", "OCTET_LENGTH", cascades.TypeInt, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fn, func(t *testing.T) {
+			t.Parallel()
+			a, s := buildScope(t)
+			r := expr.New(a, s)
+			ctx := parseFirstWhereExpr(t, tc.sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			sf, ok := v.(*cascades.ScalarFunctionValue)
+			if !ok {
+				t.Fatalf("expected *ScalarFunctionValue, got %T", v)
+			}
+			if sf.FuncName != tc.fn {
+				t.Fatalf("FuncName: got %q, want %q", sf.FuncName, tc.fn)
+			}
+			if sf.Type() != tc.typ {
+				t.Fatalf("Type: got %v, want %v", sf.Type(), tc.typ)
+			}
+			if got := len(sf.Args); got != tc.args {
+				t.Fatalf("len(Args): got %d, want %d", got, tc.args)
+			}
+		})
+	}
+}
+
+// Unknown scalar function declines so the logical-builder text
+// fallback can carry it.
+func TestWalkExpression_UnknownScalarFunctionDeclines(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE FROBNICATE(name)")
+	_, err := r.WalkExpression(ctx)
+	var ue *expr.UnsupportedExpressionShapeError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedExpressionShapeError, got %v", err)
+	}
+}
+
+// Lower-cased function names are normalized to upper-case (SQL
+// identifier semantics: function names are case-insensitive).
+func TestWalkExpression_ScalarFunctionLowerCase(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE upper(name)")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	sf := v.(*cascades.ScalarFunctionValue)
+	if sf.FuncName != "UPPER" {
+		t.Fatalf("FuncName: got %q, want UPPER", sf.FuncName)
+	}
+}
+
+// UPPER(name) = 'ALICE' — scalar function on the LHS of a
+// comparison. Composes with ResolveComparison since LHS is a Value.
+// Constant-fold declines because UPPER(field) isn't constant.
+func TestWalkPredicate_ScalarFunctionInComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE UPPER(name) = 'ALICE'")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if _, ok := cp.Operand.(*cascades.ScalarFunctionValue); !ok {
+		t.Fatalf("expected LHS *ScalarFunctionValue, got %T", cp.Operand)
+	}
+	want := "UPPER(NAME) = 'ALICE'"
+	if got := cp.Explain(); got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
 // `?` in a WHERE expression resolves to a positional ParameterValue.
 // Verifies the PreparedStatementParameterAtomContext dispatch.
 func TestWalkExpression_PositionalParameter(t *testing.T) {

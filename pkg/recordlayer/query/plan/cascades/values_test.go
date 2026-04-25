@@ -933,6 +933,113 @@ func TestParameterValue_IsNotConstant(t *testing.T) {
 	}
 }
 
+// --- ScalarFunctionValue ------------------------------------------
+
+func TestScalarFunctionValue_Shape(t *testing.T) {
+	t.Parallel()
+
+	v := NewScalarFunctionValue("upper", TypeString,
+		&ConstantValue{Value: "hi", Typ: TypeString})
+	if v.FuncName != "UPPER" {
+		t.Fatalf("FuncName: got %q, want 'UPPER'", v.FuncName)
+	}
+	if v.Type() != TypeString {
+		t.Fatalf("Type: got %v, want TypeString", v.Type())
+	}
+	if v.Name() != "scalarfn" {
+		t.Fatalf("Name: got %q", v.Name())
+	}
+	if got := len(v.Children()); got != 1 {
+		t.Fatalf("Children: got %d, want 1", got)
+	}
+	// Zero-arg form returns an empty (non-nil) slice — matcher contract.
+	zero := NewScalarFunctionValue("CURRENT_TIMESTAMP", TypeString)
+	if got := zero.Children(); got == nil || len(got) != 0 {
+		t.Fatalf("zero-arg Children: got %v, want non-nil empty", got)
+	}
+}
+
+func TestScalarFunctionValue_Evaluate(t *testing.T) {
+	t.Parallel()
+
+	str := func(s string) Value { return &ConstantValue{Value: s, Typ: TypeString} }
+	bytesV := func(b []byte) Value { return &ConstantValue{Value: b, Typ: TypeString} }
+	field := func(name string) Value { return &FieldValue{Field: name, Typ: TypeString} }
+	row := map[string]any{"NAME": "Alice", "BLANK": "", "BIN": []byte{0xff, 0xfe}}
+
+	cases := []struct {
+		name string
+		v    Value
+		ctx  any
+		want any
+	}{
+		{"UPPER literal", NewScalarFunctionValue("UPPER", TypeString, str("Hello")), nil, "HELLO"},
+		{"LOWER literal", NewScalarFunctionValue("LOWER", TypeString, str("Hello")), nil, "hello"},
+		{"UPPER over field", NewScalarFunctionValue("UPPER", TypeString, field("NAME")), row, "ALICE"},
+		{"LENGTH ascii", NewScalarFunctionValue("LENGTH", TypeInt, str("hello")), nil, int64(5)},
+		{"CHAR_LENGTH multibyte", NewScalarFunctionValue("CHAR_LENGTH", TypeInt, str("café")), nil, int64(4)},
+		{"OCTET_LENGTH multibyte", NewScalarFunctionValue("OCTET_LENGTH", TypeInt, str("café")), nil, int64(5)},
+		{"LENGTH bytes", NewScalarFunctionValue("LENGTH", TypeInt, bytesV([]byte{1, 2, 3})), nil, int64(3)},
+		{"NULL propagates", NewScalarFunctionValue("UPPER", TypeString, &NullValue{Typ: TypeString}), nil, nil},
+		{"unknown function declines", NewScalarFunctionValue("FROBNICATE", TypeString, str("x")), nil, nil},
+		{"wrong arg type declines", NewScalarFunctionValue("UPPER", TypeString, &ConstantValue{Value: int64(5), Typ: TypeInt}), nil, nil},
+		{"OCTET_LENGTH bytes", NewScalarFunctionValue("OCTET_LENGTH", TypeInt, field("BIN")), row, int64(2)},
+		{"empty string LENGTH", NewScalarFunctionValue("LENGTH", TypeInt, field("BLANK")), row, int64(0)},
+	}
+	for _, tc := range cases {
+		got := tc.v.Evaluate(tc.ctx)
+		if got != tc.want {
+			t.Fatalf("%s: got %v (%T), want %v (%T)", tc.name, got, got, tc.want, tc.want)
+		}
+	}
+}
+
+func TestScalarFunctionValue_IsConstant(t *testing.T) {
+	t.Parallel()
+
+	upperConst := NewScalarFunctionValue("UPPER", TypeString,
+		&ConstantValue{Value: "hi", Typ: TypeString})
+	if !IsConstantValue(upperConst) {
+		t.Fatal("UPPER('hi') should be constant")
+	}
+	if got, ok := EvaluateConstant(upperConst); !ok || got != "HI" {
+		t.Fatalf("EvaluateConstant(UPPER('hi')): got (%v, %v), want ('HI', true)", got, ok)
+	}
+
+	upperField := NewScalarFunctionValue("UPPER", TypeString,
+		&FieldValue{Field: "name", Typ: TypeString})
+	if IsConstantValue(upperField) {
+		t.Fatal("UPPER(field) should not be constant")
+	}
+
+	// Zero-arg form: composite branch sees zero children, falls
+	// through to "unknown leaf — conservatively not constant".
+	zero := NewScalarFunctionValue("CURRENT_TIMESTAMP", TypeString)
+	if IsConstantValue(zero) {
+		t.Fatal("CURRENT_TIMESTAMP() should not be constant in the seed (no zero-arg pure marker)")
+	}
+}
+
+func TestExplainValue_ScalarFunctionValue(t *testing.T) {
+	t.Parallel()
+
+	v := NewScalarFunctionValue("UPPER", TypeString,
+		&FieldValue{Field: "NAME", Typ: TypeString})
+	if got, want := ExplainValue(v), "UPPER(NAME)"; got != want {
+		t.Fatalf("UPPER(NAME): got %q, want %q", got, want)
+	}
+	nested := NewScalarFunctionValue("LENGTH", TypeInt,
+		NewScalarFunctionValue("LOWER", TypeString,
+			&FieldValue{Field: "NAME", Typ: TypeString}))
+	if got, want := ExplainValue(nested), "LENGTH(LOWER(NAME))"; got != want {
+		t.Fatalf("nested: got %q, want %q", got, want)
+	}
+	zero := NewScalarFunctionValue("NOW", TypeString)
+	if got, want := ExplainValue(zero), "NOW()"; got != want {
+		t.Fatalf("zero-arg: got %q, want %q", got, want)
+	}
+}
+
 func TestExplainValue_ParameterValue(t *testing.T) {
 	t.Parallel()
 

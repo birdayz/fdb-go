@@ -132,15 +132,15 @@ func TestBuildLogicalPlanWithCatalog_UnknownTable(t *testing.T) {
 	}
 }
 
-// A WHERE shape outside the walker's scope (scalar function call,
-// for example) returns UnsupportedExpressionShapeError from the
-// walker; the builder must fall back to PredicateText so Explain
-// still renders.
+// A WHERE shape outside the walker's scope returns
+// UnsupportedExpressionShapeError; the builder must fall back to
+// PredicateText so Explain still renders. FROBNICATE() is a
+// deliberate non-existent scalar function — walkScalarFunction
+// declines on names not in the seed catalogue.
 func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
-	// UPPER(name) is a scalar function — not handled by WalkExpression.
-	sq := parseSelect(t, "SELECT * FROM Order WHERE UPPER(price) = 'X'")
+	sq := parseSelect(t, "SELECT * FROM Order WHERE FROBNICATE(price) = 1")
 	op := buildLogicalPlanForSelectWithCatalog(sq, md)
 	filter, ok := op.(*logical.LogicalFilter)
 	if !ok {
@@ -151,6 +151,26 @@ func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	}
 	if filter.PredicateText == "" {
 		t.Fatal("expected text fallback populated")
+	}
+}
+
+// UPPER (and the rest of the seed scalar function set — LOWER,
+// LENGTH, CHAR_LENGTH, OCTET_LENGTH) IS now handled by
+// walkScalarFunction. The catalog-aware builder attaches a real
+// Predicate carrying the ScalarFunctionValue. Pins the new path
+// so a future walker change that breaks scalar dispatch is caught
+// immediately rather than silently regressing to text.
+func TestBuildLogicalPlanWithCatalog_ScalarFunctionWalked(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t, "SELECT * FROM Order WHERE UPPER(price) = 'X'")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	filter, ok := op.(*logical.LogicalFilter)
+	if !ok {
+		t.Fatalf("expected LogicalFilter, got %T", op)
+	}
+	if filter.Predicate == nil {
+		t.Fatal("expected Predicate non-nil — walker should accept UPPER")
 	}
 }
 
