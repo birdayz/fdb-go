@@ -28,6 +28,7 @@ go_test(
         "comparisons_test.go",
         "correlation_test.go",
         "folder_test.go",
+        "matcher_bindings_test.go",
         "matcher_test.go",
         "predicates_equivalence_test.go",
         "predicates_test.go",
