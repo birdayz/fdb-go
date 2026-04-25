@@ -8,7 +8,10 @@ import (
 // CorrelationIdentifier + Correlated — seed.
 //
 // Ports Java's
-// `com.apple.foundationdb.record.query.plan.cascades.values.CorrelationIdentifier`
+// `com.apple.foundationdb.record.query.plan.cascades.CorrelationIdentifier`
+// (Java keeps it in the root cascades package; we moved it into our
+// `values/` sub-package per RFC-025 §"Don't split" since values is
+// the only intra-package consumer)
 // (a symbolic ID for a Quantifier — the thing a Value correlates to)
 // and the `Correlated<T>` interface (types that can report and
 // rebind their correlation set).
