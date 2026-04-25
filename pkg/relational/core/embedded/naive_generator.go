@@ -112,7 +112,10 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 		return nil, fmt.Errorf("parse schema DDL: %w", err)
 	}
 	stmts := root.Statements()
-	if stmts == nil || len(stmts.AllStatement()) != 1 {
+	if stmts == nil {
+		return nil, fmt.Errorf("schema DDL must contain exactly one statement, got 0")
+	}
+	if len(stmts.AllStatement()) != 1 {
 		return nil, fmt.Errorf("schema DDL must contain exactly one statement, got %d",
 			len(stmts.AllStatement()))
 	}

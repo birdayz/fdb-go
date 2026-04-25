@@ -99,3 +99,44 @@ func TestGoEngine_CatalogAware_RejectsMalformedDDL(t *testing.T) {
 		t.Fatalf("expected error on malformed schema DDL, got tree: %q", r.Tree)
 	}
 }
+
+// TestGoEngine_CatalogAware_StatementlessDDL pins the
+// nil-RootContext.Statements() branch in buildSchemaTemplateFromDDL.
+// `RootContext.Statements()` legitimately returns nil for inputs that
+// parse as a Root with no Statements child (whitespace-only,
+// semicolon-only, etc.); the Phase-3 first cut crashed with a
+// nil-pointer dereference on the error message because the branch
+// read len(stmts.AllStatement()) before nil-checking. Round-2 review
+// on PR #115. These cases must surface as a clean error, never
+// panic.
+//
+// (Empty SchemaTemplate is a different code path: buildGoGenerator
+// short-circuits to the text-only constructor without calling
+// buildSchemaTemplateFromDDL at all, so it doesn't exercise the bug.)
+func TestGoEngine_CatalogAware_StatementlessDDL(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	eng := NewGoEngine()
+	cases := []struct {
+		name string
+		ddl  string
+	}{
+		{"whitespace-only", "   \n\t  "},
+		{"semicolon-only", ";"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("unexpected panic: %v", r)
+				}
+			}()
+			r := eng.Plan(ctx, Query{Name: tc.name, SQL: "SELECT 1", SchemaTemplate: tc.ddl})
+			if r.Err == nil {
+				t.Fatalf("expected error on DDL %q, got tree: %q", tc.ddl, r.Tree)
+			}
+		})
+	}
+}
