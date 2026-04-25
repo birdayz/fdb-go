@@ -106,11 +106,15 @@ func applyRulesOnce(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 // list; then Comparison constants fold; then Not resolves; then the
 // And/Or identity-drop + absorbing-element rules.
 //
-// Rules NOT included (intentional — follow-up shifts):
+// Rules NOT included (intentional):
 //   - De Morgan NOT-distribution (`NOT(AND(a,b))` → `OR(NOT a, NOT b)`).
-//     Kleene-safe and reducing, but Java applies this as a separate
-//     normalisation pass in `BooleanNormalizer`, not in
-//     `ValueSimplificationRuleSet`. Keep the seed aligned.
+//     Kleene-safe but NODE-INCREASING (N-ary AND becomes N-element
+//     OR plus N NOTs), so it doesn't fit the strict-reduction
+//     termination invariant DefaultSimplifyRules guarantees. Java
+//     applies De Morgan as a separate `BooleanNormalizer` pre-CNF
+//     pass; we mirror this via the explicit `NormalizationRules()`
+//     rule set (which prepends `NewDeMorganRule()` before the
+//     default set).
 //   - Tautology / contradiction folds that require NOT-NULL
 //     metadata (`x = x` → TRUE iff x is NOT NULL). Waits on Type
 //     nullability tracking.
