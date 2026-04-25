@@ -732,6 +732,126 @@ func TestWithNullability_Nil(t *testing.T) {
 	}
 }
 
+// --- TypeRepository tests -----------------------------------------
+
+// TestTypeRepository_RegisterLookup pins the basic register + lookup
+// round-trip plus the founds/not-found split.
+func TestTypeRepository_RegisterLookup(t *testing.T) {
+	t.Parallel()
+	repo := NewTypeRepository()
+	if repo.Size() != 0 {
+		t.Errorf("Size: got %d, want 0", repo.Size())
+	}
+	if err := repo.Register("Suit", NewEnumType("Suit", false, []EnumValue{
+		{Name: "S", Number: 0}, {Name: "H", Number: 1},
+	})); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if repo.Size() != 1 {
+		t.Errorf("Size: got %d, want 1", repo.Size())
+	}
+	got, ok := repo.Lookup("Suit")
+	if !ok {
+		t.Fatal("Lookup(Suit): not found")
+	}
+	if got.Code() != TypeCodeEnum {
+		t.Errorf("Lookup(Suit).Code(): got %v", got.Code())
+	}
+	if _, ok := repo.Lookup("Missing"); ok {
+		t.Errorf("Lookup(Missing): expected not found")
+	}
+}
+
+// TestTypeRepository_RejectsInvalid pins the validation arms:
+// empty name, nil type, duplicate name all return TypeRegistrationError.
+func TestTypeRepository_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	repo := NewTypeRepository()
+	t.Run("empty-name", func(t *testing.T) {
+		t.Parallel()
+		err := NewTypeRepository().Register("", NotNullInt)
+		if err == nil {
+			t.Fatal("expected error on empty name")
+		}
+		var tre *TypeRegistrationError
+		if !errorsAs(err, &tre) {
+			t.Errorf("expected TypeRegistrationError, got %T: %v", err, err)
+		}
+	})
+	t.Run("nil-type", func(t *testing.T) {
+		t.Parallel()
+		err := NewTypeRepository().Register("X", nil)
+		if err == nil {
+			t.Fatal("expected error on nil type")
+		}
+		var tre *TypeRegistrationError
+		if !errorsAs(err, &tre) || tre.Name != "X" {
+			t.Errorf("expected TypeRegistrationError for X, got %v", err)
+		}
+	})
+	t.Run("duplicate-name", func(t *testing.T) {
+		t.Parallel()
+		if err := repo.Register("DupTest", NotNullInt); err != nil {
+			t.Fatalf("first Register: %v", err)
+		}
+		err := repo.Register("DupTest", NotNullString)
+		if err == nil {
+			t.Fatal("expected error on duplicate")
+		}
+		var tre *TypeRegistrationError
+		if !errorsAs(err, &tre) || tre.Name != "DupTest" {
+			t.Errorf("expected TypeRegistrationError for DupTest, got %v", err)
+		}
+	})
+}
+
+// TestTypeRepository_Names pins that Names() returns every
+// registered name (order-undefined, so the test sorts before
+// comparing).
+func TestTypeRepository_Names(t *testing.T) {
+	t.Parallel()
+	repo := NewTypeRepository()
+	for _, n := range []string{"A", "B", "C"} {
+		if err := repo.Register(n, NotNullInt); err != nil {
+			t.Fatalf("Register %s: %v", n, err)
+		}
+	}
+	names := repo.Names()
+	if len(names) != 3 {
+		t.Fatalf("Names len: got %d, want 3", len(names))
+	}
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		seen[n] = true
+	}
+	for _, want := range []string{"A", "B", "C"} {
+		if !seen[want] {
+			t.Errorf("Names missing %q: %v", want, names)
+		}
+	}
+}
+
+// errorsAs is a thin wrapper around errors.As to keep the call sites
+// terse — Go's stdlib API requires importing "errors", which the
+// rest of this file doesn't need.
+func errorsAs(err error, target any) bool {
+	type unwrapper interface{ Unwrap() error }
+	for err != nil {
+		if t, ok := target.(**TypeRegistrationError); ok {
+			if tre, ok := err.(*TypeRegistrationError); ok {
+				*t = tre
+				return true
+			}
+		}
+		u, ok := err.(unwrapper)
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}
+
 // TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
 // invariant for the value types the legacy enum actually
 // represents. NotNull bit is inferable from the round-trip target

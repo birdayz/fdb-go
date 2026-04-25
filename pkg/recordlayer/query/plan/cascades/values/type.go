@@ -748,6 +748,85 @@ func WithNullability(t Type, nullable bool) Type {
 	return t
 }
 
+// --- TypeRepository -----------------------------------------------
+
+// TypeRepository is the registry for named types. Mirrors Java's
+// TypeRepository — a map from QName to Type used to resolve named
+// references like `CREATE TYPE Foo AS RECORD<...>` followed by a
+// later `... value Foo NOT NULL ...` column declaration.
+//
+// Not concurrency-safe: per-query / per-statement instance, not a
+// global. The Java equivalent is built up during semantic analysis
+// and discarded after planning.
+type TypeRepository struct {
+	// types holds the registered named types keyed by their declared
+	// name. Empty by default — callers Register entries as they're
+	// declared.
+	types map[string]Type
+}
+
+// NewTypeRepository constructs an empty TypeRepository.
+func NewTypeRepository() *TypeRepository {
+	return &TypeRepository{types: make(map[string]Type)}
+}
+
+// Register adds a named type. Empty name returns an error (anonymous
+// types aren't addressable). Duplicate-name registration returns an
+// error so the caller can decide whether to treat it as a redefinition
+// (typical CREATE TYPE Foo error) or a no-op (idempotent
+// re-registration in tests).
+func (r *TypeRepository) Register(name string, t Type) error {
+	if name == "" {
+		return &TypeRegistrationError{Reason: "empty type name"}
+	}
+	if t == nil {
+		return &TypeRegistrationError{Name: name, Reason: "nil type"}
+	}
+	if _, dup := r.types[name]; dup {
+		return &TypeRegistrationError{Name: name, Reason: "already registered"}
+	}
+	r.types[name] = t
+	return nil
+}
+
+// Lookup returns the registered type for name plus a found flag.
+func (r *TypeRepository) Lookup(name string) (Type, bool) {
+	t, ok := r.types[name]
+	return t, ok
+}
+
+// Names returns the registered type names in insertion-undefined
+// order. Caller-friendly for diagnostics — the slice is freshly
+// allocated each call.
+func (r *TypeRepository) Names() []string {
+	out := make([]string, 0, len(r.types))
+	for n := range r.types {
+		out = append(out, n)
+	}
+	return out
+}
+
+// Size returns the number of registered types.
+func (r *TypeRepository) Size() int { return len(r.types) }
+
+// TypeRegistrationError is returned by Register on validation
+// failures. Mirrors the structured-error pattern in CLAUDE.md.
+type TypeRegistrationError struct {
+	// Name is the type name that triggered the error. Empty when the
+	// caller passed an empty name.
+	Name string
+	// Reason is a short human-readable description of what failed.
+	Reason string
+}
+
+// Error implements error.
+func (e *TypeRegistrationError) Error() string {
+	if e.Name == "" {
+		return "TypeRepository.Register: " + e.Reason
+	}
+	return "TypeRepository.Register " + e.Name + ": " + e.Reason
+}
+
 // ToValueType bridges the new Type back to the legacy ValueType.
 // LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
 // legacy enum doesn't distinguish widths). Structured types and
