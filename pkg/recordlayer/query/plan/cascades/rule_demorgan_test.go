@@ -201,7 +201,7 @@ func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
 // composition: NOT(VP(constant)) folds via the chain
 // ValuePredicateConstantFoldRule + NotConstantSimplifyRule.
 //
-// Specifically: NOT(VP(BooleanValue(true))) → NOT(TRIE) →
+// Specifically: NOT(VP(BooleanValue(true))) → NOT(TRUE) →
 // ConstantPredicate(TriFalse). Both rules need to fire in sequence.
 func TestNormalizationRules_VPConstantFoldChain(t *testing.T) {
 	t.Parallel()
@@ -213,6 +213,34 @@ func TestNormalizationRules_VPConstantFoldChain(t *testing.T) {
 	}
 	if cp.Value != TriFalse {
 		t.Fatalf("expected TriFalse, got %v", cp.Value)
+	}
+}
+
+// TestNormalizationRules_DeMorganIntoVPFold pins the longer chain:
+// NOT(AND(VP(true), VP(false))) — DeMorgan distributes to
+// OR(NOT(VP(true)), NOT(VP(false))), then VP folds + NOT
+// folds + Or-identity-drop collapse to ConstantPredicate(TriTrue).
+//
+// Trace:
+//
+//	NOT(AND(VP(true), VP(false)))
+//	→ OR(NOT(VP(true)), NOT(VP(false)))   [DeMorgan]
+//	→ OR(NOT(TRUE), NOT(FALSE))           [VPConstantFold ×2]
+//	→ OR(FALSE, TRUE)                      [NotConstantSimplify ×2]
+//	→ ConstantPredicate(TriTrue)           [OrConstantSimplify, TRUE child]
+func TestNormalizationRules_DeMorganIntoVPFold(t *testing.T) {
+	t.Parallel()
+	pred := NewNot(NewAnd(
+		NewValuePredicate(NewBooleanValue(true)),
+		NewValuePredicate(NewBooleanValue(false)),
+	))
+	got := Simplify(pred, NormalizationRules())
+	cp, ok := got.(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T %s", got, got.Explain())
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("expected TriTrue (NOT(true AND false) = NOT(false) = TRUE), got %v", cp.Value)
 	}
 }
 
