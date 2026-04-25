@@ -1,7 +1,5 @@
 package cascades
 
-import "sync/atomic"
-
 // ValuePredicateConstantFoldRule unwraps a ValuePredicate whose Value
 // folds to a constant bool / null at plan time:
 //
@@ -31,8 +29,6 @@ import "sync/atomic"
 type ValuePredicateConstantFoldRule struct {
 	matcher BindingMatcher
 }
-
-var valuePredicateMatcherCounter atomic.Uint64
 
 // NewValuePredicateConstantFoldRule constructs the rule.
 func NewValuePredicateConstantFoldRule() *ValuePredicateConstantFoldRule {
@@ -72,10 +68,14 @@ func (r *ValuePredicateConstantFoldRule) OnMatch(call *RuleCall) {
 	}
 }
 
-type valuePredicateMatcher struct{ id uint64 }
+// The `_ bool` field forces non-zero struct size so two
+// `new(valuePredicateMatcher)` allocations land at distinct heap
+// addresses (see AnyValue at matcher.go:130-136 for the zero-size-
+// struct gotcha). No nonce is needed for actual identity tracking.
+type valuePredicateMatcher struct{ _ bool }
 
 func newValuePredicateMatcher() *valuePredicateMatcher {
-	return &valuePredicateMatcher{id: valuePredicateMatcherCounter.Add(1)}
+	return &valuePredicateMatcher{}
 }
 
 func (*valuePredicateMatcher) RootType() string { return "ValuePredicate" }
