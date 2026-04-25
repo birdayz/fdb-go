@@ -120,11 +120,25 @@ func TestComparison_NullPropagation_AllBinaryOps(t *testing.T) {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
+	t.Run("IS_NOT_DISTINCT_FROM_X_NULL", func(t *testing.T) {
+		t.Parallel()
+		c := Comparison{Type: ComparisonNotDistinctFrom}
+		if got := c.EvalAgainst(nonNullL, nil); got != TriFalse {
+			t.Fatalf("got %v, want FALSE", got)
+		}
+	})
 	t.Run("IS_NOT_DISTINCT_FROM_X_X", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonNotDistinctFrom}
 		if got := c.EvalAgainst(nonNullL, nonNullL); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
+		}
+	})
+	t.Run("IS_NOT_DISTINCT_FROM_X_Y", func(t *testing.T) {
+		t.Parallel()
+		c := Comparison{Type: ComparisonNotDistinctFrom}
+		if got := c.EvalAgainst(nonNullL, nonNullR); got != TriFalse {
+			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 
