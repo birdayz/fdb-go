@@ -38,6 +38,7 @@ go_test(
         "simplifier_predicate_values_test.go",
         "simplifier_test.go",
         "simplifier_value_test.go",
+        "values_fuzz_test.go",
         "values_java_inspired_test.go",
         "values_test.go",
     ],
