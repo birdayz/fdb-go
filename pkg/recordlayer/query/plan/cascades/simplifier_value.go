@@ -73,7 +73,7 @@ func SimplifyValue(v Value) Value {
 // rewrap.
 func isFoldableComposite(v Value) bool {
 	switch v.(type) {
-	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue:
+	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue, *NotValue:
 		return true
 	}
 	return false
@@ -117,6 +117,12 @@ func simplifyChildren(v Value) Value {
 			return v
 		}
 		return &ScalarFunctionValue{FuncName: x.FuncName, Args: newArgs, Typ: x.Typ}
+	case *NotValue:
+		c := SimplifyValue(x.Child)
+		if c == x.Child {
+			return v
+		}
+		return &NotValue{Child: c}
 	}
 	return v
 }

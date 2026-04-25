@@ -117,25 +117,93 @@ func TestNotValue_Name(t *testing.T) {
 	}
 }
 
-// TestNotValue_DoubleNegation_NotConstantFolded pins that
-// NotValue is NOT auto-folded by the seed simplifier today —
-// SimplifyValue.isFoldableComposite excludes NotValue, so
-// NOT(NOT(TRUE)) survives as a 3-deep tree at plan time.
-//
-// This is intentional: the seed simplifier folds composites whose
-// Evaluate produces a Go-native scalar that LiteralValue can
-// faithfully rewrap (Arithmetic, Cast, Promote, ScalarFunction).
-// Adding NotValue to the foldable set would also work — explicitly
-// marking the gap so a future addition is a deliberate decision,
-// not a silent drift.
-func TestNotValue_DoubleNegation_NotConstantFolded(t *testing.T) {
+// TestNotValue_DoubleNegation_FoldsToLeaf pins that SimplifyValue
+// collapses NOT(NOT(TRUE)) to a leaf BooleanValue(true). NotValue
+// is in isFoldableComposite (alongside ArithmeticValue / CastValue /
+// PromoteValue / ScalarFunctionValue) — Evaluate produces a Go-
+// native bool that LiteralValue can faithfully rewrap.
+func TestNotValue_DoubleNegation_FoldsToLeaf(t *testing.T) {
 	t.Parallel()
 	tree := NewNotValue(NewNotValue(NewBooleanValue(true)))
 	out := SimplifyValue(tree)
-	// CURRENT BEHAVIOUR: NotValue is NOT in isFoldableComposite, so
-	// SimplifyValue returns the tree unchanged. Pin this so a future
-	// extension is flagged.
-	if _, ok := out.(*NotValue); !ok {
-		t.Fatalf("SimplifyValue folded NotValue (current seed should not — flag this and update isFoldableComposite if intentional). Got %T", out)
+	bv, ok := out.(*BooleanValue)
+	if !ok {
+		t.Fatalf("expected BooleanValue after fold, got %T", out)
+	}
+	if bv.Value == nil || *bv.Value != true {
+		t.Fatalf("expected NOT(NOT(TRUE)) → TRUE, got %v", bv.Value)
+	}
+}
+
+// TestNotValue_FoldsConstantToLeaf pins single-NOT folding:
+// NOT(TRUE) → BooleanValue(false), NOT(FALSE) → BooleanValue(true),
+// NOT(NULL) → NullValue.
+func TestNotValue_FoldsConstantToLeaf(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		child Value
+		check func(Value) error
+	}{
+		{
+			"NOT TRUE → FALSE",
+			NewBooleanValue(true),
+			func(v Value) error {
+				bv, ok := v.(*BooleanValue)
+				if !ok {
+					t.Fatalf("expected BooleanValue, got %T", v)
+				}
+				if bv.Value == nil || *bv.Value != false {
+					t.Fatalf("expected false, got %v", bv.Value)
+				}
+				return nil
+			},
+		},
+		{
+			"NOT FALSE → TRUE",
+			NewBooleanValue(false),
+			func(v Value) error {
+				bv, ok := v.(*BooleanValue)
+				if !ok {
+					t.Fatalf("expected BooleanValue, got %T", v)
+				}
+				if bv.Value == nil || *bv.Value != true {
+					t.Fatalf("expected true, got %v", bv.Value)
+				}
+				return nil
+			},
+		},
+		{
+			"NOT NULL(Bool) → NULL",
+			&BooleanValue{Value: nil},
+			func(v Value) error {
+				if _, ok := v.(*NullValue); !ok {
+					t.Fatalf("expected NullValue, got %T", v)
+				}
+				return nil
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := SimplifyValue(NewNotValue(tc.child))
+			_ = tc.check(out)
+		})
+	}
+}
+
+// TestNotValue_NonConstantChild_NoFold pins that NOT(field) does NOT
+// fold — the child isn't constant, so the Not wrapper survives.
+func TestNotValue_NonConstantChild_NoFold(t *testing.T) {
+	t.Parallel()
+	tree := NewNotValue(&FieldValue{Field: "active", Typ: TypeBool})
+	out := SimplifyValue(tree)
+	if out != Value(tree) {
+		// Allow either pointer-stable (child unchanged → return v) or
+		// rebuilt-but-still-NotValue. Reject collapse to leaf.
+		if _, ok := out.(*NotValue); !ok {
+			t.Fatalf("expected NotValue to survive non-constant child, got %T", out)
+		}
 	}
 }
