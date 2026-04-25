@@ -825,6 +825,23 @@ func TestEvaluateConstant(t *testing.T) {
 	}
 }
 
+// TestScalarFunctionValue_Evaluate_NilArg pins the malformed-input
+// guard: a ScalarFunctionValue carrying a nil Args[i] short-circuits
+// to nil rather than dereferencing. Defensive against rule authors
+// that build ScalarFunctionValue programmatically and forget to
+// populate every slot.
+func TestScalarFunctionValue_Evaluate_NilArg(t *testing.T) {
+	t.Parallel()
+	v := &ScalarFunctionValue{
+		FuncName: "ABS",
+		Args:     []Value{nil}, // deliberately malformed
+		Typ:      TypeInt,
+	}
+	if got := v.Evaluate(nil); got != nil {
+		t.Fatalf("Evaluate with nil arg: got %v, want nil", got)
+	}
+}
+
 // TestValueType_String pins the SQL-text rendering for each
 // ValueType + the unknown fall-through. Used by ExplainValue's
 // CAST(_ AS X) renderer; if these strings change the plandiff
