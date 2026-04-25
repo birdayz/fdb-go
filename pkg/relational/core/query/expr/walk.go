@@ -79,9 +79,12 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		// doesn't expose them.
 		return r.walkMathExpression(a)
 	case *antlrgen.FunctionCallExpressionAtomContext:
-		// Function call — only aggregates (COUNT/SUM/MIN/MAX/AVG)
-		// are wired in the seed. Scalar functions land once the
-		// scalar-function catalogue is ported.
+		// Function call — aggregates (COUNT/SUM/MIN/MAX/AVG) +
+		// CAST/CONVERT (DataTypeFunctionCall) + the seed scalar set
+		// (UPPER/LOWER/LENGTH family). Names outside the seed
+		// catalogue decline with UnsupportedExpressionShapeError so
+		// the logical-builder text fallback catches them; the full
+		// registry lands with the function-catalog port.
 		return r.walkFunctionCall(a.FunctionCall())
 	case *antlrgen.PreparedStatementParameterAtomContext:
 		// `?` (positional) or `?name` / `$name` (named, per the
