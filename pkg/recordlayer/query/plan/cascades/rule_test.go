@@ -95,6 +95,61 @@ func TestFireRule_AddConstantFold(t *testing.T) {
 	}
 }
 
+// multiYieldRule: a rule that yields TWO replacements per match.
+// Cascades treats yields as alternative replacements (memo will pick
+// the best); the seed driver simply collects them all. Used to pin
+// FireRule's accumulator semantics over a multi-yield body.
+type multiYieldRule struct {
+	matcher BindingMatcher
+	target  *Instance
+}
+
+func (r *multiYieldRule) Matcher() BindingMatcher { return r.matcher }
+func (r *multiYieldRule) OnMatch(call *RuleCall) {
+	cv := Get[*ConstantValue](call.Bindings, r.target)
+	li, ok := cv.Value.(int64)
+	if !ok {
+		return
+	}
+	// Yield two alternatives — original literal vs +1.
+	call.Yield(&ConstantValue{Value: li, Typ: TypeInt})
+	call.Yield(&ConstantValue{Value: li + 1, Typ: TypeInt})
+}
+
+func TestFireRule_MultipleYieldsPerMatch(t *testing.T) {
+	t.Parallel()
+	target := NewConstantMatcher()
+	rule := &multiYieldRule{matcher: target, target: target}
+	cv := &ConstantValue{Value: int64(10), Typ: TypeInt}
+
+	replacements := FireRule(rule, cv)
+	if len(replacements) != 2 {
+		t.Fatalf("expected 2 yields, got %d", len(replacements))
+	}
+	first := replacements[0].(*ConstantValue)
+	second := replacements[1].(*ConstantValue)
+	if first.Value != int64(10) || second.Value != int64(11) {
+		t.Fatalf("yields wrong: got [%v, %v]", first.Value, second.Value)
+	}
+}
+
+// TestRuleCall_Yield_PreservesOrder pins that yield order is FIFO —
+// matters for cost-ordered alternatives where the lowest-cost yield
+// goes first by convention.
+func TestRuleCall_Yield_PreservesOrder(t *testing.T) {
+	t.Parallel()
+	call := &RuleCall{Bindings: NewBindings()}
+	for i := 0; i < 5; i++ {
+		call.Yield(i)
+	}
+	got := call.Yielded()
+	for i, v := range got {
+		if v.(int) != i {
+			t.Fatalf("yield order broken at index %d: got %v", i, v)
+		}
+	}
+}
+
 // Rule body can decline to yield even on a successful match.
 type declineRule struct {
 	matcher BindingMatcher
