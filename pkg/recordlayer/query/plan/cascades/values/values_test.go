@@ -308,6 +308,29 @@ func TestCastValue(t *testing.T) {
 		t.Fatalf("string→int not yet wired: expected nil, got %v", got)
 	}
 
+	// bool → string. Match runtime functions.CastValue: lowercase.
+	// Pre-this-shift the fold path returned nil while the runtime
+	// returned "true"/"false" — fold-vs-runtime divergence on a
+	// constant input.
+	boolToStrTrue := NewCastValue(NewBooleanValue(true), TypeString)
+	if got := boolToStrTrue.Evaluate(nil); got != "true" {
+		t.Fatalf("TRUE→string: got %v, want \"true\"", got)
+	}
+	boolToStrFalse := NewCastValue(NewBooleanValue(false), TypeString)
+	if got := boolToStrFalse.Evaluate(nil); got != "false" {
+		t.Fatalf("FALSE→string: got %v, want \"false\"", got)
+	}
+	// bool → float. Mirrors runtime's CAST(b AS INT) AS FLOAT chain
+	// in one step (TRUE→1.0, FALSE→0.0).
+	boolToFloatT := NewCastValue(NewBooleanValue(true), TypeFloat)
+	if got := boolToFloatT.Evaluate(nil); got != float64(1) {
+		t.Fatalf("TRUE→float: got %v, want 1", got)
+	}
+	boolToFloatF := NewCastValue(NewBooleanValue(false), TypeFloat)
+	if got := boolToFloatF.Evaluate(nil); got != float64(0) {
+		t.Fatalf("FALSE→float: got %v, want 0", got)
+	}
+
 	// Children wiring + Type.
 	if len(strC.Children()) != 1 {
 		t.Fatalf("cast children: expected 1, got %d", len(strC.Children()))

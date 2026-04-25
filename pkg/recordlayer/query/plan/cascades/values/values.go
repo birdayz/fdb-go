@@ -1402,6 +1402,17 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		if f, ok := v.(float64); ok {
 			return strconv.FormatFloat(f, 'g', -1, 64)
 		}
+		if b, ok := v.(bool); ok {
+			// Match runtime functions.CastValue: lowercase
+			// "true"/"false" (Java's CastValue.BOOLEAN_TO_STRING).
+			// Without this arm, fold-time `CAST(TRUE AS STRING)`
+			// returned nil while the runtime returned "true" — fold
+			// vs runtime mismatch on a constant input.
+			if b {
+				return "true"
+			}
+			return "false"
+		}
 	case TypeFloat:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
 		// integral types to float64. Without this case, the walker's
@@ -1415,6 +1426,15 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return float64(val)
 		case int64:
 			return float64(val)
+		case bool:
+			// Java doesn't define CAST(BOOLEAN AS FLOAT) directly —
+			// but the runtime path goes via CAST(b AS INT) AS FLOAT,
+			// folding to 1.0/0.0. Mirror that one-step here so a
+			// fold-time literal `CAST(TRUE AS FLOAT)` resolves cleanly.
+			if val {
+				return float64(1)
+			}
+			return float64(0)
 		}
 	}
 	return nil
