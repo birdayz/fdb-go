@@ -233,10 +233,19 @@ func TestAllOf_ThreadsOuterBindings(t *testing.T) {
 // doubleMatcher is a test-only matcher that always emits TWO
 // successful PlannerBindings for any input — used to pin Cartesian
 // behaviour where Go-side test fixtures don't have a natural
-// multi-match shape today. Two distinct &doubleMatcher{} pointers
-// are already unique map keys via Go's pointer identity, so no
-// nonce field is needed.
-type doubleMatcher struct{}
+// multi-match shape today.
+//
+// The `_ [0]func()` field forces a non-zero-size struct so two
+// `&doubleMatcher{}` allocations are distinct map keys. Per the
+// zero-size-struct gotcha documented at AnyValue (matcher.go:130-136),
+// pointers to distinct zero-size variables MAY share an address per
+// the Go spec, which would silently collide in PlannerBindings's
+// matcher → []any map. The lint-comparable alternatives:
+// `_ bool` works too but reads as "we use this somehow"; `[0]func()`
+// is the canonical "force non-zero size, no semantics" idiom.
+type doubleMatcher struct {
+	_ [0]func()
+}
 
 func (*doubleMatcher) RootType() string { return "Value" }
 func (d *doubleMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {

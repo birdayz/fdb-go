@@ -1,7 +1,5 @@
 package cascades
 
-import "sync/atomic"
-
 // AllElementsMatcher matches an []any input where EVERY element binds
 // the same downstream matcher. The downstream is invoked once per
 // element with the running partial bindings (AllOfMatcher convention),
@@ -27,18 +25,18 @@ import "sync/atomic"
 // Difference from ListMatcher: ListMatcher pairs each position with
 // its own downstream and is length-strict. AllElementsMatcher uses
 // a single downstream against every element regardless of count.
+// The downstream pointer gives the struct non-zero size so two
+// `new(AllElementsMatcher)` calls receive distinct map-key identities
+// (no nonce field needed here — see AnyValue in matcher.go for the
+// zero-size-struct gotcha).
 type AllElementsMatcher struct {
-	id         uint64
 	downstream BindingMatcher
 }
-
-var allElementsMatcherCounter atomic.Uint64
 
 // NewAllElementsMatcher constructs an AllElementsMatcher with the
 // given downstream applied to every input element.
 func NewAllElementsMatcher(downstream BindingMatcher) *AllElementsMatcher {
 	return &AllElementsMatcher{
-		id:         allElementsMatcherCounter.Add(1),
 		downstream: downstream,
 	}
 }

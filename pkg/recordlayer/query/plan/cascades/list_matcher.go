@@ -1,7 +1,5 @@
 package cascades
 
-import "sync/atomic"
-
 // ListMatcher pairs each element of an []any (or []Value, etc.) with
 // a positional downstream matcher and only succeeds when the input
 // length matches the downstream count AND every downstream binds.
@@ -24,12 +22,13 @@ import "sync/atomic"
 //
 // The matcher binds itself + each downstream when matching succeeds,
 // so rule bodies can fetch any positional value via Get[T].
+// The downstreams slice gives the struct non-zero size so two
+// `new(ListMatcher)` calls receive distinct map-key identities (no
+// nonce field needed here — see the zero-size-struct gotcha
+// documented at AnyValue in matcher.go).
 type ListMatcher struct {
-	id          uint64
 	downstreams []BindingMatcher
 }
-
-var listMatcherCounter atomic.Uint64
 
 // NewListMatcher constructs a ListMatcher matching exactly len(downstreams)
 // elements in order. Panics on zero downstreams — same rationale as
@@ -41,7 +40,6 @@ func NewListMatcher(downstreams ...BindingMatcher) *ListMatcher {
 		panic("NewListMatcher: need at least one downstream matcher")
 	}
 	return &ListMatcher{
-		id:          listMatcherCounter.Add(1),
 		downstreams: downstreams,
 	}
 }
