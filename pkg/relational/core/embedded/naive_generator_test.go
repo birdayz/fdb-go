@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -454,6 +455,34 @@ func TestNaiveGenerator_Explain_ExplainWarmCacheSelect(t *testing.T) {
 	}
 	if p.IsUpdate() {
 		t.Fatal("EXPLAIN must not be an update plan even on warm cache")
+	}
+}
+
+// EXPLAIN EXECUTE CONTINUATION → UNSUPPORTED_OPERATION. The
+// describeObjectClause alternative `executeContinuationStatement`
+// IS a *DescribeStatementsContext (so the type-assertion branch
+// passes), but the four accessor methods (Query / Delete / Insert
+// / Update) all return nil — computeExplainText returns "" and
+// planExplain's empty-string guard fires.
+//
+// Pinned because the comment in planExplain explicitly calls out
+// this corner; the test makes sure a future change that adds
+// continuation-handling at the !ok branch (or adds a new accessor)
+// doesn't accidentally let it through.
+func TestNaiveGenerator_Explain_ExplainContinuationDeclines(t *testing.T) {
+	t.Parallel()
+	g := &naiveGenerator{c: &EmbeddedConnection{}}
+	_, err := g.Plan(context.Background(),
+		"EXPLAIN EXECUTE CONTINUATION X'00'")
+	if err == nil {
+		t.Fatal("EXPLAIN <continuation>: expected error, got nil plan")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *api.Error, got %T: %v", err, err)
+	}
+	if apiErr.Code != api.ErrCodeUnsupportedOperation {
+		t.Fatalf("expected ErrCodeUnsupportedOperation, got %q", apiErr.Code)
 	}
 }
 

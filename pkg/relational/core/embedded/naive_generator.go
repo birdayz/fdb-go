@@ -233,9 +233,23 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 // Mirrors fdb-relational's PLAN column shape so the plan-equivalence
 // harness can diff Go-side EXPLAIN output against Java's.
 //
-// `EXPLAIN FOR CONNECTION` is not supported (the seed has no
-// connection identifier). `EXPLAIN <continuation>` is also out of
-// scope — both decline with UNSUPPORTED_OPERATION.
+// Format specifiers — the grammar allows `EXPLAIN FORMAT = JSON …`
+// / `EXPLAIN EXTENDED = TRADITIONAL …` etc., but this seed silently
+// ignores them: the inner plan tree always renders as text. Future
+// support for FORMAT=JSON / FORMAT=DOT / EXTENDED would extend this
+// path; tooling that requires structured output should not depend
+// on the format request being honoured today.
+//
+// Decline modes (each returns UNSUPPORTED_OPERATION):
+//   - `EXPLAIN FOR CONNECTION uid` → `*DescribeConnectionContext`,
+//     not a `*DescribeStatementsContext` → exits via the `!ok` arm
+//     below. The seed has no connection-identifier surface.
+//   - `EXPLAIN EXECUTE CONTINUATION …` → IS a `*DescribeStatementsContext`
+//     (the grammar's #describeStatements alternative includes
+//     executeContinuationStatement), so it passes the `ok` check
+//     but every accessor (Query / DeleteStatement / InsertStatement
+//     / UpdateStatement) returns nil → computeExplainText returns
+//     "" → the `planText == ""` guard fires.
 func (g *naiveGenerator) planExplain(full antlrgen.IFullDescribeStatementContext) (query.Plan, error) {
 	objClause := full.DescribeObjectClause()
 	if objClause == nil {
@@ -244,12 +258,18 @@ func (g *naiveGenerator) planExplain(full antlrgen.IFullDescribeStatementContext
 	}
 	descStmts, ok := objClause.(*antlrgen.DescribeStatementsContext)
 	if !ok {
-		// describeConnection / future variants land here.
+		// EXPLAIN FOR CONNECTION lands here (it's a
+		// *DescribeConnectionContext, not *DescribeStatementsContext).
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"EXPLAIN form not supported (only EXPLAIN <query|insert|update|delete>)")
 	}
 	planText := g.computeExplainText(descStmts)
 	if planText == "" {
+		// `EXPLAIN EXECUTE CONTINUATION …` reaches here — it parses
+		// as a *DescribeStatementsContext but none of the
+		// query/delete/insert/update accessors return non-nil for it.
+		// Future extensions (CTAS-style EXPLAIN, etc.) that don't
+		// produce a plan tree also surface here.
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"EXPLAIN inner statement produced no plan text")
 	}
