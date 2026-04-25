@@ -178,6 +178,83 @@ func TestPrimitiveEqual(t *testing.T) {
 	}
 }
 
+// TestPrimitiveEqual_RemainingTypes pins Equal across the secondary
+// primitive types (Version, UUID, Null, Unknown) — TestPrimitiveEqual
+// covers Integer/Long; these others have their own Equal impls
+// that need their own pinning.
+func TestPrimitiveEqual_RemainingTypes(t *testing.T) {
+	t.Parallel()
+
+	// VersionType: equal if same nullability.
+	if !NewVersionType(false).Equal(NewVersionType(false)) {
+		t.Fatal("version(non-null) should equal version(non-null)")
+	}
+	if NewVersionType(false).Equal(NewVersionType(true)) {
+		t.Fatal("version(non-null) should NOT equal version(null)")
+	}
+	if NewVersionType(false).Equal(NewIntegerType(false)) {
+		t.Fatal("version != integer")
+	}
+
+	// UUIDType.
+	if !NewUUIDType(true).Equal(NewUUIDType(true)) {
+		t.Fatal("uuid(null) should equal uuid(null)")
+	}
+	if NewUUIDType(false).Equal(NewUUIDType(true)) {
+		t.Fatal("uuid(non-null) should NOT equal uuid(null)")
+	}
+	if NewUUIDType(false).Equal(NewVersionType(false)) {
+		t.Fatal("uuid != version")
+	}
+
+	// NullType: always nullable singleton; Equal compares isNullable.
+	if !NewNullType().Equal(NewNullType()) {
+		t.Fatal("null should equal null")
+	}
+	if NewNullType().Equal(NewIntegerType(true)) {
+		t.Fatal("null != integer")
+	}
+
+	// UnknownType: equal to other UnknownType regardless of nullability;
+	// not equal to anything else.
+	if !NewUnknownType().Equal(NewUnknownType()) {
+		t.Fatal("unknown should equal unknown")
+	}
+	if NewUnknownType().Equal(NewIntegerType(false)) {
+		t.Fatal("unknown != integer")
+	}
+}
+
+// TestPrimitiveResolve_RemainingTypes pins the no-op Resolve on
+// fully-resolved primitive types (Version, UUID, Null) — they
+// return themselves verbatim regardless of the binding map.
+func TestPrimitiveResolve_RemainingTypes(t *testing.T) {
+	t.Parallel()
+	v := NewVersionType(false)
+	if v.Resolve(nil) != DataType(v) {
+		t.Fatal("version.Resolve(nil) should return self")
+	}
+	u := NewUUIDType(true)
+	if u.Resolve(map[string]Named{"foo": nil}) != DataType(u) {
+		t.Fatal("uuid.Resolve(map) should return self")
+	}
+	n := NewNullType()
+	if n.Resolve(nil) != DataType(n) {
+		t.Fatal("null.Resolve(nil) should return self")
+	}
+}
+
+// TestUnknownType_IsResolved pins that Unknown reports
+// IsResolved=false (the only non-resolved primitive). Used by the
+// resolver to decide whether to recurse into composite types or
+// short-circuit.
+func TestUnknownType_IsResolved(t *testing.T) {
+	t.Parallel()
+	if NewUnknownType().IsResolved() {
+		t.Fatal("unknown should report IsResolved=false")
+	}
+}
+
 // ---- NULL type special cases ----
 
 func TestNullTypeNonNullablePanics(t *testing.T) {
