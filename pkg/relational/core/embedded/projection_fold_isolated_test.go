@@ -26,6 +26,14 @@ import (
 
 // fakeResolver returns canned (Value, error) results keyed by the
 // IExpressionContext pointer. Implements expr.ExpressionResolver.
+//
+// Two-tier lookup: when a test wires up `results[ctx]`, that result
+// wins. Otherwise the resolver falls through to `defaultV` / `defaultErr`
+// — useful when a test wants "all unspecified contexts return X" without
+// enumerating every key. Today's tests use only the per-context map
+// (defaults are implicitly the zero values, which produce a (nil, nil)
+// fall-through that causes the harness to skip the slot — a passable
+// no-op contract). Add per-default cases when needed.
 type fakeResolver struct {
 	calls   int
 	results map[antlrgen.IExpressionContext]struct {
