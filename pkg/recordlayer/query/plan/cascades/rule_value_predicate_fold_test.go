@@ -168,3 +168,41 @@ func TestSimplify_ValuePredicateInAndCollapses(t *testing.T) {
 		t.Fatalf("expected the comparison to survive, got %T %s", got, got.Explain())
 	}
 }
+
+// TestSimplify_ValuePredicateInOrCollapses pins the dual integration
+// effect: OR(VP(false), x > 5) → x > 5. VP(false) folds to FALSE,
+// then OrConstantSimplifyRule's identity-drop removes the FALSE
+// child.
+func TestSimplify_ValuePredicateInOrCollapses(t *testing.T) {
+	t.Parallel()
+	cmp := NewComparisonPredicate(
+		&FieldValue{Field: "x", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(5))},
+	)
+	pred := NewOr(NewValuePredicate(NewBooleanValue(false)), cmp)
+	got := Simplify(pred, DefaultSimplifyRules())
+	if got != QueryPredicate(cmp) {
+		t.Fatalf("expected the comparison to survive, got %T %s", got, got.Explain())
+	}
+}
+
+// TestSimplify_ValuePredicate_NotValue_FullyFolds pins the end-to-end
+// chain across BOTH the Value-layer NotValue fold (commit 54) AND
+// the predicate-layer ValuePredicateConstantFoldRule (this rule):
+// VP(NotValue(BooleanValue(true))) — the Value tree NOT(TRUE) folds
+// to BooleanValue(false), then ValuePredicateConstantFoldRule
+// unwraps VP(false) to ConstantPredicate(TriFalse).
+func TestSimplify_ValuePredicate_NotValue_FullyFolds(t *testing.T) {
+	t.Parallel()
+	pred := NewValuePredicate(NewNotValue(NewBooleanValue(true)))
+	// SimplifyPredicateValues handles the inner Value fold first,
+	// then the rule pipeline unwraps. Use Simplify with default rules.
+	got := Simplify(SimplifyPredicateValues(pred), DefaultSimplifyRules())
+	cp, ok := got.(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T %s", got, got.Explain())
+	}
+	if cp.Value != TriFalse {
+		t.Fatalf("expected TriFalse, got %v", cp.Value)
+	}
+}
