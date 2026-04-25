@@ -1,5 +1,40 @@
 package embedded
 
+// Catalog-aware logical-builder seam.
+//
+// logical_builder.go ports parse trees into LogicalOperator trees with
+// WHERE clauses carried as canonical source text — adequate for the
+// pre-cascades Explain output but blind to identifier resolution and
+// type information.
+//
+// This file is the catalog-aware variant: when a *recordlayer.RecordMetaData
+// is in scope, WHERE clauses walk through expr.WalkPredicate (via
+// rlcatalog → semantic.Analyzer + Scope) and produce a real
+// cascades.QueryPredicate tree on LogicalFilter.Predicate alongside
+// the source text. Best-effort throughout — any walker error,
+// catalog miss, ambiguous column ref, or shape outside the walker's
+// support degrades to text fallback rather than failing the build.
+//
+// Wiring map (catalog-aware → text fallback):
+//
+//   buildLogicalPlanForSelectWithCatalog → buildLogicalPlanForSelect
+//   buildLogicalPlanForDeleteWithCatalog → buildLogicalPlanForDelete
+//   buildLogicalPlanForUpdateWithCatalog → buildLogicalPlanForUpdate
+//   buildLogicalPlanForInsertWithCatalog → buildLogicalPlanForInsert
+//   buildLogicalPlanForQueryWithCatalog (CTE/UNION/SELECT recursion)
+//
+// Predicate-extraction helpers:
+//
+//   buildWherePredicate          (selectQuery shape, dispatches)
+//   buildWherePredicateForTable  (single source — primary table)
+//   buildWherePredicateForJoins  (multi source — JOIN chain)
+//
+// Plumbed into naive_generator.ExplainFn via
+// EmbeddedConnection.cachedMetaData() — when the session schema cache
+// already holds the active schema, ExplainFn upgrades to predicate-tree
+// rendering; cold cache stays on the text-builder path so EXPLAIN
+// remains deterministic and IO-free.
+
 import (
 	"strings"
 
