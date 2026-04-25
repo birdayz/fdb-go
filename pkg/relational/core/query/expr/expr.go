@@ -84,6 +84,14 @@ type Resolver struct {
 	analyzer *semantic.Analyzer
 	scope    *semantic.Scope
 	funcCat  *semantic.FunctionCatalog
+	// nextOrdinal counts positional `?` placeholders in the order they
+	// appear within a single statement walk. The counter is part of
+	// the Resolver because Go's database/sql NamedValue.Ordinal is
+	// 1-based and statement-scoped — one Resolver instance covers one
+	// statement walk, so resetting per-walk falls out naturally.
+	// Named parameters (`?foo` / `$bar`) keep their declared name and
+	// don't consume an ordinal slot.
+	nextOrdinal int
 }
 
 // New constructs a Resolver bound to a scope. Nil analyzer or nil

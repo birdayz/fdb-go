@@ -1451,8 +1451,8 @@ func TestWalkExpression_PositionalParameter(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ParameterValue, got %T", v)
 	}
-	// Walker leaves ordinal=0 (statement-wide counter not wired yet).
-	if pv.Ordinal != 0 || pv.ParamName != "" {
+	// Walker assigns 1-based ordinal in declaration order.
+	if pv.Ordinal != 1 || pv.ParamName != "" {
 		t.Fatalf("got Ordinal=%d ParamName=%q", pv.Ordinal, pv.ParamName)
 	}
 }
@@ -1499,14 +1499,49 @@ func TestWalkPredicate_ParameterizedComparison(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
 	}
-	if pv.Ordinal != 0 {
-		t.Fatalf("Ordinal: got %d, want 0", pv.Ordinal)
+	if pv.Ordinal != 1 {
+		t.Fatalf("Ordinal: got %d, want 1", pv.Ordinal)
 	}
-	// Plan-cache key seam: render the predicate as `NAME = ?` so two
+	// Plan-cache key seam: render the predicate as `NAME = ?1` so two
 	// queries with different bind values share the same Explain.
-	want := "NAME = ?"
+	want := "NAME = ?1"
 	if got := cp.Explain(); got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+// Two `?` in the same statement get distinct 1-based ordinals so
+// ExplainValue / plan-cache keying disambiguates `WHERE x=?` from
+// `WHERE x=? AND y=?`. The Resolver's nextOrdinal counter is the
+// seam — same Resolver across both walks → continues numbering.
+func TestWalkPredicate_MultiplePositionalParameters(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = ? AND name = ?")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("SubPredicates: got %d, want 2", len(and.SubPredicates))
+	}
+	got := []int{}
+	for _, sp := range and.SubPredicates {
+		cp := sp.(*cascades.ComparisonPredicate)
+		pv := cp.Comparison.Operand.(*cascades.ParameterValue)
+		got = append(got, pv.Ordinal)
+	}
+	if got[0] != 1 || got[1] != 2 {
+		t.Fatalf("ordinals: got %v, want [1 2]", got)
+	}
+	want := "(ID = ?1 AND NAME = ?2)"
+	if exp := and.Explain(); exp != want {
+		t.Fatalf("Explain: got %q, want %q", exp, want)
 	}
 }
 

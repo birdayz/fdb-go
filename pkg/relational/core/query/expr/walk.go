@@ -121,11 +121,15 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 		return cascades.NewNamedParameterValue(text[1:]), nil
 	}
 	if ppc.QUESTION() != nil {
-		// Ordinal numbering across the statement is the caller's
-		// responsibility — the walker stays per-expression. Use 0 as
-		// the seed sentinel so ExplainValue renders `?` (not `?N`);
-		// the binder will rewrite ordinals once it's wired.
-		return cascades.NewParameterValue(0), nil
+		// 1-based ordinal, statement-scoped — matches Go's
+		// database/sql NamedValue.Ordinal so binders can index by
+		// position without remapping. Two `?` in the same statement
+		// get distinct ordinals, so plan-cache keys derived via
+		// ExplainValue normalise to `?1` / `?2` (etc.) — different
+		// bind values share one cache entry, but `WHERE x=? AND y=?`
+		// stays distinct from `WHERE x=?`.
+		r.nextOrdinal++
+		return cascades.NewParameterValue(r.nextOrdinal), nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: "PreparedStatementParameter with no QUESTION/NAMED_PARAMETER"}
 }
