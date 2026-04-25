@@ -81,6 +81,41 @@ func TestErrorWrapping(t *testing.T) {
 	}
 }
 
+// TestWrapErrorf pins formatted-message wrapping at API boundaries.
+// fmt.Errorf("context: %w", err) doesn't carry a SQLSTATE the way
+// errors.As does on *Error — WrapErrorf produces one that does.
+func TestWrapErrorf(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("io failure")
+	e := WrapErrorf(cause, ErrCodeInternalError, "context %s for table=%q", "load", "orders")
+
+	if e.Code != ErrCodeInternalError {
+		t.Fatalf("Code: got %q, want %q", e.Code, ErrCodeInternalError)
+	}
+	if e.Message != `context load for table="orders"` {
+		t.Fatalf("formatted Message: got %q", e.Message)
+	}
+	if !errors.Is(e, cause) {
+		t.Fatal("WrapErrorf should propagate %%w chain")
+	}
+}
+
+// TestNewErrorf pins the formatted constructor for the no-cause
+// case. Symmetric to NewError.
+func TestNewErrorf(t *testing.T) {
+	t.Parallel()
+	e := NewErrorf(ErrCodeUndefinedTable, "unknown table %q in schema %s", "T", "S")
+	if e.Code != ErrCodeUndefinedTable {
+		t.Fatalf("Code: got %q", e.Code)
+	}
+	if e.Message != `unknown table "T" in schema S` {
+		t.Fatalf("formatted Message: got %q", e.Message)
+	}
+	if e.Cause != nil {
+		t.Fatal("NewErrorf should leave Cause nil")
+	}
+}
+
 func TestErrorWithContextImmutable(t *testing.T) {
 	t.Parallel()
 	base := NewError(ErrCodeUndefinedColumn, "unknown column 'foo'")
