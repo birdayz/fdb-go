@@ -169,6 +169,19 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	if got := tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)}); got != nil {
 		t.Fatalf("type mismatch: got %v", got)
 	}
+
+	// Float arithmetic returns nil per the seed contract — int-only
+	// Evaluate, full coercion waits on the Phase 4.0 Type hierarchy
+	// port. Pin this so a future "fix" doesn't silently start
+	// returning float results that downstream callers don't expect.
+	floatOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	if got := floatOp.Evaluate(map[string]any{"a": float64(1.5), "b": float64(2.5)}); got != nil {
+		t.Fatalf("float arith should be nil: got %v", got)
+	}
+	mixedOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	if got := mixedOp.Evaluate(map[string]any{"a": int64(1), "b": float64(2.5)}); got != nil {
+		t.Fatalf("mixed int/float arith should be nil: got %v", got)
+	}
 }
 
 func TestBooleanValue(t *testing.T) {
