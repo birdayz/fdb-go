@@ -1193,7 +1193,7 @@ func TestWriteWriteConflict(t *testing.T) {
 	t.Logf("tx2 conflict (expected): %v", err)
 
 	// Use OnError to reset tx2 for retry.
-	if retryErr := tx2.OnError(err); retryErr != nil {
+	if retryErr := tx2.OnError(ctx, err); retryErr != nil {
 		t.Fatalf("OnError should allow retry: %v", retryErr)
 	}
 

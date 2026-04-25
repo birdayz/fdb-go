@@ -195,7 +195,7 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 
 			// Wrap like real code does: fmt.Errorf("context: %w", fdbErr)
 			err := fmt.Errorf("commit: %w", &wire.FDBError{Code: tc.code})
-			result := tx.OnError(err)
+			result := tx.OnError(context.Background(), err)
 			if result != nil {
 				t.Errorf("code %d should be retryable, got: %v", tc.code, result)
 			}
@@ -216,7 +216,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 		t.Parallel()
 		tx := &Transaction{}
 		err := fmt.Errorf("something: %w", &wire.FDBError{Code: 9999})
-		if tx.OnError(err) == nil {
+		if tx.OnError(context.Background(), err) == nil {
 			t.Error("expected non-retryable")
 		}
 		if txState(tx.state.Load()) != txStateErrored {
@@ -227,7 +227,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 	t.Run("non_fdb_error", func(t *testing.T) {
 		t.Parallel()
 		tx := &Transaction{}
-		if tx.OnError(fmt.Errorf("network timeout")) == nil {
+		if tx.OnError(context.Background(), fmt.Errorf("network timeout")) == nil {
 			t.Error("non-FDB error should be non-retryable")
 		}
 	})
@@ -238,7 +238,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 		// OnError should treat it as non-retryable.
 		tx := &Transaction{}
 		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1062})
-		if tx.OnError(err) == nil {
+		if tx.OnError(context.Background(), err) == nil {
 			t.Error("wrong_shard_server should not be retryable at Transact level")
 		}
 	})
@@ -249,7 +249,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 		// Matches C++ where OnError(1031) returns 1031.
 		tx := &Transaction{}
 		err := fmt.Errorf("timed out: %w", &wire.FDBError{Code: ErrTransactionTimedOut})
-		if tx.OnError(err) == nil {
+		if tx.OnError(context.Background(), err) == nil {
 			t.Error("transaction_timed_out should not be retryable")
 		}
 		if txState(tx.state.Load()) != txStateErrored {
@@ -275,7 +275,7 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 
 	// Simulate commit_unknown_result.
 	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrCommitUnknownResult})
-	result := tx.OnError(err)
+	result := tx.OnError(context.Background(), err)
 	if result != nil {
 		t.Fatalf("1021 should be retryable, got: %v", result)
 	}
@@ -307,7 +307,7 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	tx2 := &Transaction{}
 	tx2.Set([]byte("key"), []byte("val"))
 	err2 := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrNotCommitted})
-	tx2.OnError(err2)
+	tx2.OnError(context.Background(), err2)
 	if len(tx2.readConflicts) != 0 {
 		t.Errorf("1020 should NOT inject self-conflicts, got %d readConflicts", len(tx2.readConflicts))
 	}
@@ -326,7 +326,7 @@ func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
 	copy(originalWriteConflicts, tx.writeConflicts)
 
 	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrClusterVersionChanged})
-	result := tx.OnError(err)
+	result := tx.OnError(context.Background(), err)
 	if result != nil {
 		t.Fatalf("1039 should be retryable, got: %v", result)
 	}

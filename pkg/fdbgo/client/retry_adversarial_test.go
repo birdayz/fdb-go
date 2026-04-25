@@ -9,8 +9,10 @@ package client
 // - Error categorization (retryable vs non-retryable)
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
@@ -33,7 +35,7 @@ func TestOnError_SelfConflicting_CommitUnknown(t *testing.T) {
 		KeyRange{Begin: []byte("m"), End: []byte("n")},
 	)
 
-	err := tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrCommitUnknownResult})
 	if err != nil {
 		t.Fatalf("OnError should retry commit_unknown_result, got: %v", err)
 	}
@@ -69,7 +71,7 @@ func TestOnError_SelfConflicting_ClusterVersionChanged(t *testing.T) {
 		KeyRange{Begin: []byte("k"), End: []byte("l")},
 	)
 
-	err := tx.OnError(&wire.FDBError{Code: ErrClusterVersionChanged})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrClusterVersionChanged})
 	if err != nil {
 		t.Fatalf("OnError should retry cluster_version_changed, got: %v", err)
 	}
@@ -93,7 +95,7 @@ func TestOnError_NotCommitted_NoSelfConflicting(t *testing.T) {
 		KeyRange{Begin: []byte("a"), End: []byte("b")},
 	)
 
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err != nil {
 		t.Fatalf("OnError should retry not_committed, got: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestOnError_NonRetryablePassthrough(t *testing.T) {
 	tx := &Transaction{}
 
 	// Error 2000 (client_invalid_operation) is not retryable.
-	err := tx.OnError(&wire.FDBError{Code: 2000})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: 2000})
 	if err == nil {
 		t.Fatal("expected non-retryable error to pass through")
 	}
@@ -128,7 +130,7 @@ func TestOnError_NonFDBError(t *testing.T) {
 
 	tx := &Transaction{}
 
-	err := tx.OnError(errors.New("some network error"))
+	err := tx.OnError(context.Background(), errors.New("some network error"))
 	if err == nil {
 		t.Fatal("expected non-FDB error to pass through")
 	}
@@ -145,17 +147,17 @@ func TestOnError_RetryCount(t *testing.T) {
 	tx := &Transaction{}
 
 	// 3 retries with different error types.
-	tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if tx.retryCount != 1 {
 		t.Errorf("retryCount after not_committed: got %d, want 1", tx.retryCount)
 	}
 
-	tx.OnError(&wire.FDBError{Code: ErrTransactionTooOld})
+	tx.OnError(context.Background(), &wire.FDBError{Code: ErrTransactionTooOld})
 	if tx.retryCount != 2 {
 		t.Errorf("retryCount after transaction_too_old: got %d, want 2", tx.retryCount)
 	}
 
-	tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+	tx.OnError(context.Background(), &wire.FDBError{Code: ErrCommitUnknownResult})
 	if tx.retryCount != 3 {
 		t.Errorf("retryCount after commit_unknown: got %d, want 3", tx.retryCount)
 	}
@@ -182,7 +184,7 @@ func TestOnError_ResourceConstrainedErrors(t *testing.T) {
 
 	for _, code := range resourceConstrained {
 		tx := &Transaction{}
-		err := tx.OnError(&wire.FDBError{Code: code})
+		err := tx.OnError(context.Background(), &wire.FDBError{Code: code})
 		if err != nil {
 			t.Errorf("OnError(%d) should retry, got: %v", code, err)
 		}
@@ -219,7 +221,7 @@ func TestOnError_AllRetryableErrors(t *testing.T) {
 		t.Run(codeToString(code), func(t *testing.T) {
 			t.Parallel()
 			tx := &Transaction{}
-			err := tx.OnError(&wire.FDBError{Code: code})
+			err := tx.OnError(context.Background(), &wire.FDBError{Code: code})
 			if err != nil {
 				t.Errorf("OnError(%d) should retry, got: %v", code, err)
 			}
@@ -323,5 +325,98 @@ func TestIntersectConflictRanges_Adversarial(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestOnError_RespectsContextCancellation verifies that a cancelled ctx
+// interrupts the retry backoff sleep instead of blocking for the full
+// delay (up to 30s for resource-constrained errors). Regression test for
+// the bare-time.Sleep bug noted in the 2026-04-25 client quality audit.
+//
+// Pre-fix: bare time.Sleep blocked for the full backoff regardless of ctx.
+// Post-fix: select { ctx.Done() | time.After } returns ctx.Err() promptly.
+func TestOnError_RespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	// Force a multi-second backoff so the cancel-vs-sleep race is
+	// unambiguous. nextBackoff returns tx.backoff*rand for the first call,
+	// so seeding tx.backoff = 4s gives a first delay of 0–4s (mean ~2s).
+	// ErrThrottledHotShard is in the resource-constrained bucket whose
+	// internal cap is 30s, NOT maxRetryDelay — but we set maxRetryDelay
+	// = 4s as belt-and-suspenders in case the bucket dispatch ever changes.
+	tx := &Transaction{}
+	tx.backoff = 4 * time.Second
+	tx.maxRetryDelay = 4 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelAt := 20 * time.Millisecond
+	go func() {
+		time.Sleep(cancelAt)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := tx.OnError(ctx, &wire.FDBError{Code: ErrThrottledHotShard})
+	elapsed := time.Since(start)
+
+	// Allow generous slack on slow CI: cancellation should be observed
+	// within ~10x cancelAt. Pre-fix this test would block ~2 seconds.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("OnError did not respect ctx cancellation: blocked %v (cancel fired at %v)", elapsed, cancelAt)
+	}
+	if err == nil {
+		t.Fatal("OnError should return ctx.Err() on cancellation, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("OnError returned %v, want context.Canceled", err)
+	}
+}
+
+// TestBackoffSleep_ZeroDuration verifies the d<=0 fast path returns
+// ctx.Err() (nil for live ctx) without allocating a timer.
+func TestBackoffSleep_ZeroDuration(t *testing.T) {
+	t.Parallel()
+	if err := backoffSleep(context.Background(), 0); err != nil {
+		t.Errorf("d=0 with live ctx: got %v, want nil", err)
+	}
+	if err := backoffSleep(context.Background(), -1*time.Second); err != nil {
+		t.Errorf("d=-1s with live ctx: got %v, want nil", err)
+	}
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := backoffSleep(cctx, 0); err == nil {
+		t.Error("d=0 with cancelled ctx: got nil, want context.Canceled")
+	}
+}
+
+// BenchmarkOnError_NonRetryable measures OnError fast-path overhead (no sleep).
+// Sanity-check that the ctx parameter and error-state-store are negligible.
+func BenchmarkOnError_NonRetryable(b *testing.B) {
+	tx := &Transaction{}
+	ctx := context.Background()
+	plainErr := errors.New("non-fdb error") // takes the no-FDBError fast path
+	b.ResetTimer()
+	for b.Loop() {
+		_ = tx.OnError(ctx, plainErr)
+	}
+}
+
+// BenchmarkBackoffSleep_NoSleep measures the d<=0 short-circuit cost.
+func BenchmarkBackoffSleep_NoSleep(b *testing.B) {
+	ctx := context.Background()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = backoffSleep(ctx, 0)
+	}
+}
+
+// BenchmarkBackoffSleep_TinyDelay measures the timer + select cost for
+// a 1-nanosecond delay (timer fires immediately). This is the per-call
+// overhead added vs the old bare time.Sleep.
+func BenchmarkBackoffSleep_TinyDelay(b *testing.B) {
+	ctx := context.Background()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = backoffSleep(ctx, 1)
 	}
 }

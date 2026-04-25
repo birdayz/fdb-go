@@ -7,14 +7,53 @@ package types
 // (end, empty) instead of (begin, end), saving len(begin)+4 bytes.
 // On deserialization, begin is reconstructed from end[:-1].
 //
-// This matches the C++ behavior exactly. Without this, our serialized
-// output is larger than C++ by 4+ bytes per single-key KeyRangeRef.
+// Both directions must be customized — without an override on
+// UnmarshalFromReader, single-key-optimized payloads emitted by C++
+// (or by our own writer) read back as Begin/End swapped. Caught by
+// FuzzSplitRangeRequest_RoundTrip 2026-04-25.
 
 import (
 	"encoding/binary"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
+
+// UnmarshalFromReader replaces the generated reader to invert the
+// single-key serialize optimization. Slot 1 (End) being empty signals
+// "first slot carries End; reconstruct Begin = End[:-1]".
+//
+// Matches C++ KeyRangeRef::serialize deserialization branch.
+func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
+	var first, second []byte
+	if r.FieldPresent(KeyRangeRefSlotBegin) {
+		first = r.ReadBytes(KeyRangeRefSlotBegin)
+	}
+	if r.FieldPresent(KeyRangeRefSlotEnd) {
+		second = r.ReadBytes(KeyRangeRefSlotEnd)
+	}
+	if len(second) == 0 && len(first) > 0 {
+		// Single-key optimization: writer emitted (end, empty).
+		// Reconstruct: begin = end[:-1], end = first.
+		// Note: m.Begin and m.End share the same backing array — same
+		// zero-copy convention as the rest of wire deserialization.
+		// Callers that mutate must copy first.
+		m.Begin = first[:len(first)-1]
+		m.End = first
+	} else {
+		m.Begin = first
+		m.End = second
+	}
+}
+
+// UnmarshalFDB constructs a Reader and delegates.
+func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	m.UnmarshalFromReader(r)
+	return nil
+}
 
 // equalsKeyAfter returns true if begin + '\x00' == end.
 // C++ FDBTypes.h: equalsKeyAfter(begin, end)

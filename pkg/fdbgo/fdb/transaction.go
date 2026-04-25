@@ -323,9 +323,9 @@ func (tr Transaction) Cancel() {
 // includes the retry delay — the delay runs when Get() is called, not when
 // OnError() is called. This matches Apple binding semantics.
 func (tr Transaction) OnError(e Error) FutureNil {
-	inner := tr.t.inner
+	inner, ctx := tr.t.inner, tr.t.ctx
 	return newFutureNil(func() error {
-		err := inner.OnError(&wire.FDBError{Code: e.Code})
+		err := inner.OnError(ctx, &wire.FDBError{Code: e.Code})
 		return convertError(err)
 	})
 }

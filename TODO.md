@@ -87,6 +87,12 @@ Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope i
 
 - [ ] **C++ ConnectionID dedup** — C++ FlowTransport deduplicates bidirectional connections via ConnectionID exchange in ConnectPacket. Not needed as a pure client (we never accept incoming connections). Implement only if we add server-side functionality.
 
+- [ ] **Isolated unit tests for big core files** — `transaction.go` (1464 lines, state machine + isolation + conflict detection), `transport/conn.go` (847 lines, framing + multiplexing), `topology.go` (112 lines, shard placement parsing). Today exercised only via integration tests; subtle bugs surface only under specific multi-client load. `grv.go` partially closed by swingshift-50 (`grv_test.go` covers the adaptive-refresh math, 7 cases). Sized 2 shifts. From the 2026-04-25 client quality audit.
+
+- [ ] **Multi-shard test matrix** — 24 sub-tests in `multishard_test.go` against ONE 3-process container with `max_shard_bytes=50KB`. No systematic variation of shard count (2/4/8), no chaos during rebalancing, no continuation-token correctness check across shard splits with different shard sizes. Historic bug pattern (PR #61 connection pool, #1 selector loop) suggests this surface is under-covered. Sized 1 shift. From the 2026-04-25 client quality audit.
+
+- [ ] **Round-trip fuzz: KeyServerLocationsReply + GetKeyValuesReply + remaining nested types** — swingshift-50 added round-trip for SplitRangeRequest/Reply, WaitMetricsRequest, WatchValueRequest (and found the KeyRangeRef single-key bug). Same shape would extend coverage to the remaining production wire types not in the differential oracle. From the 2026-04-25 client quality audit.
+
 ---
 
 ## MEDIUM
@@ -183,6 +189,10 @@ Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope i
 
 - [ ] **Throughput benchmarks fail on single-node testcontainer** — `BenchmarkThroughputInsertBatchConcurrent128` overwhelms FDB testcontainer. Two issues: (1) GRV cache staleness causes "record store does not exist" on first goroutines after setup; fix: `InvalidateGRVCache()` after store creation. (2) FDB 5-second tx timeout under load → "context deadline exceeded". Fix: skip in `just bench` or use larger cluster. `just bench-ci` excludes throughput benchmarks and works fine.
 
+- [ ] **Per-PR binding-stress smoke + runner deps** — first attempt at adding a `just binding-stress 5 100` step to PR CI hit a real env blocker: the Hetzner self-hosted runner is missing Python `foundationdb` package + `libfdb_c.so`. Same blocker breaks the nightly-fuzz `binding-stress` job (silently failing/cancelled for weeks). Fix: provision runner with `pip install foundationdb==<matching version>` AND `apt install foundationdb-clients`, OR have `cmd/fdb-binding-stress` install/extract them on first run. Then re-add the smoke step (5 seeds × 100 ops, ~30s) to ci.yml. Closes a 24h hide-window between nightly runs. Sized 1 shift. From the 2026-04-25 client quality audit.
+
+- [ ] **FDB client error-code coverage** — `pkg/fdbgo/client/errors.go` defines ~24 codes vs C++ `error_definitions.h`'s ~200. Unknown codes return generic strings; retry classification works for everything we've seen but would silently mishandle a new retryable code if FDB 7.4+ adds one. Fix: port the full table with retry classification. Sized 1 shift. From the 2026-04-25 client quality audit.
+
 ### Proto / metadata
 
 - [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages). Regenerate via `just generate`.
@@ -234,6 +244,13 @@ Only used by Java's query planner / SQL layer, not by core CRUD. Defer until Cas
 - [ ] **LRU eviction for location cache** — currently random eviction. Works well at 600K entries.
 - [ ] **Pre-allocate prefixed keys** — commit path tenant prefix allocation. Not on read hot path.
 
+### Pure Go FDB Client — quality polish (2026-04-25 audit)
+
+- [ ] **Split `transaction.go` (1464 lines)** — mixes state machine, retry, conflict tracking, options, version handling. Pure refactor into ~400 LOC files makes the next bug easier to find. Sized 1 shift.
+- [ ] **Document accepted divergences inline** — items #6 (auto-reset), #18 (wrong-shard cap), #19 (GRV refresh, partially closed by swingshift-50) need inline comments at the divergent code site explaining why we differ. Today the rationales live only in handovers / commit messages.
+- [ ] **Backoff jitter** — `commitDummyTransaction` exponential backoff lacks jitter. Under coordinated retry storms (multiple clients hitting same hot range) all clients back off in lockstep. Add ±10% jitter.
+- [ ] **`unsafe.Pointer` `[]Mutation`→`[]MutationRef` reinterpret guard** — `commitpath.go:235` uses `unsafe.Pointer` cast guarded by compile-time size assertion. A field-order or alignment change breaks silently. Add a startup runtime assert that compares one mutation's serialized bytes both ways, OR replace with a typed conversion loop and benchmark the actual cost.
+
 ### Record Layer — niche
 
 - [ ] **FDBReverseDirectoryCache** — reverse prefix→name caching (~496 lines Java).
@@ -252,6 +269,14 @@ Only used by Java's query planner / SQL layer, not by core CRUD. Defer until Cas
 ## Recently shipped (last ~5 shifts)
 
 Trimmed history list for context. Older completions trimmed; full history in git log.
+
+### Pure Go FDB Client quality batch (2026-04-25, PR #114)
+
+Three audit findings from a 2026-04-25 deep-research pass on `pkg/fdbgo/`. Verdict: production-grade for FDB 7.3.x; gaps are in test concentration, cadence, and ergonomic papercuts — not in wire correctness or transaction semantics.
+
+- [x] **Adaptive `backgroundGrvUpdater` matching C++** — verbatim port of C++ `release-7.3` `NativeAPI.actor.cpp`. Replaces fixed 50ms ticker with `next = max(1ms, min(MAX_PROXY_CONTACT_LAG - elapsed, (MAX_VERSION_CACHE_LAG - grvDelay) - elapsed))` and EMA `grvDelay = (grvDelay + latency)/2`. Cuts GRV RPC rate ~2× under low load. Math extracted to pure-function `nextGRVRefreshDelay` with 7 table-driven tests. `backgroundRefresher` also fixed to use `b.priority` instead of always `grvPriorityDefault` so BATCH/DEFAULT batchers refresh their respective ratekeeper state.
+- [x] **Round-trip fuzz for 4 wire types not in the differential oracle** — SplitRangeRequest, SplitRangeReply, WaitMetricsRequest, WatchValueRequest. Found a real bug: `KeyRangeRef`'s custom MarshalFDB applies C++'s single-key serialize optimization (`begin+'\x00' == end` → write `(end, empty)`) but the generated `UnmarshalFromReader` didn't invert it. Single-key payloads from servers parsed with Begin/End **swapped**. Fixed in custom code; same fix applied to `ParseKeyRangeRefStringVector`; generator updated to skip duplicate-method emission. ~100M fuzz executions clean post-fix.
+- [x] **`OnError` + `commitDummyTransaction` respect ctx during retry backoff** — `OnError(err)` → `OnError(ctx, err)`; bare `time.Sleep(d)` → `select { ctx.Done() | timer.C }` via `backoffSleep` helper. Pre-fix: cancelled ctx blocked for full backoff (up to 30s for resource-constrained errors). Post-fix: returns `context.Canceled` within ~50ms.
 
 ### swingshift-50 (2026-04-25)
 
