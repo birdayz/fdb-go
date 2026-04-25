@@ -294,6 +294,77 @@ func TestScalarFnInt64Arg_RejectsString(t *testing.T) {
 	}
 }
 
+// TestEvalScalarFunction_PI pins the math.Pi constant. Mirrors
+// embedded.scalar_functions.go's PI: zero-arg, returns float64
+// math.Pi. Wrong arity (1+ args) declines with nil.
+func TestEvalScalarFunction_PI(t *testing.T) {
+	t.Parallel()
+	if got := evalScalarFunction("PI", []any{}); got != math.Pi {
+		t.Fatalf("PI(): got %v, want math.Pi", got)
+	}
+	// Wrong arity declines.
+	if got := evalScalarFunction("PI", []any{int64(1)}); got != nil {
+		t.Fatalf("PI(1): expected decline, got %v", got)
+	}
+}
+
+// TestEvalScalarFunction_LEN pins LEN as an alias for LENGTH —
+// matches embedded.scalar_functions.go's "LENGTH" / "LEN" /
+// "CHAR_LENGTH" / "CHARACTER_LENGTH" group. Both return rune count.
+func TestEvalScalarFunction_LEN(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		fn   string
+		arg  string
+		want int64
+	}{
+		{"LEN", "hello", 5},
+		{"LENGTH", "hello", 5},           // confirm parity with the existing alias
+		{"LEN", "héllo", 5},              // multi-byte rune count
+		{"LEN", "", 0},                   // empty string
+		{"CHAR_LENGTH", "héllo", 5},      // sanity check
+		{"CHARACTER_LENGTH", "héllo", 5}, // sanity check
+	}
+	for _, tc := range cases {
+		got := evalScalarFunction(tc.fn, []any{tc.arg})
+		if got != tc.want {
+			t.Fatalf("%s(%q): got %v, want %v", tc.fn, tc.arg, got, tc.want)
+		}
+	}
+}
+
+// TestEvalScalarFunction_CONCAT_WS pins MySQL-semantics CONCAT_WS:
+// first arg is the separator; NULL separator → NULL result; NULL
+// elements are skipped (don't appear in output, but separator
+// adjusts accordingly).
+func TestEvalScalarFunction_CONCAT_WS(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args []any
+		want any
+	}{
+		{"three strings", []any{"-", "a", "b", "c"}, "a-b-c"},
+		{"empty separator", []any{"", "a", "b", "c"}, "abc"},
+		{"NULL separator → NULL", []any{nil, "a", "b"}, nil},
+		{"NULL elements skipped", []any{",", "a", nil, "b"}, "a,b"},
+		{"all-NULL elements", []any{",", nil, nil}, ""},
+		{"single non-NULL", []any{"-", "only"}, "only"},
+		{"non-string separator declines", []any{int64(1), "a", "b"}, nil},
+		{"no elements", []any{","}, ""},
+		{"mixed types", []any{"|", "x", int64(42), true}, "x|42|true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := evalScalarFunction("CONCAT_WS", tc.args)
+			if got != tc.want {
+				t.Fatalf("CONCAT_WS(%v): got %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 // ----- EXP / LN / LOG ---------------------------------------------------
 
 func TestEvalScalarFunction_EXP(t *testing.T) {

@@ -655,7 +655,7 @@ func evalScalarFunction(name string, args []any) any {
 			return nil
 		}
 		return strings.ToLower(s)
-	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH":
+	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
 		// Rune count — matches embedded.scalar_functions.go's LENGTH
 		// (utf8.RuneCountInString) so plan-time fold and runtime eval
 		// agree. The seed coerces []byte the same way for symmetry
@@ -746,6 +746,12 @@ func evalScalarFunction(name string, args []any) any {
 			return int64(result)
 		}
 		return result
+	case "PI":
+		// Zero-arg constant. Mirrors embedded.scalar_functions.go's PI.
+		if len(args) != 0 {
+			return nil
+		}
+		return math.Pi
 	case "SQRT":
 		if len(args) != 1 || args[0] == nil {
 			return nil
@@ -829,14 +835,39 @@ func evalScalarFunction(name string, args []any) any {
 	case "CONCAT":
 		// MySQL/Postgres semantics — NULL skips, doesn't poison.
 		// Pinned by trim_concat.yaml; the embedded path uses the
-		// same rule. CONCAT_WS would need a separator arg and is
-		// deferred to a follow-up.
+		// same rule.
 		var b strings.Builder
 		for _, a := range args {
 			if a == nil {
 				continue
 			}
 			b.WriteString(fmt.Sprintf("%v", a))
+		}
+		return b.String()
+	case "CONCAT_WS":
+		// CONCAT With Separator — MySQL semantics: first arg is the
+		// separator (NULL → result is NULL); remaining args are
+		// concatenated with the separator between non-NULL values.
+		// NULL elements are skipped (different from CONCAT in
+		// Postgres, which poisons; matches embedded.scalar_functions.go).
+		if len(args) < 1 || args[0] == nil {
+			return nil
+		}
+		sep, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		var b strings.Builder
+		first := true
+		for _, a := range args[1:] {
+			if a == nil {
+				continue
+			}
+			if !first {
+				b.WriteString(sep)
+			}
+			b.WriteString(fmt.Sprintf("%v", a))
+			first = false
 		}
 		return b.String()
 	case "SUBSTRING", "SUBSTR":
