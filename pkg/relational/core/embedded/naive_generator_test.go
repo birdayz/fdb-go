@@ -434,3 +434,46 @@ func TestNaiveGenerator_Explain_WarmCache_DeleteWhere(t *testing.T) {
 		t.Fatal("DELETE should be an update plan")
 	}
 }
+
+// `EXPLAIN <query>` warm-cache path: the EXPLAIN dispatcher delegates
+// to computeExplainText, which goes through buildLogicalPlanForQuery
+// WithCatalog — same predicate-tree form as the bare SELECT case.
+// Pins that EXPLAIN doesn't drop the catalog-aware path.
+func TestNaiveGenerator_Explain_ExplainWarmCacheSelect(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	p := helperPlanWithCachedMd(t,
+		"EXPLAIN SELECT * FROM Order WHERE price > 5",
+		md, "/main", "public")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("expected EXPLAIN: prefix, got %q", got)
+	}
+	if !strings.Contains(got, "PRICE > 5") {
+		t.Fatalf("expected predicate-tree form (PRICE > 5), got %q", got)
+	}
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN must not be an update plan even on warm cache")
+	}
+}
+
+// `EXPLAIN UPDATE` warm-cache path — verifies the catalog-aware
+// builder fires for UPDATE inside EXPLAIN, AND that no actual
+// mutation is attempted (would panic without an FDB connection).
+func TestNaiveGenerator_Explain_ExplainWarmCacheUpdate(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	p := helperPlanWithCachedMd(t,
+		"EXPLAIN UPDATE Order SET price = 99 WHERE price > 5",
+		md, "/main", "public")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("expected EXPLAIN: prefix, got %q", got)
+	}
+	if !strings.Contains(got, "PRICE > 5") {
+		t.Fatalf("expected predicate-tree form (PRICE > 5), got %q", got)
+	}
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN UPDATE must not be an update plan — returns rows, not RowsAffected")
+	}
+}
