@@ -1115,6 +1115,54 @@ func TestWalkExpression_FloatLiteral(t *testing.T) {
 	}
 }
 
+// DIV operator — `a DIV b` is MySQL's integer-truncated division.
+// At the seed it shares OpDiv with `/` because ArithmeticValue.Evaluate
+// is int64-only and Go's `/` on int64 already truncates toward zero.
+// Once float arithmetic lands DIV will need a distinct op. The test
+// pins the dispatch + evaluation parity; if a future change splits
+// the op, this test breaks loudly rather than silently changing
+// truncation semantics.
+func TestWalkExpression_IntegerDivOperator(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	for _, sql := range []string{"id / 7", "id DIV 7"} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			av, ok := v.(*cascades.ArithmeticValue)
+			if !ok {
+				t.Fatalf("expected *ArithmeticValue, got %T", v)
+			}
+			if av.Op != cascades.OpDiv {
+				t.Fatalf("Op: got %v, want OpDiv", av.Op)
+			}
+			// 23 / 7 → 3 (truncated toward zero).
+			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(3) {
+				t.Errorf("23/7: got %v, want 3", got)
+			}
+			// -23 / 7 → -3 (Go truncates toward zero).
+			if got := av.Evaluate(map[string]any{"ID": int64(-23)}); got != int64(-3) {
+				t.Errorf("-23/7: got %v, want -3", got)
+			}
+			// Divide by zero → nil (NULL).
+			divZero := &cascades.ArithmeticValue{
+				Op:    cascades.OpDiv,
+				Left:  &cascades.ConstantValue{Value: int64(5), Typ: cascades.TypeInt},
+				Right: &cascades.ConstantValue{Value: int64(0), Typ: cascades.TypeInt},
+			}
+			if got := divZero.Evaluate(nil); got != nil {
+				t.Errorf("5/0: got %v, want nil", got)
+			}
+		})
+	}
+}
+
 // MOD operator — walker produces an ArithmeticValue with Op=OpMod
 // for both `a % b` and `a MOD b` syntactic forms. Eval returns
 // truncated-toward-zero modulo (Go's `%`); MOD by zero returns nil

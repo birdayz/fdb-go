@@ -372,7 +372,15 @@ func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticO
 		return cascades.OpSub, nil
 	case mo.STAR() != nil:
 		return cascades.OpMul, nil
-	case mo.DIVIDE() != nil:
+	case mo.DIVIDE() != nil, mo.DIV() != nil:
+		// `/` and `DIV` both map to OpDiv. In MySQL `DIV` is the
+		// integer-truncated division operator while `/` is true
+		// division — at the seed they coincide because
+		// ArithmeticValue.Evaluate is int64-only and Go's `/` on int64
+		// already truncates toward zero. Once the Type hierarchy
+		// lands and float arithmetic is wired, DIV will need its own
+		// op (OpIntDiv) that coerces float operands to int before
+		// dividing.
 		return cascades.OpDiv, nil
 	case mo.MOD() != nil, mo.MODULE() != nil:
 		// MOD / MODULE / `%` all map to OpMod. The grammar treats
