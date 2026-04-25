@@ -518,6 +518,220 @@ func TestArrayType_Nested(t *testing.T) {
 	}
 }
 
+// --- EnumType tests -----------------------------------------------
+
+// TestEnumType_Shape pins constructor + getters + Equals.
+func TestEnumType_Shape(t *testing.T) {
+	t.Parallel()
+	e := NewEnumType("Suit", false, []EnumValue{
+		{Name: "SPADES", Number: 0},
+		{Name: "HEARTS", Number: 1},
+		{Name: "DIAMONDS", Number: 2},
+		{Name: "CLUBS", Number: 3},
+	})
+	if e.Code() != TypeCodeEnum {
+		t.Errorf("Code(): got %v", e.Code())
+	}
+	if e.IsNullable() {
+		t.Errorf("IsNullable(): got true")
+	}
+	if e.EnumName != "Suit" {
+		t.Errorf("Name: got %q", e.EnumName)
+	}
+	if len(e.Values) != 4 {
+		t.Fatalf("Values len: got %d", len(e.Values))
+	}
+	// Equals: same shape.
+	e2 := NewEnumType("Suit", false, []EnumValue{
+		{Name: "SPADES", Number: 0},
+		{Name: "HEARTS", Number: 1},
+		{Name: "DIAMONDS", Number: 2},
+		{Name: "CLUBS", Number: 3},
+	})
+	if !e.Equals(e2) {
+		t.Errorf("Equals: identical enums should be equal")
+	}
+	// Not equal: different name.
+	if e.Equals(NewEnumType("Other", false, e.Values)) {
+		t.Errorf("Equals: different name should differ")
+	}
+	// Not equal: different ordering of values.
+	eReorder := NewEnumType("Suit", false, []EnumValue{
+		{Name: "HEARTS", Number: 1},
+		{Name: "SPADES", Number: 0},
+		{Name: "DIAMONDS", Number: 2},
+		{Name: "CLUBS", Number: 3},
+	})
+	if e.Equals(eReorder) {
+		t.Errorf("Equals: reordered values should differ (declared order matters)")
+	}
+}
+
+// TestEnumType_Lookup pins LookupValueByName / LookupValueByNumber.
+func TestEnumType_Lookup(t *testing.T) {
+	t.Parallel()
+	e := NewEnumType("Suit", false, []EnumValue{
+		{Name: "SPADES", Number: 0},
+		{Name: "HEARTS", Number: 1},
+	})
+	v, ok := e.LookupValueByName("HEARTS")
+	if !ok || v.Number != 1 {
+		t.Errorf("LookupValueByName(HEARTS): got %v, %v", v, ok)
+	}
+	if _, ok := e.LookupValueByName(""); ok {
+		t.Errorf("LookupValueByName(\"\") should not match")
+	}
+	if _, ok := e.LookupValueByName("MISSING"); ok {
+		t.Errorf("LookupValueByName(MISSING) should not match")
+	}
+	v, ok = e.LookupValueByNumber(0)
+	if !ok || v.Name != "SPADES" {
+		t.Errorf("LookupValueByNumber(0): got %v, %v", v, ok)
+	}
+	if _, ok := e.LookupValueByNumber(99); ok {
+		t.Errorf("LookupValueByNumber(99) should not match")
+	}
+}
+
+// TestNewEnumType_RejectsDuplicates pins both name + number dup
+// detection. Either duplicate panics.
+func TestNewEnumType_RejectsDuplicates(t *testing.T) {
+	t.Parallel()
+	t.Run("duplicate-name", func(t *testing.T) {
+		t.Parallel()
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on duplicate name")
+			}
+		}()
+		_ = NewEnumType("Bad", false, []EnumValue{
+			{Name: "X", Number: 0},
+			{Name: "X", Number: 1},
+		})
+	})
+	t.Run("duplicate-number", func(t *testing.T) {
+		t.Parallel()
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic on duplicate number")
+			}
+		}()
+		_ = NewEnumType("Bad", false, []EnumValue{
+			{Name: "X", Number: 0},
+			{Name: "Y", Number: 0},
+		})
+	})
+}
+
+// TestEnumType_String pins the rendered form.
+func TestEnumType_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    Type
+		want string
+	}{
+		{
+			NewEnumType("Suit", false, []EnumValue{
+				{Name: "S", Number: 0}, {Name: "H", Number: 1},
+			}),
+			"Suit ENUM<S=0, H=1> NOT NULL",
+		},
+		{
+			NewEnumType("", true, []EnumValue{{Name: "A", Number: 42}}),
+			"ENUM<A=42> NULL",
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.t.String(); got != tc.want {
+			t.Errorf("String(): got %q, want %q", got, tc.want)
+		}
+	}
+}
+
+// --- WithNullability tests ----------------------------------------
+
+// TestWithNullability_Primitive pins that flipping nullability on a
+// canonical singleton returns the OTHER canonical singleton (so
+// pointer-equality stays useful for fast checks). Re-flipping
+// returns the original singleton.
+func TestWithNullability_Primitive(t *testing.T) {
+	t.Parallel()
+	if WithNullability(NotNullInt, true) != NullableInt {
+		t.Errorf("NotNullInt → nullable should return NullableInt singleton")
+	}
+	if WithNullability(NullableInt, false) != NotNullInt {
+		t.Errorf("NullableInt → not-nullable should return NotNullInt singleton")
+	}
+	// Same nullability returns input unchanged (pointer-equal).
+	if WithNullability(NotNullInt, false) != NotNullInt {
+		t.Errorf("NotNullInt → not-nullable (no-op) should return same instance")
+	}
+	// All canonical singletons round-trip.
+	for _, sing := range []Type{
+		NotNullBoolean, NullableBoolean,
+		NotNullString, NullableString,
+		NotNullLong, NullableLong,
+		NotNullDouble, NullableDouble,
+		NotNullBytes, NullableBytes,
+	} {
+		flipped := WithNullability(sing, !sing.IsNullable())
+		if flipped.IsNullable() == sing.IsNullable() {
+			t.Errorf("WithNullability didn't flip for %v", sing)
+		}
+		if !WithNullability(flipped, sing.IsNullable()).Equals(sing) {
+			t.Errorf("Round-trip lost shape for %v", sing)
+		}
+	}
+}
+
+// TestWithNullability_Structured pins behavior for RecordType,
+// ArrayType, EnumType — flipping returns a NEW instance with the
+// same payload but flipped Nullable.
+func TestWithNullability_Structured(t *testing.T) {
+	t.Parallel()
+	r := NewRecordType("R", false, []Field{{Name: "x", FieldType: NotNullLong, Ordinal: 0}})
+	rNullable := WithNullability(r, true)
+	if !rNullable.IsNullable() {
+		t.Errorf("Record: expected Nullable=true after flip")
+	}
+	rNullableR, ok := rNullable.(*RecordType)
+	if !ok {
+		t.Fatalf("Record: got %T, want *RecordType", rNullable)
+	}
+	if rNullableR.RecordName != r.RecordName || len(rNullableR.Fields) != len(r.Fields) {
+		t.Errorf("Record: shape changed")
+	}
+
+	a := NewArrayType(false, NotNullLong)
+	aNullable := WithNullability(a, true)
+	if !aNullable.IsNullable() {
+		t.Errorf("Array: expected Nullable=true")
+	}
+	if !aNullable.(*ArrayType).ElementType.Equals(NotNullLong) {
+		t.Errorf("Array: ElementType changed")
+	}
+
+	e := NewEnumType("E", false, []EnumValue{{Name: "X", Number: 0}})
+	eNullable := WithNullability(e, true)
+	if !eNullable.IsNullable() {
+		t.Errorf("Enum: expected Nullable=true")
+	}
+	if eNullable.(*EnumType).EnumName != "E" {
+		t.Errorf("Enum: name changed")
+	}
+}
+
+// TestWithNullability_Nil pins the nil-input safety contract.
+func TestWithNullability_Nil(t *testing.T) {
+	t.Parallel()
+	if WithNullability(nil, true) != nil {
+		t.Error("WithNullability(nil) should return nil")
+	}
+	if WithNullability(nil, false) != nil {
+		t.Error("WithNullability(nil) should return nil")
+	}
+}
+
 // TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
 // invariant for the value types the legacy enum actually
 // represents. NotNull bit is inferable from the round-trip target

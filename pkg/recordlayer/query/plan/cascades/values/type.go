@@ -536,6 +536,218 @@ func (a *ArrayType) String() string {
 	return "ARRAY<" + elemStr + ">" + suffix
 }
 
+// --- EnumType ------------------------------------------------------
+
+// EnumValue is one member of an EnumType. Mirrors Java's
+// Enum.EnumValue — a Name + Number pair where the Number is the
+// declared ordinal (matches the protobuf enum-value semantics).
+type EnumValue struct {
+	// Name is the enum member's identifier.
+	Name string
+	// Number is the declared ordinal (matches protobuf semantics —
+	// stable across schema evolution; renames are forbidden but
+	// repurposing a number is a hard breaking change).
+	Number int32
+}
+
+// Equals reports structural equality — Name + Number.
+func (e EnumValue) Equals(other EnumValue) bool {
+	return e.Name == other.Name && e.Number == other.Number
+}
+
+// EnumType is the Type impl for SQL ENUM columns. Mirrors Java's
+// Enum nested type. Carries an EnumName (the enum's type identifier)
+// plus an ordered list of EnumValues.
+//
+// Two EnumType instances are Equal iff their EnumName + Nullable
+// match AND their Values slice is element-wise equal.
+type EnumType struct {
+	// EnumName is the enum's type identifier — empty string for
+	// anonymous enums (rare in real schemas but legal).
+	EnumName string
+	// Nullable reports whether the enum column allows NULL.
+	Nullable bool
+	// Values are the declared enum members in declared order.
+	Values []EnumValue
+}
+
+// NewEnumType constructs an EnumType. The Values slice is
+// defensively copied. Panics on duplicate Name OR duplicate Number
+// within Values — both are schema-level errors per Java + protobuf.
+func NewEnumType(name string, nullable bool, values []EnumValue) *EnumType {
+	seenNames := make(map[string]struct{}, len(values))
+	seenNumbers := make(map[int32]struct{}, len(values))
+	out := make([]EnumValue, len(values))
+	for i, v := range values {
+		if _, dup := seenNames[v.Name]; dup {
+			panic("NewEnumType: duplicate enum value name " + v.Name)
+		}
+		seenNames[v.Name] = struct{}{}
+		if _, dup := seenNumbers[v.Number]; dup {
+			panic("NewEnumType: duplicate enum value number")
+		}
+		seenNumbers[v.Number] = struct{}{}
+		out[i] = v
+	}
+	return &EnumType{
+		EnumName: name,
+		Nullable: nullable,
+		Values:   out,
+	}
+}
+
+// Code implements Type — always TypeCodeEnum.
+func (*EnumType) Code() TypeCode { return TypeCodeEnum }
+
+// IsNullable implements Type.
+func (e *EnumType) IsNullable() bool { return e.Nullable }
+
+// Equals implements Type. Structural — name + nullable + values.
+func (e *EnumType) Equals(other Type) bool {
+	if other == nil {
+		return false
+	}
+	oe, ok := other.(*EnumType)
+	if !ok {
+		return false
+	}
+	if e.EnumName != oe.EnumName || e.Nullable != oe.Nullable {
+		return false
+	}
+	if len(e.Values) != len(oe.Values) {
+		return false
+	}
+	for i := range e.Values {
+		if !e.Values[i].Equals(oe.Values[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// String implements Type. Renders as
+// `[name] ENUM<v1=0, v2=1> [NOT NULL | NULL]`.
+func (e *EnumType) String() string {
+	var b []byte
+	if e.EnumName != "" {
+		b = append(b, e.EnumName...)
+		b = append(b, ' ')
+	}
+	b = append(b, "ENUM<"...)
+	for i, v := range e.Values {
+		if i > 0 {
+			b = append(b, ',', ' ')
+		}
+		b = append(b, v.Name...)
+		b = append(b, '=')
+		b = append(b, intToDec(int64(v.Number))...)
+	}
+	b = append(b, '>')
+	if e.Nullable {
+		b = append(b, " NULL"...)
+	} else {
+		b = append(b, " NOT NULL"...)
+	}
+	return string(b)
+}
+
+// LookupValueByName returns the enum value matching name plus a
+// found flag. Empty string returns (zero, false).
+func (e *EnumType) LookupValueByName(name string) (EnumValue, bool) {
+	if name == "" {
+		return EnumValue{}, false
+	}
+	for _, v := range e.Values {
+		if v.Name == name {
+			return v, true
+		}
+	}
+	return EnumValue{}, false
+}
+
+// LookupValueByNumber returns the enum value matching number plus
+// a found flag.
+func (e *EnumType) LookupValueByNumber(number int32) (EnumValue, bool) {
+	for _, v := range e.Values {
+		if v.Number == number {
+			return v, true
+		}
+	}
+	return EnumValue{}, false
+}
+
+// --- Nullability helpers ------------------------------------------
+
+// WithNullability returns a Type with the same shape as t but the
+// given nullability. For PrimitiveType it returns one of the
+// canonical singletons; for structured types it returns a new
+// instance. nil t returns nil. Mirrors Java's
+// Type.withNullability(boolean).
+//
+// Used by callers that derive a Type from a parent context (e.g.
+// "the result of LEFT JOIN's right side is the right table's row
+// type but nullable") without having to manually clone-and-mutate.
+func WithNullability(t Type, nullable bool) Type {
+	if t == nil {
+		return nil
+	}
+	if t.IsNullable() == nullable {
+		return t
+	}
+	switch tt := t.(type) {
+	case *PrimitiveType:
+		// Canonical singleton when one exists, else a fresh
+		// PrimitiveType.
+		switch tt.TypeCode {
+		case TypeCodeBoolean:
+			if nullable {
+				return NullableBoolean
+			}
+			return NotNullBoolean
+		case TypeCodeInt:
+			if nullable {
+				return NullableInt
+			}
+			return NotNullInt
+		case TypeCodeLong:
+			if nullable {
+				return NullableLong
+			}
+			return NotNullLong
+		case TypeCodeFloat:
+			if nullable {
+				return NullableFloat
+			}
+			return NotNullFloat
+		case TypeCodeDouble:
+			if nullable {
+				return NullableDouble
+			}
+			return NotNullDouble
+		case TypeCodeString:
+			if nullable {
+				return NullableString
+			}
+			return NotNullString
+		case TypeCodeBytes:
+			if nullable {
+				return NullableBytes
+			}
+			return NotNullBytes
+		}
+		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
+	case *RecordType:
+		return &RecordType{RecordName: tt.RecordName, Nullable: nullable, Fields: tt.Fields}
+	case *ArrayType:
+		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
+	case *EnumType:
+		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values}
+	}
+	// Unknown impl — fall back to whatever the original was. Future
+	// impls should add their own arm here.
+	return t
+}
+
 // ToValueType bridges the new Type back to the legacy ValueType.
 // LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
 // legacy enum doesn't distinguish widths). Structured types and
