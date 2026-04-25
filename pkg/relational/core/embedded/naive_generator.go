@@ -63,7 +63,7 @@ func NewExplainOnlyGenerator() query.Generator {
 // schema, and seeds the connection's SchemaCache. Subsequent
 // statements planned through the returned Generator route through the
 // `buildLogicalPlanFor*WithCatalog` paths so WHERE clauses appear as
-// real cascades.QueryPredicate trees in the Explain output.
+// real cascades.predicates.QueryPredicate trees in the Explain output.
 //
 // schemaDDL must contain exactly one CREATE SCHEMA TEMPLATE
 // statement. Multiple-statement DDL or any non-CREATE-SCHEMA-TEMPLATE
@@ -241,7 +241,7 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 				// When the session schema cache already holds the
 				// active schema, route through the catalog-aware
 				// builder so WHERE clauses become real
-				// cascades.QueryPredicate trees in the Explain
+				// cascades.predicates.QueryPredicate trees in the Explain
 				// output. Cold cache → text builder (deterministic
 				// fallback, never blocks on a catalog fetch).
 				if q := sel.Query(); q != nil {
@@ -402,7 +402,7 @@ func (g *naiveGenerator) planExplain(full antlrgen.IFullDescribeStatementContext
 // computeExplainText builds the plan-tree text for the inner
 // statement of an EXPLAIN. Routes through the catalog-aware builder
 // when the schema cache is warm (so WHERE clauses become
-// cascades.QueryPredicate trees) and falls back to the text builder
+// cascades.predicates.QueryPredicate trees) and falls back to the text builder
 // otherwise.
 func (g *naiveGenerator) computeExplainText(d *antlrgen.DescribeStatementsContext) string {
 	c := g.c

@@ -239,29 +239,8 @@ func (r *NotConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 }
 
-// predicateMatcher is the generic single-type matcher: type-asserts
-// `in` to T (any QueryPredicate concrete type) and binds the host on
-// success. Replaces 5 hand-written near-identical matchers
-// (notPredicateMatcher, comparisonPredicateMatcher, andPredicateMatcher,
-// orPredicateMatcher, valuePredicateMatcher).
-//
-// rootType is kept as a field rather than computed via reflect so
-// debug output stays cheap and the struct has non-zero size (no
-// zero-size-struct aliasing — see AnyValue at matcher.go:130-136).
-//
-// Each rule's `new...` factory returns a distinct allocation so
-// pointer-identity comparisons stay distinct across rule instances.
-type predicateMatcher[T predicates.QueryPredicate] struct {
-	rootType string
-}
-
-func (m *predicateMatcher[T]) RootType() string { return m.rootType }
-func (m *predicateMatcher[T]) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
-	if _, ok := in.(T); !ok {
-		return nil
-	}
-	return []*matching.PlannerBindings{outer.Bind(m, in)}
-}
+// predicateMatcher lives in rule.go alongside CascadesRule —
+// it's shared infrastructure used by every rule pattern.
 
 func newNotPredicateMatcher() *predicateMatcher[*predicates.NotPredicate] {
 	return &predicateMatcher[*predicates.NotPredicate]{rootType: "NotPredicate"}
