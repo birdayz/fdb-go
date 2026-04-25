@@ -144,6 +144,59 @@ func TestNormalizationRules_AppliesDeMorganThenSimplify(t *testing.T) {
 	}
 }
 
+// TestNormalizationRules_NestedNotDistributesRecursively pins that
+// the Simplify driver applies DeMorganRule at every NOT-level it
+// reaches:
+//
+//	NOT(AND(p, OR(q, r)))
+//	→ OR(NOT(p), NOT(OR(q, r)))   (top-level DeMorgan)
+//	→ OR(NOT(p), AND(NOT(q), NOT(r)))  (inner DeMorgan via child recursion)
+//
+// Without driver recursion, the inner NOT(OR) would survive. This
+// exercises the `recurse into children + re-simplify` arm of
+// simplifier.go.
+func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeString}
+	b := &FieldValue{Field: "b", Typ: TypeString}
+	c := &FieldValue{Field: "c", Typ: TypeString}
+	p := NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue("x")})
+	q := NewComparisonPredicate(b, Comparison{Type: ComparisonEquals, Operand: LiteralValue("y")})
+	r := NewComparisonPredicate(c, Comparison{Type: ComparisonEquals, Operand: LiteralValue("z")})
+
+	pred := NewNot(NewAnd(p, NewOr(q, r)))
+	got := Simplify(pred, NormalizationRules())
+
+	// After full distribution + NotComparisonRewrite:
+	// OR(p<>, AND(q<>, r<>))
+	or, ok := got.(*OrPredicate)
+	if !ok {
+		t.Fatalf("expected OrPredicate at top, got %T %s", got, got.Explain())
+	}
+	if len(or.SubPredicates) != 2 {
+		t.Fatalf("expected 2 OR children, got %d", len(or.SubPredicates))
+	}
+	// First child: p<>.
+	cp1, ok := or.SubPredicates[0].(*ComparisonPredicate)
+	if !ok || cp1.Comparison.Type != ComparisonNotEquals {
+		t.Fatalf("first OR child: expected ComparisonPredicate(<>), got %T %v", or.SubPredicates[0], cp1)
+	}
+	// Second child: AND(q<>, r<>).
+	innerAnd, ok := or.SubPredicates[1].(*AndPredicate)
+	if !ok {
+		t.Fatalf("second OR child: expected AndPredicate (inner DeMorgan), got %T", or.SubPredicates[1])
+	}
+	if len(innerAnd.SubPredicates) != 2 {
+		t.Fatalf("inner AND: expected 2 children, got %d", len(innerAnd.SubPredicates))
+	}
+	for i, sp := range innerAnd.SubPredicates {
+		cp, ok := sp.(*ComparisonPredicate)
+		if !ok || cp.Comparison.Type != ComparisonNotEquals {
+			t.Fatalf("inner AND child %d: expected ComparisonPredicate(<>), got %T", i, sp)
+		}
+	}
+}
+
 // TestNormalizationRules_NotOverAndProducesOr pins that NOT(AND(...))
 // distributes to OR(NOT...) under the normalisation rule set, while
 // the same input under DefaultSimplifyRules survives as NOT(AND(...)).
