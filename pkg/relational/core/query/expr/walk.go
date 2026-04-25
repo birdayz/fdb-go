@@ -84,20 +84,22 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		// scalar-function catalogue is ported.
 		return r.walkFunctionCall(a.FunctionCall())
 	case *antlrgen.PreparedStatementParameterAtomContext:
-		// `?` (positional) or `:name` (named) prepared-statement
-		// parameter. Surfaces as a cascades.ParameterValue — Operand
-		// composes through the comparison resolver, IsConstantValue
-		// declines, ExplainValue renders `?N` / `:name` for plan-cache
-		// keying.
+		// `?` (positional) or `?name` / `$name` (named, per the
+		// grammar's NAMED_PARAMETER rule [?$][A-Za-z]…) prepared-
+		// statement parameter. Surfaces as a cascades.ParameterValue
+		// — Operand composes through the comparison resolver,
+		// IsConstantValue declines, ExplainValue renders `?N` /
+		// `?name` for plan-cache keying.
 		return r.walkPreparedParameter(a.PreparedStatementParameter())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
 }
 
-// walkPreparedParameter handles the `?` / `:name` placeholder that
-// appears as a PreparedStatementParameterAtom. The grammar's
-// PreparedStatementParameter rule accepts either QUESTION (positional,
-// rendered as a single `?`) or NAMED_PARAMETER (`:foo`).
+// walkPreparedParameter handles the `?` / `?name` (or `$name`)
+// placeholder that appears as a PreparedStatementParameterAtom. The
+// grammar's PreparedStatementParameter rule accepts either QUESTION
+// (positional, rendered as a single `?`) or NAMED_PARAMETER (the
+// `[?$][A-Za-z][A-Za-z0-9_/]*` token form, e.g. `?foo` / `$foo`).
 //
 // Positional parameters fold to the ordinal of this `?` within the
 // statement; numbering is left to the caller (the walker has no
