@@ -520,6 +520,31 @@ func TestEvalScalarFunction_RIGHT(t *testing.T) {
 
 // ----- SimplifyValue composition ----------------------------------------
 
+// TestSimplifyValue_PI_DoesNotFold pins the CURRENT (deliberately
+// conservative) behaviour: PI() has zero arguments, and
+// IsConstantValue returns false for composites with no children
+// (line 240ish of values.go: "Unknown leaf — conservatively not
+// constant"). So SimplifyValue leaves the ScalarFunctionValue
+// intact and the runtime evaluator computes math.Pi per call.
+//
+// The runtime fold via evalScalarFunction works (see
+// TestEvalScalarFunction_PI), so SELECT PI() returns the right
+// answer — it just doesn't pre-compute at plan time.
+//
+// A future "pure no-arg function" registry would let PI() (and
+// any future E(), TAU(), etc.) fold at plan time. When that lands,
+// flip this test to assert the fold happens. Other no-arg functions
+// like NOW() / CURRENT_TIMESTAMP() would deliberately STAY
+// non-folding (impure), so the registry needs to be selective.
+func TestSimplifyValue_PI_DoesNotFold(t *testing.T) {
+	t.Parallel()
+	v := NewScalarFunctionValue("PI", TypeFloat)
+	out := SimplifyValue(v)
+	if _, ok := out.(*ScalarFunctionValue); !ok {
+		t.Fatalf("expected ScalarFunctionValue (no fold for zero-arg fns), got %T — if a purity registry was added, update this test to assert *ConstantValue with math.Pi", out)
+	}
+}
+
 // TestSimplifyValue_FoldsSecondBatchScalars composes the folding
 // path: a fully-constant ScalarFunctionValue tree of the new
 // functions folds straight to a ConstantValue at plan time.
@@ -563,6 +588,21 @@ func TestSimplifyValue_FoldsSecondBatchScalars(t *testing.T) {
 			NewScalarFunctionValue("REVERSE", TypeString,
 				&ConstantValue{Value: "abc", Typ: TypeString}),
 			"cba",
+		},
+		{
+			"LEN folds to int64 rune count",
+			NewScalarFunctionValue("LEN", TypeInt,
+				&ConstantValue{Value: "héllo", Typ: TypeString}),
+			int64(5),
+		},
+		{
+			"CONCAT_WS folds with skip-NULL",
+			NewScalarFunctionValue("CONCAT_WS", TypeString,
+				&ConstantValue{Value: "-", Typ: TypeString},
+				&ConstantValue{Value: "a", Typ: TypeString},
+				&NullValue{Typ: TypeUnknown},
+				&ConstantValue{Value: "c", Typ: TypeString}),
+			"a-c",
 		},
 	}
 	for _, tc := range cases {
