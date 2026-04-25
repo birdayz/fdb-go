@@ -281,6 +281,10 @@ func TestCastValue(t *testing.T) {
 	if got := infToInt.Evaluate(nil); got != nil {
 		t.Fatalf("+Inf→int: expected nil, got %v", got)
 	}
+	negInfToInt := NewCastValue(&ConstantValue{Value: float64(math.Inf(-1)), Typ: TypeFloat}, TypeInt)
+	if got := negInfToInt.Evaluate(nil); got != nil {
+		t.Fatalf("-Inf→int: expected nil, got %v", got)
+	}
 
 	// Unknown conversion: int → bool via the reverse path is OK,
 	// but string → int isn't wired in the seed (returns nil).
