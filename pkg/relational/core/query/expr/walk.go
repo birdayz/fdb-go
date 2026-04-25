@@ -299,12 +299,24 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (ca
 
 // scalarFunctionResultType returns the result type of a seed scalar
 // function. Unknown name → (_, false) so the walker declines.
+//
+// Polymorphic returns (ABS / CEILING / FLOOR / ROUND / COALESCE /
+// NULLIF) carry TypeUnknown because the result type depends on the
+// input — int input stays int, float input stays float. Once the Type
+// hierarchy port lands the walker will infer per-arg types and surface
+// the precise result type instead.
 func scalarFunctionResultType(name string) (cascades.ValueType, bool) {
 	switch name {
-	case "UPPER", "LOWER":
+	case "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
+		"CONCAT", "SUBSTRING", "SUBSTR", "REPLACE":
 		return cascades.TypeString, true
 	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH":
 		return cascades.TypeInt, true
+	case "SQRT", "POWER", "POW":
+		return cascades.TypeFloat, true
+	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND",
+		"COALESCE", "NULLIF":
+		return cascades.TypeUnknown, true
 	}
 	return cascades.TypeUnknown, false
 }

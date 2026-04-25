@@ -88,6 +88,8 @@
 package cascades
 
 import (
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -664,8 +666,262 @@ func evalScalarFunction(name string, args []any) any {
 			return int64(len(v))
 		}
 		return nil
+	case "ABS":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		switch n := args[0].(type) {
+		case int64:
+			// MinInt64 abs overflows; embedded errors and we can't
+			// surface that from a fold path — decline (return nil)
+			// so the runtime evaluator handles it and reports the
+			// 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+			if n == math.MinInt64 {
+				return nil
+			}
+			if n < 0 {
+				return -n
+			}
+			return n
+		case float64:
+			return math.Abs(n)
+		}
+		return nil
+	case "FLOOR", "CEIL", "CEILING", "ROUND":
+		if len(args) < 1 || args[0] == nil {
+			return nil
+		}
+		var f float64
+		switch n := args[0].(type) {
+		case int64:
+			// Already an integer — short-circuit to mirror embedded.
+			return n
+		case float64:
+			f = n
+		default:
+			return nil
+		}
+		var result float64
+		switch name {
+		case "FLOOR":
+			result = math.Floor(f)
+		case "CEIL", "CEILING":
+			result = math.Ceil(f)
+		case "ROUND":
+			decimals := int64(0)
+			if len(args) >= 2 {
+				if args[1] == nil {
+					return nil
+				}
+				d, ok := scalarFnInt64Arg(args[1])
+				if !ok {
+					return nil
+				}
+				decimals = d
+			}
+			if decimals == 0 {
+				result = math.Round(f)
+			} else {
+				factor := math.Pow(10, float64(decimals))
+				result = math.Round(f*factor) / factor
+			}
+		}
+		// Match embedded's "return int64 if no fractional part" rule.
+		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+			return int64(result)
+		}
+		return result
+	case "SQRT":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		f, _, ok := toFloat64(args[0])
+		if !ok {
+			return nil
+		}
+		if f < 0 {
+			return nil
+		}
+		return math.Sqrt(f)
+	case "POWER", "POW":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		base, _, bok := toFloat64(args[0])
+		exp, _, eok := toFloat64(args[1])
+		if !bok || !eok {
+			return nil
+		}
+		result := math.Pow(base, exp)
+		if math.IsNaN(result) || math.IsInf(result, 0) {
+			return nil
+		}
+		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+			return int64(result)
+		}
+		return result
+	case "COALESCE":
+		// First non-nil argument wins; all nil → nil. Empty argument
+		// list also folds to nil so a degenerate `COALESCE()` doesn't
+		// error at plan time (the parser rejects zero-arg COALESCE
+		// anyway, so this is just a defensive default).
+		for _, a := range args {
+			if a != nil {
+				return a
+			}
+		}
+		return nil
+	case "NULLIF":
+		// NULLIF(a, b) → NULL when a == b; otherwise a. Compare via
+		// nullifEqual so int/float promotion mirrors embedded.
+		if len(args) != 2 {
+			return nil
+		}
+		if args[0] == nil {
+			return nil
+		}
+		if args[1] != nil && nullifEqual(args[0], args[1]) {
+			return nil
+		}
+		return args[0]
+	case "TRIM":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.TrimSpace(s)
+	case "LTRIM":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.TrimLeft(s, " \t\n\r")
+	case "RTRIM":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.TrimRight(s, " \t\n\r")
+	case "CONCAT":
+		// MySQL/Postgres semantics — NULL skips, doesn't poison.
+		// Pinned by trim_concat.yaml; the embedded path uses the
+		// same rule. CONCAT_WS would need a separator arg and is
+		// deferred to a follow-up.
+		var b strings.Builder
+		for _, a := range args {
+			if a == nil {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("%v", a))
+		}
+		return b.String()
+	case "SUBSTRING", "SUBSTR":
+		// SUBSTRING(s, pos[, len]) — 1-based position per SQL standard.
+		// pos < 1 normalises to 1 (matches embedded, MySQL).
+		if len(args) < 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		pos, ok := scalarFnInt64Arg(args[1])
+		if !ok {
+			return nil
+		}
+		if pos < 1 {
+			pos = 1
+		}
+		runes := []rune(s)
+		start := int(pos) - 1
+		if start >= len(runes) {
+			return ""
+		}
+		if len(args) >= 3 {
+			if args[2] == nil {
+				return nil
+			}
+			n, ok := scalarFnInt64Arg(args[2])
+			if !ok {
+				return nil
+			}
+			end := start + int(n)
+			if end > len(runes) {
+				end = len(runes)
+			}
+			if end < start {
+				return ""
+			}
+			return string(runes[start:end])
+		}
+		return string(runes[start:])
+	case "REPLACE":
+		// REPLACE(s, from, to). NULL `to` is treated as empty (matches
+		// embedded). Pure-string semantics — non-string args coerce
+		// via fmt.Sprintf("%v", v) for parity with the embedded path.
+		if len(args) != 3 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		toStr := ""
+		if args[2] != nil {
+			toStr = fmt.Sprintf("%v", args[2])
+		}
+		return strings.ReplaceAll(fmt.Sprintf("%v", args[0]), fmt.Sprintf("%v", args[1]), toStr)
 	}
 	return nil
+}
+
+// scalarFnInt64Arg coerces a numeric scalar-fn argument to int64.
+// Float coercion only succeeds for whole-valued floats — non-integer
+// floats decline so the fold path returns nil and the runtime
+// evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
+// the conversion error. Mirrors the strictness of
+// embedded.functions.ToIntegerArg.
+func scalarFnInt64Arg(v any) (int64, bool) {
+	if i, ok := toInt64(v); ok {
+		return i, true
+	}
+	if f, _, ok := toFloat64(v); ok && f == math.Trunc(f) &&
+		f >= math.MinInt64 && f <= math.MaxInt64 {
+		return int64(f), true
+	}
+	return 0, false
+}
+
+// nullifEqual is the equality test used by NULLIF's plan-time fold.
+// Mirrors embedded.functions.CompareValues for the int/float promotion
+// case while staying conservative (declines on mixed-type comparisons
+// the seed Type hierarchy can't model).
+func nullifEqual(a, b any) bool {
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			return av == bv
+		case float64:
+			return float64(av) == bv
+		}
+	case float64:
+		switch bv := b.(type) {
+		case int64:
+			return av == float64(bv)
+		case float64:
+			return av == bv
+		}
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	}
+	return false
 }
 
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a
