@@ -127,5 +127,6 @@ func DefaultSimplifyRules() []CascadesRule {
 		NewAndAbsorbOrRule(),
 		NewOrAbsorbAndRule(),
 		NewNotComparisonRewriteRule(),
+		NewValuePredicateConstantFoldRule(),
 	}
 }
