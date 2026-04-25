@@ -6,18 +6,21 @@ package embedded
 // SELECT-list expression evaluated per row by evalExpr. When the
 // expression is row-context-independent (`SELECT 1+2 FROM t`,
 // `SELECT UPPER('hi'), price FROM t`), evaluating it on every row is
-// pure waste. foldConstantProjections walks each slot through the
+// pure waste. foldConstantProjections walks each slot through an
 // expr → cascades.Value walker, runs cascades.SimplifyValue, and when
 // the simplified node is constant per IsConstantValue, evaluates it
 // once and stores the Go value in projConstFolded[i]. Per-row consumers
 // (select_query_full.go proto path, cte_scan.go map path) check the
 // slot before calling evalExpr.
 //
-// Best-effort throughout. A walker error, an unsupported expression
-// shape, or a non-constant simplified Value silently leaves the slot
-// unset and the per-row evaluator handles the projection. Catalog miss
-// or nil metadata short-circuits the whole pass — without metadata we
-// can't build a Resolver that resolves table sources.
+// Architecture (post-RFC-025 leak closure): the routing logic in
+// foldConstantProjectionsWith takes the walker + folder via injected
+// interfaces (`expr.ExpressionResolver` + `cascades.ExpressionFolder`)
+// rather than constructing them inline. The thin entry-point
+// `foldConstantProjections` builds the production deps via
+// buildProjectionResolver + cascades.DefaultFolder and forwards. Tests
+// call the With form with fakes — they assert routing behaviour
+// without standing up a real catalog or metadata.
 
 import (
 	"strings"
@@ -37,17 +40,38 @@ type projectionFold struct {
 	present bool
 }
 
-// foldConstantProjections is best-effort plan-time constant folding
-// over sq.projExprs. Sets sq.projConstFolded[i].present for each slot
-// that simplifies to a constant Value. Already-folded slots are
-// preserved on a re-call (idempotent across the second-pass dispatchers
-// in execSelectQuery).
+// foldConstantProjections is the production entry point. Builds the
+// real Resolver from `md` + the seed semantic stack, builds the
+// production folder from cascades.DefaultFolder, and delegates to
+// foldConstantProjectionsWith for the actual routing work.
+//
+// Best-effort: nil sq, empty projExprs, or nil md short-circuits.
+// Likewise a catalog-lookup miss inside buildProjectionResolver
+// returns nil and the pass becomes a no-op.
 func foldConstantProjections(sq *selectQuery, md *recordlayer.RecordMetaData) {
 	if sq == nil || len(sq.projExprs) == 0 || md == nil {
 		return
 	}
 	resolver := buildProjectionResolver(sq, md)
 	if resolver == nil {
+		return
+	}
+	foldConstantProjectionsWith(sq, resolver, cascades.DefaultFolder())
+}
+
+// foldConstantProjectionsWith is the testable core. Routes each
+// projExpr through the supplied resolver + folder. Callers get to
+// inject fakes that return canned answers — the routing logic
+// (already-folded slots are preserved, the slice grows when needed,
+// resolver errors and folder declines silently leave the slot unset)
+// can then be exercised against a fake without setting up the real
+// catalog stack.
+//
+// Idempotent: re-calling preserves already-folded slots so the
+// second-pass dispatchers in execSelectQuery don't clobber prior
+// work.
+func foldConstantProjectionsWith(sq *selectQuery, resolver expr.ExpressionResolver, folder cascades.ExpressionFolder) {
+	if sq == nil || len(sq.projExprs) == 0 || resolver == nil || folder == nil {
 		return
 	}
 	if sq.projConstFolded == nil {
@@ -65,8 +89,7 @@ func foldConstantProjections(sq *selectQuery, md *recordlayer.RecordMetaData) {
 		if err != nil {
 			continue
 		}
-		simplified := cascades.SimplifyValue(v)
-		val, ok := cascades.EvaluateConstant(simplified)
+		val, ok := folder.Fold(v)
 		if !ok {
 			continue
 		}

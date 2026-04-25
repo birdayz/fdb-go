@@ -78,6 +78,7 @@ go_test(
         "logical_predicate_test.go",
         "naive_generator_test.go",
         "order_by_test.go",
+        "projection_fold_isolated_test.go",
         "projection_fold_test.go",
     ],
     embed = [":embedded"],
