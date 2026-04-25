@@ -825,6 +825,32 @@ func TestEvaluateConstant(t *testing.T) {
 	}
 }
 
+// TestAggregateValue_Type_UnknownOpIsTypeUnknown pins the default
+// arm of AggregateValue.Type — a hand-constructed AggregateValue with
+// an out-of-range Op (e.g. AggInvalid or any future-but-unknown
+// enum value) returns TypeUnknown rather than panicking. The proper
+// constructor NewAggregateValue rejects AggInvalid, but this test
+// pins the fall-through arm for raw struct-construction.
+func TestAggregateValue_Type_UnknownOpIsTypeUnknown(t *testing.T) {
+	t.Parallel()
+	a := &AggregateValue{Op: AggInvalid, Operand: &FieldValue{Field: "x", Typ: TypeInt}}
+	if got := a.Type(); got != TypeUnknown {
+		t.Fatalf("AggInvalid.Type() = %v, want TypeUnknown", got)
+	}
+}
+
+// TestAggregateValue_Type_SumWithoutOperandFallsBackToTypeInt pins
+// the seed contract: SUM/MIN/MAX/AVG with no Operand defaults to
+// TypeInt. Unusual shape (the proper constructor demands an operand)
+// but the fall-through is part of the function's documented behavior.
+func TestAggregateValue_Type_SumWithoutOperandFallsBackToTypeInt(t *testing.T) {
+	t.Parallel()
+	a := &AggregateValue{Op: AggSum, Operand: nil}
+	if got := a.Type(); got != TypeInt {
+		t.Fatalf("Sum without operand: got %v, want TypeInt", got)
+	}
+}
+
 // TestEvaluateConstant_PanicRecovers pins the defence-in-depth
 // recover() in EvaluateConstant. A Value whose IsConstantValue says
 // "yes" (composite with all-constant children) but whose Evaluate

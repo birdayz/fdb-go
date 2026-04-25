@@ -293,6 +293,39 @@ func TestPredicateSize(t *testing.T) {
 	}
 }
 
+// TestValuePredicate_Explain_NilValue pins the defensive branch:
+// ValuePredicate{Value: nil}.Explain returns "<nil-value>" rather
+// than panicking. Plan-tree rendering must stay total — a malformed
+// predicate has to render to *something* so the explain output isn't
+// truncated mid-tree.
+func TestValuePredicate_Explain_NilValue(t *testing.T) {
+	t.Parallel()
+	vp := &ValuePredicate{Value: nil}
+	if got := vp.Explain(); got != "<nil-value>" {
+		t.Fatalf("ValuePredicate{Value:nil}.Explain() = %q, want \"<nil-value>\"", got)
+	}
+}
+
+// TestValueNamesEqual_NilSafety pins the both-nil-equal / one-nil-not-
+// equal contract used by PredicateEquals across nil Value fields.
+// Reaches valueNamesEqual via PredicateEquals on ValuePredicate.
+func TestValueNamesEqual_NilSafety(t *testing.T) {
+	t.Parallel()
+	withNil := &ValuePredicate{Value: nil}
+	alsoNil := &ValuePredicate{Value: nil}
+	withVal := &ValuePredicate{Value: &FieldValue{Field: "x", Typ: TypeInt}}
+
+	if !PredicateEquals(withNil, alsoNil) {
+		t.Fatal("two ValuePredicate{Value:nil} should be equal")
+	}
+	if PredicateEquals(withNil, withVal) {
+		t.Fatal("nil-Value vs non-nil-Value ValuePredicate should NOT be equal")
+	}
+	if PredicateEquals(withVal, withNil) {
+		t.Fatal("symmetric: non-nil-Value vs nil-Value ValuePredicate should NOT be equal")
+	}
+}
+
 // PredicateEquals: structural-equality across predicate shapes.
 func TestPredicateEquals(t *testing.T) {
 	t.Parallel()
