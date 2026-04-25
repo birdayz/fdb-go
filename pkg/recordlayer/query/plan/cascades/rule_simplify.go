@@ -233,21 +233,32 @@ func (r *NotConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 }
 
-// notPredicateMatcher: `_ bool` forces non-zero struct size so
-// distinct allocations don't collide as map keys (zero-size-struct
-// gotcha at AnyValue, matcher.go:130-136). No nonce-counter is
-// needed; the struct's identity is its pointer.
-type notPredicateMatcher struct{ _ bool }
-
-func newNotPredicateMatcher() *notPredicateMatcher {
-	return &notPredicateMatcher{}
+// predicateMatcher is the generic single-type matcher: type-asserts
+// `in` to T (any QueryPredicate concrete type) and binds the host on
+// success. Replaces 5 hand-written near-identical matchers
+// (notPredicateMatcher, comparisonPredicateMatcher, andPredicateMatcher,
+// orPredicateMatcher, valuePredicateMatcher).
+//
+// rootType is kept as a field rather than computed via reflect so
+// debug output stays cheap and the struct has non-zero size (no
+// zero-size-struct aliasing — see AnyValue at matcher.go:130-136).
+//
+// Each rule's `new...` factory returns a distinct allocation so
+// pointer-identity comparisons stay distinct across rule instances.
+type predicateMatcher[T QueryPredicate] struct {
+	rootType string
 }
-func (*notPredicateMatcher) RootType() string { return "NotPredicate" }
-func (m *notPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
-	if _, ok := in.(*NotPredicate); !ok {
+
+func (m *predicateMatcher[T]) RootType() string { return m.rootType }
+func (m *predicateMatcher[T]) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
+	if _, ok := in.(T); !ok {
 		return nil
 	}
 	return []*PlannerBindings{outer.Bind(m, in)}
+}
+
+func newNotPredicateMatcher() *predicateMatcher[*NotPredicate] {
+	return &predicateMatcher[*NotPredicate]{rootType: "NotPredicate"}
 }
 
 // --- AndDedupRule / OrDedupRule ------------------------------------
@@ -415,53 +426,18 @@ func constantLiteral(v Value) (any, bool) {
 	return EvaluateConstant(v)
 }
 
-// comparisonPredicateMatcher: `_ bool` forces non-zero size, no
-// nonce-counter needed — see notPredicateMatcher for rationale.
-type comparisonPredicateMatcher struct{ _ bool }
-
-func newComparisonPredicateMatcher() *comparisonPredicateMatcher {
-	return &comparisonPredicateMatcher{}
-}
-func (*comparisonPredicateMatcher) RootType() string { return "ComparisonPredicate" }
-func (m *comparisonPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
-	if _, ok := in.(*ComparisonPredicate); !ok {
-		return nil
-	}
-	return []*PlannerBindings{outer.Bind(m, in)}
+func newComparisonPredicateMatcher() *predicateMatcher[*ComparisonPredicate] {
+	return &predicateMatcher[*ComparisonPredicate]{rootType: "ComparisonPredicate"}
 }
 
 // --- Predicate matchers -------------------------------------------
 
-// andPredicateMatcher / orPredicateMatcher are minimal Instance-like
-// matchers over *AndPredicate / *OrPredicate. The `_ bool` field
-// keeps each struct non-zero-sized so distinct rule instances'
-// matchers don't alias as map keys in PlannerBindings (zero-size-
-// struct gotcha at AnyValue, matcher.go:130-136).
-
-type andPredicateMatcher struct{ _ bool }
-
-func newAndPredicateMatcher() *andPredicateMatcher {
-	return &andPredicateMatcher{}
-}
-func (*andPredicateMatcher) RootType() string { return "AndPredicate" }
-func (m *andPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
-	if _, ok := in.(*AndPredicate); !ok {
-		return nil
-	}
-	return []*PlannerBindings{outer.Bind(m, in)}
+func newAndPredicateMatcher() *predicateMatcher[*AndPredicate] {
+	return &predicateMatcher[*AndPredicate]{rootType: "AndPredicate"}
 }
 
-type orPredicateMatcher struct{ _ bool }
-
-func newOrPredicateMatcher() *orPredicateMatcher {
-	return &orPredicateMatcher{}
-}
-func (*orPredicateMatcher) RootType() string { return "OrPredicate" }
-func (m *orPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
-	if _, ok := in.(*OrPredicate); !ok {
-		return nil
-	}
-	return []*PlannerBindings{outer.Bind(m, in)}
+func newOrPredicateMatcher() *predicateMatcher[*OrPredicate] {
+	return &predicateMatcher[*OrPredicate]{rootType: "OrPredicate"}
 }
 
 // --- NotComparisonRewriteRule --------------------------------------

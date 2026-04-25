@@ -68,20 +68,6 @@ func (r *ValuePredicateConstantFoldRule) OnMatch(call *RuleCall) {
 	}
 }
 
-// The `_ bool` field forces non-zero struct size so two
-// `new(valuePredicateMatcher)` allocations land at distinct heap
-// addresses (see AnyValue at matcher.go:130-136 for the zero-size-
-// struct gotcha). No nonce is needed for actual identity tracking.
-type valuePredicateMatcher struct{ _ bool }
-
-func newValuePredicateMatcher() *valuePredicateMatcher {
-	return &valuePredicateMatcher{}
-}
-
-func (*valuePredicateMatcher) RootType() string { return "ValuePredicate" }
-func (m *valuePredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
-	if _, ok := in.(*ValuePredicate); !ok {
-		return nil
-	}
-	return []*PlannerBindings{outer.Bind(m, in)}
+func newValuePredicateMatcher() *predicateMatcher[*ValuePredicate] {
+	return &predicateMatcher[*ValuePredicate]{rootType: "ValuePredicate"}
 }
