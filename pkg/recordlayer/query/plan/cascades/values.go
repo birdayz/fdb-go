@@ -609,12 +609,21 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 				return int64(1)
 			}
 			return int64(0)
+		case float64:
+			// SQL CAST AS INT truncates toward zero. NaN / ±Inf
+			// fall through to nil (UNKNOWN-at-Value-layer).
+			if val != val || val > 1<<62 || val < -(1<<62) {
+				return nil
+			}
+			return int64(val)
 		}
 	case TypeBool:
 		switch val := v.(type) {
 		case bool:
 			return val
 		case int64:
+			return val != 0
+		case float64:
 			return val != 0
 		}
 	case TypeString:
@@ -623,6 +632,9 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		}
 		if i, ok := v.(int64); ok {
 			return uitoa(uint64(i))
+		}
+		if f, ok := v.(float64); ok {
+			return strconv.FormatFloat(f, 'g', -1, 64)
 		}
 	case TypeFloat:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote

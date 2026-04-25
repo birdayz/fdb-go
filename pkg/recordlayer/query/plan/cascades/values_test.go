@@ -1,6 +1,9 @@
 package cascades
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // Static interface assertions.
 var (
@@ -220,6 +223,50 @@ func TestCastValue(t *testing.T) {
 	nullC := NewCastValue(&ConstantValue{Value: nil, Typ: TypeInt}, TypeString)
 	if got := nullC.Evaluate(nil); got != nil {
 		t.Fatalf("NULL cast: got %v", got)
+	}
+
+	// Float source casts.
+	// int → float
+	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeFloat)
+	if got := intToFloat.Evaluate(nil); got != float64(5) {
+		t.Fatalf("int→float: got %v", got)
+	}
+	// float → int (truncates toward zero)
+	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: TypeFloat}, TypeInt)
+	if got := floatToInt.Evaluate(nil); got != int64(3) {
+		t.Fatalf("3.9→int: got %v", got)
+	}
+	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: TypeFloat}, TypeInt)
+	if got := floatToIntNeg.Evaluate(nil); got != int64(-3) {
+		t.Fatalf("-3.9→int: got %v", got)
+	}
+	// float → bool: 0.0 = false, non-zero = true
+	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
+	if got := floatToBool0.Evaluate(nil); got != false {
+		t.Fatalf("0.0→bool: got %v", got)
+	}
+	floatToBoolNZ := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: TypeFloat}, TypeBool)
+	if got := floatToBoolNZ.Evaluate(nil); got != true {
+		t.Fatalf("0.5→bool: got %v", got)
+	}
+	// float → string
+	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: TypeFloat}, TypeString)
+	if got := floatToStr.Evaluate(nil); got != "3.14" {
+		t.Fatalf("3.14→string: got %v", got)
+	}
+	// float → float (verbatim)
+	floatToFloat := NewCastValue(&ConstantValue{Value: float64(2.5), Typ: TypeFloat}, TypeFloat)
+	if got := floatToFloat.Evaluate(nil); got != float64(2.5) {
+		t.Fatalf("float→float: got %v", got)
+	}
+	// NaN / Inf → nil for int target (out-of-range).
+	nanToInt := NewCastValue(&ConstantValue{Value: float64(math.NaN()), Typ: TypeFloat}, TypeInt)
+	if got := nanToInt.Evaluate(nil); got != nil {
+		t.Fatalf("NaN→int: expected nil, got %v", got)
+	}
+	infToInt := NewCastValue(&ConstantValue{Value: float64(math.Inf(1)), Typ: TypeFloat}, TypeInt)
+	if got := infToInt.Evaluate(nil); got != nil {
+		t.Fatalf("+Inf→int: expected nil, got %v", got)
 	}
 
 	// Unknown conversion: int → bool via the reverse path is OK,
