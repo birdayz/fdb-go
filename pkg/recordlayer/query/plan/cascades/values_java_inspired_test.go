@@ -1,0 +1,281 @@
+package cascades
+
+// Java-test-suite-inspired unit tests for the Value hierarchy.
+//
+// These ports take the parameterized-table style of Java's
+// fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/
+// query/plan/cascades/{ArithmeticValueTest,BooleanValueTest}.java but
+// keep within our seed's surface — int64-only ArithmeticValue
+// evaluation, no Type hierarchy promotion yet, no Bindings /
+// EvaluationContext machinery. Cross-type coercion cases (Java
+// promotes long↔int, float↔double, etc.) are deliberately omitted
+// until Phase 4.0 ports the Type hierarchy. The tests will then
+// extend naturally to the broader surface — same pattern, more rows.
+//
+// Test discipline goal (per RFC-025): each Value subtype gets parameterised
+// coverage that runs in <100ms with no FDB / no testcontainer / no
+// conformance server. When Phase 1 splits this file into
+// `pkg/recordlayer/query/plan/cascades/values/`, these tests move with
+// the source files; only the import path changes.
+
+import (
+	"math"
+	"testing"
+)
+
+// ----- ArithmeticValue ---------------------------------------------------
+
+// TestArithmeticValue_BinaryOps_Parameterised mirrors
+// ArithmeticValueTest.BinaryPredicateTestProvider: a flat table of
+// (op, left, right, want) cases so a regression in one operator
+// surfaces with the failing row visible.
+func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	b := &FieldValue{Field: "b", Typ: TypeInt}
+	cases := []struct {
+		name string
+		op   ArithmeticOp
+		l, r int64
+		want any
+	}{
+		// Java's "Arguments.of(List.of(INT_1, INT_1), AddFn(), 2, false)" line by line.
+		{"add 1+1", OpAdd, 1, 1, int64(2)},
+		{"add 0+0", OpAdd, 0, 0, int64(0)},
+		{"add neg+neg", OpAdd, -3, -4, int64(-7)},
+		{"add max-1+1 in range", OpAdd, math.MaxInt64 - 1, 1, int64(math.MaxInt64)},
+		{"sub 1-1", OpSub, 1, 1, int64(0)},
+		{"sub 10-3", OpSub, 10, 3, int64(7)},
+		{"sub 0 - max", OpSub, 0, math.MaxInt64, int64(-math.MaxInt64)},
+		{"mul 0", OpMul, 7, 0, int64(0)},
+		{"mul 1", OpMul, 12345, 1, int64(12345)},
+		{"mul -2 * 3", OpMul, -2, 3, int64(-6)},
+		{"mul -2 * -3", OpMul, -2, -3, int64(6)},
+		{"div 20/4", OpDiv, 20, 4, int64(5)},
+		{"div trunc-toward-zero +", OpDiv, 7, 2, int64(3)},
+		{"div trunc-toward-zero -", OpDiv, -7, 2, int64(-3)},
+		{"div by 1", OpDiv, math.MaxInt64, 1, int64(math.MaxInt64)},
+		{"mod 20%7", OpMod, 20, 7, int64(6)},
+		{"mod neg dividend", OpMod, -20, 7, int64(-6)}, // Go truncates toward zero, MySQL/Postgres parity
+		{"mod neg divisor", OpMod, 20, -7, int64(6)},
+		{"mod result-zero", OpMod, 21, 7, int64(0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
+			got := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			if got != tc.want {
+				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestArithmeticValue_NullPropagation_Deep pins NULL-propagation
+// through nested arithmetic — Java's test stresses this because the
+// Cascades simplifier folds NULL holes at multiple depths.
+// Our ArithmeticValue should propagate NULL through any depth so the
+// surrounding NullPropagationRule (Phase 4.5) has a stable contract
+// to rewrite against.
+func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	b := &FieldValue{Field: "b", Typ: TypeInt}
+	c := &FieldValue{Field: "c", Typ: TypeInt}
+	// (a + b) * c
+	tree := &ArithmeticValue{
+		Op:    OpMul,
+		Left:  &ArithmeticValue{Op: OpAdd, Left: a, Right: b},
+		Right: c,
+	}
+	cases := []struct {
+		name string
+		row  map[string]any
+		want any
+	}{
+		{"all-non-null", map[string]any{"a": int64(2), "b": int64(3), "c": int64(4)}, int64(20)},
+		{"a NULL", map[string]any{"a": nil, "b": int64(3), "c": int64(4)}, nil},
+		{"b NULL", map[string]any{"a": int64(2), "b": nil, "c": int64(4)}, nil},
+		{"c NULL", map[string]any{"a": int64(2), "b": int64(3), "c": nil}, nil},
+		{"all NULL", map[string]any{"a": nil, "b": nil, "c": nil}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tree.Evaluate(tc.row)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestArithmeticValue_DivByZero_AllOps pins the SQL-standard
+// nil-on-zero-divisor contract for both / and %. Java's test surfaces
+// these as ArithmeticException; we surface them as nil at the Value
+// layer so the surrounding ComparisonPredicate / projection layer
+// can map them to UNKNOWN per SQL §8.2.
+func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	b := &FieldValue{Field: "b", Typ: TypeInt}
+	for _, op := range []ArithmeticOp{OpDiv, OpMod} {
+		op := op
+		t.Run(op.Symbol(), func(t *testing.T) {
+			t.Parallel()
+			av := &ArithmeticValue{Op: op, Left: a, Right: b}
+			got := av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+			if got != nil {
+				t.Fatalf("%v by zero: got %v, want nil", op, got)
+			}
+		})
+	}
+}
+
+// TestArithmeticValue_TypeMismatch_NotPanics pins the seed contract:
+// ArithmeticValue silently returns nil on a type mismatch (string +
+// int, etc.) rather than panicking. This is the boundary between
+// "row data we received" (which could be anything) and "value we can
+// arithmetic on". Once Phase 4.0 lands typed comparisons, the
+// behaviour shifts to a typed error at parse time; the runtime still
+// must not panic.
+func TestArithmeticValue_TypeMismatch_NotPanics(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	b := &FieldValue{Field: "b", Typ: TypeInt}
+	cases := []struct {
+		name string
+		row  map[string]any
+	}{
+		{"string + int", map[string]any{"a": "foo", "b": int64(1)}},
+		{"int + string", map[string]any{"a": int64(1), "b": "foo"}},
+		{"bool + int", map[string]any{"a": true, "b": int64(1)}},
+		{"int + bool", map[string]any{"a": int64(1), "b": false}},
+		{"float + int", map[string]any{"a": float64(1.0), "b": int64(1)}}, // seed is int-only
+		{"int + float", map[string]any{"a": int64(1), "b": float64(1.0)}},
+		{"both float", map[string]any{"a": float64(1.5), "b": float64(2.5)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("ArithmeticValue.Evaluate panicked on %v: %v", tc.row, r)
+				}
+			}()
+			av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+			if got := av.Evaluate(tc.row); got != nil {
+				t.Fatalf("type mismatch %v: got %v, want nil", tc.row, got)
+			}
+		})
+	}
+}
+
+// ----- BooleanValue ------------------------------------------------------
+
+// TestBooleanValue_KleeneTriBool pins the three-valued logic
+// surface — true / false / nil-as-UNKNOWN — that BooleanValueTest
+// exercises in Java. Our seed BooleanValue keeps the literal as a
+// bool pointer; nil pointer renders UNKNOWN and Evaluate returns nil.
+func TestBooleanValue_KleeneTriBool(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		val  *bool
+		want any
+	}{
+		{"true literal", boolPtr(true), true},
+		{"false literal", boolPtr(false), false},
+		{"unknown literal", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			bv := &BooleanValue{Value: tc.val}
+			if got := bv.Evaluate(nil); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			if bv.Type() != TypeBool {
+				t.Fatalf("Type: got %v, want TypeBool", bv.Type())
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestBooleanValue_NewBooleanValueFactory pins NewBooleanValue's
+// equivalence with the literal constructor. Java has multiple
+// factory methods (LiteralValue<Boolean>, BooleanValue.True / False);
+// we have one factory + a literal struct, both surfaces should
+// behave identically.
+func TestBooleanValue_NewBooleanValueFactory(t *testing.T) {
+	t.Parallel()
+	if got := NewBooleanValue(true).Evaluate(nil); got != true {
+		t.Fatalf("NewBooleanValue(true): got %v", got)
+	}
+	if got := NewBooleanValue(false).Evaluate(nil); got != false {
+		t.Fatalf("NewBooleanValue(false): got %v", got)
+	}
+	// Verify factory and direct-struct paths produce equal Evaluate
+	// behaviour. Two separate factories should not diverge on the
+	// happy path even if internal pointer identities differ.
+	a := NewBooleanValue(true)
+	b := &BooleanValue{Value: boolPtr(true)}
+	if a.Evaluate(nil) != b.Evaluate(nil) {
+		t.Fatal("factory and literal produce divergent Evaluate")
+	}
+}
+
+// ----- CastValue ---------------------------------------------------------
+
+// TestCastValue_Identity_Parameterised mirrors Java's
+// CastValueTest.identity test cases — the cast is the identity when
+// the source and target types match. Our seed CastValue evaluates
+// CAST(int AS INTEGER) == the original int.
+func TestCastValue_Identity_Parameterised(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		v    any
+		typ  ValueType
+	}{
+		{"int → int", int64(42), TypeInt},
+		{"string → string", "hello", TypeString},
+		{"bool → bool", true, TypeBool},
+		{"float → float", float64(3.14), TypeFloat},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			lit := &ConstantValue{Value: tc.v, Typ: tc.typ}
+			c := NewCastValue(lit, tc.typ)
+			got := c.Evaluate(nil)
+			if got != tc.v {
+				t.Fatalf("identity cast: got %v, want %v", got, tc.v)
+			}
+		})
+	}
+}
+
+// TestCastValue_NullPropagation pins that CAST(NULL AS X) is NULL,
+// not the type's zero value. This matches Java's CastValueTest
+// nullPropagationTest and SQL §6.13 General Rule 1.
+func TestCastValue_NullPropagation(t *testing.T) {
+	t.Parallel()
+	for _, target := range []ValueType{TypeInt, TypeString, TypeBool, TypeFloat} {
+		target := target
+		t.Run(target.String(), func(t *testing.T) {
+			t.Parallel()
+			null := &NullValue{Typ: TypeUnknown}
+			c := NewCastValue(null, target)
+			if got := c.Evaluate(nil); got != nil {
+				t.Fatalf("CAST(NULL AS %v): got %v, want nil", target, got)
+			}
+			if c.Type() != target {
+				t.Fatalf("CastValue.Type after NULL propagation: got %v, want %v", c.Type(), target)
+			}
+		})
+	}
+}
