@@ -39,7 +39,7 @@ These block the Cascades port (`fdb-relational` Phase 2) or cross-language SQL c
 Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope is visible.
 
 - [~] **4.0 — Foundation types**
-  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values.go` — to be replaced.
+  - [ ] `Type` / `TypeRepository` / `Typed` — type inference + constraint propagation. Interim `ValueType` enum lives in `pkg/recordlayer/query/plan/cascades/values/values.go` — to be replaced.
   - [~] `Value` hierarchy — dayshift-46 seeded `Value` interface (with `Evaluate`) + 5 concrete types (Constant, Field, Arithmetic, Boolean, Cast). nightshift-48 + dayshift-49 added Promote, Null, Aggregate, QuantifiedObject, RecordConstructor, ParameterValue, ScalarFunctionValue. swingshift-50 added NotValue (Value-layer boolean negation, Kleene 3VL) + overflow-checked `ArithmeticValue.Evaluate` (ADD/SUB/MUL/DIV bounds-checked, MIN/-1 + MIN*-1 boundary cases — closes the divergence between fold-time and runtime semantics where the embedded executor's `ApplyMathOp` errors but the fold silently wrapped). Remaining: ~66 of Java's 77 value classes.
   - [~] `QueryPredicate` hierarchy — Constant / And / Or / Not / Value / Comparison ported. Remaining: `ComparisonRange(s)`, `MatchesValue`, `Placeholder`, `PredicateWithValueAndRanges`.
   - [~] `Simplification` — dayshift-49 added `SimplifyValue` (constant-fold over standalone Values). swingshift-50 added `SimplifyPredicateValues` (folds Value operands inside QueryPredicates). Phase 4.6 brings the full `ValueSimplificationRuleSet` and the rule-driven driver retires the seed.

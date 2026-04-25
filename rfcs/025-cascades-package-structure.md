@@ -1,6 +1,6 @@
 # RFC 025 — Cascades Package Structure
 
-**Status:** Draft — supplements RFC 021 §Phase 2 + RFC 022. Authored swingshift-50 (2026-04-25).
+**Status:** Phase 1 executed — supplements RFC 021 §Phase 2 + RFC 022. Authored swingshift-50 (2026-04-25); Phase 1 (`values/` + `predicates/` + `matching/` split + ~25 import-site updates) landed nightshift-50 (2026-04-26). Phase 2 (`rules/`) deferred until Batch A rules start landing per RFC plan.
 
 **Scope:** Sub-package layout for `pkg/recordlayer/query/plan/cascades/`. Mirrors Java's `com.apple.foundationdb.record.query.plan.cascades` structure (4.11.1.0) — but no overly small packages, no leaky abstractions, strong per-package unit tests inspired by Java's test suite.
 
