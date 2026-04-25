@@ -262,9 +262,16 @@ func (t *NullType) WithNullable(isNullable bool) DataType {
 }
 
 func (t *NullType) Resolve(_ map[string]Named) DataType { return t }
-func (t *NullType) Equal(other DataType) bool {
-	o, ok := other.(*NullType)
-	return ok && o.isNullable == t.isNullable
+
+// Equal: NullType is a singleton (NewNullType returns the same
+// pointer every time, WithNullable(false) panics). Type assertion
+// is the only condition needed — any *NullType is the singleton, so
+// the previous `o.isNullable == t.isNullable` check was unreachable
+// dead code (always `true == true`). Pin the singleton invariant
+// in the test instead.
+func (*NullType) Equal(other DataType) bool {
+	_, ok := other.(*NullType)
+	return ok
 }
 func (t *NullType) String() string { return "null" }
 

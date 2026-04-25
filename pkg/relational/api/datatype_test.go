@@ -207,11 +207,17 @@ func TestPrimitiveEqual_RemainingTypes(t *testing.T) {
 		t.Fatal("uuid != version")
 	}
 
-	// NullType: always nullable singleton; Equal compares isNullable.
-	if !NewNullType().Equal(NewNullType()) {
+	// NullType: always-nullable singleton — NewNullType returns the
+	// same pointer every call, so Equal collapses to a type assertion.
+	first := NewNullType()
+	second := NewNullType()
+	if first != second {
+		t.Fatal("NewNullType should return the same singleton pointer")
+	}
+	if !first.Equal(second) {
 		t.Fatal("null should equal null")
 	}
-	if NewNullType().Equal(NewIntegerType(true)) {
+	if first.Equal(NewIntegerType(true)) {
 		t.Fatal("null != integer")
 	}
 
