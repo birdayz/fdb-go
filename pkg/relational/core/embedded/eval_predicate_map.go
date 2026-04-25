@@ -410,17 +410,15 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		}
 		var hadNullElement bool
 		for _, inExpr := range p.InList().Expressions().AllExpression() {
-			// TODO: only PredicatedExpressionContext list elements are
-			// evaluated; arithmetic / function-call elements like
-			// `b IN (1+0, foo())` get silently skipped. The proto path
-			// (evalInPredicateTri) calls evalExpr on every element. Phase
-			// 1c unification picks this up — for now flagged so a future
-			// reader doesn't re-discover it.
-			ep, ok := inExpr.(*antlrgen.PredicatedExpressionContext)
-			if !ok {
-				continue
-			}
-			litVal, litErr := evalExprAtomOnMap(ctx, conn, row, ep.ExpressionAtom())
+			// Match the proto path (evalInPredicateTri at
+			// eval_predicate.go:289): IN-list elements are arbitrary
+			// expressions — `b IN (1+0, foo(), CASE WHEN ... THEN ... END)` —
+			// not just bare predicated atoms. Use evalExprOnMap which
+			// dispatches PredicatedExpression / LogicalExpression / atom
+			// uniformly. Pre-fix the map path called evalExprAtomOnMap on
+			// just the .ExpressionAtom() of a PredicatedExpression, which
+			// silently dropped arithmetic / function-call elements.
+			litVal, litErr := evalExprOnMap(ctx, conn, row, inExpr)
 			if litErr != nil {
 				return triFalse, litErr
 			}
