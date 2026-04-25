@@ -1,5 +1,11 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
+
 // ValuePredicateConstantFoldRule unwraps a ValuePredicate whose Value
 // folds to a constant bool / null at plan time:
 //
@@ -27,7 +33,7 @@ package cascades
 // behaviour. This prevents the wrapper surviving past simplification
 // when the embedded executor would also report UNKNOWN at runtime.
 type ValuePredicateConstantFoldRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewValuePredicateConstantFoldRule constructs the rule.
@@ -35,17 +41,17 @@ func NewValuePredicateConstantFoldRule() *ValuePredicateConstantFoldRule {
 	return &ValuePredicateConstantFoldRule{matcher: newValuePredicateMatcher()}
 }
 
-func (r *ValuePredicateConstantFoldRule) Matcher() BindingMatcher { return r.matcher }
+func (r *ValuePredicateConstantFoldRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *ValuePredicateConstantFoldRule) OnMatch(call *RuleCall) {
-	vp := call.Bindings.Get(r.matcher).(*ValuePredicate)
+	vp := call.Bindings.Get(r.matcher).(*predicates.ValuePredicate)
 	if vp.Value == nil {
 		// Malformed predicate — leave for ValuePredicate.Explain's
 		// nil-value rendering. Folding a nil Value to UNKNOWN would
 		// silently swallow the structural error.
 		return
 	}
-	lit, ok := EvaluateConstant(vp.Value)
+	lit, ok := values.EvaluateConstant(vp.Value)
 	if !ok {
 		// Value isn't constant — leave the predicate alone.
 		return
@@ -53,21 +59,21 @@ func (r *ValuePredicateConstantFoldRule) OnMatch(call *RuleCall) {
 	switch v := lit.(type) {
 	case bool:
 		if v {
-			call.Yield(NewConstantPredicate(TriTrue))
+			call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 		} else {
-			call.Yield(NewConstantPredicate(TriFalse))
+			call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
 		}
 	case nil:
-		call.Yield(NewConstantPredicate(TriUnknown))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriUnknown))
 	default:
 		// Constant-but-non-bool literal: ValuePredicate.Eval would
 		// degrade to UNKNOWN at runtime, so collapse to UNKNOWN at
 		// plan time. The embedded executor reports the same shape.
 		_ = v
-		call.Yield(NewConstantPredicate(TriUnknown))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriUnknown))
 	}
 }
 
-func newValuePredicateMatcher() *predicateMatcher[*ValuePredicate] {
-	return &predicateMatcher[*ValuePredicate]{rootType: "ValuePredicate"}
+func newValuePredicateMatcher() *predicateMatcher[*predicates.ValuePredicate] {
+	return &predicateMatcher[*predicates.ValuePredicate]{rootType: "ValuePredicate"}
 }

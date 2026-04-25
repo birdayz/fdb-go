@@ -1,5 +1,9 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+)
+
 // CascadesRule — seed.
 //
 // Ports Java's
@@ -32,7 +36,7 @@ type RuleCall struct {
 	// Bindings is the PlannerBindings the rule's matcher built up
 	// during BindMatches. Rule bodies use Get[T] / Get to retrieve
 	// matched values.
-	Bindings *PlannerBindings
+	Bindings *matching.PlannerBindings
 
 	// yielded holds replacement expressions the rule produces. One
 	// rule call can yield zero, one, or many (AnyOf-style rules).
@@ -60,7 +64,7 @@ type CascadesRule interface {
 	// walks every expression in the memo, runs every rule's
 	// matcher against it, and invokes OnMatch on successful
 	// bindings.
-	Matcher() BindingMatcher
+	Matcher() matching.BindingMatcher
 
 	// OnMatch is the rule body. It reads call.Bindings to retrieve
 	// the matched expression shape and calls call.Yield for each
@@ -77,7 +81,7 @@ type CascadesRule interface {
 // exists so the seed has a testable entry point.
 func FireRule(rule CascadesRule, in any) []any {
 	matcher := rule.Matcher()
-	matches := matcher.BindMatches(NewBindings(), in)
+	matches := matcher.BindMatches(matching.NewBindings(), in)
 	var all []any
 	for _, b := range matches {
 		call := &RuleCall{Bindings: b}

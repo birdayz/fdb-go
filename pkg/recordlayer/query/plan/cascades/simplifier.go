@@ -1,5 +1,10 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+)
+
 // Simplifier — seed Phase 4.6 driver.
 //
 // Tiny fixed-point driver that applies a list of rules to a
@@ -31,7 +36,7 @@ package cascades
 // Not safe against cyclic-rewrite rule sets — real Cascades uses a
 // memo to detect cycles. The seed rule sets are termination-proven
 // per above so no cycle is possible.
-func Simplify(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
+func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) predicates.QueryPredicate {
 	if pred == nil || len(rules) == 0 {
 		return pred
 	}
@@ -47,9 +52,9 @@ func Simplify(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 	// sub-predicates and then re-simplify the top (child
 	// simplifications may expose new top-level opportunities).
 	switch p := pred.(type) {
-	case *AndPredicate:
+	case *predicates.AndPredicate:
 		rewritten := false
-		simpler := make([]QueryPredicate, len(p.SubPredicates))
+		simpler := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sp := range p.SubPredicates {
 			simpler[i] = Simplify(sp, rules)
 			if simpler[i] != sp {
@@ -57,11 +62,11 @@ func Simplify(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 			}
 		}
 		if rewritten {
-			return Simplify(&AndPredicate{SubPredicates: simpler}, rules)
+			return Simplify(&predicates.AndPredicate{SubPredicates: simpler}, rules)
 		}
-	case *OrPredicate:
+	case *predicates.OrPredicate:
 		rewritten := false
-		simpler := make([]QueryPredicate, len(p.SubPredicates))
+		simpler := make([]predicates.QueryPredicate, len(p.SubPredicates))
 		for i, sp := range p.SubPredicates {
 			simpler[i] = Simplify(sp, rules)
 			if simpler[i] != sp {
@@ -69,11 +74,11 @@ func Simplify(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 			}
 		}
 		if rewritten {
-			return Simplify(&OrPredicate{SubPredicates: simpler}, rules)
+			return Simplify(&predicates.OrPredicate{SubPredicates: simpler}, rules)
 		}
-	case *NotPredicate:
+	case *predicates.NotPredicate:
 		if inner := Simplify(p.Child, rules); inner != p.Child {
-			return Simplify(&NotPredicate{Child: inner}, rules)
+			return Simplify(&predicates.NotPredicate{Child: inner}, rules)
 		}
 	}
 	return pred
@@ -82,15 +87,15 @@ func Simplify(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 // applyRulesOnce fires each rule against pred exactly once, returning
 // the first yielded replacement. When no rule fires, returns pred
 // unchanged (the caller's fixpoint test uses pointer-equality).
-func applyRulesOnce(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
+func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule) predicates.QueryPredicate {
 	for _, rule := range rules {
-		matches := rule.Matcher().BindMatches(NewBindings(), pred)
+		matches := rule.Matcher().BindMatches(matching.NewBindings(), pred)
 		for _, b := range matches {
 			call := &RuleCall{Bindings: b}
 			rule.OnMatch(call)
 			if ys := call.Yielded(); len(ys) > 0 {
 				// First yield wins — rules are ordered by priority.
-				if qp, ok := ys[0].(QueryPredicate); ok {
+				if qp, ok := ys[0].(predicates.QueryPredicate); ok {
 					return qp
 				}
 			}

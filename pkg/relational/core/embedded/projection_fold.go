@@ -7,7 +7,7 @@ package embedded
 // expression is row-context-independent (`SELECT 1+2 FROM t`,
 // `SELECT UPPER('hi'), price FROM t`), evaluating it on every row is
 // pure waste. foldConstantProjections walks each slot through an
-// expr → cascades.Value walker, runs cascades.SimplifyValue, and when
+// expr → values.Value walker, runs values.SimplifyValue, and when
 // the simplified node is constant per IsConstantValue, evaluates it
 // once and stores the Go value in projConstFolded[i]. Per-row consumers
 // (select_query_full.go proto path, cte_scan.go map path) check the
@@ -15,10 +15,10 @@ package embedded
 //
 // Architecture (post-RFC-025 leak closure): the routing logic in
 // foldConstantProjectionsWith takes the walker + folder via injected
-// interfaces (`expr.ExpressionResolver` + `cascades.ExpressionFolder`)
+// interfaces (`expr.ExpressionResolver` + `values.ExpressionFolder`)
 // rather than constructing them inline. The thin entry-point
 // `foldConstantProjections` builds the production deps via
-// buildProjectionResolver + cascades.DefaultFolder and forwards. Tests
+// buildProjectionResolver + values.DefaultFolder and forwards. Tests
 // call the With form with fakes — they assert routing behaviour
 // without standing up a real catalog or metadata.
 
@@ -26,7 +26,7 @@ import (
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog"
@@ -42,7 +42,7 @@ type projectionFold struct {
 
 // foldConstantProjections is the production entry point. Builds the
 // real Resolver from `md` + the seed semantic stack, builds the
-// production folder from cascades.DefaultFolder, and delegates to
+// production folder from values.DefaultFolder, and delegates to
 // foldConstantProjectionsWith for the actual routing work.
 //
 // Best-effort: nil sq, empty projExprs, or nil md short-circuits.
@@ -56,7 +56,7 @@ func foldConstantProjections(sq *selectQuery, md *recordlayer.RecordMetaData) {
 	if resolver == nil {
 		return
 	}
-	foldConstantProjectionsWith(sq, resolver, cascades.DefaultFolder())
+	foldConstantProjectionsWith(sq, resolver, values.DefaultFolder())
 }
 
 // foldConstantProjectionsWith is the testable core. Routes each
@@ -70,7 +70,7 @@ func foldConstantProjections(sq *selectQuery, md *recordlayer.RecordMetaData) {
 // Idempotent: re-calling preserves already-folded slots so the
 // second-pass dispatchers in execSelectQuery don't clobber prior
 // work.
-func foldConstantProjectionsWith(sq *selectQuery, resolver expr.ExpressionResolver, folder cascades.ExpressionFolder) {
+func foldConstantProjectionsWith(sq *selectQuery, resolver expr.ExpressionResolver, folder values.ExpressionFolder) {
 	if sq == nil || len(sq.projExprs) == 0 || resolver == nil || folder == nil {
 		return
 	}

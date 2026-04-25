@@ -1,5 +1,11 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
+
 // Predicate-simplification rules — seed.
 //
 // Examples of the rule pattern for Phase 4.5 Batch A. Each rule
@@ -21,7 +27,7 @@ package cascades
 // AndConstantSimplifyRule matches an AndPredicate and folds constant
 // children per Kleene AND identities.
 type AndConstantSimplifyRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewAndConstantSimplifyRule constructs the rule.
@@ -33,20 +39,20 @@ func NewAndConstantSimplifyRule() *AndConstantSimplifyRule {
 	return m
 }
 
-func (r *AndConstantSimplifyRule) Matcher() BindingMatcher { return r.matcher }
+func (r *AndConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *AndConstantSimplifyRule) OnMatch(call *RuleCall) {
-	and := call.Bindings.Get(r.matcher).(*AndPredicate)
+	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
 	// Collect non-TRUE children; short-circuit on FALSE.
-	kept := make([]QueryPredicate, 0, len(and.SubPredicates))
+	kept := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
 	for _, sp := range and.SubPredicates {
-		if cp, ok := sp.(*ConstantPredicate); ok {
-			if cp.Value == TriFalse {
+		if cp, ok := sp.(*predicates.ConstantPredicate); ok {
+			if cp.Value == predicates.TriFalse {
 				// Whole AND collapses to FALSE regardless of siblings.
-				call.Yield(NewConstantPredicate(TriFalse))
+				call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
 				return
 			}
-			if cp.Value == TriTrue {
+			if cp.Value == predicates.TriTrue {
 				// TRUE is AND-identity; drop.
 				continue
 			}
@@ -61,18 +67,18 @@ func (r *AndConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 	switch len(kept) {
 	case 0:
-		call.Yield(NewConstantPredicate(TriTrue))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 	case 1:
 		call.Yield(kept[0])
 	default:
-		call.Yield(&AndPredicate{SubPredicates: kept})
+		call.Yield(&predicates.AndPredicate{SubPredicates: kept})
 	}
 }
 
 // OrConstantSimplifyRule matches an OrPredicate and folds constant
 // children per Kleene OR identities.
 type OrConstantSimplifyRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewOrConstantSimplifyRule constructs the rule.
@@ -82,18 +88,18 @@ func NewOrConstantSimplifyRule() *OrConstantSimplifyRule {
 	return m
 }
 
-func (r *OrConstantSimplifyRule) Matcher() BindingMatcher { return r.matcher }
+func (r *OrConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
-	or := call.Bindings.Get(r.matcher).(*OrPredicate)
-	kept := make([]QueryPredicate, 0, len(or.SubPredicates))
+	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
+	kept := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
 	for _, sp := range or.SubPredicates {
-		if cp, ok := sp.(*ConstantPredicate); ok {
-			if cp.Value == TriTrue {
-				call.Yield(NewConstantPredicate(TriTrue))
+		if cp, ok := sp.(*predicates.ConstantPredicate); ok {
+			if cp.Value == predicates.TriTrue {
+				call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 				return
 			}
-			if cp.Value == TriFalse {
+			if cp.Value == predicates.TriFalse {
 				// FALSE is OR-identity; drop.
 				continue
 			}
@@ -105,11 +111,11 @@ func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 	switch len(kept) {
 	case 0:
-		call.Yield(NewConstantPredicate(TriFalse))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
 	case 1:
 		call.Yield(kept[0])
 	default:
-		call.Yield(&OrPredicate{SubPredicates: kept})
+		call.Yield(&predicates.OrPredicate{SubPredicates: kept})
 	}
 }
 
@@ -120,7 +126,7 @@ func (r *OrConstantSimplifyRule) OnMatch(call *RuleCall) {
 // `ValueSimplificationRuleSet`. Runs before the constant-simplify
 // pass so the simplifier sees a flat list of operands.
 type AndFlattenRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewAndFlattenRule constructs the rule.
@@ -130,14 +136,14 @@ func NewAndFlattenRule() *AndFlattenRule {
 	return r
 }
 
-func (r *AndFlattenRule) Matcher() BindingMatcher { return r.matcher }
+func (r *AndFlattenRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *AndFlattenRule) OnMatch(call *RuleCall) {
-	and := call.Bindings.Get(r.matcher).(*AndPredicate)
+	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
 	// Check for any child that is itself an AndPredicate.
 	hasNested := false
 	for _, sp := range and.SubPredicates {
-		if _, ok := sp.(*AndPredicate); ok {
+		if _, ok := sp.(*predicates.AndPredicate); ok {
 			hasNested = true
 			break
 		}
@@ -145,20 +151,20 @@ func (r *AndFlattenRule) OnMatch(call *RuleCall) {
 	if !hasNested {
 		return
 	}
-	flat := make([]QueryPredicate, 0, len(and.SubPredicates))
+	flat := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
 	for _, sp := range and.SubPredicates {
-		if inner, ok := sp.(*AndPredicate); ok {
+		if inner, ok := sp.(*predicates.AndPredicate); ok {
 			flat = append(flat, inner.SubPredicates...)
 		} else {
 			flat = append(flat, sp)
 		}
 	}
-	call.Yield(&AndPredicate{SubPredicates: flat})
+	call.Yield(&predicates.AndPredicate{SubPredicates: flat})
 }
 
 // OrFlattenRule: mirror of AndFlattenRule for OR.
 type OrFlattenRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewOrFlattenRule constructs the rule.
@@ -168,13 +174,13 @@ func NewOrFlattenRule() *OrFlattenRule {
 	return r
 }
 
-func (r *OrFlattenRule) Matcher() BindingMatcher { return r.matcher }
+func (r *OrFlattenRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *OrFlattenRule) OnMatch(call *RuleCall) {
-	or := call.Bindings.Get(r.matcher).(*OrPredicate)
+	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
 	hasNested := false
 	for _, sp := range or.SubPredicates {
-		if _, ok := sp.(*OrPredicate); ok {
+		if _, ok := sp.(*predicates.OrPredicate); ok {
 			hasNested = true
 			break
 		}
@@ -182,15 +188,15 @@ func (r *OrFlattenRule) OnMatch(call *RuleCall) {
 	if !hasNested {
 		return
 	}
-	flat := make([]QueryPredicate, 0, len(or.SubPredicates))
+	flat := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
 	for _, sp := range or.SubPredicates {
-		if inner, ok := sp.(*OrPredicate); ok {
+		if inner, ok := sp.(*predicates.OrPredicate); ok {
 			flat = append(flat, inner.SubPredicates...)
 		} else {
 			flat = append(flat, sp)
 		}
 	}
-	call.Yield(&OrPredicate{SubPredicates: flat})
+	call.Yield(&predicates.OrPredicate{SubPredicates: flat})
 }
 
 // --- NotConstantSimplifyRule + DoubleNegationRule ------------------
@@ -199,7 +205,7 @@ func (r *OrFlattenRule) OnMatch(call *RuleCall) {
 // NOT (NOT TRUE=FALSE, NOT FALSE=TRUE, NOT UNKNOWN=UNKNOWN). Also
 // fires on NOT NOT x → x (double-negation elimination).
 type NotConstantSimplifyRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewNotConstantSimplifyRule constructs the rule.
@@ -209,27 +215,27 @@ func NewNotConstantSimplifyRule() *NotConstantSimplifyRule {
 	return m
 }
 
-func (r *NotConstantSimplifyRule) Matcher() BindingMatcher { return r.matcher }
+func (r *NotConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *NotConstantSimplifyRule) OnMatch(call *RuleCall) {
-	not := call.Bindings.Get(r.matcher).(*NotPredicate)
+	not := call.Bindings.Get(r.matcher).(*predicates.NotPredicate)
 	// NOT NOT x → x (double-negation elimination).
-	if inner, ok := not.Child.(*NotPredicate); ok {
+	if inner, ok := not.Child.(*predicates.NotPredicate); ok {
 		call.Yield(inner.Child)
 		return
 	}
 	// NOT <constant> → constant with Kleene-negated value.
-	cp, ok := not.Child.(*ConstantPredicate)
+	cp, ok := not.Child.(*predicates.ConstantPredicate)
 	if !ok {
 		return
 	}
 	switch cp.Value {
-	case TriTrue:
-		call.Yield(NewConstantPredicate(TriFalse))
-	case TriFalse:
-		call.Yield(NewConstantPredicate(TriTrue))
+	case predicates.TriTrue:
+		call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
+	case predicates.TriFalse:
+		call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 	default:
-		call.Yield(NewConstantPredicate(TriUnknown))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriUnknown))
 	}
 }
 
@@ -245,20 +251,20 @@ func (r *NotConstantSimplifyRule) OnMatch(call *RuleCall) {
 //
 // Each rule's `new...` factory returns a distinct allocation so
 // pointer-identity comparisons stay distinct across rule instances.
-type predicateMatcher[T QueryPredicate] struct {
+type predicateMatcher[T predicates.QueryPredicate] struct {
 	rootType string
 }
 
 func (m *predicateMatcher[T]) RootType() string { return m.rootType }
-func (m *predicateMatcher[T]) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
+func (m *predicateMatcher[T]) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
 	if _, ok := in.(T); !ok {
 		return nil
 	}
-	return []*PlannerBindings{outer.Bind(m, in)}
+	return []*matching.PlannerBindings{outer.Bind(m, in)}
 }
 
-func newNotPredicateMatcher() *predicateMatcher[*NotPredicate] {
-	return &predicateMatcher[*NotPredicate]{rootType: "NotPredicate"}
+func newNotPredicateMatcher() *predicateMatcher[*predicates.NotPredicate] {
+	return &predicateMatcher[*predicates.NotPredicate]{rootType: "NotPredicate"}
 }
 
 // --- AndDedupRule / OrDedupRule ------------------------------------
@@ -267,7 +273,7 @@ func newNotPredicateMatcher() *predicateMatcher[*NotPredicate] {
 // an AndPredicate. `AND(p, p, q, p)` → `AND(p, q)`. Mirrors Java
 // `PredicateSimplification`'s dedup pass.
 type AndDedupRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewAndDedupRule constructs the rule.
@@ -277,27 +283,27 @@ func NewAndDedupRule() *AndDedupRule {
 	return r
 }
 
-func (r *AndDedupRule) Matcher() BindingMatcher { return r.matcher }
+func (r *AndDedupRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *AndDedupRule) OnMatch(call *RuleCall) {
-	and := call.Bindings.Get(r.matcher).(*AndPredicate)
+	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
 	deduped := dedupPredicates(and.SubPredicates)
 	if len(deduped) == len(and.SubPredicates) {
 		return
 	}
 	switch len(deduped) {
 	case 0:
-		call.Yield(NewConstantPredicate(TriTrue))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 	case 1:
 		call.Yield(deduped[0])
 	default:
-		call.Yield(&AndPredicate{SubPredicates: deduped})
+		call.Yield(&predicates.AndPredicate{SubPredicates: deduped})
 	}
 }
 
 // OrDedupRule: mirror of AndDedupRule.
 type OrDedupRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewOrDedupRule constructs the rule.
@@ -307,21 +313,21 @@ func NewOrDedupRule() *OrDedupRule {
 	return r
 }
 
-func (r *OrDedupRule) Matcher() BindingMatcher { return r.matcher }
+func (r *OrDedupRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *OrDedupRule) OnMatch(call *RuleCall) {
-	or := call.Bindings.Get(r.matcher).(*OrPredicate)
+	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
 	deduped := dedupPredicates(or.SubPredicates)
 	if len(deduped) == len(or.SubPredicates) {
 		return
 	}
 	switch len(deduped) {
 	case 0:
-		call.Yield(NewConstantPredicate(TriFalse))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
 	case 1:
 		call.Yield(deduped[0])
 	default:
-		call.Yield(&OrPredicate{SubPredicates: deduped})
+		call.Yield(&predicates.OrPredicate{SubPredicates: deduped})
 	}
 }
 
@@ -329,12 +335,12 @@ func (r *OrDedupRule) OnMatch(call *RuleCall) {
 // PredicateEquals) removed, preserving first-occurrence order.
 // O(n²) is fine for AND/OR operand counts the corpus exercises
 // (typically < 10 children).
-func dedupPredicates(in []QueryPredicate) []QueryPredicate {
-	out := make([]QueryPredicate, 0, len(in))
+func dedupPredicates(in []predicates.QueryPredicate) []predicates.QueryPredicate {
+	out := make([]predicates.QueryPredicate, 0, len(in))
 	for _, p := range in {
 		dup := false
 		for _, o := range out {
-			if PredicateEquals(p, o) {
+			if predicates.PredicateEquals(p, o) {
 				dup = true
 				break
 			}
@@ -360,7 +366,7 @@ func dedupPredicates(in []QueryPredicate) []QueryPredicate {
 // literal regardless of context, which is the only current seed
 // Value whose result is reproducible without an eval context.
 type ComparisonConstantSimplifyRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewComparisonConstantSimplifyRule constructs the rule.
@@ -370,10 +376,10 @@ func NewComparisonConstantSimplifyRule() *ComparisonConstantSimplifyRule {
 	return m
 }
 
-func (r *ComparisonConstantSimplifyRule) Matcher() BindingMatcher { return r.matcher }
+func (r *ComparisonConstantSimplifyRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
-	cp := call.Bindings.Get(r.matcher).(*ComparisonPredicate)
+	cp := call.Bindings.Get(r.matcher).(*predicates.ComparisonPredicate)
 	// Only fold when BOTH sides are deterministic without a row
 	// context. Whitelist known-constant Value types rather than
 	// calling Evaluate(nil) — FieldValue.Evaluate(nil) also returns
@@ -389,12 +395,12 @@ func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 		if cp.Comparison.Operand == nil {
 			return
 		}
-		if !IsConstantValue(cp.Comparison.Operand) {
+		if !values.IsConstantValue(cp.Comparison.Operand) {
 			return
 		}
 	}
 	result := cp.Comparison.Eval(lhs)
-	call.Yield(NewConstantPredicate(result))
+	call.Yield(predicates.NewConstantPredicate(result))
 }
 
 // constantLiteral unwraps a known-constant Value to its Go-native
@@ -408,13 +414,13 @@ func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 // EvaluateConstant. The composite path is what lets
 // ComparisonConstantSimplifyRule fire on `CAST(5 AS STRING) = 'X'`
 // rather than leaving the whole predicate unsimplified.
-func constantLiteral(v Value) (any, bool) {
+func constantLiteral(v values.Value) (any, bool) {
 	switch x := v.(type) {
-	case *ConstantValue:
+	case *values.ConstantValue:
 		return x.Value, true
-	case *NullValue:
+	case *values.NullValue:
 		return nil, true
-	case *BooleanValue:
+	case *values.BooleanValue:
 		// Unwrap *bool so the typed-nil doesn't masquerade as a
 		// non-NULL bool when downstream Eval NULL-guards on
 		// `left == nil`. A BooleanValue with Value==nil is SQL NULL.
@@ -423,21 +429,21 @@ func constantLiteral(v Value) (any, bool) {
 		}
 		return *x.Value, true
 	}
-	return EvaluateConstant(v)
+	return values.EvaluateConstant(v)
 }
 
-func newComparisonPredicateMatcher() *predicateMatcher[*ComparisonPredicate] {
-	return &predicateMatcher[*ComparisonPredicate]{rootType: "ComparisonPredicate"}
+func newComparisonPredicateMatcher() *predicateMatcher[*predicates.ComparisonPredicate] {
+	return &predicateMatcher[*predicates.ComparisonPredicate]{rootType: "ComparisonPredicate"}
 }
 
 // --- Predicate matchers -------------------------------------------
 
-func newAndPredicateMatcher() *predicateMatcher[*AndPredicate] {
-	return &predicateMatcher[*AndPredicate]{rootType: "AndPredicate"}
+func newAndPredicateMatcher() *predicateMatcher[*predicates.AndPredicate] {
+	return &predicateMatcher[*predicates.AndPredicate]{rootType: "AndPredicate"}
 }
 
-func newOrPredicateMatcher() *predicateMatcher[*OrPredicate] {
-	return &predicateMatcher[*OrPredicate]{rootType: "OrPredicate"}
+func newOrPredicateMatcher() *predicateMatcher[*predicates.OrPredicate] {
+	return &predicateMatcher[*predicates.OrPredicate]{rootType: "OrPredicate"}
 }
 
 // --- NotComparisonRewriteRule --------------------------------------
@@ -452,7 +458,7 @@ func newOrPredicateMatcher() *predicateMatcher[*OrPredicate] {
 // to leaves so downstream index-pushdown rules see a canonical
 // leaf-level predicate and don't have to also handle NOT wrappers.
 type NotComparisonRewriteRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewNotComparisonRewriteRule constructs the rule.
@@ -460,11 +466,11 @@ func NewNotComparisonRewriteRule() *NotComparisonRewriteRule {
 	return &NotComparisonRewriteRule{matcher: newNotPredicateMatcher()}
 }
 
-func (r *NotComparisonRewriteRule) Matcher() BindingMatcher { return r.matcher }
+func (r *NotComparisonRewriteRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *NotComparisonRewriteRule) OnMatch(call *RuleCall) {
-	not := call.Bindings.Get(r.matcher).(*NotPredicate)
-	cp, ok := not.Child.(*ComparisonPredicate)
+	not := call.Bindings.Get(r.matcher).(*predicates.NotPredicate)
+	cp, ok := not.Child.(*predicates.ComparisonPredicate)
 	if !ok {
 		return
 	}
@@ -477,9 +483,9 @@ func (r *NotComparisonRewriteRule) OnMatch(call *RuleCall) {
 	// Negate declines on it), so this is defensive: if a future
 	// ComparisonType grows both Negate-support and Escape-meaning, the
 	// rewrite stays correct without an explicit fix.
-	call.Yield(&ComparisonPredicate{
+	call.Yield(&predicates.ComparisonPredicate{
 		Operand:    cp.Operand,
-		Comparison: Comparison{Type: negated, Operand: cp.Comparison.Operand, Escape: cp.Comparison.Escape},
+		Comparison: predicates.Comparison{Type: negated, Operand: cp.Comparison.Operand, Escape: cp.Comparison.Escape},
 	})
 }
 
@@ -499,7 +505,7 @@ func (r *NotComparisonRewriteRule) OnMatch(call *RuleCall) {
 // sibling is redundant — drop it. `AND(p, OR(p, q))` → `AND(p)` → `p`
 // once the constant-fold rules collapse the unary AND.
 type AndAbsorbOrRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewAndAbsorbOrRule constructs the rule.
@@ -509,14 +515,14 @@ func NewAndAbsorbOrRule() *AndAbsorbOrRule {
 	return r
 }
 
-func (r *AndAbsorbOrRule) Matcher() BindingMatcher { return r.matcher }
+func (r *AndAbsorbOrRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *AndAbsorbOrRule) OnMatch(call *RuleCall) {
-	and := call.Bindings.Get(r.matcher).(*AndPredicate)
-	kept := make([]QueryPredicate, 0, len(and.SubPredicates))
+	and := call.Bindings.Get(r.matcher).(*predicates.AndPredicate)
+	kept := make([]predicates.QueryPredicate, 0, len(and.SubPredicates))
 	changed := false
 	for _, sp := range and.SubPredicates {
-		or, ok := sp.(*OrPredicate)
+		or, ok := sp.(*predicates.OrPredicate)
 		if !ok {
 			kept = append(kept, sp)
 			continue
@@ -534,18 +540,18 @@ func (r *AndAbsorbOrRule) OnMatch(call *RuleCall) {
 	switch len(kept) {
 	case 0:
 		// Shouldn't happen — the matching OR still leaves its sibling.
-		call.Yield(NewConstantPredicate(TriTrue))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriTrue))
 	case 1:
 		call.Yield(kept[0])
 	default:
-		call.Yield(&AndPredicate{SubPredicates: kept})
+		call.Yield(&predicates.AndPredicate{SubPredicates: kept})
 	}
 }
 
 // OrAbsorbAndRule: mirror. Inside an OR, any AND child that contains
 // a sibling is redundant — drop it. `OR(p, AND(p, q))` → `OR(p)` → `p`.
 type OrAbsorbAndRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewOrAbsorbAndRule constructs the rule.
@@ -555,14 +561,14 @@ func NewOrAbsorbAndRule() *OrAbsorbAndRule {
 	return r
 }
 
-func (r *OrAbsorbAndRule) Matcher() BindingMatcher { return r.matcher }
+func (r *OrAbsorbAndRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
-	or := call.Bindings.Get(r.matcher).(*OrPredicate)
-	kept := make([]QueryPredicate, 0, len(or.SubPredicates))
+	or := call.Bindings.Get(r.matcher).(*predicates.OrPredicate)
+	kept := make([]predicates.QueryPredicate, 0, len(or.SubPredicates))
 	changed := false
 	for _, sp := range or.SubPredicates {
-		and, ok := sp.(*AndPredicate)
+		and, ok := sp.(*predicates.AndPredicate)
 		if !ok {
 			kept = append(kept, sp)
 			continue
@@ -578,11 +584,11 @@ func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
 	}
 	switch len(kept) {
 	case 0:
-		call.Yield(NewConstantPredicate(TriFalse))
+		call.Yield(predicates.NewConstantPredicate(predicates.TriFalse))
 	case 1:
 		call.Yield(kept[0])
 	default:
-		call.Yield(&OrPredicate{SubPredicates: kept})
+		call.Yield(&predicates.OrPredicate{SubPredicates: kept})
 	}
 }
 
@@ -590,13 +596,13 @@ func (r *OrAbsorbAndRule) OnMatch(call *RuleCall) {
 // structurally equals any element of `siblings` other than `self`.
 // Used by the absorption rules to decide whether a child is made
 // redundant by a sibling.
-func anyMatchesAnother(candidates, siblings []QueryPredicate, self QueryPredicate) bool {
+func anyMatchesAnother(candidates, siblings []predicates.QueryPredicate, self predicates.QueryPredicate) bool {
 	for _, c := range candidates {
 		for _, s := range siblings {
 			if s == self {
 				continue
 			}
-			if PredicateEquals(c, s) {
+			if predicates.PredicateEquals(c, s) {
 				return true
 			}
 		}

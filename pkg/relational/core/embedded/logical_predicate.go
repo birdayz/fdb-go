@@ -10,7 +10,7 @@ package embedded
 // This file is the catalog-aware variant: when a *recordlayer.RecordMetaData
 // is in scope, WHERE clauses walk through expr.WalkPredicate (via
 // rlcatalog → semantic.Analyzer + Scope) and produce a real
-// cascades.QueryPredicate tree on LogicalFilter.Predicate alongside
+// predicates.QueryPredicate tree on LogicalFilter.Predicate alongside
 // the source text. Best-effort throughout — any walker error,
 // catalog miss, ambiguous column ref, or shape outside the walker's
 // support degrades to text fallback rather than failing the build.
@@ -39,7 +39,7 @@ import (
 	"strings"
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -49,7 +49,7 @@ import (
 )
 
 // buildWherePredicateForTable converts a WHERE expression context
-// into a cascades.QueryPredicate using the expr walker, with a
+// into a predicates.QueryPredicate using the expr walker, with a
 // single-source scope over the named table. Returns (nil, false) on
 // any shape the walker can't handle, on a catalog lookup miss, or
 // when metadata is nil.
@@ -66,7 +66,7 @@ func buildWherePredicateForTable(
 	md *recordlayer.RecordMetaData,
 	tableName, tableAlias string,
 	whereExpr antlrgen.IWhereExprContext,
-) (cascades.QueryPredicate, bool) {
+) (predicates.QueryPredicate, bool) {
 	if md == nil || tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
 		return nil, false
 	}
@@ -99,7 +99,7 @@ func buildWherePredicateForTable(
 	// Plan-time fold of constant Value sub-trees inside the predicate
 	// (`name = 1+2` → `name = 3`). Best-effort — SimplifyPredicateValues
 	// is pointer-stable when nothing folds.
-	pred = cascades.SimplifyPredicateValues(pred)
+	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
@@ -112,7 +112,7 @@ func buildWherePredicate(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
-) (cascades.QueryPredicate, bool) {
+) (predicates.QueryPredicate, bool) {
 	if sq == nil || sq.derivedQuery != nil {
 		return nil, false
 	}
@@ -135,7 +135,7 @@ func buildWherePredicateForJoins(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
-) (cascades.QueryPredicate, bool) {
+) (predicates.QueryPredicate, bool) {
 	if md == nil || sq == nil || sq.tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
 		return nil, false
 	}
@@ -171,13 +171,13 @@ func buildWherePredicateForJoins(
 	if err != nil {
 		return nil, false
 	}
-	pred = cascades.SimplifyPredicateValues(pred)
+	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
 // buildLogicalPlanForSelectWithCatalog is the catalog-aware variant
 // of buildLogicalPlanForSelect. It walks the WHERE predicate through
-// the expr package and attaches a cascades.QueryPredicate tree to
+// the expr package and attaches a predicates.QueryPredicate tree to
 // LogicalFilter when the walker succeeds; on any walker failure the
 // filter falls back to the canonical source text (identical output
 // to buildLogicalPlanForSelect for the WHERE shape alone).
@@ -218,7 +218,7 @@ func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.Recor
 // signals the invariant broke — tests assert on it so a future
 // builder change that drops the Filter doesn't silently throw
 // away the predicate.
-func upgradeFirstFilter(op logical.LogicalOperator, pred cascades.QueryPredicate) bool {
+func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredicate) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
 			f.Predicate = pred
