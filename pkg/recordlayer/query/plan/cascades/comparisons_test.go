@@ -1265,6 +1265,67 @@ func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
 	}
 }
 
+// IS [NOT] DISTINCT FROM with both sides constant folds at plan
+// time. Pin all four corners of the null-safety truth table:
+//   - NULL IS DISTINCT FROM NULL → FALSE (NOT distinct, both NULL)
+//   - 5 IS NOT DISTINCT FROM 5 → TRUE (equal)
+//   - NULL IS DISTINCT FROM 5 → TRUE (one is NULL, one isn't)
+//   - 5 IS NOT DISTINCT FROM NULL → FALSE
+//
+// IS [NOT] DISTINCT FROM is the SQL null-safe equality / inequality
+// — always resolves to TRUE/FALSE, never UNKNOWN. Catches a future
+// regression where the constant-fold rule narrows its dispatch
+// table and stops handling these types.
+func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		lhs  Value
+		op   ComparisonType
+		rhs  Value
+		want TriBool
+	}{
+		{
+			"NULL IS DISTINCT FROM NULL",
+			&NullValue{Typ: TypeUnknown}, ComparisonIsDistinctFrom, &NullValue{Typ: TypeUnknown},
+			TriFalse,
+		},
+		{
+			"5 IS NOT DISTINCT FROM 5",
+			&ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonNotDistinctFrom, &ConstantValue{Value: int64(5), Typ: TypeInt},
+			TriTrue,
+		},
+		{
+			"NULL IS DISTINCT FROM 5",
+			&NullValue{Typ: TypeUnknown}, ComparisonIsDistinctFrom, &ConstantValue{Value: int64(5), Typ: TypeInt},
+			TriTrue,
+		},
+		{
+			"5 IS NOT DISTINCT FROM NULL",
+			&ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonNotDistinctFrom, &NullValue{Typ: TypeUnknown},
+			TriFalse,
+		},
+	}
+	rule := NewComparisonConstantSimplifyRule()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(tc.lhs, Comparison{Type: tc.op, Operand: tc.rhs})
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T", got[0])
+			}
+			if cp.Value != tc.want {
+				t.Fatalf("got %v, want %v", cp.Value, tc.want)
+			}
+		})
+	}
+}
+
 // LIKE with FieldValue RHS — the Operand→Value migration unlocks
 // dynamic patterns sourced from the row. Each row's `pattern`
 // column drives the LIKE match against that same row's `name`.
