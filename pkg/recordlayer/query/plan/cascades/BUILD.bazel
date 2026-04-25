@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cascades",
     srcs = [
+        "all_elements_matcher.go",
         "combinators.go",
         "comparisons.go",
         "correlation.go",
@@ -25,6 +26,7 @@ go_library(
 go_test(
     name = "cascades_test",
     srcs = [
+        "all_elements_matcher_test.go",
         "benchmark_test.go",
         "combinators_test.go",
         "comparisons_test.go",
