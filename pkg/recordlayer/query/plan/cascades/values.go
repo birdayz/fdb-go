@@ -231,7 +231,7 @@ func IsConstantValue(v Value) bool {
 	switch v.(type) {
 	case *ConstantValue, *NullValue, *BooleanValue:
 		return true
-	case *FieldValue, *QuantifiedObjectValue, *AggregateValue:
+	case *FieldValue, *QuantifiedObjectValue, *AggregateValue, *ParameterValue:
 		return false
 	}
 	// Composite: all children must be constant.
@@ -347,6 +347,21 @@ func ExplainValue(v Value) string {
 		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
 	case *QuantifiedObjectValue:
 		return cv.Correlation.Name()
+	case *ParameterValue:
+		// Render with the same `?` sigil the grammar accepts:
+		// `?` for plain positional, `?N` once an ordinal is assigned,
+		// `?name` for the lexer's NAMED_PARAMETER form. Keeps Explain
+		// round-trippable to recognisable SQL.
+		switch {
+		case cv.Ordinal > 0:
+			return "?" + intToDec(int64(cv.Ordinal))
+		case cv.ParamName != "":
+			return "?" + cv.ParamName
+		default:
+			// Unnumbered positional `?` — the per-statement ordinal
+			// counter isn't wired yet, so render the surface form.
+			return "?"
+		}
 	}
 	return v.Name()
 }
@@ -487,6 +502,63 @@ func (*NullValue) Children() []Value { return []Value{} }
 func (n *NullValue) Type() ValueType { return n.Typ }
 func (*NullValue) Name() string      { return "null" }
 func (*NullValue) Evaluate(any) any  { return nil }
+
+// ParameterValue is a placeholder for a prepared-statement parameter
+// — `?` (positional, Ordinal>=1) or `:name` (named, Ordinal=0).
+// Its concrete value is unknown at plan time, so Evaluate returns
+// nil unless the eval context implements ParameterBinder. Treated
+// as non-constant by IsConstantValue, so constant-fold rules
+// decline to fire on `x = ?` / `x = :foo`.
+//
+// Plan-cache keying: ExplainValue renders a parameter as `?N` /
+// `:name`, which means `WHERE x = ?` and `WHERE x = ?` for two
+// different bind-values share the same Explain string — the seam a
+// future plan cache will key on.
+//
+// Seed runtime evaluation is intentionally minimal: a richer
+// EvalContext that threads parameter bindings through every
+// Value.Evaluate is the next step. Until then ParameterValue
+// degrades to NULL at exec time, which is harmless for the
+// plan-time / explain-time work this type unblocks.
+type ParameterValue struct {
+	Ordinal   int       // 1-based positional index; 0 ⇒ named parameter
+	ParamName string    // populated when Ordinal == 0
+	Typ       ValueType // TypeUnknown until upstream type inference fills it
+}
+
+// NewParameterValue constructs a positional `?` parameter (1-based).
+func NewParameterValue(ordinal int) *ParameterValue {
+	return &ParameterValue{Ordinal: ordinal, Typ: TypeUnknown}
+}
+
+// NewNamedParameterValue constructs a named `:name` parameter.
+func NewNamedParameterValue(name string) *ParameterValue {
+	return &ParameterValue{ParamName: name, Typ: TypeUnknown}
+}
+
+// ParameterBinder is an optional eval-context capability: when
+// ParameterValue.Evaluate is called with a context that implements
+// this interface, the parameter is resolved to its bound value.
+// Otherwise Evaluate returns nil (SQL UNKNOWN), which is the safe
+// default for plan-time evaluation where no bindings exist.
+type ParameterBinder interface {
+	BindParameter(ordinal int, name string) (any, bool)
+}
+
+func (*ParameterValue) Children() []Value { return []Value{} }
+func (p *ParameterValue) Type() ValueType { return p.Typ }
+func (*ParameterValue) Name() string      { return "param" }
+
+func (p *ParameterValue) Evaluate(evalCtx any) any {
+	if evalCtx == nil {
+		return nil
+	}
+	if b, ok := evalCtx.(ParameterBinder); ok {
+		v, _ := b.BindParameter(p.Ordinal, p.ParamName)
+		return v
+	}
+	return nil
+}
 
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a
 // non-trivial matcher.

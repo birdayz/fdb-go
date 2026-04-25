@@ -78,8 +78,52 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		// are wired in the seed. Scalar functions land once the
 		// scalar-function catalogue is ported.
 		return r.walkFunctionCall(a.FunctionCall())
+	case *antlrgen.PreparedStatementParameterAtomContext:
+		// `?` (positional) or `:name` (named) prepared-statement
+		// parameter. Surfaces as a cascades.ParameterValue — Operand
+		// composes through the comparison resolver, IsConstantValue
+		// declines, ExplainValue renders `?N` / `:name` for plan-cache
+		// keying.
+		return r.walkPreparedParameter(a.PreparedStatementParameter())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
+}
+
+// walkPreparedParameter handles the `?` / `:name` placeholder that
+// appears as a PreparedStatementParameterAtom. The grammar's
+// PreparedStatementParameter rule accepts either QUESTION (positional,
+// rendered as a single `?`) or NAMED_PARAMETER (`:foo`).
+//
+// Positional parameters fold to the ordinal of this `?` within the
+// statement; numbering is left to the caller (the walker has no
+// statement-wide cursor today). The seed assigns ordinal 0 and
+// records the literal text — sufficient for plan-time wiring; the
+// per-statement counter lands when the binder is plumbed.
+func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameterContext) (cascades.Value, error) {
+	if pp == nil {
+		return nil, fmt.Errorf("expr.walkPreparedParameter: nil")
+	}
+	ppc, ok := pp.(*antlrgen.PreparedStatementParameterContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("PreparedStatementParameter ctx %T", pp)}
+	}
+	if ppc.NAMED_PARAMETER() != nil {
+		// Lexer rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*
+		// Strip the leading sigil (`?` or `$`).
+		text := ppc.NAMED_PARAMETER().GetText()
+		if len(text) < 2 || (text[0] != '?' && text[0] != '$') {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("NAMED_PARAMETER token %q", text)}
+		}
+		return cascades.NewNamedParameterValue(text[1:]), nil
+	}
+	if ppc.QUESTION() != nil {
+		// Ordinal numbering across the statement is the caller's
+		// responsibility — the walker stays per-expression. Use 0 as
+		// the seed sentinel so ExplainValue renders `?0`; the binder
+		// will rewrite ordinals once it's wired.
+		return cascades.NewParameterValue(0), nil
+	}
+	return nil, &UnsupportedExpressionShapeError{Shape: "PreparedStatementParameter with no QUESTION/NAMED_PARAMETER"}
 }
 
 // walkFunctionCall handles FunctionCall contexts. Only aggregate

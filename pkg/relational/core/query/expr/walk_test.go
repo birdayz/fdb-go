@@ -1286,3 +1286,100 @@ func TestWalkPredicate_CastInComparison(t *testing.T) {
 		t.Fatalf("expected Operand to be *CastValue, got %T", cp.Operand)
 	}
 }
+
+// `?` in a WHERE expression resolves to a positional ParameterValue.
+// Verifies the PreparedStatementParameterAtomContext dispatch.
+func TestWalkExpression_PositionalParameter(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE ?")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	pv, ok := v.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected *ParameterValue, got %T", v)
+	}
+	// Walker leaves ordinal=0 (statement-wide counter not wired yet).
+	if pv.Ordinal != 0 || pv.ParamName != "" {
+		t.Fatalf("got Ordinal=%d ParamName=%q", pv.Ordinal, pv.ParamName)
+	}
+}
+
+// `?foo` in a WHERE expression resolves to a named ParameterValue.
+// (Grammar rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*.)
+func TestWalkExpression_NamedParameter(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE ?foo")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	pv, ok := v.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected *ParameterValue, got %T", v)
+	}
+	if pv.ParamName != "foo" || pv.Ordinal != 0 {
+		t.Fatalf("got Ordinal=%d ParamName=%q", pv.Ordinal, pv.ParamName)
+	}
+}
+
+// `name = ?` composes through ResolveComparison: LHS FieldValue, RHS
+// ParameterValue. Constant-fold declines because RHS is non-constant.
+func TestWalkPredicate_ParameterizedComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name = ?")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if _, ok := cp.Operand.(*cascades.FieldValue); !ok {
+		t.Fatalf("expected LHS *FieldValue, got %T", cp.Operand)
+	}
+	pv, ok := cp.Comparison.Operand.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
+	}
+	if pv.Ordinal != 0 {
+		t.Fatalf("Ordinal: got %d, want 0", pv.Ordinal)
+	}
+	// Plan-cache key seam: render the predicate as `NAME = ?` so two
+	// queries with different bind values share the same Explain.
+	want := "NAME = ?"
+	if got := cp.Explain(); got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+// `name = ?user` — same composition for a named parameter.
+func TestWalkPredicate_NamedParameterizedComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name = ?user")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	pv, ok := cp.Comparison.Operand.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
+	}
+	if pv.ParamName != "user" {
+		t.Fatalf("ParamName: got %q, want 'user'", pv.ParamName)
+	}
+	if got, want := cp.Explain(), "NAME = ?user"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}

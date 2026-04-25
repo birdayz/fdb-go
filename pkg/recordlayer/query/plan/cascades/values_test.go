@@ -824,3 +824,131 @@ func TestEvaluateConstant(t *testing.T) {
 		t.Fatal("nil should decline")
 	}
 }
+
+// --- ParameterValue -----------------------------------------------
+
+// fakeBinder implements ParameterBinder for tests. Maps positional
+// ordinals via Pos and named parameters via Named.
+type fakeBinder struct {
+	Pos   map[int]any
+	Named map[string]any
+}
+
+func (b *fakeBinder) BindParameter(ordinal int, name string) (any, bool) {
+	if name != "" {
+		v, ok := b.Named[name]
+		return v, ok
+	}
+	v, ok := b.Pos[ordinal]
+	return v, ok
+}
+
+func TestParameterValue_Shape(t *testing.T) {
+	t.Parallel()
+
+	pos := NewParameterValue(1)
+	if pos.Ordinal != 1 || pos.ParamName != "" {
+		t.Fatalf("positional: got Ordinal=%d ParamName=%q", pos.Ordinal, pos.ParamName)
+	}
+	if pos.Type() != TypeUnknown {
+		t.Fatalf("positional Type: want TypeUnknown, got %v", pos.Type())
+	}
+	if pos.Name() != "param" {
+		t.Fatalf("Name: want 'param', got %q", pos.Name())
+	}
+	if len(pos.Children()) != 0 {
+		t.Fatalf("Children: want 0, got %d", len(pos.Children()))
+	}
+
+	named := NewNamedParameterValue("foo")
+	if named.Ordinal != 0 || named.ParamName != "foo" {
+		t.Fatalf("named: got Ordinal=%d ParamName=%q", named.Ordinal, named.ParamName)
+	}
+}
+
+func TestParameterValue_Evaluate_NoBinder(t *testing.T) {
+	t.Parallel()
+
+	pos := NewParameterValue(1)
+	// Nil context → NULL (UNKNOWN).
+	if got := pos.Evaluate(nil); got != nil {
+		t.Fatalf("nil ctx: want nil, got %v", got)
+	}
+	// Row-only context (no binder capability) → NULL.
+	if got := pos.Evaluate(map[string]any{"x": int64(5)}); got != nil {
+		t.Fatalf("row ctx without binder: want nil, got %v", got)
+	}
+}
+
+func TestParameterValue_Evaluate_WithBinder(t *testing.T) {
+	t.Parallel()
+
+	binder := &fakeBinder{
+		Pos:   map[int]any{1: int64(42), 2: "hello"},
+		Named: map[string]any{"foo": true, "bar": nil},
+	}
+
+	if got := NewParameterValue(1).Evaluate(binder); got != int64(42) {
+		t.Fatalf("?1: want 42, got %v", got)
+	}
+	if got := NewParameterValue(2).Evaluate(binder); got != "hello" {
+		t.Fatalf("?2: want 'hello', got %v", got)
+	}
+	if got := NewNamedParameterValue("foo").Evaluate(binder); got != true {
+		t.Fatalf(":foo: want true, got %v", got)
+	}
+	// Bound to NULL — binder reports (nil, true). Evaluate surfaces nil.
+	if got := NewNamedParameterValue("bar").Evaluate(binder); got != nil {
+		t.Fatalf(":bar (NULL bound): want nil, got %v", got)
+	}
+	// Unbound → nil.
+	if got := NewParameterValue(99).Evaluate(binder); got != nil {
+		t.Fatalf("?99 unbound: want nil, got %v", got)
+	}
+	if got := NewNamedParameterValue("missing").Evaluate(binder); got != nil {
+		t.Fatalf(":missing unbound: want nil, got %v", got)
+	}
+}
+
+func TestParameterValue_IsNotConstant(t *testing.T) {
+	t.Parallel()
+
+	if IsConstantValue(NewParameterValue(1)) {
+		t.Fatal("?1 must not be constant")
+	}
+	if IsConstantValue(NewNamedParameterValue("foo")) {
+		t.Fatal(":foo must not be constant")
+	}
+	// Composite containing a parameter is not constant either.
+	arith := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: NewParameterValue(1),
+	}
+	if IsConstantValue(arith) {
+		t.Fatal("1 + ?1 must not be constant")
+	}
+	if _, ok := EvaluateConstant(arith); ok {
+		t.Fatal("EvaluateConstant on composite-with-param must decline")
+	}
+}
+
+func TestExplainValue_ParameterValue(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		v    Value
+		want string
+	}{
+		{NewParameterValue(1), "?1"},
+		{NewParameterValue(7), "?7"},
+		{NewParameterValue(0), "?"}, // unnumbered `?` (walker seed; per-statement ordinal not yet wired)
+		{NewNamedParameterValue("foo"), "?foo"},
+		{NewNamedParameterValue("user_id"), "?user_id"},
+	}
+	for _, tc := range cases {
+		if got := ExplainValue(tc.v); got != tc.want {
+			t.Fatalf("ExplainValue(%v): got %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
