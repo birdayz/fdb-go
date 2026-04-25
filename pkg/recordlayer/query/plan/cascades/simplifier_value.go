@@ -48,9 +48,19 @@ func SimplifyValue(v Value) Value {
 		// Preserve the original Type — LiteralValue defaults to
 		// TypeUnknown for non-bool / non-nil literals; we know the
 		// arithmetic / cast result type from the source node, so
-		// surface it on the folded ConstantValue.
-		if cv, ok := out.(*ConstantValue); ok && cv.Typ == TypeUnknown {
-			cv.Typ = v.Type()
+		// surface it on the folded ConstantValue / NullValue. Once
+		// the Type hierarchy lands and rules start matching on
+		// `NULL :: TypeInt` vs `NULL :: TypeUnknown`, this carries
+		// the typed-null semantics through the fold path.
+		switch o := out.(type) {
+		case *ConstantValue:
+			if o.Typ == TypeUnknown {
+				o.Typ = v.Type()
+			}
+		case *NullValue:
+			if o.Typ == TypeUnknown {
+				o.Typ = v.Type()
+			}
 		}
 		return out
 	}

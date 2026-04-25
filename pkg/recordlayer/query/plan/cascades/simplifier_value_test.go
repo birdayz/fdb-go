@@ -174,15 +174,64 @@ func TestSimplifyValue_ScalarFunctionPartialFold(t *testing.T) {
 
 func TestSimplifyValue_NULLPropagatesThroughArith(t *testing.T) {
 	t.Parallel()
-	// NULL + 5 → NULL (NullValue, not nil) via fold path.
+	// NULL + 5 → NULL (NullValue, not nil) via fold path. Pin the
+	// Type as well — the source ArithmeticValue is TypeInt, and the
+	// folded NullValue must carry that forward so future type-aware
+	// rules (`NULL :: TypeInt` vs `NULL :: TypeUnknown`) see the
+	// correct annotation.
 	v := &ArithmeticValue{
 		Op:    OpAdd,
 		Left:  NewNullValue(TypeInt),
 		Right: &ConstantValue{Value: int64(5), Typ: TypeInt},
 	}
 	got := SimplifyValue(v)
-	if _, ok := got.(*NullValue); !ok {
+	nv, ok := got.(*NullValue)
+	if !ok {
 		t.Fatalf("NULL + 5 should fold to NullValue, got %T (%v)", got, got)
+	}
+	if nv.Typ != TypeInt {
+		t.Fatalf("NullValue.Typ: got %v, want TypeInt (carried from source)", nv.Typ)
+	}
+}
+
+func TestSimplifyValue_PromoteFold(t *testing.T) {
+	t.Parallel()
+	// PROMOTE(1+2, TypeFloat) → ConstantValue(3) with Typ=TypeFloat.
+	// Mirrors TestSimplifyValue_CastFold for the PromoteValue arm of
+	// isFoldableComposite / simplifyChildren — keeps both cast-like
+	// shapes covered before either grows real wire-up.
+	v := NewPromoteValue(
+		&ArithmeticValue{
+			Op:    OpAdd,
+			Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+			Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+		},
+		TypeFloat,
+	)
+	got := SimplifyValue(v)
+	cv, ok := got.(*ConstantValue)
+	if !ok {
+		t.Fatalf("expected *ConstantValue, got %T", got)
+	}
+	// PromoteValue.Evaluate returns the child's value verbatim at
+	// the seed (no type coercion yet — that lands with the Type
+	// hierarchy port). The folded ConstantValue inherits its Typ
+	// from the PromoteValue.Target.
+	if cv.Value != int64(3) {
+		t.Fatalf("Value: got %v, want 3", cv.Value)
+	}
+	if cv.Typ != TypeFloat {
+		t.Fatalf("Typ: got %v, want TypeFloat (preserved from PROMOTE target)", cv.Typ)
+	}
+}
+
+func TestSimplifyValue_PromotePartialFold(t *testing.T) {
+	t.Parallel()
+	// PROMOTE(name, TypeFloat) — non-constant child; pointer-equal
+	// short-circuit through simplifyChildren.
+	v := NewPromoteValue(&FieldValue{Field: "name", Typ: TypeInt}, TypeFloat)
+	if got := SimplifyValue(v); got != Value(v) {
+		t.Fatal("PROMOTE(field) should be unchanged")
 	}
 }
 

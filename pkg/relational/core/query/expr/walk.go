@@ -24,10 +24,15 @@ import (
 // walkAtom handles:
 //
 //   - FullColumnName → FieldValue (via ResolveIdentifier).
-//   - Constant (integer / string / NULL) → ConstantValue / NullValue.
-//   - MathExpression (+, -, *, /) → ArithmeticValue.
+//   - Constant (integer / float / string / NULL / boolean) →
+//     ConstantValue / NullValue / BooleanValue.
+//   - MathExpression (+, -, *, /, %, MOD, DIV) → ArithmeticValue.
 //   - RecordConstructor (1-element unnamed, i.e. `(x)`) → unwrap.
-//   - FunctionCall (aggregate forms) → AggregateValue.
+//   - FunctionCall:
+//     · aggregate forms (COUNT/SUM/MIN/MAX/AVG) → AggregateValue;
+//     · CAST/CONVERT (SpecificFunction) → CastValue;
+//     · scalar UPPER/LOWER/LENGTH family → ScalarFunctionValue.
+//   - PreparedStatementParameter (`?` / `?name`) → ParameterValue.
 //
 // Everything else returns UnsupportedExpressionShapeError so the
 // caller can fall back to the existing logical-builder path.
