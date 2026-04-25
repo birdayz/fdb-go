@@ -457,6 +457,35 @@ func TestNaiveGenerator_Explain_ExplainWarmCacheSelect(t *testing.T) {
 	}
 }
 
+// EXPLAIN UNION ALL — exercises the SetQuery alternative inside
+// the inner query. Ensures EXPLAIN doesn't choke on compound query
+// shapes.
+func TestNaiveGenerator_Explain_ExplainUnion(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN SELECT id FROM a UNION ALL SELECT id FROM b")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+	for _, want := range []string{"Scan(a)", "Scan(b)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, missing %q (UNION inner)", got, want)
+		}
+	}
+}
+
+// EXPLAIN over a CTE — `WITH … SELECT` flows through the same
+// query-shape path. The text builder handles it; the EXPLAIN wrapper
+// just delegates.
+func TestNaiveGenerator_Explain_ExplainCTE(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN WITH active_users AS (SELECT id FROM users WHERE active = TRUE) SELECT id FROM active_users")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+}
+
 // `EXPLAIN UPDATE` warm-cache path — verifies the catalog-aware
 // builder fires for UPDATE inside EXPLAIN, AND that no actual
 // mutation is attempted (would panic without an FDB connection).
