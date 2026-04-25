@@ -9,12 +9,12 @@ import (
 //
 // Ports Java's
 // `com.apple.foundationdb.record.query.plan.cascades.CorrelationIdentifier`
-// (Java keeps it in the root cascades package; we moved it into our
-// `values/` sub-package per RFC-025 §"Don't split" since values is
-// the only intra-package consumer)
-// (a symbolic ID for a Quantifier — the thing a Value correlates to)
+// — a symbolic ID for a Quantifier (the thing a Value correlates to)
 // and the `Correlated<T>` interface (types that can report and
-// rebind their correlation set).
+// rebind their correlation set). Java keeps `CorrelationIdentifier`
+// in the root cascades package; we moved it into our `values/`
+// sub-package per RFC-025 §"Don't split" since values is the only
+// intra-package consumer.
 //
 // Most Cascades types implement Correlated — Value, QueryPredicate,
 // RelationalExpression, Quantifier. It tells rules which upstream
