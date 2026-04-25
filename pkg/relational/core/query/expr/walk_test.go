@@ -1416,12 +1416,7 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 		{"SELECT * FROM users WHERE REPLACE(name, 'a', 'b')", "REPLACE", cascades.TypeString, 3},
 		// swingshift-50 additions: walker must build ScalarFunctionValue
 		// for the new fn names so the cascades fold path can fire.
-		// LEN deliberately not tested here — it isn't in the parser
-		// grammar's keyword list (line 1375 of RelationalParser.g4),
-		// so SQL `LEN(name)` parses as UserDefinedScalarFunctionCall
-		// which the walker doesn't handle. Reachable today only via
-		// programmatic ScalarFunctionValue{FuncName: "LEN"}; adding
-		// SQL surface needs a parser-grammar edit + regen.
+		{"SELECT * FROM users WHERE LEN(name)", "LEN", cascades.TypeInt, 1},
 		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", cascades.TypeString, 3},
 		// PI() is a zero-arg function — exercises the no-args branch
 		// of the function-call walker (Java's `PI()` parse shape).
