@@ -308,13 +308,13 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (ca
 func scalarFunctionResultType(name string) (cascades.ValueType, bool) {
 	switch name {
 	case "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
-		"CONCAT", "SUBSTRING", "SUBSTR", "REPLACE",
+		"CONCAT", "CONCAT_WS", "SUBSTRING", "SUBSTR", "REPLACE",
 		"REVERSE", "LEFT", "RIGHT":
 		return cascades.TypeString, true
-	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
+	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
 		"POSITION":
 		return cascades.TypeInt, true
-	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG":
+	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG", "PI":
 		return cascades.TypeFloat, true
 	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND",
 		"SIGN", "MOD",
