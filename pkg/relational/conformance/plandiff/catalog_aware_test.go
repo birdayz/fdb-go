@@ -1,0 +1,101 @@
+package plandiff
+
+// Tests for the catalog-aware Go plan-harness path (RFC-022 §4.-1
+// Phase 3). NewExplainOnlyGeneratorWithSchema parses a CREATE SCHEMA
+// TEMPLATE body, builds a synthetic in-memory schema cache, and
+// routes WHERE / DELETE / UPDATE shapes through
+// buildLogicalPlanFor*WithCatalog so cascades.QueryPredicate trees
+// appear in Explain output. These tests pin both the routing and the
+// observable difference vs the text-only baseline.
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+// TestGoEngine_CatalogAwarePathDiffersFromTextOnly pins the
+// observable difference between the text-only and catalog-aware
+// rendering: the catalog path re-renders the WHERE clause via
+// cascades.QueryPredicate.Explain (parens-wrapped, comparison-
+// flattened), the text path emits the canonical source-text.
+//
+// We deliberately don't pin the exact catalog-aware rendering — the
+// rule simplifier may change it — only that it CHANGES, which proves
+// the catalog-aware path is the one that fired.
+func TestGoEngine_CatalogAwarePathDiffersFromTextOnly(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	eng := NewGoEngine()
+	const schema = "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY(id))"
+	const sql = "SELECT id FROM Item WHERE val = 5"
+
+	textOnly := eng.Plan(ctx, Query{Name: "text", SQL: sql})
+	if textOnly.Err != nil {
+		t.Fatalf("text-only plan errored: %v", textOnly.Err)
+	}
+	catalog := eng.Plan(ctx, Query{Name: "catalog", SQL: sql, SchemaTemplate: schema})
+	if catalog.Err != nil {
+		t.Fatalf("catalog-aware plan errored: %v\n  schema: %s", catalog.Err, schema)
+	}
+
+	if textOnly.Tree == catalog.Tree {
+		t.Fatalf("expected catalog-aware Tree to differ from text-only — same shape implies the catalog path didn't fire.\n  tree:\n%s",
+			textOnly.Tree)
+	}
+	if !strings.Contains(catalog.Tree, "Filter(") {
+		t.Fatalf("catalog tree missing Filter(...) shell — wrong rendering path?\n  tree:\n%s", catalog.Tree)
+	}
+}
+
+// TestGoEngine_CatalogAware_AcceptsBareSchemaBody pins the auto-wrap
+// behaviour: the harness's existing corpus passes a bare CREATE TABLE
+// body (mirroring conformance/sql_plan_steps.java#planSql which wraps
+// into CREATE SCHEMA TEMPLATE on the Java side). The Go side wraps
+// the same shape rather than rejecting it.
+func TestGoEngine_CatalogAware_AcceptsBareSchemaBody(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	eng := NewGoEngine()
+
+	cases := []struct {
+		name string
+		ddl  string
+	}{
+		{"bare-table", "CREATE TABLE Item (id BIGINT NOT NULL, name STRING, PRIMARY KEY(id))"},
+		{"explicit-template-header", "CREATE SCHEMA TEMPLATE my_T " +
+			"CREATE TABLE Item (id BIGINT NOT NULL, name STRING, PRIMARY KEY(id))"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := eng.Plan(ctx, Query{Name: tc.name, SQL: "SELECT id FROM Item", SchemaTemplate: tc.ddl})
+			if r.Err != nil {
+				t.Fatalf("plan errored: %v\n  ddl: %s", r.Err, tc.ddl)
+			}
+			if r.Tree == "" {
+				t.Fatalf("plan tree empty")
+			}
+		})
+	}
+}
+
+// TestGoEngine_CatalogAware_RejectsMalformedDDL pins the error path:
+// malformed schema DDL surfaces as a goEngine error rather than a
+// silent fall-through to the text-only path. A silent fallback would
+// hide schema-side bugs in the corpus and make catalog-divergence
+// invisible.
+func TestGoEngine_CatalogAware_RejectsMalformedDDL(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	eng := NewGoEngine()
+	r := eng.Plan(ctx, Query{
+		Name:           "bad",
+		SQL:            "SELECT 1",
+		SchemaTemplate: "THIS IS NOT VALID SQL",
+	})
+	if r.Err == nil {
+		t.Fatalf("expected error on malformed schema DDL, got tree: %q", r.Tree)
+	}
+}

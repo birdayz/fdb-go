@@ -16,6 +16,9 @@ go_library(
 
 go_test(
     name = "plandiff_test",
-    srcs = ["plandiff_test.go"],
+    srcs = [
+        "catalog_aware_test.go",
+        "plandiff_test.go",
+    ],
     embed = [":plandiff"],
 )
