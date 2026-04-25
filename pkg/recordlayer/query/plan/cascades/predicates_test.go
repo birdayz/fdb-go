@@ -196,7 +196,7 @@ func TestNotPredicate_ExplainParens(t *testing.T) {
 			name: "NOT(ComparisonPredicate) — wraps",
 			in: NewNot(NewComparisonPredicate(
 				&FieldValue{Field: "age", Typ: TypeInt},
-				Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+				Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 			)),
 			want: "NOT (age >= 18)",
 		},
@@ -328,11 +328,11 @@ func TestPredicateEquals(t *testing.T) {
 	// ComparisonPredicate structural (same operand name + same op + same literal)
 	c1 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	c2 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	if !PredicateEquals(c1, c2) {
 		t.Fatal("same comparison should be equal")
@@ -340,7 +340,7 @@ func TestPredicateEquals(t *testing.T) {
 	// Different op.
 	c3 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonLessThan, Operand: int64(5)},
+		Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(5))},
 	)
 	if PredicateEquals(c1, c3) {
 		t.Fatal("different ops should not be equal")
@@ -381,25 +381,25 @@ func TestPredicateEquals_DifferentFieldsAreNotEqual(t *testing.T) {
 	t.Parallel()
 	age := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	rank := NewComparisonPredicate(
 		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	if PredicateEquals(age, rank) {
 		t.Fatal("age=5 and rank=5 should NOT be equal — different fields")
 	}
 	age2 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	if !PredicateEquals(age, age2) {
 		t.Fatal("two identical age=5 predicates should be equal")
 	}
 	age10 := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(10)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(10))},
 	)
 	if PredicateEquals(age, age10) {
 		t.Fatal("age=5 and age=10 should NOT be equal — different literals")
@@ -427,18 +427,77 @@ func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 	t.Parallel()
 	field := &FieldValue{Field: "x", Typ: TypeInt}
 	pIn1 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)},
+		Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	})
 	pIn2 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)},
+		Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	})
 	pIn3 := NewComparisonPredicate(field, Comparison{
-		Type: ComparisonIn, Operand: []any{int64(1), int64(2)},
+		Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2)}),
 	})
 	if !PredicateEquals(pIn1, pIn2) {
 		t.Fatal("same IN lists should be equal")
 	}
 	if PredicateEquals(pIn1, pIn3) {
 		t.Fatal("different IN lists should be unequal")
+	}
+}
+
+// PredicateEquals on unary comparisons (IS NULL / IS NOT NULL)
+// must ignore the Operand field — `IS NULL{Operand: nil}` and
+// `IS NULL{Operand: LiteralValue(nil)}` are semantically identical
+// (Eval skips Operand entirely on unary types) and must compare
+// equal even though their structural Operand differs.
+func TestPredicateEquals_UnaryIgnoresOperand(t *testing.T) {
+	t.Parallel()
+	field := &FieldValue{Field: "x", Typ: TypeInt}
+	nilOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull})
+	nullValueOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull, Operand: LiteralValue(nil)})
+	if !PredicateEquals(nilOp, nullValueOp) {
+		t.Fatalf("unary IS NULL with nil vs NullValue Operand should compare equal; got Explain a=%q b=%q",
+			nilOp.Explain(), nullValueOp.Explain())
+	}
+
+	// IS NOT NULL — same property.
+	notNilOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNotNull})
+	notNullValueOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNotNull, Operand: LiteralValue(int64(0))})
+	if !PredicateEquals(notNilOp, notNullValueOp) {
+		t.Fatalf("unary IS NOT NULL must ignore Operand for equality")
+	}
+
+	// Cross-Type: IS NULL vs IS NOT NULL still distinct.
+	if PredicateEquals(nilOp, notNilOp) {
+		t.Fatal("IS NULL vs IS NOT NULL should be unequal")
+	}
+}
+
+// PredicateEquals must consider Comparison.Escape — two LIKE
+// predicates with the same LHS / pattern but different escape runes
+// are distinct. Pin both halves: same-escape → equal,
+// different-escape → unequal.
+func TestPredicateEquals_ComparisonLikeEscape(t *testing.T) {
+	t.Parallel()
+	field := &FieldValue{Field: "name", Typ: TypeString}
+	withBackslash := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"), Escape: '\\',
+	})
+	withBackslash2 := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"), Escape: '\\',
+	})
+	withBang := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"), Escape: '!',
+	})
+	noEscape := NewComparisonPredicate(field, Comparison{
+		Type: ComparisonLike, Operand: LiteralValue("a%b"),
+	})
+
+	if !PredicateEquals(withBackslash, withBackslash2) {
+		t.Fatal("same escape should compare equal")
+	}
+	if PredicateEquals(withBackslash, withBang) {
+		t.Fatal("different escape rune should compare unequal")
+	}
+	if PredicateEquals(withBackslash, noEscape) {
+		t.Fatal("escape vs no-escape should compare unequal")
 	}
 }

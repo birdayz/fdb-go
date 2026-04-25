@@ -93,6 +93,13 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 	if fc == nil {
 		return nil, fmt.Errorf("expr.walkFunctionCall: nil")
 	}
+	// SpecificFunctionCall covers CAST / CONVERT (DataTypeFunctionCall),
+	// plus CASE / current_user / extract / etc. We only wire the
+	// data-type conversions here — anything else returns an
+	// UnsupportedExpressionShapeError so callers fall back cleanly.
+	if spec, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
+		return r.walkSpecificFunction(spec.SpecificFunction())
+	}
 	agg, ok := fc.(*antlrgen.AggregateFunctionCallContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("non-aggregate function call %T", fc)}
@@ -130,6 +137,75 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 		args = []cascades.Value{v}
 	}
 	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
+}
+
+// walkSpecificFunction dispatches the SpecificFunction subtypes.
+// Seed wires CAST / CONVERT data-type conversions; everything else
+// (CASE, current_user, EXTRACT, …) returns an
+// UnsupportedExpressionShapeError so the logical-builder text
+// fallback catches it.
+func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (cascades.Value, error) {
+	if sf == nil {
+		return nil, fmt.Errorf("expr.walkSpecificFunction: nil")
+	}
+	cast, ok := sf.(*antlrgen.DataTypeFunctionCallContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("SpecificFunction ctx %T", sf)}
+	}
+	// CAST and CONVERT share the ctx; both have Expression() +
+	// ConvertedDataType(). Differ only in surface syntax.
+	if cast.CAST() == nil && cast.CONVERT() == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "DataTypeFunctionCall with no CAST/CONVERT token"}
+	}
+	exprCtx := cast.Expression()
+	if exprCtx == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "CAST without Expression"}
+	}
+	inner, err := r.WalkExpression(exprCtx)
+	if err != nil {
+		return nil, err
+	}
+	dt := cast.ConvertedDataType()
+	if dt == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "CAST without ConvertedDataType"}
+	}
+	dtc, ok := dt.(*antlrgen.ConvertedDataTypeContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ConvertedDataType ctx %T", dt)}
+	}
+	pt := dtc.PrimitiveType()
+	if pt == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ConvertedDataType without PrimitiveType"}
+	}
+	target, ok := primitiveTypeToValueType(pt)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{
+			Shape: fmt.Sprintf("CAST target not in seed ValueType (INT/STRING/BOOL); got %q", pt.GetText()),
+		}
+	}
+	return r.ResolveCast(inner, target)
+}
+
+// primitiveTypeToValueType maps the PrimitiveType terminal to a
+// cascades.ValueType. FLOAT / DOUBLE / BYTES / UUID / VECTOR aren't
+// in the seed ValueType enum (Phase 4.0 Type hierarchy port) — they
+// return (_, false) so the walker declines.
+func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (cascades.ValueType, bool) {
+	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
+	if !ok {
+		return cascades.TypeUnknown, false
+	}
+	switch {
+	case ptc.INTEGER() != nil, ptc.BIGINT() != nil:
+		return cascades.TypeInt, true
+	case ptc.STRING() != nil:
+		return cascades.TypeString, true
+	case ptc.BOOLEAN() != nil:
+		return cascades.TypeBool, true
+	case ptc.FLOAT() != nil, ptc.DOUBLE() != nil:
+		return cascades.TypeFloat, true
+	}
+	return cascades.TypeUnknown, false
 }
 
 // aggregateFunctionName reads which terminal is present on the
@@ -193,6 +269,11 @@ func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticO
 		return cascades.OpMul, nil
 	case mo.DIVIDE() != nil:
 		return cascades.OpDiv, nil
+	case mo.MOD() != nil, mo.MODULE() != nil:
+		// MOD / MODULE / `%` all map to OpMod. The grammar treats
+		// `MOD` as a keyword and `MODULE` as the synonym, plus `%`
+		// as the operator (covered by mo.MODULE() in this grammar).
+		return cascades.OpMod, nil
 	}
 	return cascades.OpAdd, &UnsupportedExpressionShapeError{Shape: "MathOperator: " + mo.GetText()}
 }
@@ -465,15 +546,10 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		return inPred, nil
 	case *antlrgen.LikePredicateContext:
-		// `x LIKE 'pattern' [ESCAPE 'c']` — seed wires LIKE without
-		// ESCAPE (cascades.likeMatch doesn't take an escape rune
-		// yet). The grammar parses both, so the ESCAPE form errors
-		// with a specific message pointing at the companion work.
-		if p.ESCAPE() != nil {
-			return nil, &UnsupportedExpressionShapeError{
-				Shape: "LIKE with ESCAPE clause (cascades.likeMatch doesn't take escape rune yet)",
-			}
-		}
+		// `x LIKE 'pattern' [ESCAPE 'c']` — both forms wire through
+		// the cascades likeMatch's escape-aware path. ESCAPE='' or
+		// missing ESCAPE produces escape == 0, which disables
+		// escape handling.
 		lhsVal, err := r.walkAtom(atom)
 		if err != nil {
 			return nil, err
@@ -486,7 +562,22 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		if err != nil {
 			return nil, err
 		}
-		like, err := r.ResolveLike(lhsVal, patConst)
+		var escape rune
+		if p.ESCAPE() != nil {
+			escTok := p.GetEscape()
+			if escTok == nil {
+				return nil, &UnsupportedExpressionShapeError{Shape: "LIKE ESCAPE without escape token"}
+			}
+			escStr := stripStringLiteral(escTok.GetText())
+			runes := []rune(escStr)
+			if len(runes) != 1 {
+				return nil, &UnsupportedExpressionShapeError{
+					Shape: fmt.Sprintf("LIKE ESCAPE expects exactly one character; got %q", escStr),
+				}
+			}
+			escape = runes[0]
+		}
+		like, err := r.ResolveLikeWithEscape(lhsVal, patConst, escape)
 		if err != nil {
 			return nil, err
 		}
@@ -546,7 +637,7 @@ func (r *Resolver) resolveIsBoolean(lhs cascades.Value, literal, negated bool) (
 		return nil, err
 	}
 	eq := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-		Type: cascades.ComparisonEquals, Operand: literal,
+		Type: cascades.ComparisonEquals, Operand: cascades.NewBooleanValue(literal),
 	})
 	isBool := r.ResolveAnd(notNull, eq)
 	if negated {
@@ -650,9 +741,10 @@ func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (cascades.Value
 }
 
 // walkConstant: a literal from the parse tree → ResolveConstant.
-// Seed handles the common shapes (integer literal, string literal).
-// Float / decimal-with-fractional handling is deferred until
-// cascades.TypeFloat lands.
+// Handles integer / float / string / boolean / NULL constants.
+// DecimalConstant covers both DECIMAL_LITERAL (int) and REAL_LITERAL
+// (float) — DecimalLiteralContext exposes both terminal accessors
+// and we dispatch by which is set.
 func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, error) {
 	if c == nil {
 		return nil, fmt.Errorf("expr.walkConstant: nil Constant")
@@ -673,10 +765,42 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, er
 		}
 		return nil, &UnsupportedExpressionShapeError{Shape: "BooleanLiteral with no TRUE/FALSE"}
 	case *antlrgen.DecimalConstantContext:
+		// DecimalLiteralContext wraps either DECIMAL_LITERAL (int)
+		// or REAL_LITERAL (float). Distinguish by which terminal is
+		// non-nil. Fall back to int parse when the literal node is
+		// missing (defensive — shouldn't happen).
+		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
+			if dl.REAL_LITERAL() != nil {
+				text := k.GetText()
+				f, err := strconv.ParseFloat(text, 64)
+				if err != nil {
+					return nil, fmt.Errorf("expr.walkConstant: float parse %q: %w", text, err)
+				}
+				return r.ResolveConstant(f)
+			}
+		}
 		text := k.GetText()
 		n, err := strconv.ParseInt(text, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("expr.walkConstant: integer parse %q: %w", text, err)
+		}
+		return r.ResolveConstant(n)
+	case *antlrgen.NegativeDecimalConstantContext:
+		// `-N` constant — same DecimalLiteral wrapper but with a
+		// leading MINUS. Dispatch on REAL vs DECIMAL again.
+		text := k.GetText()
+		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
+			if dl.REAL_LITERAL() != nil {
+				f, err := strconv.ParseFloat(text, 64)
+				if err != nil {
+					return nil, fmt.Errorf("expr.walkConstant: negative float parse %q: %w", text, err)
+				}
+				return r.ResolveConstant(f)
+			}
+		}
+		n, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expr.walkConstant: negative integer parse %q: %w", text, err)
 		}
 		return r.ResolveConstant(n)
 	case *antlrgen.StringConstantContext:

@@ -39,7 +39,7 @@ func TestComparisonType_Symbol(t *testing.T) {
 
 func TestComparison_Eval_Integers(t *testing.T) {
 	t.Parallel()
-	c := func(ct ComparisonType, rhs any) Comparison { return Comparison{Type: ct, Operand: rhs} }
+	c := func(ct ComparisonType, rhs any) Comparison { return Comparison{Type: ct, Operand: LiteralValue(rhs)} }
 
 	cases := []struct {
 		name string
@@ -80,11 +80,11 @@ func TestComparison_Eval_Integers(t *testing.T) {
 
 func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 	t.Parallel()
-	c := Comparison{Type: ComparisonEquals, Operand: int64(5)}
+	c := Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))}
 	if got := c.Eval(nil); got != TriUnknown {
 		t.Fatalf("left=NULL: got %v", got)
 	}
-	c2 := Comparison{Type: ComparisonEquals, Operand: nil}
+	c2 := Comparison{Type: ComparisonEquals, Operand: LiteralValue(nil)}
 	if got := c2.Eval(int64(5)); got != TriUnknown {
 		t.Fatalf("right=NULL: got %v", got)
 	}
@@ -92,7 +92,7 @@ func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 
 func TestComparison_Eval_TypeMismatchIsUnknown(t *testing.T) {
 	t.Parallel()
-	c := Comparison{Type: ComparisonEquals, Operand: int64(5)}
+	c := Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))}
 	// String vs int: types don't match, cmpAny returns (0, false),
 	// Eval degrades to UNKNOWN per SQL 3VL.
 	if got := c.Eval("5"); got != TriUnknown {
@@ -126,7 +126,7 @@ func TestComparison_Eval_BoolEquality(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.r)}.Eval(tc.l)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -154,7 +154,7 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.r}.Eval(tc.l)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.r)}.Eval(tc.l)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -166,14 +166,14 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 	// semantics, not just pairwise comparators.
 	hit := Comparison{
 		Type:    ComparisonIn,
-		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}},
+		Operand: LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}}),
 	}.Eval([]byte{0x02, 0x03})
 	if hit != TriTrue {
 		t.Errorf("bytes IN list hit: got %v, want TRUE", hit)
 	}
 	miss := Comparison{
 		Type:    ComparisonIn,
-		Operand: []any{[]byte{0x01}, []byte{0x02, 0x03}},
+		Operand: LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}}),
 	}.Eval([]byte{0x99})
 	if miss != TriFalse {
 		t.Errorf("bytes IN list miss: got %v, want FALSE", miss)
@@ -203,7 +203,7 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.rhs}.Eval(tc.left)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -239,7 +239,7 @@ func TestComparison_Eval_IsDistinctFrom(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: tc.rhs}.Eval(tc.left)
+			got := Comparison{Type: tc.op, Operand: LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -271,7 +271,7 @@ func TestComparison_Eval_In(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonIn, Operand: tc.list}.Eval(tc.left)
+			got := Comparison{Type: ComparisonIn, Operand: LiteralValue(tc.list)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -306,7 +306,7 @@ func TestComparison_Eval_Like(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonLike, Operand: tc.pattern}.Eval(tc.s)
+			got := Comparison{Type: ComparisonLike, Operand: LiteralValue(tc.pattern)}.Eval(tc.s)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -317,10 +317,10 @@ func TestComparison_Eval_Like(t *testing.T) {
 // LIKE type mismatch degrades to UNKNOWN.
 func TestComparison_Eval_Like_TypeMismatch(t *testing.T) {
 	t.Parallel()
-	if got := (Comparison{Type: ComparisonLike, Operand: "abc"}).Eval(int64(5)); got != TriUnknown {
+	if got := (Comparison{Type: ComparisonLike, Operand: LiteralValue("abc")}).Eval(int64(5)); got != TriUnknown {
 		t.Fatalf("got %v", got)
 	}
-	if got := (Comparison{Type: ComparisonLike, Operand: int64(5)}).Eval("abc"); got != TriUnknown {
+	if got := (Comparison{Type: ComparisonLike, Operand: LiteralValue(int64(5))}).Eval("abc"); got != TriUnknown {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -414,7 +414,7 @@ func TestComparison_Eval_StartsWith(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonStartsWith, Operand: tc.rhs}.Eval(tc.left)
+			got := Comparison{Type: ComparisonStartsWith, Operand: LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -448,6 +448,45 @@ func TestComparison_Eval_IsNullIsNotNull(t *testing.T) {
 			got := Comparison{Type: tc.op}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// IS NULL / IS NOT NULL with FieldValue LHS — exercise the
+// ComparisonPredicate.Eval path with a row context. Unary
+// comparisons short-circuit the RHS evaluation (Operand stays nil
+// and is never read), so the only signal is the LHS-from-row
+// resolution. Pin the truth table for present-and-non-NULL,
+// present-and-NULL, and missing-from-row.
+func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
+	t.Parallel()
+	isNull := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{Type: ComparisonIsNull},
+	)
+	isNotNull := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{Type: ComparisonIsNotNull},
+	)
+	cases := []struct {
+		name        string
+		row         map[string]any
+		wantNull    TriBool
+		wantNotNull TriBool
+	}{
+		{"present non-NULL", map[string]any{"name": "bob"}, TriFalse, TriTrue},
+		{"present NULL", map[string]any{"name": nil}, TriTrue, TriFalse},
+		{"missing from row", map[string]any{}, TriTrue, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isNull.Eval(tc.row); got != tc.wantNull {
+				t.Errorf("IS NULL: got %v, want %v", got, tc.wantNull)
+			}
+			if got := isNotNull.Eval(tc.row); got != tc.wantNotNull {
+				t.Errorf("IS NOT NULL: got %v, want %v", got, tc.wantNotNull)
 			}
 		})
 	}
@@ -488,7 +527,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "string RHS is quoted",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "name", Typ: TypeString},
-				Comparison{Type: ComparisonEquals, Operand: "bob"},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue("bob")},
 			),
 			want: "name = 'bob'",
 		},
@@ -496,7 +535,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "int RHS is bare",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
-				Comparison{Type: ComparisonGreaterThan, Operand: int64(5)},
+				Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(5))},
 			),
 			want: "id > 5",
 		},
@@ -504,7 +543,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "NULL RHS (rare but possible via constant-fold)",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: nil},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue(nil)},
 			),
 			want: "id = NULL",
 		},
@@ -512,7 +551,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "IN list with mixed types",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "role", Typ: TypeString},
-				Comparison{Type: ComparisonIn, Operand: []any{"admin", "owner", nil}},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{"admin", "owner", nil})},
 			),
 			want: "role IN ('admin', 'owner', NULL)",
 		},
@@ -520,7 +559,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "IN list of ints",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "id", Typ: TypeInt},
-				Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(2), int64(3)}},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)})},
 			),
 			want: "id IN (1, 2, 3)",
 		},
@@ -528,7 +567,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "bool RHS uppercased",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "active", Typ: TypeBool},
-				Comparison{Type: ComparisonEquals, Operand: true},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue(true)},
 			),
 			want: "active = TRUE",
 		},
@@ -536,7 +575,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "bool FALSE uppercased",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "active", Typ: TypeBool},
-				Comparison{Type: ComparisonNotEquals, Operand: false},
+				Comparison{Type: ComparisonNotEquals, Operand: LiteralValue(false)},
 			),
 			want: "active <> FALSE",
 		},
@@ -544,7 +583,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "bytes as SQL hex literal",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "digest", Typ: TypeUnknown},
-				Comparison{Type: ComparisonEquals, Operand: []byte{0x01, 0x02, 0xff}},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{0x01, 0x02, 0xff})},
 			),
 			want: "digest = X'0102ff'",
 		},
@@ -552,7 +591,7 @@ func TestComparisonPredicate_Explain_Binary(t *testing.T) {
 			name: "empty bytes literal",
 			pred: NewComparisonPredicate(
 				&FieldValue{Field: "digest", Typ: TypeUnknown},
-				Comparison{Type: ComparisonEquals, Operand: []byte{}},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{})},
 			),
 			want: "digest = X''",
 		},
@@ -592,7 +631,7 @@ func TestComparisonType_IsUnary(t *testing.T) {
 
 func TestComparison_Eval_Strings(t *testing.T) {
 	t.Parallel()
-	c := Comparison{Type: ComparisonLessThan, Operand: "b"}
+	c := Comparison{Type: ComparisonLessThan, Operand: LiteralValue("b")}
 	if got := c.Eval("a"); got != TriTrue {
 		t.Fatalf("a < b: got %v", got)
 	}
@@ -607,7 +646,7 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	// map. FieldValue.Evaluate resolves the column; Value.Evaluate
 	// now drives the predicate — no more closure seam.
 	operand := &FieldValue{Field: "age", Typ: TypeInt}
-	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}
+	cmp := Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}
 	pred := NewComparisonPredicate(operand, cmp)
 
 	row := map[string]any{"age": int64(21)}
@@ -632,7 +671,7 @@ func TestComparisonPredicate_NilOperand(t *testing.T) {
 	t.Parallel()
 	pred := &ComparisonPredicate{
 		// No Operand set — Eval degrades to UNKNOWN.
-		Comparison: Comparison{Type: ComparisonEquals, Operand: int64(1)},
+		Comparison: Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))},
 	}
 	if got := pred.Eval(nil); got != TriUnknown {
 		t.Fatalf("nil Operand: got %v", got)
@@ -646,9 +685,9 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 	// (age >= 18) AND (rank < 5)
 	tree := NewAnd(
 		NewComparisonPredicate(&FieldValue{Field: "age", Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+			Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}),
 		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt},
-			Comparison{Type: ComparisonLessThan, Operand: int64(5)}),
+			Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(5))}),
 	)
 	if got := tree.Eval(row); got != TriTrue {
 		t.Fatalf("AND: got %v", got)
@@ -670,7 +709,7 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 		Right: &FieldValue{Field: "b", Typ: TypeInt},
 	}
 	pred := NewComparisonPredicate(sum,
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(10)})
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(10))})
 
 	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(7)}); got != TriTrue {
 		t.Fatalf("5+7=12 > 10: got %v", got)
@@ -681,6 +720,701 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	// NULL propagation: a=NULL -> a+b=NULL -> UNKNOWN.
 	if got := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
 		t.Fatalf("a=NULL: got %v", got)
+	}
+}
+
+// Non-constant RHS: `a = b` evaluates both sides against the row
+// context and dispatches through EvalAgainst. Verifies the
+// symmetric-eval path that the Comparison.Operand → Value change
+// unblocks. Before that change the RHS was a plan-time literal —
+// `a = b` couldn't compose at all.
+func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	// age = rank_cutoff (both FieldValues)
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	)
+
+	cases := []struct {
+		name string
+		row  map[string]any
+		want TriBool
+	}{
+		{"equal", map[string]any{"age": int64(18), "cutoff": int64(18)}, TriTrue},
+		{"unequal", map[string]any{"age": int64(21), "cutoff": int64(18)}, TriFalse},
+		{"lhs NULL", map[string]any{"age": nil, "cutoff": int64(18)}, TriUnknown},
+		{"rhs NULL", map[string]any{"age": int64(18), "cutoff": nil}, TriUnknown},
+		{"both NULL", map[string]any{"age": nil, "cutoff": nil}, TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pred.Eval(tc.row); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// `a IS [NOT] DISTINCT FROM b` with both sides as FieldValues —
+// pins the null-safe binary path through ComparisonPredicate.Eval.
+// EvalAgainst's IsDistinctFrom branch treats both sides as
+// already-resolved any-typed values, so a nil from FieldValue
+// (missing-field row) behaves identically to a literal nil.
+func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	dist := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonIsDistinctFrom, Operand: &FieldValue{Field: "b", Typ: TypeInt}},
+	)
+	notDist := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonNotDistinctFrom, Operand: &FieldValue{Field: "b", Typ: TypeInt}},
+	)
+
+	cases := []struct {
+		name        string
+		row         map[string]any
+		wantDist    TriBool
+		wantNotDist TriBool
+	}{
+		{"both NULL", map[string]any{"a": nil, "b": nil}, TriFalse, TriTrue},
+		{"a NULL b 5", map[string]any{"a": nil, "b": int64(5)}, TriTrue, TriFalse},
+		{"a 5 b NULL", map[string]any{"a": int64(5), "b": nil}, TriTrue, TriFalse},
+		{"both 5", map[string]any{"a": int64(5), "b": int64(5)}, TriFalse, TriTrue},
+		{"both 5 vs 6", map[string]any{"a": int64(5), "b": int64(6)}, TriTrue, TriFalse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := dist.Eval(tc.row); got != tc.wantDist {
+				t.Errorf("IS DISTINCT FROM: got %v, want %v", got, tc.wantDist)
+			}
+			if got := notDist.Eval(tc.row); got != tc.wantNotDist {
+				t.Errorf("IS NOT DISTINCT FROM: got %v, want %v", got, tc.wantNotDist)
+			}
+		})
+	}
+}
+
+// `a = b + 1`: RHS is an ArithmeticValue over row columns. Proves
+// arbitrary Value trees compose as RHS, not just FieldValue.
+func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{
+			Type: ComparisonEquals,
+			Operand: &ArithmeticValue{
+				Op:    OpAdd,
+				Left:  &FieldValue{Field: "b", Typ: TypeInt},
+				Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+			},
+		},
+	)
+	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(4)}); got != TriTrue {
+		t.Fatalf("5 = 4+1: got %v", got)
+	}
+	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(5)}); got != TriFalse {
+		t.Fatalf("5 = 5+1: got %v", got)
+	}
+}
+
+// Plan-time constant-fold must NOT fire when the RHS is non-constant
+// — `col = field` cannot be decided at plan time. The simplifier
+// rule gates on IsConstantValue(RHS) per the Value migration.
+func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "col", Typ: TypeInt}},
+	)
+	if got := FireRule(rule, pred); len(got) != 0 {
+		t.Fatalf("expected no yield (non-constant RHS), got %d", len(got))
+	}
+}
+
+// Deeply-nested constant trees fold end-to-end: a CastValue
+// wrapping a ConstantValue, inside an ArithmeticValue, on the RHS
+// of a constant-LHS comparison. Pins that constantLiteral's
+// fall-through to EvaluateConstant correctly recurses through
+// composites without bailing on intermediate non-leaf shapes.
+func TestComparisonConstantSimplify_DeeplyNestedConstants_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	// `5 = CAST(5 AS INT) + 0`
+	rhs := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeInt),
+		Right: &ConstantValue{Value: int64(0), Typ: TypeInt},
+	}
+	pred := NewComparisonPredicate(
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: rhs},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("5 = CAST(5 AS INT) + 0: got %v, want TRUE", cp.Value)
+	}
+}
+
+// Plan-time constant-fold fires when BOTH sides are constant. Pins
+// the Value-wrapped RHS variant: `5 = 5` folds to TRUE regardless
+// of whether the RHS is a raw literal or a ConstantValue.
+func TestComparisonConstantSimplify_ConstantValueRHS_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &ConstantValue{Value: int64(5), Typ: TypeInt}},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("5=5 should be TRUE, got %v", cp.Value)
+	}
+}
+
+// Non-constant RHS Explain — formatComparisonRHS routes to
+// ExplainValue when IsConstantValue(Operand) is false. Pins the
+// rendering for FieldValue / ArithmeticValue / CastValue RHS shapes
+// the Operand → Value migration unblocked.
+func TestComparisonPredicate_Explain_NonConstantRHS(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want string
+	}{
+		{
+			name: "FieldValue RHS",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "age", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+			),
+			want: "age = cutoff",
+		},
+		{
+			name: "Arithmetic RHS over fields",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "a", Typ: TypeInt},
+				Comparison{Type: ComparisonLessThan, Operand: &ArithmeticValue{
+					Op:    OpAdd,
+					Left:  &FieldValue{Field: "b", Typ: TypeInt},
+					Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+				}},
+			),
+			want: "a < (b + 1)",
+		},
+		{
+			name: "CastValue RHS over field",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "id", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: NewCastValue(&FieldValue{Field: "raw", Typ: TypeString}, TypeInt)},
+			),
+			want: "id = CAST(raw AS INT)",
+		},
+		{
+			// Composite constant RHS (CAST over literal) — Explain
+			// preserves the user-written shape rather than collapsing
+			// to the folded literal. The simplifier handles the fold;
+			// rendering doesn't.
+			name: "CastValue RHS over constant preserves shape",
+			pred: NewComparisonPredicate(
+				&FieldValue{Field: "x", Typ: TypeInt},
+				Comparison{Type: ComparisonEquals, Operand: NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeInt)},
+			),
+			want: "x = CAST(5 AS INT)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.pred.Explain(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// LiteralValue wraps Go-native literals in the matching Value
+// subtype. Pins: nil → NullValue, bool → BooleanValue (with the
+// bool-pointer contract), everything else → ConstantValue.
+func TestLiteralValue(t *testing.T) {
+	t.Parallel()
+	// Nil literal becomes NullValue, NOT ConstantValue{Value: nil}.
+	// The simplifier distinguishes these — NullValue matches the
+	// constant-fold whitelist cleanly, ConstantValue with Value=nil
+	// would too but conflates with typed missing values.
+	if _, ok := LiteralValue(nil).(*NullValue); !ok {
+		t.Fatalf("nil → %T, want *NullValue", LiteralValue(nil))
+	}
+	// Bool → BooleanValue (not ConstantValue{Value: bool}). The
+	// IS TRUE / IS FALSE desugar + the constant-fold rule both
+	// match *BooleanValue specifically.
+	if _, ok := LiteralValue(true).(*BooleanValue); !ok {
+		t.Fatalf("true → %T, want *BooleanValue", LiteralValue(true))
+	}
+	// Everything else → ConstantValue with Value preserved verbatim.
+	cv, ok := LiteralValue(int64(42)).(*ConstantValue)
+	if !ok {
+		t.Fatalf("int64 → %T, want *ConstantValue", LiteralValue(int64(42)))
+	}
+	if cv.Value != int64(42) {
+		t.Fatalf("int64 Value: got %v, want 42", cv.Value)
+	}
+	// String preserved verbatim (no quoting in the stored Value).
+	cs := LiteralValue("hello").(*ConstantValue)
+	if cs.Value != "hello" {
+		t.Fatalf("string Value: got %v, want hello", cs.Value)
+	}
+	// []any stays []any — IN-list callers depend on this shape.
+	list := LiteralValue([]any{int64(1), int64(2), int64(3)}).(*ConstantValue)
+	arr, ok := list.Value.([]any)
+	if !ok || len(arr) != 3 {
+		t.Fatalf("[]any Value: got %v", list.Value)
+	}
+}
+
+// NewLiteralComparison is the common-case Comparison constructor.
+// It uses LiteralValue internally; the test pins that the wrapper
+// composes correctly (Type preserved, RHS wrapped).
+func TestNewLiteralComparison(t *testing.T) {
+	t.Parallel()
+	c := NewLiteralComparison(ComparisonGreaterThan, int64(18))
+	if c.Type != ComparisonGreaterThan {
+		t.Fatalf("Type: got %v", c.Type)
+	}
+	cv, ok := c.Operand.(*ConstantValue)
+	if !ok {
+		t.Fatalf("Operand: %T", c.Operand)
+	}
+	if cv.Value != int64(18) {
+		t.Fatalf("wrapped Value: %v", cv.Value)
+	}
+	// Unary types also accept a nil literal — Operand becomes
+	// NullValue (ignored at eval time for unary).
+	u := NewLiteralComparison(ComparisonIsNull, nil)
+	if _, ok := u.Operand.(*NullValue); !ok {
+		t.Fatalf("unary nil literal → %T, want *NullValue", u.Operand)
+	}
+}
+
+// Composite-constant LHS now folds at plan time. Before this
+// pass, constantLiteral only recognised *ConstantValue / *NullValue /
+// *BooleanValue and missed `CAST(5 AS STRING)` (a CastValue with a
+// constant child). Now constantLiteral falls through to
+// EvaluateConstant so composite-constant LHS like CAST / arithmetic
+// over literals folds correctly.
+func TestComparisonConstantSimplify_CompositeConstantLHS_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	// CAST(5 AS INT) is a composite constant — child ConstantValue is
+	// constant, so the whole CastValue evaluates without a row.
+	lhs := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeInt)
+	pred := NewComparisonPredicate(
+		lhs,
+		Comparison{Type: ComparisonEquals, Operand: &ConstantValue{Value: int64(5), Typ: TypeInt}},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield (composite-constant fold), got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("CAST(5 AS INT) = 5: got %v, want TRUE", cp.Value)
+	}
+}
+
+// LIKE with ESCAPE — pin the matcher's escape-handling truth
+// table. escape == 0 disables (regression check: original
+// semantics preserved). Non-zero escape makes the next char
+// literal. Trailing escape rune (no following char) is treated
+// as no-match — required by SQL semantics.
+func TestLikeMatch_Escape(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		pattern string
+		s       string
+		escape  rune
+		want    bool
+	}{
+		// escape=0 → no escape handling, original wildcard semantics.
+		{"no-escape: %% matches anything", "%", "a%b", 0, true},
+		// `\%` with escape `\` matches literal `%`.
+		{"escape blocks wildcard", `a\%b`, "a%b", '\\', true},
+		{"escape blocks wildcard, x rejected", `a\%b`, "axb", '\\', false},
+		// `\_` with escape `\` matches literal `_`.
+		{"escape blocks underscore wildcard", `a\_b`, "a_b", '\\', true},
+		{"escape blocks underscore, x rejected", `a\_b`, "axb", '\\', false},
+		// Custom escape character (`!` instead of `\`).
+		{"custom escape !", `a!%b`, "a%b", '!', true},
+		// Mixed wildcard + escaped: `a\%%c` = literal a, literal %, then anything-c.
+		{"escaped + wildcard", `a\%%c`, "a%xyzc", '\\', true},
+		{"escaped + wildcard, no leading %", `a\%%c`, "axyzc", '\\', false},
+		// Trailing escape with nothing after — pattern can't match
+		// (the escape-of-EOF is a malformed pattern; our impl
+		// rejects it rather than silently treating escape as literal).
+		{"trailing escape, all input consumed", `a\`, "a", '\\', false},
+		// Lone trailing escape with input still to match — also
+		// rejected. Same malformed-pattern contract: an escape with
+		// no following char is never a valid match, regardless of
+		// whether input remains. (Fixed by the fuzz-found bug; this
+		// row pins the symmetric behavior.)
+		{"trailing escape, input still remaining", `a\`, `a\`, '\\', false},
+		// Escape preceding a non-meta character: implementation-
+		// defined per SQL standard. Our matcher consumes the escape
+		// and treats the next character as a literal regardless of
+		// meta-ness — so `a\b` matches `ab`, NOT `a\b`. Documents
+		// the chosen behavior.
+		{"escape over non-meta yields literal next char", `a\b`, "ab", '\\', true},
+		{"escape over non-meta does NOT match escape+next", `a\b`, `a\b`, '\\', false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := likeMatch(tc.pattern, tc.s, tc.escape); got != tc.want {
+				t.Fatalf("got %v, want %v (pattern=%q s=%q escape=%q)",
+					got, tc.want, tc.pattern, tc.s, tc.escape)
+			}
+		})
+	}
+}
+
+// LIKE+ESCAPE Explain renders the ESCAPE clause inline so the
+// output round-trips back to recognisable SQL.
+func TestComparisonPredicate_Explain_LikeEscape(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: LiteralValue(`a\%b`),
+			Escape:  '\\',
+		},
+	)
+	want := `name LIKE 'a\%b' ESCAPE '\'`
+	if got := pred.Explain(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// LIKE+ESCAPE with single-quote as the escape character produces
+// valid SQL — the quote inside the literal is doubled per SQL
+// string-literal escaping. Without doubling, the output `ESCAPE ”'`
+// would be unbalanced and unparseable.
+func TestComparisonPredicate_Explain_LikeEscape_SingleQuoteEscape(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: LiteralValue("a%b"),
+			Escape:  '\'',
+		},
+	)
+	want := `name LIKE 'a%b' ESCAPE ''''`
+	if got := pred.Explain(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// LIKE without ESCAPE doesn't emit a stray "ESCAPE ”" clause.
+func TestComparisonPredicate_Explain_LikeNoEscape(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{Type: ComparisonLike, Operand: LiteralValue("hel%")},
+	)
+	want := `name LIKE 'hel%'`
+	if got := pred.Explain(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// Comparison.Eval with non-zero Escape evaluates LIKE through the
+// escape-aware matcher. Pin the round-trip from Comparison{Escape}
+// down to likeMatch.
+func TestComparison_Eval_LikeWithEscape(t *testing.T) {
+	t.Parallel()
+	c := Comparison{
+		Type:    ComparisonLike,
+		Operand: LiteralValue(`a\%b`),
+		Escape:  '\\',
+	}
+	if got := c.Eval("a%b"); got != TriTrue {
+		t.Errorf("a%%b: got %v, want TRUE", got)
+	}
+	if got := c.Eval("axb"); got != TriFalse {
+		t.Errorf("axb: got %v, want FALSE (escape blocked wildcard)", got)
+	}
+}
+
+// LIKE / STARTS_WITH / IN with both sides constant fold all the way
+// to a ConstantPredicate end-to-end. Pins that the constant-fold
+// rule covers each comparison family — easy to silently break by
+// adding a new ComparisonType to the dispatch without wiring fold
+// support, and these checks would catch it.
+func TestSimplify_StringPredicates_FoldEndToEnd(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+		want TriBool
+	}{
+		{
+			name: "LIKE matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "hello", Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue("hel%")},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "LIKE doesn't match",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "foo", Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue("bar")},
+			),
+			want: TriFalse,
+		},
+		{
+			name: "LIKE+ESCAPE",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "a%b", Typ: TypeString},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue(`a\%b`), Escape: '\\'},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "STARTS_WITH matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: "hello", Typ: TypeString},
+				Comparison{Type: ComparisonStartsWith, Operand: LiteralValue("hel")},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "IN matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: int64(5), Typ: TypeInt},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(5), int64(9)})},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "IN doesn't match",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: int64(99), Typ: TypeInt},
+				Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2)})},
+			),
+			want: TriFalse,
+		},
+		{
+			name: "bytes equality matches",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: []byte{0x01, 0x02}, Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{0x01, 0x02})},
+			),
+			want: TriTrue,
+		},
+		{
+			name: "bytes equality differs",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: []byte{0x01}, Typ: TypeUnknown},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue([]byte{0x02})},
+			),
+			want: TriFalse,
+		},
+	}
+	rule := NewComparisonConstantSimplifyRule()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := FireRule(rule, tc.pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T", got[0])
+			}
+			if cp.Value != tc.want {
+				t.Fatalf("got %v, want %v", cp.Value, tc.want)
+			}
+		})
+	}
+}
+
+// IS [NOT] DISTINCT FROM with both sides constant folds at plan
+// time. Pin all four corners of the null-safety truth table:
+//   - NULL IS DISTINCT FROM NULL → FALSE (NOT distinct, both NULL)
+//   - 5 IS NOT DISTINCT FROM 5 → TRUE (equal)
+//   - NULL IS DISTINCT FROM 5 → TRUE (one is NULL, one isn't)
+//   - 5 IS NOT DISTINCT FROM NULL → FALSE
+//
+// IS [NOT] DISTINCT FROM is the SQL null-safe equality / inequality
+// — always resolves to TRUE/FALSE, never UNKNOWN. Catches a future
+// regression where the constant-fold rule narrows its dispatch
+// table and stops handling these types.
+func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		lhs  Value
+		op   ComparisonType
+		rhs  Value
+		want TriBool
+	}{
+		{
+			"NULL IS DISTINCT FROM NULL",
+			&NullValue{Typ: TypeUnknown}, ComparisonIsDistinctFrom, &NullValue{Typ: TypeUnknown},
+			TriFalse,
+		},
+		{
+			"5 IS NOT DISTINCT FROM 5",
+			&ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonNotDistinctFrom, &ConstantValue{Value: int64(5), Typ: TypeInt},
+			TriTrue,
+		},
+		{
+			"NULL IS DISTINCT FROM 5",
+			&NullValue{Typ: TypeUnknown}, ComparisonIsDistinctFrom, &ConstantValue{Value: int64(5), Typ: TypeInt},
+			TriTrue,
+		},
+		{
+			"5 IS NOT DISTINCT FROM NULL",
+			&ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonNotDistinctFrom, &NullValue{Typ: TypeUnknown},
+			TriFalse,
+		},
+	}
+	rule := NewComparisonConstantSimplifyRule()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pred := NewComparisonPredicate(tc.lhs, Comparison{Type: tc.op, Operand: tc.rhs})
+			got := FireRule(rule, pred)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 yield, got %d", len(got))
+			}
+			cp, ok := got[0].(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T", got[0])
+			}
+			if cp.Value != tc.want {
+				t.Fatalf("got %v, want %v", cp.Value, tc.want)
+			}
+		})
+	}
+}
+
+// CAST(5 AS FLOAT) > 3.14 — composite-constant LHS via CastValue
+// over an int. CastValue.Evaluate now handles TypeFloat, so the
+// constant-fold rule unwraps to float64(5) and compares against
+// 3.14 → TRUE. Round-12 reviewer flagged the missing TypeFloat
+// case in CastValue.Evaluate which silently produced UNKNOWN.
+func TestComparisonConstantSimplify_CastFloat_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeFloat),
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(float64(3.14))},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("CAST(5 AS FLOAT) > 3.14: got %v, want TRUE", cp.Value)
+	}
+}
+
+// Float comparisons through ComparisonPredicate.Eval — both operands
+// float, mixed int/float (cmpAny promotion), NULL propagation.
+// Pinned because the float comparison path reaches further than
+// the arithmetic path (ArithmeticValue.Evaluate stays int-only;
+// see handover follow-up "Arithmetic over floats").
+func TestComparisonPredicate_FloatComparisons(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "price", Typ: TypeFloat},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(float64(3.14))},
+	)
+	cases := []struct {
+		name string
+		row  map[string]any
+		want TriBool
+	}{
+		{"4.5 > 3.14", map[string]any{"price": float64(4.5)}, TriTrue},
+		{"2.0 > 3.14", map[string]any{"price": float64(2.0)}, TriFalse},
+		{"int 5 > 3.14 (cross-type promotion)", map[string]any{"price": int64(5)}, TriTrue},
+		{"int 2 > 3.14 (cross-type promotion)", map[string]any{"price": int64(2)}, TriFalse},
+		{"NULL > 3.14", map[string]any{"price": nil}, TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pred.Eval(tc.row); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// LIKE with FieldValue RHS — the Operand→Value migration unlocks
+// dynamic patterns sourced from the row. Each row's `pattern`
+// column drives the LIKE match against that same row's `name`.
+// Non-string operands degrade to UNKNOWN per SQL 3VL.
+func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "name", Typ: TypeString},
+		Comparison{
+			Type:    ComparisonLike,
+			Operand: &FieldValue{Field: "pattern", Typ: TypeString},
+		},
+	)
+	cases := []struct {
+		row  map[string]any
+		want TriBool
+	}{
+		{map[string]any{"name": "hello", "pattern": "hel%"}, TriTrue},
+		{map[string]any{"name": "hello", "pattern": "world"}, TriFalse},
+		{map[string]any{"name": "hello", "pattern": "%"}, TriTrue},
+		{map[string]any{"name": "abc", "pattern": "_b_"}, TriTrue},
+		// NULL pattern → UNKNOWN per SQL 3VL.
+		{map[string]any{"name": "hello", "pattern": nil}, TriUnknown},
+		// NULL name → UNKNOWN.
+		{map[string]any{"name": nil, "pattern": "hel%"}, TriUnknown},
+		// Non-string pattern (numeric mismatch) → UNKNOWN.
+		{map[string]any{"name": "hello", "pattern": int64(5)}, TriUnknown},
+	}
+	for _, tc := range cases {
+		if got := pred.Eval(tc.row); got != tc.want {
+			t.Errorf("row=%v: got %v, want %v", tc.row, got, tc.want)
+		}
 	}
 }
 
@@ -708,7 +1442,7 @@ func FuzzLikeMatch(f *testing.F) {
 		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
 			t.Skip()
 		}
-		got := likeMatch(pattern, s)
+		got := likeMatch(pattern, s, 0)
 		want := likeMatchRegexOracle(pattern, s)
 		if got != want {
 			t.Fatalf("mismatch: pattern=%q s=%q got=%v want=%v",
@@ -720,12 +1454,29 @@ func FuzzLikeMatch(f *testing.F) {
 // likeMatchRegexOracle is a known-good reference impl that translates
 // the LIKE pattern to a Go regex and runs it anchored.
 func likeMatchRegexOracle(pattern, s string) bool {
+	return likeMatchRegexOracleWithEscape(pattern, s, 0)
+}
+
+// likeMatchRegexOracleWithEscape is the escape-aware oracle. When
+// escape != 0, the rune in the pattern equal to escape consumes the
+// next character and emits it as a regex-quoted literal — exactly
+// the contract likeMatch documents. A trailing escape (no following
+// char) is malformed: the oracle returns false uniformly, mirroring
+// likeMatch's malformed-pattern handling.
+func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
+	runes := []rune(pattern)
 	var b strings.Builder
-	// (?s) flag: . matches newlines too — matches SQL LIKE's
-	// byte-any semantics where `%` matches any character including
-	// \n / \r, not just printable chars.
 	b.WriteString("(?s)^")
-	for _, r := range pattern {
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if escape != 0 && r == escape {
+			if i+1 >= len(runes) {
+				return false // trailing escape — malformed
+			}
+			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
+			i++
+			continue
+		}
 		switch r {
 		case '%':
 			b.WriteString(".*")
@@ -738,4 +1489,45 @@ func likeMatchRegexOracle(pattern, s string) bool {
 	b.WriteString("$")
 	re := regexp.MustCompile(b.String())
 	return re.MatchString(s)
+}
+
+// FuzzLikeMatchEscape — same regex-oracle cross-check as FuzzLikeMatch
+// but feeds a non-zero escape rune through both implementations.
+// The escape rune itself is fuzzed via an int8 parameter (mapped to
+// printable ASCII) so adversarial cases like escape=='%' or '_'
+// (escape character collides with a wildcard) get coverage too.
+//
+// Catches divergence between the matcher's escape handling and the
+// oracle on adversarial pattern/escape combinations.
+func FuzzLikeMatchEscape(f *testing.F) {
+	// Seeds covering the documented escape behaviors. The third
+	// parameter is the escape-char index — we map it to a printable
+	// ASCII rune below so the fuzzer explores `\\`, `!`, `%`, `_`,
+	// etc. without invalid-UTF-8 noise.
+	f.Add(`a\%b`, "a%b", int8(0)) // escape='\\'
+	f.Add(`a\_b`, "a_b", int8(0)) // escape='\\'
+	f.Add(`%\%`, "x%", int8(0))   // escape='\\'
+	f.Add(`\%`, "%", int8(0))     // escape='\\'
+	f.Add(`\`, "", int8(0))       // escape='\\'
+	f.Add(`a!%b`, "a%b", int8(1)) // escape='!'
+	f.Add(`%%%`, "abc", int8(2))  // escape='%' — collides with wildcard
+	f.Fuzz(func(t *testing.T, pattern, s string, escIdx int8) {
+		if len(pattern) > 128 || len(s) > 128 {
+			t.Skip()
+		}
+		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
+			t.Skip()
+		}
+		// Map the int8 index to a printable rune. Using a small set
+		// keeps the fuzz space tractable while still hitting the
+		// adversarial escape-equals-wildcard cases.
+		escapeChars := []rune{'\\', '!', '%', '_', '#', '@'}
+		escape := escapeChars[(int(escIdx)%len(escapeChars)+len(escapeChars))%len(escapeChars)]
+		got := likeMatch(pattern, s, escape)
+		want := likeMatchRegexOracleWithEscape(pattern, s, escape)
+		if got != want {
+			t.Fatalf("mismatch: pattern=%q s=%q escape=%q got=%v want=%v",
+				pattern, s, escape, got, want)
+		}
+	})
 }

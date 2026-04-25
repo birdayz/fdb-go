@@ -193,7 +193,8 @@ func TestWalkPredicate_Comparison(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonEquals {
 		t.Fatalf("Type: got %v, want Equals", cp.Comparison.Type)
 	}
-	if cp.Comparison.Operand != int64(1) {
+	rhsLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || rhsLit != int64(1) {
 		t.Fatalf("Operand: got %v, want 1", cp.Comparison.Operand)
 	}
 	// Evaluate.
@@ -586,7 +587,11 @@ func TestWalkPredicate_In(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonIn {
 		t.Fatalf("Type: got %v, want In", cp.Comparison.Type)
 	}
-	list, ok := cp.Comparison.Operand.([]any)
+	lit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok {
+		t.Fatalf("Operand not constant: %v", cp.Comparison.Operand)
+	}
+	list, ok := lit.([]any)
 	if !ok || len(list) != 3 {
 		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
 	}
@@ -633,7 +638,8 @@ func TestWalkPredicate_Like(t *testing.T) {
 	if cp.Comparison.Type != cascades.ComparisonLike {
 		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
 	}
-	if cp.Comparison.Operand != "hel%" {
+	patLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	if !ok || patLit != "hel%" {
 		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
 	}
 }
@@ -653,15 +659,103 @@ func TestWalkPredicate_NotLike(t *testing.T) {
 	}
 }
 
-func TestWalkPredicate_Like_Escape_Unsupported(t *testing.T) {
+// LIKE with ESCAPE is now supported — verify the escape rune
+// reaches the ComparisonPredicate and the matcher honours it.
+// `'a\%b' ESCAPE '\'` matches the literal 3-char string `a%b`.
+func TestWalkPredicate_LikeEscape(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name LIKE 'a\\\\%b' ESCAPE '\\\\'")
+	// SQL: name LIKE 'a\%b' ESCAPE '\'  — Go raw string keeps the
+	// backslash: ESCAPE='\\' is the literal char `\` after the
+	// SQL string-literal unescape.
+	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name LIKE 'a\%b' ESCAPE '\'`)
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if cp.Comparison.Type != cascades.ComparisonLike {
+		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
+	}
+	if cp.Comparison.Escape != '\\' {
+		t.Fatalf("Escape: got %q, want %q", cp.Comparison.Escape, '\\')
+	}
 
-	_, err := r.WalkPredicate(ctx)
-	if err == nil {
-		t.Fatal("expected UnsupportedExpressionShapeError for LIKE with ESCAPE")
+	// Eval truth table — `\%` is a literal `%`, so the pattern
+	// matches `a%b` and rejects `axb` (the `\` did NOT mean wildcard).
+	cases := []struct {
+		s    string
+		want cascades.TriBool
+	}{
+		{"a%b", cascades.TriTrue},
+		{"axb", cascades.TriFalse}, // wildcard interpretation would say true; escape blocks it
+		{"a%bb", cascades.TriFalse},
+	}
+	for _, tc := range cases {
+		got := pred.Eval(map[string]any{"NAME": tc.s})
+		if got != tc.want {
+			t.Errorf("Eval(%q): got %v, want %v", tc.s, got, tc.want)
+		}
+	}
+}
+
+// NOT LIKE with ESCAPE — the round-6 reviewer noted this combo
+// wasn't pinned. The walker resolves the inner LIKE+ESCAPE then
+// wraps in a NotPredicate, so Eval should be the negation of the
+// LIKE+ESCAPE truth table.
+func TestWalkPredicate_NotLikeEscape(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name NOT LIKE 'a\%b' ESCAPE '\'`)
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	not, ok := pred.(*cascades.NotPredicate)
+	if !ok {
+		t.Fatalf("expected *NotPredicate, got %T", pred)
+	}
+	cp, ok := not.Child.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected NOT to wrap ComparisonPredicate, got %T", not.Child)
+	}
+	if cp.Comparison.Type != cascades.ComparisonLike {
+		t.Fatalf("inner Type: got %v, want Like", cp.Comparison.Type)
+	}
+	if cp.Comparison.Escape != '\\' {
+		t.Fatalf("inner Escape: got %q, want %q", cp.Comparison.Escape, '\\')
+	}
+	// NOT LIKE Eval: the literal `a%b` matches the pattern (so LIKE=TRUE)
+	// → NOT LIKE = FALSE; `axb` doesn't match (LIKE=FALSE) → NOT LIKE = TRUE.
+	cases := []struct {
+		s    string
+		want cascades.TriBool
+	}{
+		{"a%b", cascades.TriFalse},
+		{"axb", cascades.TriTrue}, // escape blocks wildcard, so axb is NOT a match for `a\%b`
+		{"a%bb", cascades.TriTrue},
+	}
+	for _, tc := range cases {
+		if got := pred.Eval(map[string]any{"NAME": tc.s}); got != tc.want {
+			t.Errorf("NOT LIKE Eval(%q): got %v, want %v", tc.s, got, tc.want)
+		}
+	}
+}
+
+// Multi-character escape is invalid. The walker must reject
+// rather than silently consuming only the first char.
+func TestWalkPredicate_LikeEscape_MultiChar_Rejected(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name LIKE 'a%' ESCAPE 'XY'`)
+	if _, err := r.WalkPredicate(ctx); err == nil {
+		t.Fatal("expected error for multi-char ESCAPE")
 	}
 }
 
@@ -981,5 +1075,214 @@ func TestWalkExpression_NilContext(t *testing.T) {
 	r := expr.New(a, s)
 	if _, err := r.WalkExpression(nil); err == nil {
 		t.Fatal("expected error for nil context")
+	}
+}
+
+// Float literal → ConstantValue{Typ: TypeFloat}. Walker handles
+// `3.14`, `0.5`, scientific notation, and negative forms via
+// DecimalConstant + NegativeDecimalConstant dispatch on
+// REAL_LITERAL terminal.
+func TestWalkExpression_FloatLiteral(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	cases := map[string]float64{
+		"3.14":    3.14,
+		"0.5":     0.5,
+		"-2.5":    -2.5,
+		"1e2":     100,
+		"-1.5e10": -1.5e10,
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk %q: %v", sql, err)
+			}
+			cv, ok := v.(*cascades.ConstantValue)
+			if !ok {
+				t.Fatalf("expected *ConstantValue, got %T", v)
+			}
+			if cv.Typ != cascades.TypeFloat {
+				t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
+			}
+			if cv.Value != want {
+				t.Fatalf("Value: got %v, want %v", cv.Value, want)
+			}
+		})
+	}
+}
+
+// MOD operator — walker produces an ArithmeticValue with Op=OpMod
+// for both `a % b` and `a MOD b` syntactic forms. Eval returns
+// truncated-toward-zero modulo (Go's `%`); MOD by zero returns nil
+// (NULL-at-Value-layer).
+func TestWalkExpression_ModuloOperator(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	for _, sql := range []string{"id % 7", "id MOD 7"} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			av, ok := v.(*cascades.ArithmeticValue)
+			if !ok {
+				t.Fatalf("expected *ArithmeticValue, got %T", v)
+			}
+			if av.Op != cascades.OpMod {
+				t.Fatalf("Op: got %v, want OpMod", av.Op)
+			}
+			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(2) {
+				t.Errorf("23 %% 7: got %v, want 2", got)
+			}
+		})
+	}
+}
+
+// CAST(col AS INTEGER): walker produces a CastValue over the column
+// FieldValue. Target ValueType mirrors the primitive-type token. The
+// CAST shape is wired via SpecificFunction → DataTypeFunctionCall.
+func TestWalkExpression_CastInteger(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CAST(name AS INTEGER)")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cv, ok := v.(*cascades.CastValue)
+	if !ok {
+		t.Fatalf("expected *CastValue, got %T", v)
+	}
+	if cv.Target != cascades.TypeInt {
+		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
+	}
+	fv, ok := cv.Child.(*cascades.FieldValue)
+	if !ok || fv.Field != "NAME" {
+		t.Fatalf("Child: got %v", cv.Child)
+	}
+}
+
+// CAST to STRING + BOOLEAN also compose; BIGINT aliases INTEGER.
+func TestWalkExpression_CastTargets(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	cases := map[string]cascades.ValueType{
+		"CAST(name AS STRING)":  cascades.TypeString,
+		"CAST(name AS BOOLEAN)": cascades.TypeBool,
+		"CAST(name AS BIGINT)":  cascades.TypeInt,
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			cv := v.(*cascades.CastValue)
+			if cv.Target != want {
+				t.Fatalf("%q: got %v, want %v", sql, cv.Target, want)
+			}
+		})
+	}
+}
+
+// CAST to a type outside the seed ValueType — FLOAT / DOUBLE /
+// BYTES / UUID / VECTOR — returns UnsupportedExpressionShapeError.
+// Waits on the Phase 4.0 Type hierarchy port.
+func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	cases := []string{
+		// FLOAT / DOUBLE moved to TestWalkExpression_CastFloat now
+		// that TypeFloat exists in the seed enum. BYTES still
+		// declines pending the full Type hierarchy port.
+		"CAST(name AS BYTES)",
+	}
+	for _, sql := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			if _, err := r.WalkExpression(ctx); err == nil {
+				t.Fatalf("expected UnsupportedExpressionShapeError for %q", sql)
+			}
+		})
+	}
+}
+
+// CAST AS FLOAT / DOUBLE → CastValue{Target: TypeFloat}. Walker now
+// supports float casts after TypeFloat landed.
+func TestWalkExpression_CastFloat(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	for _, sql := range []string{"CAST(name AS FLOAT)", "CAST(name AS DOUBLE)"} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			cv, ok := v.(*cascades.CastValue)
+			if !ok {
+				t.Fatalf("expected *CastValue, got %T", v)
+			}
+			if cv.Target != cascades.TypeFloat {
+				t.Fatalf("Target: got %v, want TypeFloat", cv.Target)
+			}
+		})
+	}
+}
+
+// CONVERT(expr, type) is the alternate surface for the same
+// DataTypeFunctionCall production. Walker shares one path so the
+// resulting CastValue is identical to CAST(expr AS type).
+func TestWalkExpression_ConvertSyntax(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CONVERT(name, INTEGER)")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cv, ok := v.(*cascades.CastValue)
+	if !ok {
+		t.Fatalf("expected *CastValue, got %T", v)
+	}
+	if cv.Target != cascades.TypeInt {
+		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
+	}
+}
+
+// CAST inside a WHERE predicate — real-world shape. Walker resolves
+// the CAST into a CastValue then composes with ComparisonPredicate.
+func TestWalkPredicate_CastInComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE CAST(name AS INTEGER) = 42")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if _, ok := cp.Operand.(*cascades.CastValue); !ok {
+		t.Fatalf("expected Operand to be *CastValue, got %T", cp.Operand)
 	}
 }

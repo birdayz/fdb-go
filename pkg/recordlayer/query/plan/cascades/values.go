@@ -87,7 +87,10 @@
 // closely, once enough types exist to justify the split.
 package cascades
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // ValueType is a stand-in for the full Cascades Type hierarchy. The
 // production port adds `Type` / `TypeRepository` / `Typed`, at which
@@ -99,6 +102,7 @@ const (
 	TypeInt
 	TypeString
 	TypeBool
+	TypeFloat
 )
 
 // Value is the root of the Phase 4.0 seed Value hierarchy.
@@ -357,9 +361,17 @@ func (t ValueType) String() string {
 		return "STRING"
 	case TypeBool:
 		return "BOOL"
+	case TypeFloat:
+		return "FLOAT"
 	}
 	return "UNKNOWN"
 }
+
+// Symbol returns the SQL-text form of the arithmetic operator.
+// Exposed for callers that want to render the op without going
+// through ExplainValue (e.g. error messages, plan diagnostics).
+// Lower-case `symbol` continues to be the package-internal alias.
+func (o ArithmeticOp) Symbol() string { return o.symbol() }
 
 func (o ArithmeticOp) symbol() string {
 	switch o {
@@ -371,6 +383,8 @@ func (o ArithmeticOp) symbol() string {
 		return "*"
 	case OpDiv:
 		return "/"
+	case OpMod:
+		return "%"
 	}
 	return "?"
 }
@@ -379,6 +393,18 @@ func valueLiteralString(v any) string {
 	switch x := v.(type) {
 	case int64:
 		return intToDec(x)
+	case int:
+		return intToDec(int64(x))
+	case int32:
+		return intToDec(int64(x))
+	case int16:
+		return intToDec(int64(x))
+	case int8:
+		return intToDec(int64(x))
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(x), 'g', -1, 32)
 	case bool:
 		if x {
 			return "TRUE"
@@ -386,6 +412,36 @@ func valueLiteralString(v any) string {
 		return "FALSE"
 	case string:
 		return "'" + x + "'"
+	case []byte:
+		// SQL hex-literal form — matches formatCompareOperand, so
+		// the Explain and the RHS renderer agree. Also makes
+		// ExplainValue-based equality injective over byte slices:
+		// `X'0102'` ≠ `X'0103'`.
+		const hex = "0123456789abcdef"
+		buf := make([]byte, 0, 3+2*len(x))
+		buf = append(buf, 'X', '\'')
+		for _, b := range x {
+			buf = append(buf, hex[b>>4], hex[b&0xf])
+		}
+		buf = append(buf, '\'')
+		return string(buf)
+	case []any:
+		// Paren list so different element-counts / elements render
+		// differently — required for structural equality via
+		// ExplainValue. Matches formatCompareOperand's IN-list form.
+		parts := make([]string, len(x))
+		for i, e := range x {
+			if e == nil {
+				parts[i] = "NULL"
+				continue
+			}
+			if s, ok := e.(string); ok {
+				parts[i] = "'" + s + "'"
+				continue
+			}
+			parts[i] = valueLiteralString(e)
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
 	}
 	return "?"
 }
@@ -441,6 +497,7 @@ const (
 	OpSub
 	OpMul
 	OpDiv
+	OpMod
 )
 
 // ArithmeticValue is a binary arithmetic over two child Values.
@@ -481,6 +538,14 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 			return nil
 		}
 		return li / ri
+	case OpMod:
+		// SQL: `a MOD 0` is undefined / NULL. Match Div's nil-on-zero
+		// guard. Sign of result matches Go's `%` (truncated toward
+		// zero) — matches MySQL / PostgreSQL semantics.
+		if ri == 0 {
+			return nil
+		}
+		return li % ri
 	}
 	return nil
 }
@@ -544,12 +609,21 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 				return int64(1)
 			}
 			return int64(0)
+		case float64:
+			// SQL CAST AS INT truncates toward zero. NaN / ±Inf
+			// fall through to nil (UNKNOWN-at-Value-layer).
+			if val != val || val > 1<<62 || val < -(1<<62) {
+				return nil
+			}
+			return int64(val)
 		}
 	case TypeBool:
 		switch val := v.(type) {
 		case bool:
 			return val
 		case int64:
+			return val != 0
+		case float64:
 			return val != 0
 		}
 	case TypeString:
@@ -558,6 +632,23 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		}
 		if i, ok := v.(int64); ok {
 			return uitoa(uint64(i))
+		}
+		if f, ok := v.(float64); ok {
+			return strconv.FormatFloat(f, 'g', -1, 64)
+		}
+	case TypeFloat:
+		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
+		// integral types to float64. Without this case, the walker's
+		// shiny new CastValue{TypeFloat} path silently returns nil
+		// from Evaluate and constant-fold of `CAST(5 AS FLOAT) = 3.14`
+		// gets UNKNOWN instead of FALSE.
+		switch val := v.(type) {
+		case float64:
+			return val
+		case float32:
+			return float64(val)
+		case int64:
+			return float64(val)
 		}
 	}
 	return nil

@@ -46,9 +46,28 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 	pred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	row := map[string]any{"age": int64(30)}
+	for i := 0; i < b.N; i++ {
+		_ = pred.Eval(row)
+	}
+}
+
+// Non-constant RHS exercises the second Operand.Evaluate(evalCtx)
+// call ComparisonPredicate.Eval grew this shift. Pin the cost
+// against the constant-RHS baseline so a future pessimisation
+// (extra alloc, redundant nil-guard, etc.) shows up in CI bench.
+//
+// The predicate is `age = cutoff` evaluated against a row carrying
+// both fields. Eval reads both LHS and RHS via map lookup before
+// EvalAgainst's int64 promotion and comparison.
+func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	)
+	row := map[string]any{"age": int64(18), "cutoff": int64(18)}
 	for i := 0; i < b.N; i++ {
 		_ = pred.Eval(row)
 	}
@@ -58,11 +77,11 @@ func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	// (age >= 18) AND (rank < 5) AND (score > 50)
 	tree := NewAnd(
 		NewComparisonPredicate(&FieldValue{Field: "age", Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+			Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}),
 		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt},
-			Comparison{Type: ComparisonLessThan, Operand: int64(5)}),
+			Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(5))}),
 		NewComparisonPredicate(&FieldValue{Field: "score", Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThan, Operand: int64(50)}),
+			Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))}),
 	)
 	row := map[string]any{"age": int64(30), "rank": int64(3), "score": int64(80)}
 	for i := 0; i < b.N; i++ {
@@ -110,7 +129,7 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	b.ReportAllocs()
 	agePred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	// Build fresh each iter — Simplify sees a pristine tree, not a
 	// memoised folded one.
@@ -120,7 +139,7 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 			NewAnd(
 				NewComparisonPredicate(
 					&ConstantValue{Value: int64(5), Typ: TypeInt},
-					Comparison{Type: ComparisonEquals, Operand: int64(5)},
+					Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 				),
 				NewNot(NewNot(NewConstantPredicate(TriTrue))),
 			),
@@ -140,11 +159,11 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 	b.ReportAllocs()
 	p := NewComparisonPredicate(
 		&FieldValue{Field: "a", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(1)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))},
 	)
 	q := NewComparisonPredicate(
 		&FieldValue{Field: "b", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(2)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(2))},
 	)
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {
@@ -161,7 +180,7 @@ func BenchmarkSimplify_NoOp(b *testing.B) {
 	b.ReportAllocs()
 	pred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {

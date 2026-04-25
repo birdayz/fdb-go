@@ -120,13 +120,13 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	// After simplification: just `age >= 18`.
 	agePred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	pred := NewAnd(
 		NewAnd(
 			NewComparisonPredicate(
 				&ConstantValue{Value: int64(5), Typ: TypeInt},
-				Comparison{Type: ComparisonEquals, Operand: int64(5)},
+				Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 			),
 			NewNot(NewNot(NewConstantPredicate(TriTrue))),
 		),
@@ -137,6 +137,143 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	got := Simplify(pred, DefaultSimplifyRules())
 	if got != QueryPredicate(agePred) {
 		t.Fatalf("expected agePred to survive, got %T %s", got, got.Explain())
+	}
+}
+
+// IS NULL / IS NOT NULL fold at plan time when the LHS is a known
+// constant. Pin all three branches:
+//   - FieldValue LHS: NOT foldable (depends on row context), survives
+//   - NullValue LHS: IS NULL → TRUE
+//   - ConstantValue LHS: IS NOT NULL → TRUE
+//
+// Catches a future regression where the constant-fold rule narrows
+// its whitelist and stops recognising NullValue / BooleanValue LHS.
+func TestSimplify_IsNullVariants(t *testing.T) {
+	t.Parallel()
+	t.Run("FieldValue LHS survives", func(t *testing.T) {
+		t.Parallel()
+		pred := NewComparisonPredicate(
+			&FieldValue{Field: "name", Typ: TypeString},
+			Comparison{Type: ComparisonIsNull},
+		)
+		got := Simplify(pred, DefaultSimplifyRules())
+		if _, ok := got.(*ComparisonPredicate); !ok {
+			t.Fatalf("expected ComparisonPredicate to survive (LHS row-dependent), got %T: %s", got, got.Explain())
+		}
+	})
+	t.Run("NullValue LHS folds to TRUE", func(t *testing.T) {
+		t.Parallel()
+		pred := NewComparisonPredicate(
+			&NullValue{Typ: TypeUnknown},
+			Comparison{Type: ComparisonIsNull},
+		)
+		got := Simplify(pred, DefaultSimplifyRules())
+		cp, ok := got.(*ConstantPredicate)
+		if !ok || cp.Value != TriTrue {
+			t.Fatalf("got %T %s, want ConstantPredicate{TRUE}", got, got.Explain())
+		}
+	})
+	t.Run("ConstantValue LHS, IS NOT NULL folds to TRUE", func(t *testing.T) {
+		t.Parallel()
+		pred := NewComparisonPredicate(
+			&ConstantValue{Value: int64(5), Typ: TypeInt},
+			Comparison{Type: ComparisonIsNotNull},
+		)
+		got := Simplify(pred, DefaultSimplifyRules())
+		cp, ok := got.(*ConstantPredicate)
+		if !ok || cp.Value != TriTrue {
+			t.Fatalf("got %T %s, want ConstantPredicate{TRUE}", got, got.Explain())
+		}
+	})
+}
+
+// `(1 + 2) > 0` and `0 < (1 + 2)` both fold to TRUE end-to-end
+// through Simplify. Pins the EvaluateConstant fall-through path
+// for composite-constant operands on either side of a comparison.
+// Two halves: LHS-composite + RHS-leaf, then leaf + RHS-composite.
+func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
+	t.Parallel()
+	add12 := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+	}
+	cases := []struct {
+		name string
+		pred *ComparisonPredicate
+	}{
+		{
+			name: "(1+2) > 0",
+			pred: NewComparisonPredicate(add12,
+				Comparison{Type: ComparisonGreaterThan, Operand: &ConstantValue{Value: int64(0), Typ: TypeInt}}),
+		},
+		{
+			name: "0 < (1+2)",
+			pred: NewComparisonPredicate(
+				&ConstantValue{Value: int64(0), Typ: TypeInt},
+				Comparison{Type: ComparisonLessThan, Operand: add12}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Simplify(tc.pred, DefaultSimplifyRules())
+			cp, ok := got.(*ConstantPredicate)
+			if !ok {
+				t.Fatalf("expected ConstantPredicate, got %T: %s", got, got.Explain())
+			}
+			if cp.Value != TriTrue {
+				t.Fatalf("got %v, want TRUE", cp.Value)
+			}
+		})
+	}
+}
+
+// Non-constant RHS comparisons survive the fixpoint untouched —
+// they aren't foldable at plan time (RHS is a row-dependent Value).
+// Pins that ComparisonConstantSimplifyRule's IsConstantValue gate
+// declines correctly when RHS is a FieldValue.
+func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	)
+	got := Simplify(pred, DefaultSimplifyRules())
+	cp, ok := got.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate to survive, got %T: %s", got, got.Explain())
+	}
+	if got.Explain() != "age = cutoff" {
+		t.Fatalf("Explain: got %q, want %q", got.Explain(), "age = cutoff")
+	}
+	// Identity preserved — same pointer, no rewrite happened.
+	if cp != pred {
+		t.Errorf("expected predicate identity preserved through Simplify")
+	}
+}
+
+// NOT over a non-constant comparison still rewrites via
+// NotComparisonRewriteRule — Negate doesn't depend on RHS being
+// constant, only on the Type having a direct negation. Pins that
+// the rule fires on `NOT(a = b)` → `a <> b` even when `b` is a
+// FieldValue.
+func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
+	t.Parallel()
+	pred := NewNot(NewComparisonPredicate(
+		&FieldValue{Field: "a", Typ: TypeInt},
+		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "b", Typ: TypeInt}},
+	))
+	got := Simplify(pred, DefaultSimplifyRules())
+	cp, ok := got.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected NOT to be pushed past comparison, got %T: %s", got, got.Explain())
+	}
+	if cp.Comparison.Type != ComparisonNotEquals {
+		t.Fatalf("Type: got %v, want NotEquals", cp.Comparison.Type)
+	}
+	if got.Explain() != "a <> b" {
+		t.Fatalf("Explain: got %q, want %q", got.Explain(), "a <> b")
 	}
 }
 
@@ -167,7 +304,7 @@ func TestSimplify_RecursesThroughNot(t *testing.T) {
 func TestSimplify_TripleNotCollapses(t *testing.T) {
 	t.Parallel()
 	age := &FieldValue{Field: "age", Typ: TypeInt}
-	cp := NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: int64(5)})
+	cp := NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))})
 	got := Simplify(
 		NewNot(NewNot(NewNot(cp))),
 		DefaultSimplifyRules(),
@@ -194,17 +331,17 @@ func TestSimplify_Idempotent(t *testing.T) {
 		NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse)),
 		// Partially simplifiable → surviving field predicate.
 		NewAnd(
-			NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)}),
+			NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}),
 			NewConstantPredicate(TriTrue),
 		),
 		// Exercises absorption: p AND (p OR q) → p.
 		func() QueryPredicate {
-			p := NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)})
-			q := NewComparisonPredicate(age, Comparison{Type: ComparisonLessThan, Operand: int64(65)})
+			p := NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))})
+			q := NewComparisonPredicate(age, Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(65))})
 			return NewAnd(p, NewOr(p, q))
 		}(),
 		// NOT-rewrite: NOT(x = 1) → x <> 1.
-		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: int64(1)})),
+		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))})),
 		// Opaque: should be identity.
 		NewValuePredicate(&FieldValue{Field: "flag", Typ: TypeBool}),
 	}
@@ -259,16 +396,16 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	// removes the TRUEs, leaving the surviving ComparisonPredicate.
 	agePred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	pred := NewAnd(
 		NewComparisonPredicate(
 			&ConstantValue{Value: int64(5), Typ: TypeInt},
-			Comparison{Type: ComparisonEquals, Operand: int64(5)},
+			Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 		),
 		NewComparisonPredicate(
 			&ConstantValue{Value: int64(3), Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThan, Operand: int64(1)},
+			Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(1))},
 		),
 		agePred,
 	)

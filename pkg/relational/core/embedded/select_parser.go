@@ -738,8 +738,9 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 		tblName := strings.Join(parts, ".")
 		alias := tblName
-		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
+		// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
+		if atomItem.GetAlias() != nil {
+			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
 		extraCrossJoins = append(extraCrossJoins, joinClause{
 			tableName: tblName,
@@ -810,12 +811,29 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		// InnerJoinContext to a LEFT/RIGHT join.
 		leftAlias := ""
 		promotedJoinType := ""
-		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			leftAlias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
-		} else if atomItem.Uid() != nil {
-			misAlias := strings.ToUpper(atomItem.Uid().GetText())
-			if misAlias == "LEFT" || misAlias == "RIGHT" {
-				promotedJoinType = misAlias
+		// Grammar is `tableName (AS? alias=uid)?` — AS optional.
+		// Pick up implicit aliases via GetAlias() (was previously
+		// gated on AS being present, which lost `FROM Order o` etc).
+		// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
+		// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
+		// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
+		// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
+		// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
+		// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
+		// literal alias.
+		if atomItem.GetAlias() != nil {
+			aliasRaw := atomItem.GetAlias().GetText()
+			aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
+			isQuoted := aliasRaw != aliasTxt
+			if atomItem.AS() == nil && !isQuoted {
+				up := strings.ToUpper(aliasTxt)
+				if up == "LEFT" || up == "RIGHT" {
+					promotedJoinType = up
+				} else {
+					leftAlias = aliasTxt
+				}
+			} else {
+				leftAlias = aliasTxt
 			}
 		}
 		if leftAlias == "" {
@@ -1606,8 +1624,13 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		}
 		tblName := strings.Join(parts, ".")
 		alias := tblName
-		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
+		// Grammar is `tableName (AS? alias=uid)?` — AS is optional.
+		// `atom.AS()` being nil does NOT mean no alias; check
+		// `GetAlias() != nil` so implicit aliases like
+		// `JOIN Customer c` are picked up. Mirrors the FROM-clause
+		// path in semantic.BuildScopeFromFromClause.
+		if atomItem.GetAlias() != nil {
+			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
 		var onExpr antlrgen.IExpressionContext
 		if j.Expression() != nil {
@@ -1628,8 +1651,9 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		}
 		tblName := strings.Join(parts, ".")
 		alias := tblName
-		if atomItem.AS() != nil && atomItem.Uid() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.Uid().GetText())
+		// Same implicit-alias note as InnerJoin.
+		if atomItem.GetAlias() != nil {
+			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
 		jt := "LEFT"
 		if j.RIGHT() != nil {

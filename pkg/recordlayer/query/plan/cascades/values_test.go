@@ -1,6 +1,9 @@
 package cascades
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // Static interface assertions.
 var (
@@ -129,6 +132,8 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 		{OpSub, 10, 3, int64(7)},
 		{OpMul, 6, 7, int64(42)},
 		{OpDiv, 20, 4, int64(5)},
+		{OpMod, 20, 7, int64(6)},
+		{OpMod, -20, 7, int64(-6)}, // Go truncated-toward-zero, matches MySQL/PostgreSQL
 	}
 	for _, tc := range cases {
 		av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
@@ -144,6 +149,12 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 		t.Fatalf("div by zero: got %v", got)
 	}
 
+	// MOD by zero same nil-on-zero contract as Div.
+	modZ := &ArithmeticValue{Op: OpMod, Left: a, Right: b}
+	if got := modZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); got != nil {
+		t.Fatalf("mod by zero: got %v", got)
+	}
+
 	// NULL propagation.
 	sum := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
 	if got := sum.Evaluate(map[string]any{"a": nil, "b": int64(1)}); got != nil {
@@ -157,6 +168,19 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	tm := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
 	if got := tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)}); got != nil {
 		t.Fatalf("type mismatch: got %v", got)
+	}
+
+	// Float arithmetic returns nil per the seed contract — int-only
+	// Evaluate, full coercion waits on the Phase 4.0 Type hierarchy
+	// port. Pin this so a future "fix" doesn't silently start
+	// returning float results that downstream callers don't expect.
+	floatOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	if got := floatOp.Evaluate(map[string]any{"a": float64(1.5), "b": float64(2.5)}); got != nil {
+		t.Fatalf("float arith should be nil: got %v", got)
+	}
+	mixedOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+	if got := mixedOp.Evaluate(map[string]any{"a": int64(1), "b": float64(2.5)}); got != nil {
+		t.Fatalf("mixed int/float arith should be nil: got %v", got)
 	}
 }
 
@@ -214,6 +238,54 @@ func TestCastValue(t *testing.T) {
 		t.Fatalf("NULL cast: got %v", got)
 	}
 
+	// Float source casts.
+	// int → float
+	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeFloat)
+	if got := intToFloat.Evaluate(nil); got != float64(5) {
+		t.Fatalf("int→float: got %v", got)
+	}
+	// float → int (truncates toward zero)
+	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: TypeFloat}, TypeInt)
+	if got := floatToInt.Evaluate(nil); got != int64(3) {
+		t.Fatalf("3.9→int: got %v", got)
+	}
+	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: TypeFloat}, TypeInt)
+	if got := floatToIntNeg.Evaluate(nil); got != int64(-3) {
+		t.Fatalf("-3.9→int: got %v", got)
+	}
+	// float → bool: 0.0 = false, non-zero = true
+	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
+	if got := floatToBool0.Evaluate(nil); got != false {
+		t.Fatalf("0.0→bool: got %v", got)
+	}
+	floatToBoolNZ := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: TypeFloat}, TypeBool)
+	if got := floatToBoolNZ.Evaluate(nil); got != true {
+		t.Fatalf("0.5→bool: got %v", got)
+	}
+	// float → string
+	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: TypeFloat}, TypeString)
+	if got := floatToStr.Evaluate(nil); got != "3.14" {
+		t.Fatalf("3.14→string: got %v", got)
+	}
+	// float → float (verbatim)
+	floatToFloat := NewCastValue(&ConstantValue{Value: float64(2.5), Typ: TypeFloat}, TypeFloat)
+	if got := floatToFloat.Evaluate(nil); got != float64(2.5) {
+		t.Fatalf("float→float: got %v", got)
+	}
+	// NaN / Inf → nil for int target (out-of-range).
+	nanToInt := NewCastValue(&ConstantValue{Value: float64(math.NaN()), Typ: TypeFloat}, TypeInt)
+	if got := nanToInt.Evaluate(nil); got != nil {
+		t.Fatalf("NaN→int: expected nil, got %v", got)
+	}
+	infToInt := NewCastValue(&ConstantValue{Value: float64(math.Inf(1)), Typ: TypeFloat}, TypeInt)
+	if got := infToInt.Evaluate(nil); got != nil {
+		t.Fatalf("+Inf→int: expected nil, got %v", got)
+	}
+	negInfToInt := NewCastValue(&ConstantValue{Value: float64(math.Inf(-1)), Typ: TypeFloat}, TypeInt)
+	if got := negInfToInt.Evaluate(nil); got != nil {
+		t.Fatalf("-Inf→int: expected nil, got %v", got)
+	}
+
 	// Unknown conversion: int → bool via the reverse path is OK,
 	// but string → int isn't wired in the seed (returns nil).
 	strToInt := NewCastValue(&ConstantValue{Value: "3", Typ: TypeString}, TypeInt)
@@ -233,6 +305,28 @@ func TestCastValue(t *testing.T) {
 // --- AggregateValue ------------------------------------------------
 
 var _ Value = (*AggregateValue)(nil)
+
+// ArithmeticOp.Symbol pins all five operators including OpMod
+// (added this shift) and the unknown-Op fallback.
+func TestArithmeticOp_Symbol(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		op   ArithmeticOp
+		want string
+	}{
+		{OpAdd, "+"},
+		{OpSub, "-"},
+		{OpMul, "*"},
+		{OpDiv, "/"},
+		{OpMod, "%"},
+		{ArithmeticOp(99), "?"},
+	}
+	for _, tc := range cases {
+		if got := tc.op.Symbol(); got != tc.want {
+			t.Errorf("op %v: got %q, want %q", tc.op, got, tc.want)
+		}
+	}
+}
 
 func TestAggregateOp_Symbol(t *testing.T) {
 	t.Parallel()

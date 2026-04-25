@@ -45,13 +45,18 @@
 //
 // # Not handled (returns UnsupportedExpressionShapeError)
 //
-//   - XOR.
-//   - Scalar function calls.
+//   - Scalar function calls (UPPER, LOWER, LENGTH, …).
 //   - LIKE with ESCAPE.
 //   - IN with subquery / parameter / single-column.
-//   - CAST.
-//   - IS TRUE / IS FALSE.
+//   - CAST to FLOAT / DOUBLE / BYTES / UUID / VECTOR (seed
+//     ValueType only covers INT / STRING / BOOL — the full Type
+//     hierarchy port lands in Phase 4.0).
 //   - Multi-element or named-field record constructors.
+//
+// CAST and CONVERT to INT / BIGINT / STRING / BOOLEAN are wired
+// via DataTypeFunctionCall; XOR desugars to
+// (a OR b) AND NOT (a AND b); IS [NOT] TRUE / FALSE desugars via
+// the 2VL `(x IS NOT NULL) AND (x = literal)` shape.
 //
 // Callers catching UnsupportedExpressionShapeError can fall back to
 // the existing logical-builder path, which handles the full grammar
@@ -162,11 +167,12 @@ func (r *Resolver) ResolveArithmetic(op cascades.ArithmeticOp, left, right casca
 // ComparisonPredicate. Mirrors the analyzer's job of lifting
 // `a > b` from a parse-tree comparison node to a predicate node.
 //
-// The Comparison's Operand is set from right.Evaluate(nil) when
-// right is constant (per cascades.IsConstantValue); for
-// non-constant RHS the current seed doesn't build a predicate
-// (returns an error) — the real Comparison type will take a Value
-// on the RHS in a later commit.
+// Both LHS and RHS are carried as Values — non-constant RHS
+// (`a = b`, `a < b + 1`, `a = CAST(col AS INT)`) composes uniformly
+// with constant RHS. Plan-time folding (`5 = 5` → TRUE) happens in
+// ComparisonConstantSimplifyRule when both sides are constant;
+// row-context evaluation (FieldValue RHS) runs through
+// ComparisonPredicate.Eval.
 //
 // Does NOT pre-fold even when both operands are constant. `5 = 5`
 // produces a real ComparisonPredicate; the fixpoint simplifier
@@ -177,12 +183,8 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
-	rhs, ok := cascades.EvaluateConstant(right)
-	if !ok {
-		return nil, fmt.Errorf("expr.ResolveComparison: RHS must be a constant in the seed; got %T", right)
-	}
 	return cascades.NewComparisonPredicate(left, cascades.Comparison{
-		Type: op, Operand: rhs,
+		Type: op, Operand: right,
 	}), nil
 }
 
@@ -220,6 +222,14 @@ func (r *Resolver) ResolveIsNotNull(v cascades.Value) (cascades.QueryPredicate, 
 // constant string (parameter-bound patterns land with the
 // parameter-Comparison design).
 func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (cascades.QueryPredicate, error) {
+	return r.ResolveLikeWithEscape(lhs, pattern, 0)
+}
+
+// ResolveLikeWithEscape is the LIKE … ESCAPE form. escape == 0 is
+// equivalent to ResolveLike. Pattern must be a plan-time constant
+// string. The escape rune is carried verbatim on the resulting
+// Comparison.
+func (r *Resolver) ResolveLikeWithEscape(lhs cascades.Value, pattern cascades.Value, escape rune) (cascades.QueryPredicate, error) {
 	if lhs == nil || pattern == nil {
 		return nil, fmt.Errorf("expr.ResolveLike: operand is nil")
 	}
@@ -231,7 +241,11 @@ func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (casc
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
 	}
-	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{Type: cascades.ComparisonLike, Operand: s}), nil
+	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+		Type:    cascades.ComparisonLike,
+		Operand: cascades.LiteralValue(s),
+		Escape:  escape,
+	}), nil
 }
 
 // ResolveStartsWith builds `lhs STARTS_WITH prefix`. Prefix must be
@@ -248,7 +262,9 @@ func (r *Resolver) ResolveStartsWith(lhs cascades.Value, prefix cascades.Value) 
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveStartsWith: prefix must be a string; got %T", lit)
 	}
-	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{Type: cascades.ComparisonStartsWith, Operand: s}), nil
+	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
+		Type: cascades.ComparisonStartsWith, Operand: cascades.LiteralValue(s),
+	}), nil
 }
 
 // ResolveIn builds a ComparisonPredicate{ComparisonIn} from a left
@@ -271,7 +287,8 @@ func (r *Resolver) ResolveIn(left cascades.Value, rhs []cascades.Value) (cascade
 		list = append(list, lit)
 	}
 	return cascades.NewComparisonPredicate(left, cascades.Comparison{
-		Type: cascades.ComparisonIn, Operand: list,
+		Type:    cascades.ComparisonIn,
+		Operand: &cascades.ConstantValue{Value: list, Typ: cascades.TypeUnknown},
 	}), nil
 }
 
@@ -407,10 +424,12 @@ func sqlTypeToCascadesValueType(sqlType string) cascades.ValueType {
 // expression.
 //
 // Returns an error when the literal's runtime type doesn't map to
-// any seed ValueType — nil, int, int32, int64, string, bool are
-// supported. float32/float64 are explicitly flagged pending the
-// Type hierarchy port (cascades.TypeFloat doesn't exist yet; don't
-// silently pretend they're ints).
+// any seed ValueType — nil, int, int32, int64, float32, float64,
+// string, bool are supported. Float literals carry TypeFloat;
+// arithmetic over floats still goes through ArithmeticValue's
+// int-only Eval (mixed-type arith returns nil per the seed
+// contract — a real arithmetic-over-float requires the Type
+// hierarchy port to set up coercion).
 func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
 	switch v := lit.(type) {
 	case nil:
@@ -425,12 +444,10 @@ func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
 		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeInt}, nil
 	case string:
 		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeString}, nil
-	case float32, float64:
-		// Pending cascades.TypeFloat in the Type hierarchy port.
-		// Specific error message so future maintainers know this is
-		// the companion site for FLOAT support.
-		return nil, fmt.Errorf(
-			"expr.ResolveConstant: float literals unsupported until cascades.TypeFloat lands (Phase 4.0 Type hierarchy); got %v", v)
+	case float32:
+		return &cascades.ConstantValue{Value: float64(v), Typ: cascades.TypeFloat}, nil
+	case float64:
+		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeFloat}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
 }

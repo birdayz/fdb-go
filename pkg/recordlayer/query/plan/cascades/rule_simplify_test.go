@@ -22,11 +22,11 @@ func TestAndDedup_RemovesDuplicates(t *testing.T) {
 	rule := NewAndDedupRule()
 	p := NewComparisonPredicate(
 		&FieldValue{Field: "x", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(1)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))},
 	)
 	q := NewComparisonPredicate(
 		&FieldValue{Field: "y", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
 	)
 	// Four children, two distinct: p and q.
 	and := NewAnd(p, p, q, p)
@@ -160,7 +160,7 @@ func TestComparisonConstSimplify_Folds(t *testing.T) {
 			t.Parallel()
 			pred := NewComparisonPredicate(
 				&ConstantValue{Value: tc.lhs, Typ: TypeInt},
-				Comparison{Type: tc.op, Operand: tc.rhs},
+				Comparison{Type: tc.op, Operand: LiteralValue(tc.rhs)},
 			)
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
@@ -228,22 +228,22 @@ func TestComparisonConstSimplify_StartsWithAndIn(t *testing.T) {
 	}{
 		{
 			"'hello' STARTS_WITH 'hel'", "hello",
-			Comparison{Type: ComparisonStartsWith, Operand: "hel"},
+			Comparison{Type: ComparisonStartsWith, Operand: LiteralValue("hel")},
 			TriTrue,
 		},
 		{
 			"'world' STARTS_WITH 'hel'", "world",
-			Comparison{Type: ComparisonStartsWith, Operand: "hel"},
+			Comparison{Type: ComparisonStartsWith, Operand: LiteralValue("hel")},
 			TriFalse,
 		},
 		{
 			"5 IN (1,5,9)", int64(5),
-			Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(5), int64(9)}},
+			Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(5), int64(9)})},
 			TriTrue,
 		},
 		{
 			"5 IN (1,NULL)", int64(5),
-			Comparison{Type: ComparisonIn, Operand: []any{int64(1), nil}},
+			Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), nil})},
 			TriUnknown,
 		},
 	}
@@ -285,7 +285,7 @@ func TestComparisonConstSimplify_Like(t *testing.T) {
 			t.Parallel()
 			pred := NewComparisonPredicate(
 				&ConstantValue{Value: tc.s, Typ: TypeString},
-				Comparison{Type: ComparisonLike, Operand: tc.pattern},
+				Comparison{Type: ComparisonLike, Operand: LiteralValue(tc.pattern)},
 			)
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
@@ -313,22 +313,22 @@ func TestComparisonConstSimplify_IsDistinctFrom(t *testing.T) {
 	}{
 		{
 			"NULL IS DISTINCT FROM NULL", NewNullValue(TypeInt),
-			Comparison{Type: ComparisonIsDistinctFrom, Operand: nil},
+			Comparison{Type: ComparisonIsDistinctFrom, Operand: LiteralValue(nil)},
 			TriFalse,
 		},
 		{
 			"NULL IS NOT DISTINCT FROM NULL", NewNullValue(TypeInt),
-			Comparison{Type: ComparisonNotDistinctFrom, Operand: nil},
+			Comparison{Type: ComparisonNotDistinctFrom, Operand: LiteralValue(nil)},
 			TriTrue,
 		},
 		{
 			"5 IS NOT DISTINCT FROM 5", &ConstantValue{Value: int64(5), Typ: TypeInt},
-			Comparison{Type: ComparisonNotDistinctFrom, Operand: int64(5)},
+			Comparison{Type: ComparisonNotDistinctFrom, Operand: LiteralValue(int64(5))},
 			TriTrue,
 		},
 		{
 			"5 IS DISTINCT FROM NULL", &ConstantValue{Value: int64(5), Typ: TypeInt},
-			Comparison{Type: ComparisonIsDistinctFrom, Operand: nil},
+			Comparison{Type: ComparisonIsDistinctFrom, Operand: LiteralValue(nil)},
 			TriTrue,
 		},
 	}
@@ -367,7 +367,7 @@ func TestComparisonConstSimplify_FieldOperandDeclines(t *testing.T) {
 	rule := NewComparisonConstantSimplifyRule()
 	pred := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	if got := FireRule(rule, pred); len(got) != 0 {
 		t.Fatalf("expected 0 yields (field operand), got %d", len(got))
@@ -582,11 +582,11 @@ func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
 	rule := NewAndAbsorbOrRule()
 	p := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	q := NewComparisonPredicate(
 		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
 	)
 	and := NewAnd(p, NewOr(p, q))
 	got := FireRule(rule, and)
@@ -605,15 +605,15 @@ func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
 	rule := NewAndAbsorbOrRule()
 	p := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	q := NewComparisonPredicate(
 		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
 	)
 	r := NewComparisonPredicate(
 		&FieldValue{Field: "score", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(50)},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))},
 	)
 	and := NewAnd(p, NewOr(q, r))
 	if got := FireRule(rule, and); len(got) != 0 {
@@ -627,11 +627,11 @@ func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
 	rule := NewOrAbsorbAndRule()
 	p := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	q := NewComparisonPredicate(
 		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
 	)
 	or := NewOr(p, NewAnd(p, q))
 	got := FireRule(rule, or)
@@ -649,11 +649,11 @@ func TestSimplify_Absorption_EndToEnd(t *testing.T) {
 	t.Parallel()
 	p := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: int64(18)},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
 	)
 	q := NewComparisonPredicate(
 		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: int64(0)},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
 	)
 	// AND(p, OR(p, q), TRUE) → AND(p, TRUE) → p.
 	pred := NewAnd(
@@ -673,7 +673,7 @@ func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 	rule := NewNotComparisonRewriteRule()
 	cp := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: int64(5)},
+		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
 	)
 	got := FireRule(rule, NewNot(cp))
 	if len(got) != 1 {
@@ -686,7 +686,8 @@ func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 	if out.Comparison.Type != ComparisonNotEquals {
 		t.Fatalf("got %s, want <>", out.Comparison.Type.Symbol())
 	}
-	if out.Comparison.Operand != int64(5) {
+	rhsLit, ok := EvaluateConstant(out.Comparison.Operand)
+	if !ok || rhsLit != int64(5) {
 		t.Fatalf("operand changed: got %v", out.Comparison.Operand)
 	}
 }
@@ -716,7 +717,7 @@ func TestNotComparisonRewrite_InDeclines(t *testing.T) {
 	rule := NewNotComparisonRewriteRule()
 	cp := NewComparisonPredicate(
 		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonIn, Operand: []any{int64(1), int64(2)}},
+		Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2)})},
 	)
 	if got := FireRule(rule, NewNot(cp)); len(got) != 0 {
 		t.Fatalf("expected rule to decline, got %d yields", len(got))
@@ -739,7 +740,7 @@ func TestSimplify_NotComparisonEndToEnd(t *testing.T) {
 	t.Parallel()
 	age := &FieldValue{Field: "age", Typ: TypeInt}
 	got := Simplify(
-		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThan, Operand: int64(18)})),
+		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(18))})),
 		DefaultSimplifyRules(),
 	)
 	cp, ok := got.(*ComparisonPredicate)
