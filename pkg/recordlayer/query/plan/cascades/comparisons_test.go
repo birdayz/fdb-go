@@ -279,6 +279,43 @@ func TestComparison_Eval_In(t *testing.T) {
 	}
 }
 
+// TestComparison_Eval_In_OnlyNullList pins SQL 3VL: a list containing
+// only NULLs surfaces UNKNOWN (no concrete match found, but a NULL
+// element prevented a definitive miss). Matches the existing 5
+// IN (1,NULL) case but with no non-NULL element at all.
+func TestComparison_Eval_In_OnlyNullList(t *testing.T) {
+	t.Parallel()
+	got := Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{nil, nil})}.Eval(int64(5))
+	if got != TriUnknown {
+		t.Fatalf("5 IN (NULL,NULL): got %v, want TriUnknown", got)
+	}
+}
+
+// TestComparison_Eval_In_NonSliceRHS pins the boundary: when the RHS
+// isn't a []any (Cascades author bug, malformed plan), IN degrades to
+// UNKNOWN rather than panicking. Matches the LIKE/STARTS_WITH type-
+// mismatch convention.
+func TestComparison_Eval_In_NonSliceRHS(t *testing.T) {
+	t.Parallel()
+	got := Comparison{Type: ComparisonIn, Operand: LiteralValue(int64(5))}.Eval(int64(5))
+	if got != TriUnknown {
+		t.Fatalf("5 IN <non-slice>: got %v, want TriUnknown", got)
+	}
+}
+
+// TestComparison_Eval_In_CrossTypeLHS pins the corner: a string LHS
+// against a list of int64 — cmpAny declines silently for each element,
+// no match, no NULL element → TriFalse. Documents the gap with SQL
+// 3VL, which would say UNKNOWN here. Java does not implement IN
+// against typed-mismatched lists either, so this matches.
+func TestComparison_Eval_In_CrossTypeLHS(t *testing.T) {
+	t.Parallel()
+	got := Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
+	if got != TriFalse {
+		t.Fatalf("'hello' IN (1,2,3): got %v, want TriFalse (cmpAny declines silently)", got)
+	}
+}
+
 // LIKE: SQL pattern matching with `%` / `_`. Anchored both ends.
 // No ESCAPE support yet.
 func TestComparison_Eval_Like(t *testing.T) {
