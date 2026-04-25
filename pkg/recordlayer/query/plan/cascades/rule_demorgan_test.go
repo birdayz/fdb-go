@@ -307,3 +307,41 @@ func TestNormalizationRules_NotOverAndProducesOr(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizationRules_Idempotent mirrors TestSimplify_Idempotent but
+// for the larger NormalizationRules() set (DeMorgan + NOT-rewrite + the
+// default reductions). Re-running Simplify on its own output must be a
+// no-op on the same pointer — anything else means a rule loops on its
+// own stable input or the driver's pointer-equality break-out is broken
+// for this rule set.
+func TestNormalizationRules_Idempotent(t *testing.T) {
+	t.Parallel()
+	rules := NormalizationRules()
+	a := &FieldValue{Field: "a", Typ: TypeString}
+	b := &FieldValue{Field: "b", Typ: TypeString}
+	age := &FieldValue{Field: "age", Typ: TypeInt}
+	samples := []QueryPredicate{
+		// DeMorgan-then-NOT-rewrite: NOT(AND(a=x, b=y)) → OR(a<>x, b<>y).
+		NewNot(NewAnd(
+			NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue("x")}),
+			NewComparisonPredicate(b, Comparison{Type: ComparisonEquals, Operand: LiteralValue("y")}),
+		)),
+		// VP-fold chain: NOT(VP(true)) → ConstantPredicate(FALSE).
+		NewNot(NewValuePredicate(NewBooleanValue(true))),
+		// Mixed-shape DeMorgan + VP-fold + AND-identity collapse to TRUE.
+		NewNot(NewAnd(
+			NewComparisonPredicate(age, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))}),
+			NewValuePredicate(NewBooleanValue(false)),
+		)),
+		// Opaque field VP: identity (no rule fires).
+		NewValuePredicate(&FieldValue{Field: "flag", Typ: TypeBool}),
+	}
+	for _, s := range samples {
+		once := Simplify(s, rules)
+		twice := Simplify(once, rules)
+		if once != twice {
+			t.Fatalf("not idempotent for %s: once=%s twice=%s",
+				s.Explain(), once.Explain(), twice.Explain())
+		}
+	}
+}
