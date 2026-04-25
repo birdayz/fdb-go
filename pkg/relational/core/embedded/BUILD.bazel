@@ -80,6 +80,7 @@ go_test(
         "order_by_test.go",
         "projection_fold_isolated_test.go",
         "projection_fold_test.go",
+        "where_extractors_test.go",
     ],
     embed = [":embedded"],
     deps = [
