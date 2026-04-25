@@ -505,13 +505,21 @@ func TestNaiveGenerator_Explain_ExplainUnion(t *testing.T) {
 
 // EXPLAIN over a CTE — `WITH … SELECT` flows through the same
 // query-shape path. The text builder handles it; the EXPLAIN wrapper
-// just delegates.
+// just delegates. Content check covers both the producer side
+// (Filter on the inner CTE definition) and the consumer side
+// (the outer SELECT references active_users), so the test catches
+// a regression where either side silently disappears.
 func TestNaiveGenerator_Explain_ExplainCTE(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "EXPLAIN WITH active_users AS (SELECT id FROM users WHERE active = TRUE) SELECT id FROM active_users")
 	got := p.Explain()
 	if !strings.HasPrefix(got, "EXPLAIN: ") {
 		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+	for _, want := range []string{"users", "active_users"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, missing %q (CTE producer/consumer reference)", got, want)
+		}
 	}
 }
 
