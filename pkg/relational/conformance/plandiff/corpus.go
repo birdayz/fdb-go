@@ -171,5 +171,36 @@ func SeedCorpus() []Query {
 			Name: "select_group_by_multi_agg",
 			SQL:  "SELECT status, COUNT(*), SUM(price), AVG(price) FROM orders GROUP BY status",
 		},
+		// --- Catalog-aware shapes (RFC-022 §4.-1 Phase 3) -----------------
+		// These queries carry a SchemaTemplate so the Go side routes
+		// through buildLogicalPlanFor*WithCatalog and emits real
+		// cascades.QueryPredicate trees in Explain output. Without the
+		// SchemaTemplate the Go side falls back to text-only PredicateText
+		// — these entries are the regression sentinels for the
+		// catalog-aware rendering.
+		{
+			Name: "catalog_select_eq_filter",
+			SQL:  "SELECT id FROM Item WHERE val = 5",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			Name: "catalog_select_arith_filter",
+			SQL:  "SELECT id FROM Item WHERE val + 1 > 10",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			Name: "catalog_delete_filter",
+			SQL:  "DELETE FROM Item WHERE val = 0",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			Name: "catalog_update_filter",
+			SQL:  "UPDATE Item SET val = 100 WHERE id = 1",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
 	}
 }
