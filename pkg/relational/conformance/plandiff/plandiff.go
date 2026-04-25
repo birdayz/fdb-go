@@ -154,11 +154,16 @@ type Engine interface {
 	Plan(ctx context.Context, q Query) PlanResult
 }
 
-// ErrJavaUnimplemented is returned by JavaEngine until fdb-relational
-// maven deps land in conformance/BUILD.bazel and a SqlPlanSteps Java
-// step is added. See TODO.md §CRITICAL "Java↔Go SQL conformance
-// harness Phase B".
-var ErrJavaUnimplemented = errors.New("plandiff: Java engine not wired (fdb-relational maven deps missing from conformance/BUILD.bazel)")
+// ErrJavaUnimplemented is returned by JavaEngine until a SqlPlanSteps
+// step is added to `conformance_server.java`. See TODO.md §CRITICAL
+// "Java↔Go SQL conformance harness Phase B".
+//
+// Status (post-swingshift-50): fdb-relational-api / fdb-relational-core
+// are wired into `conformance/BUILD.bazel` at version 4.11.1.0 (matches
+// fdb-record-layer-core's pin). The remaining work is the Java step
+// itself: take (sql, schema_template), plan via fdb-relational's
+// `EmbeddedRelationalConnection`, return the rendered plan tree.
+var ErrJavaUnimplemented = errors.New("plandiff: Java engine not wired (SqlPlanSteps.java step not yet added to conformance_server)")
 
 // Run executes every query in `queries` against `goEng` and `javaEng`,
 // produces per-query Diffs, and aggregates the Summary.

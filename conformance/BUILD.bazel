@@ -27,6 +27,12 @@ java_library(
         "@maven//:org_foundationdb_fdb_extensions",
         "@maven//:org_foundationdb_fdb_java",
         "@maven//:org_foundationdb_fdb_record_layer_core",
+        # fdb-relational deps power the Java side of the
+        # plan-equivalence harness (RFC-022 §4.-1 Phase 2) and the
+        # Java↔Go SQL conformance harness Phase B. Kept inert until
+        # SqlPlanSteps / SqlSteps land.
+        "@maven//:org_foundationdb_fdb_relational_api",
+        "@maven//:org_foundationdb_fdb_relational_core",
     ],
 )
 

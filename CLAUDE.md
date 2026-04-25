@@ -385,7 +385,7 @@ TCP connections use `SetLinger(0)` (RST on close, prevents TIME_WAIT port reuse)
 
 ### Java source reference
 
-Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag **4.10.6.0**. Maven artifact also 4.10.6.0 (MODULE.bazel). All 15 proto files synced from Java source. Key files:
+Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag **4.11.1.0**. Maven artifacts also 4.11.1.0 (MODULE.bazel) — fdb-record-layer-core + fdb-relational-api + fdb-relational-core. All 15 proto files synced from Java source. Key files:
 - `FDBRecordStore.java` — core CRUD, counting, save logic (5800+ lines)
 - `FDBRecordStoreKeyspace.java` — subspace constants (0-9)
 - `SplitHelper.java` — split/unsplit record logic

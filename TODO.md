@@ -2,7 +2,7 @@
 
 Authoritative priority list for fdb-record-layer-go. Strict precedence: **CRITICAL > HIGH > MEDIUM > LOW**. Pick work from the highest unchecked bucket. Shift handover follow-ups are context, not priority — see CLAUDE.md "Priority discipline at shift start".
 
-Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
+Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 Restructured 2026-04-25 (swingshift-50). Previous structure: `git show <commit-before-restructure>:TODO.md`.
 
@@ -12,11 +12,12 @@ Restructured 2026-04-25 (swingshift-50). Previous structure: `git show <commit-b
 
 These block the Cascades port (`fdb-relational` Phase 2) or cross-language SQL compatibility verification. Per RFC-022, 4.-1 must land before 4.0 rule porting, otherwise we burn shifts on rules we'd later need to redo when plan divergence shows up. Per the dayshift-34 audit, Java↔Go SQL conformance is the single largest unverified surface.
 
-- [ ] **4.-1 — Plan-equivalence harness (build FIRST, per RFC-022)**
-  - [ ] Harness takes parsed SQL + catalog, produces Go plan tree + Java plan tree + structural diff + plan-cache-key hash diff.
-  - [ ] Baseline against today's naive `query.Generator` (Phase 1a) on ~20 simple yamsql queries. Output: "which queries Go and Java already agree on, which diverge, how."
-  - [ ] Decide location: `conformance/` (Bazel + testcontainers) or `pkg/relational/plan-diff/` (Go-only subprocess runner). See RFC-022 open questions.
-- [ ] **Java↔Go SQL conformance harness Phase B** — wire fdb-relational maven deps into Bazel; extend `conformance_server.java` with `SqlSteps` to drive the same SQL through both engines and diff result sets. Single biggest test-coverage improvement; yamsql currently is the only oracle and we KNOW it's incomplete because every probe finds bugs. ~4–6h.
+- [~] **4.-1 — Plan-equivalence harness (build FIRST, per RFC-022)**
+  - [x] **Phase 1 (swingshift-50, b4ecb49c):** Go-side baseline harness shipped at `pkg/relational/conformance/plandiff/`. 26-query SeedCorpus, structural diff, SHA-256 corpus hash pinned at `7f373f382aa17411…`. `embedded.NewExplainOnlyGenerator()` exposed. 9 unit tests. Even Go-only the harness is a regression detector for plan-tree changes.
+  - [ ] **Phase 2 — Java side:** swingshift-50 bumped fdb-record-layer-core / fdb-relational-api / fdb-relational-core to **4.11.1.0** in MODULE.bazel; the gitignored `fdb-record-layer/` submodule is now on the matching tag. Remaining: add a `SqlPlanSteps.java` step on `conformance_server.java` exposing `planQuery(sql, schema_template)` → plan tree text via fdb-relational's `EmbeddedRelationalConnection`. Replace the `javaEngine` stub in `pkg/relational/conformance/plandiff/` with an HTTP client to that step.
+  - [ ] **Phase 3 — catalog-aware Go mode:** today's harness uses text-only logical builder. Inject a synthetic schema cache so `buildLogicalPlanFor*WithCatalog` fires and predicates render via `cascades.QueryPredicate.Explain()` instead of `PredicateText`. Adds the second axis the diff needs to be useful for Cascades-era tree comparison.
+  - [ ] **Phase 4 — plan-cache-key diff:** today the harness only hashes the rendered tree text. Once 4.4 cost model + 4.7 cache-key spec land, diff the plan-cache key directly (RFC-024-aligned Go-internal key; Java-hash compatibility NOT required).
+- [ ] **Java↔Go SQL conformance harness Phase B** — wire fdb-relational maven deps into Bazel; extend `conformance_server.java` with `SqlSteps` to drive the same SQL through both engines and diff result sets. Single biggest test-coverage improvement; yamsql currently is the only oracle and we KNOW it's incomplete because every probe finds bugs. **Same Maven version blocker as 4.-1 Phase 2 above** — needs the project-level version-bump decision before either can land.
 - [ ] **Catalog wire format Go↔Java round-trip** — extract a schema via Go, load with Java, run a SELECT. And the reverse. Would have caught the catalog subspace bug fixed in swingshift-35. (Subset of conformance harness above; pinned separately because of historical scar.)
 - [ ] **SQL semantic equivalence** — feed the yamsql execution corpus (1587 statements) through both engines; require identical result sets for read queries. Today only parsing is verified.
 
