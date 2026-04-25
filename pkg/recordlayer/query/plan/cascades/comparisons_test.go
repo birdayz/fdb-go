@@ -1326,6 +1326,31 @@ func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
 	}
 }
 
+// CAST(5 AS FLOAT) > 3.14 — composite-constant LHS via CastValue
+// over an int. CastValue.Evaluate now handles TypeFloat, so the
+// constant-fold rule unwraps to float64(5) and compares against
+// 3.14 → TRUE. Round-12 reviewer flagged the missing TypeFloat
+// case in CastValue.Evaluate which silently produced UNKNOWN.
+func TestComparisonConstantSimplify_CastFloat_Folds(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := NewComparisonPredicate(
+		NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeFloat),
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(float64(3.14))},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	cp, ok := got[0].(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate, got %T", got[0])
+	}
+	if cp.Value != TriTrue {
+		t.Fatalf("CAST(5 AS FLOAT) > 3.14: got %v, want TRUE", cp.Value)
+	}
+}
+
 // Float comparisons through ComparisonPredicate.Eval — both operands
 // float, mixed int/float (cmpAny promotion), NULL propagation.
 // Pinned because the float comparison path reaches further than

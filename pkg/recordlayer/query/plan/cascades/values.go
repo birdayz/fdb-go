@@ -624,6 +624,20 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		if i, ok := v.(int64); ok {
 			return uitoa(uint64(i))
 		}
+	case TypeFloat:
+		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
+		// integral types to float64. Without this case, the walker's
+		// shiny new CastValue{TypeFloat} path silently returns nil
+		// from Evaluate and constant-fold of `CAST(5 AS FLOAT) = 3.14`
+		// gets UNKNOWN instead of FALSE.
+		switch val := v.(type) {
+		case float64:
+			return val
+		case float32:
+			return float64(val)
+		case int64:
+			return float64(val)
+		}
 	}
 	return nil
 }
