@@ -825,6 +825,103 @@ func TestEvaluateConstant(t *testing.T) {
 	}
 }
 
+// TestScalarFunctionValue_Evaluate_NilArg pins the malformed-input
+// guard: a ScalarFunctionValue carrying a nil Args[i] short-circuits
+// to nil rather than dereferencing. Defensive against rule authors
+// that build ScalarFunctionValue programmatically and forget to
+// populate every slot.
+func TestScalarFunctionValue_Evaluate_NilArg(t *testing.T) {
+	t.Parallel()
+	v := &ScalarFunctionValue{
+		FuncName: "ABS",
+		Args:     []Value{nil}, // deliberately malformed
+		Typ:      TypeInt,
+	}
+	if got := v.Evaluate(nil); got != nil {
+		t.Fatalf("Evaluate with nil arg: got %v, want nil", got)
+	}
+}
+
+// TestValueType_String pins the SQL-text rendering for each
+// ValueType + the unknown fall-through. Used by ExplainValue's
+// CAST(_ AS X) renderer; if these strings change the plandiff
+// hash baseline shifts.
+func TestValueType_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    ValueType
+		want string
+	}{
+		{TypeInt, "INT"},
+		{TypeString, "STRING"},
+		{TypeBool, "BOOL"},
+		{TypeFloat, "FLOAT"},
+		{TypeUnknown, "UNKNOWN"},
+		{ValueType(99), "UNKNOWN"}, // out-of-range default arm
+	}
+	for _, tc := range cases {
+		if got := tc.t.String(); got != tc.want {
+			t.Fatalf("ValueType(%d).String() = %q, want %q", tc.t, got, tc.want)
+		}
+	}
+}
+
+// TestAggregateValue_Type_UnknownOpIsTypeUnknown pins the default
+// arm of AggregateValue.Type — a hand-constructed AggregateValue with
+// an out-of-range Op (e.g. AggInvalid or any future-but-unknown
+// enum value) returns TypeUnknown rather than panicking. The proper
+// constructor NewAggregateValue rejects AggInvalid, but this test
+// pins the fall-through arm for raw struct-construction.
+func TestAggregateValue_Type_UnknownOpIsTypeUnknown(t *testing.T) {
+	t.Parallel()
+	a := &AggregateValue{Op: AggInvalid, Operand: &FieldValue{Field: "x", Typ: TypeInt}}
+	if got := a.Type(); got != TypeUnknown {
+		t.Fatalf("AggInvalid.Type() = %v, want TypeUnknown", got)
+	}
+}
+
+// TestAggregateValue_Type_SumWithoutOperandFallsBackToTypeInt pins
+// the seed contract: SUM/MIN/MAX/AVG with no Operand defaults to
+// TypeInt. Unusual shape (the proper constructor demands an operand)
+// but the fall-through is part of the function's documented behavior.
+func TestAggregateValue_Type_SumWithoutOperandFallsBackToTypeInt(t *testing.T) {
+	t.Parallel()
+	a := &AggregateValue{Op: AggSum, Operand: nil}
+	if got := a.Type(); got != TypeInt {
+		t.Fatalf("Sum without operand: got %v, want TypeInt", got)
+	}
+}
+
+// TestEvaluateConstant_PanicRecovers pins the defence-in-depth
+// recover() in EvaluateConstant. A Value whose IsConstantValue says
+// "yes" (composite with all-constant children) but whose Evaluate
+// panics must produce (nil, false), not an uncaught panic. Today
+// IsConstantValue rules out the panicky shapes (Aggregate inside Cast
+// is excluded), but the recover stays — this test makes sure
+// removing it would surface as a failure.
+func TestEvaluateConstant_PanicRecovers(t *testing.T) {
+	t.Parallel()
+	v := &panicValue{
+		child: &ConstantValue{Value: int64(1), Typ: TypeInt},
+	}
+	got, ok := EvaluateConstant(v)
+	if ok || got != nil {
+		t.Fatalf("EvaluateConstant on panicking value: got (%v, %v), want (nil, false)", got, ok)
+	}
+}
+
+// panicValue is a test-only Value that looks constant (has a single
+// ConstantValue child) but panics during Evaluate. Reproduces the
+// "defence-in-depth" path EvaluateConstant guards against.
+type panicValue struct {
+	child Value
+}
+
+func (p *panicValue) Children() []Value { return []Value{p.child} }
+func (p *panicValue) Evaluate(any) any  { panic("test-only: Evaluate must not run") }
+func (p *panicValue) Type() ValueType   { return TypeUnknown }
+func (p *panicValue) Name() string      { return "panic-value" }
+
 // --- ParameterValue -----------------------------------------------
 
 // fakeBinder implements ParameterBinder for tests. Maps positional

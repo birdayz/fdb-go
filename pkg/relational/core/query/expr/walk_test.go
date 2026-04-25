@@ -1380,6 +1380,75 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 	}
 }
 
+// Extended scalar-function set added in swingshift-50: ABS / FLOOR /
+// CEIL / CEILING / ROUND, SQRT / POWER / POW, COALESCE / NULLIF,
+// TRIM / LTRIM / RTRIM, CONCAT, SUBSTRING / SUBSTR, REPLACE. The
+// walker now recognises these names and the catalog-aware builder
+// produces a real ScalarFunctionValue carrying their args. Polymorphic
+// returns (ABS / FLOOR / CEIL / CEILING / ROUND / COALESCE / NULLIF)
+// surface as TypeUnknown until the Type hierarchy port lands real
+// per-arg type inference.
+func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sql  string
+		fn   string
+		typ  cascades.ValueType
+		args int
+	}{
+		{"SELECT * FROM users WHERE ABS(id)", "ABS", cascades.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", cascades.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", cascades.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", cascades.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", cascades.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", cascades.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", cascades.TypeFloat, 1},
+		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", cascades.TypeFloat, 2},
+		{"SELECT * FROM users WHERE POW(id, 2)", "POW", cascades.TypeFloat, 2},
+		{"SELECT * FROM users WHERE COALESCE(name, 'default')", "COALESCE", cascades.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE NULLIF(name, 'admin')", "NULLIF", cascades.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE TRIM(name)", "TRIM", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE LTRIM(name)", "LTRIM", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE RTRIM(name)", "RTRIM", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE CONCAT(name, '_v2')", "CONCAT", cascades.TypeString, 2},
+		{"SELECT * FROM users WHERE SUBSTRING(name, 1, 3)", "SUBSTRING", cascades.TypeString, 3},
+		{"SELECT * FROM users WHERE SUBSTR(name, 1)", "SUBSTR", cascades.TypeString, 2},
+		{"SELECT * FROM users WHERE REPLACE(name, 'a', 'b')", "REPLACE", cascades.TypeString, 3},
+		// swingshift-50 additions: walker must build ScalarFunctionValue
+		// for the new fn names so the cascades fold path can fire.
+		{"SELECT * FROM users WHERE LEN(name)", "LEN", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", cascades.TypeString, 3},
+		// PI() is a zero-arg function — exercises the no-args branch
+		// of the function-call walker (Java's `PI()` parse shape).
+		{"SELECT * FROM users WHERE PI()", "PI", cascades.TypeFloat, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fn+"_"+tc.sql, func(t *testing.T) {
+			t.Parallel()
+			a, s := buildScope(t)
+			r := expr.New(a, s)
+			ctx := parseFirstWhereExpr(t, tc.sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			sf, ok := v.(*cascades.ScalarFunctionValue)
+			if !ok {
+				t.Fatalf("expected *ScalarFunctionValue, got %T", v)
+			}
+			if sf.FuncName != tc.fn {
+				t.Fatalf("FuncName: got %q, want %q", sf.FuncName, tc.fn)
+			}
+			if sf.Type() != tc.typ {
+				t.Fatalf("Type: got %v, want %v", sf.Type(), tc.typ)
+			}
+			if got := len(sf.Args); got != tc.args {
+				t.Fatalf("len(Args): got %d, want %d", got, tc.args)
+			}
+		})
+	}
+}
+
 // Unknown scalar function declines so the logical-builder text
 // fallback can carry it.
 func TestWalkExpression_UnknownScalarFunctionDeclines(t *testing.T) {

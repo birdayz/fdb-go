@@ -4,6 +4,7 @@ go_library(
     name = "expr",
     srcs = [
         "expr.go",
+        "resolver_iface.go",
         "walk.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr",

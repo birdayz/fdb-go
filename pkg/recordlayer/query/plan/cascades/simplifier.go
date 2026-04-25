@@ -16,14 +16,21 @@ package cascades
 // the loop restarts from the top (fixpoint convergence). Descends
 // into child predicates after the top-level stabilises.
 //
-// Guaranteed terminates: each rule only yields when it strictly
-// reduces the tree (folds a constant or drops an identity), and
-// there's a finite number of constants / identity children to
-// collapse.
+// Termination invariants for the rule sets this driver runs:
+//
+//   - DefaultSimplifyRules — each rule strictly reduces the tree
+//     (folds a constant or drops an identity / absorbed child), and
+//     there's a finite number of constants / identities to collapse.
+//   - NormalizationRules — adds DeMorganRule, which strictly
+//     INCREASES the node count (NOT distributed across N children
+//     adds N-1 NOTs). DeMorganRule terminates via NOT-depth monotone
+//     decrease: each application moves every NOT one level closer to
+//     leaves, leaves are finitely deep, leaves eventually hit
+//     NotComparisonRewriteRule and disappear (or stop matching).
 //
 // Not safe against cyclic-rewrite rule sets — real Cascades uses a
-// memo to detect cycles. Seed rules are all strictly-reducing so no
-// cycle is possible.
+// memo to detect cycles. The seed rule sets are termination-proven
+// per above so no cycle is possible.
 func Simplify(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 	if pred == nil || len(rules) == 0 {
 		return pred
@@ -99,11 +106,15 @@ func applyRulesOnce(pred QueryPredicate, rules []CascadesRule) QueryPredicate {
 // list; then Comparison constants fold; then Not resolves; then the
 // And/Or identity-drop + absorbing-element rules.
 //
-// Rules NOT included (intentional — follow-up shifts):
+// Rules NOT included (intentional):
 //   - De Morgan NOT-distribution (`NOT(AND(a,b))` → `OR(NOT a, NOT b)`).
-//     Kleene-safe and reducing, but Java applies this as a separate
-//     normalisation pass in `BooleanNormalizer`, not in
-//     `ValueSimplificationRuleSet`. Keep the seed aligned.
+//     Kleene-safe but NODE-INCREASING (N-ary AND becomes N-element
+//     OR plus N NOTs), so it doesn't fit the strict-reduction
+//     termination invariant DefaultSimplifyRules guarantees. Java
+//     applies De Morgan as a separate `BooleanNormalizer` pre-CNF
+//     pass; we mirror this via the explicit `NormalizationRules()`
+//     rule set (which prepends `NewDeMorganRule()` before the
+//     default set).
 //   - Tautology / contradiction folds that require NOT-NULL
 //     metadata (`x = x` → TRUE iff x is NOT NULL). Waits on Type
 //     nullability tracking.
@@ -120,5 +131,6 @@ func DefaultSimplifyRules() []CascadesRule {
 		NewAndAbsorbOrRule(),
 		NewOrAbsorbAndRule(),
 		NewNotComparisonRewriteRule(),
+		NewValuePredicateConstantFoldRule(),
 	}
 }

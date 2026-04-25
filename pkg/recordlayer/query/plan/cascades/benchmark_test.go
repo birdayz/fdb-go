@@ -173,6 +173,61 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 	}
 }
 
+// BenchmarkListMatcher_BindMatches measures positional-pairing match
+// cost — the new matcher introduced this shift. Three downstreams,
+// successful match. ReportAllocs surfaces the per-position append +
+// host-bind alloc counts.
+func BenchmarkListMatcher_BindMatches(b *testing.B) {
+	b.ReportAllocs()
+	matcher := NewListMatcher(NewConstantMatcher(), NewFieldMatcher(), NewConstantMatcher())
+	in := []any{
+		&ConstantValue{Value: int64(1), Typ: TypeInt},
+		&FieldValue{Field: "x", Typ: TypeInt},
+		&ConstantValue{Value: int64(2), Typ: TypeInt},
+	}
+	outer := NewBindings()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BindMatches(outer, in)
+	}
+}
+
+// BenchmarkAllElementsMatcher_BindMatches measures the per-element
+// cost of the all-same-downstream matcher. 5 elements, all match.
+func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
+	b.ReportAllocs()
+	matcher := NewAllElementsMatcher(NewConstantMatcher())
+	in := []any{
+		&ConstantValue{Value: int64(1), Typ: TypeInt},
+		&ConstantValue{Value: int64(2), Typ: TypeInt},
+		&ConstantValue{Value: int64(3), Typ: TypeInt},
+		&ConstantValue{Value: int64(4), Typ: TypeInt},
+		&ConstantValue{Value: int64(5), Typ: TypeInt},
+	}
+	outer := NewBindings()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BindMatches(outer, in)
+	}
+}
+
+// BenchmarkSimplify_DeMorgan exercises the NormalizationRules path:
+// NOT(AND(p,q)) → OR(NOT p, NOT q) → OR(p<>, q<>) once
+// NotComparisonRewriteRule fires. Establishes a baseline for the
+// extra rule set's overhead vs DefaultSimplifyRules-only.
+func BenchmarkSimplify_DeMorgan(b *testing.B) {
+	b.ReportAllocs()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	bb := &FieldValue{Field: "b", Typ: TypeInt}
+	rules := NormalizationRules()
+	for i := 0; i < b.N; i++ {
+		// Fresh tree per iter — Simplify mutates via rebuild.
+		pred := NewNot(NewAnd(
+			NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))}),
+			NewComparisonPredicate(bb, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(2))}),
+		))
+		_ = Simplify(pred, rules)
+	}
+}
+
 // Opaque-input baseline: the driver fires through every rule but
 // nothing yields. Measures the pure-dispatch overhead the planner
 // pays per predicate that can't be folded.

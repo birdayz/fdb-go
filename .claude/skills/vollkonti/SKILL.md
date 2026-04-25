@@ -50,9 +50,19 @@ gh pr create --draft --title "{shift-name}: {one-line goal from handover priorit
 
 ## Step 4: Work
 
-**THE CADENCE: you work hard until 1 hour before shift end.** A shift is 8 hours. 7 of those are active build-ship-review work; the last 1 is wind-down (handover + review loop + merge — see Step 6). Treat the 1h-before-end mark as a hard floor on when NEW features stop. Before that mark, do not coast, do not wait, do not "save energy for later." Review response and verification are interleaved with new work throughout — they are not a reason to stop shipping.
+**THE CADENCE — three phases, time-driven, not vibe-driven.** A shift is 8 hours. The clock owns the boundaries; "feels done" / "PR is mature" / "reviewer is happy" do NOT.
 
-If you finish the handover's priorities early, keep working. See "When the main task is done, keep working" below. Idling until the shift clock runs out is a failure mode.
+| Phase | When | What |
+|---|---|---|
+| Active work | T+0:00 — T+3:30 | Work the highest-priority TODOs. Ship features. One thing at a time. |
+| Mid-shift check-in | T+3:30 (≈ 4.5h before end) | Get the current PR state reviewed. Iterate with reviewer until LGTM. **Then KEEP GOING** with the next TODOs — the check-in is a quality gate, not a stop signal. |
+| Wind-down | last 30 min (T+7:30 — T+8:00) | Stop starting NEW features. Final review iteration, verification (fuzz / stress are fine — they're passive), write handover, merge. |
+
+Compute the wall-clock T+3:30 and T+7:30 marks at shift start so you don't drift. **Wind-down is the last 30 min — not the last hour, not "when the PR feels mature."** Anything before T+7:30 is active-work or mid-shift-check-in time; the only valid reason to coast is the clock.
+
+**Mid-shift check-in failure mode to avoid:** after the reviewer LGTMs, do NOT treat it as permission to coast for the rest of the shift. A clean review at the 3.5h mark means you have 4h of runway left to ship more — go pick up the next TODO. The check-in exists so quality issues surface mid-shift instead of all at once at the end, NOT to drain the rest of the shift.
+
+If you finish the handover's priorities early, keep working — see "When the main task is done, keep working" below. Idling until the shift clock runs out is a failure mode.
 
 Set up a 15-minute kick timer immediately:
 ```
@@ -71,10 +81,11 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **Never force-push master.** Always verify branch before amend/force: `git branch --show-current`
 - **C++ is the spec.** If our Go client diverges from C++, fix our code. Never skip tests.
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
-- **Request review early** (mid-shift is fine) so feedback arrives while you still have time to address it. But do NOT merge until the shift ends.
+- **Mid-shift review is mandatory.** At T+3:30 request a full review on whatever you've shipped so far. Iterate with reviewer until LGTM. Then KEEP GOING — pick up the next TODO. A clean mid-shift review is a quality signal, not a stop signal.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
-- **You MUST keep working until wind-down.** Idling for an hour "because piling on more changes risks regressions" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.
-- **Wind down 1 hour before shift end.** Stop starting NEW features. Use the last hour for: get the PR reviewed (request review per cohesive chunk, don't wait until everything is done), address feedback, run verification, write handover. Verification runs (fuzz, stress) are fine — they're passive. New code is not.
+- **You MUST keep working until wind-down.** Idling "because piling on more changes risks regressions" or "because the reviewer already approved" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.
+- **Wind down 30 min before shift end.** Stop starting NEW features at the T+7:30 mark. Use the last 30 min for: final review iteration, verification (fuzz / stress are passive — fine), handover doc, merge. New code stops; passive verification continues.
+- **In wind-down, once the reviewer LGTMs, merge and stop.** Do not pile on more changes inside the last 30 min just to fill time — a clean LGTM in wind-down is the merge signal. Write the handover, merge the PR, clean up. Sitting through the rest of the wind-down window after a clean review is fine; shipping more code is not.
 - **NEVER push to master directly.** Even after merging a shift PR, create a NEW branch for any remaining work. Single-line doc fixes go through a PR. If you catch yourself typing `git push origin master`, STOP. This rule is non-negotiable — dayshift-14 pushed 40+ unreviewed commits to master.
 
 ## Step 5: Review loop

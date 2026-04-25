@@ -69,6 +69,7 @@ class ConformanceServer {
         new VectorIndexSteps(),
         new BenchmarkSteps(),
         new MetaDataStoreSteps(),
+        new SqlPlanSteps(),
     };
 
     private static class StepEntry {

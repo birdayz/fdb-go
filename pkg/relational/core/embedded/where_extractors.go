@@ -165,10 +165,23 @@ func extractPKUserFields(pk recordlayer.KeyExpression) []string {
 
 // flattenAndPredicates walks a WHERE expression as a conjunction of
 // leaf predicates. Returns the flat list of leaves and `true` on
-// success. Fails (returns false) when the expression contains any
-// non-AND logical operator (OR, XOR, NOT) — those break the
-// "everything the scan would also have matched" invariant that
-// pushdown relies on.
+// success. Fails (returns false) when a non-AND logical operator
+// (OR, XOR, NOT) appears AS THE TOP-LEVEL connective at any position
+// the recursion is flattening — those break the "everything the scan
+// would also have matched" invariant that pushdown relies on.
+//
+// LAYERED CONTRACT: nested ORs inside a parenthesised composite
+// (`a = 1 AND (b = 2 OR c = 3)`) are OPAQUE to this walker — the
+// parenthesised expression isn't a LogicalExpressionContext, so the
+// recursion treats it as a leaf and returns true. The next layer
+// (extractColOpLiteral / extractColEqualsLiteral / etc.) is the one
+// that rejects shapes it can't push down. Each layer owns a
+// different boundary: this function owns the connective shape; the
+// extractors own the leaf shape.
+//
+// Pinned by where_extractors_test.go's TestFlattenAndPredicates_*
+// tests (top-level OR fails, nested OR-in-parens succeeds as opaque
+// leaf).
 func flattenAndPredicates(expr antlrgen.IExpressionContext) ([]antlrgen.IExpressionContext, bool) {
 	le, ok := expr.(*antlrgen.LogicalExpressionContext)
 	if !ok {

@@ -26,6 +26,21 @@ type naiveGenerator struct {
 	c *EmbeddedConnection
 }
 
+// NewExplainOnlyGenerator constructs a Generator suitable for capturing
+// Plan.Explain() output without executing. The returned Generator is
+// backed by a zero-value EmbeddedConnection — Plan.Execute on the
+// returned plans is unsupported (no FDB, no catalog, no session
+// state). Used by the plan-equivalence harness (RFC-022 §4.-1) to
+// produce plan trees for diffing against Java's planner output.
+//
+// Catalog-aware predicate trees (`buildLogicalPlanFor*WithCatalog`
+// paths) require non-nil RecordMetaData; this constructor always
+// produces text-only logical plans. A future variant taking a synthetic
+// schema cache will unlock the catalog-aware branch for the harness.
+func NewExplainOnlyGenerator() query.Generator {
+	return &naiveGenerator{c: &EmbeddedConnection{}}
+}
+
 // Plan parses the SQL and returns a Plan whose Execute dispatches to
 // the appropriate exec* method. Multi-statement SQL is wrapped in a
 // query.MultiPlan.
@@ -80,6 +95,17 @@ func (g *naiveGenerator) Plan(ctx context.Context, sql string) (query.Plan, erro
 // routing must land here and stay in sync with them during Phase 1a.
 func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, error) {
 	c := g.c
+
+	// EXPLAIN <inner> → driver.Rows plan with a single PLAN column.
+	// The inner query/DML is rendered via the existing
+	// buildLogicalPlanFor* path; no execution against FDB happens.
+	// Mirrors fdb-relational's `EXPLAIN <sql>` shape so the harness
+	// + user-facing `EXPLAIN` produce comparable output.
+	if util := stmt.UtilityStatement(); util != nil {
+		if full := util.FullDescribeStatement(); full != nil {
+			return g.planExplain(full)
+		}
+	}
 
 	// SELECT → driver.Rows plan.
 	if sel := stmt.SelectStatement(); sel != nil {
@@ -196,6 +222,118 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			return explainStatement(statementKind(stmt), stmt)
 		},
 	}, nil
+}
+
+// planExplain handles `EXPLAIN <query|delete|insert|update>` — the
+// fullDescribeStatement form. Returns a Plan whose Execute produces
+// a single-row driver.Rows with column "PLAN" carrying the
+// rendered logical-operator tree (or canonical SQL text on
+// builder fallback).
+//
+// Mirrors fdb-relational's PLAN column shape so the plan-equivalence
+// harness can diff Go-side EXPLAIN output against Java's.
+//
+// Format specifiers — the grammar allows `EXPLAIN FORMAT = JSON …`
+// / `EXPLAIN EXTENDED = TRADITIONAL …` etc., but this seed silently
+// ignores them: the inner plan tree always renders as text. Future
+// support for FORMAT=JSON / FORMAT=DOT / EXTENDED would extend this
+// path; tooling that requires structured output should not depend
+// on the format request being honoured today.
+//
+// Decline modes (each returns UNSUPPORTED_OPERATION):
+//   - `EXPLAIN FOR CONNECTION uid` → `*DescribeConnectionContext`,
+//     not a `*DescribeStatementsContext` → exits via the `!ok` arm
+//     below. The seed has no connection-identifier surface.
+//   - `EXPLAIN EXECUTE CONTINUATION …` → IS a `*DescribeStatementsContext`
+//     (the grammar's #describeStatements alternative includes
+//     executeContinuationStatement), so it passes the `ok` check
+//     but every accessor (Query / DeleteStatement / InsertStatement
+//     / UpdateStatement) returns nil → computeExplainText returns
+//     "" → the `planText == ""` guard fires.
+func (g *naiveGenerator) planExplain(full antlrgen.IFullDescribeStatementContext) (query.Plan, error) {
+	objClause := full.DescribeObjectClause()
+	if objClause == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN requires an inner statement")
+	}
+	descStmts, ok := objClause.(*antlrgen.DescribeStatementsContext)
+	if !ok {
+		// EXPLAIN FOR CONNECTION lands here (it's a
+		// *DescribeConnectionContext, not *DescribeStatementsContext).
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN form not supported (only EXPLAIN <query|insert|update|delete>)")
+	}
+	planText := g.computeExplainText(descStmts)
+	if planText == "" {
+		// `EXPLAIN EXECUTE CONTINUATION …` reaches here — it parses
+		// as a *DescribeStatementsContext but none of the
+		// query/delete/insert/update accessors return non-nil for it.
+		// Future extensions (CTAS-style EXPLAIN, etc.) that don't
+		// produce a plan tree also surface here.
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN inner statement produced no plan text")
+	}
+	return &query.PlanFunc{
+		ExecFn: func(_ context.Context) (query.Result, error) {
+			return query.Result{Rows: &staticRows{
+				cols: []string{"PLAN"},
+				rows: [][]driver.Value{{planText}},
+			}}, nil
+		},
+		UpdateFn:  func() bool { return false },
+		ExplainFn: func() string { return "EXPLAIN: " + planText },
+	}, nil
+}
+
+// computeExplainText builds the plan-tree text for the inner
+// statement of an EXPLAIN. Routes through the catalog-aware builder
+// when the schema cache is warm (so WHERE clauses become
+// cascades.QueryPredicate trees) and falls back to the text builder
+// otherwise.
+func (g *naiveGenerator) computeExplainText(d *antlrgen.DescribeStatementsContext) string {
+	c := g.c
+	md := c.cachedMetaData()
+	if q := d.Query(); q != nil {
+		if md != nil {
+			if op := buildLogicalPlanForQueryWithCatalog(q, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForQuery(q); op != nil {
+			return op.Explain("")
+		}
+	}
+	if del := d.DeleteStatement(); del != nil {
+		if md != nil {
+			if op := buildLogicalPlanForDeleteWithCatalog(del, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForDelete(del); op != nil {
+			return op.Explain("")
+		}
+	}
+	if ins := d.InsertStatement(); ins != nil {
+		if md != nil {
+			if op := buildLogicalPlanForInsertWithCatalog(ins, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForInsert(ins); op != nil {
+			return op.Explain("")
+		}
+	}
+	if upd := d.UpdateStatement(); upd != nil {
+		if md != nil {
+			if op := buildLogicalPlanForUpdateWithCatalog(upd, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForUpdate(upd); op != nil {
+			return op.Explain("")
+		}
+	}
+	return ""
 }
 
 // explainStatement returns a trivial textual description of a parsed

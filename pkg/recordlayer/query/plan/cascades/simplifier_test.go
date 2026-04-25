@@ -414,3 +414,69 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 		t.Fatalf("expected the age predicate to survive, got %T %s", got, got.Explain())
 	}
 }
+
+// TestSimplify_NotOverOrDoesNotDistribute pins the documented
+// SEPARATION: De Morgan's NOT distribution is INTENTIONALLY left out
+// of DefaultSimplifyRules. Java's QueryPredicateTest.testQueryPredicate
+// NotPushDownOptimization rewrites `NOT(OR(p1, p2))` to `AND(NOT p1,
+// NOT p2)`; our seed leaves the NOT on top of the OR.
+//
+// Java does the De Morgan distribution in a separate normalisation
+// pass (BooleanNormalizer); the seed Simplify driver runs only the
+// constant-fold + identity-drop + absorbing-element + leaf-NOT-
+// rewrite rules. Callers wanting the De Morgan rewrite use the
+// `NormalizationRules()` rule set (which prepends `NewDeMorganRule`).
+// See `rule_demorgan.go` + `rule_demorgan_test.go`.
+func TestSimplify_NotOverOrDoesNotDistribute(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeString}
+	b := &FieldValue{Field: "b", Typ: TypeString}
+	p1 := NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue("x")})
+	p2 := NewComparisonPredicate(b, Comparison{Type: ComparisonEquals, Operand: LiteralValue("y")})
+
+	pred := NewNot(NewOr(p1, p2))
+	got := Simplify(pred, DefaultSimplifyRules())
+
+	// CURRENT behaviour: NOT(OR(p1, p2)) survives unchanged.
+	notP, ok := got.(*NotPredicate)
+	if !ok {
+		t.Fatalf("expected NotPredicate (no De Morgan), got %T: %s", got, got.Explain())
+	}
+	if _, ok := notP.Child.(*OrPredicate); !ok {
+		t.Fatalf("NOT child should still be OR, got %T", notP.Child)
+	}
+}
+
+// TestSimplify_OrOfPredicateAndFalse pins the SQL identity-law fold
+// that Java's testQueryPredicateIdentityLawOptimization exercises:
+// `OR(p, FALSE) → p`. Our OrConstantSimplifyRule must reduce the OR
+// to its surviving member.
+func TestSimplify_OrOfPredicateAndFalse(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeString}
+	p1 := NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue("Hello")})
+
+	pred := NewOr(p1, NewConstantPredicate(TriFalse))
+	got := Simplify(pred, DefaultSimplifyRules())
+
+	// Identity law: OR(p, FALSE) collapses to p.
+	if got != QueryPredicate(p1) {
+		t.Fatalf("expected p1 to survive (Java identity-law optimization), got %T: %s", got, got.Explain())
+	}
+}
+
+// TestSimplify_AndOfPredicateAndTrue: dual identity law. AND(p, TRUE)
+// → p. Symmetric to OrOfPredicateAndFalse and pins our equivalent of
+// Java's identity-law coverage on the AND side.
+func TestSimplify_AndOfPredicateAndTrue(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeString}
+	p1 := NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue("Hello")})
+
+	pred := NewAnd(p1, NewConstantPredicate(TriTrue))
+	got := Simplify(pred, DefaultSimplifyRules())
+
+	if got != QueryPredicate(p1) {
+		t.Fatalf("expected p1 to survive (AND TRUE identity), got %T: %s", got, got.Explain())
+	}
+}

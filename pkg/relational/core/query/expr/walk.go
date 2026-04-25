@@ -251,9 +251,9 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (c
 	return r.ResolveCast(inner, target)
 }
 
-// walkScalarFunction handles the seed scalar function set —
-// UPPER / LOWER / LENGTH / CHAR_LENGTH / CHARACTER_LENGTH /
-// OCTET_LENGTH. Unknown function names decline with
+// walkScalarFunction handles every scalar function name registered
+// in scalarFunctionResultType() (the source of truth — see that
+// function for the live list). Unknown function names decline with
 // UnsupportedExpressionShapeError so the logical-builder text
 // fallback catches them; this keeps the walker conservative until
 // the full scalar function catalogue ports.
@@ -299,12 +299,28 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (ca
 
 // scalarFunctionResultType returns the result type of a seed scalar
 // function. Unknown name → (_, false) so the walker declines.
+//
+// Polymorphic returns (ABS / CEILING / FLOOR / ROUND / COALESCE /
+// NULLIF) carry TypeUnknown because the result type depends on the
+// input — int input stays int, float input stays float. Once the Type
+// hierarchy port lands the walker will infer per-arg types and surface
+// the precise result type instead.
 func scalarFunctionResultType(name string) (cascades.ValueType, bool) {
 	switch name {
-	case "UPPER", "LOWER":
+	case "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
+		"CONCAT", "CONCAT_WS", "SUBSTRING", "SUBSTR", "REPLACE",
+		"REVERSE", "LEFT", "RIGHT":
 		return cascades.TypeString, true
-	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH":
+	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
+		"POSITION":
 		return cascades.TypeInt, true
+	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG", "PI":
+		return cascades.TypeFloat, true
+	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND",
+		"SIGN", "MOD",
+		"COALESCE", "NULLIF", "IFNULL",
+		"IF", "IIF", "GREATEST", "LEAST":
+		return cascades.TypeUnknown, true
 	}
 	return cascades.TypeUnknown, false
 }

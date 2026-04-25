@@ -96,6 +96,10 @@ func buildWherePredicateForTable(
 	if err != nil {
 		return nil, false
 	}
+	// Plan-time fold of constant Value sub-trees inside the predicate
+	// (`name = 1+2` → `name = 3`). Best-effort — SimplifyPredicateValues
+	// is pointer-stable when nothing folds.
+	pred = cascades.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
@@ -167,6 +171,7 @@ func buildWherePredicateForJoins(
 	if err != nil {
 		return nil, false
 	}
+	pred = cascades.SimplifyPredicateValues(pred)
 	return pred, true
 }
 

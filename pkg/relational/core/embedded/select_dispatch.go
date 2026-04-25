@@ -131,6 +131,16 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 	// IN-subquery evaluator. See in_subquery.go.
 	c.preEvaluateInSubqueries(ctx, sq)
 
+	// Plan-time constant fold of row-context-independent SELECT-list
+	// expressions (`SELECT 1+2 FROM t`, `SELECT UPPER('hi'), price
+	// FROM t`). Best-effort — slots that decline the walker or aren't
+	// constant after cascades.SimplifyValue stay unset and fall through
+	// to the per-row evaluator. Skipped for SELECT-without-FROM since
+	// that path already evaluates each projExpr exactly once below.
+	if sq.tableName != "" {
+		foldConstantProjections(sq, c.cachedMetaData())
+	}
+
 	// SELECT without FROM: evaluate projExprs as constants and return one row.
 	if sq.tableName == "" {
 		cols := make([]string, len(sq.projCols))

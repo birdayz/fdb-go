@@ -56,6 +56,15 @@ type selectQuery struct {
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs []antlrgen.IExpressionContext
+	// projConstFolded is parallel to projExprs (populated lazily by
+	// foldConstantProjections from execSelectQuery). A slot with
+	// present=true means the expression was determined to be row-
+	// context-independent at plan time; its precomputed Go value lives
+	// in `value` and per-row consumers must use it instead of calling
+	// evalExpr. Slots stay zero-valued for expressions that touched a
+	// FieldValue, declined the walker, or weren't constant after
+	// SimplifyValue. Empty slice = pass not run yet.
+	projConstFolded []projectionFold
 	// projQualifier is set when SELECT list is exactly `<qualifier>.*`.
 	// Projection restricts to columns from the source whose alias (or
 	// table name when no alias) equals projQualifier. Empty = SELECT *

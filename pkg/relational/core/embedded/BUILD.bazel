@@ -23,6 +23,7 @@ go_library(
         "order_by.go",
         "pk_prefix_pushdown.go",
         "pk_pushdown.go",
+        "projection_fold.go",
         "recursive_cte.go",
         "scalar_functions.go",
         "scalar_subquery.go",
@@ -77,6 +78,12 @@ go_test(
         "logical_predicate_test.go",
         "naive_generator_test.go",
         "order_by_test.go",
+        "projection_fold_isolated_test.go",
+        "projection_fold_test.go",
+        "scope_test.go",
+        "select_helpers_test.go",
+        "utilities_test.go",
+        "where_extractors_test.go",
     ],
     embed = [":embedded"],
     deps = [
@@ -91,5 +98,6 @@ go_test(
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/session",
+        "@org_golang_google_protobuf//proto",
     ],
 )

@@ -957,6 +957,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// extra sort-field expressions live on outField.expr (set when
 				// the ORDER BY loop built the field for `ORDER BY v * 2`).
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+					if i < len(sq.projConstFolded) && sq.projConstFolded[i].present {
+						if v := sq.projConstFolded[i].value; v != nil {
+							vals[i] = v.(driver.Value) //nolint:forcetypeassert
+						}
+						continue
+					}
 					v, evalErr := evalExpr(ctx, c, msg, sq.projExprs[i])
 					if evalErr != nil {
 						return nil, evalErr

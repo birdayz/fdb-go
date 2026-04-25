@@ -67,10 +67,25 @@
 // **Zero-size struct gotcha.** Go's spec allows two distinct
 // zero-size variables to share an address. `&AnyValue{}` +
 // `&AnyValue{}` collapse to the same pointer, which breaks
-// PlannerBindings' matcher-identity keying. Every matcher struct
-// carries a `uint64` nonce; factory constructors (NewAnyValue,
-// NewConstantMatcher, NewFieldMatcher, …) increment an atomic
-// counter. Rule authors MUST use the factories, never bare struct
+// PlannerBindings' matcher-identity keying. The matcher catalogue
+// handles this two ways depending on the struct shape:
+//   - `AnyValue` carries a `uint64` nonce produced by an atomic
+//     counter (`NewAnyValue` increments it). The counter makes
+//     "each instance is a distinct identity" visible in a debugger
+//     as well as via pointer identity — useful because rule authors
+//     legitimately call `NewAnyValue()` many times per rule pattern.
+//     This is the only matcher that uses the counter.
+//   - All other matchers carry at least one field that gives the
+//     struct non-zero size — for `Instance` / `AllOfMatcher` /
+//     `AnyOfMatcher` / `ListMatcher` / `AllElementsMatcher` it's
+//     the inherent `rootType string` + downstream slice; for the
+//     private generic `predicateMatcher[T]` (which subsumes the
+//     hand-written notPredicateMatcher / comparisonPredicateMatcher
+//     / andPredicateMatcher / orPredicateMatcher / valuePredicateMatcher)
+//     it's the `rootType string` field. No nonce needed.
+//
+// Across all matchers: rule authors MUST use the factories
+// (`NewAnyValue`, `NewConstantMatcher`, …), never bare struct
 // literals. Java doesn't hit this — `new Object()` always allocates.
 //
 // Mapping to Java:
@@ -88,6 +103,8 @@
 package cascades
 
 import (
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -638,7 +655,7 @@ func evalScalarFunction(name string, args []any) any {
 			return nil
 		}
 		return strings.ToLower(s)
-	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH":
+	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
 		// Rune count — matches embedded.scalar_functions.go's LENGTH
 		// (utf8.RuneCountInString) so plan-time fold and runtime eval
 		// agree. The seed coerces []byte the same way for symmetry
@@ -664,8 +681,590 @@ func evalScalarFunction(name string, args []any) any {
 			return int64(len(v))
 		}
 		return nil
+	case "ABS":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		switch n := args[0].(type) {
+		case int64:
+			// MinInt64 abs overflows; embedded errors and we can't
+			// surface that from a fold path — decline (return nil)
+			// so the runtime evaluator handles it and reports the
+			// 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+			if n == math.MinInt64 {
+				return nil
+			}
+			if n < 0 {
+				return -n
+			}
+			return n
+		case float64:
+			return math.Abs(n)
+		}
+		return nil
+	case "FLOOR", "CEIL", "CEILING", "ROUND":
+		if len(args) < 1 || args[0] == nil {
+			return nil
+		}
+		var f float64
+		switch n := args[0].(type) {
+		case int64:
+			// Already an integer — short-circuit to mirror embedded.
+			return n
+		case float64:
+			f = n
+		default:
+			return nil
+		}
+		var result float64
+		switch name {
+		case "FLOOR":
+			result = math.Floor(f)
+		case "CEIL", "CEILING":
+			result = math.Ceil(f)
+		case "ROUND":
+			decimals := int64(0)
+			if len(args) >= 2 {
+				if args[1] == nil {
+					return nil
+				}
+				d, ok := scalarFnInt64Arg(args[1])
+				if !ok {
+					return nil
+				}
+				decimals = d
+			}
+			if decimals == 0 {
+				result = math.Round(f)
+			} else {
+				factor := math.Pow(10, float64(decimals))
+				result = math.Round(f*factor) / factor
+			}
+		}
+		// Match embedded's "return int64 if no fractional part" rule.
+		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+			return int64(result)
+		}
+		return result
+	case "PI":
+		// Zero-arg constant. Mirrors embedded.scalar_functions.go's PI.
+		if len(args) != 0 {
+			return nil
+		}
+		return math.Pi
+	case "SQRT":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		f, _, ok := toFloat64(args[0])
+		if !ok {
+			return nil
+		}
+		if f < 0 {
+			return nil
+		}
+		return math.Sqrt(f)
+	case "POWER", "POW":
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		base, _, bok := toFloat64(args[0])
+		exp, _, eok := toFloat64(args[1])
+		if !bok || !eok {
+			return nil
+		}
+		result := math.Pow(base, exp)
+		if math.IsNaN(result) || math.IsInf(result, 0) {
+			return nil
+		}
+		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
+			return int64(result)
+		}
+		return result
+	case "COALESCE":
+		// First non-nil argument wins; all nil → nil. Empty argument
+		// list also folds to nil so a degenerate `COALESCE()` doesn't
+		// error at plan time (the parser rejects zero-arg COALESCE
+		// anyway, so this is just a defensive default).
+		for _, a := range args {
+			if a != nil {
+				return a
+			}
+		}
+		return nil
+	case "NULLIF":
+		// NULLIF(a, b) → NULL when a == b; otherwise a. Compare via
+		// nullifEqual so int/float promotion mirrors embedded.
+		if len(args) != 2 {
+			return nil
+		}
+		if args[0] == nil {
+			return nil
+		}
+		if args[1] != nil && nullifEqual(args[0], args[1]) {
+			return nil
+		}
+		return args[0]
+	case "TRIM":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.TrimSpace(s)
+	case "LTRIM":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.TrimLeft(s, " \t\n\r")
+	case "RTRIM":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.TrimRight(s, " \t\n\r")
+	case "CONCAT":
+		// MySQL/Postgres semantics — NULL skips, doesn't poison.
+		// Pinned by trim_concat.yaml; the embedded path uses the
+		// same rule.
+		var b strings.Builder
+		for _, a := range args {
+			if a == nil {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("%v", a))
+		}
+		return b.String()
+	case "CONCAT_WS":
+		// CONCAT With Separator — MySQL semantics: first arg is the
+		// separator (NULL → result is NULL); remaining args are
+		// concatenated with the separator between non-NULL values.
+		// NULL elements are skipped (different from CONCAT in
+		// Postgres, which poisons; matches embedded.scalar_functions.go).
+		if len(args) < 1 || args[0] == nil {
+			return nil
+		}
+		sep, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		var b strings.Builder
+		first := true
+		for _, a := range args[1:] {
+			if a == nil {
+				continue
+			}
+			if !first {
+				b.WriteString(sep)
+			}
+			b.WriteString(fmt.Sprintf("%v", a))
+			first = false
+		}
+		return b.String()
+	case "SUBSTRING", "SUBSTR":
+		// SUBSTRING(s, pos[, len]) — 1-based position per SQL standard.
+		// pos < 1 normalises to 1 (matches embedded, MySQL).
+		if len(args) < 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		pos, ok := scalarFnInt64Arg(args[1])
+		if !ok {
+			return nil
+		}
+		if pos < 1 {
+			pos = 1
+		}
+		runes := []rune(s)
+		start := int(pos) - 1
+		if start >= len(runes) {
+			return ""
+		}
+		if len(args) >= 3 {
+			if args[2] == nil {
+				return nil
+			}
+			n, ok := scalarFnInt64Arg(args[2])
+			if !ok {
+				return nil
+			}
+			end := start + int(n)
+			if end > len(runes) {
+				end = len(runes)
+			}
+			if end < start {
+				return ""
+			}
+			return string(runes[start:end])
+		}
+		return string(runes[start:])
+	case "REPLACE":
+		// REPLACE(s, from, to). NULL `to` is treated as empty (matches
+		// embedded). Pure-string semantics — non-string args coerce
+		// via fmt.Sprintf("%v", v) for parity with the embedded path.
+		if len(args) != 3 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		toStr := ""
+		if args[2] != nil {
+			toStr = fmt.Sprintf("%v", args[2])
+		}
+		return strings.ReplaceAll(fmt.Sprintf("%v", args[0]), fmt.Sprintf("%v", args[1]), toStr)
+	case "SIGN":
+		// SIGN(numeric) — -1 / 0 / 1 in the input's numeric type. Mirrors
+		// embedded.scalar_functions.go's SIGN: int64 input → int64 sign,
+		// float64 input → float64 sign. Non-numeric input declines so
+		// the runtime evaluator surfaces 22018.
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		switch n := args[0].(type) {
+		case int64:
+			switch {
+			case n > 0:
+				return int64(1)
+			case n < 0:
+				return int64(-1)
+			}
+			return int64(0)
+		case float64:
+			switch {
+			case n > 0:
+				return float64(1)
+			case n < 0:
+				return float64(-1)
+			}
+			return float64(0)
+		}
+		return nil
+	case "MOD":
+		// MOD(a, b) — int64%int64 stays int64, mixed promotes to float64
+		// via math.Mod. Division-by-zero declines (runtime errors with
+		// 22012 DIVISION_BY_ZERO). Mirrors embedded's MOD semantics.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		ai, aIsInt := args[0].(int64)
+		bi, bIsInt := args[1].(int64)
+		if aIsInt && bIsInt {
+			if bi == 0 {
+				return nil
+			}
+			return ai % bi
+		}
+		af, _, aok := toFloat64(args[0])
+		bf, _, bok := toFloat64(args[1])
+		if !aok || !bok {
+			return nil
+		}
+		if bf == 0 {
+			return nil
+		}
+		return math.Mod(af, bf)
+	case "IFNULL":
+		// IFNULL(a, b) — `a` if non-null, else `b`. 2-arg COALESCE alias
+		// (MySQL/SQLite spelling). Type-uniform like embedded.
+		if len(args) != 2 {
+			return nil
+		}
+		if args[0] != nil {
+			return args[0]
+		}
+		return args[1]
+	case "IF", "IIF":
+		// IF(cond, then, else) — evaluates condition first; returns
+		// `then` if truthy, `else` otherwise. Truthy: non-zero numeric,
+		// non-empty string, true bool. Mirrors embedded's IF.
+		if len(args) != 3 {
+			return nil
+		}
+		switch v := args[0].(type) {
+		case bool:
+			if v {
+				return args[1]
+			}
+			return args[2]
+		case int64:
+			if v != 0 {
+				return args[1]
+			}
+			return args[2]
+		case float64:
+			if v != 0 {
+				return args[1]
+			}
+			return args[2]
+		case string:
+			if v != "" {
+				return args[1]
+			}
+			return args[2]
+		case nil:
+			// SQL §6.30: IF(NULL, …) returns the else branch (NULL is
+			// not truthy). embedded matches this.
+			return args[2]
+		}
+		// Unsupported condition type — decline so runtime can error.
+		return nil
+	case "GREATEST", "LEAST":
+		// GREATEST/LEAST — Java conformance: any NULL arg → NULL result
+		// (Postgres skips, Oracle propagates; Java propagates). Mirror
+		// Java per embedded's behaviour. Cross-type comparisons decline
+		// at the fold path so the runtime can surface 22000
+		// CANNOT_CONVERT_TYPE.
+		if len(args) == 0 {
+			return nil
+		}
+		isGreatest := name == "GREATEST"
+		best := args[0]
+		if best == nil {
+			return nil
+		}
+		for _, a := range args[1:] {
+			if a == nil {
+				return nil
+			}
+			cmp, ok := compareScalar(best, a)
+			if !ok {
+				return nil // cross-type — runtime reports the error
+			}
+			if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
+				best = a
+			}
+		}
+		return best
+	case "EXP":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		f, _, ok := toFloat64(args[0])
+		if !ok {
+			return nil
+		}
+		return math.Exp(f)
+	case "LN":
+		// Natural log. Domain: x > 0. Out-of-domain (≤ 0) declines so
+		// the runtime evaluator can surface 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		f, _, ok := toFloat64(args[0])
+		if !ok || f <= 0 {
+			return nil
+		}
+		return math.Log(f)
+	case "LOG":
+		// 1-arg LOG(x) = log10(x). 2-arg LOG(base, x) = ln(x)/ln(base).
+		// Mirrors embedded; out-of-domain declines.
+		switch len(args) {
+		case 1:
+			if args[0] == nil {
+				return nil
+			}
+			f, _, ok := toFloat64(args[0])
+			if !ok || f <= 0 {
+				return nil
+			}
+			return math.Log10(f)
+		case 2:
+			if args[0] == nil || args[1] == nil {
+				return nil
+			}
+			base, _, baseOK := toFloat64(args[0])
+			x, _, xOK := toFloat64(args[1])
+			if !baseOK || !xOK || base <= 0 || base == 1 || x <= 0 {
+				return nil
+			}
+			return math.Log(x) / math.Log(base)
+		}
+		return nil
+	case "REVERSE":
+		// String reverse — rune-aware so multibyte UTF-8 stays valid.
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		runes := []rune(s)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return string(runes)
+	case "POSITION":
+		// POSITION(substr, str) — 1-based rune index of first match,
+		// 0 if not found. Mirrors embedded POSITION (note: not the
+		// `POSITION(substr IN str)` SQL-standard grammar shape).
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		needle := fmt.Sprintf("%v", args[0])
+		haystack := fmt.Sprintf("%v", args[1])
+		byteIdx := strings.Index(haystack, needle)
+		if byteIdx < 0 {
+			return int64(0)
+		}
+		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1)
+	case "LEFT":
+		// LEFT(str, n) — first n runes; whole string if n ≥ length.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		n, ok := scalarFnInt64Arg(args[1])
+		if !ok {
+			return nil
+		}
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s
+		}
+		return string(runes[:n])
+	case "RIGHT":
+		// RIGHT(str, n) — last n runes; whole string if n ≥ length.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		n, ok := scalarFnInt64Arg(args[1])
+		if !ok {
+			return nil
+		}
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s
+		}
+		return string(runes[len(runes)-int(n):])
 	}
 	return nil
+}
+
+// compareScalar returns -1 / 0 / 1 for a < b / a == b / a > b under the
+// seed's numeric/string/bool comparison rules. Returns ok=false on
+// cross-type pairs the seed can't compare (the runtime reports the
+// CANNOT_CONVERT_TYPE error per Java alignment).
+func compareScalar(a, b any) (int, bool) {
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			switch {
+			case av < bv:
+				return -1, true
+			case av > bv:
+				return 1, true
+			}
+			return 0, true
+		case float64:
+			af := float64(av)
+			switch {
+			case af < bv:
+				return -1, true
+			case af > bv:
+				return 1, true
+			}
+			return 0, true
+		}
+	case float64:
+		switch bv := b.(type) {
+		case int64:
+			bf := float64(bv)
+			switch {
+			case av < bf:
+				return -1, true
+			case av > bf:
+				return 1, true
+			}
+			return 0, true
+		case float64:
+			switch {
+			case av < bv:
+				return -1, true
+			case av > bv:
+				return 1, true
+			}
+			return 0, true
+		}
+	case string:
+		bv, ok := b.(string)
+		if !ok {
+			return 0, false
+		}
+		return strings.Compare(av, bv), true
+	case bool:
+		bv, ok := b.(bool)
+		if !ok {
+			return 0, false
+		}
+		switch {
+		case !av && bv:
+			return -1, true
+		case av && !bv:
+			return 1, true
+		}
+		return 0, true
+	}
+	return 0, false
+}
+
+// scalarFnInt64Arg coerces a numeric scalar-fn argument to int64.
+// Float coercion only succeeds for whole-valued floats — non-integer
+// floats decline so the fold path returns nil and the runtime
+// evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
+// the conversion error. Mirrors the strictness of
+// embedded.functions.ToIntegerArg.
+func scalarFnInt64Arg(v any) (int64, bool) {
+	if i, ok := toInt64(v); ok {
+		return i, true
+	}
+	if f, _, ok := toFloat64(v); ok && f == math.Trunc(f) &&
+		f >= math.MinInt64 && f <= math.MaxInt64 {
+		return int64(f), true
+	}
+	return 0, false
+}
+
+// nullifEqual is the equality test used by NULLIF's plan-time fold.
+// Mirrors embedded.functions.CompareValues for the int/float promotion
+// case while staying conservative (declines on mixed-type comparisons
+// the seed Type hierarchy can't model).
+func nullifEqual(a, b any) bool {
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			return av == bv
+		case float64:
+			return float64(av) == bv
+		}
+	case float64:
+		switch bv := b.(type) {
+		case int64:
+			return av == float64(bv)
+		case float64:
+			return av == bv
+		}
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	}
+	return false
 }
 
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a
@@ -708,13 +1307,34 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	}
 	switch a.Op {
 	case OpAdd:
-		return li + ri
+		// Overflow-checked: matches Java ArithmeticValue.AddFn /
+		// embedded.functions.AddInt64Checked. Cascades returns nil
+		// (UNKNOWN) on overflow so the runtime executor surfaces
+		// the 22003 NUMERIC_VALUE_OUT_OF_RANGE error rather than the
+		// fold silently producing a wrapped value.
+		out, ok := addInt64Checked(li, ri)
+		if !ok {
+			return nil
+		}
+		return out
 	case OpSub:
-		return li - ri
+		out, ok := subInt64Checked(li, ri)
+		if !ok {
+			return nil
+		}
+		return out
 	case OpMul:
-		return li * ri
+		out, ok := mulInt64Checked(li, ri)
+		if !ok {
+			return nil
+		}
+		return out
 	case OpDiv:
 		if ri == 0 {
+			return nil
+		}
+		// MinInt64 / -1 overflows (abs value doesn't fit in int64).
+		if li == math.MinInt64 && ri == -1 {
 			return nil
 		}
 		return li / ri
@@ -722,12 +1342,58 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		// SQL: `a MOD 0` is undefined / NULL. Match Div's nil-on-zero
 		// guard. Sign of result matches Go's `%` (truncated toward
 		// zero) — matches MySQL / PostgreSQL semantics.
+		//
+		// MinInt64 % -1 is SAFE — unlike division, Go's `%` produces
+		// 0 for this combination (the mathematical result is 0,
+		// representable in int64). No special-case overflow guard
+		// needed. Pinned in TestArithmeticValue_OverflowBoundaries.
 		if ri == 0 {
 			return nil
 		}
 		return li % ri
 	}
 	return nil
+}
+
+// addInt64Checked / subInt64Checked / mulInt64Checked mirror
+// embedded.functions.{Add,Sub,Mul}Int64Checked. Re-implemented in
+// cascades to keep the value-layer arithmetic free of cross-package
+// imports (the package-structure goal in RFC-025).
+//
+// Add/Sub overflow: signed-overflow detection via the standard
+// "different sign" check (well-defined under int64 wrap semantics).
+// Mul: defer to math/bits to avoid the full multiword arithmetic
+// inline.
+func addInt64Checked(a, b int64) (int64, bool) {
+	r := a + b
+	if (a > 0 && b > 0 && r < a) || (a < 0 && b < 0 && r > a) {
+		return 0, false
+	}
+	return r, true
+}
+
+func subInt64Checked(a, b int64) (int64, bool) {
+	r := a - b
+	if (b > 0 && r > a) || (b < 0 && r < a) {
+		return 0, false
+	}
+	return r, true
+}
+
+func mulInt64Checked(a, b int64) (int64, bool) {
+	if a == 0 || b == 0 {
+		return 0, true
+	}
+	r := a * b
+	// Reverse-divide to detect overflow. The MinInt64 * -1 case is
+	// the one a/b == 1 wouldn't catch — handle explicitly.
+	if a == math.MinInt64 && b == -1 || b == math.MinInt64 && a == -1 {
+		return 0, false
+	}
+	if r/b != a {
+		return 0, false
+	}
+	return r, true
 }
 
 // --- BooleanValue + CastValue -------------------------------------

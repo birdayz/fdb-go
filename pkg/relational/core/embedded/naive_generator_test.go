@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -133,6 +134,100 @@ func TestNaiveGenerator_Explain_DDLFallback(t *testing.T) {
 	got := p.Explain()
 	if !strings.HasPrefix(got, "DDL:") {
 		t.Fatalf("got %q, want DDL:-prefixed explain", got)
+	}
+}
+
+// EXPLAIN <SELECT> — the planExplain path returns a 1-row plan
+// with a PLAN column. Plan.Explain() renders 'EXPLAIN: <inner>'.
+func TestNaiveGenerator_Explain_ExplainSelect(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN SELECT * FROM t")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+	if !strings.Contains(got, "Scan(t)") {
+		t.Fatalf("got %q, want inner Scan(t)", got)
+	}
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN should not be an update plan (returns rows)")
+	}
+}
+
+// EXPLAIN <SELECT … WHERE …> exercises the catalog-cold fallback
+// (no metadata in the connection). Predicate text comes from the
+// text builder.
+func TestNaiveGenerator_Explain_ExplainSelectWithWhere(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN SELECT id FROM users WHERE active = TRUE")
+	got := p.Explain()
+	for _, want := range []string{"EXPLAIN: ", "Filter(active = TRUE)", "Scan(users)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, missing %q", got, want)
+		}
+	}
+}
+
+// EXPLAIN UPDATE — the EXPLAIN path is independent from execution,
+// so update statements behind EXPLAIN don't actually run; their
+// text-builder rendering is what's returned.
+func TestNaiveGenerator_Explain_ExplainUpdate(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN UPDATE orders SET status = 'done' WHERE id = 1")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+	// Must not actually execute (no FDB available in this test) — if
+	// the dispatcher mistakenly routed EXPLAIN UPDATE to execStatement
+	// the test would panic / error before reaching this assertion.
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN UPDATE should not be an update plan — it returns plan-text rows, not commits")
+	}
+}
+
+// EXPLAIN INSERT — same independent-from-execution shape.
+func TestNaiveGenerator_Explain_ExplainInsert(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN INSERT INTO users (id, name) VALUES (1, 'alice')")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+}
+
+// EXPLAIN DELETE — same.
+func TestNaiveGenerator_Explain_ExplainDelete(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN DELETE FROM orders WHERE status = 'cancelled'")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+	if !strings.Contains(got, "Delete(orders") {
+		t.Fatalf("got %q, want inner Delete(orders)", got)
+	}
+}
+
+// EXPLAIN Execute — the planExplain path produces a 1-row driver.Rows
+// with column "PLAN". Verify the row stream end-to-end.
+func TestNaiveGenerator_Explain_ExplainProducesPlanRow(t *testing.T) {
+	t.Parallel()
+	g := &naiveGenerator{c: &EmbeddedConnection{}}
+	p, err := g.Plan(context.Background(), "EXPLAIN SELECT * FROM users")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	res, err := p.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Rows == nil {
+		t.Fatal("Execute: Rows should be non-nil for EXPLAIN")
+	}
+	cols := res.Rows.Columns()
+	if len(cols) != 1 || cols[0] != "PLAN" {
+		t.Fatalf("columns: got %v, want [PLAN]", cols)
 	}
 }
 
@@ -338,5 +433,137 @@ func TestNaiveGenerator_Explain_WarmCache_DeleteWhere(t *testing.T) {
 	}
 	if !p.IsUpdate() {
 		t.Fatal("DELETE should be an update plan")
+	}
+}
+
+// `EXPLAIN <query>` warm-cache path: the EXPLAIN dispatcher delegates
+// to computeExplainText, which goes through buildLogicalPlanForQuery
+// WithCatalog — same predicate-tree form as the bare SELECT case.
+// Pins that EXPLAIN doesn't drop the catalog-aware path.
+func TestNaiveGenerator_Explain_ExplainWarmCacheSelect(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	p := helperPlanWithCachedMd(t,
+		"EXPLAIN SELECT * FROM Order WHERE price > 5",
+		md, "/main", "public")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("expected EXPLAIN: prefix, got %q", got)
+	}
+	if !strings.Contains(got, "PRICE > 5") {
+		t.Fatalf("expected predicate-tree form (PRICE > 5), got %q", got)
+	}
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN must not be an update plan even on warm cache")
+	}
+}
+
+// EXPLAIN EXECUTE CONTINUATION → UNSUPPORTED_OPERATION. The
+// describeObjectClause alternative `executeContinuationStatement`
+// IS a *DescribeStatementsContext (so the type-assertion branch
+// passes), but the four accessor methods (Query / Delete / Insert
+// / Update) all return nil — computeExplainText returns "" and
+// planExplain's empty-string guard fires.
+//
+// Pinned because the comment in planExplain explicitly calls out
+// this corner; the test makes sure a future change that adds
+// continuation-handling at the !ok branch (or adds a new accessor)
+// doesn't accidentally let it through.
+func TestNaiveGenerator_Explain_ExplainContinuationDeclines(t *testing.T) {
+	t.Parallel()
+	g := &naiveGenerator{c: &EmbeddedConnection{}}
+	_, err := g.Plan(context.Background(),
+		"EXPLAIN EXECUTE CONTINUATION X'00'")
+	if err == nil {
+		t.Fatal("EXPLAIN <continuation>: expected error, got nil plan")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *api.Error, got %T: %v", err, err)
+	}
+	if apiErr.Code != api.ErrCodeUnsupportedOperation {
+		t.Fatalf("expected ErrCodeUnsupportedOperation, got %q", apiErr.Code)
+	}
+}
+
+// EXPLAIN UNION ALL — exercises the SetQuery alternative inside
+// the inner query. Ensures EXPLAIN doesn't choke on compound query
+// shapes.
+func TestNaiveGenerator_Explain_ExplainUnion(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN SELECT id FROM a UNION ALL SELECT id FROM b")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+	for _, want := range []string{"Scan(a)", "Scan(b)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, missing %q (UNION inner)", got, want)
+		}
+	}
+}
+
+// EXPLAIN over a CTE — `WITH … SELECT` flows through the same
+// query-shape path. The text builder handles it; the EXPLAIN wrapper
+// just delegates. Content check covers both the producer side
+// (Filter on the inner CTE definition) and the consumer side
+// (the outer SELECT references active_users), so the test catches
+// a regression where either side silently disappears.
+func TestNaiveGenerator_Explain_ExplainCTE(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN WITH active_users AS (SELECT id FROM users WHERE active = TRUE) SELECT id FROM active_users")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+	for _, want := range []string{"users", "active_users"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, missing %q (CTE producer/consumer reference)", got, want)
+		}
+	}
+}
+
+// EXPLAIN over a WHERE with constant arithmetic — warm-cache
+// catalog-aware path → cascades.SimplifyValue folds 1+2 to 3.
+// The user-visible PLAN row should show the folded form, not the
+// pre-fold tree.
+func TestNaiveGenerator_Explain_ExplainConstantFold(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	p := helperPlanWithCachedMd(t,
+		"EXPLAIN SELECT * FROM Order WHERE price > 1 + 2",
+		md, "/main", "public")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+	// Folded predicate: PRICE > 3 (cascades.SimplifyValue collapsed 1+2).
+	if !strings.Contains(got, "PRICE > 3") {
+		t.Fatalf("expected folded predicate (PRICE > 3) in EXPLAIN output, got %q", got)
+	}
+	// The unfolded form should NOT appear.
+	if strings.Contains(got, "1 + 2") || strings.Contains(got, "(1 + 2)") {
+		t.Fatalf("EXPLAIN still shows unfolded 1+2 — fold did not run: %q", got)
+	}
+}
+
+// `EXPLAIN UPDATE` warm-cache path — verifies the catalog-aware
+// builder fires for UPDATE inside EXPLAIN, AND that no actual
+// mutation is attempted (would panic without an FDB connection).
+func TestNaiveGenerator_Explain_ExplainWarmCacheUpdate(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	p := helperPlanWithCachedMd(t,
+		"EXPLAIN UPDATE Order SET price = 99 WHERE price > 5",
+		md, "/main", "public")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("expected EXPLAIN: prefix, got %q", got)
+	}
+	if !strings.Contains(got, "PRICE > 5") {
+		t.Fatalf("expected predicate-tree form (PRICE > 5), got %q", got)
+	}
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN UPDATE must not be an update plan — returns rows, not RowsAffected")
 	}
 }

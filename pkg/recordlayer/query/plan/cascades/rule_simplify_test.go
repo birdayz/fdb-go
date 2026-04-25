@@ -80,6 +80,46 @@ func TestOrDedup_RemovesDuplicates(t *testing.T) {
 	}
 }
 
+// TestOrDedup_PartialDedupKeepsRemaining pins the OrDedup default
+// arm (len(deduped) > 1): NewOr(p1, p2, p1) dedups to NewOr(p1, p2),
+// not just p1. Symmetric to AndDedup_RemovesDuplicates which already
+// hit this branch on the AND side.
+func TestOrDedup_PartialDedupKeepsRemaining(t *testing.T) {
+	t.Parallel()
+	rule := NewOrDedupRule()
+	p1 := NewConstantPredicate(TriTrue)
+	p2 := NewConstantPredicate(TriFalse)
+	or := NewOr(p1, p2, p1) // p1 appears twice
+	got := FireRule(rule, or)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	out, ok := got[0].(*OrPredicate)
+	if !ok {
+		t.Fatalf("expected *OrPredicate, got %T", got[0])
+	}
+	if len(out.SubPredicates) != 2 {
+		t.Fatalf("expected 2 subpredicates after dedup, got %d", len(out.SubPredicates))
+	}
+	// First-occurrence order preserved.
+	if out.SubPredicates[0] != QueryPredicate(p1) || out.SubPredicates[1] != QueryPredicate(p2) {
+		t.Fatalf("dedup did not preserve first-occurrence order")
+	}
+}
+
+// TestOrDedup_NoChange pins the no-op pointer-identity behaviour:
+// when there are no duplicates, the rule does not yield (FireRule
+// gets an empty slice). Caller's pointer-equality fixpoint loop
+// breaks out without rebuilding the OR.
+func TestOrDedup_NoChange(t *testing.T) {
+	t.Parallel()
+	rule := NewOrDedupRule()
+	or := NewOr(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	if got := FireRule(rule, or); len(got) != 0 {
+		t.Fatalf("expected no yield (no dups), got %d", len(got))
+	}
+}
+
 // AndFlattenRule collapses nested AndPredicates into a single flat
 // list of operands.
 func TestAndFlatten_NestedBecomesFlat(t *testing.T) {
@@ -600,6 +640,43 @@ func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
 
 // AndAbsorbOrRule leaves AND alone when no OR child shares an
 // operand with a sibling.
+// TestAndAbsorbOr_KeepsMultipleSurvivors pins the default arm:
+// AND(p, OR(p, q), r) drops OR(p,q) leaving AND(p, r) — TWO
+// surviving children, so the rule rebuilds an AndPredicate (case
+// default in OnMatch's switch). The DropsRedundantOrChild test
+// only exercised the case-1 arm.
+func TestAndAbsorbOr_KeepsMultipleSurvivors(t *testing.T) {
+	t.Parallel()
+	rule := NewAndAbsorbOrRule()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	)
+	r := NewComparisonPredicate(
+		&FieldValue{Field: "score", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))},
+	)
+	and := NewAnd(p, NewOr(p, q), r) // p AND (p OR q) AND r
+	got := FireRule(rule, and)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	out, ok := got[0].(*AndPredicate)
+	if !ok {
+		t.Fatalf("expected AndPredicate, got %T", got[0])
+	}
+	if len(out.SubPredicates) != 2 {
+		t.Fatalf("expected 2 surviving children (p, r), got %d", len(out.SubPredicates))
+	}
+	if out.SubPredicates[0] != QueryPredicate(p) || out.SubPredicates[1] != QueryPredicate(r) {
+		t.Fatalf("survivors out of order: got [%T, %T]", out.SubPredicates[0], out.SubPredicates[1])
+	}
+}
+
 func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()

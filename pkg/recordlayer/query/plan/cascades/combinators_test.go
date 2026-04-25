@@ -131,6 +131,130 @@ func TestMergedWith_NilSafety(t *testing.T) {
 	}
 }
 
+// NewAllOf must panic if zero downstreams — a degenerate pattern that
+// never composed into a useful rule, and silently changing semantics
+// to "matches anything" would be worse than a panic at construction
+// time.
+func TestNewAllOf_ZeroDownstreamsPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewAllOf() with zero downstreams should panic")
+		}
+	}()
+	_ = NewAllOf("Value")
+}
+
+// NewAnyOf — same shape: zero downstreams = always-fail; panic at
+// construction time so the rule author sees the bug.
+func TestNewAnyOf_ZeroDownstreamsPanics(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewAnyOf() with zero downstreams should panic")
+		}
+	}()
+	_ = NewAnyOf("Value")
+}
+
+// AllOf with a multi-match downstream multiplies the result count —
+// the documented Cartesian-product semantics. AnyValue is the only
+// generic multi-match shape we have today, so we use two layered
+// bindings to force the multiplication.
+//
+// Scenario: outer bindings already have two values bound under
+// matcher M (via AnyValue+repeated Bind). AllOf seeds its accumulator
+// with `outer`, then each downstream sees that single seed. Multi-match
+// only surfaces if a downstream returns >1 result for the same input;
+// AnyValue always returns 1. To pin Cartesian behaviour we use a
+// custom matcher that returns 2 results for a given input.
+func TestAllOf_CartesianProduct(t *testing.T) {
+	t.Parallel()
+	multi := &doubleMatcher{}
+	any := NewAnyValue()
+	pattern := NewAllOf("Value", multi, any)
+
+	cv := &ConstantValue{Value: int64(1), Typ: TypeInt}
+	got := pattern.BindMatches(NewBindings(), cv)
+	// doubleMatcher returns 2 partial bindings; any then returns 1
+	// each → 2 final results. AllOf's self-bind doesn't change count.
+	if len(got) != 2 {
+		t.Fatalf("expected Cartesian product of 2×1 = 2 matches, got %d", len(got))
+	}
+}
+
+// AnyOf preserves downstream order: results from downstream[0] appear
+// before downstream[1]'s. Java's stream-based impl has the same
+// ordering guarantee; rule pattern matching depends on it for
+// deterministic explain output.
+func TestAnyOf_PreservesDownstreamOrder(t *testing.T) {
+	t.Parallel()
+	// Two distinct AnyValue matchers — one for "first", one for
+	// "second" — so we can identify which downstream produced
+	// each binding.
+	first := NewAnyValue()
+	second := NewAnyValue()
+	pattern := NewAnyOf("Value", first, second)
+
+	cv := &ConstantValue{Value: int64(1), Typ: TypeInt}
+	got := pattern.BindMatches(NewBindings(), cv)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 matches (one per downstream), got %d", len(got))
+	}
+	// First result must be from `first`, second from `second`.
+	if got[0].GetAll(first) == nil {
+		t.Fatal("got[0] should carry the `first` matcher's binding")
+	}
+	if got[1].GetAll(second) == nil {
+		t.Fatal("got[1] should carry the `second` matcher's binding")
+	}
+}
+
+// AllOf threads outer bindings through every downstream — a value
+// already bound in `outer` is visible in the final result.
+func TestAllOf_ThreadsOuterBindings(t *testing.T) {
+	t.Parallel()
+	outerMatcher := NewAnyValue()
+	preset := &FieldValue{Field: "preset", Typ: TypeInt}
+	outer := NewBindings().Bind(outerMatcher, preset)
+
+	pattern := NewAllOf("Value", NewConstantMatcher())
+	cv := &ConstantValue{Value: int64(1), Typ: TypeInt}
+	got := pattern.BindMatches(outer, cv)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(got))
+	}
+	// The outer binding survives.
+	if got[0].Get(outerMatcher) != preset {
+		t.Fatalf("outer binding lost during AllOf threading")
+	}
+}
+
+// doubleMatcher is a test-only matcher that always emits TWO
+// successful PlannerBindings for any input — used to pin Cartesian
+// behaviour where Go-side test fixtures don't have a natural
+// multi-match shape today.
+//
+// The `_ bool` field forces a non-zero-size struct (1 byte) so two
+// `&doubleMatcher{}` allocations land at distinct heap addresses.
+// Per the zero-size-struct gotcha at AnyValue (matcher.go:130-136),
+// pointers to distinct zero-size variables MAY share an address
+// (Go's runtime parks them all at `runtime.zerobase`), which would
+// silently collide in PlannerBindings's matcher → []any map.
+//
+// `_ [0]func()` is NOT the right idiom here — it has size 0 (the
+// outer length is 0 regardless of the element type) and only makes
+// the struct non-comparable, which is unrelated. `_ bool` is the
+// minimal mechanism that actually forces non-zero size.
+type doubleMatcher struct {
+	_ bool
+}
+
+func (*doubleMatcher) RootType() string { return "Value" }
+func (d *doubleMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
+	return []*PlannerBindings{outer.Bind(d, in), outer.Bind(d, in)}
+}
+
 // PlannerBindings.MergedWith: values from both inputs visible.
 func TestMergedWith_BothBindingsVisible(t *testing.T) {
 	t.Parallel()

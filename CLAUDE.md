@@ -38,7 +38,17 @@ This project uses a Vollkonti (continuous 24/7) shift system. Run `/vollkonti` t
 
 ## Work tracking & workflow
 
-See `TODO.md` in repo root for tracked issues and improvements. Use checkbox format `- [x]` / `- [ ]` with severity levels.
+See `TODO.md` in repo root for tracked issues and improvements. **TODO.md is the authoritative priority list** — flat priority buckets `## CRITICAL > ## HIGH > ## MEDIUM > ## LOW`, items as `- [x]` / `- [ ]`.
+
+**Priority discipline at shift start:**
+
+1. Read the latest handover for shift state, last-PR feedback, and the next-shift follow-ups it lists.
+2. Read TODO.md and identify the **highest unchecked priority bucket that has open items** (CRITICAL first, then HIGH, then MEDIUM, then LOW).
+3. Pick work from THAT bucket. The handover's "Next-shift follow-ups" are *suggestions and context*, not the priority list. They are usually MEDIUM/LOW tactical clean-ups; finishing them is fine, but it is **never a substitute for unchecked CRITICAL/HIGH items**.
+4. If the handover's follow-ups happen to align with the highest-priority bucket — great, do them. If they're lower-priority than what's open in CRITICAL/HIGH, do the CRITICAL/HIGH item first.
+5. **When a CRITICAL or HIGH item is sitting unchecked, you do NOT get to spend a shift on MEDIUM follow-ups.** That's the failure mode this rule exists to prevent.
+
+**Order of operations within a shift:** CRITICAL > HIGH > MEDIUM > LOW. Finish what you start before climbing the priority ladder downward — a half-done CRITICAL item is worse than a finished HIGH one. But starting a fresh MEDIUM when CRITICAL is still open is wrong.
 
 **Working rhythm:** one thing at a time. Implement a feature, write tests, run `just test`, commit, move on. Don't batch multiple unrelated features into one commit.
 
@@ -215,8 +225,11 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzLikePatternToPrefix` | LIKE-pattern prefix extractor (with ESCAPE handling) — cross-checked against likeMatch | Clean |
 | `FuzzLikeMatch` | likeMatch (no escape) vs regex oracle | Clean |
 | `FuzzLikeMatchEscape` | likeMatch (with escape rune) vs regex oracle | Trailing-escape bug found nightshift-48 (was matched as literal; fixed to "malformed → no match") |
+| `FuzzSimplifyValue_ArithmeticTree` | cascades SimplifyValue on a 3-leaf arithmetic composite — no panic, idempotent, fully-folded result | Clean (22.5M execs/20s, swingshift-50) |
+| `FuzzSimplifyValue_CastChain` | cascades SimplifyValue on CAST(CAST(x AS X) AS Y) — no panic + idempotency | Clean (swingshift-50) |
+| `FuzzSimplify_PredicateTree` | cascades QueryPredicate-level Simplify driver under random AND/OR/NOT shapes — no panic + idempotent under both DefaultSimplifyRules and NormalizationRules | Clean (2.5M execs/15s, swingshift-50) |
 
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/comparisons_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/comparisons_test.go`, `FuzzSimplifyValue_ArithmeticTree` / `FuzzSimplifyValue_CastChain` / `FuzzSimplify_PredicateTree` are in `pkg/recordlayer/query/plan/cascades/values_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
@@ -375,7 +388,7 @@ TCP connections use `SetLinger(0)` (RST on close, prevents TIME_WAIT port reuse)
 
 ### Java source reference
 
-Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag **4.10.6.0**. Maven artifact also 4.10.6.0 (MODULE.bazel). All 15 proto files synced from Java source. Key files:
+Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag **4.11.1.0**. Maven artifacts also 4.11.1.0 (MODULE.bazel) — fdb-record-layer-core + fdb-relational-api + fdb-relational-core. All 15 proto files synced from Java source. Key files:
 - `FDBRecordStore.java` — core CRUD, counting, save logic (5800+ lines)
 - `FDBRecordStoreKeyspace.java` — subspace constants (0-9)
 - `SplitHelper.java` — split/unsplit record logic
@@ -572,5 +585,5 @@ See `TODO.md` for full gap analysis. Summary:
 - **Test counts**: 2817 Ginkgo specs + 438 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 81.0% overall. `just coverage` generates HTML report.
 - **Race detector**: CI runs race detector on all 5 FDB test targets. Locally: `just race-all`.
-- **Fuzz targets**: 28 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix + FuzzLikeMatch + FuzzLikeMatchEscape)
+- **Fuzz targets**: 31 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence + FuzzLikePrefixStrinc + FuzzLikePatternToPrefix + FuzzLikeMatch + FuzzLikeMatchEscape + FuzzSimplifyValue_ArithmeticTree + FuzzSimplifyValue_CastChain + FuzzSimplify_PredicateTree)
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.

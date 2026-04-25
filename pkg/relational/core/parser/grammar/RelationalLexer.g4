@@ -1033,6 +1033,7 @@ IS_USED_LOCK:                        'IS_USED_LOCK';
 LAST_INSERT_ID:                      'LAST_INSERT_ID';
 LCASE:                               'LCASE';
 LEAST:                               'LEAST';
+LEN:                                 'LEN';
 LENGTH:                              'LENGTH';
 LINEFROMTEXT:                        'LINEFROMTEXT';
 LINEFROMWKB:                         'LINEFROMWKB';

@@ -118,6 +118,12 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			outRow := make([]driver.Value, len(sq.projCols))
 			for j, col := range sq.projCols {
 				if j < len(sq.projExprs) && sq.projExprs[j] != nil {
+					if j < len(sq.projConstFolded) && sq.projConstFolded[j].present {
+						if v := sq.projConstFolded[j].value; v != nil {
+							outRow[j] = v.(driver.Value) //nolint:forcetypeassert
+						}
+						continue
+					}
 					v, evalErr := evalExprOnMap(ctx, c, row, sq.projExprs[j])
 					if evalErr != nil {
 						return nil, evalErr
