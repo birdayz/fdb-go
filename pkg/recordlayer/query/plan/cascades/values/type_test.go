@@ -242,6 +242,187 @@ func TestToValueType(t *testing.T) {
 	}
 }
 
+// --- RecordType tests ---------------------------------------------
+
+// TestRecordType_Shape pins the basic constructor + getters +
+// Equals over a representative shape (anonymous record with
+// Field{Name="x", Long, 0}, Field{Name="y", String, 1}).
+func TestRecordType_Shape(t *testing.T) {
+	t.Parallel()
+	fields := []Field{
+		{Name: "x", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "y", FieldType: NullableString, Ordinal: 1},
+	}
+	r := NewRecordType("MyRec", false, fields)
+
+	if r.Code() != TypeCodeRecord {
+		t.Errorf("Code(): got %v, want RECORD", r.Code())
+	}
+	if r.IsNullable() {
+		t.Errorf("IsNullable(): got true, want false")
+	}
+	if r.RecordName != "MyRec" {
+		t.Errorf("Name: got %q", r.RecordName)
+	}
+	if len(r.Fields) != 2 {
+		t.Fatalf("Fields len: got %d", len(r.Fields))
+	}
+
+	// Equals: same shape.
+	r2 := NewRecordType("MyRec", false, []Field{
+		{Name: "x", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "y", FieldType: NullableString, Ordinal: 1},
+	})
+	if !r.Equals(r2) {
+		t.Errorf("Equals: same-shape records should be equal")
+	}
+
+	// Not equal: different name.
+	rDiffName := NewRecordType("OtherRec", false, fields)
+	if r.Equals(rDiffName) {
+		t.Errorf("Equals: different name should not be equal")
+	}
+	// Not equal: different nullability.
+	rNullable := NewRecordType("MyRec", true, fields)
+	if r.Equals(rNullable) {
+		t.Errorf("Equals: different nullability should not be equal")
+	}
+	// Not equal: different field type.
+	rDiffFieldType := NewRecordType("MyRec", false, []Field{
+		{Name: "x", FieldType: NotNullInt, Ordinal: 0}, // Int instead of Long
+		{Name: "y", FieldType: NullableString, Ordinal: 1},
+	})
+	if r.Equals(rDiffFieldType) {
+		t.Errorf("Equals: different field type should not be equal")
+	}
+	// Not equal: different field count.
+	rShorter := NewRecordType("MyRec", false, []Field{fields[0]})
+	if r.Equals(rShorter) {
+		t.Errorf("Equals: different field count should not be equal")
+	}
+}
+
+// TestRecordType_LookupField pins the name-based lookup. Anonymous
+// fields (Name="") are NOT addressable — must come through GetField.
+func TestRecordType_LookupField(t *testing.T) {
+	t.Parallel()
+	r := NewRecordType("R", false, []Field{
+		{Name: "id", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "name", FieldType: NullableString, Ordinal: 1},
+		{Name: "", FieldType: NotNullBoolean, Ordinal: 2}, // anonymous
+	})
+	f, ok := r.LookupField("id")
+	if !ok || f.Ordinal != 0 || !f.FieldType.Equals(NotNullLong) {
+		t.Errorf("LookupField(id): got %v, %v", f, ok)
+	}
+	if _, ok := r.LookupField("missing"); ok {
+		t.Errorf("LookupField(missing): expected not found")
+	}
+	if _, ok := r.LookupField(""); ok {
+		t.Errorf("LookupField(\"\"): anonymous fields should not be name-addressable")
+	}
+}
+
+// TestRecordType_GetField pins ordinal-based lookup, including
+// out-of-range guards.
+func TestRecordType_GetField(t *testing.T) {
+	t.Parallel()
+	r := NewRecordType("R", false, []Field{
+		{Name: "a", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "b", FieldType: NullableString, Ordinal: 1},
+	})
+	f, ok := r.GetField(0)
+	if !ok || f.Name != "a" {
+		t.Errorf("GetField(0): got %v, %v", f, ok)
+	}
+	f, ok = r.GetField(1)
+	if !ok || f.Name != "b" {
+		t.Errorf("GetField(1): got %v, %v", f, ok)
+	}
+	if _, ok := r.GetField(2); ok {
+		t.Errorf("GetField(2): expected out-of-range")
+	}
+	if _, ok := r.GetField(-1); ok {
+		t.Errorf("GetField(-1): expected out-of-range")
+	}
+}
+
+// TestNewRecordType_RejectsDuplicateNamedFields pins the dup-check.
+// Anonymous fields with the same Name="" are NOT a duplicate (the
+// disambiguation is by Ordinal).
+func TestNewRecordType_RejectsDuplicateNamedFields(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("expected panic on duplicate field name")
+		}
+	}()
+	_ = NewRecordType("R", false, []Field{
+		{Name: "x", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "x", FieldType: NullableString, Ordinal: 1},
+	})
+}
+
+// TestNewRecordType_AnonymousFieldsAllowed pins that two Name=""
+// fields with distinct Ordinals are valid (`RECORD<INT, STRING>`).
+func TestNewRecordType_AnonymousFieldsAllowed(t *testing.T) {
+	t.Parallel()
+	r := NewRecordType("", true, []Field{
+		{Name: "", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "", FieldType: NotNullString, Ordinal: 1},
+	})
+	if len(r.Fields) != 2 {
+		t.Fatalf("Fields: got %d", len(r.Fields))
+	}
+}
+
+// TestRecordType_String pins the rendered form. Different shapes
+// produce different strings — this is how plan-cache key
+// distinguishes records by shape.
+func TestRecordType_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		t    Type
+		want string
+	}{
+		{
+			NewRecordType("Item", false, []Field{
+				{Name: "id", FieldType: NotNullLong, Ordinal: 0},
+				{Name: "name", FieldType: NullableString, Ordinal: 1},
+			}),
+			"Item RECORD<id LONG NOT NULL, name STRING NULL> NOT NULL",
+		},
+		{
+			NewRecordType("", true, []Field{
+				{Name: "x", FieldType: NotNullInt, Ordinal: 0},
+			}),
+			"RECORD<x INT NOT NULL> NULL",
+		},
+		{
+			// Empty record (unit type) — legal.
+			NewRecordType("Unit", false, nil),
+			"Unit RECORD<> NOT NULL",
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.t.String(); got != tc.want {
+			t.Errorf("String(): got %q, want %q", got, tc.want)
+		}
+	}
+}
+
+// TestRecordType_DefensiveCopy pins that mutating the input slice
+// after construction doesn't affect the constructed RecordType.
+func TestRecordType_DefensiveCopy(t *testing.T) {
+	t.Parallel()
+	fields := []Field{{Name: "x", FieldType: NotNullLong, Ordinal: 0}}
+	r := NewRecordType("R", false, fields)
+	fields[0].Name = "tampered"
+	if r.Fields[0].Name != "x" {
+		t.Errorf("Fields not defensively copied: got %q", r.Fields[0].Name)
+	}
+}
+
 // TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
 // invariant for the value types the legacy enum actually
 // represents. NotNull bit is inferable from the round-trip target

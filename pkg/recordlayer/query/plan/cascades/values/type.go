@@ -299,6 +299,175 @@ func FromValueType(vt ValueType, nullable bool) Type {
 	return UnknownType
 }
 
+// --- RecordType ----------------------------------------------------
+
+// Field is one field of a RecordType. Mirrors Java's Record.Field —
+// name + type + ordinal. The Ordinal carries the declared position
+// for stable ordering across maps; two Fields with the same Name
+// but different Ordinals are NOT equal.
+type Field struct {
+	// Name is the field's identifier. Empty string is legal and
+	// represents an anonymous field — `RECORD<INT, STRING>` produces
+	// fields with Name="" but distinct Ordinals.
+	Name string
+	// FieldType is the field's type. Never nil — anonymous /
+	// untyped fields use UnknownType.
+	FieldType Type
+	// Ordinal is the field's declared position (0-based). Two fields
+	// with the same Name but different Ordinals are distinct fields
+	// (same as Java's Record.Field.fieldIndex).
+	Ordinal int
+}
+
+// Equals reports whether two Fields are structurally equal: same
+// Name + Ordinal + FieldType.Equals.
+func (f Field) Equals(other Field) bool {
+	if f.Name != other.Name || f.Ordinal != other.Ordinal {
+		return false
+	}
+	if f.FieldType == nil || other.FieldType == nil {
+		return f.FieldType == other.FieldType
+	}
+	return f.FieldType.Equals(other.FieldType)
+}
+
+// RecordType is the Type impl for struct-shaped data. Mirrors Java's
+// Record nested type. Two RecordType instances are Equal iff their
+// Name + Nullable match AND their Fields slice is element-wise
+// equal (same length, each Field equals at the same index).
+//
+// Anonymous records (no name) are common — `RECORD<INT, STRING>`
+// produces a RecordType with Name="" and the corresponding Fields.
+// Named records carry a schema-level table or struct name.
+type RecordType struct {
+	// RecordName is the optional record name. Empty string means
+	// anonymous — frequently the case for projection result rows
+	// that haven't been bound to a named struct.
+	RecordName string
+	// Nullable reports whether the record allows NULL — i.e. a
+	// nullable column whose type is this RecordType. Anonymous
+	// records typically default to nullable since plan-time
+	// inference can't always prove non-nullness.
+	Nullable bool
+	// Fields are the record's fields in declared order. Empty slice
+	// means a record with no fields (legal — `RECORD<>` is the unit
+	// type). Never nil.
+	Fields []Field
+}
+
+// NewRecordType constructs a RecordType. The Fields slice is
+// defensively copied; callers' modifications to their input slice
+// won't affect the constructed type.
+//
+// Panics on duplicate field names within Fields (anonymous fields
+// with Name="" are exempt — they're disambiguated by Ordinal). Java
+// errors at the same point with SemanticException; the Go seed
+// panics so callers get an immediate stack trace.
+func NewRecordType(name string, nullable bool, fields []Field) *RecordType {
+	seenNames := make(map[string]struct{}, len(fields))
+	out := make([]Field, len(fields))
+	for i, f := range fields {
+		if f.Name != "" {
+			if _, dup := seenNames[f.Name]; dup {
+				panic("NewRecordType: duplicate field name " + f.Name)
+			}
+			seenNames[f.Name] = struct{}{}
+		}
+		out[i] = f
+	}
+	return &RecordType{
+		RecordName: name,
+		Nullable:   nullable,
+		Fields:     out,
+	}
+}
+
+// Code implements Type — always TypeCodeRecord.
+func (*RecordType) Code() TypeCode { return TypeCodeRecord }
+
+// IsNullable implements Type.
+func (r *RecordType) IsNullable() bool { return r.Nullable }
+
+// Equals implements Type. Structural — name + nullable + element-
+// wise field equality.
+func (r *RecordType) Equals(other Type) bool {
+	if other == nil {
+		return false
+	}
+	or, ok := other.(*RecordType)
+	if !ok {
+		return false
+	}
+	if r.RecordName != or.RecordName || r.Nullable != or.Nullable {
+		return false
+	}
+	if len(r.Fields) != len(or.Fields) {
+		return false
+	}
+	for i := range r.Fields {
+		if !r.Fields[i].Equals(or.Fields[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// String implements Type. Renders as
+// `[name] RECORD<f1 INT, f2 STRING NULL> [NOT NULL | NULL]`.
+func (r *RecordType) String() string {
+	var b []byte
+	if r.RecordName != "" {
+		b = append(b, r.RecordName...)
+		b = append(b, ' ')
+	}
+	b = append(b, "RECORD<"...)
+	for i, f := range r.Fields {
+		if i > 0 {
+			b = append(b, ',', ' ')
+		}
+		if f.Name != "" {
+			b = append(b, f.Name...)
+			b = append(b, ' ')
+		}
+		if f.FieldType == nil {
+			b = append(b, "?"...)
+		} else {
+			b = append(b, f.FieldType.String()...)
+		}
+	}
+	b = append(b, '>')
+	if r.Nullable {
+		b = append(b, " NULL"...)
+	} else {
+		b = append(b, " NOT NULL"...)
+	}
+	return string(b)
+}
+
+// LookupField returns the named field plus a found flag. Empty name
+// always returns (Field{}, false) — anonymous fields aren't
+// addressable by name.
+func (r *RecordType) LookupField(name string) (Field, bool) {
+	if name == "" {
+		return Field{}, false
+	}
+	for _, f := range r.Fields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return Field{}, false
+}
+
+// GetField returns the field at the given ordinal plus a found flag.
+// Negative or out-of-range ordinals return (Field{}, false).
+func (r *RecordType) GetField(ordinal int) (Field, bool) {
+	if ordinal < 0 || ordinal >= len(r.Fields) {
+		return Field{}, false
+	}
+	return r.Fields[ordinal], true
+}
+
 // ToValueType bridges the new Type back to the legacy ValueType.
 // LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
 // legacy enum doesn't distinguish widths). Structured types and
