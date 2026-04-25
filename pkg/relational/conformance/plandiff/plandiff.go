@@ -154,7 +154,10 @@ type Report struct {
 }
 
 // Engine produces a PlanResult for a Query. Implementations must be
-// safe for concurrent use across queries — Run() may parallelise.
+// safe for concurrent use across queries — Engine.Plan is expected
+// to be callable from multiple goroutines simultaneously, so a
+// future parallelised Run is a drop-in change. Today's Run is
+// sequential.
 type Engine interface {
 	Plan(ctx context.Context, q Query) PlanResult
 }
@@ -278,6 +281,17 @@ func hashTree(t string) string {
 // line. Symmetric (`-` for left-only, `+` for right-only). Cheap
 // O(n+m) walk — good enough for harness reports; full LCS-style diff
 // is overkill for plan trees that diverge by a few lines at most.
+//
+// Known limitation: transposed lines (same content present on both
+// sides at different positions) are NOT emitted — both sides report
+// the line as " " (context). The Status (Diverge) is correct because
+// normaliseTree differs, but the Detail will look as if no lines
+// diverged. This is unlikely to fire on today's flat-ish naive
+// planner output; a Cascades-pipeline reorder (e.g. Filter pushed
+// before Project on one engine, not the other) would surface the
+// gap. Swap to a real LCS diff (e.g. github.com/sergi/go-diff or
+// hand-rolled Hunt-McIlroy) when transpositions become common
+// enough to matter for triage.
 func lineDiff(a, b string) string {
 	la := strings.Split(a, "\n")
 	lb := strings.Split(b, "\n")
@@ -517,7 +531,9 @@ func HashCorpus(r Report) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// _ pin to avoid an unused-import warning on query if a future edit
-// drops the only consumer; query types appear in the doc comments and
-// the generator return type.
-var _ = query.Plan(nil)
+// _ static assertion that the embedded-backed Generator satisfies
+// query.Generator. Catches a future Generator-method-rename at
+// compile time. The query import is structurally needed by
+// embedded.NewExplainOnlyGenerator's return type, so this is
+// belt-and-suspenders, not the primary anchor.
+var _ query.Generator = embedded.NewExplainOnlyGenerator()

@@ -40,7 +40,10 @@ func TestSeedCorpus_GoEngineSucceedsOnAll(t *testing.T) {
 // TestRun_AllJavaUnimplemented pins that Run with the stub Java engine
 // classifies every case as StatusJavaUnimplemented (not StatusGoError /
 // StatusBothError). This lets a CI gate that wants to be Go-only
-// tolerant filter on Status.
+// tolerant filter on Status. The single Total==JavaUnimplemented check
+// covers both the "all Java unimpl" and "no Go errors" properties —
+// if Total matches JavaUnimplemented, no other status (including
+// GoError) can be non-zero.
 func TestRun_AllJavaUnimplemented(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -49,12 +52,9 @@ func TestRun_AllJavaUnimplemented(t *testing.T) {
 		t.Fatalf("Total: got %d, want %d", report.Summary.Total, len(SeedCorpus()))
 	}
 	if report.Summary.JavaUnimplemented != report.Summary.Total {
-		t.Fatalf("expected every case to be JAVA_UNIMPL, got %d/%d (go-err %d, both-err %d)",
+		t.Fatalf("expected every case to be JAVA_UNIMPL, got %d/%d (go-err %d, both-err %d, diverge %d)",
 			report.Summary.JavaUnimplemented, report.Summary.Total,
-			report.Summary.GoError, report.Summary.BothError)
-	}
-	if report.Summary.GoError != 0 {
-		t.Fatalf("Go engine errored on %d cases — corpus regression", report.Summary.GoError)
+			report.Summary.GoError, report.Summary.BothError, report.Summary.Diverge)
 	}
 }
 
@@ -126,6 +126,56 @@ func TestClassify_GoError(t *testing.T) {
 	}
 	if !strings.Contains(d.Detail, "go: parse:") {
 		t.Fatalf("Detail missing go: prefix: %q", d.Detail)
+	}
+}
+
+// TestClassify_GoError_WhenJavaUnimplemented pins the subtle branch
+// reviewer flagged: when Go errors AND Java is the stub, Status must
+// be StatusGoError (not StatusBothError) so a Go-only CI tolerant
+// path doesn't lose the real Go failure behind the stub-Java noise.
+// Detail must surface BOTH the Go error and the Java stub message
+// so the operator can confirm both sides at a glance.
+func TestClassify_GoError_WhenJavaUnimplemented(t *testing.T) {
+	t.Parallel()
+	q := Query{Name: "x", SQL: "BAD SQL"}
+	gr := PlanResult{Engine: "go", Err: errors.New("parse: unexpected token")}
+	jr := PlanResult{Engine: "java", Err: ErrJavaUnimplemented}
+	d := classify(q, gr, jr)
+	if d.Status != StatusGoError {
+		t.Fatalf("Status: got %s, want GO_ERROR", d.Status)
+	}
+	if !strings.Contains(d.Detail, "go: parse:") {
+		t.Fatalf("Detail missing go-side error: %q", d.Detail)
+	}
+	if !strings.Contains(d.Detail, "java:") {
+		t.Fatalf("Detail missing java-side stub message: %q", d.Detail)
+	}
+}
+
+// TestLineDiff_Transposition pins the documented limitation: lines
+// present on both sides at different positions are NOT emitted as
+// changed — they look like context. Status is still correctly
+// StatusDiverge (normaliseTree differs), but Detail loses the
+// ordering signal. Documented in lineDiff's doc comment; this test
+// makes a future "fix" that switches to LCS land cleanly without
+// breaking callers that expect today's behaviour.
+func TestLineDiff_Transposition(t *testing.T) {
+	t.Parallel()
+	q := Query{Name: "x", SQL: "SELECT 1"}
+	gr := PlanResult{Engine: "go", Tree: "Scan(t)\nFilter(p)\nProject(id)"}
+	jr := PlanResult{Engine: "java", Tree: "Scan(t)\nProject(id)\nFilter(p)"}
+	d := classify(q, gr, jr)
+	if d.Status != StatusDiverge {
+		t.Fatalf("Status: got %s, want DIVERGE (trees differ after normalise)", d.Status)
+	}
+	// All three lines appear in BOTH sides → multiset-membership
+	// guard suppresses every emission. Detail has no `-` or `+`
+	// markers; only context. Pin the limitation explicitly.
+	if strings.Contains(d.Detail, "- Filter(p)") || strings.Contains(d.Detail, "+ Project(id)") {
+		t.Fatalf("transposed lines unexpectedly emitted in diff (docs say they're suppressed): %q", d.Detail)
+	}
+	if !strings.Contains(d.Detail, "Scan(t)") {
+		t.Fatalf("expected at least one context line in diff, got %q", d.Detail)
 	}
 }
 
