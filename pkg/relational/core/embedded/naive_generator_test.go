@@ -136,6 +136,100 @@ func TestNaiveGenerator_Explain_DDLFallback(t *testing.T) {
 	}
 }
 
+// EXPLAIN <SELECT> — the planExplain path returns a 1-row plan
+// with a PLAN column. Plan.Explain() renders 'EXPLAIN: <inner>'.
+func TestNaiveGenerator_Explain_ExplainSelect(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN SELECT * FROM t")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+	if !strings.Contains(got, "Scan(t)") {
+		t.Fatalf("got %q, want inner Scan(t)", got)
+	}
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN should not be an update plan (returns rows)")
+	}
+}
+
+// EXPLAIN <SELECT … WHERE …> exercises the catalog-cold fallback
+// (no metadata in the connection). Predicate text comes from the
+// text builder.
+func TestNaiveGenerator_Explain_ExplainSelectWithWhere(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN SELECT id FROM users WHERE active = TRUE")
+	got := p.Explain()
+	for _, want := range []string{"EXPLAIN: ", "Filter(active = TRUE)", "Scan(users)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, missing %q", got, want)
+		}
+	}
+}
+
+// EXPLAIN UPDATE — the EXPLAIN path is independent from execution,
+// so update statements behind EXPLAIN don't actually run; their
+// text-builder rendering is what's returned.
+func TestNaiveGenerator_Explain_ExplainUpdate(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN UPDATE orders SET status = 'done' WHERE id = 1")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+	// Must not actually execute (no FDB available in this test) — if
+	// the dispatcher mistakenly routed EXPLAIN UPDATE to execStatement
+	// the test would panic / error before reaching this assertion.
+	if p.IsUpdate() {
+		t.Fatal("EXPLAIN UPDATE should not be an update plan — it returns plan-text rows, not commits")
+	}
+}
+
+// EXPLAIN INSERT — same independent-from-execution shape.
+func TestNaiveGenerator_Explain_ExplainInsert(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN INSERT INTO users (id, name) VALUES (1, 'alice')")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+}
+
+// EXPLAIN DELETE — same.
+func TestNaiveGenerator_Explain_ExplainDelete(t *testing.T) {
+	t.Parallel()
+	p := helperPlan(t, "EXPLAIN DELETE FROM orders WHERE status = 'cancelled'")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
+	}
+	if !strings.Contains(got, "Delete(orders") {
+		t.Fatalf("got %q, want inner Delete(orders)", got)
+	}
+}
+
+// EXPLAIN Execute — the planExplain path produces a 1-row driver.Rows
+// with column "PLAN". Verify the row stream end-to-end.
+func TestNaiveGenerator_Explain_ExplainProducesPlanRow(t *testing.T) {
+	t.Parallel()
+	g := &naiveGenerator{c: &EmbeddedConnection{}}
+	p, err := g.Plan(context.Background(), "EXPLAIN SELECT * FROM users")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	res, err := p.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Rows == nil {
+		t.Fatal("Execute: Rows should be non-nil for EXPLAIN")
+	}
+	cols := res.Rows.Columns()
+	if len(cols) != 1 || cols[0] != "PLAN" {
+		t.Fatalf("columns: got %v, want [PLAN]", cols)
+	}
+}
+
 // Empty SQL: Plan returns a no-op update plan; Explain renders
 // "empty" per the seed.
 func TestNaiveGenerator_Explain_EmptyStatements(t *testing.T) {

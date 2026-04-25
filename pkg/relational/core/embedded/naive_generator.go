@@ -96,6 +96,17 @@ func (g *naiveGenerator) Plan(ctx context.Context, sql string) (query.Plan, erro
 func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, error) {
 	c := g.c
 
+	// EXPLAIN <inner> → driver.Rows plan with a single PLAN column.
+	// The inner query/DML is rendered via the existing
+	// buildLogicalPlanFor* path; no execution against FDB happens.
+	// Mirrors fdb-relational's `EXPLAIN <sql>` shape so the harness
+	// + user-facing `EXPLAIN` produce comparable output.
+	if util := stmt.UtilityStatement(); util != nil {
+		if full := util.FullDescribeStatement(); full != nil {
+			return g.planExplain(full)
+		}
+	}
+
 	// SELECT → driver.Rows plan.
 	if sel := stmt.SelectStatement(); sel != nil {
 		return &query.PlanFunc{
@@ -211,6 +222,98 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 			return explainStatement(statementKind(stmt), stmt)
 		},
 	}, nil
+}
+
+// planExplain handles `EXPLAIN <query|delete|insert|update>` — the
+// fullDescribeStatement form. Returns a Plan whose Execute produces
+// a single-row driver.Rows with column "PLAN" carrying the
+// rendered logical-operator tree (or canonical SQL text on
+// builder fallback).
+//
+// Mirrors fdb-relational's PLAN column shape so the plan-equivalence
+// harness can diff Go-side EXPLAIN output against Java's.
+//
+// `EXPLAIN FOR CONNECTION` is not supported (the seed has no
+// connection identifier). `EXPLAIN <continuation>` is also out of
+// scope — both decline with UNSUPPORTED_OPERATION.
+func (g *naiveGenerator) planExplain(full antlrgen.IFullDescribeStatementContext) (query.Plan, error) {
+	objClause := full.DescribeObjectClause()
+	if objClause == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN requires an inner statement")
+	}
+	descStmts, ok := objClause.(*antlrgen.DescribeStatementsContext)
+	if !ok {
+		// describeConnection / future variants land here.
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN form not supported (only EXPLAIN <query|insert|update|delete>)")
+	}
+	planText := g.computeExplainText(descStmts)
+	if planText == "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"EXPLAIN inner statement produced no plan text")
+	}
+	return &query.PlanFunc{
+		ExecFn: func(_ context.Context) (query.Result, error) {
+			return query.Result{Rows: &staticRows{
+				cols: []string{"PLAN"},
+				rows: [][]driver.Value{{planText}},
+			}}, nil
+		},
+		UpdateFn:  func() bool { return false },
+		ExplainFn: func() string { return "EXPLAIN: " + planText },
+	}, nil
+}
+
+// computeExplainText builds the plan-tree text for the inner
+// statement of an EXPLAIN. Routes through the catalog-aware builder
+// when the schema cache is warm (so WHERE clauses become
+// cascades.QueryPredicate trees) and falls back to the text builder
+// otherwise.
+func (g *naiveGenerator) computeExplainText(d *antlrgen.DescribeStatementsContext) string {
+	c := g.c
+	md := c.cachedMetaData()
+	if q := d.Query(); q != nil {
+		if md != nil {
+			if op := buildLogicalPlanForQueryWithCatalog(q, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForQuery(q); op != nil {
+			return op.Explain("")
+		}
+	}
+	if del := d.DeleteStatement(); del != nil {
+		if md != nil {
+			if op := buildLogicalPlanForDeleteWithCatalog(del, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForDelete(del); op != nil {
+			return op.Explain("")
+		}
+	}
+	if ins := d.InsertStatement(); ins != nil {
+		if md != nil {
+			if op := buildLogicalPlanForInsertWithCatalog(ins, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForInsert(ins); op != nil {
+			return op.Explain("")
+		}
+	}
+	if upd := d.UpdateStatement(); upd != nil {
+		if md != nil {
+			if op := buildLogicalPlanForUpdateWithCatalog(upd, md); op != nil {
+				return op.Explain("")
+			}
+		}
+		if op := buildLogicalPlanForUpdate(upd); op != nil {
+			return op.Explain("")
+		}
+	}
+	return ""
 }
 
 // explainStatement returns a trivial textual description of a parsed
