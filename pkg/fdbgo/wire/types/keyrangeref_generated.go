@@ -22,28 +22,9 @@ type KeyRangeRef struct {
 	End   []byte // slot 1
 }
 
-func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeyRangeRefSlotBegin) {
-		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
-	}
-	if r.FieldPresent(KeyRangeRefSlotEnd) {
-		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
-	}
-}
-
-func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
-	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
-	if r.FieldPresent(KeyRangeRefSlotBegin) {
-		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
-	}
-	if r.FieldPresent(KeyRangeRefSlotEnd) {
-		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
-	}
-	return nil
-}
+// UnmarshalFromReader / UnmarshalFDB are defined in keyrangeref_custom.go to
+// invert the C++ single-key-range serialize optimization. The generator
+// (cmd/fdb-schema-extract/main.cpp) skips them when hasCustomSerialize is true.
 
 // ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
 func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
