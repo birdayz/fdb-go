@@ -235,16 +235,19 @@ func TestAllOf_ThreadsOuterBindings(t *testing.T) {
 // behaviour where Go-side test fixtures don't have a natural
 // multi-match shape today.
 //
-// The `_ [0]func()` field forces a non-zero-size struct so two
-// `&doubleMatcher{}` allocations are distinct map keys. Per the
-// zero-size-struct gotcha documented at AnyValue (matcher.go:130-136),
-// pointers to distinct zero-size variables MAY share an address per
-// the Go spec, which would silently collide in PlannerBindings's
-// matcher → []any map. The lint-comparable alternatives:
-// `_ bool` works too but reads as "we use this somehow"; `[0]func()`
-// is the canonical "force non-zero size, no semantics" idiom.
+// The `_ bool` field forces a non-zero-size struct (1 byte) so two
+// `&doubleMatcher{}` allocations land at distinct heap addresses.
+// Per the zero-size-struct gotcha at AnyValue (matcher.go:130-136),
+// pointers to distinct zero-size variables MAY share an address
+// (Go's runtime parks them all at `runtime.zerobase`), which would
+// silently collide in PlannerBindings's matcher → []any map.
+//
+// `_ [0]func()` is NOT the right idiom here — it has size 0 (the
+// outer length is 0 regardless of the element type) and only makes
+// the struct non-comparable, which is unrelated. `_ bool` is the
+// minimal mechanism that actually forces non-zero size.
 type doubleMatcher struct {
-	_ [0]func()
+	_ bool
 }
 
 func (*doubleMatcher) RootType() string { return "Value" }
