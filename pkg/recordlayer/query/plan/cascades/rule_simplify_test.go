@@ -640,6 +640,43 @@ func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
 
 // AndAbsorbOrRule leaves AND alone when no OR child shares an
 // operand with a sibling.
+// TestAndAbsorbOr_KeepsMultipleSurvivors pins the default arm:
+// AND(p, OR(p, q), r) drops OR(p,q) leaving AND(p, r) — TWO
+// surviving children, so the rule rebuilds an AndPredicate (case
+// default in OnMatch's switch). The DropsRedundantOrChild test
+// only exercised the case-1 arm.
+func TestAndAbsorbOr_KeepsMultipleSurvivors(t *testing.T) {
+	t.Parallel()
+	rule := NewAndAbsorbOrRule()
+	p := NewComparisonPredicate(
+		&FieldValue{Field: "age", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	)
+	q := NewComparisonPredicate(
+		&FieldValue{Field: "rank", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	)
+	r := NewComparisonPredicate(
+		&FieldValue{Field: "score", Typ: TypeInt},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))},
+	)
+	and := NewAnd(p, NewOr(p, q), r) // p AND (p OR q) AND r
+	got := FireRule(rule, and)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(got))
+	}
+	out, ok := got[0].(*AndPredicate)
+	if !ok {
+		t.Fatalf("expected AndPredicate, got %T", got[0])
+	}
+	if len(out.SubPredicates) != 2 {
+		t.Fatalf("expected 2 surviving children (p, r), got %d", len(out.SubPredicates))
+	}
+	if out.SubPredicates[0] != QueryPredicate(p) || out.SubPredicates[1] != QueryPredicate(r) {
+		t.Fatalf("survivors out of order: got [%T, %T]", out.SubPredicates[0], out.SubPredicates[1])
+	}
+}
+
 func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
