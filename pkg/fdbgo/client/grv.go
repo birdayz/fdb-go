@@ -347,8 +347,12 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 		case <-timer.C:
 			requestTime := time.Now()
 			refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
-			// Background refresher uses default priority (8 << 24).
-			version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
+			// Refresh at this batcher's own priority, not always DEFAULT.
+			// The BATCH batcher must refresh BATCH ratekeeper state
+			// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
+			// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
+			// its tryCache always returns false (refreshOnce never fires).
+			version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
 			refreshCancel()
 			if err == nil {
 				b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)

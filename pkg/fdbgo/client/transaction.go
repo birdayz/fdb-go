@@ -877,11 +877,11 @@ func backoffSleep(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	}
 	t := time.NewTimer(d)
+	defer t.Stop()
 	select {
 	case <-t.C:
 		return nil
 	case <-ctx.Done():
-		t.Stop()
 		return ctx.Err()
 	}
 }

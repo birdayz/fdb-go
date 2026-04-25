@@ -83,6 +83,15 @@ func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
 			elem.End = data[pos : pos+n : pos+n]
 			pos += n
 		}
+		// Apply the same single-key-optimization inversion as
+		// UnmarshalFromReader (see keyrangeref_custom.go). Without this, a
+		// vector element written by C++'s optimization (begin+\x00 == end →
+		// emit (end, empty)) would parse with Begin/End swapped.
+		if len(elem.End) == 0 && len(elem.Begin) > 0 {
+			first := elem.Begin
+			elem.Begin = first[:len(first)-1]
+			elem.End = first
+		}
 		result = append(result, elem)
 	}
 	return result
