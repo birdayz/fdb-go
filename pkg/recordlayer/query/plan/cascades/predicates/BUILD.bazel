@@ -15,6 +15,7 @@ go_library(
 go_test(
     name = "predicates_test",
     srcs = [
+        "comparisons_null_table_test.go",
         "comparisons_test.go",
         "predicates_equivalence_test.go",
         "predicates_test.go",
