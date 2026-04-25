@@ -390,7 +390,7 @@ func (goEngine) Plan(ctx context.Context, q Query) PlanResult {
 // buildGoGenerator picks the catalog-aware constructor when the
 // Query carries a SchemaTemplate (so WHERE / DELETE / UPDATE shapes
 // route through buildLogicalPlanFor*WithCatalog and produce real
-// cascades.QueryPredicate trees in Explain output) and falls back
+// cascades.predicates.QueryPredicate trees in Explain output) and falls back
 // to the text-only generator otherwise.
 func buildGoGenerator(q Query) (query.Generator, error) {
 	if q.SchemaTemplate == "" {

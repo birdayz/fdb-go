@@ -35,8 +35,8 @@ type ScopeSource struct {
 	// this source back to a Quantifier when building
 	// QuantifiedObjectValue / FieldValue trees that reference it.
 	// Stored as a string so the semantic package doesn't take a
-	// dependency on cascades/CorrelationIdentifier — callers wrap
-	// this into a cascades.CorrelationIdentifier themselves.
+	// dependency on cascades/values/CorrelationIdentifier — callers wrap
+	// this into a cascades.values.CorrelationIdentifier themselves.
 	CorrelationName string
 }
 

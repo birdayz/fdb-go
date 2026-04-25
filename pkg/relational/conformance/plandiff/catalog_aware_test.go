@@ -4,7 +4,7 @@ package plandiff
 // Phase 3). NewExplainOnlyGeneratorWithSchema parses a CREATE SCHEMA
 // TEMPLATE body, builds a synthetic in-memory schema cache, and
 // routes WHERE / DELETE / UPDATE shapes through
-// buildLogicalPlanFor*WithCatalog so cascades.QueryPredicate trees
+// buildLogicalPlanFor*WithCatalog so cascades.predicates.QueryPredicate trees
 // appear in Explain output. These tests pin both the routing and the
 // observable difference vs the text-only baseline.
 
@@ -17,7 +17,7 @@ import (
 // TestGoEngine_CatalogAwarePathDiffersFromTextOnly pins the
 // observable difference between the text-only and catalog-aware
 // rendering: the catalog path re-renders the WHERE clause via
-// cascades.QueryPredicate.Explain (parens-wrapped, comparison-
+// cascades.predicates.QueryPredicate.Explain (parens-wrapped, comparison-
 // flattened), the text path emits the canonical source-text.
 //
 // We deliberately don't pin the exact catalog-aware rendering — the

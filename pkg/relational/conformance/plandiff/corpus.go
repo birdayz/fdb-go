@@ -174,7 +174,7 @@ func SeedCorpus() []Query {
 		// --- Catalog-aware shapes (RFC-022 §4.-1 Phase 3) -----------------
 		// These queries carry a SchemaTemplate so the Go side routes
 		// through buildLogicalPlanFor*WithCatalog and emits real
-		// cascades.QueryPredicate trees in Explain output. Without the
+		// cascades.predicates.QueryPredicate trees in Explain output. Without the
 		// SchemaTemplate the Go side falls back to text-only PredicateText
 		// — these entries are the regression sentinels for the
 		// catalog-aware rendering.

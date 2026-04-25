@@ -446,7 +446,7 @@ func TestSeedCorpus_BaselineHash(t *testing.T) {
 	// Last update: corpus extended 35 → 39 queries; the four
 	// `catalog_*` entries carry SchemaTemplates so the Go side
 	// routes through buildLogicalPlanFor*WithCatalog (RFC-022
-	// §4.-1 Phase 3) and emits cascades.QueryPredicate trees
+	// §4.-1 Phase 3) and emits cascades.predicates.QueryPredicate trees
 	// rather than the text-only fallback.
 	const wantBaseline = "07f065311b769e6985ea5d407cc9e36e474844b58ea437b872d222fffb88f655"
 	if got != wantBaseline {
