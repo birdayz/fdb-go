@@ -1,7 +1,5 @@
 package cascades
 
-import "sync/atomic"
-
 // Predicate-simplification rules — seed.
 //
 // Examples of the rule pattern for Phase 4.5 Batch A. Each rule
@@ -235,12 +233,14 @@ func (r *NotConstantSimplifyRule) OnMatch(call *RuleCall) {
 	}
 }
 
-var notPredicateMatcherCounter atomic.Uint64
-
-type notPredicateMatcher struct{ id uint64 }
+// notPredicateMatcher: `_ bool` forces non-zero struct size so
+// distinct allocations don't collide as map keys (zero-size-struct
+// gotcha at AnyValue, matcher.go:130-136). No nonce-counter is
+// needed; the struct's identity is its pointer.
+type notPredicateMatcher struct{ _ bool }
 
 func newNotPredicateMatcher() *notPredicateMatcher {
-	return &notPredicateMatcher{id: notPredicateMatcherCounter.Add(1)}
+	return &notPredicateMatcher{}
 }
 func (*notPredicateMatcher) RootType() string { return "NotPredicate" }
 func (m *notPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
@@ -415,12 +415,12 @@ func constantLiteral(v Value) (any, bool) {
 	return EvaluateConstant(v)
 }
 
-var comparisonPredicateMatcherCounter atomic.Uint64
-
-type comparisonPredicateMatcher struct{ id uint64 }
+// comparisonPredicateMatcher: `_ bool` forces non-zero size, no
+// nonce-counter needed — see notPredicateMatcher for rationale.
+type comparisonPredicateMatcher struct{ _ bool }
 
 func newComparisonPredicateMatcher() *comparisonPredicateMatcher {
-	return &comparisonPredicateMatcher{id: comparisonPredicateMatcherCounter.Add(1)}
+	return &comparisonPredicateMatcher{}
 }
 func (*comparisonPredicateMatcher) RootType() string { return "ComparisonPredicate" }
 func (m *comparisonPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
@@ -433,23 +433,15 @@ func (m *comparisonPredicateMatcher) BindMatches(outer *PlannerBindings, in any)
 // --- Predicate matchers -------------------------------------------
 
 // andPredicateMatcher / orPredicateMatcher are minimal Instance-like
-// matchers over *AndPredicate / *OrPredicate. No zero-size gotcha
-// (both structs are addressable; the matcher is used directly from
-// the rule's Matcher() field, not allocated repeatedly).
+// matchers over *AndPredicate / *OrPredicate. The `_ bool` field
+// keeps each struct non-zero-sized so distinct rule instances'
+// matchers don't alias as map keys in PlannerBindings (zero-size-
+// struct gotcha at AnyValue, matcher.go:130-136).
 
-// Nonce counters so distinct matcher instances have distinct
-// identities (avoids Go's zero-size-struct address collision that
-// would otherwise break PlannerBindings' matcher-key lookups when
-// multiple rule instances are live at once).
-var (
-	andPredicateMatcherCounter atomic.Uint64
-	orPredicateMatcherCounter  atomic.Uint64
-)
-
-type andPredicateMatcher struct{ id uint64 }
+type andPredicateMatcher struct{ _ bool }
 
 func newAndPredicateMatcher() *andPredicateMatcher {
-	return &andPredicateMatcher{id: andPredicateMatcherCounter.Add(1)}
+	return &andPredicateMatcher{}
 }
 func (*andPredicateMatcher) RootType() string { return "AndPredicate" }
 func (m *andPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
@@ -459,10 +451,10 @@ func (m *andPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*Pla
 	return []*PlannerBindings{outer.Bind(m, in)}
 }
 
-type orPredicateMatcher struct{ id uint64 }
+type orPredicateMatcher struct{ _ bool }
 
 func newOrPredicateMatcher() *orPredicateMatcher {
-	return &orPredicateMatcher{id: orPredicateMatcherCounter.Add(1)}
+	return &orPredicateMatcher{}
 }
 func (*orPredicateMatcher) RootType() string { return "OrPredicate" }
 func (m *orPredicateMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {

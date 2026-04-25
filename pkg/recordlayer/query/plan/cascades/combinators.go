@@ -1,7 +1,5 @@
 package cascades
 
-import "sync/atomic"
-
 // Combinators: AllOf + AnyOf.
 //
 // Ported from Java's
@@ -29,13 +27,15 @@ import "sync/atomic"
 // Bindings produced by each downstream merge into each output
 // PlannerBindings; multi-match downstreams produce a Cartesian
 // product across outputs.
+// The rootType + downstreams fields give the struct non-zero size
+// so two `new(AllOfMatcher)` calls receive distinct map-key
+// identities (see AnyValue at matcher.go:130-136 for the zero-size-
+// struct gotcha; this struct is naturally non-zero from those
+// fields, no nonce needed).
 type AllOfMatcher struct {
-	id          uint64
 	rootType    string
 	downstreams []BindingMatcher
 }
-
-var allOfMatcherCounter atomic.Uint64
 
 // NewAllOf builds an AllOfMatcher whose reported RootType is rootType
 // (used for debug explain output only; enforcement is in each
@@ -48,7 +48,6 @@ func NewAllOf(rootType string, downstreams ...BindingMatcher) *AllOfMatcher {
 		panic("NewAllOf: need at least one downstream matcher")
 	}
 	return &AllOfMatcher{
-		id:          allOfMatcherCounter.Add(1),
 		rootType:    rootType,
 		downstreams: downstreams,
 	}
@@ -87,13 +86,12 @@ func (a *AllOfMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBin
 // AnyOfMatcher matches when at least one downstream matches. The
 // union of all downstream match sets is returned; the combinator
 // binds itself into each resulting PlannerBindings.
+// AnyOfMatcher: same non-zero-size guarantee from
+// rootType + downstreams as AllOfMatcher.
 type AnyOfMatcher struct {
-	id          uint64
 	rootType    string
 	downstreams []BindingMatcher
 }
-
-var anyOfMatcherCounter atomic.Uint64
 
 // NewAnyOf builds an AnyOfMatcher. Zero downstreams panics — an
 // AnyOf with no downstreams always fails to match, which is rarely
@@ -103,7 +101,6 @@ func NewAnyOf(rootType string, downstreams ...BindingMatcher) *AnyOfMatcher {
 		panic("NewAnyOf: need at least one downstream matcher")
 	}
 	return &AnyOfMatcher{
-		id:          anyOfMatcherCounter.Add(1),
 		rootType:    rootType,
 		downstreams: downstreams,
 	}
