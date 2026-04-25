@@ -26,6 +26,14 @@ func TestExplainValue_NarrowIntTypes(t *testing.T) {
 		{"int32", int32(1234), "1234"},
 		{"int16", int16(-9), "-9"},
 		{"int8", int8(127), "127"},
+		// MIN_INT64 boundary — pre-fix intToDec used `n = -n` which
+		// overflows for math.MinInt64 (|MinInt64| > MaxInt64) and
+		// produced just "-". Pin the correct full decimal so a
+		// future intToDec rewrite can't regress this — ExplainValue
+		// is the plan-cache key seam and a wrong rendering would
+		// hash-collide distinct queries.
+		{"int64 MIN", int64(-9223372036854775808), "-9223372036854775808"},
+		{"int64 MAX", int64(9223372036854775807), "9223372036854775807"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
