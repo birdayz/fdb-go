@@ -97,6 +97,41 @@ func TestNotValue_Children(t *testing.T) {
 	}
 }
 
+// TestNotValue_WalkValue pins integration with the WalkValue
+// pre-order traversal: NOT(Add(field, 1)) visits 4 nodes (Not, Add,
+// field, 1) — Children's slice-of-1 is the right shape for the
+// walker.
+func TestNotValue_WalkValue(t *testing.T) {
+	t.Parallel()
+	tree := NewNotValue(&ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &FieldValue{Field: "x", Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(1), Typ: TypeInt},
+	})
+	visited := 0
+	WalkValue(tree, func(Value) bool {
+		visited++
+		return true
+	})
+	if visited != 4 {
+		t.Fatalf("NOT(Add(field, 1)): walker visited %d nodes, want 4", visited)
+	}
+}
+
+// TestNotValue_IsConstantValue pins that NotValue(constant) is itself
+// considered constant (composite-with-all-constant-children rule),
+// while NotValue(field) is not. This is the gate IsFoldableComposite
+// + EvaluateConstant rely on for plan-time folding.
+func TestNotValue_IsConstantValue(t *testing.T) {
+	t.Parallel()
+	if !IsConstantValue(NewNotValue(NewBooleanValue(true))) {
+		t.Fatal("NOT(constant) should be IsConstantValue")
+	}
+	if IsConstantValue(NewNotValue(&FieldValue{Field: "x", Typ: TypeBool})) {
+		t.Fatal("NOT(field) should NOT be IsConstantValue")
+	}
+}
+
 // TestNotValue_NilChild_Evaluate pins that a NotValue with no child
 // evaluates to nil (UNKNOWN) rather than nil-deref panicking. Defensive
 // against rule authors that build NotValue programmatically.
