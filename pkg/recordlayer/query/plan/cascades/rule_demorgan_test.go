@@ -197,6 +197,25 @@ func TestNormalizationRules_NestedNotDistributesRecursively(t *testing.T) {
 	}
 }
 
+// TestNormalizationRules_VPConstantFoldChain pins the rule
+// composition: NOT(VP(constant)) folds via the chain
+// ValuePredicateConstantFoldRule + NotConstantSimplifyRule.
+//
+// Specifically: NOT(VP(BooleanValue(true))) → NOT(TRIE) →
+// ConstantPredicate(TriFalse). Both rules need to fire in sequence.
+func TestNormalizationRules_VPConstantFoldChain(t *testing.T) {
+	t.Parallel()
+	pred := NewNot(NewValuePredicate(NewBooleanValue(true)))
+	got := Simplify(pred, NormalizationRules())
+	cp, ok := got.(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate after NOT(VP(true)) fold, got %T %s", got, got.Explain())
+	}
+	if cp.Value != TriFalse {
+		t.Fatalf("expected TriFalse, got %v", cp.Value)
+	}
+}
+
 // TestNormalizationRules_NotOverAndProducesOr pins that NOT(AND(...))
 // distributes to OR(NOT...) under the normalisation rule set, while
 // the same input under DefaultSimplifyRules survives as NOT(AND(...)).
