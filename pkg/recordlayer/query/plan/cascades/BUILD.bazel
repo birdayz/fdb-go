@@ -29,6 +29,7 @@ go_test(
         "correlation_test.go",
         "folder_test.go",
         "matcher_test.go",
+        "predicates_equivalence_test.go",
         "predicates_test.go",
         "rule_simplify_test.go",
         "rule_test.go",
