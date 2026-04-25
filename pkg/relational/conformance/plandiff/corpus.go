@@ -1,6 +1,6 @@
 package plandiff
 
-// SeedCorpus is the small RFC-022 §4.-1 baseline set: 26 queries
+// SeedCorpus is the small RFC-022 §4.-1 baseline set: 33 queries
 // hand-picked to exercise the planner shapes the existing 11-branch
 // pushdown chain rewrites (covered by Cascades Batch A rules — see
 // TODO.md §HIGH 4.5). Each query is a single SELECT / DML / DDL whose
@@ -128,8 +128,48 @@ func SeedCorpus() []Query {
 			SQL:  "SELECT id FROM a UNION ALL SELECT id FROM b",
 		},
 		{
+			Name: "select_union_distinct",
+			SQL:  "SELECT id FROM a UNION SELECT id FROM b",
+		},
+		{
 			Name: "select_with_cte",
 			SQL:  "WITH active_users AS (SELECT id FROM users WHERE active = TRUE) SELECT id FROM active_users",
+		},
+		{
+			Name: "select_recursive_cte",
+			SQL:  "WITH RECURSIVE c AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM c WHERE n < 10) SELECT n FROM c",
+		},
+		// --- Joins (extra shapes) ------------------------------------------
+		{
+			Name: "select_right_outer_join",
+			SQL:  "SELECT a.id, b.name FROM a RIGHT OUTER JOIN b ON a.b_id = b.id",
+		},
+		// --- Projection expressions ---------------------------------------
+		{
+			Name: "select_with_arithmetic_projection",
+			SQL:  "SELECT id, price * qty FROM orders",
+		},
+		{
+			Name: "select_with_function_projection",
+			SQL:  "SELECT UPPER(name), LENGTH(name) FROM users",
+		},
+		{
+			Name: "select_with_case_when",
+			SQL:  "SELECT id, CASE WHEN price > 100 THEN 'high' ELSE 'low' END FROM orders",
+		},
+		// --- Subqueries ----------------------------------------------------
+		{
+			Name: "select_with_in_subquery",
+			SQL:  "SELECT id FROM orders WHERE customer IN (SELECT id FROM users WHERE active = TRUE)",
+		},
+		{
+			Name: "select_with_exists_subquery",
+			SQL:  "SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM users WHERE users.id = orders.customer)",
+		},
+		// --- Multi-aggregate GROUP BY -------------------------------------
+		{
+			Name: "select_group_by_multi_agg",
+			SQL:  "SELECT status, COUNT(*), SUM(price), AVG(price) FROM orders GROUP BY status",
 		},
 	}
 }

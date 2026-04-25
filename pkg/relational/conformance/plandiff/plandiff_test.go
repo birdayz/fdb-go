@@ -399,7 +399,11 @@ func TestSeedCorpus_BaselineHash(t *testing.T) {
 	// swingshift-50 baseline. Deliberate planner / corpus changes
 	// require updating this constant. Run with `-v` to see the
 	// current hash diagnostic and copy the new value here.
-	const wantBaseline = "7f373f382aa174115e8932c7173f84323ef9738dec0daa0a595d7ccba48d9c42"
+	// Last update: corpus extended from 26 → 33 queries
+	// (RIGHT OUTER JOIN, arithmetic / function / CASE projections,
+	// IN / EXISTS subqueries, recursive CTE, multi-aggregate
+	// GROUP BY, UNION DISTINCT).
+	const wantBaseline = "631267125aab018edc1687acec924f2e5af2070366c9bdcae77140f31918a877"
 	if got != wantBaseline {
 		// Per-query report so the user sees WHICH query changed, not
 		// just "the corpus changed".
