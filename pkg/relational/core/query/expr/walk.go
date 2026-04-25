@@ -109,7 +109,11 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 	}
 	if ppc.NAMED_PARAMETER() != nil {
 		// Lexer rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*
-		// Strip the leading sigil (`?` or `$`).
+		// Strip the leading sigil (`?` or `$`). Both surface forms
+		// fold to the same canonical name in ParameterValue —
+		// ExplainValue renders `?name` regardless of whether the
+		// user wrote `?foo` or `$foo`. Intentional: one canonical
+		// form for plan-cache keying.
 		text := ppc.NAMED_PARAMETER().GetText()
 		if len(text) < 2 || (text[0] != '?' && text[0] != '$') {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("NAMED_PARAMETER token %q", text)}
@@ -119,8 +123,8 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 	if ppc.QUESTION() != nil {
 		// Ordinal numbering across the statement is the caller's
 		// responsibility — the walker stays per-expression. Use 0 as
-		// the seed sentinel so ExplainValue renders `?0`; the binder
-		// will rewrite ordinals once it's wired.
+		// the seed sentinel so ExplainValue renders `?` (not `?N`);
+		// the binder will rewrite ordinals once it's wired.
 		return cascades.NewParameterValue(0), nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: "PreparedStatementParameter with no QUESTION/NAMED_PARAMETER"}

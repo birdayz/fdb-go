@@ -90,6 +90,7 @@ package cascades
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ValueType is a stand-in for the full Cascades Type hierarchy. The
@@ -613,15 +614,15 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
 }
 
 // evalScalarFunction dispatches the seed scalar function set. NULL
-// argument propagates to NULL result (SQL standard). Unknown function
-// or wrong arg type returns nil — the seed errs on the side of
-// declining rather than erroring, so the embedded executor's richer
-// scalar_functions.go path remains the primary surface for now.
+// argument propagates to NULL result (SQL standard). Unknown function,
+// wrong arity, or wrong arg type returns nil — the seed errs on the
+// side of declining rather than erroring, so the embedded executor's
+// richer scalar_functions.go path remains the primary surface for now.
 func evalScalarFunction(name string, args []any) any {
 	switch name {
 	case "UPPER":
 		if len(args) != 1 || args[0] == nil {
-			return nilOrPropagate(args)
+			return nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
@@ -630,7 +631,7 @@ func evalScalarFunction(name string, args []any) any {
 		return strings.ToUpper(s)
 	case "LOWER":
 		if len(args) != 1 || args[0] == nil {
-			return nilOrPropagate(args)
+			return nil
 		}
 		s, ok := args[0].(string)
 		if !ok {
@@ -643,18 +644,18 @@ func evalScalarFunction(name string, args []any) any {
 		// agree. The seed coerces []byte the same way for symmetry
 		// with OCTET_LENGTH (byte count there, rune count here).
 		if len(args) != 1 || args[0] == nil {
-			return nilOrPropagate(args)
+			return nil
 		}
 		switch v := args[0].(type) {
 		case string:
-			return int64(utf8RuneCount(v))
+			return int64(utf8.RuneCountInString(v))
 		case []byte:
-			return int64(utf8RuneCount(string(v)))
+			return int64(utf8.RuneCount(v))
 		}
 		return nil
 	case "OCTET_LENGTH":
 		if len(args) != 1 || args[0] == nil {
-			return nilOrPropagate(args)
+			return nil
 		}
 		switch v := args[0].(type) {
 		case string:
@@ -665,28 +666,6 @@ func evalScalarFunction(name string, args []any) any {
 		return nil
 	}
 	return nil
-}
-
-// nilOrPropagate returns nil when any argument is NULL — used by the
-// scalar functions to short-circuit NULL propagation cleanly.
-func nilOrPropagate(args []any) any {
-	for _, a := range args {
-		if a == nil {
-			return nil
-		}
-	}
-	return nil
-}
-
-// utf8RuneCount mirrors utf8.RuneCountInString — kept inline to avoid
-// an extra import in this file (strings is already pulled in for
-// ToUpper / ToLower; unicode/utf8 lands when the seed grows further).
-func utf8RuneCount(s string) int {
-	n := 0
-	for range s {
-		n++
-	}
-	return n
 }
 
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a
