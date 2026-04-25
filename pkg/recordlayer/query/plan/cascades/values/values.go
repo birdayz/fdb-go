@@ -1,105 +1,32 @@
-// Package cascades is the Go port of Java's
-// `com.apple.foundationdb.record.query.plan.cascades` (the Cascades
-// query planner). This is the Phase 4.0 seed — committed shape per
-// RFC-023 (non-generic BindingMatcher interface + `any` + generic
-// `Get[T]` retrieval helper). Follow-up shifts add the full Value
-// and Type hierarchies, the BindingMatcher combinators (AllOf, AnyOf,
-// TypedWithDownstream, etc.), PlannerBindings with proper identity
-// keying, CascadesRule / CascadesRuleCall, the memo, cost model, and
-// the planner driver.
+// Package values is the Value-tier of the Go Cascades planner port —
+// scalar / row-context expressions that compose into predicates,
+// projections, and join keys. Mirrors Java's
+// `com.apple.foundationdb.record.query.plan.cascades.values` package.
 //
-// Dayshift-46 seed contents:
+// Contents:
 //
-//   - values.go          — Value interface (Children, Type, Name,
-//     Evaluate) + ValueType enum + 10 concrete
-//     values (Constant, Field, Arithmetic, Boolean,
-//     Cast, Null, Aggregate, QuantifiedObject,
-//     Promote, RecordConstructor) + ExplainValue
-//     SQL-ish renderer.
-//   - matcher.go         — BindingMatcher interface +
-//     PlannerBindings + MergedWith + AnyValue /
-//     Instance / ArithmeticMatcher + the generic
-//     Get[T] retrieval helper.
-//   - combinators.go     — AllOf / AnyOf matcher combinators —
-//     primary building blocks for real rule
-//     patterns.
-//   - predicates.go      — QueryPredicate interface + TriBool
-//     (Kleene 3VL) + Constant / And / Or / Not /
-//     ValuePredicate + WalkPredicate + AsConstant +
-//     PredicateSize + PredicateEquals (structural,
-//     handles IN-list slice operand and
-//     per-instance Value data).
-//   - comparisons.go     — 13-operator ComparisonType enum plus
-//     ComparisonPredicate, cmpAny with numeric
-//     promotion, rune-level LIKE matcher, and the
-//     IsEquality / Negate classification helpers. Ops:
-//     =, <>, <, <=, >, >=, IS [NOT] NULL, STARTS_WITH,
-//     IN, IS [NOT] DISTINCT FROM, LIKE.
-//   - correlation.go     — CorrelationIdentifier value-type +
-//     Named / Unique factories + Correlated
-//     interface signature (Quantifier-tracking
-//     surface for rewrite rules).
-//   - rule.go            — CascadesRule interface + RuleCall
-//     (Yield / Yielded) + FireRule testing driver.
-//     Example addConstantFoldRule folds
-//     `Const + Const` → `Const`.
-//   - rule_simplify.go   — Eleven Phase 4.5 Batch A-style rules:
-//     AndFlatten / OrFlatten (associative
-//     normalisation), AndConstantSimplify /
-//     OrConstantSimplify / NotConstantSimplify /
-//     ComparisonConstantSimplify (Kleene folds),
-//     AndDedup / OrDedup (structural dedup),
-//     AndAbsorbOr / OrAbsorbAnd (absorption),
-//     NotComparisonRewrite (NOT-past-comparison).
-//   - simplifier.go      — Fixed-point Simplify driver + the
-//     DefaultSimplifyRules rule set. Pre-4.6 seed;
-//     real planner task-stack replaces this later.
-//   - benchmark_test.go  — 7 micro-benchmarks covering Value
-//     evaluation, predicate evaluation, and
-//     matcher dispatch.
+//   - Value interface (Children, Type, Name, Evaluate) + ValueType
+//     enum + concrete subtypes: Constant, Field, Arithmetic, Boolean,
+//     Cast, Null, Aggregate, QuantifiedObject, Promote,
+//     RecordConstructor, Parameter, ScalarFunction, Not.
+//   - ExplainValue — SQL-ish renderer used by plan-cache keying and
+//     EXPLAIN output.
+//   - SimplifyValue — standalone constant-fold over a Value tree
+//     (free function; the rule-driven equivalent lives in cascades's
+//     `Simplify`).
+//   - LiteralValue / ToInt64 / ToFloat64 — coercion helpers
+//     promoted from comparisons.go (RFC-025 Phase 1) so both values/
+//     and predicates/ can call them without a layering cycle.
+//   - CorrelationIdentifier + Correlated — Quantifier-tracking
+//     surface used by Values to declare which upstream Quantifier
+//     they depend on; rewrite rules consult this when checking
+//     correlation-shape preservation.
+//   - ExpressionFolder + DefaultFolder — testable seam for plan-time
+//     constant folding (RFC-025 §"Closing the leaks").
 //
-// Establishes the shape RFC-023 committed to; real Value
-// subtypes (77 in Java), the rest of the matcher combinator
-// catalogue (~15 shapes), full QueryPredicate + Comparisons, and
-// the CascadesRule / CascadesRuleCall / memo / cost / planner
-// driver land in subsequent Phase 4.0 / 4.2-4.6 shifts.
-//
-// **Zero-size struct gotcha.** Go's spec allows two distinct
-// zero-size variables to share an address. `&AnyValue{}` +
-// `&AnyValue{}` collapse to the same pointer, which breaks
-// PlannerBindings' matcher-identity keying. The matcher catalogue
-// handles this two ways depending on the struct shape:
-//   - `AnyValue` carries a `uint64` nonce produced by an atomic
-//     counter (`NewAnyValue` increments it). The counter makes
-//     "each instance is a distinct identity" visible in a debugger
-//     as well as via pointer identity — useful because rule authors
-//     legitimately call `NewAnyValue()` many times per rule pattern.
-//     This is the only matcher that uses the counter.
-//   - All other matchers carry at least one field that gives the
-//     struct non-zero size — for `Instance` / `AllOfMatcher` /
-//     `AnyOfMatcher` / `ListMatcher` / `AllElementsMatcher` it's
-//     the inherent `rootType string` + downstream slice; for the
-//     private generic `predicateMatcher[T]` (which subsumes the
-//     hand-written notPredicateMatcher / comparisonPredicateMatcher
-//     / andPredicateMatcher / orPredicateMatcher / valuePredicateMatcher)
-//     it's the `rootType string` field. No nonce needed.
-//
-// Across all matchers: rule authors MUST use the factories
-// (`NewAnyValue`, `NewConstantMatcher`, …), never bare struct
-// literals. Java doesn't hit this — `new Object()` always allocates.
-//
-// Mapping to Java:
-//
-//	pkg/recordlayer/query/plan/cascades/values.go
-//	  ↔ com.apple.foundationdb.record.query.plan.cascades.values.Value
-//	     (trimmed — full Java hierarchy has 77 Value subtypes)
-//	pkg/recordlayer/query/plan/cascades/matcher.go
-//	  ↔ com.apple.foundationdb.record.query.plan.cascades.matching.structure
-//	     (trimmed — full Java hierarchy has ~15 matcher shapes)
-//
-// Future shifts will likely split this into `cascades/values/` +
-// `cascades/matching/structure/` subpackages to mirror Java more
-// closely, once enough types exist to justify the split.
+// Imports: nothing else from `pkg/recordlayer/query/plan/cascades/...`.
+// `predicates/`, `matching/`, and root `cascades` all import this
+// package; the dependency arrow points inward to keep cycles out.
 package values
 
 import (
