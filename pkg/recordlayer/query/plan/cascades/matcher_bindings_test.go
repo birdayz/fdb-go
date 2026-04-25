@@ -282,17 +282,20 @@ func TestInstance_NewFieldMatcher_RejectsConstant(t *testing.T) {
 }
 
 // TestPredicateMatchers_DistinctIdentity is the regression sentinel
-// for the `_ bool` zero-size guard added in commits 67/68. Each of
-// the four predicate matchers (notPredicateMatcher,
-// comparisonPredicateMatcher, andPredicateMatcher,
-// orPredicateMatcher) is a 1-byte struct that MUST give distinct
-// pointer identities per allocation — otherwise PlannerBindings's
-// matcher → []any map collapses two distinct rule pattern instances
-// onto the same key.
+// for the non-zero-size guard each predicate matcher relies on.
+// After commit 70's generic refactor, the 5 matchers
+// (notPredicateMatcher / comparisonPredicateMatcher /
+// andPredicateMatcher / orPredicateMatcher / valuePredicateMatcher)
+// are all `*predicateMatcher[T]` with a 16-byte `rootType string`
+// field — that field is what keeps the struct non-zero-sized.
 //
-// If a future cleanup mistakenly drops `_ bool` and leaves the
-// struct zero-size, two `new(...)` calls would alias under Go's
-// runtime.zerobase optimisation. This test catches that.
+// Two consecutive `new...PredicateMatcher()` calls MUST land at
+// distinct heap addresses; otherwise PlannerBindings's matcher →
+// []any map collapses two distinct rule pattern instances onto the
+// same key. If a future cleanup drops `rootType string` (or replaces
+// it with a method-only computation) and the struct becomes zero-
+// size, the two allocations would alias under Go's runtime.zerobase
+// optimisation. This test catches that.
 func TestPredicateMatchers_DistinctIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +321,12 @@ func TestPredicateMatchers_DistinctIdentity(t *testing.T) {
 	orB := newOrPredicateMatcher()
 	if orA == orB {
 		t.Fatal("orPredicateMatcher: two allocations aliased")
+	}
+
+	vpA := newValuePredicateMatcher()
+	vpB := newValuePredicateMatcher()
+	if vpA == vpB {
+		t.Fatal("valuePredicateMatcher: two allocations aliased")
 	}
 }
 
