@@ -87,6 +87,9 @@ func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
 		// UnmarshalFromReader (see keyrangeref_custom.go). Without this, a
 		// vector element written by C++'s optimization (begin+\x00 == end →
 		// emit (end, empty)) would parse with Begin/End swapped.
+		// Note: after inversion, elem.Begin and elem.End share the same
+		// backing array (the original wire buffer). Same zero-copy
+		// convention as the rest of this function.
 		if len(elem.End) == 0 && len(elem.Begin) > 0 {
 			first := elem.Begin
 			elem.Begin = first[:len(first)-1]

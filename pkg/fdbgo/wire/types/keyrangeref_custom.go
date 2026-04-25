@@ -34,6 +34,9 @@ func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 	if len(second) == 0 && len(first) > 0 {
 		// Single-key optimization: writer emitted (end, empty).
 		// Reconstruct: begin = end[:-1], end = first.
+		// Note: m.Begin and m.End share the same backing array — same
+		// zero-copy convention as the rest of wire deserialization.
+		// Callers that mutate must copy first.
 		m.Begin = first[:len(first)-1]
 		m.End = first
 	} else {
