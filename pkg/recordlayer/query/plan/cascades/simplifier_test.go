@@ -415,8 +415,8 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	}
 }
 
-// TestSimplify_NotOverOrDoesNotDistribute pins the documented JAVA-
-// DIVERGENCE: De Morgan's NOT distribution is INTENTIONALLY left out
+// TestSimplify_NotOverOrDoesNotDistribute pins the documented
+// SEPARATION: De Morgan's NOT distribution is INTENTIONALLY left out
 // of DefaultSimplifyRules. Java's QueryPredicateTest.testQueryPredicate
 // NotPushDownOptimization rewrites `NOT(OR(p1, p2))` to `AND(NOT p1,
 // NOT p2)`; our seed leaves the NOT on top of the OR.
@@ -424,8 +424,9 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 // Java does the De Morgan distribution in a separate normalisation
 // pass (BooleanNormalizer); the seed Simplify driver runs only the
 // constant-fold + identity-drop + absorbing-element + leaf-NOT-
-// rewrite rules. If a future commit silently includes De Morgan in
-// the default rule set this test fails, flagging the divergence.
+// rewrite rules. Callers wanting the De Morgan rewrite use the
+// `NormalizationRules()` rule set (which prepends `NewDeMorganRule`).
+// See `rule_demorgan.go` + `rule_demorgan_test.go`.
 func TestSimplify_NotOverOrDoesNotDistribute(t *testing.T) {
 	t.Parallel()
 	a := &FieldValue{Field: "a", Typ: TypeString}
