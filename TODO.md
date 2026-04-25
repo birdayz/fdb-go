@@ -80,13 +80,8 @@ Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope i
 
 ### frl CLI — pre-v1 release blockers
 
-- [ ] **Phase A.5 — metadata loading (file + FDB store sources)**
-  - [ ] Add `MetadataSource` + fields to `cmd/frl/proto/frl/config/v1/config.proto`; regenerate.
-  - [ ] `cmd/frl/internal/meta/{source.go,file.go,fdbstore.go}` with unit tests (missing file, corrupt .pb, missing FDBMetaDataStore, FDBMetaDataStore with empty `records`).
-  - [ ] `pkg/recordlayer/metadata_export.go` + `WriteRecordMetaData` helper.
-  - [ ] Wire `--meta-file` global flag + context field resolution.
-  - [ ] First consumers: `frl store info` then `frl meta get`.
-- [ ] **Phase A.6 — operator guide (Go + Java, blocking v1 release)** — `docs/operator-guide.md`. Without it, both metadata sources are silently inaccessible to users.
+- [x] **Phase A.5 — metadata loading (file + FDB store sources)** — DONE in earlier shifts. `MetadataSource` proto union (meta_file / meta_store_keyspace) lives in `cmd/frl/proto/frl/config/v1/config.proto`. `cmd/frl/internal/meta/meta.go` has `Source` interface + `FileSource` + `FDBStoreSource` + `FromContext` factory + the `buildFromBytes` / `buildFromProto` validators. `pkg/recordlayer/metadata_export.go` ships `WriteRecordMetaData`. The `--meta-file` flag is wired in commands like `frl index describe`. Consumers: `frl store info` (in `cmd/frl/internal/cmd/store.go`) + `frl meta get` (`meta.go:254`).
+- [x] **Phase A.6 — operator guide** — DONE. `cmd/frl/docs/operator-guide.md` (251 lines) covers both metadata sources for Go and Java apps.
 
 ### Pure Go FDB Client
 
