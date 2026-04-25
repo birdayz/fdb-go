@@ -154,6 +154,49 @@ func TestBuildLogicalPlanWithCatalog_UnsupportedShape(t *testing.T) {
 	}
 }
 
+// TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded pins the
+// SimplifyPredicateValues wire-in: a constant arithmetic RHS
+// (`PRICE = 1+2`) folds at plan time so EXPLAIN renders `PRICE = 3`
+// rather than `PRICE = 1 + 2`. Same applies to nested arithmetic and
+// scalar-function RHS (`name = UPPER('hi')` → `NAME = "HI"`).
+func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t, "SELECT * FROM Order WHERE price = 1+2")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	filter, ok := op.(*logical.LogicalFilter)
+	if !ok {
+		t.Fatalf("expected LogicalFilter, got %T", op)
+	}
+	if filter.Predicate == nil {
+		t.Fatal("expected Predicate non-nil")
+	}
+	if got := filter.Predicate.Explain(); got != "PRICE = 3" {
+		t.Fatalf("Predicate.Explain: got %q, want PRICE = 3", got)
+	}
+}
+
+// TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded pins the
+// scalar-function arm: `name = UPPER('hi')` reaches EXPLAIN as
+// `NAME = "HI"`.
+func TestBuildLogicalPlanWithCatalog_RHSScalarFunctionFolded(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	sq := parseSelect(t, "SELECT * FROM Customer WHERE name = UPPER('hi')")
+	op := buildLogicalPlanForSelectWithCatalog(sq, md)
+	filter, ok := op.(*logical.LogicalFilter)
+	if !ok {
+		t.Fatalf("expected LogicalFilter, got %T", op)
+	}
+	if filter.Predicate == nil {
+		t.Fatal("expected Predicate non-nil")
+	}
+	got := filter.Predicate.Explain()
+	if !strings.Contains(got, "HI") || strings.Contains(got, "UPPER") {
+		t.Fatalf("Predicate.Explain: got %q, want folded HI without UPPER", got)
+	}
+}
+
 // UPPER (and the rest of the seed scalar function set — LOWER,
 // LENGTH, CHAR_LENGTH, OCTET_LENGTH) IS now handled by
 // walkScalarFunction. The catalog-aware builder attaches a real
