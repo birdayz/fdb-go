@@ -369,6 +369,49 @@ func TestBuildLogicalPlanWithCatalog_InsertSelect_NoWhere(t *testing.T) {
 	}
 }
 
+// INSERT … SELECT with a JOIN inside the SELECT — the catalog-aware
+// path threads metadata down to the inner SELECT including its
+// multi-source scope. Pins that the JOIN scope feature composes
+// with the INSERT … SELECT path.
+func TestBuildLogicalPlanWithCatalog_InsertSelectJoin(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	ins := parseInsert(t,
+		"INSERT INTO Customer (customer_id, name) "+
+			"SELECT order_id, 'x' FROM Order o JOIN Customer c ON o.order_id = c.customer_id WHERE o.price > 5")
+	op := buildLogicalPlanForInsertWithCatalog(ins, md)
+	insertOp, ok := op.(*logical.LogicalInsert)
+	if !ok {
+		t.Fatalf("expected LogicalInsert, got %T", op)
+	}
+	if insertOp.Source == nil {
+		t.Fatal("expected non-nil Source on INSERT … SELECT JOIN")
+	}
+	// Inner SELECT's filter should carry a Predicate with the
+	// qualified column resolved.
+	var filter *logical.LogicalFilter
+	for cur := insertOp.Source; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			filter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if filter == nil {
+		t.Fatalf("expected LogicalFilter inside INSERT … SELECT JOIN, got tree:\n%s", insertOp.Source.Explain(""))
+	}
+	if filter.Predicate == nil {
+		t.Fatalf("expected resolved Predicate on JOIN-WHERE, PredicateText=%q", filter.PredicateText)
+	}
+	if got := filter.Predicate.Explain(); !strings.Contains(got, "PRICE > 5") {
+		t.Fatalf("expected PRICE > 5 in resolved predicate, got %q", got)
+	}
+}
+
 // INSERT VALUES has no nested SELECT — the catalog-aware path
 // returns the same shape as the text builder (Source is nil).
 func TestBuildLogicalPlanWithCatalog_InsertValuesNoOp(t *testing.T) {
