@@ -306,6 +306,28 @@ func TestCastValue(t *testing.T) {
 
 var _ Value = (*AggregateValue)(nil)
 
+// ArithmeticOp.Symbol pins all five operators including OpMod
+// (added this shift) and the unknown-Op fallback.
+func TestArithmeticOp_Symbol(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		op   ArithmeticOp
+		want string
+	}{
+		{OpAdd, "+"},
+		{OpSub, "-"},
+		{OpMul, "*"},
+		{OpDiv, "/"},
+		{OpMod, "%"},
+		{ArithmeticOp(99), "?"},
+	}
+	for _, tc := range cases {
+		if got := tc.op.Symbol(); got != tc.want {
+			t.Errorf("op %v: got %q, want %q", tc.op, got, tc.want)
+		}
+	}
+}
+
 func TestAggregateOp_Symbol(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
