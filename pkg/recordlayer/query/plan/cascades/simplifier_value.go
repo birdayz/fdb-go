@@ -23,10 +23,11 @@ package cascades
 // Java) and SimplifyValue retires.
 //
 // Coverage: ArithmeticValue, CastValue, PromoteValue,
-// ScalarFunctionValue. Other composites (RecordConstructorValue,
-// AggregateValue) are not folded — Aggregate inherently needs row
-// context, RecordConstructor seldom appears in a fold-able position.
-// Adding more shapes is mechanical when need arises.
+// ScalarFunctionValue, NotValue. Other composites
+// (RecordConstructorValue, AggregateValue) are not folded —
+// Aggregate inherently needs row context, RecordConstructor seldom
+// appears in a fold-able position. Adding more shapes is mechanical
+// when need arises (extend isFoldableComposite + simplifyChildren).
 func SimplifyValue(v Value) Value {
 	if v == nil {
 		return nil
