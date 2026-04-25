@@ -32,6 +32,7 @@ go_test(
         "predicates_test.go",
         "rule_simplify_test.go",
         "rule_test.go",
+        "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
         "simplifier_predicate_values_test.go",
         "simplifier_test.go",

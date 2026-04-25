@@ -873,8 +873,305 @@ func evalScalarFunction(name string, args []any) any {
 			toStr = fmt.Sprintf("%v", args[2])
 		}
 		return strings.ReplaceAll(fmt.Sprintf("%v", args[0]), fmt.Sprintf("%v", args[1]), toStr)
+	case "SIGN":
+		// SIGN(numeric) — -1 / 0 / 1 in the input's numeric type. Mirrors
+		// embedded.scalar_functions.go's SIGN: int64 input → int64 sign,
+		// float64 input → float64 sign. Non-numeric input declines so
+		// the runtime evaluator surfaces 22018.
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		switch n := args[0].(type) {
+		case int64:
+			switch {
+			case n > 0:
+				return int64(1)
+			case n < 0:
+				return int64(-1)
+			}
+			return int64(0)
+		case float64:
+			switch {
+			case n > 0:
+				return float64(1)
+			case n < 0:
+				return float64(-1)
+			}
+			return float64(0)
+		}
+		return nil
+	case "MOD":
+		// MOD(a, b) — int64%int64 stays int64, mixed promotes to float64
+		// via math.Mod. Division-by-zero declines (runtime errors with
+		// 22012 DIVISION_BY_ZERO). Mirrors embedded's MOD semantics.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		ai, aIsInt := args[0].(int64)
+		bi, bIsInt := args[1].(int64)
+		if aIsInt && bIsInt {
+			if bi == 0 {
+				return nil
+			}
+			return ai % bi
+		}
+		af, _, aok := toFloat64(args[0])
+		bf, _, bok := toFloat64(args[1])
+		if !aok || !bok {
+			return nil
+		}
+		if bf == 0 {
+			return nil
+		}
+		return math.Mod(af, bf)
+	case "IFNULL":
+		// IFNULL(a, b) — `a` if non-null, else `b`. 2-arg COALESCE alias
+		// (MySQL/SQLite spelling). Type-uniform like embedded.
+		if len(args) != 2 {
+			return nil
+		}
+		if args[0] != nil {
+			return args[0]
+		}
+		return args[1]
+	case "IF", "IIF":
+		// IF(cond, then, else) — evaluates condition first; returns
+		// `then` if truthy, `else` otherwise. Truthy: non-zero numeric,
+		// non-empty string, true bool. Mirrors embedded's IF.
+		if len(args) != 3 {
+			return nil
+		}
+		switch v := args[0].(type) {
+		case bool:
+			if v {
+				return args[1]
+			}
+			return args[2]
+		case int64:
+			if v != 0 {
+				return args[1]
+			}
+			return args[2]
+		case float64:
+			if v != 0 {
+				return args[1]
+			}
+			return args[2]
+		case string:
+			if v != "" {
+				return args[1]
+			}
+			return args[2]
+		case nil:
+			// SQL §6.30: IF(NULL, …) returns the else branch (NULL is
+			// not truthy). embedded matches this.
+			return args[2]
+		}
+		// Unsupported condition type — decline so runtime can error.
+		return nil
+	case "GREATEST", "LEAST":
+		// GREATEST/LEAST — Java conformance: any NULL arg → NULL result
+		// (Postgres skips, Oracle propagates; Java propagates). Mirror
+		// Java per embedded's behaviour. Cross-type comparisons decline
+		// at the fold path so the runtime can surface 22000
+		// CANNOT_CONVERT_TYPE.
+		if len(args) == 0 {
+			return nil
+		}
+		isGreatest := name == "GREATEST"
+		best := args[0]
+		if best == nil {
+			return nil
+		}
+		for _, a := range args[1:] {
+			if a == nil {
+				return nil
+			}
+			cmp, ok := compareScalar(best, a)
+			if !ok {
+				return nil // cross-type — runtime reports the error
+			}
+			if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
+				best = a
+			}
+		}
+		return best
+	case "EXP":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		f, _, ok := toFloat64(args[0])
+		if !ok {
+			return nil
+		}
+		return math.Exp(f)
+	case "LN":
+		// Natural log. Domain: x > 0. Out-of-domain (≤ 0) declines so
+		// the runtime evaluator can surface 22003 NUMERIC_VALUE_OUT_OF_RANGE.
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		f, _, ok := toFloat64(args[0])
+		if !ok || f <= 0 {
+			return nil
+		}
+		return math.Log(f)
+	case "LOG":
+		// 1-arg LOG(x) = log10(x). 2-arg LOG(base, x) = ln(x)/ln(base).
+		// Mirrors embedded; out-of-domain declines.
+		switch len(args) {
+		case 1:
+			if args[0] == nil {
+				return nil
+			}
+			f, _, ok := toFloat64(args[0])
+			if !ok || f <= 0 {
+				return nil
+			}
+			return math.Log10(f)
+		case 2:
+			if args[0] == nil || args[1] == nil {
+				return nil
+			}
+			base, _, baseOK := toFloat64(args[0])
+			x, _, xOK := toFloat64(args[1])
+			if !baseOK || !xOK || base <= 0 || base == 1 || x <= 0 {
+				return nil
+			}
+			return math.Log(x) / math.Log(base)
+		}
+		return nil
+	case "REVERSE":
+		// String reverse — rune-aware so multibyte UTF-8 stays valid.
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		runes := []rune(s)
+		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+			runes[i], runes[j] = runes[j], runes[i]
+		}
+		return string(runes)
+	case "POSITION":
+		// POSITION(substr, str) — 1-based rune index of first match,
+		// 0 if not found. Mirrors embedded POSITION (note: not the
+		// `POSITION(substr IN str)` SQL-standard grammar shape).
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		needle := fmt.Sprintf("%v", args[0])
+		haystack := fmt.Sprintf("%v", args[1])
+		byteIdx := strings.Index(haystack, needle)
+		if byteIdx < 0 {
+			return int64(0)
+		}
+		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1)
+	case "LEFT":
+		// LEFT(str, n) — first n runes; whole string if n ≥ length.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		n, ok := scalarFnInt64Arg(args[1])
+		if !ok {
+			return nil
+		}
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s
+		}
+		return string(runes[:n])
+	case "RIGHT":
+		// RIGHT(str, n) — last n runes; whole string if n ≥ length.
+		if len(args) != 2 || args[0] == nil || args[1] == nil {
+			return nil
+		}
+		s := fmt.Sprintf("%v", args[0])
+		n, ok := scalarFnInt64Arg(args[1])
+		if !ok {
+			return nil
+		}
+		if n < 0 {
+			n = 0
+		}
+		runes := []rune(s)
+		if int(n) >= len(runes) {
+			return s
+		}
+		return string(runes[len(runes)-int(n):])
 	}
 	return nil
+}
+
+// compareScalar returns -1 / 0 / 1 for a < b / a == b / a > b under the
+// seed's numeric/string/bool comparison rules. Returns ok=false on
+// cross-type pairs the seed can't compare (the runtime reports the
+// CANNOT_CONVERT_TYPE error per Java alignment).
+func compareScalar(a, b any) (int, bool) {
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			switch {
+			case av < bv:
+				return -1, true
+			case av > bv:
+				return 1, true
+			}
+			return 0, true
+		case float64:
+			af := float64(av)
+			switch {
+			case af < bv:
+				return -1, true
+			case af > bv:
+				return 1, true
+			}
+			return 0, true
+		}
+	case float64:
+		switch bv := b.(type) {
+		case int64:
+			bf := float64(bv)
+			switch {
+			case av < bf:
+				return -1, true
+			case av > bf:
+				return 1, true
+			}
+			return 0, true
+		case float64:
+			switch {
+			case av < bv:
+				return -1, true
+			case av > bv:
+				return 1, true
+			}
+			return 0, true
+		}
+	case string:
+		bv, ok := b.(string)
+		if !ok {
+			return 0, false
+		}
+		return strings.Compare(av, bv), true
+	case bool:
+		bv, ok := b.(bool)
+		if !ok {
+			return 0, false
+		}
+		switch {
+		case !av && bv:
+			return -1, true
+		case av && !bv:
+			return 1, true
+		}
+		return 0, true
+	}
+	return 0, false
 }
 
 // scalarFnInt64Arg coerces a numeric scalar-fn argument to int64.
