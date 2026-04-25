@@ -1078,6 +1078,43 @@ func TestWalkExpression_NilContext(t *testing.T) {
 	}
 }
 
+// Float literal → ConstantValue{Typ: TypeFloat}. Walker handles
+// `3.14`, `0.5`, scientific notation, and negative forms via
+// DecimalConstant + NegativeDecimalConstant dispatch on
+// REAL_LITERAL terminal.
+func TestWalkExpression_FloatLiteral(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	cases := map[string]float64{
+		"3.14":    3.14,
+		"0.5":     0.5,
+		"-2.5":    -2.5,
+		"1e2":     100,
+		"-1.5e10": -1.5e10,
+	}
+	for sql, want := range cases {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk %q: %v", sql, err)
+			}
+			cv, ok := v.(*cascades.ConstantValue)
+			if !ok {
+				t.Fatalf("expected *ConstantValue, got %T", v)
+			}
+			if cv.Typ != cascades.TypeFloat {
+				t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
+			}
+			if cv.Value != want {
+				t.Fatalf("Value: got %v, want %v", cv.Value, want)
+			}
+		})
+	}
+}
+
 // MOD operator — walker produces an ArithmeticValue with Op=OpMod
 // for both `a % b` and `a MOD b` syntactic forms. Eval returns
 // truncated-toward-zero modulo (Go's `%`); MOD by zero returns nil
@@ -1168,8 +1205,9 @@ func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 	cases := []string{
-		"CAST(name AS FLOAT)",
-		"CAST(name AS DOUBLE)",
+		// FLOAT / DOUBLE moved to TestWalkExpression_CastFloat now
+		// that TypeFloat exists in the seed enum. BYTES still
+		// declines pending the full Type hierarchy port.
 		"CAST(name AS BYTES)",
 	}
 	for _, sql := range cases {
@@ -1178,6 +1216,31 @@ func TestWalkExpression_CastUnsupportedTarget(t *testing.T) {
 			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
 			if _, err := r.WalkExpression(ctx); err == nil {
 				t.Fatalf("expected UnsupportedExpressionShapeError for %q", sql)
+			}
+		})
+	}
+}
+
+// CAST AS FLOAT / DOUBLE → CastValue{Target: TypeFloat}. Walker now
+// supports float casts after TypeFloat landed.
+func TestWalkExpression_CastFloat(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	for _, sql := range []string{"CAST(name AS FLOAT)", "CAST(name AS DOUBLE)"} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			cv, ok := v.(*cascades.CastValue)
+			if !ok {
+				t.Fatalf("expected *CastValue, got %T", v)
+			}
+			if cv.Target != cascades.TypeFloat {
+				t.Fatalf("Target: got %v, want TypeFloat", cv.Target)
 			}
 		})
 	}

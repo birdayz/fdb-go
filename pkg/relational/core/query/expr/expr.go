@@ -424,10 +424,12 @@ func sqlTypeToCascadesValueType(sqlType string) cascades.ValueType {
 // expression.
 //
 // Returns an error when the literal's runtime type doesn't map to
-// any seed ValueType — nil, int, int32, int64, string, bool are
-// supported. float32/float64 are explicitly flagged pending the
-// Type hierarchy port (cascades.TypeFloat doesn't exist yet; don't
-// silently pretend they're ints).
+// any seed ValueType — nil, int, int32, int64, float32, float64,
+// string, bool are supported. Float literals carry TypeFloat;
+// arithmetic over floats still goes through ArithmeticValue's
+// int-only Eval (mixed-type arith returns nil per the seed
+// contract — a real arithmetic-over-float requires the Type
+// hierarchy port to set up coercion).
 func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
 	switch v := lit.(type) {
 	case nil:
@@ -442,12 +444,10 @@ func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
 		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeInt}, nil
 	case string:
 		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeString}, nil
-	case float32, float64:
-		// Pending cascades.TypeFloat in the Type hierarchy port.
-		// Specific error message so future maintainers know this is
-		// the companion site for FLOAT support.
-		return nil, fmt.Errorf(
-			"expr.ResolveConstant: float literals unsupported until cascades.TypeFloat lands (Phase 4.0 Type hierarchy); got %v", v)
+	case float32:
+		return &cascades.ConstantValue{Value: float64(v), Typ: cascades.TypeFloat}, nil
+	case float64:
+		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeFloat}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
 }

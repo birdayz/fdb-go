@@ -202,6 +202,8 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (cascades.Value
 		return cascades.TypeString, true
 	case ptc.BOOLEAN() != nil:
 		return cascades.TypeBool, true
+	case ptc.FLOAT() != nil, ptc.DOUBLE() != nil:
+		return cascades.TypeFloat, true
 	}
 	return cascades.TypeUnknown, false
 }
@@ -739,9 +741,10 @@ func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (cascades.Value
 }
 
 // walkConstant: a literal from the parse tree → ResolveConstant.
-// Seed handles the common shapes (integer literal, string literal).
-// Float / decimal-with-fractional handling is deferred until
-// cascades.TypeFloat lands.
+// Handles integer / float / string / boolean / NULL constants.
+// DecimalConstant covers both DECIMAL_LITERAL (int) and REAL_LITERAL
+// (float) — DecimalLiteralContext exposes both terminal accessors
+// and we dispatch by which is set.
 func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, error) {
 	if c == nil {
 		return nil, fmt.Errorf("expr.walkConstant: nil Constant")
@@ -762,10 +765,42 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, er
 		}
 		return nil, &UnsupportedExpressionShapeError{Shape: "BooleanLiteral with no TRUE/FALSE"}
 	case *antlrgen.DecimalConstantContext:
+		// DecimalLiteralContext wraps either DECIMAL_LITERAL (int)
+		// or REAL_LITERAL (float). Distinguish by which terminal is
+		// non-nil. Fall back to int parse when the literal node is
+		// missing (defensive — shouldn't happen).
+		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
+			if dl.REAL_LITERAL() != nil {
+				text := k.GetText()
+				f, err := strconv.ParseFloat(text, 64)
+				if err != nil {
+					return nil, fmt.Errorf("expr.walkConstant: float parse %q: %w", text, err)
+				}
+				return r.ResolveConstant(f)
+			}
+		}
 		text := k.GetText()
 		n, err := strconv.ParseInt(text, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("expr.walkConstant: integer parse %q: %w", text, err)
+		}
+		return r.ResolveConstant(n)
+	case *antlrgen.NegativeDecimalConstantContext:
+		// `-N` constant — same DecimalLiteral wrapper but with a
+		// leading MINUS. Dispatch on REAL vs DECIMAL again.
+		text := k.GetText()
+		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
+			if dl.REAL_LITERAL() != nil {
+				f, err := strconv.ParseFloat(text, 64)
+				if err != nil {
+					return nil, fmt.Errorf("expr.walkConstant: negative float parse %q: %w", text, err)
+				}
+				return r.ResolveConstant(f)
+			}
+		}
+		n, err := strconv.ParseInt(text, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expr.walkConstant: negative integer parse %q: %w", text, err)
 		}
 		return r.ResolveConstant(n)
 	case *antlrgen.StringConstantContext:

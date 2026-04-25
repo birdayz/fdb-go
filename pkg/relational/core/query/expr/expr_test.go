@@ -2,7 +2,6 @@ package expr_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -190,24 +189,35 @@ func TestResolver_ResolveConstant_Unsupported(t *testing.T) {
 	}
 }
 
-// float literals get a specific error pointing at the Type hierarchy
-// port, not a generic "unsupported" — helps future maintainers
-// know where to wire FLOAT support.
-func TestResolver_ResolveConstant_FloatSpecificError(t *testing.T) {
+// Float literals now produce ConstantValue{Typ: TypeFloat}.
+func TestResolver_ResolveConstant_Float(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 
-	_, err := r.ResolveConstant(float64(3.14))
-	if err == nil {
-		t.Fatal("expected error for float64")
+	v, err := r.ResolveConstant(float64(3.14))
+	if err != nil {
+		t.Fatalf("float64: %v", err)
 	}
-	if !strings.Contains(err.Error(), "TypeFloat") {
-		t.Fatalf("error should mention TypeFloat; got %q", err.Error())
+	cv, ok := v.(*cascades.ConstantValue)
+	if !ok {
+		t.Fatalf("expected *ConstantValue, got %T", v)
 	}
-	_, err32 := r.ResolveConstant(float32(2.5))
-	if err32 == nil {
-		t.Fatal("expected error for float32")
+	if cv.Typ != cascades.TypeFloat {
+		t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
+	}
+	if cv.Value != float64(3.14) {
+		t.Fatalf("Value: got %v", cv.Value)
+	}
+
+	// float32 widens to float64.
+	v32, err := r.ResolveConstant(float32(2.5))
+	if err != nil {
+		t.Fatalf("float32: %v", err)
+	}
+	cv32 := v32.(*cascades.ConstantValue)
+	if cv32.Value != float64(2.5) {
+		t.Fatalf("float32 widening: got %v", cv32.Value)
 	}
 }
 

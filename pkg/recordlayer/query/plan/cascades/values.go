@@ -87,7 +87,10 @@
 // closely, once enough types exist to justify the split.
 package cascades
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // ValueType is a stand-in for the full Cascades Type hierarchy. The
 // production port adds `Type` / `TypeRepository` / `Typed`, at which
@@ -99,6 +102,7 @@ const (
 	TypeInt
 	TypeString
 	TypeBool
+	TypeFloat
 )
 
 // Value is the root of the Phase 4.0 seed Value hierarchy.
@@ -357,6 +361,8 @@ func (t ValueType) String() string {
 		return "STRING"
 	case TypeBool:
 		return "BOOL"
+	case TypeFloat:
+		return "FLOAT"
 	}
 	return "UNKNOWN"
 }
@@ -395,6 +401,10 @@ func valueLiteralString(v any) string {
 		return intToDec(int64(x))
 	case int8:
 		return intToDec(int64(x))
+	case float64:
+		return strconv.FormatFloat(x, 'g', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(x), 'g', -1, 32)
 	case bool:
 		if x {
 			return "TRUE"
