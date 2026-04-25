@@ -1296,6 +1296,11 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		// SQL: `a MOD 0` is undefined / NULL. Match Div's nil-on-zero
 		// guard. Sign of result matches Go's `%` (truncated toward
 		// zero) — matches MySQL / PostgreSQL semantics.
+		//
+		// MinInt64 % -1 is SAFE — unlike division, Go's `%` produces
+		// 0 for this combination (the mathematical result is 0,
+		// representable in int64). No special-case overflow guard
+		// needed. Pinned in TestArithmeticValue_OverflowBoundaries.
 		if ri == 0 {
 			return nil
 		}

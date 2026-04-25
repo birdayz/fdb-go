@@ -172,60 +172,43 @@ func TestNotValue_DoubleNegation_FoldsToLeaf(t *testing.T) {
 
 // TestNotValue_FoldsConstantToLeaf pins single-NOT folding:
 // NOT(TRUE) → BooleanValue(false), NOT(FALSE) → BooleanValue(true),
-// NOT(NULL) → NullValue.
+// NOT(NULL) → NullValue. Each case uses an inline t.Fatalf-based
+// asserter (no error-return ceremony); they're parallel-safe via
+// the t.Run closure capturing t.
 func TestNotValue_FoldsConstantToLeaf(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name  string
-		child Value
-		check func(Value) error
-	}{
-		{
-			"NOT TRUE → FALSE",
-			NewBooleanValue(true),
-			func(v Value) error {
-				bv, ok := v.(*BooleanValue)
-				if !ok {
-					t.Fatalf("expected BooleanValue, got %T", v)
-				}
-				if bv.Value == nil || *bv.Value != false {
-					t.Fatalf("expected false, got %v", bv.Value)
-				}
-				return nil
-			},
-		},
-		{
-			"NOT FALSE → TRUE",
-			NewBooleanValue(false),
-			func(v Value) error {
-				bv, ok := v.(*BooleanValue)
-				if !ok {
-					t.Fatalf("expected BooleanValue, got %T", v)
-				}
-				if bv.Value == nil || *bv.Value != true {
-					t.Fatalf("expected true, got %v", bv.Value)
-				}
-				return nil
-			},
-		},
-		{
-			"NOT NULL(Bool) → NULL",
-			&BooleanValue{Value: nil},
-			func(v Value) error {
-				if _, ok := v.(*NullValue); !ok {
-					t.Fatalf("expected NullValue, got %T", v)
-				}
-				return nil
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			out := SimplifyValue(NewNotValue(tc.child))
-			_ = tc.check(out)
-		})
-	}
+
+	t.Run("NOT TRUE → FALSE", func(t *testing.T) {
+		t.Parallel()
+		out := SimplifyValue(NewNotValue(NewBooleanValue(true)))
+		bv, ok := out.(*BooleanValue)
+		if !ok {
+			t.Fatalf("expected BooleanValue, got %T", out)
+		}
+		if bv.Value == nil || *bv.Value != false {
+			t.Fatalf("expected false, got %v", bv.Value)
+		}
+	})
+
+	t.Run("NOT FALSE → TRUE", func(t *testing.T) {
+		t.Parallel()
+		out := SimplifyValue(NewNotValue(NewBooleanValue(false)))
+		bv, ok := out.(*BooleanValue)
+		if !ok {
+			t.Fatalf("expected BooleanValue, got %T", out)
+		}
+		if bv.Value == nil || *bv.Value != true {
+			t.Fatalf("expected true, got %v", bv.Value)
+		}
+	})
+
+	t.Run("NOT NULL(Bool) → NULL", func(t *testing.T) {
+		t.Parallel()
+		out := SimplifyValue(NewNotValue(&BooleanValue{Value: nil}))
+		if _, ok := out.(*NullValue); !ok {
+			t.Fatalf("expected NullValue, got %T", out)
+		}
+	})
 }
 
 // TestNotValue_NonConstantChild_NoFold pins that NOT(field) does NOT
