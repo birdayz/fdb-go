@@ -1,6 +1,6 @@
 package plandiff
 
-// SeedCorpus is the small RFC-022 §4.-1 baseline set: 33 queries
+// SeedCorpus is the small RFC-022 §4.-1 baseline set: 35 queries
 // hand-picked to exercise the planner shapes the existing 11-branch
 // pushdown chain rewrites (covered by Cascades Batch A rules — see
 // TODO.md §HIGH 4.5). Each query is a single SELECT / DML / DDL whose

@@ -443,7 +443,7 @@ func TestSeedCorpus_BaselineHash(t *testing.T) {
 	// swingshift-50 baseline. Deliberate planner / corpus changes
 	// require updating this constant. Run with `-v` to see the
 	// current hash diagnostic and copy the new value here.
-	// Last update: corpus extended from 26 → 33 queries
+	// Last update: corpus extended from 26 → 35 queries
 	// (RIGHT OUTER JOIN, arithmetic / function / CASE projections,
 	// IN / EXISTS subqueries, recursive CTE, multi-aggregate
 	// GROUP BY, UNION DISTINCT).

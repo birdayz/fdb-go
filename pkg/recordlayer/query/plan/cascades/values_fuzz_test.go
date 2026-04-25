@@ -93,5 +93,13 @@ func FuzzSimplifyValue_CastChain(f *testing.F) {
 		if out == nil {
 			t.Fatalf("SimplifyValue returned nil for CAST chain (n=%d t1=%v t2=%v)", n, t1, t2)
 		}
+
+		// Idempotency: simplifying the result must be a no-op. Either
+		// the chain folded to a leaf (folds back to itself) or the
+		// type-mismatch case declined (declining is also idempotent).
+		again := SimplifyValue(out)
+		if again == nil {
+			t.Fatalf("SimplifyValue(simplified) returned nil for CAST chain")
+		}
 	})
 }

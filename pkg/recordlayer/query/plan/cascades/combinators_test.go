@@ -233,8 +233,10 @@ func TestAllOf_ThreadsOuterBindings(t *testing.T) {
 // doubleMatcher is a test-only matcher that always emits TWO
 // successful PlannerBindings for any input — used to pin Cartesian
 // behaviour where Go-side test fixtures don't have a natural
-// multi-match shape today.
-type doubleMatcher struct{ id any }
+// multi-match shape today. Two distinct &doubleMatcher{} pointers
+// are already unique map keys via Go's pointer identity, so no
+// nonce field is needed.
+type doubleMatcher struct{}
 
 func (*doubleMatcher) RootType() string { return "Value" }
 func (d *doubleMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
