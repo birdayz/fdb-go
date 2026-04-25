@@ -251,9 +251,9 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (c
 	return r.ResolveCast(inner, target)
 }
 
-// walkScalarFunction handles the seed scalar function set —
-// UPPER / LOWER / LENGTH / CHAR_LENGTH / CHARACTER_LENGTH /
-// OCTET_LENGTH. Unknown function names decline with
+// walkScalarFunction handles every scalar function name registered
+// in scalarFunctionResultType() (the source of truth — see that
+// function for the live list). Unknown function names decline with
 // UnsupportedExpressionShapeError so the logical-builder text
 // fallback catches them; this keeps the walker conservative until
 // the full scalar function catalogue ports.
