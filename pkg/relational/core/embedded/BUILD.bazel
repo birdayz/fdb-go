@@ -82,6 +82,7 @@ go_test(
         "projection_fold_test.go",
         "scope_test.go",
         "select_helpers_test.go",
+        "utilities_test.go",
         "where_extractors_test.go",
     ],
     embed = [":embedded"],
