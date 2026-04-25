@@ -50,6 +50,12 @@ type LogicalFilter struct {
 	PredicateText string                  // source-text fallback
 }
 
+// NewFilter constructs a text-only LogicalFilter — used by the
+// non-catalog-aware logical-builder path where only canonical
+// source text is available. Pair with NewFilterWithPredicate when
+// a cascades.QueryPredicate tree is in scope (catalog-aware
+// builder); the predicate-tree form takes precedence in Explain
+// output when both are set.
 func NewFilter(input LogicalOperator, pred string) *LogicalFilter {
 	return &LogicalFilter{Input: input, PredicateText: pred}
 }
