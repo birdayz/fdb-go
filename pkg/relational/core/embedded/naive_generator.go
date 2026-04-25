@@ -26,6 +26,21 @@ type naiveGenerator struct {
 	c *EmbeddedConnection
 }
 
+// NewExplainOnlyGenerator constructs a Generator suitable for capturing
+// Plan.Explain() output without executing. The returned Generator is
+// backed by a zero-value EmbeddedConnection — Plan.Execute on the
+// returned plans is unsupported (no FDB, no catalog, no session
+// state). Used by the plan-equivalence harness (RFC-022 §4.-1) to
+// produce plan trees for diffing against Java's planner output.
+//
+// Catalog-aware predicate trees (`buildLogicalPlanFor*WithCatalog`
+// paths) require non-nil RecordMetaData; this constructor always
+// produces text-only logical plans. A future variant taking a synthetic
+// schema cache will unlock the catalog-aware branch for the harness.
+func NewExplainOnlyGenerator() query.Generator {
+	return &naiveGenerator{c: &EmbeddedConnection{}}
+}
+
 // Plan parses the SQL and returns a Plan whose Execute dispatches to
 // the appropriate exec* method. Multi-statement SQL is wrapped in a
 // query.MultiPlan.
