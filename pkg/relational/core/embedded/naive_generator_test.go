@@ -523,6 +523,30 @@ func TestNaiveGenerator_Explain_ExplainCTE(t *testing.T) {
 	}
 }
 
+// EXPLAIN over a WHERE with constant arithmetic — warm-cache
+// catalog-aware path → cascades.SimplifyValue folds 1+2 to 3.
+// The user-visible PLAN row should show the folded form, not the
+// pre-fold tree.
+func TestNaiveGenerator_Explain_ExplainConstantFold(t *testing.T) {
+	t.Parallel()
+	md := buildExplainTestMd(t)
+	p := helperPlanWithCachedMd(t,
+		"EXPLAIN SELECT * FROM Order WHERE price > 1 + 2",
+		md, "/main", "public")
+	got := p.Explain()
+	if !strings.HasPrefix(got, "EXPLAIN: ") {
+		t.Fatalf("got %q, want EXPLAIN: prefix", got)
+	}
+	// Folded predicate: PRICE > 3 (cascades.SimplifyValue collapsed 1+2).
+	if !strings.Contains(got, "PRICE > 3") {
+		t.Fatalf("expected folded predicate (PRICE > 3) in EXPLAIN output, got %q", got)
+	}
+	// The unfolded form should NOT appear.
+	if strings.Contains(got, "1 + 2") || strings.Contains(got, "(1 + 2)") {
+		t.Fatalf("EXPLAIN still shows unfolded 1+2 — fold did not run: %q", got)
+	}
+}
+
 // `EXPLAIN UPDATE` warm-cache path — verifies the catalog-aware
 // builder fires for UPDATE inside EXPLAIN, AND that no actual
 // mutation is attempted (would panic without an FDB connection).
