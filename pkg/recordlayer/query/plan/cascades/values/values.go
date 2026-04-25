@@ -1404,7 +1404,11 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			return s
 		}
 		if i, ok := v.(int64); ok {
-			return uitoa(uint64(i))
+			// strconv.FormatInt handles signed values correctly —
+			// uitoa(uint64(i)) would reinterpret negative int64 as
+			// the corresponding huge positive number (CAST(-5 AS
+			// STRING) → "18446744073709551611").
+			return strconv.FormatInt(i, 10)
 		}
 		if f, ok := v.(float64); ok {
 			return strconv.FormatFloat(f, 'g', -1, 64)

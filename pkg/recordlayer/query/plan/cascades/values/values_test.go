@@ -206,10 +206,25 @@ func TestBooleanValue(t *testing.T) {
 
 func TestCastValue(t *testing.T) {
 	t.Parallel()
-	// int → string
+	// int → string. Pin both positive and negative — pre-fix the
+	// negative path used `uitoa(uint64(i))` which reinterprets a
+	// signed int64 as the corresponding unsigned, producing
+	// "18446744073709551611" for -5 instead of "-5".
 	strC := NewCastValue(&ConstantValue{Value: int64(42), Typ: TypeInt}, TypeString)
 	if got := strC.Evaluate(nil); got != "42" {
 		t.Fatalf("int→string: got %v", got)
+	}
+	negStrC := NewCastValue(&ConstantValue{Value: int64(-5), Typ: TypeInt}, TypeString)
+	if got := negStrC.Evaluate(nil); got != "-5" {
+		t.Fatalf("negative int→string: got %v, want \"-5\" (regression for uitoa(uint64(int64))) bug", got)
+	}
+	zeroStrC := NewCastValue(&ConstantValue{Value: int64(0), Typ: TypeInt}, TypeString)
+	if got := zeroStrC.Evaluate(nil); got != "0" {
+		t.Fatalf("zero→string: got %v", got)
+	}
+	minStrC := NewCastValue(&ConstantValue{Value: int64(-9223372036854775808), Typ: TypeInt}, TypeString)
+	if got := minStrC.Evaluate(nil); got != "-9223372036854775808" {
+		t.Fatalf("MIN_INT64→string: got %v", got)
 	}
 
 	// bool → int: true=1, false=0.
