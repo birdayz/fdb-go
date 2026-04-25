@@ -1326,6 +1326,38 @@ func TestSimplify_IsDistinctFrom_FoldsEndToEnd(t *testing.T) {
 	}
 }
 
+// Float comparisons through ComparisonPredicate.Eval — both operands
+// float, mixed int/float (cmpAny promotion), NULL propagation.
+// Pinned because the float comparison path reaches further than
+// the arithmetic path (ArithmeticValue.Evaluate stays int-only;
+// see handover follow-up "Arithmetic over floats").
+func TestComparisonPredicate_FloatComparisons(t *testing.T) {
+	t.Parallel()
+	pred := NewComparisonPredicate(
+		&FieldValue{Field: "price", Typ: TypeFloat},
+		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(float64(3.14))},
+	)
+	cases := []struct {
+		name string
+		row  map[string]any
+		want TriBool
+	}{
+		{"4.5 > 3.14", map[string]any{"price": float64(4.5)}, TriTrue},
+		{"2.0 > 3.14", map[string]any{"price": float64(2.0)}, TriFalse},
+		{"int 5 > 3.14 (cross-type promotion)", map[string]any{"price": int64(5)}, TriTrue},
+		{"int 2 > 3.14 (cross-type promotion)", map[string]any{"price": int64(2)}, TriFalse},
+		{"NULL > 3.14", map[string]any{"price": nil}, TriUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pred.Eval(tc.row); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // LIKE with FieldValue RHS — the Operand→Value migration unlocks
 // dynamic patterns sourced from the row. Each row's `pattern`
 // column drives the LIKE match against that same row's `name`.
