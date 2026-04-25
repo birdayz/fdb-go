@@ -244,6 +244,32 @@ func TestNormalizationRules_DeMorganIntoVPFold(t *testing.T) {
 	}
 }
 
+// TestNormalizationRules_DeMorganMixed pins the cross-shape: an AND
+// containing a comparison + a constant under NOT exercises DeMorgan
+// distributing into both shapes simultaneously.
+//
+//	NOT(AND(a = 5, VP(false)))
+//	→ OR(NOT(a = 5), NOT(VP(false)))     [DeMorgan]
+//	→ OR(a <> 5, NOT(FALSE))              [NotComparisonRewrite + VP fold]
+//	→ OR(a <> 5, TRUE)                    [NotConstantSimplify]
+//	→ ConstantPredicate(TriTrue)          [OrConstantSimplify, TRUE absorbs]
+//
+// Pins the rule pipeline doesn't fall through any of the 4 transforms.
+func TestNormalizationRules_DeMorganMixed(t *testing.T) {
+	t.Parallel()
+	a := &FieldValue{Field: "a", Typ: TypeInt}
+	cp := NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))})
+	pred := NewNot(NewAnd(cp, NewValuePredicate(NewBooleanValue(false))))
+	got := Simplify(pred, NormalizationRules())
+	out, ok := got.(*ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected ConstantPredicate (TRUE absorbs), got %T %s", got, got.Explain())
+	}
+	if out.Value != TriTrue {
+		t.Fatalf("expected TriTrue, got %v", out.Value)
+	}
+}
+
 // TestNormalizationRules_NotOverAndProducesOr pins that NOT(AND(...))
 // distributes to OR(NOT...) under the normalisation rule set, while
 // the same input under DefaultSimplifyRules survives as NOT(AND(...)).
