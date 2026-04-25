@@ -68,24 +68,23 @@
 // zero-size variables to share an address. `&AnyValue{}` +
 // `&AnyValue{}` collapse to the same pointer, which breaks
 // PlannerBindings' matcher-identity keying. The matcher catalogue
-// handles this three different ways depending on the struct shape:
+// handles this two ways depending on the struct shape:
 //   - `AnyValue` carries a `uint64` nonce produced by an atomic
-//     counter (`NewAnyValue` increments it). This is the only
-//     matcher that needs the counter, because rule authors
-//     legitimately call `NewAnyValue()` many times per rule pattern
-//     and the counter makes "each instance is a distinct identity"
-//     visible in a debugger as well as via pointer identity.
-//   - `Instance` (NewConstantMatcher / NewFieldMatcher),
-//     `AllOfMatcher` / `AnyOfMatcher`, `ListMatcher` /
-//     `AllElementsMatcher` are naturally non-zero-size from their
-//     `rootType string` + downstream slice fields — no nonce needed.
-//   - Private predicate matchers (`notPredicateMatcher`,
-//     `comparisonPredicateMatcher`, …) carry a `_ bool` placeholder
-//     so the struct stays non-zero-size without the bookkeeping
-//     overhead of an atomic counter (since they're not user-facing,
-//     debug visibility doesn't matter).
+//     counter (`NewAnyValue` increments it). The counter makes
+//     "each instance is a distinct identity" visible in a debugger
+//     as well as via pointer identity — useful because rule authors
+//     legitimately call `NewAnyValue()` many times per rule pattern.
+//     This is the only matcher that uses the counter.
+//   - All other matchers carry at least one field that gives the
+//     struct non-zero size — for `Instance` / `AllOfMatcher` /
+//     `AnyOfMatcher` / `ListMatcher` / `AllElementsMatcher` it's
+//     the inherent `rootType string` + downstream slice; for the
+//     private generic `predicateMatcher[T]` (which subsumes the
+//     hand-written notPredicateMatcher / comparisonPredicateMatcher
+//     / andPredicateMatcher / orPredicateMatcher / valuePredicateMatcher)
+//     it's the `rootType string` field. No nonce needed.
 //
-// Across all three: rule authors MUST use the factories
+// Across all matchers: rule authors MUST use the factories
 // (`NewAnyValue`, `NewConstantMatcher`, …), never bare struct
 // literals. Java doesn't hit this — `new Object()` always allocates.
 //
