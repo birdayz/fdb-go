@@ -65,6 +65,7 @@ package expr
 
 import (
 	"fmt"
+	"sync"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
@@ -80,10 +81,27 @@ import (
 // never sees a function call) and reused thereafter. Callers that
 // want a custom catalog (scalar extensions, overridden defaults)
 // can pass one via NewWithFunctionCatalog.
+// Concurrency contract: Resolver is intended for a single statement
+// walk and is NOT goroutine-safe — `nextOrdinal` (the positional `?`
+// counter) and the lazy `funcCat` initialization both rely on
+// single-goroutine access during a walk. Callers that fan parsing
+// out across goroutines should construct one Resolver per goroutine.
+// `funcCatOnce` makes the lazy build defensive against
+// existing concurrent test patterns that share a Resolver across
+// `t.Parallel()` subtests; `nextOrdinal` would still be racy in
+// that pattern but no test exercises that path.
 type Resolver struct {
-	analyzer *semantic.Analyzer
-	scope    *semantic.Scope
-	funcCat  *semantic.FunctionCatalog
+	analyzer    *semantic.Analyzer
+	scope       *semantic.Scope
+	funcCat     *semantic.FunctionCatalog
+	funcCatOnce sync.Once
+	// nextOrdinal counts positional `?` placeholders in the order they
+	// appear within a single statement walk. Statement-scoped via the
+	// Resolver lifetime — one Resolver per statement, so resetting
+	// per-walk falls out of construction. Matches Go's database/sql
+	// NamedValue.Ordinal (1-based). Named parameters (`?foo` / `$bar`)
+	// keep their declared name and consume no ordinal slot.
+	nextOrdinal int
 }
 
 // New constructs a Resolver bound to a scope. Nil analyzer or nil
@@ -110,11 +128,16 @@ func NewWithFunctionCatalog(analyzer *semantic.Analyzer, scope *semantic.Scope, 
 
 // functionCatalog returns the resolver's FunctionCatalog, lazily
 // building the defaults on first use when none was supplied to New.
+// The sync.Once guard makes the lazy build defensive — production
+// usage is single-goroutine per Resolver, but several existing test
+// patterns share one Resolver across `t.Parallel()` subtests.
 func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
-	if r.funcCat == nil {
-		r.funcCat = semantic.NewFunctionCatalog()
-		r.funcCat.RegisterDefaults()
-	}
+	r.funcCatOnce.Do(func() {
+		if r.funcCat == nil {
+			r.funcCat = semantic.NewFunctionCatalog()
+			r.funcCat.RegisterDefaults()
+		}
+	})
 	return r.funcCat
 }
 

@@ -90,6 +90,7 @@ package cascades
 import (
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ValueType is a stand-in for the full Cascades Type hierarchy. The
@@ -231,7 +232,7 @@ func IsConstantValue(v Value) bool {
 	switch v.(type) {
 	case *ConstantValue, *NullValue, *BooleanValue:
 		return true
-	case *FieldValue, *QuantifiedObjectValue, *AggregateValue:
+	case *FieldValue, *QuantifiedObjectValue, *AggregateValue, *ParameterValue:
 		return false
 	}
 	// Composite: all children must be constant.
@@ -347,6 +348,27 @@ func ExplainValue(v Value) string {
 		return cv.Op.Symbol() + "(" + ExplainValue(cv.Operand) + ")"
 	case *QuantifiedObjectValue:
 		return cv.Correlation.Name()
+	case *ScalarFunctionValue:
+		parts := make([]string, len(cv.Args))
+		for i, a := range cv.Args {
+			parts[i] = ExplainValue(a)
+		}
+		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
+	case *ParameterValue:
+		// Render with the same `?` sigil the grammar accepts:
+		// `?` for plain positional, `?N` once an ordinal is assigned,
+		// `?name` for the lexer's NAMED_PARAMETER form. Keeps Explain
+		// round-trippable to recognisable SQL.
+		switch {
+		case cv.Ordinal > 0:
+			return "?" + intToDec(int64(cv.Ordinal))
+		case cv.ParamName != "":
+			return "?" + cv.ParamName
+		default:
+			// Unnumbered positional `?` — the per-statement ordinal
+			// counter isn't wired yet, so render the surface form.
+			return "?"
+		}
 	}
 	return v.Name()
 }
@@ -487,6 +509,164 @@ func (*NullValue) Children() []Value { return []Value{} }
 func (n *NullValue) Type() ValueType { return n.Typ }
 func (*NullValue) Name() string      { return "null" }
 func (*NullValue) Evaluate(any) any  { return nil }
+
+// ParameterValue is a placeholder for a prepared-statement parameter
+// — `?` (positional, Ordinal>=1) or `:name` (named, Ordinal=0).
+// Its concrete value is unknown at plan time, so Evaluate returns
+// nil unless the eval context implements ParameterBinder. Treated
+// as non-constant by IsConstantValue, so constant-fold rules
+// decline to fire on `x = ?` / `x = :foo`.
+//
+// Plan-cache keying: ExplainValue renders a parameter as `?N` /
+// `:name`, which means `WHERE x = ?` and `WHERE x = ?` for two
+// different bind-values share the same Explain string — the seam a
+// future plan cache will key on.
+//
+// Seed runtime evaluation is intentionally minimal: a richer
+// EvalContext that threads parameter bindings through every
+// Value.Evaluate is the next step. Until then ParameterValue
+// degrades to NULL at exec time, which is harmless for the
+// plan-time / explain-time work this type unblocks.
+type ParameterValue struct {
+	Ordinal   int       // 1-based positional index; 0 ⇒ named parameter
+	ParamName string    // populated when Ordinal == 0
+	Typ       ValueType // TypeUnknown until upstream type inference fills it
+}
+
+// NewParameterValue constructs a positional `?` parameter (1-based).
+func NewParameterValue(ordinal int) *ParameterValue {
+	return &ParameterValue{Ordinal: ordinal, Typ: TypeUnknown}
+}
+
+// NewNamedParameterValue constructs a named `:name` parameter.
+func NewNamedParameterValue(name string) *ParameterValue {
+	return &ParameterValue{ParamName: name, Typ: TypeUnknown}
+}
+
+// ParameterBinder is an optional eval-context capability: when
+// ParameterValue.Evaluate is called with a context that implements
+// this interface, the parameter is resolved to its bound value.
+// Otherwise Evaluate returns nil (SQL UNKNOWN), which is the safe
+// default for plan-time evaluation where no bindings exist.
+type ParameterBinder interface {
+	BindParameter(ordinal int, name string) (any, bool)
+}
+
+func (*ParameterValue) Children() []Value { return []Value{} }
+func (p *ParameterValue) Type() ValueType { return p.Typ }
+func (*ParameterValue) Name() string      { return "param" }
+
+func (p *ParameterValue) Evaluate(evalCtx any) any {
+	if evalCtx == nil {
+		return nil
+	}
+	if b, ok := evalCtx.(ParameterBinder); ok {
+		v, _ := b.BindParameter(p.Ordinal, p.ParamName)
+		return v
+	}
+	return nil
+}
+
+// ScalarFunctionValue is a row-scalar function call — `UPPER(name)`,
+// `LENGTH(str)`, etc. Args carries the evaluated sub-Values; Name is
+// the canonical (UPPER-CASE) function identifier as it appears in the
+// catalog. Children returns Args so IsConstantValue / WalkValue
+// recurse normally — `UPPER('foo')` is a constant composite and folds
+// via EvaluateConstant; `UPPER(name)` is non-constant because the
+// FieldValue arg is non-constant.
+//
+// Seed function set is intentionally narrow: UPPER, LOWER,
+// LENGTH/CHAR_LENGTH/CHARACTER_LENGTH (utf8 rune count),
+// OCTET_LENGTH (byte count). The full function catalog port is a
+// Phase 4.0 follow-up; the seam lives in evalScalarFunction so the
+// production registry can replace this switch without touching the
+// Value contract.
+type ScalarFunctionValue struct {
+	FuncName string
+	Args     []Value
+	Typ      ValueType
+}
+
+// NewScalarFunctionValue builds a ScalarFunctionValue. The function
+// name is upper-cased so callers can pass case-insensitive identifiers.
+func NewScalarFunctionValue(name string, typ ValueType, args ...Value) *ScalarFunctionValue {
+	return &ScalarFunctionValue{FuncName: strings.ToUpper(name), Args: args, Typ: typ}
+}
+
+func (s *ScalarFunctionValue) Children() []Value {
+	if len(s.Args) == 0 {
+		return []Value{}
+	}
+	return s.Args
+}
+func (s *ScalarFunctionValue) Type() ValueType { return s.Typ }
+func (*ScalarFunctionValue) Name() string      { return "scalarfn" }
+
+func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
+	args := make([]any, len(s.Args))
+	for i, a := range s.Args {
+		if a == nil {
+			return nil
+		}
+		args[i] = a.Evaluate(evalCtx)
+	}
+	return evalScalarFunction(s.FuncName, args)
+}
+
+// evalScalarFunction dispatches the seed scalar function set. NULL
+// argument propagates to NULL result (SQL standard). Unknown function,
+// wrong arity, or wrong arg type returns nil — the seed errs on the
+// side of declining rather than erroring, so the embedded executor's
+// richer scalar_functions.go path remains the primary surface for now.
+func evalScalarFunction(name string, args []any) any {
+	switch name {
+	case "UPPER":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.ToUpper(s)
+	case "LOWER":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		s, ok := args[0].(string)
+		if !ok {
+			return nil
+		}
+		return strings.ToLower(s)
+	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH":
+		// Rune count — matches embedded.scalar_functions.go's LENGTH
+		// (utf8.RuneCountInString) so plan-time fold and runtime eval
+		// agree. The seed coerces []byte the same way for symmetry
+		// with OCTET_LENGTH (byte count there, rune count here).
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		switch v := args[0].(type) {
+		case string:
+			return int64(utf8.RuneCountInString(v))
+		case []byte:
+			return int64(utf8.RuneCount(v))
+		}
+		return nil
+	case "OCTET_LENGTH":
+		if len(args) != 1 || args[0] == nil {
+			return nil
+		}
+		switch v := args[0].(type) {
+		case string:
+			return int64(len(v))
+		case []byte:
+			return int64(len(v))
+		}
+		return nil
+	}
+	return nil
+}
 
 // ArithmeticOp is a subset of SQL arithmetic — enough to build a
 // non-trivial matcher.

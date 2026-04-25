@@ -824,3 +824,238 @@ func TestEvaluateConstant(t *testing.T) {
 		t.Fatal("nil should decline")
 	}
 }
+
+// --- ParameterValue -----------------------------------------------
+
+// fakeBinder implements ParameterBinder for tests. Maps positional
+// ordinals via Pos and named parameters via Named.
+type fakeBinder struct {
+	Pos   map[int]any
+	Named map[string]any
+}
+
+func (b *fakeBinder) BindParameter(ordinal int, name string) (any, bool) {
+	if name != "" {
+		v, ok := b.Named[name]
+		return v, ok
+	}
+	v, ok := b.Pos[ordinal]
+	return v, ok
+}
+
+func TestParameterValue_Shape(t *testing.T) {
+	t.Parallel()
+
+	pos := NewParameterValue(1)
+	if pos.Ordinal != 1 || pos.ParamName != "" {
+		t.Fatalf("positional: got Ordinal=%d ParamName=%q", pos.Ordinal, pos.ParamName)
+	}
+	if pos.Type() != TypeUnknown {
+		t.Fatalf("positional Type: want TypeUnknown, got %v", pos.Type())
+	}
+	if pos.Name() != "param" {
+		t.Fatalf("Name: want 'param', got %q", pos.Name())
+	}
+	if len(pos.Children()) != 0 {
+		t.Fatalf("Children: want 0, got %d", len(pos.Children()))
+	}
+
+	named := NewNamedParameterValue("foo")
+	if named.Ordinal != 0 || named.ParamName != "foo" {
+		t.Fatalf("named: got Ordinal=%d ParamName=%q", named.Ordinal, named.ParamName)
+	}
+}
+
+func TestParameterValue_Evaluate_NoBinder(t *testing.T) {
+	t.Parallel()
+
+	pos := NewParameterValue(1)
+	// Nil context → NULL (UNKNOWN).
+	if got := pos.Evaluate(nil); got != nil {
+		t.Fatalf("nil ctx: want nil, got %v", got)
+	}
+	// Row-only context (no binder capability) → NULL.
+	if got := pos.Evaluate(map[string]any{"x": int64(5)}); got != nil {
+		t.Fatalf("row ctx without binder: want nil, got %v", got)
+	}
+}
+
+func TestParameterValue_Evaluate_WithBinder(t *testing.T) {
+	t.Parallel()
+
+	binder := &fakeBinder{
+		Pos:   map[int]any{1: int64(42), 2: "hello"},
+		Named: map[string]any{"foo": true, "bar": nil},
+	}
+
+	if got := NewParameterValue(1).Evaluate(binder); got != int64(42) {
+		t.Fatalf("?1: want 42, got %v", got)
+	}
+	if got := NewParameterValue(2).Evaluate(binder); got != "hello" {
+		t.Fatalf("?2: want 'hello', got %v", got)
+	}
+	if got := NewNamedParameterValue("foo").Evaluate(binder); got != true {
+		t.Fatalf(":foo: want true, got %v", got)
+	}
+	// Bound to NULL — binder reports (nil, true). Evaluate surfaces nil.
+	if got := NewNamedParameterValue("bar").Evaluate(binder); got != nil {
+		t.Fatalf(":bar (NULL bound): want nil, got %v", got)
+	}
+	// Unbound → nil.
+	if got := NewParameterValue(99).Evaluate(binder); got != nil {
+		t.Fatalf("?99 unbound: want nil, got %v", got)
+	}
+	if got := NewNamedParameterValue("missing").Evaluate(binder); got != nil {
+		t.Fatalf(":missing unbound: want nil, got %v", got)
+	}
+}
+
+func TestParameterValue_IsNotConstant(t *testing.T) {
+	t.Parallel()
+
+	if IsConstantValue(NewParameterValue(1)) {
+		t.Fatal("?1 must not be constant")
+	}
+	if IsConstantValue(NewNamedParameterValue("foo")) {
+		t.Fatal(":foo must not be constant")
+	}
+	// Composite containing a parameter is not constant either.
+	arith := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: NewParameterValue(1),
+	}
+	if IsConstantValue(arith) {
+		t.Fatal("1 + ?1 must not be constant")
+	}
+	if _, ok := EvaluateConstant(arith); ok {
+		t.Fatal("EvaluateConstant on composite-with-param must decline")
+	}
+}
+
+// --- ScalarFunctionValue ------------------------------------------
+
+func TestScalarFunctionValue_Shape(t *testing.T) {
+	t.Parallel()
+
+	v := NewScalarFunctionValue("upper", TypeString,
+		&ConstantValue{Value: "hi", Typ: TypeString})
+	if v.FuncName != "UPPER" {
+		t.Fatalf("FuncName: got %q, want 'UPPER'", v.FuncName)
+	}
+	if v.Type() != TypeString {
+		t.Fatalf("Type: got %v, want TypeString", v.Type())
+	}
+	if v.Name() != "scalarfn" {
+		t.Fatalf("Name: got %q", v.Name())
+	}
+	if got := len(v.Children()); got != 1 {
+		t.Fatalf("Children: got %d, want 1", got)
+	}
+	// Zero-arg form returns an empty (non-nil) slice — matcher contract.
+	zero := NewScalarFunctionValue("CURRENT_TIMESTAMP", TypeString)
+	if got := zero.Children(); got == nil || len(got) != 0 {
+		t.Fatalf("zero-arg Children: got %v, want non-nil empty", got)
+	}
+}
+
+func TestScalarFunctionValue_Evaluate(t *testing.T) {
+	t.Parallel()
+
+	str := func(s string) Value { return &ConstantValue{Value: s, Typ: TypeString} }
+	bytesV := func(b []byte) Value { return &ConstantValue{Value: b, Typ: TypeString} }
+	field := func(name string) Value { return &FieldValue{Field: name, Typ: TypeString} }
+	row := map[string]any{"NAME": "Alice", "BLANK": "", "BIN": []byte{0xff, 0xfe}}
+
+	cases := []struct {
+		name string
+		v    Value
+		ctx  any
+		want any
+	}{
+		{"UPPER literal", NewScalarFunctionValue("UPPER", TypeString, str("Hello")), nil, "HELLO"},
+		{"LOWER literal", NewScalarFunctionValue("LOWER", TypeString, str("Hello")), nil, "hello"},
+		{"UPPER over field", NewScalarFunctionValue("UPPER", TypeString, field("NAME")), row, "ALICE"},
+		{"LENGTH ascii", NewScalarFunctionValue("LENGTH", TypeInt, str("hello")), nil, int64(5)},
+		{"CHAR_LENGTH multibyte", NewScalarFunctionValue("CHAR_LENGTH", TypeInt, str("café")), nil, int64(4)},
+		{"OCTET_LENGTH multibyte", NewScalarFunctionValue("OCTET_LENGTH", TypeInt, str("café")), nil, int64(5)},
+		{"LENGTH bytes", NewScalarFunctionValue("LENGTH", TypeInt, bytesV([]byte{1, 2, 3})), nil, int64(3)},
+		{"NULL propagates", NewScalarFunctionValue("UPPER", TypeString, &NullValue{Typ: TypeString}), nil, nil},
+		{"unknown function declines", NewScalarFunctionValue("FROBNICATE", TypeString, str("x")), nil, nil},
+		{"wrong arg type declines", NewScalarFunctionValue("UPPER", TypeString, &ConstantValue{Value: int64(5), Typ: TypeInt}), nil, nil},
+		{"OCTET_LENGTH bytes", NewScalarFunctionValue("OCTET_LENGTH", TypeInt, field("BIN")), row, int64(2)},
+		{"empty string LENGTH", NewScalarFunctionValue("LENGTH", TypeInt, field("BLANK")), row, int64(0)},
+	}
+	for _, tc := range cases {
+		got := tc.v.Evaluate(tc.ctx)
+		if got != tc.want {
+			t.Fatalf("%s: got %v (%T), want %v (%T)", tc.name, got, got, tc.want, tc.want)
+		}
+	}
+}
+
+func TestScalarFunctionValue_IsConstant(t *testing.T) {
+	t.Parallel()
+
+	upperConst := NewScalarFunctionValue("UPPER", TypeString,
+		&ConstantValue{Value: "hi", Typ: TypeString})
+	if !IsConstantValue(upperConst) {
+		t.Fatal("UPPER('hi') should be constant")
+	}
+	if got, ok := EvaluateConstant(upperConst); !ok || got != "HI" {
+		t.Fatalf("EvaluateConstant(UPPER('hi')): got (%v, %v), want ('HI', true)", got, ok)
+	}
+
+	upperField := NewScalarFunctionValue("UPPER", TypeString,
+		&FieldValue{Field: "name", Typ: TypeString})
+	if IsConstantValue(upperField) {
+		t.Fatal("UPPER(field) should not be constant")
+	}
+
+	// Zero-arg form: composite branch sees zero children, falls
+	// through to "unknown leaf — conservatively not constant".
+	zero := NewScalarFunctionValue("CURRENT_TIMESTAMP", TypeString)
+	if IsConstantValue(zero) {
+		t.Fatal("CURRENT_TIMESTAMP() should not be constant in the seed (no zero-arg pure marker)")
+	}
+}
+
+func TestExplainValue_ScalarFunctionValue(t *testing.T) {
+	t.Parallel()
+
+	v := NewScalarFunctionValue("UPPER", TypeString,
+		&FieldValue{Field: "NAME", Typ: TypeString})
+	if got, want := ExplainValue(v), "UPPER(NAME)"; got != want {
+		t.Fatalf("UPPER(NAME): got %q, want %q", got, want)
+	}
+	nested := NewScalarFunctionValue("LENGTH", TypeInt,
+		NewScalarFunctionValue("LOWER", TypeString,
+			&FieldValue{Field: "NAME", Typ: TypeString}))
+	if got, want := ExplainValue(nested), "LENGTH(LOWER(NAME))"; got != want {
+		t.Fatalf("nested: got %q, want %q", got, want)
+	}
+	zero := NewScalarFunctionValue("NOW", TypeString)
+	if got, want := ExplainValue(zero), "NOW()"; got != want {
+		t.Fatalf("zero-arg: got %q, want %q", got, want)
+	}
+}
+
+func TestExplainValue_ParameterValue(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		v    Value
+		want string
+	}{
+		{NewParameterValue(1), "?1"},
+		{NewParameterValue(7), "?7"},
+		{NewParameterValue(0), "?"}, // unnumbered `?` (walker seed; per-statement ordinal not yet wired)
+		{NewNamedParameterValue("foo"), "?foo"},
+		{NewNamedParameterValue("user_id"), "?user_id"},
+	}
+	for _, tc := range cases {
+		if got := ExplainValue(tc.v); got != tc.want {
+			t.Fatalf("ExplainValue(%v): got %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}

@@ -1115,6 +1115,54 @@ func TestWalkExpression_FloatLiteral(t *testing.T) {
 	}
 }
 
+// DIV operator — `a DIV b` is MySQL's integer-truncated division.
+// At the seed it shares OpDiv with `/` because ArithmeticValue.Evaluate
+// is int64-only and Go's `/` on int64 already truncates toward zero.
+// Once float arithmetic lands DIV will need a distinct op. The test
+// pins the dispatch + evaluation parity; if a future change splits
+// the op, this test breaks loudly rather than silently changing
+// truncation semantics.
+func TestWalkExpression_IntegerDivOperator(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+
+	for _, sql := range []string{"id / 7", "id DIV 7"} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE "+sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			av, ok := v.(*cascades.ArithmeticValue)
+			if !ok {
+				t.Fatalf("expected *ArithmeticValue, got %T", v)
+			}
+			if av.Op != cascades.OpDiv {
+				t.Fatalf("Op: got %v, want OpDiv", av.Op)
+			}
+			// 23 / 7 → 3 (truncated toward zero).
+			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(3) {
+				t.Errorf("23/7: got %v, want 3", got)
+			}
+			// -23 / 7 → -3 (Go truncates toward zero).
+			if got := av.Evaluate(map[string]any{"ID": int64(-23)}); got != int64(-3) {
+				t.Errorf("-23/7: got %v, want -3", got)
+			}
+			// Divide by zero → nil (NULL).
+			divZero := &cascades.ArithmeticValue{
+				Op:    cascades.OpDiv,
+				Left:  &cascades.ConstantValue{Value: int64(5), Typ: cascades.TypeInt},
+				Right: &cascades.ConstantValue{Value: int64(0), Typ: cascades.TypeInt},
+			}
+			if got := divZero.Evaluate(nil); got != nil {
+				t.Errorf("5/0: got %v, want nil", got)
+			}
+		})
+	}
+}
+
 // MOD operator — walker produces an ArithmeticValue with Op=OpMod
 // for both `a % b` and `a MOD b` syntactic forms. Eval returns
 // truncated-toward-zero modulo (Go's `%`); MOD by zero returns nil
@@ -1284,5 +1332,238 @@ func TestWalkPredicate_CastInComparison(t *testing.T) {
 	}
 	if _, ok := cp.Operand.(*cascades.CastValue); !ok {
 		t.Fatalf("expected Operand to be *CastValue, got %T", cp.Operand)
+	}
+}
+
+// UPPER / LOWER / LENGTH / CHAR_LENGTH / OCTET_LENGTH dispatch via
+// walkScalarFunction → ScalarFunctionValue. Verifies result type +
+// arg composition for each seed function.
+func TestWalkExpression_ScalarFunctions(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sql  string
+		fn   string
+		typ  cascades.ValueType
+		args int
+	}{
+		{"SELECT * FROM users WHERE UPPER(name)", "UPPER", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE LOWER(name)", "LOWER", cascades.TypeString, 1},
+		{"SELECT * FROM users WHERE LENGTH(name)", "LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE CHAR_LENGTH(name)", "CHAR_LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE CHARACTER_LENGTH(name)", "CHARACTER_LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE OCTET_LENGTH(name)", "OCTET_LENGTH", cascades.TypeInt, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.fn, func(t *testing.T) {
+			t.Parallel()
+			a, s := buildScope(t)
+			r := expr.New(a, s)
+			ctx := parseFirstWhereExpr(t, tc.sql)
+			v, err := r.WalkExpression(ctx)
+			if err != nil {
+				t.Fatalf("walk: %v", err)
+			}
+			sf, ok := v.(*cascades.ScalarFunctionValue)
+			if !ok {
+				t.Fatalf("expected *ScalarFunctionValue, got %T", v)
+			}
+			if sf.FuncName != tc.fn {
+				t.Fatalf("FuncName: got %q, want %q", sf.FuncName, tc.fn)
+			}
+			if sf.Type() != tc.typ {
+				t.Fatalf("Type: got %v, want %v", sf.Type(), tc.typ)
+			}
+			if got := len(sf.Args); got != tc.args {
+				t.Fatalf("len(Args): got %d, want %d", got, tc.args)
+			}
+		})
+	}
+}
+
+// Unknown scalar function declines so the logical-builder text
+// fallback can carry it.
+func TestWalkExpression_UnknownScalarFunctionDeclines(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE FROBNICATE(name)")
+	_, err := r.WalkExpression(ctx)
+	var ue *expr.UnsupportedExpressionShapeError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedExpressionShapeError, got %v", err)
+	}
+}
+
+// Lower-cased function names are normalized to upper-case (SQL
+// identifier semantics: function names are case-insensitive).
+func TestWalkExpression_ScalarFunctionLowerCase(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE upper(name)")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	sf := v.(*cascades.ScalarFunctionValue)
+	if sf.FuncName != "UPPER" {
+		t.Fatalf("FuncName: got %q, want UPPER", sf.FuncName)
+	}
+}
+
+// UPPER(name) = 'ALICE' — scalar function on the LHS of a
+// comparison. Composes with ResolveComparison since LHS is a Value.
+// Constant-fold declines because UPPER(field) isn't constant.
+func TestWalkPredicate_ScalarFunctionInComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE UPPER(name) = 'ALICE'")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if _, ok := cp.Operand.(*cascades.ScalarFunctionValue); !ok {
+		t.Fatalf("expected LHS *ScalarFunctionValue, got %T", cp.Operand)
+	}
+	want := "UPPER(NAME) = 'ALICE'"
+	if got := cp.Explain(); got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+// `?` in a WHERE expression resolves to a positional ParameterValue.
+// Verifies the PreparedStatementParameterAtomContext dispatch.
+func TestWalkExpression_PositionalParameter(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE ?")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	pv, ok := v.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected *ParameterValue, got %T", v)
+	}
+	// Walker assigns 1-based ordinal in declaration order.
+	if pv.Ordinal != 1 || pv.ParamName != "" {
+		t.Fatalf("got Ordinal=%d ParamName=%q", pv.Ordinal, pv.ParamName)
+	}
+}
+
+// `?foo` in a WHERE expression resolves to a named ParameterValue.
+// (Grammar rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*.)
+func TestWalkExpression_NamedParameter(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE ?foo")
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	pv, ok := v.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected *ParameterValue, got %T", v)
+	}
+	if pv.ParamName != "foo" || pv.Ordinal != 0 {
+		t.Fatalf("got Ordinal=%d ParamName=%q", pv.Ordinal, pv.ParamName)
+	}
+}
+
+// `name = ?` composes through ResolveComparison: LHS FieldValue, RHS
+// ParameterValue. Constant-fold declines because RHS is non-constant.
+func TestWalkPredicate_ParameterizedComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name = ?")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp, ok := pred.(*cascades.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
+	}
+	if _, ok := cp.Operand.(*cascades.FieldValue); !ok {
+		t.Fatalf("expected LHS *FieldValue, got %T", cp.Operand)
+	}
+	pv, ok := cp.Comparison.Operand.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
+	}
+	if pv.Ordinal != 1 {
+		t.Fatalf("Ordinal: got %d, want 1", pv.Ordinal)
+	}
+	// Plan-cache key seam: render the predicate as `NAME = ?1` so two
+	// queries with different bind values share the same Explain.
+	want := "NAME = ?1"
+	if got := cp.Explain(); got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+// Two `?` in the same statement get distinct 1-based ordinals so
+// ExplainValue / plan-cache keying disambiguates `WHERE x=?` from
+// `WHERE x=? AND y=?`. The Resolver's nextOrdinal counter is the
+// seam — same Resolver across both walks → continues numbering.
+func TestWalkPredicate_MultiplePositionalParameters(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE id = ? AND name = ?")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	and, ok := pred.(*cascades.AndPredicate)
+	if !ok {
+		t.Fatalf("expected *AndPredicate, got %T", pred)
+	}
+	if len(and.SubPredicates) != 2 {
+		t.Fatalf("SubPredicates: got %d, want 2", len(and.SubPredicates))
+	}
+	got := []int{}
+	for _, sp := range and.SubPredicates {
+		cp := sp.(*cascades.ComparisonPredicate)
+		pv := cp.Comparison.Operand.(*cascades.ParameterValue)
+		got = append(got, pv.Ordinal)
+	}
+	if got[0] != 1 || got[1] != 2 {
+		t.Fatalf("ordinals: got %v, want [1 2]", got)
+	}
+	want := "(ID = ?1 AND NAME = ?2)"
+	if exp := and.Explain(); exp != want {
+		t.Fatalf("Explain: got %q, want %q", exp, want)
+	}
+}
+
+// `name = ?user` — same composition for a named parameter.
+func TestWalkPredicate_NamedParameterizedComparison(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE name = ?user")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	cp := pred.(*cascades.ComparisonPredicate)
+	pv, ok := cp.Comparison.Operand.(*cascades.ParameterValue)
+	if !ok {
+		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
+	}
+	if pv.ParamName != "user" {
+		t.Fatalf("ParamName: got %q, want 'user'", pv.ParamName)
+	}
+	if got, want := cp.Explain(), "NAME = ?user"; got != want {
+		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }

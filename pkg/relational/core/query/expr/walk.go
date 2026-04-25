@@ -24,10 +24,15 @@ import (
 // walkAtom handles:
 //
 //   - FullColumnName → FieldValue (via ResolveIdentifier).
-//   - Constant (integer / string / NULL) → ConstantValue / NullValue.
-//   - MathExpression (+, -, *, /) → ArithmeticValue.
+//   - Constant (integer / float / string / NULL / boolean) →
+//     ConstantValue / NullValue / BooleanValue.
+//   - MathExpression (+, -, *, /, %, MOD, DIV) → ArithmeticValue.
 //   - RecordConstructor (1-element unnamed, i.e. `(x)`) → unwrap.
-//   - FunctionCall (aggregate forms) → AggregateValue.
+//   - FunctionCall:
+//     · aggregate forms (COUNT/SUM/MIN/MAX/AVG) → AggregateValue;
+//     · CAST/CONVERT (SpecificFunction) → CastValue;
+//     · scalar UPPER/LOWER/LENGTH family → ScalarFunctionValue.
+//   - PreparedStatementParameter (`?` / `?name`) → ParameterValue.
 //
 // Everything else returns UnsupportedExpressionShapeError so the
 // caller can fall back to the existing logical-builder path.
@@ -74,12 +79,69 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 		// doesn't expose them.
 		return r.walkMathExpression(a)
 	case *antlrgen.FunctionCallExpressionAtomContext:
-		// Function call — only aggregates (COUNT/SUM/MIN/MAX/AVG)
-		// are wired in the seed. Scalar functions land once the
-		// scalar-function catalogue is ported.
+		// Function call — aggregates (COUNT/SUM/MIN/MAX/AVG) +
+		// CAST/CONVERT (DataTypeFunctionCall) + the seed scalar set
+		// (UPPER/LOWER/LENGTH family). Names outside the seed
+		// catalogue decline with UnsupportedExpressionShapeError so
+		// the logical-builder text fallback catches them; the full
+		// registry lands with the function-catalog port.
 		return r.walkFunctionCall(a.FunctionCall())
+	case *antlrgen.PreparedStatementParameterAtomContext:
+		// `?` (positional) or `?name` / `$name` (named, per the
+		// grammar's NAMED_PARAMETER rule [?$][A-Za-z]…) prepared-
+		// statement parameter. Surfaces as a cascades.ParameterValue
+		// — Operand composes through the comparison resolver,
+		// IsConstantValue declines, ExplainValue renders `?N` /
+		// `?name` for plan-cache keying.
+		return r.walkPreparedParameter(a.PreparedStatementParameter())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", atom)}
+}
+
+// walkPreparedParameter handles the `?` / `?name` (or `$name`)
+// placeholder that appears as a PreparedStatementParameterAtom. The
+// grammar's PreparedStatementParameter rule accepts either QUESTION
+// (positional, rendered as a single `?`) or NAMED_PARAMETER (the
+// `[?$][A-Za-z][A-Za-z0-9_/]*` token form, e.g. `?foo` / `$foo`).
+//
+// Positional parameters fold to the ordinal of this `?` within the
+// statement; numbering is left to the caller (the walker has no
+// statement-wide cursor today). The seed assigns ordinal 0 and
+// records the literal text — sufficient for plan-time wiring; the
+// per-statement counter lands when the binder is plumbed.
+func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameterContext) (cascades.Value, error) {
+	if pp == nil {
+		return nil, fmt.Errorf("expr.walkPreparedParameter: nil")
+	}
+	ppc, ok := pp.(*antlrgen.PreparedStatementParameterContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("PreparedStatementParameter ctx %T", pp)}
+	}
+	if ppc.NAMED_PARAMETER() != nil {
+		// Lexer rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*
+		// Strip the leading sigil (`?` or `$`). Both surface forms
+		// fold to the same canonical name in ParameterValue —
+		// ExplainValue renders `?name` regardless of whether the
+		// user wrote `?foo` or `$foo`. Intentional: one canonical
+		// form for plan-cache keying.
+		text := ppc.NAMED_PARAMETER().GetText()
+		if len(text) < 2 || (text[0] != '?' && text[0] != '$') {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("NAMED_PARAMETER token %q", text)}
+		}
+		return cascades.NewNamedParameterValue(text[1:]), nil
+	}
+	if ppc.QUESTION() != nil {
+		// 1-based ordinal, statement-scoped — matches Go's
+		// database/sql NamedValue.Ordinal so binders can index by
+		// position without remapping. Two `?` in the same statement
+		// get distinct ordinals, so plan-cache keys derived via
+		// ExplainValue normalise to `?1` / `?2` (etc.) — different
+		// bind values share one cache entry, but `WHERE x=? AND y=?`
+		// stays distinct from `WHERE x=?`.
+		r.nextOrdinal++
+		return cascades.NewParameterValue(r.nextOrdinal), nil
+	}
+	return nil, &UnsupportedExpressionShapeError{Shape: "PreparedStatementParameter with no QUESTION/NAMED_PARAMETER"}
 }
 
 // walkFunctionCall handles FunctionCall contexts. Only aggregate
@@ -99,6 +161,9 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 	// UnsupportedExpressionShapeError so callers fall back cleanly.
 	if spec, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
 		return r.walkSpecificFunction(spec.SpecificFunction())
+	}
+	if scalar, ok := fc.(*antlrgen.ScalarFunctionCallContext); ok {
+		return r.walkScalarFunction(scalar)
 	}
 	agg, ok := fc.(*antlrgen.AggregateFunctionCallContext)
 	if !ok {
@@ -186,6 +251,64 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (c
 	return r.ResolveCast(inner, target)
 }
 
+// walkScalarFunction handles the seed scalar function set —
+// UPPER / LOWER / LENGTH / CHAR_LENGTH / CHARACTER_LENGTH /
+// OCTET_LENGTH. Unknown function names decline with
+// UnsupportedExpressionShapeError so the logical-builder text
+// fallback catches them; this keeps the walker conservative until
+// the full scalar function catalogue ports.
+//
+// Args walk through the standard WalkExpression dispatch so nested
+// expressions (`UPPER(name)`, `LENGTH(CAST(x AS STRING))`) compose
+// without further plumbing.
+func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (cascades.Value, error) {
+	if s == nil {
+		return nil, fmt.Errorf("expr.walkScalarFunction: nil")
+	}
+	if s.ScalarFunctionName() == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ScalarFunctionCall without ScalarFunctionName"}
+	}
+	name := strings.ToUpper(s.ScalarFunctionName().GetText())
+	typ, ok := scalarFunctionResultType(name)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
+	}
+	args := []cascades.Value{}
+	if fa := s.FunctionArgs(); fa != nil {
+		fac, ok := fa.(*antlrgen.FunctionArgsContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArgs ctx %T", fa)}
+		}
+		for _, arg := range fac.AllFunctionArg() {
+			argCtx, ok := arg.(*antlrgen.FunctionArgContext)
+			if !ok {
+				return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", arg)}
+			}
+			if argCtx.Expression() == nil {
+				return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
+			}
+			v, err := r.WalkExpression(argCtx.Expression())
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, v)
+		}
+	}
+	return cascades.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// scalarFunctionResultType returns the result type of a seed scalar
+// function. Unknown name → (_, false) so the walker declines.
+func scalarFunctionResultType(name string) (cascades.ValueType, bool) {
+	switch name {
+	case "UPPER", "LOWER":
+		return cascades.TypeString, true
+	case "LENGTH", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH":
+		return cascades.TypeInt, true
+	}
+	return cascades.TypeUnknown, false
+}
+
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
 // cascades.ValueType. FLOAT / DOUBLE / BYTES / UUID / VECTOR aren't
 // in the seed ValueType enum (Phase 4.0 Type hierarchy port) — they
@@ -267,7 +390,15 @@ func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticO
 		return cascades.OpSub, nil
 	case mo.STAR() != nil:
 		return cascades.OpMul, nil
-	case mo.DIVIDE() != nil:
+	case mo.DIVIDE() != nil, mo.DIV() != nil:
+		// `/` and `DIV` both map to OpDiv. In MySQL `DIV` is the
+		// integer-truncated division operator while `/` is true
+		// division — at the seed they coincide because
+		// ArithmeticValue.Evaluate is int64-only and Go's `/` on int64
+		// already truncates toward zero. Once the Type hierarchy
+		// lands and float arithmetic is wired, DIV will need its own
+		// op (OpIntDiv) that coerces float operands to int before
+		// dividing.
 		return cascades.OpDiv, nil
 	case mo.MOD() != nil, mo.MODULE() != nil:
 		// MOD / MODULE / `%` all map to OpMod. The grammar treats
