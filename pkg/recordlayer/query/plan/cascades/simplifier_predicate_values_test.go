@@ -202,3 +202,147 @@ func TestSimplifyPredicateValues_ConstantPredicateUnchanged(t *testing.T) {
 		t.Fatal("expected same pointer for ConstantPredicate")
 	}
 }
+
+// TestSimplifyPredicateValues_OrRecurses pins that the Or branch
+// recurses through children — symmetric to AndRecurses. The And and
+// Or branches are independent code paths; one being correct doesn't
+// imply the other is.
+func TestSimplifyPredicateValues_OrRecurses(t *testing.T) {
+	t.Parallel()
+	op := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+	}
+	left := &ComparisonPredicate{
+		Operand:    op,
+		Comparison: NewLiteralComparison(ComparisonEquals, int64(5)),
+	}
+	right := &ValuePredicate{Value: &FieldValue{Field: "x", Typ: TypeBool}}
+
+	or := &OrPredicate{SubPredicates: []QueryPredicate{left, right}}
+	out := SimplifyPredicateValues(or)
+
+	got, ok := out.(*OrPredicate)
+	if !ok {
+		t.Fatalf("expected *OrPredicate, got %T", out)
+	}
+	if got == or {
+		t.Fatal("expected fresh OrPredicate after fold (Or branch returned receiver)")
+	}
+	cp, ok := got.SubPredicates[0].(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("first child should be *ComparisonPredicate, got %T", got.SubPredicates[0])
+	}
+	cv, ok := cp.Operand.(*ConstantValue)
+	if !ok {
+		t.Fatalf("first child operand should fold to constant, got %T", cp.Operand)
+	}
+	if cv.Value.(int64) != 3 {
+		t.Fatalf("expected folded constant=3, got %v", cv.Value)
+	}
+	if got.SubPredicates[1] != right {
+		t.Fatal("second child should be unchanged (no fold to do)")
+	}
+}
+
+// TestSimplifyPredicateValues_OrPointerStableWhenNoFold pins the
+// "nothing changed → return receiver" optimisation for the Or branch
+// (pinned for And in PointerStableWhenNoFold).
+func TestSimplifyPredicateValues_OrPointerStableWhenNoFold(t *testing.T) {
+	t.Parallel()
+	leaf1 := &ComparisonPredicate{
+		Operand:    &FieldValue{Field: "x", Typ: TypeInt},
+		Comparison: NewLiteralComparison(ComparisonEquals, int64(1)),
+	}
+	leaf2 := &ComparisonPredicate{
+		Operand:    &FieldValue{Field: "y", Typ: TypeInt},
+		Comparison: NewLiteralComparison(ComparisonGreaterThan, int64(0)),
+	}
+	or := &OrPredicate{SubPredicates: []QueryPredicate{leaf1, leaf2}}
+	if got := SimplifyPredicateValues(or); got != or {
+		t.Fatalf("expected receiver pointer when nothing folds, got fresh alloc")
+	}
+}
+
+// TestSimplifyPredicateValues_ComparisonPreservesEscape pins the easy-
+// to-drop bug: Escape rune must survive the rebuild that happens when
+// a fold changes the operand. LIKE … ESCAPE '\\' must NOT lose the
+// escape rune.
+func TestSimplifyPredicateValues_ComparisonPreservesEscape(t *testing.T) {
+	t.Parallel()
+	op := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: "foo", Typ: TypeString},
+		Right: &ConstantValue{Value: "bar", Typ: TypeString},
+	}
+	pred := &ComparisonPredicate{
+		Operand: op,
+		Comparison: Comparison{
+			Type:    ComparisonLike,
+			Operand: LiteralValue("foo\\%"),
+			Escape:  '\\',
+		},
+	}
+	out := SimplifyPredicateValues(pred)
+	got, ok := out.(*ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", out)
+	}
+	if got.Comparison.Escape != '\\' {
+		t.Fatalf("Escape rune dropped during fold: got %q, want '\\\\'", got.Comparison.Escape)
+	}
+	if got.Comparison.Type != ComparisonLike {
+		t.Fatalf("ComparisonType dropped: got %v, want ComparisonLike", got.Comparison.Type)
+	}
+}
+
+// TestSimplifyPredicateValues_UnknownPredicateShape: foreign predicate
+// types (anything outside the switch) pass through unchanged. Pins
+// the "no panic on extension types" contract documented at the
+// bottom of the implementation.
+func TestSimplifyPredicateValues_UnknownPredicateShape(t *testing.T) {
+	t.Parallel()
+	// A test-local predicate type the simplifier has never seen.
+	p := &fakePred{}
+	if got := SimplifyPredicateValues(p); got != p {
+		t.Fatalf("unknown predicate type should pass through unchanged, got %T", got)
+	}
+}
+
+// TestSimplifyPredicateValues_DeeplyNested: AND(OR(NOT(p))) over a
+// foldable comparison must thread through all three connectives.
+// One stale pointer-equality short-circuit anywhere in the tree
+// would surface here.
+func TestSimplifyPredicateValues_DeeplyNested(t *testing.T) {
+	t.Parallel()
+	op := &ArithmeticValue{
+		Op:    OpAdd,
+		Left:  &ConstantValue{Value: int64(2), Typ: TypeInt},
+		Right: &ConstantValue{Value: int64(3), Typ: TypeInt},
+	}
+	leaf := &ComparisonPredicate{
+		Operand:    op,
+		Comparison: NewLiteralComparison(ComparisonEquals, int64(5)),
+	}
+	tree := &AndPredicate{SubPredicates: []QueryPredicate{
+		&OrPredicate{SubPredicates: []QueryPredicate{
+			&NotPredicate{Child: leaf},
+		}},
+	}}
+	out := SimplifyPredicateValues(tree).(*AndPredicate)
+	or := out.SubPredicates[0].(*OrPredicate)
+	not := or.SubPredicates[0].(*NotPredicate)
+	cp := not.Child.(*ComparisonPredicate)
+	if _, ok := cp.Operand.(*ConstantValue); !ok {
+		t.Fatalf("deeply nested fold did not reach the leaf: operand is %T", cp.Operand)
+	}
+}
+
+// fakePred is a test-only QueryPredicate the simplifier has no case
+// for. Used by UnknownPredicateShape.
+type fakePred struct{}
+
+func (*fakePred) Children() []QueryPredicate { return nil }
+func (*fakePred) Eval(any) TriBool           { return TriUnknown }
+func (*fakePred) Explain() string            { return "fakePred" }
