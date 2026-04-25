@@ -43,14 +43,12 @@ func (n *NotValue) Evaluate(evalCtx any) any {
 		return nil
 	}
 	v := n.Child.Evaluate(evalCtx)
-	switch b := v.(type) {
-	case bool:
-		return !b
-	case nil:
-		return nil
-	default:
-		// Type mismatch — degrade to UNKNOWN.
-		_ = b
+	if v == nil {
 		return nil
 	}
+	if b, ok := v.(bool); ok {
+		return !b
+	}
+	// Type mismatch — degrade to UNKNOWN.
+	return nil
 }
