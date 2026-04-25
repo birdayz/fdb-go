@@ -3805,6 +3805,62 @@ func TestFDB_SelectWithoutFrom(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 }
 
+// TestFDB_ConstantProjectionFolding exercises the embedded layer's
+// plan-time fold pass: row-context-independent SELECT-list expressions
+// (`1+2`, `UPPER('hi')`, `(1+2)*4`) are evaluated once and reused on
+// every row instead of evaluated per-row by evalExpr. The test asserts
+// each row sees the precomputed value verbatim and that bare-column
+// projections still vary per row (i.e. the cache only short-circuits
+// the constant slots).
+func TestFDB_ConstantProjectionFolding(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_const_proj_fold")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_const_proj_fold")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cpf_tmpl
+		CREATE TABLE Item (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_const_proj_fold/main WITH TEMPLATE cpf_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_const_proj_fold?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO Item (id, name) VALUES (1, 'alice'), (2, 'bob'), (3, 'carol')`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// Pure constants alongside a row column. Slots 0/2/3 fold; slot 1
+	// (bare column `name`) varies per row. Slot 3 exercises a nested
+	// arithmetic that simplifies through SimplifyValue's Arithmetic arm.
+	rows, err := db.QueryContext(ctx, `SELECT 1+2, name, UPPER('hi'), (1+2)*4 FROM Item ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	type row struct {
+		c0   int64
+		name string
+		c2   string
+		c3   int64
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.c0, &r.name, &r.c2, &r.c3)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{
+		{c0: 3, name: "alice", c2: "HI", c3: 12},
+		{c0: 3, name: "bob", c2: "HI", c3: 12},
+		{c0: 3, name: "carol", c2: "HI", c3: 12},
+	}))
+}
+
 func TestFDB_DerivedTable(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
