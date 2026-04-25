@@ -62,7 +62,7 @@ func TestOnError_ResetsRYWCache(t *testing.T) {
 	}
 
 	// OnError resets the transaction (including RYW cache).
-	if retryErr := tx1.OnError(err); retryErr != nil {
+	if retryErr := tx1.OnError(context.Background(), err); retryErr != nil {
 		t.Fatalf("OnError should allow retry: %v", retryErr)
 	}
 
@@ -138,7 +138,7 @@ func TestOnError_PreservesReadVersionBehavior(t *testing.T) {
 	}
 
 	// OnError resets tx1 — it will get a new read version on next read.
-	if retryErr := tx1.OnError(err); retryErr != nil {
+	if retryErr := tx1.OnError(context.Background(), err); retryErr != nil {
 		t.Fatalf("OnError should allow retry: %v", retryErr)
 	}
 
@@ -208,7 +208,7 @@ func TestConflictDetectionAcrossRetry(t *testing.T) {
 	}
 
 	// OnError resets for retry.
-	if retryErr := tx1.OnError(err); retryErr != nil {
+	if retryErr := tx1.OnError(context.Background(), err); retryErr != nil {
 		t.Fatalf("OnError should allow retry: %v", retryErr)
 	}
 
