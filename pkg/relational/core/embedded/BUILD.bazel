@@ -80,6 +80,7 @@ go_test(
         "order_by_test.go",
         "projection_fold_isolated_test.go",
         "projection_fold_test.go",
+        "scope_test.go",
         "where_extractors_test.go",
     ],
     embed = [":embedded"],
@@ -95,5 +96,6 @@ go_test(
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/session",
+        "@org_golang_google_protobuf//proto",
     ],
 )
