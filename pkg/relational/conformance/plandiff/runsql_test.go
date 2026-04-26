@@ -157,6 +157,54 @@ func TestJavaRunner_NilBaseURL(t *testing.T) {
 	}
 }
 
+// TestJavaRunner_UnsupportedTypeMarker pins the contract for values
+// that SqlPlanSteps#encodeValue can't handle natively. Java sends
+// `{"__unsupported__": "<class>"}` as a JSON object; the Go side
+// parses it into the row's any slot as a map[string]any. Consumers
+// that type-assert to a primitive will fail loudly (good — surfaces
+// the gap); consumers that handle the marker gracefully can ignore
+// the row or treat it as an unsupported-type sentinel.
+//
+// This test pins the shape, not consumer behaviour — the harness
+// itself must not crash on the marker.
+func TestJavaRunner_UnsupportedTypeMarker(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"columns": []map[string]any{
+					{"name": "ID", "type": "BIGINT"},
+					{"name": "MYSTERY", "type": "OTHER"},
+				},
+				"rows": [][]any{
+					{1, map[string]string{"__unsupported__": "java.sql.Array"}},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	runner := NewJavaRunnerHTTP(srv.URL, "")
+	got := runner.Run(context.Background(), Query{Name: "x", SQL: "SELECT id, mystery FROM T"})
+	if got.Err != nil {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	if len(got.Rows.Rows) != 1 || len(got.Rows.Rows[0]) != 2 {
+		t.Fatalf("Rows shape: got %+v", got.Rows.Rows)
+	}
+	// First column passes through as float64 (JSON number); second
+	// column arrives as map[string]any with the marker key.
+	marker, ok := got.Rows.Rows[0][1].(map[string]any)
+	if !ok {
+		t.Fatalf("Rows[0][1]: expected map[string]any (unsupported marker), got %T: %v", got.Rows.Rows[0][1], got.Rows.Rows[0][1])
+	}
+	if marker["__unsupported__"] != "java.sql.Array" {
+		t.Fatalf("Rows[0][1] marker: got %v", marker)
+	}
+}
+
 // TestJavaRunner_EmptyResultSet pins zero-row handling: a SELECT that
 // returns no rows produces RowSet with non-nil Columns and an empty
 // (or nil) Rows slice. Caller must not crash on len(Rows)==0.
