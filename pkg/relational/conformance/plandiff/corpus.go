@@ -363,6 +363,21 @@ func SeedRunCorpus() []RunQuery {
 		// it's a JDBC-only knob exposed via Statement.setMaxRows.
 		// Re-add when the planner adds LIMIT-as-SQL support.
 		{
+			Name:           "between",
+			SchemaTemplate: "CREATE TABLE T_BTW (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW VALUES (1, 5)",
+				"INSERT INTO T_BTW VALUES (2, 10)",
+				"INSERT INTO T_BTW VALUES (3, 15)",
+				"INSERT INTO T_BTW VALUES (4, 20)",
+			},
+			Query: "SELECT id FROM T_BTW WHERE val BETWEEN 10 AND 15 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(2)}, {float64(3)}},
+			},
+		},
+		{
 			Name:           "math_in_projection",
 			SchemaTemplate: "CREATE TABLE T22 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
