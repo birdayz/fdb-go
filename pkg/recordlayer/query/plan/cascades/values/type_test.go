@@ -1084,6 +1084,51 @@ func TestMaximumType_RecordRecursion(t *testing.T) {
 	})
 }
 
+// TestMaximumType_EnumRecursion pins ENUM × ENUM:
+// - same value list → single ENUM with adjusted nullability.
+// - different value list → nil.
+// Mirrors Java's enum case in Type.maximumType.
+func TestMaximumType_EnumRecursion(t *testing.T) {
+	t.Parallel()
+	colours := []EnumValue{{Name: "RED", Number: 0}, {Name: "GREEN", Number: 1}}
+	moods := []EnumValue{{Name: "HAPPY", Number: 0}, {Name: "SAD", Number: 1}}
+
+	t.Run("identical → equal", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("Color", false, colours)
+		e2 := NewEnumType("Color", false, colours)
+		got := MaximumType(e1, e2).(*EnumType)
+		if !got.Equals(e1) {
+			t.Errorf("got %v, want %v", got, e1)
+		}
+	})
+	t.Run("nullability propagation", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("Color", true, colours)
+		e2 := NewEnumType("Color", false, colours)
+		got := MaximumType(e1, e2).(*EnumType)
+		if !got.Nullable {
+			t.Error("nullability should propagate")
+		}
+	})
+	t.Run("different values → nil", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("X", false, colours)
+		e2 := NewEnumType("X", false, moods)
+		if MaximumType(e1, e2) != nil {
+			t.Error("different values should return nil")
+		}
+	})
+	t.Run("different value count → nil", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("X", false, colours)
+		e2 := NewEnumType("X", false, []EnumValue{{Name: "RED", Number: 0}})
+		if MaximumType(e1, e2) != nil {
+			t.Error("different value count should return nil")
+		}
+	})
+}
+
 // TestMaximumType_NilHandling pins that nil inputs return nil
 // (defensive — never panic on a missing operand).
 func TestMaximumType_NilHandling(t *testing.T) {

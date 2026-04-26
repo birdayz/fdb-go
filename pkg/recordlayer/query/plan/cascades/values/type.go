@@ -959,9 +959,28 @@ func MaximumType(t1, t2 Type) Type {
 				Fields:     out,
 			}
 		}
-		// RELATION / ENUM structural recursion is future work — return
-		// nil so the caller knows the seed can't compute it.
-		if c1 == TypeCodeRelation || c1 == TypeCodeEnum {
+		// ENUM × ENUM: structurally equal value lists → one with the
+		// adjusted nullability; different values → nil.
+		if c1 == TypeCodeEnum {
+			e1 := t1.(*EnumType)
+			e2 := t2.(*EnumType)
+			if len(e1.Values) != len(e2.Values) {
+				return nil
+			}
+			for i := range e1.Values {
+				if !e1.Values[i].Equals(e2.Values[i]) {
+					return nil
+				}
+			}
+			// EnumName resolution uses Java's withNullability(t1)
+			// shape — keep t1's name. (No anonymous-enum handling
+			// here; if names differ, Equals on the EnumType would
+			// already report inequality at the call site.)
+			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values}
+		}
+		// RELATION recursion is future work — return nil so the
+		// caller knows the seed can't compute it.
+		if c1 == TypeCodeRelation {
 			return nil
 		}
 		return WithNullability(t1, resultNullable)
