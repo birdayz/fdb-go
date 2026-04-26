@@ -6,6 +6,71 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TestEmptyCollectionMatcher_MatchesEmpty pins the success case:
+// empty []any input → single binding to the matcher.
+func TestEmptyCollectionMatcher_MatchesEmpty(t *testing.T) {
+	t.Parallel()
+	m := NewEmptyCollectionMatcher()
+	got := m.BindMatches(NewBindings(), []any{})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 binding for empty input, got %d", len(got))
+	}
+}
+
+// TestEmptyCollectionMatcher_FailsNonEmpty pins the failure case:
+// any non-empty slice returns nil.
+func TestEmptyCollectionMatcher_FailsNonEmpty(t *testing.T) {
+	t.Parallel()
+	m := NewEmptyCollectionMatcher()
+	in := []any{&values.ConstantValue{Value: int64(1), Typ: values.TypeInt}}
+	if got := m.BindMatches(NewBindings(), in); got != nil {
+		t.Errorf("expected nil for non-empty input, got %d bindings", len(got))
+	}
+}
+
+// TestEmptyCollectionMatcher_NonSliceInput pins the type-guard.
+func TestEmptyCollectionMatcher_NonSliceInput(t *testing.T) {
+	t.Parallel()
+	m := NewEmptyCollectionMatcher()
+	for _, in := range []any{nil, "string", 42} {
+		in := in
+		if got := m.BindMatches(NewBindings(), in); got != nil {
+			t.Errorf("non-slice %T: got %d bindings, want nil", in, len(got))
+		}
+	}
+}
+
+// TestEmptyCollectionMatcher_DistinctIdentity pins distinct map-key
+// identity for two NewEmptyCollectionMatcher() instances. The id
+// counter (analogous to AnyValue's nonce) prevents the zero-size-
+// struct collision.
+func TestEmptyCollectionMatcher_DistinctIdentity(t *testing.T) {
+	t.Parallel()
+	a := NewEmptyCollectionMatcher()
+	b := NewEmptyCollectionMatcher()
+	bindings := NewBindings()
+	for _, partial := range a.BindMatches(bindings, []any{}) {
+		bindings = partial
+	}
+	for _, partial := range b.BindMatches(bindings, []any{}) {
+		bindings = partial
+	}
+	if bindings.Get(a) == nil || bindings.Get(b) == nil {
+		t.Fatalf("each matcher should bind distinctly")
+	}
+}
+
+// TestEmptyCollectionMatcher_SatisfiesCollectionMatcher pins
+// interface conformance.
+func TestEmptyCollectionMatcher_SatisfiesCollectionMatcher(t *testing.T) {
+	t.Parallel()
+	var _ CollectionMatcher = (*EmptyCollectionMatcher)(nil)
+	var c CollectionMatcher = NewEmptyCollectionMatcher()
+	if c.RootType() != "EmptyCollection" {
+		t.Errorf("got %q", c.RootType())
+	}
+}
+
 // TestAllElementsMatcher_AllConstants pins the canonical case: every
 // element of the input matches the downstream Constant matcher.
 func TestAllElementsMatcher_AllConstants(t *testing.T) {

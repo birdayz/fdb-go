@@ -1,5 +1,7 @@
 package matching
 
+import "sync/atomic"
+
 // AllElementsMatcher matches an []any input where EVERY element binds
 // the same downstream matcher. The downstream is invoked once per
 // element with the running partial bindings (AllOfMatcher convention),
@@ -54,6 +56,50 @@ type AllElementsMatcher struct {
 }
 
 func (*AllElementsMatcher) isCollectionMatcher() {}
+
+// EmptyCollectionMatcher matches an []any input ONLY when it's
+// empty (length 0). Returns nil for non-slice input or any non-
+// empty slice. Mirrors Java's `CollectionMatcher.empty()` factory.
+//
+// Useful for rule patterns that want to ASSERT a list is empty —
+// e.g. an OrPredicate with no children (degenerate input the
+// simplifier should have culled), or a record constructor with no
+// fields (the unit type).
+//
+// id gives the struct non-zero size so two NewEmptyCollectionMatcher
+// instances bind to distinct map-key identities — see the zero-size
+// struct gotcha at AnyValue in matcher.go.
+type EmptyCollectionMatcher struct {
+	id uint64
+}
+
+func (*EmptyCollectionMatcher) isCollectionMatcher() {}
+
+// emptyCollectionCounter is the per-process atomic counter that
+// gives each NewEmptyCollectionMatcher instance a distinct id. Same
+// pattern as AnyValue's anyValueCounter.
+var emptyCollectionCounter atomic.Uint64
+
+// NewEmptyCollectionMatcher constructs a fresh EmptyCollectionMatcher
+// with a unique id so PlannerBindings map-key collisions can't
+// happen. Rule authors MUST use this factory rather than bare
+// struct literals.
+func NewEmptyCollectionMatcher() *EmptyCollectionMatcher {
+	return &EmptyCollectionMatcher{id: emptyCollectionCounter.Add(1)}
+}
+
+// RootType implements BindingMatcher.
+func (*EmptyCollectionMatcher) RootType() string { return "EmptyCollection" }
+
+// BindMatches succeeds with a single binding when in is an empty
+// []any; nil otherwise.
+func (m *EmptyCollectionMatcher) BindMatches(outer *PlannerBindings, in any) []*PlannerBindings {
+	items, ok := in.([]any)
+	if !ok || len(items) > 0 {
+		return nil
+	}
+	return []*PlannerBindings{outer.Bind(m, in)}
+}
 
 // NewAllElementsMatcher constructs an AllElementsMatcher with the
 // given downstream applied to every input element.
