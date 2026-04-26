@@ -794,6 +794,76 @@ func (r *RelationType) IsErased() bool {
 	return r.InnerType == nil
 }
 
+// --- Shape predicates (free functions over Type) ------------------
+//
+// Mirror Java's default methods on Type (isNull, isPrimitive,
+// isArray, isRecord, isEnum, isUuid). Free functions so callers can
+// compose without forcing every Type impl to gain a default-method
+// implementation. nil t safely returns false.
+
+// IsNull reports whether t is the NULL literal's type (TypeCodeNull).
+// Mirrors Java's `Type.isNull()`.
+func IsNull(t Type) bool {
+	return t != nil && t.Code() == TypeCodeNull
+}
+
+// IsNone reports whether t is the NONE type (untyped empty array).
+// Mirrors Java's `Type.isNone()`.
+func IsNone(t Type) bool {
+	return t != nil && t.Code() == TypeCodeNone
+}
+
+// IsAny reports whether t is the universal supertype.
+// Mirrors Java's `Type.isAny()`.
+func IsAny(t Type) bool {
+	return t != nil && t.Code() == TypeCodeAny
+}
+
+// IsUnresolved reports whether t is one of the placeholder types
+// (UNKNOWN / NULL / NONE / ANY) — i.e. the type isn't a concrete
+// shape that can carry data on its own. Mirrors Java's
+// `Type.isUnresolved()`.
+func IsUnresolved(t Type) bool {
+	if t == nil {
+		return true
+	}
+	switch t.Code() {
+	case TypeCodeUnknown, TypeCodeNull, TypeCodeNone, TypeCodeAny:
+		return true
+	}
+	return false
+}
+
+// IsArray reports whether t is an ARRAY (concrete or erased).
+// Mirrors Java's `Type.isArray()`.
+func IsArray(t Type) bool {
+	return t != nil && t.Code() == TypeCodeArray
+}
+
+// IsRecord reports whether t is a RECORD.
+// Mirrors Java's `Type.isRecord()`.
+func IsRecord(t Type) bool {
+	return t != nil && t.Code() == TypeCodeRecord
+}
+
+// IsEnum reports whether t is an ENUM.
+// Mirrors Java's `Type.isEnum()`.
+func IsEnum(t Type) bool {
+	return t != nil && t.Code() == TypeCodeEnum
+}
+
+// IsUuid reports whether t is a UUID.
+// Mirrors Java's `Type.isUuid()`.
+func IsUuid(t Type) bool {
+	return t != nil && t.Code() == TypeCodeUuid
+}
+
+// IsRelation reports whether t is a RELATION.
+// Mirrors Java's `Type.isRelation()`.
+func IsRelation(t Type) bool {
+	return t != nil && t.Code() == TypeCodeRelation
+}
+
 // --- Promotion lattice --------------------------------------------
 
 // promotionEdge is a (from-code, to-code) pair representing a

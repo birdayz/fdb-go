@@ -755,6 +755,72 @@ func TestWithNullability_Structured(t *testing.T) {
 	}
 }
 
+// TestShapePredicates pins the IsNull / IsNone / IsAny / IsUnresolved
+// / IsArray / IsRecord / IsEnum / IsUuid / IsRelation free functions.
+// All safely return false for nil. Each matches the corresponding
+// TypeCode shape.
+func TestShapePredicates(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		t       Type
+		isNull  bool
+		isNone  bool
+		isAny   bool
+		isUnres bool
+		isArr   bool
+		isRec   bool
+		isEnum  bool
+		isUuid  bool
+		isRel   bool
+	}{
+		{name: "nil", t: nil, isUnres: true},
+		{name: "INT", t: NotNullInt},
+		{name: "NULL", t: NullType, isNull: true, isUnres: true},
+		{name: "NONE", t: NoneType, isNone: true, isUnres: true},
+		{name: "ANY", t: AnyType, isAny: true, isUnres: true},
+		{name: "UNKNOWN", t: UnknownType, isUnres: true},
+		{name: "ARRAY<INT>", t: NewArrayType(false, NotNullInt), isArr: true},
+		{name: "RECORD", t: &RecordType{}, isRec: true},
+		{name: "ENUM", t: NewEnumType("E", false, []EnumValue{{Name: "A", Number: 0}}), isEnum: true},
+		{name: "UUID", t: NotNullUuid, isUuid: true},
+		{name: "RELATION", t: NewRelationType(NotNullLong), isRel: true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if IsNull(tc.t) != tc.isNull {
+				t.Errorf("IsNull: got %v, want %v", IsNull(tc.t), tc.isNull)
+			}
+			if IsNone(tc.t) != tc.isNone {
+				t.Errorf("IsNone: got %v, want %v", IsNone(tc.t), tc.isNone)
+			}
+			if IsAny(tc.t) != tc.isAny {
+				t.Errorf("IsAny: got %v, want %v", IsAny(tc.t), tc.isAny)
+			}
+			if IsUnresolved(tc.t) != tc.isUnres {
+				t.Errorf("IsUnresolved: got %v, want %v", IsUnresolved(tc.t), tc.isUnres)
+			}
+			if IsArray(tc.t) != tc.isArr {
+				t.Errorf("IsArray: got %v, want %v", IsArray(tc.t), tc.isArr)
+			}
+			if IsRecord(tc.t) != tc.isRec {
+				t.Errorf("IsRecord: got %v, want %v", IsRecord(tc.t), tc.isRec)
+			}
+			if IsEnum(tc.t) != tc.isEnum {
+				t.Errorf("IsEnum: got %v, want %v", IsEnum(tc.t), tc.isEnum)
+			}
+			if IsUuid(tc.t) != tc.isUuid {
+				t.Errorf("IsUuid: got %v, want %v", IsUuid(tc.t), tc.isUuid)
+			}
+			if IsRelation(tc.t) != tc.isRel {
+				t.Errorf("IsRelation: got %v, want %v", IsRelation(tc.t), tc.isRel)
+			}
+		})
+	}
+}
+
 // TestIsPromotable pins the type-promotion lattice — Java's
 // PromoteValue.PROMOTION_MAP shape ported to Go. Each row is a
 // (from-code, to-code, expected) triple. Identity is always
