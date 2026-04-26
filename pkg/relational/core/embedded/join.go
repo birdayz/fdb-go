@@ -23,11 +23,13 @@ import (
 
 func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
 	var cols []string
+	var colTypes []string
 	var data [][]driver.Value
 
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil
 		cols = nil
+		colTypes = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
 		if loadErr != nil {
@@ -243,6 +245,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				return nil, aggErr
 			}
 			cols = aggCols
+			// Aggregates over a JOIN: COUNT/SUM/MIN/MAX over integral
+			// inputs → BIGINT; matches the proto-path heuristic.
+			colTypes = make([]string, len(aggCols))
+			for i := range colTypes {
+				colTypes[i] = "BIGINT"
+			}
 			data = aggData
 		} else {
 			// Determine output columns.
@@ -313,12 +321,64 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 				}
 			} else {
 				cols = make([]string, len(sq.projCols))
-				for i, c := range sq.projCols {
-					out := c
+				colTypes = make([]string, len(sq.projCols))
+				// Build a unified bare-name → JDBC-type map across all
+				// JOIN sources (left table + every joined CTE / table)
+				// so projected columns can carry their result-set type
+				// regardless of which source they came from. Same-name
+				// across sources first-source-wins, mirroring how the
+				// rest of the JOIN executor resolves bare-name lookups.
+				typeBySource := make(map[string]string)
+				addTypes := func(tableName string) {
+					if c.ctes != nil {
+						if cte, ok := c.ctes[strings.ToUpper(tableName)]; ok {
+							for ci, name := range cte.cols {
+								if _, dup := typeBySource[name]; dup {
+									continue
+								}
+								t := ""
+								if ci < len(cte.colTypes) {
+									t = cte.colTypes[ci]
+								}
+								typeBySource[name] = t
+							}
+							return
+						}
+					}
+					if rt := md.GetRecordType(tableName); rt != nil {
+						fields := rt.Descriptor.Fields()
+						for fi := 0; fi < fields.Len(); fi++ {
+							fd := fields.Get(fi)
+							name := string(fd.Name())
+							if _, dup := typeBySource[name]; dup {
+								continue
+							}
+							typeBySource[name] = jdbcTypeNameForFD(fd)
+						}
+					}
+				}
+				addTypes(sq.tableName)
+				for _, jc := range sq.joins {
+					addTypes(jc.tableName)
+				}
+				for i, projCol := range sq.projCols {
+					out := projCol
 					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 						out = sq.projAliases[i]
 					}
 					cols[i] = out
+					if i < len(sq.projExprs) && sq.projExprs[i] != nil {
+						// Computed expression — JOIN path doesn't have
+						// a single msgDesc to walk against. Leave
+						// colTypes[i] = "" until per-source expression
+						// type-inference lands.
+						continue
+					}
+					bare := projCol
+					if dot := strings.LastIndex(projCol, "."); dot >= 0 {
+						bare = projCol[dot+1:]
+					}
+					colTypes[i] = typeBySource[bare]
 				}
 			}
 
@@ -559,5 +619,5 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 	if runErr != nil {
 		return nil, runErr
 	}
-	return &staticRows{cols: cols, rows: data}, nil
+	return &staticRows{cols: cols, colTypes: colTypes, rows: data}, nil
 }

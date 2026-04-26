@@ -114,28 +114,18 @@ func TestGoSQLRunner_HappyPath(t *testing.T) {
 	}
 }
 
-// TestGoSQLRunner_SeedRunCorpus drives every SeedRunCorpus entry
-// through the real Go embedded engine and asserts BOTH the column
-// metadata (names + JDBC type names) AND the row values match the
-// entry's Expected (Java-side baseline).
+// TestGoSQLRunner_SeedRunCorpus is a Go-side runner smoke test:
+// every SeedRunCorpus entry must execute through the embedded engine
+// without error. Cross-engine byte-equivalence with Java is asserted
+// in `conformance/run_sql_conformance_test.go` (the only place that
+// has both the Java conformance server AND the FDB testcontainer in
+// scope). Splitting the responsibilities keeps this package's tests
+// running without a Java dependency.
 //
-// History: this used to be split into _Values (strict) and a
-// _ColumnGaps (logging-only) audit, because the Go embedded engine
-// preserved user-case identifiers, retained qualifiers, used raw
-// expression text for anonymous projections, and had no JDBC
-// type-name plumbing. Those gaps closed in swingshift-52 — the
-// projection-name normalizer at the staticRows.Columns() boundary
-// and the new ColumnTypeDatabaseTypeName driver method bring
-// metadata into byte-equivalence with Java's ResultSetMetaData.
-//
-// Now: strict per-entry Column[] + Rows[] assertion. Anything that
-// diverges is a real cross-engine regression — fix the underlying
-// engine bug, do not relax this test.
-//
-// Entries that hit feature gaps in the Go engine are classified
-// via isGoFeatureGap and t.Skipf'd with a note. As of swingshift-52
-// no entries hit the gap path — UUID DDL/INSERT/SELECT all landed —
-// but the gate stays in place so future corpus additions surfacing
+// Entries that hit feature gaps in the Go engine are classified via
+// isGoFeatureGap and t.Skipf'd with a note. As of swingshift-52 no
+// entries hit the gap path — UUID DDL / INSERT / SELECT all landed
+// — but the gate stays in place so future corpus additions surfacing
 // new gaps don't fail the build until the gap is closed.
 func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 	t.Parallel()
@@ -150,37 +140,10 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 			t.Parallel()
 			got := r.RunWithSetup(context.Background(), q.SchemaTemplate, q.SetupSqls, q.Query)
 			if got.Err != nil {
-				// Distinguish "Go engine doesn't support this feature
-				// yet" (skip with note — surfaces the gap) from "Go
-				// engine should work but errored" (real failure).
 				if isGoFeatureGap(got.Err) {
 					t.Skipf("Go-engine feature gap: %v", got.Err)
 				}
 				t.Fatalf("Go engine failed: %v\nQuery: %s", got.Err, q.Query)
-			}
-			// Column metadata (names + JDBC type names): strict.
-			if !columnsMatch(got.Rows.Columns, q.Expected.Columns) {
-				t.Errorf("column metadata mismatch\n  got:  %v\n  want: %v",
-					got.Rows.Columns, q.Expected.Columns)
-			}
-			// Row values: strict.
-			if len(got.Rows.Rows) != len(q.Expected.Rows) {
-				t.Fatalf("row count mismatch: got %d, want %d\ngot rows: %v\nwant rows: %v",
-					len(got.Rows.Rows), len(q.Expected.Rows),
-					got.Rows.Rows, q.Expected.Rows)
-			}
-			for i := range got.Rows.Rows {
-				gotRow := got.Rows.Rows[i]
-				wantRow := q.Expected.Rows[i]
-				if len(gotRow) != len(wantRow) {
-					t.Fatalf("row %d width mismatch: got %d, want %d", i, len(gotRow), len(wantRow))
-				}
-				for j := range gotRow {
-					if gotRow[j] != wantRow[j] {
-						t.Errorf("row %d col %d: got %v (%T), want %v (%T)",
-							i, j, gotRow[j], gotRow[j], wantRow[j], wantRow[j])
-					}
-				}
 			}
 		})
 	}
@@ -204,18 +167,6 @@ func isGoFeatureGap(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "unsupported column type") ||
 		strings.Contains(s, "unsupported DataType code")
-}
-
-func columnsMatch(a, b []Column) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestGoSQLRunner_NullPassThrough pins NULL handling: a SELECT on a

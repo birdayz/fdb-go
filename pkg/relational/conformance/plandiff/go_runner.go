@@ -216,15 +216,6 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 			row[i] = coerceForComparison(v)
 		}
 		out.Rows = append(out.Rows, row)
-		// For columns where the driver didn't supply a type name,
-		// fall back to inferring from the first non-NULL row's value.
-		if len(out.Rows) == 1 {
-			for i, v := range row {
-				if out.Columns[i].Type == "" {
-					out.Columns[i].Type = inferTypeName(v)
-				}
-			}
-		}
 	}
 	if err := sqlRows.Err(); err != nil {
 		return RowSet{}, fmt.Errorf("plandiff/go: rows.Err: %w", err)
@@ -261,25 +252,6 @@ func coerceForComparison(v any) any {
 		return base64Encode(x)
 	}
 	return v
-}
-
-// inferTypeName maps a runtime Go value back to a JDBC-style type
-// name matching the Java side's getColumnTypeName output. Best-
-// effort — the embedded driver doesn't expose type names, so the
-// runner infers from value shapes.
-func inferTypeName(v any) string {
-	if v == nil {
-		return "" // unknown — caller can match against empty
-	}
-	switch v.(type) {
-	case float64:
-		return "BIGINT" // JSON-decoded numbers default to integral types
-	case bool:
-		return "BOOLEAN"
-	case string:
-		return "STRING"
-	}
-	return ""
 }
 
 // base64Encode renders a BYTES value to match Java's base64 wire

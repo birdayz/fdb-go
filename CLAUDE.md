@@ -446,7 +446,14 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 
 ### Go embedded SQL engine — Java conformance status
 
-The plandiff Go-vs-Java result-set harness (`pkg/relational/conformance/plandiff/go_runner_test.go`) drives every SeedRunCorpus entry through both engines and asserts byte-equivalence on column metadata + row values. As of swingshift-52, **all 31 corpus entries pass strict end-to-end equivalence** (column names + JDBC type names + row values, all strict, per-entry). When new gaps emerge (e.g. when a corpus entry pulls in a not-yet-supported type), they're surfaced via `isGoFeatureGap` skips, never silent passes.
+The plandiff Go-vs-Java result-set harness lives in two halves:
+
+- `conformance/run_sql_conformance_test.go` — **the cross-engine equivalence assertion**. Drives every `plandiff.SeedRunCorpus()` entry through Java AND Go and asserts byte-equal column metadata + row values. Adding a new test case is just appending `{Name, SchemaTemplate, SetupSqls, Query}` to the corpus; no baseline RowSet to capture, no test wiring.
+- `pkg/relational/conformance/plandiff/go_runner_test.go` — Go-side runner smoke test (no Java dependency). Each corpus entry must execute through the embedded engine without error. Strict equivalence is asserted in conformance/, not here.
+
+`RunQuery` carries no `Expected` field — pinned baselines are redundant given Java is pinned at Maven 4.11.1.0 and Go is what we control. Cross-engine drift surfaces immediately on either side.
+
+As of swingshift-52, **all 38 corpus entries pass strict end-to-end equivalence** (column names + JDBC type names + row values, all strict, per-entry). When new gaps emerge, they're surfaced via `isGoFeatureGap` skips, never silent passes.
 
 Conformance gaps **closed** in swingshift-52:
 
@@ -456,6 +463,7 @@ Conformance gaps **closed** in swingshift-52:
 - ✅ **JDBC type-name plumbing** — embedded driver implements `RowsColumnTypeDatabaseTypeName`. `staticRows.colTypes` populated from proto FieldDescriptor in the SELECT path; aggregate columns default to BIGINT (covers SUM/MIN/MAX/COUNT over integral types).
 - ✅ **Empty result-set type inference** — same driver method, no longer dependent on first-row value inspection.
 - ✅ **`UUID` column type — full end-to-end** — DDL parser accepts `key UUID`; metadata builder emits the `tuple_fields.UUID` proto sub-message reference (`.com.apple.foundationdb.record.UUID` with sfixed64 most/least bits, matching Java's `Type.uuidType` lowering); `CAST(string AS UUID)` validates and returns the canonical 36-char form; `ConvertToProtoValue` encodes the canonical string into the proto UUID message via `most_significant_bits` / `least_significant_bits` derived big-endian from the 16-byte UUID; `ProtoValueToDriver` reverses on read; `jdbcTypeNameForFD` reports `OTHER` (matching `java.sql.Types.OTHER` for UUID). See `pkg/relational/core/functions/proto_value.go`.
+- ✅ **Engine-side type inference for arithmetic / CAST / CASE projection results** — `inferProjectionJDBCType` walks the projection-expression AST in `select_helpers.go` and returns the JDBC type name for `x + y`, `id + 10`, `CAST(... AS UUID)`, `CASE WHEN ... THEN 'low' END`, etc. Uses the `jdbcTypeMax` lattice (DOUBLE > FLOAT > BIGINT > INTEGER for numerics, identity for non-numeric same-type pairs). Plumbed through the JOIN executor (per-source type map) and the CTE-scan executor (cte.colTypes propagated through derived-table materialisation). The runner-side value-based inference fallback was deleted — engine-side inference covers every corpus entry.
 
 The projection-name + type-name transformation is applied at the driver-output boundary (`staticRows.Columns()` and `ColumnTypeDatabaseTypeName`), NOT at the internal `.cols` field. Internal callers (CTE row-map keying, ORDER BY resolution against unqualified names, alias remapping) read `.cols` directly and bypass normalization, preserving correctness of internal lookups.
 

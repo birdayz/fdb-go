@@ -27,12 +27,27 @@ package conformance_test
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// writeClusterFileToTemp materialises the cluster file string contents
+// (env.ClusterFile) to a temp file on disk and returns its path. The
+// Go embedded SQL driver's DSN takes a `cluster_file=<path>` option,
+// not the file contents — so the conformance test writes once per It
+// block and removes it on cleanup.
+func writeClusterFileToTemp(contents string) string {
+	f, err := os.CreateTemp("", "fdb-conformance-*.cluster")
+	Expect(err).NotTo(HaveOccurred())
+	_, err = f.WriteString(contents)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(f.Close()).To(Succeed())
+	return f.Name()
+}
 
 var _ = Describe("RunSql Harness", func() {
 	var (
@@ -196,32 +211,37 @@ var _ = Describe("RunSql Harness", func() {
 		Expect(got.Rows.Rows[0][1].(string)).To(Equal("aGk="))
 	})
 
-	It("runs the SeedRunCorpus through the Java server and matches per-entry expected RowSets", func() {
-		// Per-entry assertion: each corpus entry carries an Expected
-		// RowSet captured from real fdb-relational output. A failure
-		// here pinpoints WHICH entry diverged AND in what way (cmp
-		// diff with column / row paths). When the Go runner lands
-		// (Track C2), the same Expected RowSet doubles as the Go-side
-		// reference — turning every entry into a real cross-engine
-		// equivalence check without harness changes.
+	It("runs the SeedRunCorpus through BOTH engines and asserts cross-engine equivalence", func() {
+		// Generic plumbing: every SeedRunCorpus entry is driven through
+		// Java (via the conformance HTTP server) AND Go (via the
+		// embedded fdbsql driver against the same FDB container). The
+		// harness asserts both engines succeed AND produce byte-equal
+		// column metadata + row values.
+		//
+		// Adding a new test case is just appending {Name, Schema,
+		// Setup, Query} to SeedRunCorpus(). No baseline RowSet to
+		// capture, no conformance-test wiring.
 		javaR := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
-		corpus := plandiff.SeedRunCorpus()
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goR := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 
+		corpus := plandiff.SeedRunCorpus()
 		for _, rq := range corpus {
 			rq := rq
 			By(rq.Name, func() {
-				got := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
-				Expect(got.Err).NotTo(HaveOccurred(),
+				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+				Expect(javaResult.Err).NotTo(HaveOccurred(),
 					"corpus entry %q: Java executor errored", rq.Name)
-				// Columns: name + type pair-wise. Surfaces type-name
-				// drift on individual columns, not "the corpus changed."
-				Expect(got.Rows.Columns).To(Equal(rq.Expected.Columns),
-					"corpus entry %q: column metadata diverged", rq.Name)
-				// Rows: Equal compares element-wise. NULL → nil; numeric
-				// values arrive as float64 (encoding/json default), so
-				// the corpus uses float64 literals to match.
-				Expect(got.Rows.Rows).To(Equal(rq.Expected.Rows),
-					"corpus entry %q: row data diverged", rq.Name)
+
+				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+				Expect(goResult.Err).NotTo(HaveOccurred(),
+					"corpus entry %q: Go executor errored", rq.Name)
+
+				Expect(goResult.Rows.Columns).To(Equal(javaResult.Rows.Columns),
+					"corpus entry %q: column metadata diverged between Java and Go", rq.Name)
+				Expect(goResult.Rows.Rows).To(Equal(javaResult.Rows.Rows),
+					"corpus entry %q: row data diverged between Java and Go", rq.Name)
 			})
 		}
 	})

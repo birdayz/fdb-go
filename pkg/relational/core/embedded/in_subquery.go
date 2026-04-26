@@ -114,7 +114,7 @@ func extractInSubqueryBody(expr antlrgen.IExpressionContext) antlrgen.IQueryExpr
 // there for unequal x; here too the NULL contributes nothing the
 // equality IN-list extractor would use).
 func runInSubqueryOnce(ctx context.Context, conn *EmbeddedConnection, body antlrgen.IQueryExpressionBodyContext) ([]any, error) {
-	cols, rows, err := conn.execQueryBodyRows(ctx, body)
+	cols, _, rows, err := conn.execQueryBodyRows(ctx, body)
 	if err != nil {
 		return nil, err
 	}

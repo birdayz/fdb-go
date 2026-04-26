@@ -64,7 +64,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		// Qualifier taken from the proto descriptor name (single-source
 		// FROM without an explicit AS alias — the common case).
 		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -250,7 +250,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
 		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
+		subCols, _, subRows, err := conn.execQueryBodyRows(ctx, qb)
 		if err != nil {
 			return triFalse, err
 		}

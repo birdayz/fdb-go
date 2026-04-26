@@ -1,32 +1,23 @@
 package plandiff
 
 // SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
-// (schema, setup-DMLs, SELECT, expected RowSet) cases for the result-
-// set diff harness. Each entry carries the EXPECTED Java-side output
-// inline, so a regression surfaces with a precise per-entry diff
-// rather than "the corpus changed somewhere."
-//
-// Today only the Java side runs (Go is gated on Track C2). The same
-// Expected RowSet doubles as the cross-engine reference: when the Go
-// runner lands, every entry becomes a Go-vs-Java equivalence check.
+// (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
+// The conformance test runs each entry through BOTH engines (Java
+// fdb-relational + Go embedded) and asserts byte-equivalent column
+// metadata + row values.
 //
 // Each entry's SetupSqls must produce deterministic state — SELECTs
 // without ORDER BY can't be added until we trust both engines'
 // row-order semantics match. Today every entry orders by primary key.
 //
-// JSON note: Expected.Rows uses Go's `any` slice. Numbers MUST be
-// `float64` (encoding/json's default for JSON numbers); `int` literals
-// would compare unequal because the wire-arrived values are float64.
+// Adding a new entry: just append {Name, SchemaTemplate, SetupSqls,
+// Query}. No baseline RowSet to capture or paste — the cross-engine
+// equivalence check is the assertion.
 type RunQuery struct {
 	Name           string
 	SetupSqls      []string
 	Query          string
 	SchemaTemplate string
-	// Expected is the Java-side RowSet this entry must produce. Captured
-	// from real fdb-relational output and pinned here. Update
-	// deliberately when the corpus query / setup / Java behaviour
-	// changes intentionally.
-	Expected RowSet
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
@@ -45,10 +36,6 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T1 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T1 VALUES (42)"},
 			Query:          "SELECT id FROM T1 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(42)}},
-			},
 		},
 		{
 			Name:           "multi_row_string",
@@ -59,14 +46,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T2 VALUES (3, 'carol')",
 			},
 			Query: "SELECT id, name FROM T2 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
-				Rows: [][]any{
-					{float64(1), "alice"},
-					{float64(2), "bob"},
-					{float64(3), "carol"},
-				},
-			},
 		},
 		{
 			Name:           "null_string",
@@ -76,23 +55,12 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T3 VALUES (2, NULL)",
 			},
 			Query: "SELECT id, name FROM T3 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
-				Rows: [][]any{
-					{float64(1), "alice"},
-					{float64(2), nil},
-				},
-			},
 		},
 		{
 			Name:           "empty_table",
 			SchemaTemplate: "CREATE TABLE T4 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT id FROM T4",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{},
-			},
 		},
 		{
 			Name:           "boolean_column",
@@ -103,14 +71,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T5 VALUES (3, NULL)",
 			},
 			Query: "SELECT id, flag FROM T5 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "FLAG", Type: "BOOLEAN"}},
-				Rows: [][]any{
-					{float64(1), true},
-					{float64(2), false},
-					{float64(3), nil},
-				},
-			},
 		},
 		{
 			Name:           "double_column",
@@ -120,13 +80,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T6 VALUES (2, -7.25)",
 			},
 			Query: "SELECT id, val FROM T6 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "DOUBLE"}},
-				Rows: [][]any{
-					{float64(1), 1.5},
-					{float64(2), -7.25},
-				},
-			},
 		},
 		{
 			Name:           "order_by_desc",
@@ -137,10 +90,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T7 VALUES (3, 'c')",
 			},
 			Query: "SELECT id FROM T7 ORDER BY id DESC",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(3)}, {float64(2)}, {float64(1)}},
-			},
 		},
 		{
 			Name:           "where_filter",
@@ -151,13 +100,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T8 VALUES (3, 300)",
 			},
 			Query: "SELECT id, val FROM T8 WHERE val > 150 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "BIGINT"}},
-				Rows: [][]any{
-					{float64(2), float64(200)},
-					{float64(3), float64(300)},
-				},
-			},
 		},
 		{
 			Name:           "multi_column_pk",
@@ -168,30 +110,12 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T9 VALUES ('eu', 1, 'carol')",
 			},
 			Query: "SELECT region, id, name FROM T9 ORDER BY region, id",
-			Expected: RowSet{
-				Columns: []Column{
-					{Name: "REGION", Type: "STRING"},
-					{Name: "ID", Type: "BIGINT"},
-					{Name: "NAME", Type: "STRING"},
-				},
-				Rows: [][]any{
-					{"eu", float64(1), "carol"},
-					{"us", float64(1), "alice"},
-					{"us", float64(2), "bob"},
-				},
-			},
 		},
 		{
 			Name:           "select_constant_expr",
 			SchemaTemplate: "CREATE TABLE T10 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T10 VALUES (5)"},
 			Query:          "SELECT id, id + 10 FROM T10",
-			Expected: RowSet{
-				// fdb-relational synthesises "_<n>" names for anonymous
-				// projection slots in declaration order.
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "_1", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(5), float64(15)}},
-			},
 		},
 		{
 			Name:           "string_filter",
@@ -202,10 +126,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T11 VALUES (3, 'cherry')",
 			},
 			Query: "SELECT id, name FROM T11 WHERE name = 'banana'",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
-				Rows:    [][]any{{float64(2), "banana"}},
-			},
 		},
 		{
 			Name: "inner_join",
@@ -219,14 +139,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO Orders VALUES (12, 2, 300)",
 			},
 			Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid",
-			Expected: RowSet{
-				Columns: []Column{{Name: "NAME", Type: "STRING"}, {Name: "TOTAL", Type: "BIGINT"}},
-				Rows: [][]any{
-					{"alice", float64(100)},
-					{"alice", float64(200)},
-					{"bob", float64(300)},
-				},
-			},
 		},
 		{
 			Name:           "count_aggregate",
@@ -237,10 +149,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T12 VALUES (3, 'eu')",
 			},
 			Query: "SELECT count(*) FROM T12",
-			Expected: RowSet{
-				Columns: []Column{{Name: "_0", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(3)}},
-			},
 		},
 		{
 			Name:           "like_pattern",
@@ -251,13 +159,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T13 VALUES (3, 'banana')",
 			},
 			Query: "SELECT id, name FROM T13 WHERE name LIKE 'ap%' ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
-				Rows: [][]any{
-					{float64(1), "apple"},
-					{float64(2), "apricot"},
-				},
-			},
 		},
 		{
 			Name:           "in_list",
@@ -269,13 +170,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T14 VALUES (4, 'd')",
 			},
 			Query: "SELECT id, name FROM T14 WHERE id IN (1, 3) ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
-				Rows: [][]any{
-					{float64(1), "a"},
-					{float64(3), "c"},
-				},
-			},
 		},
 		// GROUP BY <col> deferred: fdb-relational 4.11.1.0's Cascades
 		// planner returns UnableToPlanException for "SELECT region,
@@ -292,10 +186,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T16 VALUES (4, 'eu', 200)",
 			},
 			Query: "SELECT id FROM T16 WHERE region = 'us' AND val > 150 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(2)}},
-			},
 		},
 		{
 			Name:           "or_predicate",
@@ -307,10 +197,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T17 VALUES (4, 40)",
 			},
 			Query: "SELECT id FROM T17 WHERE val = 10 OR val = 30 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(1)}, {float64(3)}},
-			},
 		},
 		{
 			Name:           "is_null",
@@ -322,10 +208,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T18 VALUES (4, NULL)",
 			},
 			Query: "SELECT id FROM T18 WHERE name IS NULL ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(2)}, {float64(4)}},
-			},
 		},
 		{
 			Name:           "is_not_null",
@@ -336,13 +218,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T19 VALUES (3, 'bob')",
 			},
 			Query: "SELECT id, name FROM T19 WHERE name IS NOT NULL ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
-				Rows: [][]any{
-					{float64(1), "alice"},
-					{float64(3), "bob"},
-				},
-			},
 		},
 		{
 			Name:           "comparison_ops",
@@ -353,10 +228,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T20 VALUES (3, 30)",
 			},
 			Query: "SELECT id FROM T20 WHERE val >= 20 AND val < 30 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(2)}},
-			},
 		},
 		// LIMIT deferred: fdb-relational 4.11.1.0 returns
 		// `RelationalException: LIMIT clause is not supported.` —
@@ -380,14 +251,6 @@ func SeedRunCorpus() []RunQuery {
 				"UPDATE T_UPD SET val = val + 1 WHERE id = 2",
 			},
 			Query: "SELECT id, val FROM T_UPD ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "BIGINT"}},
-				Rows: [][]any{
-					{float64(1), float64(100)},
-					{float64(2), float64(201)},
-					{float64(3), float64(300)},
-				},
-			},
 		},
 		{
 			Name:           "delete_then_select",
@@ -399,13 +262,6 @@ func SeedRunCorpus() []RunQuery {
 				"DELETE FROM T_DEL WHERE id = 2",
 			},
 			Query: "SELECT id, val FROM T_DEL ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "BIGINT"}},
-				Rows: [][]any{
-					{float64(1), float64(10)},
-					{float64(3), float64(30)},
-				},
-			},
 		},
 		// INFORMATION_SCHEMA.TABLES probe deferred: fdb-relational's
 		// SELECT parser doesn't recognize the schema-qualified
@@ -432,10 +288,6 @@ func SeedRunCorpus() []RunQuery {
 			// UNKNOWN is filtered out (treated as false) by WHERE.
 			// Only id=1 and id=3 (where x is genuinely 5) match.
 			Query: "SELECT id FROM T_NEQ WHERE x = 5 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(1)}, {float64(3)}},
-			},
 		},
 		{
 			Name:           "null_arithmetic",
@@ -445,14 +297,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_NA VALUES (2, NULL)",
 			},
 			Query: "SELECT id, x + 10 FROM T_NA ORDER BY id",
-			Expected: RowSet{
-				// SQL Kleene three-valued: NULL + integer = NULL.
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "_1", Type: "BIGINT"}},
-				Rows: [][]any{
-					{float64(1), float64(15)},
-					{float64(2), nil},
-				},
-			},
 		},
 		{
 			Name:           "math_in_where",
@@ -463,10 +307,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_MATH VALUES (3, 4, 6)", // 4+6=10 > 9 ✓
 			},
 			Query: "SELECT id FROM T_MATH WHERE x + y > 9 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(1)}, {float64(3)}},
-			},
 		},
 		{
 			Name:           "subquery_in_from",
@@ -477,10 +317,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SUB VALUES (3, 300)",
 			},
 			Query: "SELECT t.id FROM (SELECT id, val FROM T_SUB WHERE val > 100) AS t WHERE t.val < 300 ORDER BY t.id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(2)}},
-			},
 		},
 		{
 			Name:           "sum_min_max",
@@ -491,14 +327,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_AGG VALUES (3, 30)",
 			},
 			Query: "SELECT sum(val), min(val), max(val) FROM T_AGG",
-			Expected: RowSet{
-				Columns: []Column{
-					{Name: "_0", Type: "BIGINT"},
-					{Name: "_1", Type: "BIGINT"},
-					{Name: "_2", Type: "BIGINT"},
-				},
-				Rows: [][]any{{float64(60), float64(10), float64(30)}},
-			},
 		},
 		{
 			Name:           "uuid_round_trip",
@@ -507,19 +335,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_UUID VALUES (1, CAST('00000000-0000-0000-0000-000000000042' AS UUID))",
 			},
 			Query: "SELECT id, key FROM T_UUID ORDER BY id",
-			Expected: RowSet{
-				// fdb-relational reports UUID columns as JDBC type "OTHER"
-				// (the standard JDBC type code for vendor-specific types).
-				// java.util.UUID values are encoded via toString() by
-				// SqlPlanSteps#encodeValue's UUID arm.
-				Columns: []Column{
-					{Name: "ID", Type: "BIGINT"},
-					{Name: "KEY", Type: "OTHER"},
-				},
-				Rows: [][]any{
-					{float64(1), "00000000-0000-0000-0000-000000000042"},
-				},
-			},
 		},
 		{
 			Name:           "case_expression",
@@ -530,14 +345,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CASE VALUES (3, 25)",
 			},
 			Query: "SELECT id, CASE WHEN val < 10 THEN 'low' WHEN val < 20 THEN 'mid' ELSE 'high' END FROM T_CASE ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "_1", Type: "STRING"}},
-				Rows: [][]any{
-					{float64(1), "low"},
-					{float64(2), "mid"},
-					{float64(3), "high"},
-				},
-			},
 		},
 		{
 			Name:           "between",
@@ -549,10 +356,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_BTW VALUES (4, 20)",
 			},
 			Query: "SELECT id FROM T_BTW WHERE val BETWEEN 10 AND 15 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-				Rows:    [][]any{{float64(2)}, {float64(3)}},
-			},
 		},
 		{
 			Name:           "math_in_projection",
@@ -562,17 +365,72 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T22 VALUES (2, 7, 2)",
 			},
 			Query: "SELECT id, x + y, x * y FROM T22 ORDER BY id",
-			Expected: RowSet{
-				Columns: []Column{
-					{Name: "ID", Type: "BIGINT"},
-					{Name: "_1", Type: "BIGINT"},
-					{Name: "_2", Type: "BIGINT"},
-				},
-				Rows: [][]any{
-					{float64(1), float64(8), float64(15)},
-					{float64(2), float64(9), float64(14)},
-				},
+		},
+		{
+			// Negative numbers — pins big-negative + small-negative
+			// preservation through the proto INT64 round-trip + JSON
+			// coercion. fdb-relational supports unary minus on
+			// INSERT but the parser routes it through arithmetic
+			// rather than as a literal sign, so the value flows
+			// through the cast path.
+			Name:           "negative_numbers",
+			SchemaTemplate: "CREATE TABLE T_NEG (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NEG VALUES (1, -1)",
+				"INSERT INTO T_NEG VALUES (2, -9223372036854775807)",
+				"INSERT INTO T_NEG VALUES (3, 0)",
 			},
+			Query: "SELECT id, val FROM T_NEG ORDER BY id",
+		},
+		{
+			// Double-precision arithmetic — pins DOUBLE preservation
+			// (and rules out the INT64 ↔ FLOAT64 collapse the runner
+			// used to do before ColumnTypeDatabaseTypeName landed).
+			Name:           "double_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_DARITH (id BIGINT, x DOUBLE, y DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DARITH VALUES (1, 1.5, 2.5)",
+				"INSERT INTO T_DARITH VALUES (2, 0.1, 0.2)",
+			},
+			Query: "SELECT id, x + y FROM T_DARITH ORDER BY id",
+		},
+		{
+			// UUID equality predicate — pins WHERE on a UUID column.
+			// Forces the planner to compare UUIDs at the proto-message
+			// level (not as raw bytes), and tests that CAST in WHERE
+			// reaches the same canonicalization as CAST in INSERT.
+			Name: "uuid_where_equality",
+			SchemaTemplate: "CREATE TABLE T_UUW (id BIGINT, key UUID, " +
+				"PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UUW VALUES (1, CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_UUW VALUES (2, CAST('22222222-2222-2222-2222-222222222222' AS UUID))",
+			},
+			Query: "SELECT id FROM T_UUW WHERE key = CAST('22222222-2222-2222-2222-222222222222' AS UUID)",
+		},
+		{
+			// COUNT distinct (no DISTINCT keyword) of a string col.
+			Name:           "count_with_filter",
+			SchemaTemplate: "CREATE TABLE T_CF (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CF VALUES (1, 'a')",
+				"INSERT INTO T_CF VALUES (2, 'b')",
+				"INSERT INTO T_CF VALUES (3, 'a')",
+			},
+			Query: "SELECT count(*) FROM T_CF WHERE name = 'a'",
+		},
+		{
+			// Multi-condition AND with negation — pins the WHERE
+			// composition through three predicates plus NOT.
+			Name:           "where_not_and",
+			SchemaTemplate: "CREATE TABLE T_NA (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NA VALUES (1, 100)",
+				"INSERT INTO T_NA VALUES (2, 200)",
+				"INSERT INTO T_NA VALUES (3, 300)",
+				"INSERT INTO T_NA VALUES (4, 400)",
+			},
+			Query: "SELECT id FROM T_NA WHERE val > 100 AND NOT val = 300 ORDER BY id",
 		},
 	}
 }

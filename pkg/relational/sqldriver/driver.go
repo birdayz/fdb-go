@@ -120,7 +120,14 @@ func (c *Connector) initialize(_ context.Context) error {
 		clusterFile = os.Getenv(defaultClusterFileEnv)
 	}
 
-	purefdb.MustAPIVersion(720)
+	// FDB API version is process-global; setting it twice with
+	// different values panics. Tolerate the case where another
+	// component (test infrastructure, embedding application) already
+	// initialised the client — accept whatever version was selected.
+	if _, err := purefdb.GetAPIVersion(); err != nil {
+		// Unset → set to our default.
+		purefdb.MustAPIVersion(720)
+	}
 	var rawDB purefdb.Database
 	var err error
 	if clusterFile == "" {

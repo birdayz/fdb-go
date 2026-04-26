@@ -47,6 +47,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// extra sort-only fields like `ORDER BY v * 2`). Evaluated against
 		// the current message in the scan loop; fd is nil in that case.
 		expr antlrgen.IExpressionContext
+		// jdbcTyp carries the JDBC result-set type name for computed
+		// expression slots whose result type was inferable at parse
+		// time (`x + y` of two DOUBLE → "DOUBLE"). Empty for typed
+		// columns (where the type comes from `fd`) and for shapes
+		// the inferer didn't recognise.
+		jdbcTyp string
 	}
 	var cols []string
 	var colTypes []string // parallel to cols; "" entries mean "type unknown"
@@ -835,7 +841,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 						outName = sq.projAliases[i]
 					}
-					outFields[i] = outField{name: outName}
+					// Infer the expression's result type so the JDBC
+					// metadata layer can report it (e.g. `x + y` of
+					// two DOUBLE columns → DOUBLE). Falls through to
+					// empty when the AST shape isn't recognised; the
+					// runner-side fallback then infers from the
+					// runtime value.
+					outFields[i] = outField{
+						name:    outName,
+						jdbcTyp: inferProjectionJDBCType(sq.projExprs[i], msgDesc),
+					}
 					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
 					continue
 				}
@@ -921,7 +936,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		colTypes = make([]string, len(outFields))
 		for i, f := range outFields {
 			cols[i] = f.name
-			colTypes[i] = jdbcTypeNameForFD(f.fd)
+			// Typed columns (with a FieldDescriptor) take the type
+			// straight from proto. Computed expressions use the
+			// inferred jdbcTyp captured during projection-binding.
+			if f.fd != nil {
+				colTypes[i] = jdbcTypeNameForFD(f.fd)
+			} else {
+				colTypes[i] = f.jdbcTyp
+			}
 		}
 
 		// Early-termination target: when the scan's natural order

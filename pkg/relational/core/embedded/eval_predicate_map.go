@@ -64,7 +64,7 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
 		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
-		_, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
+		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -391,7 +391,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 			}
 			defer conn.pushOuterScope(outerScopeFromMapRow(row))()
-			_, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
+			_, _, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
 			if subErr != nil {
 				return triFalse, subErr
 			}
@@ -494,7 +494,7 @@ func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, ro
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
 		}
 		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
-		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr
 		}
