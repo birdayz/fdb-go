@@ -449,6 +449,11 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **Bare `WHERE flag` on a BOOLEAN column is rejected by fdb-relational** with `RelationalException: expected BooleanValue but got FieldValue`. Boolean columns must be compared explicitly: `WHERE flag = TRUE`. The grammar accepts `WHERE flag` but the planner rejects FieldValue-as-predicate downstream. Our Go embedded engine matches this strictness (`evalComparisonPredicateTri` rejects FullColumnName-as-predicate explicitly).
 - **`ORDER BY <alias>` is unsupported by fdb-relational's planner.** `SELECT v AS amount FROM t ORDER BY amount` raises `UnableToPlanException`. The ORDER BY clause must reference the underlying column name, not a SELECT-list alias. Same applies to ORDER BY on non-projected columns (`SELECT name FROM t ORDER BY sortkey` where `sortkey` isn't in the projection).
 - **SQL-standard apostrophe-escape (`''`) diverges between engines.** `INSERT INTO t VALUES ('it''s here')` produces stored value `it's here` in Go (correct SQL-standard unescape) but `it''s here` (literal doubled apostrophe) in fdb-relational. fdb-relational's lexer / parser doesn't unescape `''` at INSERT time. Cross-engine corpus entries should avoid apostrophe-in-string literals until upstream aligns.
+- **Bit-shift operators `<<` / `>>` are tokenized but not implemented.** fdb-relational 4.11.1.0's lexer/parser accept `<<` and `>>`, but the function registry has no evaluator — the planner returns `RelationalException: Unsupported operator <<`. Bitwise AND / OR / XOR (`& | ^`) work fine; only shifts are missing.
+- **Floating-point exponent literal requires uppercase `E`.** Per `RelationalLexer.g4#EXPONENT_NUM_PART`, scientific notation is `1.5E10` — `1.5e10` is rejected as a syntax error. The Go embedded engine accepts both; cross-engine corpus entries should use uppercase `E`.
+- **`IS TRUE` / `IS FALSE` predicate forms are unsupported on BOOLEAN columns.** fdb-relational 4.11.1.0 rejects `WHERE flag IS TRUE` at the planner. The supported form is `WHERE flag = TRUE`.
+- **Division-by-zero error messages differ.** Java's stock `ArithmeticException` says `"/ by zero"`; Go's eval says `"division by zero"`. Cross-engine error-substring assertions should use the case-insensitive substring `"zero"`.
+- **CAST-overflow error messages differ.** Java's CastValue says `"Value out of range for INT"`; Go says `"value … out of range for INTEGER"`. Common substring: `"out of range"`.
 
 ### Go embedded SQL engine — Java conformance status
 
@@ -459,7 +464,7 @@ The plandiff Go-vs-Java result-set harness lives in two halves:
 
 `RunQuery` carries no `Expected` field — pinned baselines are redundant given Java is pinned at Maven 4.11.1.0 and Go is what we control. Cross-engine drift surfaces immediately on either side.
 
-As of swingshift-52, **all 38 corpus entries pass strict end-to-end equivalence** (column names + JDBC type names + row values, all strict, per-entry). When new gaps emerge, they're surfaced via `isGoFeatureGap` skips, never silent passes.
+As of swingshift-52, **all 170 corpus entries pass strict end-to-end equivalence** (column names + JDBC type names + row values, all strict, per-entry). The corpus also includes negative entries (`ExpectErrorContains`-tagged) that assert BOTH engines reject a query AND the error messages contain a (case-insensitive) substring — catching silent acceptance on one side, the kind of divergence success-only harnesses miss. When new gaps emerge, they're surfaced via `isGoFeatureGap` skips, never silent passes.
 
 Conformance gaps **closed** in swingshift-52:
 
