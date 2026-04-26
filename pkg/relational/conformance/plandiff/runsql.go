@@ -212,15 +212,20 @@ func classifyRun(q Query, gr, jr RunResult) RunDiff {
 	d := RunDiff{Query: q, Go: gr, Java: jr}
 	switch {
 	case gr.Err != nil && jr.Err != nil:
-		// Both errored. JavaUnimplemented OR GoUnimplemented as the
-		// "soft failure" buckets — pin which side is stubbed first
-		// (Go side first today; will flip as runners come online).
+		// Both errored. Each side has its own stub sentinel
+		// (ErrGoUnimplemented / ErrJavaRunUnimplemented) — track
+		// them with distinct Status values so reports are clear
+		// about which side is stubbed.
+		goStub := errors.Is(gr.Err, ErrGoUnimplemented)
+		javaStub := errors.Is(jr.Err, ErrJavaRunUnimplemented)
 		switch {
-		case errors.Is(gr.Err, ErrGoUnimplemented) && errors.Is(jr.Err, ErrJavaRunUnimplemented):
-			d.Status = StatusJavaUnimplemented
-		case errors.Is(gr.Err, ErrGoUnimplemented):
-			d.Status = StatusGoError
-		case errors.Is(jr.Err, ErrJavaRunUnimplemented):
+		case goStub && javaStub:
+			// Both stubbed — pick GoUnimplemented (the more pressing
+			// side today; flip when Java becomes the lagging side).
+			d.Status = StatusGoUnimplemented
+		case goStub:
+			d.Status = StatusGoUnimplemented
+		case javaStub:
 			d.Status = StatusJavaUnimplemented
 		default:
 			d.Status = StatusBothError
@@ -230,7 +235,7 @@ func classifyRun(q Query, gr, jr RunResult) RunDiff {
 		if errors.Is(gr.Err, ErrGoUnimplemented) {
 			// Go-side stub today. Don't fail the whole report — the
 			// Java baseline is what we want to capture.
-			d.Status = StatusJavaUnimplemented
+			d.Status = StatusGoUnimplemented
 			d.Detail = "go: " + gr.Err.Error()
 		} else {
 			d.Status = StatusGoError
@@ -275,6 +280,8 @@ func summariseRun(cases []RunDiff) Summary {
 			s.BothError++
 		case StatusJavaUnimplemented:
 			s.JavaUnimplemented++
+		case StatusGoUnimplemented:
+			s.GoUnimplemented++
 		}
 	}
 	return s

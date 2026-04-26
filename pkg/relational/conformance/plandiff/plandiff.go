@@ -95,6 +95,12 @@ const (
 	// soft failure — the report shows it but a CI gate that wants to
 	// be Go-only-tolerant can ignore it.
 	StatusJavaUnimplemented
+	// StatusGoUnimplemented is the result-set harness's mirror —
+	// Go runner returns ErrGoUnimplemented today (gated on Track C2's
+	// QueryExecutor). Distinct from StatusJavaUnimplemented so reports
+	// can tell which side is stubbed. Plan-tree harness never produces
+	// this status (Go always works on plan-tree).
+	StatusGoUnimplemented
 )
 
 // String renders Status as a short tag for reports.
@@ -112,6 +118,8 @@ func (s Status) String() string {
 		return "BOTH_ERROR"
 	case StatusJavaUnimplemented:
 		return "JAVA_UNIMPL"
+	case StatusGoUnimplemented:
+		return "GO_UNIMPL"
 	}
 	return "UNKNOWN"
 }
@@ -140,6 +148,7 @@ type Summary struct {
 	JavaError         int
 	BothError         int
 	JavaUnimplemented int
+	GoUnimplemented   int
 }
 
 // Report is the harness's full output for a corpus run.
@@ -245,6 +254,8 @@ func summarise(cases []Diff) Summary {
 			s.BothError++
 		case StatusJavaUnimplemented:
 			s.JavaUnimplemented++
+		case StatusGoUnimplemented:
+			s.GoUnimplemented++
 		}
 	}
 	return s

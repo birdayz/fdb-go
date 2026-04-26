@@ -201,12 +201,12 @@ func TestGoRunner_Unimplemented(t *testing.T) {
 	}
 }
 
-// TestRunCorpus_AllJavaUnimplemented pins that RunCorpus with a stub
-// JavaRunner classifies every case as JAVA_UNIMPL — same shape as
-// the plan-tree harness's symmetric test. Today's Go side also
-// returns ErrGoUnimplemented; both being unimplemented surfaces as
-// JAVA_UNIMPL (the more specific bucket) so reports stay actionable.
-func TestRunCorpus_AllJavaUnimplemented(t *testing.T) {
+// TestRunCorpus_BothStubbed pins that RunCorpus with both Go and
+// Java stubbed runners classifies every case as GO_UNIMPL — Go is
+// the more pressing side today (Track C2's QueryExecutor blocks
+// real Go execution), so when both sides are stubbed the report
+// surfaces it as Go's responsibility.
+func TestRunCorpus_BothStubbed(t *testing.T) {
 	t.Parallel()
 	queries := []Query{
 		{Name: "x", SQL: "SELECT 1"},
@@ -216,8 +216,8 @@ func TestRunCorpus_AllJavaUnimplemented(t *testing.T) {
 	if report.Summary.Total != 2 {
 		t.Fatalf("Total: got %d, want 2", report.Summary.Total)
 	}
-	if report.Summary.JavaUnimplemented != 2 {
-		t.Fatalf("expected 2 JAVA_UNIMPL, got %+v", report.Summary)
+	if report.Summary.GoUnimplemented != 2 {
+		t.Fatalf("expected 2 GO_UNIMPL (both sides stubbed → Go's responsibility), got %+v", report.Summary)
 	}
 }
 
