@@ -265,6 +265,12 @@ var (
 	// expects ARRAY<T>, NONE adopts T as its element type.
 	// Always non-nullable. Mirrors Java's `Type.NONE`.
 	NoneType Type = &PrimitiveType{TypeCode: TypeCodeNone, Nullable: false}
+
+	// AnyType is the universal supertype — every Type is assignable
+	// to it. Used by quantifiers and pre-resolution placeholders
+	// where a concrete type isn't known at construction. Always
+	// nullable. Mirrors Java's `Type.ANY`.
+	AnyType Type = &PrimitiveType{TypeCode: TypeCodeAny, Nullable: true}
 )
 
 // Typed is the interface things-with-a-type implement. Mirrors Java's
@@ -1008,6 +1014,13 @@ func WithNullability(t Type, nullable bool) Type {
 				panic("WithNullability: NONE type cannot be nullable")
 			}
 			return NoneType
+		case TypeCodeAny:
+			// ANY is always nullable per Java's contract. Asking for
+			// a non-nullable ANY is a programming error.
+			if !nullable {
+				panic("WithNullability: ANY type must be nullable")
+			}
+			return AnyType
 		}
 		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
 	case *RecordType:

@@ -952,6 +952,28 @@ func TestMaximumType_NilHandling(t *testing.T) {
 	}
 }
 
+// TestAnyType_Singleton pins ANY: the universal supertype.
+// Always nullable; WithNullability(AnyType, false) panics. Mirrors
+// Java's Type.ANY contract.
+func TestAnyType_Singleton(t *testing.T) {
+	t.Parallel()
+	if AnyType.Code() != TypeCodeAny {
+		t.Errorf("AnyType.Code(): got %v, want ANY", AnyType.Code())
+	}
+	if !AnyType.IsNullable() {
+		t.Error("AnyType is always nullable")
+	}
+	if WithNullability(AnyType, true) != AnyType {
+		t.Error("WithNullability(AnyType, true) should return the same singleton")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic from WithNullability(AnyType, false)")
+		}
+	}()
+	_ = WithNullability(AnyType, false)
+}
+
 // TestNoneType_Singleton pins NONE: the type of the untyped empty
 // array `[]`. Always non-nullable; WithNullability(NoneType, true)
 // panics. Mirrors Java's Type.NONE contract.
