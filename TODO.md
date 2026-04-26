@@ -90,13 +90,7 @@ These are bounded clean-ups that don't gate anything but make future work easier
 
 ### Track G — Cascades cleanup (MEDIUM, single-shift each)
 
-- [ ] **G1 — Retire legacy `ValueType` enum**: every Value impl in `pkg/recordlayer/query/plan/cascades/values/` implements `RichType() Type` post-swingshift-52, but the structs still carry `Typ ValueType` fields and `Type() ValueType` methods. To retire:
-  - Flip `Typ ValueType` → `Typ Type` on every Value struct (~6 structs: ConstantValue, FieldValue, NullValue, ParameterValue, ScalarFunctionValue, CastValue + AggregateValue's operand type via Operand).
-  - Update ~20+ constructor call sites in `pkg/relational/core/query/expr/expr.go` and `walk.go` (replace `values.TypeInt` with `values.NotNullLong`, etc.).
-  - Update ~15 test files using the legacy constants for fixtures.
-  - Drop `Type() ValueType` from the Value interface + each impl.
-  - Delete `FromValueType` / `ToValueType` / the `ValueType` enum + `TypeBool` / `TypeInt` / `TypeString` / `TypeFloat` / `TypeUnknown` constants.
-  Single-shift, mostly mechanical, but a coordinated change — can't be done piecewise without leaving the tree broken. Do it on a shift dedicated to this so the diff (~30 files) gets clean review.
+- [x] **G1 — Retire legacy `ValueType` enum** — DONE swingshift-52 (commits b37b6b0a + 96f11e96). Every Value impl's `Type()` now returns rich `Type`. Field migration (`Typ ValueType` → `Typ Type`) on all 8 Value structs + Target on Cast/Promote. The legacy `TypeBool/TypeInt/TypeString/TypeFloat/TypeUnknown` constants kept their names but are now `Type`-typed `var`s aliased to the canonical singletons (`NullableBoolean`/`NullableLong`/`NullableString`/`NullableDouble`/`UnknownType`) — every existing `Typ: values.TypeInt` call site continues to compile unchanged. Bridge functions (`FromValueType`/`ToValueType`/`ValueRichType`) deleted. `RichType()` method + `Typed` interface removed; the Value interface's `Type()` is now the single rich-Type accessor. ConstantValue.Type() correctly preserves the NOT-NULL signal for non-nil Value (commit 96f11e96 — without that, every non-NULL literal lost its NOT NULL information at the Type layer).
 
 ### Out-of-track / opportunistic
 
