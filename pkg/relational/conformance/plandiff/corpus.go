@@ -407,6 +407,11 @@ func SeedRunCorpus() []RunQuery {
 				},
 			},
 		},
+		// INFORMATION_SCHEMA.TABLES probe deferred: fdb-relational's
+		// SELECT parser doesn't recognize the schema-qualified
+		// reference (syntax error on TABLES). Track A4 needs a
+		// different probe shape — investigate the catalog access
+		// path in a follow-up shift.
 		{
 			Name:           "sum_min_max",
 			SchemaTemplate: "CREATE TABLE T_AGG (id BIGINT, val BIGINT, PRIMARY KEY (id))",
