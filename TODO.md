@@ -8,6 +8,91 @@ Restructured 2026-04-25 (swingshift-50). Previous structure: `git show 4cc93ccb:
 
 ---
 
+## Execution roadmap (read this first)
+
+The bucketed sections below list work by priority but not by **sequencing**. This roadmap is the dependency-ordered execution path. A worker should do **the next unchecked item in this list whose prerequisites are satisfied** rather than picking by gut feel.
+
+Update the checkboxes as items land. When an item lists multiple parallel tracks, finish the gating track first; the parallel-track items can run in any order once their gate clears.
+
+### Track A — Cross-language SQL conformance (CRITICAL, unblocked, biggest leverage)
+
+The fastest route to closing the "yamsql is the only oracle" hole. Each item below depends on the previous one in the same track.
+
+- [ ] **A1 — Phase B SqlSteps**: extend `conformance/sql_plan_steps.java` with a `runSql(clusterFile, schemaTemplate, sql)` step that returns the result rows as JSON (mirrors the existing `planSql` shape). Wire `pkg/relational/conformance/plandiff` to invoke it. Maven blocker is GONE (4.11.1.0 landed swingshift-50). Multi-shift; sized 2–3 shifts.
+- [ ] **A2 — Catalog wire format Go↔Java round-trip**: extract a schema via Go, load with Java, run a SELECT; reverse direction too. Subset of A1's runSql infrastructure. Pinned separately because of the swingshift-35 catalog-subspace scar — same harness shape would have caught that bug.
+- [ ] **A3 — SQL semantic equivalence on yamsql corpus**: feed the 1587 yamsql statements through both engines via A1; require identical result sets for read queries. Today only parsing is verified.
+- [ ] **A4 — System-table contents byte-equivalence**: `SELECT * FROM INFORMATION_SCHEMA.TABLES` byte-identical from Go and Java against the same store. Subset / specific shape exercised by A3.
+
+### Track B — Cascades planner port (HIGH, longer fuse, sequencing strict per RFC-022)
+
+The path from today's seeded `cascades/values/` + matchers to a real Cascades planner. Each phase strictly depends on the previous. Per RFC-022 §"sequencing", do NOT attempt 4.0+ until 4.-1 (the plan-equivalence harness) is shipped — that's already done in plandiff Phase 1+2+3.
+
+- [~] **B0 — Phase 4.0 Type hierarchy**: seed landed nightshift-50 (Type, PrimitiveType, RecordType, ArrayType, EnumType, TypeRepository, WithNullability, ValueRichType, FromValueType/ToValueType bridges). **Remaining**: UuidType + RelationType structured impls; type inference on `Value.Type()` so it returns rich Type instead of the legacy ValueType enum; full conversion / coercion lattice; plan-serialisation hooks. When `cascades/values/type.go` exceeds ~1500 LOC, split into `cascades/typing/` per RFC-025. Sized 2–3 shifts to "complete enough to retire ValueType".
+- [ ] **B1 — Phase 4.1 RelationalExpression**: `RelationalExpression` interface + the 8 logical operator subclasses (`LogicalFilterExpression`, `LogicalProjectionExpression`, `LogicalSortExpression`, `LogicalTypeFilterExpression`, `LogicalUnionExpression`, `LogicalDistinctExpression`, `LogicalIntersectionExpression`, `SelectExpression`) + 4 DML expressions (`InsertExpression`, `UpdateExpression`, `DeleteExpression`, `TableFunctionExpression`). Sized 4–6 shifts. **Gates B3, B4, B5.**
+- [ ] **B2 — Phase 4.2 matcher catalogue completion**: substantially done nightshift-50 (`SomeElementsMatcher`, `AtLeastElementsMatcher`, `EmptyCollectionMatcher`, generic `TypedMatcher`, `NegationMatcher`, generic `SatisfyingMatcher`, `CollectionMatcher` interface). **Remaining**: `OptionalIfPresentMatcher`, `PartialMatchMatchers`, `graph/` matchers — all gated on B3 (Reference / DAG infra). Run in parallel with B1.
+- [ ] **B3 — Phase 4.3 Memo & references**: `Reference` (= Cascades "group"), implicit DAG via `Reference` pointers, `PlanContext`, `CascadesRuleCall`. Gates B4, B5, the partial-match matchers in B2. Sized 3–4 shifts.
+- [ ] **B4 — Phase 4.4 Cost model**: `CascadesCostModel` heuristic comparator matching Java; cardinality estimation hooks; `properties/` package (~25 classes). Per RFC-024, hash-identical Java compatibility is NOT a goal — free to ship simpler Go-native cost. Sized 4–5 shifts.
+- [ ] **B5 — Phase 4.5 Rules**: rule batches per yamsql feature (JOIN, CTE, aggregate). 69 rules total in three batches:
+  - **Batch A** (port FIRST per RFC-022): `PrimaryScanRule`, `ImplementFilterRule`, `ImplementSortRule`, `MergeFetchIntoCoveringIndexRule`, index-equality + index-range rules, `InComparisonToExplodeRule`. Covers swingshift-44's existing 11-branch pushdown chain. Triggers RFC-025's Phase 2 `cascades/rules/` sub-package split. Sized 3–4 shifts.
+  - **Batch B+C** (rest of data-access + implementation + decomposition + finalization rules). ~58 rules. Sized 6–8 shifts.
+- [ ] **B6 — Phase 4.6 Planner driver**: `CascadesPlanner` task stack (EXPLORE → OPTIMIZE), `PlannerEvent` debug hooks, integration with `RecordMetaData` + index availability. Sized 3 shifts.
+- [ ] **B7 — Phase 4.7 Correctness tests**: port enough of Java's planner test suite to validate rule-by-rule equivalence; extend the 4.-1 harness as rules land. Cross-cuts every Bx item — write tests as the rule lands, not after. Pin per-query plan-equivalence as the rule batches converge.
+- [ ] **B8 — plandiff Phase 4 plan-cache-key diff**: today the harness only hashes the rendered tree text. Once B4 cost model + B7 cache-key spec land, diff the plan-cache key directly (RFC-024-aligned Go-internal key; Java-hash compatibility NOT required). Sized 1–2 shifts. **THIS IS THE GATE on the original RFC-022 §4.-1 Phase 4 question.**
+
+### Track C — Phase 5 query execution (HIGH, sequencing strict)
+
+Once the planner produces a `RecordQueryPlan`, the engine needs to run it against an `FDBRecordStore`. Strictly serialised within Track C; parallel to Track B5+ (don't need rules to start).
+
+- [ ] **C1 — `PlanGenerator`**: `LogicalOperator → RelationalExpression` adapter. Bridges today's text-based logical builder to the new RelationalExpression hierarchy. Gated on B1.
+- [ ] **C2 — `QueryExecutor`**: executes a `RecordQueryPlan` against a `FDBRecordStore`, returns `RecordCursor`. Sized 2 shifts. Gated on C1 + B6.
+- [ ] **C3 — `RecordLayerResultSet`**: wraps the cursor, implements `api.ResultSet`. Sized 1 shift. Gated on C2.
+- [ ] **C4 — Continuation support**: cursor continuation → SQL-level cursor state; match Java encoding. Sized 1 shift. Gated on C3.
+- [ ] **C5 — Prepared parameter binding via cascades.Value.Evaluate**: `PreparedParams` substitutes `?` at runtime evaluation time (replaces today's textual `substituteParams`). Unblocks the deferred `ParameterBinder caller plumbing` MEDIUM. Sized 1 shift. Gated on B0 type inference.
+
+### Track D — DDL + cache + driver completion (HIGH/MEDIUM, parallel to B/C)
+
+- [ ] **D1 — Phase 6 DDL action types**: individual `CreateTableAction`, `CreateIndexAction`, `DropTableAction`, `DropIndexAction`, `SetStoreStateAction`, etc. Sized 2 shifts.
+- [ ] **D2 — DDL types DATE / TIMESTAMP / ARRAY / JSON**: today's CREATE TABLE accepts BIGINT / INTEGER / DOUBLE / FLOAT / STRING / BYTES / BOOLEAN. Java has all of these. Gated on B0 (TypeDate / TypeTimestamp need the Type hierarchy port to complete). Sized 2 shifts.
+- [ ] **D3 — Online indexer integration via DDL**: CREATE INDEX triggers a background build via the existing `OnlineIndexer`. Sized 1 shift. Gated on D1.
+- [ ] **D4 — Phase 7 Plan cache**: port `RelationalPlanCache` (3-tier with per-tier TTL + max-entries), `QueryCacheKey` (SQL + param types + catalog version), `PhysicalPlanEquivalence`, async eviction. Gated on B7 cache-key spec. Sized 3 shifts.
+- [ ] **D5 — Phase 8 driver adapter remaining gaps**: `Stmt`, `Rows` column-type interfaces, `Tx`, custom scanner/valuer (Struct/Array/Versionstamp/Continuation), integration test matrix. Sized 2 shifts. Most of Phase 8 is already shipped.
+
+### Track E — Cross-language perf + security (HIGH/MEDIUM)
+
+- [ ] **E1 — FRL perf comparison Go vs Java SQL**: once C2 lands enough to run a real SELECT, stand up the same comparison harness for SQL workloads (simple SELECT, secondary-index, INSERT, aggregate, prepared statement). Mirrors the record-layer numbers in CLAUDE.md. Gated on C2.
+- [ ] **E2 — ANTLR parser DoS hardening**: 4-min FuzzParse run (swingshift-35) found a 3.4KB unclosed-parens input that takes ~8.7s. Same grammar as Java so the vulnerability exists upstream too. Real fix likely needs grammar tweaks or a parse-time limit in BOTH Go and Java. **Action**: file upstream ticket first, then coordinate Go-side fix to match Java's. NOT a Go-only fix.
+
+### Track F — Architectural follow-ups (MEDIUM, can run any time)
+
+These are bounded clean-ups that don't gate anything but make future work easier.
+
+- [ ] **F1 — Mutual recursion in CTEs**: `WITH RECURSIVE a AS (..., b ...), b AS (..., a ...)`. Today CTEs evaluated in declaration order; mutual refs bail.
+- [ ] **F2 — Continuation resumption of partial recursive results**: for `maxRows: 1` pagination. Java's `RecursiveStateManager` uses TempTable cursors. Gated on C4.
+- [ ] **F3 — Intermingled schema type-filter wrapper**: re-enable PK pushdown on `FieldKeyExpression` PKs (intermingled tables) by wrapping the narrowed cursor with a type-filtering predicate. Blocker: `INTERMINGLE_TABLES` exists in lexer/parser grammar but isn't wired through DDL.
+- [ ] **F4 — `MetaDataEvolutionValidator` wiring**: exists in `recordlayer` but not wired into `SaveSchemaTemplate` / `CreateTemplate`. Java's equivalent flow also skips. Adding Go-side validation unilaterally would reject evolutions Java accepts → divergence. Needs upstream discussion before Go-side enforcement.
+- [ ] **F5 — RFC-025 Phase 2 cascades/rules/ split**: triggered when the FIRST B5 Batch A rule (PrimaryScanRule / ImplementFilterRule / etc.) is ready to commit. Mechanical move per RFC-025.
+- [ ] **F6 — RFC-025 Leak closure**: extract `ExpressionFolder` (done), `ExpressionResolver` (done), and move `NewExplainOnlyGenerator` to `pkg/relational/core/query/`. Last item is architectural-tax-only — defer until a real fake-engine test needs the indirection.
+- [ ] **F7 — RFC-025 Test ports**: port priority-1 + priority-2 Java test classes (ArithmeticValueTest, BooleanValueTest, CastValueTest in values; QueryPredicateTest, ConstantFoldingTest in predicates). Existing coverage is functionally equivalent; the formal port is mostly about cross-shift discoverability. Cosmetic.
+
+### Out-of-track / opportunistic
+
+These don't fit a critical path; pick them up only when a related shift is already touching the area.
+
+- Wire `SimplifyValue` into ORDER BY / aggregate / INSERT VALUES Value-tree paths. Gated on C5 (cascades.Value runtime evaluation seam).
+- More walker scalar functions (date functions: NOW, CURDATE, YEAR, etc.). Gated on B0 TypeDate / TypeTime.
+- GROUP BY (a+b) AS alias — multi-touch; the rewrite path only handles bare-column entries.
+- Pure Go FDB Client `C++ ConnectionID dedup` — not needed unless we add server-side functionality.
+
+### How to use this roadmap
+
+1. Find the highest-letter track with an unchecked item whose prerequisites are checked.
+2. If multiple tracks have such items, prefer Track A (CRITICAL leverage) over Track B (CRITICAL but longer fuse) over Track C/D/E (HIGH).
+3. Within a track, items are listed in dependency order — start at the lowest unchecked number.
+4. Mark `[~]` while in progress; `[x]` when done with a brief shift-name + commit-hash note.
+5. The bucketed sections below this roadmap remain authoritative for the **what**; this roadmap is authoritative for the **next**.
+
+---
+
 ## CRITICAL
 
 These block the Cascades port (`fdb-relational` Phase 2) or cross-language SQL compatibility verification. Per RFC-022, 4.-1 must land before 4.0 rule porting, otherwise we burn shifts on rules we'd later need to redo when plan divergence shows up. Per the dayshift-34 audit, Java↔Go SQL conformance is the single largest unverified surface.
