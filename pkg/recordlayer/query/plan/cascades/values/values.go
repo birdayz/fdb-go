@@ -133,17 +133,20 @@ func (c *ConstantValue) Children() []Value { return []Value{} }
 func (c *ConstantValue) Name() string      { return "constant" }
 func (c *ConstantValue) Evaluate(any) any  { return c.Value }
 
-// Type returns the constant's rich Type. NULL value flips the
-// nullability (a NULL constant is, by definition, nullable); a
-// non-NULL value returns the constant's stored Type verbatim.
+// Type returns the constant's rich Type. Nullability is derived
+// from Value: nil Value → nullable (a typed NULL literal); non-nil
+// Value → NOT NULL (the literal carries a concrete value, so by
+// definition can't be NULL). Mirrors Java's
+// `LiteralValue.computeReturnType` shape.
+//
+// The Typ field's own nullability is overridden — callers shouldn't
+// have to pre-compute the right NotNull / Nullable singleton; the
+// presence/absence of Value is the authoritative signal.
 func (c *ConstantValue) Type() Type {
 	if c.Typ == nil {
 		return UnknownType
 	}
-	if c.Value == nil {
-		return WithNullability(c.Typ, true)
-	}
-	return c.Typ
+	return WithNullability(c.Typ, c.Value == nil)
 }
 
 // FieldValue references a column by name. Evaluate expects a

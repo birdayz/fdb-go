@@ -1646,11 +1646,12 @@ func TestValue_Type_Leaves(t *testing.T) {
 		{"BooleanValue(true)", NewBooleanValue(true), "BOOLEAN NOT NULL"},
 		{"BooleanValue(false)", NewBooleanValue(false), "BOOLEAN NOT NULL"},
 		{"BooleanValue(nil)", &BooleanValue{Value: nil}, "BOOLEAN NULL"},
-		// ConstantValue Typ now carries the nullable-bridged singleton
-		// (TypeInt → NullableLong); Type() flips to nullable on a
-		// NULL Value, returns Typ verbatim otherwise.
-		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NULL"},
-		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NULL"},
+		// ConstantValue: nullability is derived from Value (non-nil
+		// → NOT NULL, nil → NULL). The Typ field's own nullability
+		// is overridden — callers don't need to pre-pick the right
+		// NotNull/Nullable singleton.
+		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NOT NULL"},
+		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NOT NULL"},
 		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: TypeInt}, "LONG NULL"},
 		{"NullValue(typed-INT)", &NullValue{Typ: TypeInt}, "LONG NULL"},
 		{"NullValue(unknown)", &NullValue{Typ: TypeUnknown}, "UNKNOWN NULL"},
@@ -1785,8 +1786,8 @@ func TestValue_Type_RecordConstructor(t *testing.T) {
 		t.Errorf("Fields[0]: got %v", rt.Fields[0])
 	}
 	// Second field: ConstantValue(int64=5, Typ=TypeInt).Type() ==
-	// NullableLong (TypeInt is the nullable singleton).
-	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NullableLong) {
+	// NotNullLong (non-nil Value → NOT NULL per ConstantValue.Type()).
+	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NotNullLong) {
 		t.Errorf("Fields[1]: got %v", rt.Fields[1])
 	}
 }
