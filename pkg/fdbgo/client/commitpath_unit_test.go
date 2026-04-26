@@ -279,6 +279,67 @@ func TestGetVersionstamp_FormatBigEndian(t *testing.T) {
 }
 
 // ============================================================================
+// MutationRef ↔ Mutation layout — runtime assertion catching what
+// compile-time offsetof checks miss (field-type swaps that preserve
+// offsets and sizes, e.g. swapping uint8 with int8).
+// ============================================================================
+
+func TestMutationLayout_BitIdenticalRoundTrip(t *testing.T) {
+	t.Parallel()
+	// Construct a Mutation with non-trivial values, build a request through
+	// the unsafe-cast path (the production path), unmarshal, and verify the
+	// fields round-trip. Catches a field-reorder or type-swap that the
+	// compile-time offset assertions in commitpath.go don't catch.
+	tx := newTestTx()
+	tx.tenantId = NoTenantID
+	tx.mutations = []Mutation{
+		{Type: MutSetValue, Key: []byte("k1"), Value: []byte("v1")},
+		{Type: MutClearRange, Key: []byte("a"), Value: []byte("z")},
+		{Type: MutAddValue, Key: []byte("counter"), Value: []byte{1, 0, 0, 0, 0, 0, 0, 0}},
+	}
+	tx.writeConflicts = []KeyRange{
+		{Begin: []byte("k1"), End: []byte("k1\x00")},
+		{Begin: []byte("a"), End: []byte("z")},
+		{Begin: []byte("counter"), End: []byte("counter\x00")},
+	}
+
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2})
+	defer marshalBufPool.Put(bufp)
+
+	var req types.CommitTransactionRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+
+	want := []struct {
+		mutType uint8
+		k, v    []byte
+	}{
+		{uint8(MutSetValue), []byte("k1"), []byte("v1")},
+		{uint8(MutClearRange), []byte("a"), []byte("z")},
+		{uint8(MutAddValue), []byte("counter"), []byte{1, 0, 0, 0, 0, 0, 0, 0}},
+	}
+	if len(req.Transaction.Mutations) != len(want) {
+		t.Fatalf("count: got %d, want %d", len(req.Transaction.Mutations), len(want))
+	}
+	for i, w := range want {
+		got := req.Transaction.Mutations[i]
+		if got.MutType != w.mutType {
+			t.Errorf("mut[%d].MutType: got %d, want %d (likely Type field swapped)",
+				i, got.MutType, w.mutType)
+		}
+		if !bytesEqual(got.Param1, w.k) {
+			t.Errorf("mut[%d].Param1: got %q, want %q (likely Key field swapped)",
+				i, got.Param1, w.k)
+		}
+		if !bytesEqual(got.Param2, w.v) {
+			t.Errorf("mut[%d].Param2: got %q, want %q (likely Value field swapped)",
+				i, got.Param2, w.v)
+		}
+	}
+}
+
+// ============================================================================
 // jitterBackoff — ±10% jitter on the dummy-transaction retry sleep.
 // ============================================================================
 

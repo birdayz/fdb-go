@@ -231,9 +231,21 @@ var metadataVersionKey = []byte("\xff/metadataVersion")
 
 // buildCommitTransactionRequest constructs the full request with
 // typed mutations and conflict ranges — no pre-serialization blobs.
-// Compile-time assertion: Mutation and MutationRef must have identical size.
-// The zero-copy unsafe cast in buildCommitTransactionRequest depends on this.
-var _ [unsafe.Sizeof(Mutation{})]byte = [unsafe.Sizeof(types.MutationRef{})]byte{}
+//
+// The zero-copy unsafe cast in buildCommitTransactionRequest depends on
+// Mutation and MutationRef having BIT-IDENTICAL memory layouts. A size
+// match alone is insufficient — a field reorder that preserves total
+// size would break silently. Pin per-field offsets at compile time so
+// any future field addition / reorder / type swap fails the build.
+var (
+	_ [unsafe.Sizeof(Mutation{})]byte         = [unsafe.Sizeof(types.MutationRef{})]byte{}
+	_ [unsafe.Offsetof(Mutation{}.Type)]byte  = [unsafe.Offsetof(types.MutationRef{}.MutType)]byte{}
+	_ [unsafe.Offsetof(Mutation{}.Key)]byte   = [unsafe.Offsetof(types.MutationRef{}.Param1)]byte{}
+	_ [unsafe.Offsetof(Mutation{}.Value)]byte = [unsafe.Offsetof(types.MutationRef{}.Param2)]byte{}
+	_ [unsafe.Sizeof(Mutation{}.Type)]byte    = [unsafe.Sizeof(types.MutationRef{}.MutType)]byte{}
+	_ [unsafe.Sizeof(Mutation{}.Key)]byte     = [unsafe.Sizeof(types.MutationRef{}.Param1)]byte{}
+	_ [unsafe.Sizeof(Mutation{}.Value)]byte   = [unsafe.Sizeof(types.MutationRef{}.Param2)]byte{}
+)
 
 // Pool for conflict range slices. Avoids per-commit alloc.
 var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
