@@ -362,6 +362,28 @@ func SeedRunCorpus() []RunQuery {
 		// `RelationalException: LIMIT clause is not supported.` —
 		// it's a JDBC-only knob exposed via Statement.setMaxRows.
 		// Re-add when the planner adds LIMIT-as-SQL support.
+		// SELECT DISTINCT deferred: fdb-relational 4.11.1.0's Cascades
+		// planner returns UnableToPlanException for "SELECT DISTINCT
+		// region FROM T". Re-add when the planner ports the
+		// distinct rule (RFC-022 §4.5).
+		{
+			Name:           "case_expression",
+			SchemaTemplate: "CREATE TABLE T_CASE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CASE VALUES (1, 5)",
+				"INSERT INTO T_CASE VALUES (2, 15)",
+				"INSERT INTO T_CASE VALUES (3, 25)",
+			},
+			Query: "SELECT id, CASE WHEN val < 10 THEN 'low' WHEN val < 20 THEN 'mid' ELSE 'high' END FROM T_CASE ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "_1", Type: "STRING"}},
+				Rows: [][]any{
+					{float64(1), "low"},
+					{float64(2), "mid"},
+					{float64(3), "high"},
+				},
+			},
+		},
 		{
 			Name:           "between",
 			SchemaTemplate: "CREATE TABLE T_BTW (id BIGINT, val BIGINT, PRIMARY KEY (id))",

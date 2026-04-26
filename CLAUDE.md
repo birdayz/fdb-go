@@ -427,6 +427,7 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **`setAPIVersion` throws if client already started.** When the conformance server runs many test suites in one process, a sibling test may init FDB first; `setAPIVersion` then throws `RecordCoreException("API version cannot be changed after client has already started")`. The shared driver-init helper catches this specific exception and proceeds.
 - **`GROUP BY <col>` is not supported by fdb-relational 4.11.1.0's planner.** Returns `UnableToPlanException: Cascades planner could not plan query`. Bare `SELECT count(*)` (no GROUP BY) works. Wait until the planner ports the relevant rule (RFC-022 §4.5 Batch B) before adding GROUP BY corpus entries.
 - **`LIMIT N` clause is not supported in SQL.** Returns `RelationalException: LIMIT clause is not supported.` — pagination is exposed as a JDBC `Statement.setMaxRows` knob, not SQL syntax. Don't add `... LIMIT N` corpus entries until this changes.
+- **`SELECT DISTINCT` is not supported by the planner.** Returns `UnableToPlanException`, same as GROUP BY. Wait until RFC-022 §4.5 Batch B rules port the distinct rule.
 
 ## Error handling
 
