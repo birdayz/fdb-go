@@ -609,6 +609,24 @@ func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
 
 var _ Value = (*RecordConstructorValue)(nil)
 
+// Compile-time assertions that every other Value impl in this
+// package satisfies Value. Post-G1 (swingshift-52), Value includes
+// Type() Type — this list also pins that every impl returns rich
+// Type without needing a separate Typed-interface assertion. New
+// Value impls in this package MUST add themselves here.
+var (
+	_ Value = (*ConstantValue)(nil)
+	_ Value = (*FieldValue)(nil)
+	_ Value = (*NullValue)(nil)
+	_ Value = (*ParameterValue)(nil)
+	_ Value = (*ScalarFunctionValue)(nil)
+	_ Value = (*ArithmeticValue)(nil)
+	_ Value = (*BooleanValue)(nil)
+	_ Value = (*CastValue)(nil)
+	_ Value = (*QuantifiedObjectValue)(nil)
+	// NotValue is in value_not_test.go.
+)
+
 func TestRecordConstructorValue_Shape(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
