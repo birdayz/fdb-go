@@ -952,6 +952,21 @@ func TestMaximumType_NilHandling(t *testing.T) {
 	}
 }
 
+// TestArrayType_IsErased pins the typed/erased distinction for
+// ArrayType. Mirrors Java's Type.Array.isErased().
+func TestArrayType_IsErased(t *testing.T) {
+	t.Parallel()
+	if !NewArrayType(false, nil).IsErased() {
+		t.Error("nil ElementType → IsErased() = true")
+	}
+	if NewArrayType(false, NotNullLong).IsErased() {
+		t.Error("typed ElementType → IsErased() = false")
+	}
+	if !NewArrayType(true, nil).IsErased() {
+		t.Error("nullable + nil element → IsErased() = true")
+	}
+}
+
 // TestRelationType_Shape pins the basic getters + Equals + String.
 // Mirrors Java's Type.Relation contract — always non-nullable,
 // inner-type-driven equality, erased-relation handling.

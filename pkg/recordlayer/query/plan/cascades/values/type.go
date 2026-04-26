@@ -515,6 +515,14 @@ func (*ArrayType) Code() TypeCode { return TypeCodeArray }
 // IsNullable implements Type.
 func (a *ArrayType) IsNullable() bool { return a.Nullable }
 
+// IsErased reports whether the array's element type isn't filled
+// in yet. Mirrors Java's `Type.Array.isErased()` — typically true
+// for the empty-array literal `[]` before inference resolves what
+// it should adopt from context (target column / sibling expression).
+func (a *ArrayType) IsErased() bool {
+	return a.ElementType == nil
+}
+
 // Equals implements Type. Structural — Nullable + ElementType.Equals.
 // Two ArrayTypes both with nil ElementType are equal; one nil + one
 // non-nil are not.
