@@ -671,6 +671,29 @@ func FuzzRecordMetaDataFromProto(f *testing.F) {
 	if b, err := proto.Marshal(ab); err == nil {
 		f.Add(b)
 	}
+	// Seed 4: real demo-proto metadata shipped through a real builder
+	// (no indexes). Captures the full FileDescriptor + dependencies +
+	// union descriptor that A2 cross-language tests exercise.
+	if b := buildSeedMetaDataBytes(false, false, false); b != nil {
+		f.Add(b)
+	}
+	// Seed 5: same but with a VALUE index on Order.price — pins the
+	// shape A2 spec #2 sends across the wire.
+	if b := buildSeedMetaDataBytes(true, false, false); b != nil {
+		f.Add(b)
+	}
+	// Seed 6: same but with a COUNT index on Order.price (atomic
+	// mutation maintainer + grouping expression). Shape from A2 spec
+	// #6 (COUNT index BY_GROUP).
+	if b := buildSeedMetaDataBytes(false, true, false); b != nil {
+		f.Add(b)
+	}
+	// Seed 7: same but with an ungrouped SUM index on Order.price —
+	// shape from A2 spec #8.
+	if b := buildSeedMetaDataBytes(false, false, true); b != nil {
+		f.Add(b)
+	}
+
 	// Pathological raw bytes.
 	f.Add([]byte{})
 	f.Add([]byte{0x00})
@@ -692,4 +715,40 @@ func FuzzRecordMetaDataFromProto(f *testing.F) {
 			t.Fatalf("RecordMetaDataFromProto returned (nil, nil) for bytes %x", blob)
 		}
 	})
+}
+
+// buildSeedMetaDataBytes constructs a real RecordMetaData via the
+// builder, optionally with a VALUE / COUNT / SUM index on Order.price,
+// and serialises to bytes for FuzzRecordMetaDataFromProto seeds.
+// Returns nil if any step fails (the fuzz target tolerates fewer
+// seeds gracefully).
+func buildSeedMetaDataBytes(withValueIndex, withCountIndex, withSumIndex bool) []byte {
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	if withValueIndex {
+		builder.AddIndex("Order", NewIndex("Order$price", Field("price")))
+	}
+	if withCountIndex {
+		builder.AddIndex("Order", NewCountIndex("Order$count_by_price",
+			GroupAll(Field("price"))))
+	}
+	if withSumIndex {
+		builder.AddIndex("Order", NewSumIndex("Order$total_price",
+			Ungrouped(Field("price"))))
+	}
+	md, err := builder.Build()
+	if err != nil {
+		return nil
+	}
+	mdProto, err := md.ToProto()
+	if err != nil {
+		return nil
+	}
+	b, err := proto.Marshal(mdProto)
+	if err != nil {
+		return nil
+	}
+	return b
 }

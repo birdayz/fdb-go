@@ -1143,6 +1143,18 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 // works correctly after proto round-trip (FDB tuple unpack returns int64,
 // valueFromProto may return int32, and Go code may use int). Without this,
 // int64(42) != int(42) in Go's any comparison. Fixes bug 13.
+//
+// `[]byte` keys are normalized to `string` because byte slices are
+// unhashable in Go and would panic when used as a map key. Adversarial
+// proto inputs (e.g. via the FuzzRecordMetaDataFromProto fuzz target,
+// nightshift-53) can carry `[]byte` subspace keys; without this branch,
+// `RecordMetaDataBuilder.Build` would panic with "hash of unhashable
+// type: []uint8" rather than returning a typed error. The string-cast
+// preserves byte-equality semantics for keys with the same byte
+// content, but does collapse `[]byte("x")` and `"x"` into the same
+// equivalence class — that's a harmless conflation here because any
+// metadata that mixes the two for the same logical subspace is
+// already malformed.
 func normalizeSubspaceKey(key any) any {
 	switch k := key.(type) {
 	case int:
@@ -1151,6 +1163,8 @@ func normalizeSubspaceKey(key any) any {
 		return int64(k)
 	case int64:
 		return k
+	case []byte:
+		return string(k)
 	default:
 		return key
 	}
