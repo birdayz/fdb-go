@@ -1771,6 +1771,104 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_IS_DST ORDER BY id",
 		},
+
+		// ===== Aggregate edge cases =====
+		{
+			// COUNT(col) — should skip NULLs (different from COUNT(*)).
+			Name:           "count_col_skips_nulls",
+			SchemaTemplate: "CREATE TABLE T_AG1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AG1 VALUES (1, 10)",
+				"INSERT INTO T_AG1 VALUES (2, NULL)",
+				"INSERT INTO T_AG1 VALUES (3, 30)",
+			},
+			Query: "SELECT count(val) FROM T_AG1",
+		},
+		{
+			// COUNT(*) over empty table → 0 (not NULL like SUM/MIN/MAX).
+			Name:           "count_empty_table",
+			SchemaTemplate: "CREATE TABLE T_AG2 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT count(*) FROM T_AG2",
+		},
+		{
+			// SUM over empty result → NULL (not 0). Pins SQL-standard
+			// aggregate-over-empty behaviour.
+			Name:           "sum_empty_result",
+			SchemaTemplate: "CREATE TABLE T_AG3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AG3 VALUES (1, 100)",
+			},
+			Query: "SELECT sum(val) FROM T_AG3 WHERE val < 0",
+		},
+		{
+			// MIN over empty result → NULL.
+			Name:           "min_empty_result",
+			SchemaTemplate: "CREATE TABLE T_AG4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AG4 VALUES (1, 100)",
+			},
+			Query: "SELECT min(val) FROM T_AG4 WHERE val < 0",
+		},
+
+		// ===== Multi-row INSERT =====
+		{
+			// VALUES with multiple rows in one INSERT — pins
+			// batch-insert semantics through the round-trip.
+			Name:           "multi_row_insert",
+			SchemaTemplate: "CREATE TABLE T_MRI (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MRI VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')",
+			},
+			Query: "SELECT id, name FROM T_MRI ORDER BY id",
+		},
+
+		// ===== UPDATE with arithmetic =====
+		{
+			// UPDATE SET col = col + N — pins arithmetic-as-RHS in
+			// the SET clause.
+			Name:           "update_increment",
+			SchemaTemplate: "CREATE TABLE T_UI (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UI VALUES (1, 10)",
+				"INSERT INTO T_UI VALUES (2, 20)",
+				"INSERT INTO T_UI VALUES (3, 30)",
+				"UPDATE T_UI SET val = val + 100 WHERE id <= 2",
+			},
+			Query: "SELECT id, val FROM T_UI ORDER BY id",
+		},
+
+		// ===== Self-join (same table aliased twice) =====
+		{
+			// Self-join via comma-separated FROM with two aliases.
+			// Pins the planner's ability to disambiguate two
+			// projections of the same source.
+			Name:           "self_join",
+			SchemaTemplate: "CREATE TABLE T_SJ (id BIGINT, parent BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SJ VALUES (1, 0, 'root')",
+				"INSERT INTO T_SJ VALUES (2, 1, 'a')",
+				"INSERT INTO T_SJ VALUES (3, 1, 'b')",
+				"INSERT INTO T_SJ VALUES (4, 2, 'a-1')",
+			},
+			Query: "SELECT child.name, parent.name FROM T_SJ AS child, T_SJ AS parent WHERE child.parent = parent.id ORDER BY child.id",
+		},
+
+		// ===== Compound predicates with mixed AND/OR =====
+		{
+			// AND has higher precedence than OR — `(a AND b) OR c`
+			// is equivalent to `a AND b OR c` per SQL spec. Pins
+			// engines parse and evaluate operator precedence the same.
+			Name:           "and_or_precedence",
+			SchemaTemplate: "CREATE TABLE T_AOP (id BIGINT, x BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AOP VALUES (1, 1, 0, 0)",
+				"INSERT INTO T_AOP VALUES (2, 1, 1, 0)",
+				"INSERT INTO T_AOP VALUES (3, 0, 0, 1)",
+				"INSERT INTO T_AOP VALUES (4, 0, 0, 0)",
+			},
+			Query: "SELECT id FROM T_AOP WHERE x = 1 AND y = 1 OR z = 1 ORDER BY id",
+		},
 	}
 }
 
