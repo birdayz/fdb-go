@@ -1301,26 +1301,25 @@ func (e *TypeRegistrationError) Error() string {
 
 // --- Value → Type bridge ------------------------------------------
 
-// ValueRichType returns the rich Type for v, mapping every Value
-// impl in the seed to a concrete Type. Mirrors what Java's Typed
-// interface produces from the same node — but as a free function
-// rather than an interface method so existing Value impls don't
-// need their interfaces extended (avoids a breaking change).
+// ValueRichType returns the rich Type for v. Post-swingshift-52,
+// this is a thin dispatch over the Typed interface — every Value
+// impl in this package implements `RichType()` directly. The
+// previous type-switch dispatch retired in commit 66cd492c.
 //
-// Nil v returns UnknownType; an unrecognised concrete type degrades
-// to UnknownType so callers don't have to nil-check + type-switch
-// everywhere. The Type returned is best-effort: the seed's int-only
-// arithmetic / int-only aggregate evaluation produces TypeCodeLong
-// even though true SQL semantics depend on operand widths. The
-// Type hierarchy port replaces this with proper inference once
-// every Value subtype carries enough information to derive a
-// precise Type.
+// Kept as a free function (rather than just calling
+// `v.(Typed).RichType()` inline) so callers don't have to type-
+// assert + nil-check; ValueRichType handles both ergonomically.
 //
-// Nullability rules are conservative: literal values are NOT NULL
-// (the literal carries a concrete value); column references and
-// parameter bindings are nullable (the database column / bound
-// parameter could be NULL); intermediate computed values inherit
-// their inputs' nullability. NullValue is always nullable.
+// Nil v returns UnknownType; a Value that DOESN'T implement Typed
+// (e.g. a future Value impl outside this package that forgot to
+// implement RichType) also returns UnknownType — caller can't
+// distinguish "missing implementation" from "intentionally
+// unknown." If you need that distinction, type-assert directly.
+//
+// The returned Type is best-effort: the seed's int-only arithmetic
+// always reports NullableLong even though true SQL would track
+// operand width promotion. Per-Value RichType() impls capture
+// this approximation; tightening them is future work.
 func ValueRichType(v Value) Type {
 	if v == nil {
 		return UnknownType

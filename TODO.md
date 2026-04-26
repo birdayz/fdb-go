@@ -88,6 +88,16 @@ These are bounded clean-ups that don't gate anything but make future work easier
 - [ ] **F6 — RFC-025 Leak closure**: extract `ExpressionFolder` (done), `ExpressionResolver` (done), and move `NewExplainOnlyGenerator` to `pkg/relational/core/query/`. Last item is architectural-tax-only — defer until a real fake-engine test needs the indirection.
 - [ ] **F7 — RFC-025 Test ports**: port priority-1 + priority-2 Java test classes (ArithmeticValueTest, BooleanValueTest, CastValueTest in values; QueryPredicateTest, ConstantFoldingTest in predicates). Existing coverage is functionally equivalent; the formal port is mostly about cross-shift discoverability. Cosmetic.
 
+### Track G — Cascades cleanup (MEDIUM, single-shift each)
+
+- [ ] **G1 — Retire legacy `ValueType` enum**: every Value impl in `pkg/recordlayer/query/plan/cascades/values/` implements `RichType() Type` post-swingshift-52, but the structs still carry `Typ ValueType` fields and `Type() ValueType` methods. To retire:
+  - Flip `Typ ValueType` → `Typ Type` on every Value struct (~6 structs: ConstantValue, FieldValue, NullValue, ParameterValue, ScalarFunctionValue, CastValue + AggregateValue's operand type via Operand).
+  - Update ~20+ constructor call sites in `pkg/relational/core/query/expr/expr.go` and `walk.go` (replace `values.TypeInt` with `values.NotNullLong`, etc.).
+  - Update ~15 test files using the legacy constants for fixtures.
+  - Drop `Type() ValueType` from the Value interface + each impl.
+  - Delete `FromValueType` / `ToValueType` / the `ValueType` enum + `TypeBool` / `TypeInt` / `TypeString` / `TypeFloat` / `TypeUnknown` constants.
+  Single-shift, mostly mechanical, but a coordinated change — can't be done piecewise without leaving the tree broken. Do it on a shift dedicated to this so the diff (~30 files) gets clean review.
+
 ### Out-of-track / opportunistic
 
 These don't fit a critical path; pick them up only when a related shift is already touching the area.
