@@ -1082,6 +1082,34 @@ func TestMaximumType_RecordRecursion(t *testing.T) {
 			t.Errorf("field name: got %q, want empty (anonymised)", got.Fields[0].Name)
 		}
 	})
+
+	t.Run("record name: both agree → keep", func(t *testing.T) {
+		t.Parallel()
+		r1 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		r2 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.RecordName != "User" {
+			t.Errorf("record name: got %q, want User", got.RecordName)
+		}
+	})
+	t.Run("record name: r1 anonymous → use r2", func(t *testing.T) {
+		t.Parallel()
+		r1 := &RecordType{RecordName: "", Fields: []Field{f("x", NotNullInt, 0)}}
+		r2 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.RecordName != "User" {
+			t.Errorf("record name: got %q, want User", got.RecordName)
+		}
+	})
+	t.Run("record name: different names → anonymise", func(t *testing.T) {
+		t.Parallel()
+		r1 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		r2 := &RecordType{RecordName: "Order", Fields: []Field{f("x", NotNullInt, 0)}}
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.RecordName != "" {
+			t.Errorf("record name: got %q, want empty", got.RecordName)
+		}
+	})
 }
 
 // TestMaximumType_EnumRecursion pins ENUM × ENUM:

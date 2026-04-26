@@ -953,8 +953,20 @@ func MaximumType(t1, t2 Type) Type {
 				}
 				out[i] = Field{Name: name, FieldType: ft, Ordinal: i}
 			}
+			// Result record name: use t1's when both agree or t2 is
+			// anonymous; use t2's when t1 is anonymous; anonymise on
+			// disagreement (per Java's Record.fromFields shape — the
+			// merged record loses its origin identity unless both
+			// inputs agree).
+			resultRecordName := ""
+			switch {
+			case r1.RecordName == "":
+				resultRecordName = r2.RecordName
+			case r2.RecordName == "" || r1.RecordName == r2.RecordName:
+				resultRecordName = r1.RecordName
+			}
 			return &RecordType{
-				RecordName: r1.RecordName, // t1's name; could anonymise if mismatched
+				RecordName: resultRecordName,
 				Nullable:   resultNullable,
 				Fields:     out,
 			}
