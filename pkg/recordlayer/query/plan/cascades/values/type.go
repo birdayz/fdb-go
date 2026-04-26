@@ -1320,6 +1320,12 @@ func ValueRichType(v Value) Type {
 	if v == nil {
 		return UnknownType
 	}
+	// Phase 4.0 migration: Value impls that opt into the Typed
+	// interface compute their RichType() directly. Skip the
+	// type-switch dispatch for those.
+	if t, ok := v.(Typed); ok {
+		return t.RichType()
+	}
 	switch x := v.(type) {
 	case *ConstantValue:
 		// Literal constant — NOT NULL when the literal carries a value;

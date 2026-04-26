@@ -104,6 +104,15 @@ func (c *ConstantValue) Type() ValueType   { return c.Typ }
 func (c *ConstantValue) Name() string      { return "constant" }
 func (c *ConstantValue) Evaluate(any) any  { return c.Value }
 
+// RichType implements the Typed interface — Phase 4.0 type-system
+// migration. Returns the rich Type (with nullability) instead of
+// the legacy ValueType enum. NULL when Value is nil; otherwise the
+// non-nullable form of the legacy type's bridged Type.
+func (c *ConstantValue) RichType() Type {
+	nullable := c.Value == nil
+	return FromValueType(c.Typ, nullable)
+}
+
 // FieldValue references a column by name. Evaluate expects a
 // `map[string]any` eval context and returns the field's value
 // (nil if absent — SQL NULL semantics).
