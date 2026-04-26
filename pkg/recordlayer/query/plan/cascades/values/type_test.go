@@ -177,6 +177,42 @@ func TestNewPrimitiveType_RejectsStructured(t *testing.T) {
 	}
 }
 
+// TestConstantValue_Type_OverridesTypField pins the contract: the
+// presence/absence of Value is the AUTHORITATIVE nullability signal,
+// regardless of which singleton the caller stored in Typ. So
+// ConstantValue with Typ=NotNullLong + Value=nil is nullable
+// (typed-NULL), and ConstantValue with Typ=NullableLong + Value=5
+// is NOT NULL (literal carries a value).
+//
+// Without this override, callers would have to pre-pick the right
+// NotNull/Nullable singleton for Typ — error-prone and unnecessary.
+func TestConstantValue_Type_OverridesTypField(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		typ     Type
+		value   any
+		wantStr string
+	}{
+		{"NotNullLong + 5 → NOT NULL", NotNullLong, int64(5), "LONG NOT NULL"},
+		{"NotNullLong + nil → NULL", NotNullLong, nil, "LONG NULL"},
+		{"NullableLong + 5 → NOT NULL", NullableLong, int64(5), "LONG NOT NULL"},
+		{"NullableLong + nil → NULL", NullableLong, nil, "LONG NULL"},
+		{"NullableString + \"hi\" → NOT NULL", NullableString, "hi", "STRING NOT NULL"},
+		{"NotNullBoolean + nil → NULL", NotNullBoolean, nil, "BOOLEAN NULL"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := &ConstantValue{Value: tc.value, Typ: tc.typ}
+			if got := c.Type().String(); got != tc.wantStr {
+				t.Errorf("got %q, want %q", got, tc.wantStr)
+			}
+		})
+	}
+}
+
 // TestLegacyConstants_Aliases pins that the legacy ValueType-named
 // constants (TypeInt / TypeBool / TypeString / TypeFloat / TypeUnknown)
 // continue to point at the canonical Type singletons after the Track
