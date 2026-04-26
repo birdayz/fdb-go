@@ -413,6 +413,20 @@ func SeedRunCorpus() []RunQuery {
 		// different probe shape — investigate the catalog access
 		// path in a follow-up shift.
 		{
+			Name:           "math_in_where",
+			SchemaTemplate: "CREATE TABLE T_MATH (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MATH VALUES (1, 5, 5)", // 5+5=10 > 9 ✓
+				"INSERT INTO T_MATH VALUES (2, 3, 4)", // 3+4=7  > 9 ✗
+				"INSERT INTO T_MATH VALUES (3, 4, 6)", // 4+6=10 > 9 ✓
+			},
+			Query: "SELECT id FROM T_MATH WHERE x + y > 9 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(1)}, {float64(3)}},
+			},
+		},
+		{
 			Name:           "subquery_in_from",
 			SchemaTemplate: "CREATE TABLE T_SUB (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
