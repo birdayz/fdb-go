@@ -1869,6 +1869,102 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_AOP WHERE x = 1 AND y = 1 OR z = 1 ORDER BY id",
 		},
+
+		// ===== Feature combinations =====
+		{
+			// JOIN + aggregate + WHERE + ORDER BY — full pipeline
+			// across multiple sources.
+			Name: "join_with_aggregate_filter_order",
+			SchemaTemplate: "CREATE TABLE T_C1 (id BIGINT, region STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_C2 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C1 VALUES (1, 'us')",
+				"INSERT INTO T_C1 VALUES (2, 'eu')",
+				"INSERT INTO T_C2 VALUES (10, 1, 100)",
+				"INSERT INTO T_C2 VALUES (11, 1, 200)",
+				"INSERT INTO T_C2 VALUES (12, 2, 300)",
+				"INSERT INTO T_C2 VALUES (13, 2, 50)",
+			},
+			Query: "SELECT count(*) FROM T_C1 a, T_C2 b WHERE a.id = b.parent AND b.val > 75",
+		},
+		{
+			// CTE + JOIN — pins JOIN against a materialised CTE
+			// rather than a base table.
+			Name: "cte_join_to_table",
+			SchemaTemplate: "CREATE TABLE T_C3 (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_C4 (id BIGINT, fid BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C3 VALUES (1, 'alpha')",
+				"INSERT INTO T_C3 VALUES (2, 'beta')",
+				"INSERT INTO T_C4 VALUES (10, 1, 100)",
+				"INSERT INTO T_C4 VALUES (11, 1, 200)",
+				"INSERT INTO T_C4 VALUES (12, 2, 300)",
+			},
+			Query: "WITH big AS (SELECT id, fid FROM T_C4 WHERE val >= 200) SELECT t.name FROM T_C3 t, big WHERE t.id = big.fid ORDER BY t.id",
+		},
+		{
+			// Compound WHERE + OR-of-AND — surfaces predicate
+			// simplification across operator levels.
+			Name:           "compound_or_of_and",
+			SchemaTemplate: "CREATE TABLE T_C5 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C5 VALUES (1, 'us', 50)",
+				"INSERT INTO T_C5 VALUES (2, 'us', 150)",
+				"INSERT INTO T_C5 VALUES (3, 'eu', 50)",
+				"INSERT INTO T_C5 VALUES (4, 'eu', 150)",
+			},
+			Query: "SELECT id FROM T_C5 WHERE (region = 'us' AND val > 100) OR (region = 'eu' AND val < 100) ORDER BY id",
+		},
+		{
+			// CTE feeding aggregate that then feeds a final WHERE.
+			Name:           "cte_aggregate_then_filter",
+			SchemaTemplate: "CREATE TABLE T_C6 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C6 VALUES (1, 'us', 100)",
+				"INSERT INTO T_C6 VALUES (2, 'us', 200)",
+				"INSERT INTO T_C6 VALUES (3, 'eu', 300)",
+			},
+			Query: "WITH us AS (SELECT id, val FROM T_C6 WHERE region = 'us') SELECT count(*) FROM us WHERE val < 150",
+		},
+
+		// ===== UPDATE / DELETE feature interactions =====
+		{
+			// UPDATE with arithmetic on existing value — pins read-
+			// modify-write semantics.
+			Name:           "update_arithmetic_value",
+			SchemaTemplate: "CREATE TABLE T_UA1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA1 VALUES (1, 100)",
+				"INSERT INTO T_UA1 VALUES (2, 200)",
+				"UPDATE T_UA1 SET val = val * 2",
+			},
+			Query: "SELECT id, val FROM T_UA1 ORDER BY id",
+		},
+		{
+			// DELETE with predicate using BETWEEN.
+			Name:           "delete_between",
+			SchemaTemplate: "CREATE TABLE T_DB (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DB VALUES (1, 5)",
+				"INSERT INTO T_DB VALUES (2, 15)",
+				"INSERT INTO T_DB VALUES (3, 25)",
+				"INSERT INTO T_DB VALUES (4, 35)",
+				"DELETE FROM T_DB WHERE val BETWEEN 10 AND 30",
+			},
+			Query: "SELECT id FROM T_DB ORDER BY id",
+		},
+		{
+			// DELETE all rows (no WHERE) — pins truncate-style DML.
+			Name:           "delete_all",
+			SchemaTemplate: "CREATE TABLE T_DA (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DA VALUES (1)",
+				"INSERT INTO T_DA VALUES (2)",
+				"INSERT INTO T_DA VALUES (3)",
+				"DELETE FROM T_DA",
+			},
+			Query: "SELECT id FROM T_DA",
+		},
 	}
 }
 
