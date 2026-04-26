@@ -371,6 +371,43 @@ func SeedRunCorpus() []RunQuery {
 		// `RelationalException: Unsupported operator lower`. Re-add
 		// when the function registry expands.
 		{
+			Name:           "update_then_select",
+			SchemaTemplate: "CREATE TABLE T_UPD (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPD VALUES (1, 100)",
+				"INSERT INTO T_UPD VALUES (2, 200)",
+				"INSERT INTO T_UPD VALUES (3, 300)",
+				"UPDATE T_UPD SET val = val + 1 WHERE id = 2",
+			},
+			Query: "SELECT id, val FROM T_UPD ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "BIGINT"}},
+				Rows: [][]any{
+					{float64(1), float64(100)},
+					{float64(2), float64(201)},
+					{float64(3), float64(300)},
+				},
+			},
+		},
+		{
+			Name:           "delete_then_select",
+			SchemaTemplate: "CREATE TABLE T_DEL (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DEL VALUES (1, 10)",
+				"INSERT INTO T_DEL VALUES (2, 20)",
+				"INSERT INTO T_DEL VALUES (3, 30)",
+				"DELETE FROM T_DEL WHERE id = 2",
+			},
+			Query: "SELECT id, val FROM T_DEL ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "BIGINT"}},
+				Rows: [][]any{
+					{float64(1), float64(10)},
+					{float64(3), float64(30)},
+				},
+			},
+		},
+		{
 			Name:           "case_expression",
 			SchemaTemplate: "CREATE TABLE T_CASE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
