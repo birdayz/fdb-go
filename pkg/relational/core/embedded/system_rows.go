@@ -33,7 +33,17 @@ type staticRows struct {
 	current int
 }
 
-func (r *staticRows) Columns() []string { return r.cols }
+// Columns returns column names in JDBC-result-set form: unquoted
+// identifiers uppercased, qualifiers stripped, anonymous expressions
+// rendered as "_<position>". Internal callers that depend on the raw
+// per-column name (CTE materialization keying off "alias.col" forms,
+// ORDER BY resolution against unqualified identifiers, etc.) read
+// from `r.cols` directly and bypass this transformation. Driver
+// callers go through this method, which is what fdb-relational's
+// JDBC ResultSetMetaData reports.
+//
+// See jdbcColumnName in select_helpers.go for the rules.
+func (r *staticRows) Columns() []string { return jdbcizeColumnNames(r.cols) }
 func (r *staticRows) Close() error      { r.current = len(r.rows); return nil }
 func (r *staticRows) Next(dest []driver.Value) error {
 	if r.current >= len(r.rows) {

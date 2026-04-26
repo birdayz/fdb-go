@@ -1033,7 +1033,7 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 	defer rows.Close()
 	cols, err := rows.Columns()
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(cols).To(gomega.Equal([]string{"name"}))
+	g.Expect(cols).To(gomega.Equal([]string{"NAME"}))
 	var names []string
 	for rows.Next() {
 		var n string
@@ -1049,7 +1049,7 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 	defer rows2.Close()
 	cols2, err := rows2.Columns()
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(cols2).To(gomega.Equal([]string{"item_id", "price"}))
+	g.Expect(cols2).To(gomega.Equal([]string{"ITEM_ID", "PRICE"}))
 	var itemCount int
 	for rows2.Next() {
 		var id, p any
@@ -2091,7 +2091,7 @@ func TestFDB_SelectColumnAlias(t *testing.T) {
 	// Verify column names use aliases.
 	cols, colsErr := rows.Columns()
 	g.Expect(colsErr).NotTo(gomega.HaveOccurred())
-	g.Expect(cols).To(gomega.Equal([]string{"id", "amount"}))
+	g.Expect(cols).To(gomega.Equal([]string{"ID", "AMOUNT"}))
 
 	var id, amount int64
 	g.Expect(rows.Next()).To(gomega.BeTrue())

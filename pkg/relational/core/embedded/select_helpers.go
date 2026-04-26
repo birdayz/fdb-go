@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,63 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
+
+// jdbcColumnName transforms an internal projection name into the
+// JDBC-style result-set metadata name that fdb-relational emits.
+// Java uppercases unquoted identifiers, strips qualifiers from
+// projected columns, and synthesises `_N` (zero-based position) for
+// anonymous expression projections (CASE, COUNT(*), arithmetic, etc.).
+//
+// Rules:
+//   - Bare simple identifier ("id", "name") → upper-cased ("ID").
+//   - Qualified column ("t.id", "u.name") → strip qualifier, upper.
+//   - Anything containing operators / parens / spaces → "_<pos>".
+//
+// Idempotent: applying twice yields the same result, so it's safe
+// to chain through multiple staticRows wrappers (CTE → SELECT, UNION
+// over already-transformed sources).
+func jdbcColumnName(name string, position int) string {
+	base := name
+	if dot := strings.LastIndex(name, "."); dot >= 0 {
+		base = name[dot+1:]
+	}
+	if isSimpleIdentifier(base) {
+		return strings.ToUpper(base)
+	}
+	return fmt.Sprintf("_%d", position)
+}
+
+// isSimpleIdentifier reports whether s matches `[A-Za-z_][A-Za-z0-9_]*`.
+// Empty strings, leading digits, and any non-ASCII / punctuation
+// characters fail the check.
+func isSimpleIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// jdbcizeColumnNames returns a copy of cols with each entry transformed
+// via jdbcColumnName. Used at the driver-output boundary so the
+// internal column-name flow (used for ORDER BY resolution, alias
+// remapping, etc.) stays unchanged.
+func jdbcizeColumnNames(cols []string) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = jdbcColumnName(c, i)
+	}
+	return out
+}
 
 // SELECT-path helpers shared by the single-table / JOIN / CTE
 // executors in select_query_full.go / join.go / cte_scan.go.
