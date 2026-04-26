@@ -446,15 +446,21 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 
 ### Go embedded SQL engine — known divergences from fdb-relational
 
-The plandiff Go-vs-Java result-set harness (`pkg/relational/conformance/plandiff/go_runner_test.go`) exposes these conformance gaps in the Go embedded SQL engine. Each entry's row VALUES match Java byte-for-byte (30/31 corpus entries — the one outlier is a feature gap, not a value divergence), but column metadata diverges. The harness ships with a strict-VALUES test plus a logging-only `_ColumnGaps` audit so semantic regressions surface immediately while metadata gaps remain visible without failing the build.
+The plandiff Go-vs-Java result-set harness (`pkg/relational/conformance/plandiff/go_runner_test.go`) drives every SeedRunCorpus entry through both engines and asserts byte-equivalence on column metadata + row values. As of swingshift-52, **30/31 corpus entries pass strict end-to-end equivalence**. The remaining outlier (`uuid_round_trip`) is a documented feature gap, not a value divergence.
 
-- **Identifier case is preserved, not uppercased.** Go returns `id`, `name`, etc.; fdb-relational returns `ID`, `NAME`. SQL standard says unquoted identifiers should fold to a single case; Java picks upper. The Go embedded engine should adopt the same rule (likely a single transformation point in column-resolution / projection naming).
-- **Anonymous projections use raw expression text instead of synthetic `_N`.** A `SELECT count(*) FROM T` returns column name `COUNT(*)` in Go vs `_0` in Java. Compound expressions are worse: `SELECT id, x+10 FROM T` becomes `id, x+10` in Go vs `ID, _1` in Java; `CASE WHEN val<10 THEN 'low' ... END` becomes the raw concatenated case text in Go (`CASEWHENval<10THEN'low'WHENval<20THEN'mid'ELSE'high'END`). The Go engine should generate `_N` synthetic names matching Java's column-naming convention.
-- **Qualified column names retain the qualifier.** `SELECT t.id FROM (SELECT id FROM T) t` returns column name `t.id` in Go vs `ID` in Java (Java strips the qualifier in the result-set metadata).
-- **Inner-join projection retains qualifier.** `FROM Users u, Orders o WHERE ...` projecting `u.name, o.total` returns `u.name`, `o.total` in Go vs `NAME`, `TOTAL` in Java.
-- **DOUBLE columns infer as `BIGINT` in the runner.** This is half a runner issue and half a driver issue: the embedded driver doesn't implement `ColumnTypeDatabaseTypeName`, so the runner has to guess from runtime values — and `coerceForComparison` collapses int64/float64/etc. into `float64` for cross-engine value comparison, after which we can't distinguish DOUBLE from BIGINT. Fix by either implementing `ColumnTypeDatabaseTypeName` on the embedded driver (right fix), or splitting type inference from value coercion in the runner (workaround).
-- **Empty result set leaves the runner with no type to infer.** `SELECT id FROM T1 WHERE 1=0` returns columns `id|` (no type) in Go because there's no row to inspect. Java pulls the type from `ResultSetMetaData` directly. Same root cause as DOUBLE inference — driver-side metadata.
-- **`UUID` columns aren't supported as a column type at DDL time.** `CREATE TABLE T (... key UUID, ...)` raises `42F59: unsupported column type: UUID`. The Go embedded engine never registered UUID in its column-type vocabulary. Java supports UUID end-to-end (DDL, INSERT, projection — values come through as `java.util.UUID`).
+Conformance gaps **closed** in swingshift-52:
+
+- ✅ **Identifier case** — JDBC normalizer at `staticRows.Columns()` uppercases unquoted identifiers (`id` → `ID`).
+- ✅ **Qualified column stripping** — same normalizer drops `alias.` prefix in projected columns (`t.id` → `ID`, `u.name` → `NAME`).
+- ✅ **Anonymous projection naming** — same normalizer emits synthetic `_N` (zero-based position) for any expression that isn't a simple identifier (`COUNT(*)` → `_0`, `id+10` → `_1`, `CASE ... END` → `_<pos>`).
+- ✅ **JDBC type-name plumbing** — embedded driver implements `RowsColumnTypeDatabaseTypeName`. `staticRows.colTypes` populated from proto FieldDescriptor in the SELECT path; aggregate columns default to BIGINT (covers SUM/MIN/MAX/COUNT over integral types).
+- ✅ **Empty result-set type inference** — same driver method, no longer dependent on first-row value inspection.
+
+The transformation is applied at the driver-output boundary (`staticRows.Columns()` and `ColumnTypeDatabaseTypeName`), NOT at the internal `.cols` field. Internal callers (CTE row-map keying, ORDER BY resolution against unqualified names, alias remapping) read `.cols` directly and bypass normalization, preserving correctness of internal lookups.
+
+Conformance gaps **still open**:
+
+- **`UUID` column type** — DDL parser hook landed swingshift-52 (`pkg/relational/core/embedded/ddl.go` accepts `key UUID` syntax), but the metadata builder (`pkg/relational/core/metadata/builder.go#datatypeToProtoFieldType`) doesn't yet emit the `tuple_fields.UUID` proto sub-message reference (sfixed64 most/least bits, matching Java's `Type.uuidType` lowering). The plandiff `uuid_round_trip` entry is t.Skipf'd via `isGoFeatureGap` until the proto layer lands. Tracked in TODO.md.
 
 ## Error handling
 

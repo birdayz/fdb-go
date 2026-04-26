@@ -114,21 +114,29 @@ func TestGoSQLRunner_HappyPath(t *testing.T) {
 	}
 }
 
-// TestGoSQLRunner_SeedRunCorpus_Values drives every SeedRunCorpus
-// entry through the real Go embedded engine and asserts that the
-// row-VALUES match the entry's Expected (Java-side baseline).
+// TestGoSQLRunner_SeedRunCorpus drives every SeedRunCorpus entry
+// through the real Go embedded engine and asserts BOTH the column
+// metadata (names + JDBC type names) AND the row values match the
+// entry's Expected (Java-side baseline).
 //
-// Column metadata (names + types) is checked separately in
-// TestGoSQLRunner_SeedRunCorpus_ColumnGaps — there are documented
-// Java↔Go divergences (identifier-case, synthetic projection names,
-// qualifier stripping, ResultSetMetaData type-name inference) that
-// are real conformance gaps in the Go embedded engine, not bugs in
-// the runner. Splitting the assertions surfaces semantic-VALUE
-// regressions immediately while keeping the metadata gaps visible
-// without failing the build.
+// History: this used to be split into _Values (strict) and a
+// _ColumnGaps (logging-only) audit, because the Go embedded engine
+// preserved user-case identifiers, retained qualifiers, used raw
+// expression text for anonymous projections, and had no JDBC
+// type-name plumbing. Those gaps closed in swingshift-52 — the
+// projection-name normalizer at the staticRows.Columns() boundary
+// and the new ColumnTypeDatabaseTypeName driver method bring
+// metadata into byte-equivalence with Java's ResultSetMetaData.
 //
-// See CLAUDE.md "Java↔Go conformance gotchas" for the full list.
-func TestGoSQLRunner_SeedRunCorpus_Values(t *testing.T) {
+// Now: strict per-entry Column[] + Rows[] assertion. Anything that
+// diverges is a real cross-engine regression — fix the underlying
+// engine bug, do not relax this test.
+//
+// Entries that hit feature gaps in the Go engine (today: UUID
+// columns) are classified via isGoFeatureGap and t.Skipf'd with a
+// note. When a gap closes, the corresponding entry will start
+// passing automatically.
+func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 	t.Parallel()
 	if goSQLClusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -149,6 +157,12 @@ func TestGoSQLRunner_SeedRunCorpus_Values(t *testing.T) {
 				}
 				t.Fatalf("Go engine failed: %v\nQuery: %s", got.Err, q.Query)
 			}
+			// Column metadata (names + JDBC type names): strict.
+			if !columnsMatch(got.Rows.Columns, q.Expected.Columns) {
+				t.Errorf("column metadata mismatch\n  got:  %v\n  want: %v",
+					got.Rows.Columns, q.Expected.Columns)
+			}
+			// Row values: strict.
 			if len(got.Rows.Rows) != len(q.Expected.Rows) {
 				t.Fatalf("row count mismatch: got %d, want %d\ngot rows: %v\nwant rows: %v",
 					len(got.Rows.Rows), len(q.Expected.Rows),
@@ -169,48 +183,6 @@ func TestGoSQLRunner_SeedRunCorpus_Values(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestGoSQLRunner_SeedRunCorpus_ColumnGaps logs (does NOT fail on)
-// column-metadata divergences between the Go embedded engine and
-// the Java reference. Each entry's failure is one of the documented
-// gaps in CLAUDE.md "Java↔Go conformance gotchas":
-//
-//   - Identifier case: Go preserves "id", Java uppercases to "ID".
-//   - Anonymous projections: Go uses raw expression text
-//     ("COUNT(*)", "id+10"), Java uses synthetic "_0", "_1".
-//   - Qualified columns: Go returns "t.id" / "u.name", Java
-//     strips qualifiers.
-//   - Type-name inference: the Go runner infers from value shapes
-//     because the embedded driver doesn't expose JDBC type names;
-//     DOUBLE values come through as float64 and infer to "BIGINT".
-//   - Empty result set: no row = no inferred type ("ID|" vs
-//     "ID|BIGINT").
-//
-// This subtest is intentionally a t.Logf-only audit. When the Go
-// engine catches up on a gap, the corresponding entry will start
-// agreeing. When all entries agree, fold the assertion into
-// _Values and delete this audit.
-func TestGoSQLRunner_SeedRunCorpus_ColumnGaps(t *testing.T) {
-	t.Parallel()
-	if goSQLClusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-
-	r := NewGoSQLSetupRunner(goSQLClusterFilePath)
-	mismatches := 0
-	for _, q := range SeedRunCorpus() {
-		got := r.RunWithSetup(context.Background(), q.SchemaTemplate, q.SetupSqls, q.Query)
-		if got.Err != nil {
-			continue
-		}
-		if !columnsMatch(got.Rows.Columns, q.Expected.Columns) {
-			mismatches++
-			t.Logf("[%s] columns differ:\n  got:  %v\n  want: %v",
-				q.Name, got.Rows.Columns, q.Expected.Columns)
-		}
-	}
-	t.Logf("column-metadata gaps: %d / %d entries", mismatches, len(SeedRunCorpus()))
 }
 
 // isGoFeatureGap recognises errors that mean "the Go embedded engine

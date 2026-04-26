@@ -49,6 +49,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		expr antlrgen.IExpressionContext
 	}
 	var cols []string
+	var colTypes []string // parallel to cols; "" entries mean "type unknown"
 	var data []row
 	var extraSortFields []outField
 	// naturalOrder holds the column names the chosen scan cursor emits
@@ -80,6 +81,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
+		colTypes = nil
 		extraSortFields = nil
 		naturalOrder = nil
 		naturalOrderAliases = nil
@@ -377,6 +379,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		if sq.countStar {
 			cols = []string{countStarOutName(sq)}
+			colTypes = []string{"BIGINT"}
 			var count int64
 			for {
 				result, nextErr := cursor.OnNext(ctx)
@@ -710,8 +713,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 			cols = make([]string, len(emitIdx))
+			colTypes = make([]string, len(emitIdx))
 			for out, i := range emitIdx {
 				cols[out] = sq.aggCols[i].outName
+				// Heuristic: COUNT is always BIGINT; SUM/MIN/MAX/AVG
+				// over typed columns inherit the operand's type. Today
+				// we don't track operand types through the aggregator
+				// pipeline, so default to BIGINT — covers the common
+				// case (SUM/MIN/MAX over INT/BIGINT). When numeric-type
+				// inference for aggregates lands, replace this default.
+				colTypes[out] = "BIGINT"
 			}
 
 			// Emit one row per group (with HAVING filter). Two passes:
@@ -907,8 +918,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// fullFields = projected + extra sort columns; output strips extra at end.
 		fullFields := append(outFields, extraSortFields...) //nolint:gocritic
 		cols = make([]string, len(outFields))
+		colTypes = make([]string, len(outFields))
 		for i, f := range outFields {
 			cols[i] = f.name
+			colTypes[i] = jdbcTypeNameForFD(f.fd)
 		}
 
 		// Early-termination target: when the scan's natural order
@@ -1114,5 +1127,5 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		cols, data = stripAggregateSortOnly(sq, cols, data)
 	}
 
-	return &staticRows{cols: cols, rows: data}, nil
+	return &staticRows{cols: cols, colTypes: colTypes, rows: data}, nil
 }

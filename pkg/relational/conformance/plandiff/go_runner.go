@@ -173,12 +173,28 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 		return RowSet{}, fmt.Errorf("plandiff/go: column names: %w", err)
 	}
 
+	// Pull JDBC-style type names directly from the driver — the
+	// embedded driver implements RowsColumnTypeDatabaseTypeName, so
+	// we get authoritative type names for typed columns and "" only
+	// for projections whose result type wasn't inferred (e.g.
+	// arithmetic expressions). This replaces the earlier value-based
+	// inference, which couldn't distinguish DOUBLE from BIGINT after
+	// numeric coercion.
+	colTypes, ctErr := sqlRows.ColumnTypes()
+	if ctErr != nil {
+		return RowSet{}, fmt.Errorf("plandiff/go: column types: %w", ctErr)
+	}
+
 	out := RowSet{
 		Columns: make([]Column, len(colNames)),
 		Rows:    [][]any{},
 	}
 	for i, name := range colNames {
-		out.Columns[i] = Column{Name: name, Type: ""} // type filled from first row's value
+		typeName := ""
+		if i < len(colTypes) && colTypes[i] != nil {
+			typeName = colTypes[i].DatabaseTypeName()
+		}
+		out.Columns[i] = Column{Name: name, Type: typeName}
 	}
 
 	for sqlRows.Next() {
@@ -200,10 +216,13 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 			row[i] = coerceForComparison(v)
 		}
 		out.Rows = append(out.Rows, row)
-		// Fill column type from first row's values.
+		// For columns where the driver didn't supply a type name,
+		// fall back to inferring from the first non-NULL row's value.
 		if len(out.Rows) == 1 {
 			for i, v := range row {
-				out.Columns[i].Type = inferTypeName(v)
+				if out.Columns[i].Type == "" {
+					out.Columns[i].Type = inferTypeName(v)
+				}
 			}
 		}
 	}

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -68,6 +70,34 @@ func jdbcizeColumnNames(cols []string) []string {
 		out[i] = jdbcColumnName(c, i)
 	}
 	return out
+}
+
+// jdbcTypeNameForFD maps a protoreflect FieldDescriptor's kind to the
+// JDBC-style type name fdb-relational reports via
+// ResultSetMetaData.getColumnTypeName(). Empty string for unmappable /
+// nil descriptors — the staticRows.ColumnTypeDatabaseTypeName implementation
+// treats "" as "type unknown".
+func jdbcTypeNameForFD(fd protoreflect.FieldDescriptor) string {
+	if fd == nil {
+		return ""
+	}
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return "BOOLEAN"
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return "INTEGER"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "BIGINT"
+	case protoreflect.FloatKind:
+		return "FLOAT"
+	case protoreflect.DoubleKind:
+		return "DOUBLE"
+	case protoreflect.StringKind:
+		return "STRING"
+	case protoreflect.BytesKind:
+		return "BYTES"
+	}
+	return ""
 }
 
 // SELECT-path helpers shared by the single-table / JOIN / CTE
