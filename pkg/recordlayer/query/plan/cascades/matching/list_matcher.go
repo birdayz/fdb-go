@@ -30,6 +30,8 @@ type ListMatcher struct {
 	downstreams []BindingMatcher
 }
 
+func (*ListMatcher) isCollectionMatcher() {}
+
 // NewListMatcher constructs a ListMatcher matching exactly len(downstreams)
 // elements in order. Panics on zero downstreams — same rationale as
 // NewAllOf / NewAnyOf: a zero-downstream matcher is a degenerate

@@ -29,9 +29,31 @@ package matching
 // `new(AllElementsMatcher)` calls receive distinct map-key identities
 // (no nonce field needed here — see AnyValue in matcher.go for the
 // zero-size-struct gotcha).
+// CollectionMatcher is the interface every collection-shaped matcher
+// implements — AllElementsMatcher / SomeElementsMatcher /
+// AtLeastElementsMatcher / ListMatcher. Mirrors Java's
+// `com.apple.foundationdb.record.query.plan.cascades.matching.structure.
+// CollectionMatcher`. Used by rule patterns that want to constrain
+// "this matcher must be one that matches a slice", as opposed to a
+// scalar Value or a Predicate.
+//
+// Rule authors typically use the concrete factories
+// (NewAllElementsMatcher, etc.) directly; the interface exists so
+// future combinators that compose collection matchers (e.g.
+// `combine(allElements, atLeastTwo)`) can take it as a parameter.
+type CollectionMatcher interface {
+	BindingMatcher
+	// isCollectionMatcher is a marker method — its only purpose is
+	// to confine the interface to the four concrete impls in this
+	// package. A bare `BindingMatcher` won't satisfy it.
+	isCollectionMatcher()
+}
+
 type AllElementsMatcher struct {
 	downstream BindingMatcher
 }
+
+func (*AllElementsMatcher) isCollectionMatcher() {}
 
 // NewAllElementsMatcher constructs an AllElementsMatcher with the
 // given downstream applied to every input element.

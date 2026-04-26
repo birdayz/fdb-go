@@ -29,6 +29,8 @@ type SomeElementsMatcher struct {
 	downstream BindingMatcher
 }
 
+func (*SomeElementsMatcher) isCollectionMatcher() {}
+
 // NewSomeElementsMatcher constructs a SomeElementsMatcher with the
 // given downstream applied per-element.
 func NewSomeElementsMatcher(downstream BindingMatcher) *SomeElementsMatcher {

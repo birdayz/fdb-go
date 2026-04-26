@@ -89,6 +89,26 @@ func TestSomeElementsMatcher_NonSliceInput(t *testing.T) {
 	}
 }
 
+// TestCollectionMatcher_InterfaceImpls pins the marker-interface
+// constraint: every collection-shaped matcher (AllElements / Some /
+// AtLeast / List) satisfies CollectionMatcher; bare BindingMatchers
+// (NewConstantMatcher, NewAnyValue) do not. Compile-time check via
+// var assignment + a runtime sanity test.
+func TestCollectionMatcher_InterfaceImpls(t *testing.T) {
+	t.Parallel()
+	// Compile-time interface conformance.
+	var _ CollectionMatcher = (*AllElementsMatcher)(nil)
+	var _ CollectionMatcher = (*SomeElementsMatcher)(nil)
+	var _ CollectionMatcher = (*AtLeastElementsMatcher)(nil)
+	var _ CollectionMatcher = (*ListMatcher)(nil)
+	// Runtime sanity — the marker method is reachable.
+	m := NewSomeElementsMatcher(NewConstantMatcher())
+	var c CollectionMatcher = m
+	if c.RootType() != "SomeElements" {
+		t.Errorf("interface dispatch: got %q, want %q", c.RootType(), "SomeElements")
+	}
+}
+
 // TestSomeElementsMatcher_DistinctIdentity pins that two
 // SomeElementsMatcher instances bind to distinct identities in
 // PlannerBindings — the downstream pointer field gives the struct

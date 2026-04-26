@@ -24,6 +24,8 @@ type AtLeastElementsMatcher struct {
 	minMatches int
 }
 
+func (*AtLeastElementsMatcher) isCollectionMatcher() {}
+
 // NewAtLeastElementsMatcher constructs an AtLeastElementsMatcher.
 // Panics on negative minMatches — Java's Verify.verify(min >= 0)
 // has the same effect.
