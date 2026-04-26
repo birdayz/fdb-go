@@ -371,6 +371,61 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     /**
+     * Load metadata, open store, scan a SUM index BY_GROUP, return the
+     * single ungrouped sum entry. Used by A2 to pin SUM-index wire
+     * format (atomic-mutation maintainer, like COUNT but with the
+     * summed value rather than a counter).
+     */
+    @ConformanceStep("loadMetaDataAndScanSumIndexJava")
+    public Map<String, Object> loadMetaDataAndScanSumIndexJava(String clusterFile,
+                                                               byte[] mdSubspace,
+                                                               byte[] storeSubspace,
+                                                               String indexName) {
+        return runInContext(clusterFile, null, context -> {
+            Subspace mdSS = new Subspace(mdSubspace);
+            byte[] unsplitKey = mdSS.pack(Tuple.from((Object) null, 0L));
+            byte[] data = context.ensureActive().get(unsplitKey).join();
+            Map<String, Object> result = new HashMap<>();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaData metaData = RecordMetaData.build(proto);
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metaData.getIndex(indexName);
+            List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null,
+                ScanProperties.FORWARD_SCAN
+            ).asList().join();
+
+            // Ungrouped SUM index: there's exactly one entry with the
+            // total under an empty grouping key.
+            long sum = 0;
+            int entryCount = entries.size();
+            if (entryCount > 0) {
+                sum = entries.get(0).getValue().getLong(0);
+            }
+            result.put("found", true);
+            result.put("metadataVersion", proto.getVersion());
+            result.put("entryCount", entryCount);
+            result.put("sum", sum);
+            return result;
+        });
+    }
+
+    /**
      * Save metadata WITH a VALUE index ("Order$price" on Order.price)
      * at mdSubspace, plus Order records at storeSubspace. The index is
      * built as records are saved. Used by Track A2 reverse direction:

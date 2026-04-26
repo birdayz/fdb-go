@@ -421,6 +421,84 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(indexEntries[2].pk).To(Equal(int64(3)))
 		})
 
+		It("Java scans Go-built SUM index using cross-language metadata", func() {
+			// SUM uses the same atomic-mutation maintainer as COUNT but
+			// the atomic value is the sum of the indexed expression
+			// rather than +1 per row. Pins the SUM wire format
+			// independent of COUNT — both are atomic but a bug in the
+			// SUM maintainer's atomic-ADD payload (e.g. encoding the
+			// added value as int32 instead of int64, or the wrong
+			// endianness) would silently produce a wrong total without
+			// breaking COUNT.
+			//
+			// Setup: 4 Orders with prices 100, 50, 150, 200 → SUM=500.
+			orders := []*gen.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+				{OrderId: proto.Int64(3), Price: proto.Int32(150)},
+				{OrderId: proto.Int64(4), Price: proto.Int32(200)},
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				idx := recordlayer.NewSumIndex("Order$total_price",
+					recordlayer.Ungrouped(recordlayer.Field("price")))
+				builder.AddIndex("Order", idx)
+				built, buildErr := builder.Build()
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				mdProto, protoErr := built.ToProto()
+				if protoErr != nil {
+					return nil, protoErr
+				}
+				mdProto.Version = proto.Int32(43)
+
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				if fromProtoErr != nil {
+					return nil, fromProtoErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, o := range orders {
+					if _, saveErr := store.SaveRecord(o); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"indexName":     "Order$total_price",
+			}
+			var result struct {
+				Found           bool  `json:"found"`
+				MetadataVersion int   `json:"metadataVersion"`
+				EntryCount      int   `json:"entryCount"`
+				Sum             int64 `json:"sum"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanSumIndexJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue())
+			Expect(result.MetadataVersion).To(Equal(43))
+			Expect(result.EntryCount).To(Equal(1), "ungrouped SUM has exactly one entry")
+			Expect(result.Sum).To(Equal(int64(500)))
+		})
+
 		It("Java scans Go-built COUNT index using cross-language metadata", func() {
 			// COUNT indexes use the atomic-mutation maintainer — entries
 			// are atomic counters stored at one key per grouping value
