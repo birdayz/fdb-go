@@ -21,6 +21,7 @@ go_library(
 go_test(
     name = "transport_test",
     srcs = [
+        "conn_unit_test.go",
         "ping_test.go",
         "transport_test.go",
         "wirelog_test.go",
