@@ -1608,6 +1608,58 @@ func SeedRunCorpus() []RunQuery {
 			Query:               "SELECT id, val / 0 FROM T_N15",
 			ExpectErrorContains: "zero",
 		},
+
+		// ===== More negative entries: error-parity surface =====
+		{
+			// INSERT into non-existent table → both engines must
+			// reject. Same shape as undefined_table at SELECT-time
+			// but for DML.
+			Name:                "insert_into_undefined_table",
+			SchemaTemplate:      "CREATE TABLE T_NEG1 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:           []string{"INSERT INTO no_such_dml_table VALUES (1)"},
+			Query:               "SELECT id FROM T_NEG1",
+			ExpectErrorContains: "no_such_dml_table",
+		},
+		{
+			// INSERT with mismatched column count — too few values.
+			// Both engines must reject before storing the row.
+			Name:                "insert_too_few_values",
+			SchemaTemplate:      "CREATE TABLE T_NEG2 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:           []string{"INSERT INTO T_NEG2 (id, name) VALUES (1)"},
+			Query:               "SELECT id FROM T_NEG2",
+			ExpectErrorContains: "column",
+		},
+		{
+			// CAST string to UUID with malformed UUID — both engines
+			// must reject (we use google/uuid; Java uses
+			// java.util.UUID.fromString which has the same strict
+			// 36-char canonical-form expectation).
+			Name:                "cast_invalid_uuid",
+			SchemaTemplate:      "CREATE TABLE T_NEG3 (id BIGINT, key UUID, PRIMARY KEY (id))",
+			SetupSqls:           []string{"INSERT INTO T_NEG3 VALUES (1, CAST('not-a-real-uuid' AS UUID))"},
+			Query:               "SELECT id FROM T_NEG3",
+			ExpectErrorContains: "uuid",
+		},
+		{
+			// CAST overflow from BIGINT to INTEGER on the negative
+			// side. Java says "Value out of range for INT", Go says
+			// "value … out of range for INTEGER" — common substring
+			// "out of range".
+			Name:           "cast_negative_overflow",
+			SchemaTemplate: "CREATE TABLE T_NEG4 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NEG4 VALUES (1)",
+			},
+			Query:               "SELECT CAST(-2147483649 AS INTEGER) FROM T_NEG4",
+			ExpectErrorContains: "out of range",
+		},
+		// Documented but not enforceable (one-sided divergence): bit-shift
+		// `<<` / `>>` are tokenized but unimplemented in fdb-relational
+		// (Java rejects "Unsupported operator <<"); Go's engine
+		// implements them. Adding a corpus entry would either fail
+		// permanently or paper over the divergence. Tracked in
+		// CLAUDE.md gotchas. Same shape applies to `IS TRUE` / `IS
+		// FALSE` on BOOLEAN — Java's planner rejects, Go's accepts.
 	}
 }
 
