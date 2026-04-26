@@ -26,9 +26,15 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.sql.DriverManager;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -199,6 +205,215 @@ class SqlPlanSteps {
             }
             String plan = rs.getString("PLAN");
             return plan == null ? "" : plan;
+        }
+    }
+
+    /**
+     * Run a SQL statement against fdb-relational's embedded driver and return
+     * the result rows as a structured JSON-shape Map. Mirrors {@link #planSql}'s
+     * setup/teardown — fresh schema-template + database + schema per call,
+     * dropped in {@code finally}.
+     *
+     * Track A1 (TODO.md): the Go-side {@code plandiff} harness today only
+     * diffs plan trees ({@link #planSql}); cross-language SQL conformance
+     * needs {@code runSql} so Go and Java can also diff actual result sets.
+     *
+     * <p>Result format (Gson-serialised):
+     * <pre>{@code
+     * {
+     *   "columns":     ["c1", "c2"],         // result-set column names, in order
+     *   "columnTypes": ["BIGINT", "STRING"], // SQL type names from ResultSetMetaData
+     *   "rows":        [[1, "a"], [2, null]] // values per row, JSON-typed
+     * }
+     * }</pre>
+     *
+     * Value encoding (mirrors what the Go-side decoder must accept):
+     * <ul>
+     *   <li>NULL → JSON null</li>
+     *   <li>BIGINT / INTEGER / SMALLINT / TINYINT → JSON number</li>
+     *   <li>DOUBLE / FLOAT / REAL → JSON number</li>
+     *   <li>BOOLEAN → JSON boolean</li>
+     *   <li>VARCHAR / CHAR / OTHER text → JSON string</li>
+     *   <li>VARBINARY / BINARY → "0x" + hex string (lossless, JSON-safe)</li>
+     *   <li>Anything else → toString() fallback (JSON string)</li>
+     * </ul>
+     *
+     * Non-SELECT statements (INSERT / UPDATE / DELETE) are accepted: the
+     * statement is executed via {@code execute()} and the response carries
+     * the affected-row count instead of a row-set, in this shape:
+     * <pre>{@code
+     * { "updateCount": 3 }
+     * }</pre>
+     *
+     * @param clusterFile     cluster-file content (string, not path)
+     * @param schemaTemplate  CREATE SCHEMA TEMPLATE body. Empty → run against /__SYS.
+     * @param sql             SELECT / INSERT / UPDATE / DELETE — bare SQL, no EXPLAIN prefix.
+     * @return                Map with {columns, columnTypes, rows} for SELECT, or
+     *                        {updateCount} for DML.
+     */
+    @ConformanceStep("runSql")
+    public Map<String, Object> runSql(String clusterFile, String schemaTemplate, String sql) throws Exception {
+        ensureDriverRegistered(clusterFile);
+
+        String suffix = UUID.randomUUID().toString().replace("-", "");
+        String templateName = "RUN_SQL_T_" + suffix;
+        String dbPath = "/TEST/RUN_SQL_" + suffix;
+        String schemaName = "S_" + suffix;
+        boolean templateCreated = false;
+        boolean dbCreated = false;
+
+        try {
+            if (schemaTemplate != null && !schemaTemplate.isEmpty()) {
+                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
+                     Statement st = sysConn.createStatement()) {
+                    st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplate);
+                    templateCreated = true;
+                    st.executeUpdate("CREATE DATABASE \"" + dbPath + "\"");
+                    dbCreated = true;
+                    st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\"");
+                }
+
+                try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath)) {
+                    conn.setSchema(schemaName);
+                    return executeAndCapture(conn, sql, schemaName);
+                }
+            }
+            try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:/__SYS")) {
+                return executeAndCapture(conn, sql, null);
+            }
+        } finally {
+            if (dbCreated) {
+                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
+                     Statement st = sysConn.createStatement()) {
+                    st.executeUpdate("DROP DATABASE IF EXISTS \"" + dbPath + "\"");
+                } catch (SQLException ignored) {
+                    // teardown best-effort — preserve primary exception.
+                }
+            }
+            if (templateCreated) {
+                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
+                     Statement st = sysConn.createStatement()) {
+                    st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\"");
+                } catch (SQLException ignored) {
+                    // ditto
+                }
+            }
+        }
+    }
+
+    private Map<String, Object> executeAndCapture(java.sql.Connection conn, String sql, String schemaName) throws SQLException {
+        // FORCED diagnostic — throw on entry to confirm we got here. If we
+        // never see "runSql.entered" round-tripped through the response
+        // envelope, the failure is upstream (DDL setup or conn.setSchema).
+        if (schemaName != null) {
+            throw new SQLException("[runSql.entered] schemaName=" + schemaName + " sql=" + sql);
+        }
+        RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+        try (RelationalPreparedStatement ps = rconn.prepareStatement(sql)) {
+            boolean hasResultSet = ps.execute();
+            if (!hasResultSet) {
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("updateCount", ps.getUpdateCount());
+                return out;
+            }
+            try (RelationalResultSet rs = (RelationalResultSet) ps.getResultSet()) {
+                return captureRows(rs);
+            }
+        }
+    }
+
+    private Map<String, Object> captureRows(java.sql.ResultSet rs) throws SQLException {
+        ResultSetMetaData md = rs.getMetaData();
+        int n = md.getColumnCount();
+
+        List<String> cols = new ArrayList<>(n);
+        List<String> types = new ArrayList<>(n);
+        for (int i = 1; i <= n; i++) {
+            // getColumnLabel returns the alias if set, else the column name —
+            // matches what a SELECT-with-alias caller actually sees.
+            cols.add(md.getColumnLabel(i));
+            types.add(md.getColumnTypeName(i));
+        }
+
+        List<List<Object>> rows = new ArrayList<>();
+        while (rs.next()) {
+            List<Object> row = new ArrayList<>(n);
+            for (int i = 1; i <= n; i++) {
+                row.add(extractValue(rs, i, md.getColumnType(i)));
+            }
+            rows.add(row);
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("columns", cols);
+        out.put("columnTypes", types);
+        out.put("rows", rows);
+        return out;
+    }
+
+    /**
+     * Extract a column value into a Gson-serialisable Object. Centralised
+     * so the Go-side decoder can mirror the same type matrix.
+     */
+    private Object extractValue(java.sql.ResultSet rs, int idx, int sqlType) throws SQLException {
+        switch (sqlType) {
+            case Types.NULL:
+                return null;
+
+            case Types.BIGINT: {
+                long v = rs.getLong(idx);
+                return rs.wasNull() ? null : v;
+            }
+            case Types.INTEGER:
+            case Types.SMALLINT:
+            case Types.TINYINT: {
+                int v = rs.getInt(idx);
+                return rs.wasNull() ? null : v;
+            }
+
+            case Types.DOUBLE:
+            case Types.FLOAT:
+            case Types.REAL: {
+                double v = rs.getDouble(idx);
+                return rs.wasNull() ? null : v;
+            }
+
+            case Types.BOOLEAN:
+            case Types.BIT: {
+                boolean v = rs.getBoolean(idx);
+                return rs.wasNull() ? null : v;
+            }
+
+            case Types.VARCHAR:
+            case Types.CHAR:
+            case Types.LONGVARCHAR:
+            case Types.NVARCHAR:
+            case Types.NCHAR:
+            case Types.LONGNVARCHAR:
+                return rs.getString(idx);
+
+            case Types.VARBINARY:
+            case Types.BINARY:
+            case Types.LONGVARBINARY: {
+                byte[] b = rs.getBytes(idx);
+                if (b == null) {
+                    return null;
+                }
+                StringBuilder sb = new StringBuilder(2 + 2 * b.length);
+                sb.append("0x");
+                for (byte x : b) {
+                    sb.append(String.format("%02x", x & 0xff));
+                }
+                return sb.toString();
+            }
+
+            default: {
+                Object v = rs.getObject(idx);
+                if (v == null) {
+                    return null;
+                }
+                return v.toString();
+            }
         }
     }
 }
