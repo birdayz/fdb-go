@@ -443,12 +443,11 @@ func TestSeedCorpus_BaselineHash(t *testing.T) {
 	// nightshift-50 baseline. Deliberate planner / corpus changes
 	// require updating this constant. Run with `-v` to see the
 	// current hash diagnostic and copy the new value here.
-	// Last update: corpus extended 35 → 39 queries; the four
-	// `catalog_*` entries carry SchemaTemplates so the Go side
-	// routes through buildLogicalPlanFor*WithCatalog (RFC-022
-	// §4.-1 Phase 3) and emits cascades.predicates.QueryPredicate trees
-	// rather than the text-only fallback.
-	const wantBaseline = "07f065311b769e6985ea5d407cc9e36e474844b58ea437b872d222fffb88f655"
+	// Last update: corpus extended 39 → 41 queries — added
+	// `catalog_derived_table_where` (pins the derived-table WHERE
+	// path landed this shift) and `catalog_and_where` (multi-leaf
+	// catalog walker + simplifier composition).
+	const wantBaseline = "473f93b396abf52050f676c918749d0a823f8aeed6fc50beca7a0493baecfdc4"
 	if got != wantBaseline {
 		// Per-query report so the user sees WHICH query changed, not
 		// just "the corpus changed".

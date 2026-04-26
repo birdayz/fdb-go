@@ -202,5 +202,25 @@ func SeedCorpus() []Query {
 			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
 				"PRIMARY KEY (id))",
 		},
+		{
+			// Pins the derived-table WHERE path landed nightshift-50:
+			// `(SELECT col, col FROM real) AS x WHERE x.col = ?` synth-
+			// esises a virtual ScopeSource so the WHERE walks through
+			// the catalog-aware path (rather than degrading to text
+			// fallback as it did pre-this-shift).
+			Name: "catalog_derived_table_where",
+			SQL:  "SELECT id FROM (SELECT id, val FROM Item) AS x WHERE val = 5",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			// AND-chain WHERE — exercises the multi-leaf catalog walker
+			// + simplifier composition (each leaf goes through the
+			// walker, then the simplifier dedups / folds).
+			Name: "catalog_and_where",
+			SQL:  "SELECT id FROM Item WHERE val > 5 AND val < 100",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
 	}
 }
