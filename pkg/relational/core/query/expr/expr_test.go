@@ -72,7 +72,7 @@ func TestResolver_ResolveIdentifier_Qualified(t *testing.T) {
 	}
 }
 
-// sqlTypeToCascadesValueType is exercised via ResolveIdentifier (it's
+// sqlTypeToCascadesType is exercised via ResolveIdentifier (it's
 // unexported). Pin the SQL-string → values.ValueType mapping so
 // any drift (including misses like the old BYTES→TypeInt lie) surfaces
 // at test time. Downstream comparators dispatch on ValueType; a bad

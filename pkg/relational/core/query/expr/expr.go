@@ -168,7 +168,7 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	}
 	return &values.FieldValue{
 		Field: col.Id.Name(),
-		Typ:   sqlTypeToCascadesValueType(col.Type),
+		Typ:   sqlTypeToCascadesType(col.Type),
 	}, nil
 }
 
@@ -419,13 +419,13 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 	return values.AggInvalid, false
 }
 
-// sqlTypeToCascadesValueType maps the seed's string-valued SQL type
+// sqlTypeToCascadesType maps the seed's string-valued SQL type
 // (from semantic.Column.Type) to a cascades values.Type. Coarse —
 // the seed maps INT/STRING/BOOL/ENUM to the matching primitive
 // singletons; everything else falls through to UnknownType. Real
 // type inference (proper nullability + structured-type recursion)
 // is future work.
-func sqlTypeToCascadesValueType(sqlType string) values.Type {
+func sqlTypeToCascadesType(sqlType string) values.Type {
 	switch sqlType {
 	case "INT":
 		return values.TypeInt
