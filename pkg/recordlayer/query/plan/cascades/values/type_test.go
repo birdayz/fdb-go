@@ -755,6 +755,93 @@ func TestWithNullability_Structured(t *testing.T) {
 	}
 }
 
+// TestRelationType_Shape pins the basic getters + Equals + String.
+// Mirrors Java's Type.Relation contract — always non-nullable,
+// inner-type-driven equality, erased-relation handling.
+func TestRelationType_Shape(t *testing.T) {
+	t.Parallel()
+
+	// Concrete inner type.
+	r1 := NewRelationType(NotNullLong)
+	if r1.Code() != TypeCodeRelation {
+		t.Errorf("Code(): got %v, want RELATION", r1.Code())
+	}
+	if r1.IsNullable() {
+		t.Errorf("RelationType is always non-nullable")
+	}
+	if r1.IsErased() {
+		t.Errorf("RelationType with InnerType is not erased")
+	}
+	if r1.String() != "RELATION<LONG NOT NULL>" {
+		t.Errorf("String(): got %q", r1.String())
+	}
+
+	// Erased.
+	r2 := NewRelationType(nil)
+	if !r2.IsErased() {
+		t.Errorf("RelationType with nil InnerType IS erased")
+	}
+	if r2.String() != "RELATION<?>" {
+		t.Errorf("Erased String(): got %q", r2.String())
+	}
+}
+
+// TestRelationType_Equals pins structural equality semantics:
+// same inner type → equal; different inner → unequal; both erased
+// → equal.
+func TestRelationType_Equals(t *testing.T) {
+	t.Parallel()
+	a := NewRelationType(NotNullLong)
+	b := NewRelationType(NotNullLong)
+	c := NewRelationType(NotNullString)
+	d := NewRelationType(nil)
+	e := NewRelationType(nil)
+
+	if !a.Equals(b) {
+		t.Errorf("same inner type should be equal")
+	}
+	if a.Equals(c) {
+		t.Errorf("different inner type should not be equal")
+	}
+	if !d.Equals(e) {
+		t.Errorf("two erased relations should be equal")
+	}
+	if a.Equals(d) {
+		t.Errorf("typed and erased relations should not be equal")
+	}
+	if a.Equals(nil) {
+		t.Errorf("Equals(nil) should be false")
+	}
+	// Mixing types — RelationType is never equal to a non-Relation.
+	if a.Equals(NotNullLong) {
+		t.Errorf("RelationType should not equal a non-Relation Type")
+	}
+}
+
+// TestRelationType_WithNullabilityPanics pins the contract: asking
+// for a nullable relation is a programming error and panics.
+func TestRelationType_WithNullabilityPanics(t *testing.T) {
+	t.Parallel()
+	r := NewRelationType(NotNullLong)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected WithNullability(RelationType, true) to panic")
+		}
+	}()
+	_ = WithNullability(r, true)
+}
+
+// TestRelationType_WithNullabilityNoOp pins that WithNullability(r, false)
+// is a no-op (RelationType is already non-nullable).
+func TestRelationType_WithNullabilityNoOp(t *testing.T) {
+	t.Parallel()
+	r := NewRelationType(NotNullLong)
+	out := WithNullability(r, false)
+	if out != Type(r) {
+		t.Errorf("WithNullability(r, false) should return the same instance")
+	}
+}
+
 // TestWithNullability_Nil pins the nil-input safety contract.
 func TestWithNullability_Nil(t *testing.T) {
 	t.Parallel()

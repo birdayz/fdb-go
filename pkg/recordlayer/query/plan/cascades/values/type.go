@@ -689,6 +689,75 @@ func (e *EnumType) LookupValueByNumber(number int32) (EnumValue, bool) {
 	return EnumValue{}, false
 }
 
+// --- RelationType -------------------------------------------------
+
+// RelationType is the type of a stream of rows — typically the
+// result of SELECT, the materialised value of a CTE, or the type
+// of a subquery. Mirrors Java's `Type.Relation`.
+//
+// Always non-nullable: a relation is always defined as a stream of
+// rows, even if that stream happens to be empty. NULL relations
+// don't exist in the type system. WithNullability(true) on a
+// RelationType panics.
+//
+// InnerType is the type of each row in the stream — typically a
+// RecordType. nil InnerType means "erased" — Java treats this as
+// "the inner type was once known but has been intentionally
+// dropped" (e.g. when crossing an API boundary that doesn't preserve
+// it). Two erased relations compare equal regardless of what their
+// inner types USED to be.
+type RelationType struct {
+	// InnerType is the row type. nil for erased relations.
+	InnerType Type
+}
+
+// NewRelationType constructs a RelationType with the given inner
+// row type. nil inner is allowed and produces an erased relation.
+func NewRelationType(inner Type) *RelationType {
+	return &RelationType{InnerType: inner}
+}
+
+// Code implements Type — always TypeCodeRelation.
+func (*RelationType) Code() TypeCode { return TypeCodeRelation }
+
+// IsNullable implements Type — always false. RELATION is never
+// nullable per Java's contract.
+func (*RelationType) IsNullable() bool { return false }
+
+// Equals implements Type. Two RelationTypes are equal iff their
+// inner types are structurally equal (or both erased).
+func (r *RelationType) Equals(other Type) bool {
+	if other == nil {
+		return false
+	}
+	or, ok := other.(*RelationType)
+	if !ok {
+		return false
+	}
+	if r.IsErased() != or.IsErased() {
+		return false
+	}
+	if r.IsErased() {
+		return true
+	}
+	return r.InnerType.Equals(or.InnerType)
+}
+
+// String implements Type. Renders as `RELATION<inner>` for typed
+// relations and `RELATION<?>` for erased ones.
+func (r *RelationType) String() string {
+	if r.IsErased() {
+		return "RELATION<?>"
+	}
+	return "RELATION<" + r.InnerType.String() + ">"
+}
+
+// IsErased reports whether the relation has no concrete inner row
+// type. Mirrors Java's Type.Erasable.isErased().
+func (r *RelationType) IsErased() bool {
+	return r.InnerType == nil
+}
+
 // --- Nullability helpers ------------------------------------------
 
 // WithNullability returns a Type with the same shape as t but the
@@ -765,6 +834,13 @@ func WithNullability(t Type, nullable bool) Type {
 		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
 	case *EnumType:
 		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values}
+	case *RelationType:
+		// RELATION is always non-nullable per Java's contract. Asking
+		// to flip to nullable is a programming error — fail loud.
+		if nullable {
+			panic("WithNullability: RelationType cannot be nullable")
+		}
+		return tt
 	}
 	// Unknown impl — fall back to whatever the original was. Future
 	// impls should add their own arm here.
