@@ -4,6 +4,7 @@ go_library(
     name = "matching",
     srcs = [
         "all_elements_matcher.go",
+        "at_least_elements_matcher.go",
         "combinators.go",
         "list_matcher.go",
         "matcher.go",
@@ -18,6 +19,7 @@ go_test(
     name = "matching_test",
     srcs = [
         "all_elements_matcher_test.go",
+        "at_least_elements_matcher_test.go",
         "combinators_test.go",
         "list_matcher_test.go",
         "matcher_bindings_test.go",
