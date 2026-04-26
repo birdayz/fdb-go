@@ -215,14 +215,22 @@ func TestGoSQLRunner_SeedRunCorpus_ColumnGaps(t *testing.T) {
 
 // isGoFeatureGap recognises errors that mean "the Go embedded engine
 // doesn't support this feature yet" (vs. an unexpected runtime error).
-// Today: the unsupported-column-type DDL error for UUID columns.
-// Extend as new gap categories emerge.
+// Today's gaps:
+//   - "unsupported column type": DDL parser-level rejection.
+//   - "unsupported DataType code": metadata-builder-level rejection
+//     for types whose DDL is accepted but proto-mapping isn't wired
+//     (e.g. UUID after swingshift-52's ddl.go fix — the parser accepts
+//     UUID, the proto-builder doesn't yet map it to a field type).
+//
+// Extend as new gap categories emerge. Each entry points at a tracked
+// TODO.md item so closing it removes the skip path.
 func isGoFeatureGap(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
-	return strings.Contains(s, "unsupported column type")
+	return strings.Contains(s, "unsupported column type") ||
+		strings.Contains(s, "unsupported DataType code")
 }
 
 func columnsMatch(a, b []Column) bool {

@@ -234,6 +234,8 @@ func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool) (api.DataTyp
 		return api.NewStringType(nullable), nil
 	case pt.BYTES() != nil:
 		return api.NewBytesType(nullable), nil
+	case pt.UUID() != nil:
+		return api.NewUUIDType(nullable), nil
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported column type: %s", ct.GetText())
