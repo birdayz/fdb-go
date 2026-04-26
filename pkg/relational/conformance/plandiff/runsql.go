@@ -20,11 +20,14 @@ package plandiff
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -271,6 +274,226 @@ func (r javaRunner) invokeRunWithSetup(ctx context.Context, schemaTemplate strin
 		return RowSet{}, fmt.Errorf("plandiff: parse rows from result: %w (result=%q)", err, string(resp.Result))
 	}
 	return rows, nil
+}
+
+// RunDiff is the per-Query verdict for the runSql harness — parallel
+// to the plan-tree Diff. Either Go or Java may have errored; the
+// Status classifies the pair.
+type RunDiff struct {
+	Query  Query
+	Go     RunResult
+	Java   RunResult
+	Status Status
+	// Detail carries the row-by-row delta on Diverge, or the engine
+	// error text on *Error statuses. Empty for AGREE.
+	Detail string
+}
+
+// RunReport aggregates RunDiffs from a corpus run.
+type RunReport struct {
+	Cases   []RunDiff
+	Summary Summary
+}
+
+// RunCorpus drives every query through both runners and produces a
+// RunReport. Today's primary use: pin Java-side outputs via the
+// JavaRunner against a corpus, regression-detecting fdb-relational
+// changes. When Track C2 lands the Go-side runner, this function
+// upgrades to cross-engine result-set comparison without any caller
+// changes.
+//
+// `goR` and `javaR` may be nil — the noop fallback returns
+// "nil runner" errors so the report stays deterministic.
+func RunCorpus(ctx context.Context, queries []Query, goR, javaR Runner) RunReport {
+	if goR == nil {
+		goR = noopRunner{name: "go"}
+	}
+	if javaR == nil {
+		javaR = noopRunner{name: "java"}
+	}
+	out := RunReport{Cases: make([]RunDiff, 0, len(queries))}
+	for _, q := range queries {
+		gr := goR.Run(ctx, q)
+		jr := javaR.Run(ctx, q)
+		out.Cases = append(out.Cases, classifyRun(q, gr, jr))
+	}
+	out.Summary = summariseRun(out.Cases)
+	return out
+}
+
+// classifyRun pairs two RunResults into a RunDiff with computed
+// Status + Detail. Mirrors the plan-tree classify shape.
+func classifyRun(q Query, gr, jr RunResult) RunDiff {
+	d := RunDiff{Query: q, Go: gr, Java: jr}
+	switch {
+	case gr.Err != nil && jr.Err != nil:
+		// Both errored. JavaUnimplemented OR GoUnimplemented as the
+		// "soft failure" buckets — pin which side is stubbed first
+		// (Go side first today; will flip as runners come online).
+		switch {
+		case errors.Is(gr.Err, ErrGoUnimplemented) && errors.Is(jr.Err, ErrJavaRunUnimplemented):
+			d.Status = StatusJavaUnimplemented
+		case errors.Is(gr.Err, ErrGoUnimplemented):
+			d.Status = StatusGoError
+		case errors.Is(jr.Err, ErrJavaRunUnimplemented):
+			d.Status = StatusJavaUnimplemented
+		default:
+			d.Status = StatusBothError
+		}
+		d.Detail = fmt.Sprintf("go: %v\njava: %v", gr.Err, jr.Err)
+	case gr.Err != nil:
+		if errors.Is(gr.Err, ErrGoUnimplemented) {
+			// Go-side stub today. Don't fail the whole report — the
+			// Java baseline is what we want to capture.
+			d.Status = StatusJavaUnimplemented
+			d.Detail = "go: " + gr.Err.Error()
+		} else {
+			d.Status = StatusGoError
+			d.Detail = fmt.Sprintf("go: %v", gr.Err)
+		}
+	case jr.Err != nil:
+		if errors.Is(jr.Err, ErrJavaRunUnimplemented) {
+			d.Status = StatusJavaUnimplemented
+			d.Detail = jr.Err.Error()
+		} else {
+			d.Status = StatusJavaError
+			d.Detail = fmt.Sprintf("java: %v", jr.Err)
+		}
+	default:
+		// Both succeeded — compare normalised RowSets.
+		ng := normaliseRows(gr.Rows)
+		nj := normaliseRows(jr.Rows)
+		if ng == nj {
+			d.Status = StatusAgree
+		} else {
+			d.Status = StatusDiverge
+			d.Detail = fmt.Sprintf("--- go\n%s\n+++ java\n%s", ng, nj)
+		}
+	}
+	return d
+}
+
+// summariseRun tallies Status counts across the RunDiff slice.
+func summariseRun(cases []RunDiff) Summary {
+	s := Summary{Total: len(cases)}
+	for _, c := range cases {
+		switch c.Status {
+		case StatusAgree:
+			s.Agree++
+		case StatusDiverge:
+			s.Diverge++
+		case StatusGoError:
+			s.GoError++
+		case StatusJavaError:
+			s.JavaError++
+		case StatusBothError:
+			s.BothError++
+		case StatusJavaUnimplemented:
+			s.JavaUnimplemented++
+		}
+	}
+	return s
+}
+
+// normaliseRows produces a stable string representation of a RowSet
+// suitable for byte-equality comparison + hashing. Format: column
+// metadata as "name|type" pairs, one per line, then a separator,
+// then row values one per line (values JSON-encoded for unambiguous
+// type preservation across Go's any).
+func normaliseRows(r RowSet) string {
+	var b strings.Builder
+	for _, c := range r.Columns {
+		b.WriteString(c.Name)
+		b.WriteString("|")
+		b.WriteString(c.Type)
+		b.WriteString("\n")
+	}
+	b.WriteString("---\n")
+	for _, row := range r.Rows {
+		bs, _ := json.Marshal(row)
+		b.Write(bs)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// HashRowSet returns a hex SHA-256 of the normalised RowSet. Stable
+// across runs; sensitive to any column-shape or value change.
+// Useful for golden-hash regression detection of Java-side outputs.
+func HashRowSet(r RowSet) string {
+	h := sha256.Sum256([]byte(normaliseRows(r)))
+	return hex.EncodeToString(h[:])
+}
+
+// RunCorpusWithSetup is RunCorpus's sibling for SeedRunCorpus-style
+// queries that need INSERT before SELECT. Calls Java's runWithSetup
+// step. The Go side returns ErrGoUnimplemented today (Track C2).
+//
+// Returns a RunReport in the same shape as RunCorpus so reporting
+// utilities can be shared.
+func RunCorpusWithSetup(ctx context.Context, queries []RunQuery, goR, javaR SetupRunner) RunReport {
+	if goR == nil {
+		goR = noopSetupRunner{name: "go"}
+	}
+	if javaR == nil {
+		javaR = noopSetupRunner{name: "java"}
+	}
+	out := RunReport{Cases: make([]RunDiff, 0, len(queries))}
+	for _, rq := range queries {
+		// Use Query as the keyed-name carrier in the RunDiff so
+		// reports stay homogeneous with RunCorpus output.
+		q := Query{Name: rq.Name, SQL: rq.Query, SchemaTemplate: rq.SchemaTemplate}
+		gr := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+		jr := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+		out.Cases = append(out.Cases, classifyRun(q, gr, jr))
+	}
+	out.Summary = summariseRun(out.Cases)
+	return out
+}
+
+// HashRunCorpus returns a stable hex hash over (Query.Name,
+// Java-side normalised RowSet) pairs in name-sorted order. Useful
+// as a corpus-level regression sentinel — any Java-side output
+// drift surfaces as a single hash diff.
+func HashRunCorpus(r RunReport) string {
+	cases := append([]RunDiff(nil), r.Cases...)
+	sortRunDiffsByName(cases)
+	h := sha256.New()
+	for _, c := range cases {
+		fmt.Fprintf(h, "%s\n%s\n---\n", c.Query.Name, normaliseRows(c.Java.Rows))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// sortRunDiffsByName sorts in place by Query.Name. Insertion sort
+// keeps the dependency footprint minimal (no `sort` package import
+// needed yet); n is small (corpus ≤ 100 entries), so O(n²) is fine.
+func sortRunDiffsByName(cases []RunDiff) {
+	for i := 1; i < len(cases); i++ {
+		for j := i; j > 0 && cases[j-1].Query.Name > cases[j].Query.Name; j-- {
+			cases[j-1], cases[j] = cases[j], cases[j-1]
+		}
+	}
+}
+
+// noopSetupRunner is the fallback when RunCorpusWithSetup is called
+// with a nil SetupRunner.
+type noopSetupRunner struct{ name string }
+
+func (n noopSetupRunner) Run(_ context.Context, _ Query) RunResult {
+	return RunResult{Engine: n.name, Err: fmt.Errorf("plandiff: nil %s runner", n.name)}
+}
+
+func (n noopSetupRunner) RunWithSetup(_ context.Context, _ string, _ []string, _ string) RunResult {
+	return RunResult{Engine: n.name, Err: fmt.Errorf("plandiff: nil %s runner", n.name)}
+}
+
+// noopRunner is the fallback when RunCorpus is called with a nil
+// Runner. Mirrors plandiff's noopEngine for the plan-tree harness.
+type noopRunner struct{ name string }
+
+func (n noopRunner) Run(_ context.Context, _ Query) RunResult {
+	return RunResult{Engine: n.name, Err: fmt.Errorf("plandiff: nil %s runner", n.name)}
 }
 
 // goRunner is the unwired Go runner. Returns ErrGoUnimplemented for

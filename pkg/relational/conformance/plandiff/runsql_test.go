@@ -201,6 +201,93 @@ func TestGoRunner_Unimplemented(t *testing.T) {
 	}
 }
 
+// TestRunCorpus_AllJavaUnimplemented pins that RunCorpus with a stub
+// JavaRunner classifies every case as JAVA_UNIMPL — same shape as
+// the plan-tree harness's symmetric test. Today's Go side also
+// returns ErrGoUnimplemented; both being unimplemented surfaces as
+// JAVA_UNIMPL (the more specific bucket) so reports stay actionable.
+func TestRunCorpus_AllJavaUnimplemented(t *testing.T) {
+	t.Parallel()
+	queries := []Query{
+		{Name: "x", SQL: "SELECT 1"},
+		{Name: "y", SQL: "SELECT 2"},
+	}
+	report := RunCorpus(context.Background(), queries, NewGoRunner(), NewJavaRunner())
+	if report.Summary.Total != 2 {
+		t.Fatalf("Total: got %d, want 2", report.Summary.Total)
+	}
+	if report.Summary.JavaUnimplemented != 2 {
+		t.Fatalf("expected 2 JAVA_UNIMPL, got %+v", report.Summary)
+	}
+}
+
+// TestRunCorpus_NilRunner pins the noop fallback — both nil runners
+// produce per-case "nil X runner" errors. Status: BothError (no
+// Unimplemented sentinel).
+func TestRunCorpus_NilRunner(t *testing.T) {
+	t.Parallel()
+	report := RunCorpus(context.Background(), []Query{{Name: "x", SQL: "SELECT 1"}}, nil, nil)
+	if report.Summary.BothError != 1 {
+		t.Fatalf("expected 1 BOTH_ERROR, got %+v", report.Summary)
+	}
+}
+
+// TestClassifyRun_Agree pins the happy-path branch: identical RowSets
+// produce StatusAgree.
+func TestClassifyRun_Agree(t *testing.T) {
+	t.Parallel()
+	rs := RowSet{
+		Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+		Rows:    [][]any{{float64(1)}, {float64(2)}},
+	}
+	q := Query{Name: "x"}
+	d := classifyRun(q, RunResult{Engine: "go", Rows: rs}, RunResult{Engine: "java", Rows: rs})
+	if d.Status != StatusAgree {
+		t.Fatalf("Status: got %s, want AGREE", d.Status)
+	}
+}
+
+// TestClassifyRun_Diverge pins that differing RowSets produce
+// StatusDiverge with both sides surfaced in Detail.
+func TestClassifyRun_Diverge(t *testing.T) {
+	t.Parallel()
+	goRS := RowSet{Columns: []Column{{Name: "ID", Type: "BIGINT"}}, Rows: [][]any{{float64(1)}}}
+	javaRS := RowSet{Columns: []Column{{Name: "ID", Type: "BIGINT"}}, Rows: [][]any{{float64(2)}}}
+	d := classifyRun(Query{Name: "x"}, RunResult{Engine: "go", Rows: goRS}, RunResult{Engine: "java", Rows: javaRS})
+	if d.Status != StatusDiverge {
+		t.Fatalf("Status: got %s, want DIVERGE", d.Status)
+	}
+	if !strings.Contains(d.Detail, "--- go") || !strings.Contains(d.Detail, "+++ java") {
+		t.Fatalf("Detail missing diff markers: %q", d.Detail)
+	}
+}
+
+// TestHashRowSet_Stable pins SHA-256 hex output. Same RowSet → same
+// hash; different RowSet → different hash. Used as a regression
+// fingerprint for Java-side output drift detection.
+func TestHashRowSet_Stable(t *testing.T) {
+	t.Parallel()
+	rs := RowSet{
+		Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+		Rows:    [][]any{{float64(1)}},
+	}
+	h1 := HashRowSet(rs)
+	h2 := HashRowSet(rs)
+	if h1 != h2 {
+		t.Fatalf("hash not stable: %q vs %q", h1, h2)
+	}
+	if len(h1) != 64 {
+		t.Fatalf("expected 64-hex, got %d", len(h1))
+	}
+	rs2 := RowSet{
+		Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+		Rows:    [][]any{{float64(2)}},
+	}
+	if HashRowSet(rs2) == h1 {
+		t.Fatalf("different RowSets produced same hash")
+	}
+}
+
 // TestJavaRunner_RunWithSetup_HappyPath pins the wire shape for the
 // runWithSetup step: POSTs step="runWithSetup" + params{clusterFile,
 // schemaTemplate, setupSqls, querySql}, parses the same RowSet result

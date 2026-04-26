@@ -1,5 +1,79 @@
 package plandiff
 
+// SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
+// (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
+// Today only the Java side runs (Go is gated on Track C2). Once the
+// Go runner is wired, RunCorpus + this corpus produce real
+// cross-engine result-set diffs.
+//
+// Each entry's SetupSqls must produce deterministic state — SELECTs
+// without ORDER BY can't be added until we trust both engines'
+// row-order semantics match. Today every entry orders by primary key.
+type RunQuery struct {
+	Name           string
+	SetupSqls      []string
+	Query          string
+	SchemaTemplate string
+}
+
+// SeedRunCorpus returns the baseline RunQuery set. Add entries that
+// exercise distinct primitive types or row-shape edge cases (NULL
+// handling, multi-row, empty, single-column, multi-column).
+func SeedRunCorpus() []RunQuery {
+	return []RunQuery{
+		{
+			Name:           "single_row_bigint",
+			SchemaTemplate: "CREATE TABLE T1 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T1 VALUES (42)"},
+			Query:          "SELECT id FROM T1 ORDER BY id",
+		},
+		{
+			Name:           "multi_row_string",
+			SchemaTemplate: "CREATE TABLE T2 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T2 VALUES (1, 'alice')",
+				"INSERT INTO T2 VALUES (2, 'bob')",
+				"INSERT INTO T2 VALUES (3, 'carol')",
+			},
+			Query: "SELECT id, name FROM T2 ORDER BY id",
+		},
+		{
+			Name:           "null_string",
+			SchemaTemplate: "CREATE TABLE T3 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T3 VALUES (1, 'alice')",
+				"INSERT INTO T3 VALUES (2, NULL)",
+			},
+			Query: "SELECT id, name FROM T3 ORDER BY id",
+		},
+		{
+			Name:           "empty_table",
+			SchemaTemplate: "CREATE TABLE T4 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT id FROM T4",
+		},
+		{
+			Name:           "boolean_column",
+			SchemaTemplate: "CREATE TABLE T5 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T5 VALUES (1, TRUE)",
+				"INSERT INTO T5 VALUES (2, FALSE)",
+				"INSERT INTO T5 VALUES (3, NULL)",
+			},
+			Query: "SELECT id, flag FROM T5 ORDER BY id",
+		},
+		{
+			Name:           "double_column",
+			SchemaTemplate: "CREATE TABLE T6 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T6 VALUES (1, 1.5)",
+				"INSERT INTO T6 VALUES (2, -7.25)",
+			},
+			Query: "SELECT id, val FROM T6 ORDER BY id",
+		},
+	}
+}
+
 // SeedCorpus is the small RFC-022 §4.-1 baseline set: 35 queries
 // hand-picked to exercise the planner shapes the existing 11-branch
 // pushdown chain rewrites (covered by Cascades Batch A rules — see
