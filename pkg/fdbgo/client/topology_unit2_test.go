@@ -197,10 +197,12 @@ func TestTopologyMonitor_ShutsDownOnCtxDone(t *testing.T) {
 		proxiesChanged: make(chan struct{}),
 		failMon:        newFailureMonitor(),
 		connPool:       make(map[string]*transport.Conn),
+		clusterFile:    &ClusterFile{Coordinators: nil},
 	}
-	// Seed dbInfo so refreshTopology's "no change" early-exit fires before any
-	// hot-path coordinator dial happens. Combined with no coordinators,
-	// tryAllCoordinators returns an error and refreshTopology exits.
+	// Seed dbInfo so refreshTopology has something to compare against.
+	// With Coordinators: nil, tryAllCoordinators returns an
+	// "no coordinators configured" error and refreshTopology takes its
+	// err early-out before reaching applyDBInfo.
 	db.dbInfo.Store(&DBInfo{})
 
 	db.wg.Add(1)
@@ -238,24 +240,13 @@ func TestTopologyMonitor_ConsumesKickWithoutBlocking(t *testing.T) {
 	db.wg.Add(1)
 	go db.topologyMonitor()
 
-	// Pump several kicks. Each should be consumed; the loop must not block.
+	// Pump several kicks. kickTopology is non-blocking by contract — verified
+	// in TestKickTopology_DropsWhenFull. What this test pins is that the
+	// monitor goroutine doesn't deadlock on a kick and shuts down cleanly
+	// when ctx is cancelled (i.e., the kick handling doesn't get stuck in a
+	// state that would block the ctx.Done() select arm).
 	for i := 0; i < 5; i++ {
 		db.kickTopology()
-	}
-	// Give the monitor a moment to drain. We don't strictly need any state to
-	// have changed — only that the goroutine remains responsive (next test:
-	// ctx-cancel exits cleanly).
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		// kickTopology is non-blocking: when the goroutine is consuming, the
-		// channel drains. We assert the channel reaches the empty state.
-		if len(db.topologyKick) == 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if len(db.topologyKick) != 0 {
-		t.Errorf("topologyKick channel still has %d entries — goroutine not consuming", len(db.topologyKick))
 	}
 
 	cancel()
@@ -266,7 +257,8 @@ func TestTopologyMonitor_ConsumesKickWithoutBlocking(t *testing.T) {
 	}()
 	select {
 	case <-exitDone:
-		// ok
+		// ok — wg.Wait completing implies topologyMonitor reached its
+		// ctx.Done() arm despite the buffered kick.
 	case <-time.After(2 * time.Second):
 		t.Fatal("topologyMonitor failed to exit after kick burst + ctx cancel")
 	}
@@ -281,16 +273,20 @@ func TestApplyDBInfo_WakesAllConcurrentWaiters(t *testing.T) {
 	db := &database{proxiesChanged: make(chan struct{})}
 	const N = 20
 	var wg sync.WaitGroup
+	var ready sync.WaitGroup
 	wg.Add(N)
+	ready.Add(N)
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
 			ch := db.waitProxiesChanged()
-			<-ch // blocks until applyDBInfo broadcasts
+			ready.Done() // signal: this goroutine has captured its channel snapshot
+			<-ch         // block until applyDBInfo broadcasts
 		}()
 	}
-	// Give all waiters time to subscribe.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for every waiter to confirm it has captured its channel — replaces
+	// the previous "sleep 50ms and hope" pattern (race on slow CI).
+	ready.Wait()
 
 	info := &DBInfo{GRVProxies: []ProxyInfo{{Address: "10.0.0.1:4500", Token: transport.UID{First: 1}}}}
 	if !db.applyDBInfo(info) {

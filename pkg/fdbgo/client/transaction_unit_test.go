@@ -92,7 +92,7 @@ func TestKeyAfterBytes_AppendsZero(t *testing.T) {
 	t.Parallel()
 	got := keyAfterBytes([]byte("abc"))
 	want := []byte{'a', 'b', 'c', 0}
-	if !equalBytes(got, want) {
+	if !bytesEqual(got, want) {
 		t.Errorf("keyAfterBytes(%q) = %v, want %v", "abc", got, want)
 	}
 }
@@ -198,10 +198,11 @@ func TestCheckTimeout_Expired(t *testing.T) {
 // conflictBufAlloc — pooled bumper allocator.
 // ============================================================================
 
-func TestConflictBufAlloc_PoolReuseOnFreshTransaction(t *testing.T) {
+func TestConflictBufAlloc_AllocatesOnFreshTransaction(t *testing.T) {
 	t.Parallel()
-	// Drain & reseed the pool with a known capacity so this test is deterministic.
-	// Pool has at most 32K-cap buffers; a 100-byte request should always fit.
+	// First call on a fresh transaction either pulls a buffer from the
+	// sync.Pool (most common) or grows from zero. Either way, the returned
+	// slice must have len==n and the backing buffer must have cap >= n.
 	tx := &Transaction{}
 	tx.conflictMu.Lock()
 	buf := tx.conflictBufAlloc(100)
@@ -650,7 +651,8 @@ func TestGetWatchCtx_LazyAndIdempotent(t *testing.T) {
 }
 
 // ============================================================================
-// Helpers — tiny utilities for these tests only.
+// Helpers — tiny utilities for these tests only. (bytesEqual lives in
+// commitpath_unit_test.go and is shared across all client_test files.)
 // ============================================================================
 
 // newTestTx returns a Transaction with state.Store explicitly initialised.
@@ -660,17 +662,4 @@ func newTestTx() *Transaction {
 	tx := &Transaction{}
 	tx.state.Store(int32(txStateActive))
 	return tx
-}
-
-// equalBytes compares byte slices including nil-vs-empty-vs-content.
-func equalBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

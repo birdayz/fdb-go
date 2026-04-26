@@ -56,10 +56,11 @@ func TestStripTenantPrefix_NegativeTenantNoop(t *testing.T) {
 	}
 }
 
-func TestStripTenantPrefix_DoesNotStripNonMatchingPrefix(t *testing.T) {
+func TestStripTenantPrefix_TooShortToContainPrefix(t *testing.T) {
 	t.Parallel()
 	const tenantID int64 = 7
-	// begin is shorter than the 8-byte tenant prefix → no prefix to strip → leave it alone.
+	// begin is shorter than the 8-byte tenant prefix → bytes.HasPrefix returns
+	// false → leave it alone.
 	entries := []locationEntry{
 		{begin: []byte("abc"), end: []byte("xyz")},
 	}
@@ -69,6 +70,36 @@ func TestStripTenantPrefix_DoesNotStripNonMatchingPrefix(t *testing.T) {
 	}
 	if string(entries[0].end) != "xyz" {
 		t.Errorf("end should not be modified when prefix absent: got %q", entries[0].end)
+	}
+}
+
+func TestStripTenantPrefix_DifferentTenantsPrefixNotStripped(t *testing.T) {
+	t.Parallel()
+	// Function is asked to strip prefix for tenant 7, but the entries carry
+	// tenant 99's prefix. Even though the bytes are LONG enough (>=8) and
+	// LOOK like a tenant prefix, they must be left alone — the function's
+	// contract is strip-only-if-matches, NOT strip-always-the-first-8-bytes.
+	const targetTenant int64 = 7
+	const wrongTenant int64 = 99
+	var wrongPrefix [8]byte
+	binary.BigEndian.PutUint64(wrongPrefix[:], uint64(wrongTenant))
+
+	entries := []locationEntry{{
+		begin: append(append([]byte{}, wrongPrefix[:]...), 'a'),
+		end:   append(append([]byte{}, wrongPrefix[:]...), 'z'),
+	}}
+	originalBegin := append([]byte{}, entries[0].begin...)
+	originalEnd := append([]byte{}, entries[0].end...)
+
+	stripTenantPrefix(entries, targetTenant)
+
+	if !bytesEqual(entries[0].begin, originalBegin) {
+		t.Errorf("different-tenant prefix was wrongly stripped: got %x, want %x",
+			entries[0].begin, originalBegin)
+	}
+	if !bytesEqual(entries[0].end, originalEnd) {
+		t.Errorf("different-tenant prefix was wrongly stripped: got %x, want %x",
+			entries[0].end, originalEnd)
 	}
 }
 
