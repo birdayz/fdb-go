@@ -152,18 +152,16 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				// Save metadata at mdSS.
 				mdStore := recordlayer.NewFDBMetaDataStore(ss)
-				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), buildMetaDataProto(7)); saveErr != nil {
+				mdProto := buildMetaDataProto(7)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
 					return nil, saveErr
 				}
-				// Open record store at storeSS using the same metadata,
-				// save Orders. Builder requires a built MetaData (not
-				// just a proto), so re-build via the same builder used
-				// by buildMetaDataProto for byte-identical schema.
-				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
-				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-				md, buildErr := builder.Build()
+				// Build the runtime RecordMetaData from the SAME proto we
+				// just persisted (instead of rebuilding via the builder)
+				// — guarantees the store uses the exact schema bytes
+				// that crossed the wire to Java, removing any chance of
+				// the Go save path and the records save path diverging.
+				md, buildErr := recordlayer.RecordMetaDataFromProto(mdProto)
 				if buildErr != nil {
 					return nil, buildErr
 				}
@@ -344,12 +342,13 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 					return nil, scanErr
 				}
 				for _, e := range entries {
-					var price, pk int64
-					if v, ok := e.Key[0].(int64); ok {
-						price = v
+					price, ok := e.Key[0].(int64)
+					if !ok {
+						return nil, fmt.Errorf("expected int64 in index key, got %T (%v)", e.Key[0], e.Key[0])
 					}
-					if v, ok := e.PrimaryKey()[0].(int64); ok {
-						pk = v
+					pk, ok := e.PrimaryKey()[0].(int64)
+					if !ok {
+						return nil, fmt.Errorf("expected int64 in primary key, got %T (%v)", e.PrimaryKey()[0], e.PrimaryKey()[0])
 					}
 					indexEntries = append(indexEntries, entry{priceKey: price, pk: pk})
 				}

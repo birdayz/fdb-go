@@ -161,7 +161,7 @@ class MetaDataStoreSteps extends ConformanceBase {
             for (int i = 0; i < orderIds.size(); i++) {
                 Order order = Order.newBuilder()
                     .setOrderId(orderIds.get(i))
-                    .setPrice(prices.get(i).intValue())
+                    .setPrice(Math.toIntExact(prices.get(i)))
                     .build();
                 store.saveRecord(order);
                 saved++;
@@ -234,10 +234,12 @@ class MetaDataStoreSteps extends ConformanceBase {
                     throw new RuntimeException("Failed to parse Order: " + e.getMessage(), e);
                 }
             }).join();
-            // Sort by orderId for deterministic Go-side comparison —
-            // scanRecords is PK-ordered already, but record-layer sorts
-            // tuples by component, not necessarily by long-int value alone
-            // when negatives are involved; explicit sort is harmless.
+            // Defensive sort by orderId for deterministic Go-side
+            // comparison. scanRecords is PK-ordered already and current
+            // tests use positive ids, so this is a no-op today; the
+            // explicit sort is a safety net for future tests that might
+            // use negative ids (where tuple-component ordering would
+            // surface ahead of strict numeric ordering).
             rows.sort((a, b) -> Long.compare((Long) a.get("orderId"), (Long) b.get("orderId")));
             result.put("found", true);
             result.put("metadataVersion", proto.getVersion());
@@ -289,7 +291,7 @@ class MetaDataStoreSteps extends ConformanceBase {
             for (int i = 0; i < orderIds.size(); i++) {
                 Order order = Order.newBuilder()
                     .setOrderId(orderIds.get(i))
-                    .setPrice(prices.get(i).intValue())
+                    .setPrice(Math.toIntExact(prices.get(i)))
                     .build();
                 store.saveRecord(order);
             }
