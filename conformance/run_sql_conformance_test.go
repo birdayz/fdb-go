@@ -1,28 +1,28 @@
 package conformance_test
 
-// End-to-end integration test for the runSql harness (Track A1 of TODO.md
-// execution roadmap). Drives the Java fdb-relational engine via the
-// SqlPlanSteps#runSql step against a shared FDB testcontainer and verifies
-// the result-set wire shape — column metadata, row values, NULL handling.
+// End-to-end integration tests for the runSql harness (Track A1 of TODO.md
+// execution roadmap). Drives the Java fdb-relational engine via
+// SqlPlanSteps#runSql / runWithSetup against a shared FDB testcontainer.
 //
-// What this test asserts:
+// Specs in this file:
 //
-//   1. Schema-less SELECT (no FROM, no schema): a literal returns the
-//      expected value via the /__SYS connection path.
+//   1. Schema-less SELECT — pins the documented "No Schema specified"
+//      error path on /__SYS without a schema.
+//   2. SELECT against an ephemeral-schema table — pins column metadata
+//      (uppercased names + JDBC type names) for an empty table.
+//   3. Empty result set — pins zero-row handling.
+//   4. Multi-primitive INSERT-then-SELECT round-trip — BIGINT, DOUBLE,
+//      STRING, BOOLEAN with NULL preservation.
+//   5. INTEGER + FLOAT round-trip — type narrowing via explicit CAST.
+//   6. BYTES round-trip — base64 encoding via X'...' literal.
+//   7. SeedRunCorpus driver — runs every corpus entry against Java and
+//      asserts per-entry Expected RowSet (precise diagnostics on
+//      divergence).
 //
-//   2. SELECT against a table in the ephemeral schema: pins the schema-
-//      template branch end-to-end (CREATE TEMPLATE / DATABASE / SCHEMA
-//      → JDBC executeQuery → RelationalResultSet → JSON encoding).
-//      Empty result is sufficient — multi-row + NULL preservation are
-//      exercised by httptest unit tests (full wire-shape control).
-//
-//   3. SELECT 0 rows from an in-line VALUES: empty result set must
-//      produce zero-length Rows without crashing the harness.
-//
-// What this test does NOT assert:
+// What this file does NOT assert:
 //
 //   - Cross-engine result-set equivalence. That's Track A3 (yamsql
-//     corpus comparison) and depends on Go-side execution (Track C2).
+//     corpus) and depends on a real Go-side runner (Track C2).
 
 import (
 	"context"
