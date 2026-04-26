@@ -249,6 +249,67 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     /**
+     * Multi-record-type variant: load metadata, scan ALL records (no
+     * type filter), classify each by record-type tag and return per-type
+     * row counts + summaries. Used to verify that the union descriptor
+     * round-trips with non-trivial multi-type populations — the
+     * Customers and Orders subspaces share the same record-store
+     * subspace but use distinct record-type prefixes, and the loaded
+     * RecordMetaData must dispatch each stored bytes blob to the right
+     * type.
+     */
+    @ConformanceStep("loadMetaDataAndScanAllRecordsJava")
+    public Map<String, Object> loadMetaDataAndScanAllRecordsJava(String clusterFile,
+                                                                 byte[] mdSubspace,
+                                                                 byte[] storeSubspace) {
+        return runInContext(clusterFile, null, context -> {
+            Subspace mdSS = new Subspace(mdSubspace);
+            byte[] unsplitKey = mdSS.pack(Tuple.from((Object) null, 0L));
+            byte[] data = context.ensureActive().get(unsplitKey).join();
+            Map<String, Object> result = new HashMap<>();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaData metaData = RecordMetaData.build(proto);
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            // Scan all records — no type filter. The store dispatches by
+            // record-type tag from the loaded union descriptor.
+            List<FDBStoredRecord<Message>> records = store.scanRecords(
+                null, ScanProperties.FORWARD_SCAN).asList().join();
+
+            int orderCount = 0;
+            int customerCount = 0;
+            for (FDBStoredRecord<Message> rec : records) {
+                String typeName = rec.getRecordType().getName();
+                if ("Order".equals(typeName)) {
+                    orderCount++;
+                } else if ("Customer".equals(typeName)) {
+                    customerCount++;
+                }
+            }
+            result.put("found", true);
+            result.put("metadataVersion", proto.getVersion());
+            result.put("totalRecords", records.size());
+            result.put("orderCount", orderCount);
+            result.put("customerCount", customerCount);
+            return result;
+        });
+    }
+
+    /**
      * Save metadata WITH a VALUE index ("Order$price" on Order.price)
      * at mdSubspace, plus Order records at storeSubspace. The index is
      * built as records are saved. Used by Track A2 reverse direction:

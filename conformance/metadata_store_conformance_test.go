@@ -365,6 +365,77 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(indexEntries[2].pk).To(Equal(int64(3)))
 		})
 
+		It("Java scans multi-record-type store (Orders + Customers) using cross-language metadata", func() {
+			// The union-descriptor wire-format covers ALL record types in
+			// one descriptor. This test pins that the multi-type union
+			// (Order + Customer + TypedRecord, all defined in the demo
+			// proto) round-trips through metadata serialization, AND
+			// that the loaded RecordMetaData dispatches stored bytes
+			// blobs to the correct record-type by tag. A bug in the
+			// type-tag prefix (or the union field-tag mapping) would
+			// surface here even when single-type tests pass.
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdProto := buildMetaDataProto(31)
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				if fromProtoErr != nil {
+					return nil, fromProtoErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				// Two Orders + three Customers — asymmetric counts so a
+				// type-tag mix-up (Order misclassified as Customer or
+				// vice versa) shows up cleanly.
+				orders := []*gen.Order{
+					{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					{OrderId: proto.Int64(2), Price: proto.Int32(200)},
+				}
+				for _, o := range orders {
+					if _, saveErr := store.SaveRecord(o); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				customers := []*gen.Customer{
+					{CustomerId: proto.Int64(10), Name: proto.String("alice")},
+					{CustomerId: proto.Int64(20), Name: proto.String("bob")},
+					{CustomerId: proto.Int64(30), Name: proto.String("carol")},
+				}
+				for _, c := range customers {
+					if _, saveErr := store.SaveRecord(c); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+			}
+			var result struct {
+				Found           bool `json:"found"`
+				MetadataVersion int  `json:"metadataVersion"`
+				TotalRecords    int  `json:"totalRecords"`
+				OrderCount      int  `json:"orderCount"`
+				CustomerCount   int  `json:"customerCount"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanAllRecordsJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue())
+			Expect(result.MetadataVersion).To(Equal(31))
+			Expect(result.TotalRecords).To(Equal(5))
+			Expect(result.OrderCount).To(Equal(2))
+			Expect(result.CustomerCount).To(Equal(3))
+		})
+
 		It("Java reads Go-written split records (>100KB) using cross-language metadata", func() {
 			// Stricter still: split-long-records is a wire-format feature
 			// — records >100KB are split across keys with suffixes 1, 2,
