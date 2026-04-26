@@ -1291,9 +1291,20 @@ func TestMaximumType_NilHandling(t *testing.T) {
 // Structured types are out of scope — recursion's invariants don't
 // fit a simple property predicate.
 func FuzzMaximumType_Properties(f *testing.F) {
-	f.Add(byte(0), byte(0))
-	f.Add(byte(1), byte(2))
-	f.Add(byte(3), byte(7))
+	// Seed corpus picks pairs that exercise interesting lattice
+	// transitions: identity, every adjacent widening edge, NULL × T,
+	// and cross-category rejection.
+	f.Add(byte(0), byte(0))    // INT × INT (identity)
+	f.Add(byte(0), byte(1))    // INT × LONG (widen)
+	f.Add(byte(0), byte(2))    // INT × FLOAT (widen)
+	f.Add(byte(0), byte(3))    // INT × DOUBLE (widen)
+	f.Add(byte(1), byte(2))    // LONG × FLOAT (widen)
+	f.Add(byte(1), byte(3))    // LONG × DOUBLE (widen)
+	f.Add(byte(2), byte(3))    // FLOAT × DOUBLE (widen)
+	f.Add(byte(7), byte(0))    // NULL × INT (NULL → T-nullable)
+	f.Add(byte(7), byte(7))    // NULL × NULL (NULL identity)
+	f.Add(byte(0), byte(4))    // INT × STRING (incompatible)
+	f.Add(byte(0x80), byte(0)) // INT NULL × INT NOT NULL (nullability fold)
 	f.Add(byte(255), byte(255))
 
 	pickType := func(b byte) Type {
