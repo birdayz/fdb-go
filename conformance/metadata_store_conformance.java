@@ -2,17 +2,28 @@ package com.birdayz.conformance;
 
 import com.apple.foundationdb.record.RecordMetaData;
 import com.apple.foundationdb.record.RecordMetaDataBuilder;
+import com.apple.foundationdb.record.RecordMetaDataOptionsProto;
 import com.apple.foundationdb.record.RecordMetaDataProto;
 import com.apple.foundationdb.record.metadata.Key;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
+import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
+import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
 import com.apple.foundationdb.record.provider.foundationdb.SplitHelper;
 import com.apple.foundationdb.record.RecordLayerDemo;
+import com.apple.foundationdb.record.RecordLayerDemo.Order;
+import com.apple.foundationdb.record.ScanProperties;
+import com.apple.foundationdb.record.TupleRange;
+import com.apple.foundationdb.record.RecordCursor;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 
+import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.Message;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -22,6 +33,19 @@ import java.util.Map;
  * SplitHelper calls.
  */
 class MetaDataStoreSteps extends ConformanceBase {
+
+    // Without this extension registry, parseFrom() drops the
+    // [record].usage=UNION extension option on RecordLayerDemo's
+    // UnionDescriptor message, and RecordMetaData.build() then can't
+    // identify the union descriptor (the proto's union message is
+    // named "UnionDescriptor", not Java's DEFAULT_UNION_NAME of
+    // "RecordTypeUnion"). Result: "Union descriptor is required" at
+    // RecordMetaDataBuilder.fetchUnionDescriptor.
+    private static final ExtensionRegistry EXTENSION_REGISTRY;
+    static {
+        EXTENSION_REGISTRY = ExtensionRegistry.newInstance();
+        RecordMetaDataOptionsProto.registerAllExtensions(EXTENSION_REGISTRY);
+    }
 
     private static RecordMetaData createTestMetaData() {
         RecordMetaDataBuilder b = RecordMetaData.newBuilder()
@@ -66,7 +90,7 @@ class MetaDataStoreSteps extends ConformanceBase {
             if (data != null && data.length > 0) {
                 RecordMetaDataProto.MetaData proto;
                 try {
-                    proto = RecordMetaDataProto.MetaData.parseFrom(data);
+                    proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
                 } catch (InvalidProtocolBufferException e) {
                     throw new RuntimeException("Failed to parse metadata proto", e);
                 }
@@ -96,6 +120,130 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     /**
+     * Save metadata at mdSubspace AND a list of Order records at storeSubspace,
+     * exercising the full FDBMetaDataStore + FDBRecordStore wire format. Used
+     * by Track A2 (catalog wire format Go↔Java round-trip): with this, a Go
+     * test can have Java write a complete (metadata, records) pair, then read
+     * it back through the Go side and assert byte-equality of both layers.
+     *
+     * orderIds and prices are parallel arrays — one Order per index.
+     */
+    @ConformanceStep("saveMetaDataAndOrdersJava")
+    public Map<String, Object> saveMetaDataAndOrdersJava(String clusterFile,
+                                                         byte[] mdSubspace,
+                                                         byte[] storeSubspace,
+                                                         List<Long> orderIds,
+                                                         List<Long> prices,
+                                                         int version) {
+        return runInContext(clusterFile, null, context -> {
+            // Step 1: save the metadata proto via FDBMetaDataStore wire format.
+            Subspace mdSS = new Subspace(mdSubspace);
+            Tuple currentKey = Tuple.from((Object) null);
+            RecordMetaData metaData = createTestMetaData();
+            RecordMetaDataProto.MetaData.Builder protoBuilder = metaData.toProto().toBuilder();
+            protoBuilder.setVersion(version);
+            byte[] serialized = protoBuilder.build().toByteArray();
+            SplitHelper.saveWithSplit(context, mdSS, currentKey, serialized, null);
+
+            // Step 2: open a record store at storeSubspace using the SAME
+            // metadata, save each Order. ALWAYS_READABLE_CHECKER tolerates
+            // store-state cache cold start.
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            int saved = 0;
+            for (int i = 0; i < orderIds.size(); i++) {
+                Order order = Order.newBuilder()
+                    .setOrderId(orderIds.get(i))
+                    .setPrice(prices.get(i).intValue())
+                    .build();
+                store.saveRecord(order);
+                saved++;
+            }
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("metadataBytes", serialized.length);
+            result.put("recordsSaved", saved);
+            return result;
+        });
+    }
+
+    /**
+     * Load metadata via FDBMetaDataStore wire format from mdSubspace, build
+     * a RecordMetaData, open the record store at storeSubspace using THAT
+     * metadata (proving the cross-language metadata is functionally usable),
+     * scan all Order records, and return them as a list of {orderId, price}
+     * maps. The list is sorted by orderId for deterministic comparison.
+     */
+    @ConformanceStep("loadMetaDataAndScanOrdersJava")
+    public Map<String, Object> loadMetaDataAndScanOrdersJava(String clusterFile,
+                                                             byte[] mdSubspace,
+                                                             byte[] storeSubspace) {
+        return runInContext(clusterFile, null, context -> {
+            // Step 1: read metadata bytes at the unsplit key. Same path
+            // loadMetaDataJava uses.
+            Subspace mdSS = new Subspace(mdSubspace);
+            byte[] unsplitKey = mdSS.pack(Tuple.from((Object) null, 0L));
+            byte[] data = context.ensureActive().get(unsplitKey).join();
+            Map<String, Object> result = new HashMap<>();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaData metaData = RecordMetaData.build(proto);
+
+            // Step 2: open the record store using the LOADED metadata (not
+            // a freshly-built one — this is the cross-language test's whole
+            // point), scan Orders.
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            RecordCursor<FDBStoredRecord<Message>> cursor = store.scanRecords(
+                TupleRange.ALL, null, ScanProperties.FORWARD_SCAN);
+
+            List<Map<String, Object>> rows = new ArrayList<>();
+            cursor.forEach(rec -> {
+                // Java-loaded RecordMetaData uses DynamicMessage, not the
+                // static Order class, so mergeFrom across descriptors
+                // fails ("can only merge messages of the same type").
+                // Round-trip via raw bytes — proto wire format is
+                // shared, so re-parsing with the static descriptor is
+                // safe.
+                try {
+                    Order order = Order.parseFrom(rec.getRecord().toByteArray());
+                    Map<String, Object> row = new HashMap<>();
+                    row.put("orderId", order.getOrderId());
+                    row.put("price", (long) order.getPrice());
+                    rows.add(row);
+                } catch (InvalidProtocolBufferException e) {
+                    throw new RuntimeException("Failed to parse Order: " + e.getMessage(), e);
+                }
+            }).join();
+            // Sort by orderId for deterministic Go-side comparison —
+            // scanRecords is PK-ordered already, but record-layer sorts
+            // tuples by component, not necessarily by long-int value alone
+            // when negatives are involved; explicit sort is harmless.
+            rows.sort((a, b) -> Long.compare((Long) a.get("orderId"), (Long) b.get("orderId")));
+            result.put("found", true);
+            result.put("metadataVersion", proto.getVersion());
+            result.put("rows", rows);
+            return result;
+        });
+    }
+
+    /**
      * Load historical metadata version using raw FDB read at unsplit key.
      */
     @ConformanceStep("loadMetaDataHistoryJava")
@@ -109,7 +257,7 @@ class MetaDataStoreSteps extends ConformanceBase {
             if (data != null && data.length > 0) {
                 RecordMetaDataProto.MetaData proto;
                 try {
-                    proto = RecordMetaDataProto.MetaData.parseFrom(data);
+                    proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
                 } catch (InvalidProtocolBufferException e) {
                     throw new RuntimeException("Failed to parse metadata proto", e);
                 }

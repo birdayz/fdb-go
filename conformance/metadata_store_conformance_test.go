@@ -22,6 +22,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 		java        *JavaInvoker
 		goRecordDB  *recordlayer.FDBDatabase
 		ss          subspace.Subspace
+		storeSS     subspace.Subspace
 		clusterFile string
 	)
 
@@ -34,6 +35,11 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 		// Unique subspace per spec for isolation
 		prefix := fmt.Sprintf("mdstore_%s", uuid.New().String())
 		ss = subspace.Sub(tuple.Tuple{prefix}...)
+		// Separate sibling subspace for the record store, so the metadata
+		// store and the record store don't share a key prefix (matches the
+		// real-world deployment pattern where mdSS lives at /__SYS/META and
+		// the user store is at /<dbpath>).
+		storeSS = subspace.Sub(tuple.Tuple{prefix + "_store"}...)
 
 		var err error
 		clusterFile, err = sharedContainer.ClusterFile(ctx)
@@ -45,6 +51,8 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 		_, _ = sharedDB.Transact(func(tr gofdb.Transaction) (any, error) {
 			begin, end := ss.FDBRangeKeys()
 			tr.ClearRange(gofdb.KeyRange{Begin: begin, End: end})
+			begin2, end2 := storeSS.FDBRangeKeys()
+			tr.ClearRange(gofdb.KeyRange{Begin: begin2, End: end2})
 			return nil, nil
 		})
 	})
@@ -113,6 +121,162 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(loaded).NotTo(BeNil())
 			Expect(loaded.GetVersion()).To(Equal(int32(99)))
+		})
+	})
+
+	// Track A2 — Catalog wire format Go↔Java functional round-trip.
+	//
+	// The earlier "Go writes, Java reads" / "Java writes, Go reads" specs
+	// only verify that the metadata's `version` field round-trips. That's
+	// proto byte-equivalence, but it doesn't prove the loaded metadata is
+	// USABLE — that the receiving engine can open a record store with it
+	// and read records the other engine wrote. This block fills that gap:
+	// one engine saves (metadata + records), the other engine LOADS the
+	// metadata and uses it to scan the records.
+	//
+	// Pinned separately because of the swingshift-35 catalog-subspace
+	// scar: the byte-level metadata round-trip can be byte-equal at the
+	// proto level while the on-disk subspace LAYOUT is incompatible.
+	// This functional test catches that class of bug — the loaded metadata
+	// has to drive a real record store at the right subspace tuple shape.
+	Describe("Cross-language functional round-trip (A2)", func() {
+		It("Java loads Go-written metadata and scans Go-written records", func() {
+			// Direction: Go saves both metadata and Order records; Java
+			// LOADS the metadata fresh and uses it to scan.
+			orders := []*gen.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(2), Price: proto.Int32(250)},
+				{OrderId: proto.Int64(3), Price: proto.Int32(50)},
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				// Save metadata at mdSS.
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), buildMetaDataProto(7)); saveErr != nil {
+					return nil, saveErr
+				}
+				// Open record store at storeSS using the same metadata,
+				// save Orders. Builder requires a built MetaData (not
+				// just a proto), so re-build via the same builder used
+				// by buildMetaDataProto for byte-identical schema.
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				md, buildErr := builder.Build()
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, o := range orders {
+					if _, saveErr := store.SaveRecord(o); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Java loads metadata + scans.
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+			}
+			var result struct {
+				Found           bool `json:"found"`
+				MetadataVersion int  `json:"metadataVersion"`
+				Rows            []struct {
+					OrderId int64 `json:"orderId"`
+					Price   int64 `json:"price"`
+				} `json:"rows"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanOrdersJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue(), "Java should find the metadata Go wrote")
+			Expect(result.MetadataVersion).To(Equal(7))
+			Expect(result.Rows).To(HaveLen(3))
+			// PK-ordered scan: 1, 2, 3.
+			Expect(result.Rows[0].OrderId).To(Equal(int64(1)))
+			Expect(result.Rows[0].Price).To(Equal(int64(100)))
+			Expect(result.Rows[1].OrderId).To(Equal(int64(2)))
+			Expect(result.Rows[1].Price).To(Equal(int64(250)))
+			Expect(result.Rows[2].OrderId).To(Equal(int64(3)))
+			Expect(result.Rows[2].Price).To(Equal(int64(50)))
+		})
+
+		It("Go loads Java-written metadata and scans Java-written records", func() {
+			// Direction: Java saves both metadata and Orders; Go LOADS the
+			// metadata fresh and uses it to scan.
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				// JSON sends ints as doubles — pass through []int64 so
+				// Java's Long unmarshal works.
+				"orderIds": []int64{10, 20, 30, 40},
+				"prices":   []int64{100, 200, 300, 400},
+				"version":  11,
+			}
+			var saveResult struct {
+				MetadataBytes int `json:"metadataBytes"`
+				RecordsSaved  int `json:"recordsSaved"`
+			}
+			err := java.InvokeAs(ctx, "saveMetaDataAndOrdersJava", params, &saveResult)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(saveResult.RecordsSaved).To(Equal(4))
+			Expect(saveResult.MetadataBytes).To(BeNumerically(">", 0))
+
+			// Go loads metadata, opens store, scans Orders.
+			var loadedMD *gen.MetaData
+			var scannedOrders []*gen.Order
+			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				var loadErr error
+				loadedMD, loadErr = mdStore.LoadRecordMetaDataProto(rtx.Transaction())
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				if loadedMD == nil {
+					return nil, fmt.Errorf("Go: no metadata at subspace")
+				}
+				// Build a RecordMetaData from the LOADED proto (this is
+				// the cross-language test's whole point — using the
+				// metadata Java wrote to drive Go's record store).
+				md, buildErr := recordlayer.RecordMetaDataFromProto(loadedMD)
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
+				records, scanErr := recordlayer.AsList(ctx, cursor)
+				if scanErr != nil {
+					return nil, scanErr
+				}
+				for _, rec := range records {
+					if order, ok := rec.Record.(*gen.Order); ok {
+						scannedOrders = append(scannedOrders, order)
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadedMD).NotTo(BeNil())
+			Expect(loadedMD.GetVersion()).To(Equal(int32(11)))
+			Expect(scannedOrders).To(HaveLen(4))
+			// PK-ordered scan: 10, 20, 30, 40.
+			Expect(scannedOrders[0].GetOrderId()).To(Equal(int64(10)))
+			Expect(scannedOrders[0].GetPrice()).To(Equal(int32(100)))
+			Expect(scannedOrders[3].GetOrderId()).To(Equal(int64(40)))
+			Expect(scannedOrders[3].GetPrice()).To(Equal(int32(400)))
 		})
 	})
 
