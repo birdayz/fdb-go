@@ -185,10 +185,11 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	//   - Multi-record-type type-tag dispatch (Go→Java)
 	//   - Split records (Go→Java)
 	//   - COUNT index BY_GROUP (Go→Java)
+	//   - SUM index BY_GROUP (Go→Java)
 	//
 	// Mechanical follow-ons (same pattern, no new harness mechanism needed):
-	//   - SUM / MAX_EVER / MIN_EVER index BY_GROUP (atomic-mutation)
-	//   - Reverse direction for COUNT / multi-type / split records
+	//   - MAX_EVER / MIN_EVER index BY_GROUP (atomic-mutation)
+	//   - Reverse direction for COUNT / SUM / multi-type / split records
 	//
 	// What this harness does NOT yet cover (gated work):
 	//   - SchemaTemplateCatalog wire format (the relational/SQL catalog).
