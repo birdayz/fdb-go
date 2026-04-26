@@ -282,6 +282,82 @@ func SeedRunCorpus() []RunQuery {
 		// count(*) FROM T GROUP BY region". The unaggregated count(*)
 		// works (see count_aggregate above). Re-add when the planner
 		// learns the GROUP BY rule.
+		{
+			Name:           "and_predicate",
+			SchemaTemplate: "CREATE TABLE T16 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T16 VALUES (1, 'us', 100)",
+				"INSERT INTO T16 VALUES (2, 'us', 200)",
+				"INSERT INTO T16 VALUES (3, 'eu', 100)",
+				"INSERT INTO T16 VALUES (4, 'eu', 200)",
+			},
+			Query: "SELECT id FROM T16 WHERE region = 'us' AND val > 150 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(2)}},
+			},
+		},
+		{
+			Name:           "or_predicate",
+			SchemaTemplate: "CREATE TABLE T17 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T17 VALUES (1, 10)",
+				"INSERT INTO T17 VALUES (2, 20)",
+				"INSERT INTO T17 VALUES (3, 30)",
+				"INSERT INTO T17 VALUES (4, 40)",
+			},
+			Query: "SELECT id FROM T17 WHERE val = 10 OR val = 30 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(1)}, {float64(3)}},
+			},
+		},
+		{
+			Name:           "is_null",
+			SchemaTemplate: "CREATE TABLE T18 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T18 VALUES (1, 'alice')",
+				"INSERT INTO T18 VALUES (2, NULL)",
+				"INSERT INTO T18 VALUES (3, 'bob')",
+				"INSERT INTO T18 VALUES (4, NULL)",
+			},
+			Query: "SELECT id FROM T18 WHERE name IS NULL ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(2)}, {float64(4)}},
+			},
+		},
+		{
+			Name:           "is_not_null",
+			SchemaTemplate: "CREATE TABLE T19 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T19 VALUES (1, 'alice')",
+				"INSERT INTO T19 VALUES (2, NULL)",
+				"INSERT INTO T19 VALUES (3, 'bob')",
+			},
+			Query: "SELECT id, name FROM T19 WHERE name IS NOT NULL ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
+				Rows: [][]any{
+					{float64(1), "alice"},
+					{float64(3), "bob"},
+				},
+			},
+		},
+		{
+			Name:           "comparison_ops",
+			SchemaTemplate: "CREATE TABLE T20 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T20 VALUES (1, 10)",
+				"INSERT INTO T20 VALUES (2, 20)",
+				"INSERT INTO T20 VALUES (3, 30)",
+			},
+			Query: "SELECT id FROM T20 WHERE val >= 20 AND val < 30 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(2)}},
+			},
+		},
 	}
 }
 
