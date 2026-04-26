@@ -36,6 +36,16 @@ We require **very high and thorough test coverage**. Every new feature, bug fix,
 
 This project uses a Vollkonti (continuous 24/7) shift system. Run `/vollkonti` to start a shift. Handovers live in `shifts/`. Each shift gets one branch, one PR, merged at end.
 
+**Pacing is NEVER the model's call.** During a vollkonti shift, do not autonomously slow down, "let things settle," "find a stopping point," or rationalize coasting on grounds of marginal value, PR size, milestone reached, or reviewer empathy. Stops are EXTERNAL signals only: user intervention, mid-shift check-in trigger, wind-down clock at T+7:30. Heuristics from human-paced codebase practice ("keep PRs focused," "don't pile on changes," "let big work rest before review") DO NOT apply here — the system is designed for continuous output. If you catch yourself reasoning about whether to slow down, the answer is no — keep working.
+
+The failure modes that trigger this rule, and what's wrong with each:
+
+1. **Trained heuristics from human SWE practice** (don't pile on changes, keep PRs focused, let things rest) — valid for shared codebases with reviewer fatigue and merge conflicts; misapplied here.
+2. **Marginal-value reasoning** ("each new commit is incrementally less valuable") — unbounded; ALWAYS feels true at some point. Not a permission to coast.
+3. **Reviewer-empathy projection** (imagining reviewer frustration with a 70+ commit PR) — PR shape is the reviewer's scoping problem, not your pre-emptive constraint.
+4. **Milestone pattern-matching** (a major thing landed, "breathe") — milestones are points on the path, not stopping signals.
+5. **Conservative-default bias** (small diffs feel safe; big diffs feel risky) — CI is the safety net. Stop relying on self-restraint.
+
 ## Work tracking & workflow
 
 See `TODO.md` in repo root for tracked issues and improvements. **TODO.md is the authoritative priority list** — flat priority buckets `## CRITICAL > ## HIGH > ## MEDIUM > ## LOW`, items as `- [x]` / `- [ ]`.
