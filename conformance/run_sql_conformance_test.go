@@ -196,45 +196,33 @@ var _ = Describe("RunSql Harness", func() {
 		Expect(got.Rows.Rows[0][1].(string)).To(Equal("aGk="))
 	})
 
-	It("runs the SeedRunCorpus through the Java server and pins the output hash", func() {
-		// Drive every SeedRunCorpus entry through Java's runWithSetup
-		// step and compute a corpus-wide hash. A single hash diff
-		// against the pinned baseline means SOMETHING in the corpus
-		// changed — Java planner output, encoding, or our own corpus.
-		// Also pins per-case StatusJavaUnimplemented (Go side stubbed)
-		// so a future Go runner landing surfaces as deliberate intent.
+	It("runs the SeedRunCorpus through the Java server and matches per-entry expected RowSets", func() {
+		// Per-entry assertion: each corpus entry carries an Expected
+		// RowSet captured from real fdb-relational output. A failure
+		// here pinpoints WHICH entry diverged AND in what way (cmp
+		// diff with column / row paths). When the Go runner lands
+		// (Track C2), the same Expected RowSet doubles as the Go-side
+		// reference — turning every entry into a real cross-engine
+		// equivalence check without harness changes.
 		javaR := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
-		// Wrap the Java runner so it acts as the producer for the
-		// HashRunCorpus key. The Go side intentionally stays stubbed.
-		report := plandiff.RunCorpusWithSetup(ctx, plandiff.SeedRunCorpus(), plandiff.NewGoRunner().(plandiff.SetupRunner), javaR)
+		corpus := plandiff.SeedRunCorpus()
 
-		Expect(report.Summary.Total).To(Equal(len(plandiff.SeedRunCorpus())))
-		// Every case should be JavaUnimplemented (Go stub) — Java side
-		// succeeded if we got here without transport-level failure.
-		// classifyRun routes "go-unimplemented + java-success" through
-		// JavaUnimplemented because Go is the stubbed side.
-		Expect(report.Summary.JavaUnimplemented).To(Equal(len(plandiff.SeedRunCorpus())),
-			"every case should be JAVA_UNIMPL while Go runner is stubbed; got %+v", report.Summary)
-		// Make sure no real GO_ERROR / JAVA_ERROR / BOTH_ERROR.
-		Expect(report.Summary.GoError).To(BeZero())
-		Expect(report.Summary.JavaError).To(BeZero())
-		Expect(report.Summary.BothError).To(BeZero())
-
-		// Pin the corpus-wide hash. A diff means SOMETHING changed —
-		// Java planner output, encoding, or the corpus itself. When
-		// updating intentionally (added/removed entry, deliberate
-		// engine behaviour change), run with `-v`, copy the
-		// diagnostic-printed hash, and update wantBaseline below.
-		const wantBaseline = "39ad05fda97fe426a404a8f604800f154503df7eaa50f8a628a5a60c16cb99e7"
-		got := plandiff.HashRunCorpus(report)
-		if got != wantBaseline {
-			GinkgoWriter.Printf("[runSql] SeedRunCorpus hash drift\n  got:  %s\n  want: %s\n", got, wantBaseline)
-			for _, c := range report.Cases {
-				GinkgoWriter.Printf("  [%s] %s — rows=%d cols=%d\n",
-					c.Query.Name, plandiff.HashRowSet(c.Java.Rows)[:12],
-					len(c.Java.Rows.Rows), len(c.Java.Rows.Columns))
-			}
-			Fail("SeedRunCorpus hash drifted — see diagnostic above; update wantBaseline if intentional")
+		for _, rq := range corpus {
+			rq := rq
+			By(rq.Name, func() {
+				got := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+				Expect(got.Err).NotTo(HaveOccurred(),
+					"corpus entry %q: Java executor errored", rq.Name)
+				// Columns: name + type pair-wise. Surfaces type-name
+				// drift on individual columns, not "the corpus changed."
+				Expect(got.Rows.Columns).To(Equal(rq.Expected.Columns),
+					"corpus entry %q: column metadata diverged", rq.Name)
+				// Rows: Equal compares element-wise. NULL → nil; numeric
+				// values arrive as float64 (encoding/json default), so
+				// the corpus uses float64 literals to match.
+				Expect(got.Rows.Rows).To(Equal(rq.Expected.Rows),
+					"corpus entry %q: row data diverged", rq.Name)
+			})
 		}
 	})
 

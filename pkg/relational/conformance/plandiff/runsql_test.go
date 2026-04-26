@@ -262,32 +262,6 @@ func TestClassifyRun_Diverge(t *testing.T) {
 	}
 }
 
-// TestHashRowSet_Stable pins SHA-256 hex output. Same RowSet → same
-// hash; different RowSet → different hash. Used as a regression
-// fingerprint for Java-side output drift detection.
-func TestHashRowSet_Stable(t *testing.T) {
-	t.Parallel()
-	rs := RowSet{
-		Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-		Rows:    [][]any{{float64(1)}},
-	}
-	h1 := HashRowSet(rs)
-	h2 := HashRowSet(rs)
-	if h1 != h2 {
-		t.Fatalf("hash not stable: %q vs %q", h1, h2)
-	}
-	if len(h1) != 64 {
-		t.Fatalf("expected 64-hex, got %d", len(h1))
-	}
-	rs2 := RowSet{
-		Columns: []Column{{Name: "ID", Type: "BIGINT"}},
-		Rows:    [][]any{{float64(2)}},
-	}
-	if HashRowSet(rs2) == h1 {
-		t.Fatalf("different RowSets produced same hash")
-	}
-}
-
 // TestJavaRunner_RunWithSetup_HappyPath pins the wire shape for the
 // runWithSetup step: POSTs step="runWithSetup" + params{clusterFile,
 // schemaTemplate, setupSqls, querySql}, parses the same RowSet result

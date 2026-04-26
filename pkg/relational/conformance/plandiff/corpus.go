@@ -1,24 +1,43 @@
 package plandiff
 
 // SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
-// (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
-// Today only the Java side runs (Go is gated on Track C2). Once the
-// Go runner is wired, RunCorpus + this corpus produce real
-// cross-engine result-set diffs.
+// (schema, setup-DMLs, SELECT, expected RowSet) cases for the result-
+// set diff harness. Each entry carries the EXPECTED Java-side output
+// inline, so a regression surfaces with a precise per-entry diff
+// rather than "the corpus changed somewhere."
+//
+// Today only the Java side runs (Go is gated on Track C2). The same
+// Expected RowSet doubles as the cross-engine reference: when the Go
+// runner lands, every entry becomes a Go-vs-Java equivalence check.
 //
 // Each entry's SetupSqls must produce deterministic state — SELECTs
 // without ORDER BY can't be added until we trust both engines'
 // row-order semantics match. Today every entry orders by primary key.
+//
+// JSON note: Expected.Rows uses Go's `any` slice. Numbers MUST be
+// `float64` (encoding/json's default for JSON numbers); `int` literals
+// would compare unequal because the wire-arrived values are float64.
 type RunQuery struct {
 	Name           string
 	SetupSqls      []string
 	Query          string
 	SchemaTemplate string
+	// Expected is the Java-side RowSet this entry must produce. Captured
+	// from real fdb-relational output and pinned here. Update
+	// deliberately when the corpus query / setup / Java behaviour
+	// changes intentionally.
+	Expected RowSet
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
 // exercise distinct primitive types or row-shape edge cases (NULL
 // handling, multi-row, empty, single-column, multi-column).
+//
+// fdb-relational quirks that show up in Expected:
+//   - All identifiers uppercased ("ID" not "id").
+//   - Type names: BIGINT / STRING / BOOLEAN / DOUBLE / BYTES.
+//   - Anonymous projections (constant exprs, COUNT(*)) get synthetic
+//     column names "_0", "_1", ... in declaration order.
 func SeedRunCorpus() []RunQuery {
 	return []RunQuery{
 		{
@@ -26,6 +45,10 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T1 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T1 VALUES (42)"},
 			Query:          "SELECT id FROM T1 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(42)}},
+			},
 		},
 		{
 			Name:           "multi_row_string",
@@ -36,6 +59,14 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T2 VALUES (3, 'carol')",
 			},
 			Query: "SELECT id, name FROM T2 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
+				Rows: [][]any{
+					{float64(1), "alice"},
+					{float64(2), "bob"},
+					{float64(3), "carol"},
+				},
+			},
 		},
 		{
 			Name:           "null_string",
@@ -45,12 +76,23 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T3 VALUES (2, NULL)",
 			},
 			Query: "SELECT id, name FROM T3 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
+				Rows: [][]any{
+					{float64(1), "alice"},
+					{float64(2), nil},
+				},
+			},
 		},
 		{
 			Name:           "empty_table",
 			SchemaTemplate: "CREATE TABLE T4 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT id FROM T4",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{},
+			},
 		},
 		{
 			Name:           "boolean_column",
@@ -61,6 +103,14 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T5 VALUES (3, NULL)",
 			},
 			Query: "SELECT id, flag FROM T5 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "FLAG", Type: "BOOLEAN"}},
+				Rows: [][]any{
+					{float64(1), true},
+					{float64(2), false},
+					{float64(3), nil},
+				},
+			},
 		},
 		{
 			Name:           "double_column",
@@ -70,6 +120,13 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T6 VALUES (2, -7.25)",
 			},
 			Query: "SELECT id, val FROM T6 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "DOUBLE"}},
+				Rows: [][]any{
+					{float64(1), 1.5},
+					{float64(2), -7.25},
+				},
+			},
 		},
 		{
 			Name:           "order_by_desc",
@@ -80,6 +137,10 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T7 VALUES (3, 'c')",
 			},
 			Query: "SELECT id FROM T7 ORDER BY id DESC",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(3)}, {float64(2)}, {float64(1)}},
+			},
 		},
 		{
 			Name:           "where_filter",
@@ -90,6 +151,13 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T8 VALUES (3, 300)",
 			},
 			Query: "SELECT id, val FROM T8 WHERE val > 150 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "VAL", Type: "BIGINT"}},
+				Rows: [][]any{
+					{float64(2), float64(200)},
+					{float64(3), float64(300)},
+				},
+			},
 		},
 		{
 			Name:           "multi_column_pk",
@@ -100,12 +168,30 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T9 VALUES ('eu', 1, 'carol')",
 			},
 			Query: "SELECT region, id, name FROM T9 ORDER BY region, id",
+			Expected: RowSet{
+				Columns: []Column{
+					{Name: "REGION", Type: "STRING"},
+					{Name: "ID", Type: "BIGINT"},
+					{Name: "NAME", Type: "STRING"},
+				},
+				Rows: [][]any{
+					{"eu", float64(1), "carol"},
+					{"us", float64(1), "alice"},
+					{"us", float64(2), "bob"},
+				},
+			},
 		},
 		{
 			Name:           "select_constant_expr",
 			SchemaTemplate: "CREATE TABLE T10 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T10 VALUES (5)"},
 			Query:          "SELECT id, id + 10 FROM T10",
+			Expected: RowSet{
+				// fdb-relational synthesises "_<n>" names for anonymous
+				// projection slots in declaration order.
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "_1", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(5), float64(15)}},
+			},
 		},
 		{
 			Name:           "string_filter",
@@ -116,6 +202,45 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T11 VALUES (3, 'cherry')",
 			},
 			Query: "SELECT id, name FROM T11 WHERE name = 'banana'",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
+				Rows:    [][]any{{float64(2), "banana"}},
+			},
+		},
+		{
+			Name: "inner_join",
+			SchemaTemplate: "CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) " +
+				"CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))",
+			SetupSqls: []string{
+				"INSERT INTO Users VALUES (1, 'alice')",
+				"INSERT INTO Users VALUES (2, 'bob')",
+				"INSERT INTO Orders VALUES (10, 1, 100)",
+				"INSERT INTO Orders VALUES (11, 1, 200)",
+				"INSERT INTO Orders VALUES (12, 2, 300)",
+			},
+			Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid",
+			Expected: RowSet{
+				Columns: []Column{{Name: "NAME", Type: "STRING"}, {Name: "TOTAL", Type: "BIGINT"}},
+				Rows: [][]any{
+					{"alice", float64(100)},
+					{"alice", float64(200)},
+					{"bob", float64(300)},
+				},
+			},
+		},
+		{
+			Name:           "count_aggregate",
+			SchemaTemplate: "CREATE TABLE T12 (id BIGINT, region STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T12 VALUES (1, 'us')",
+				"INSERT INTO T12 VALUES (2, 'us')",
+				"INSERT INTO T12 VALUES (3, 'eu')",
+			},
+			Query: "SELECT count(*) FROM T12",
+			Expected: RowSet{
+				Columns: []Column{{Name: "_0", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(3)}},
+			},
 		},
 	}
 }

@@ -20,8 +20,6 @@ package plandiff
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -417,14 +415,6 @@ func normaliseRows(r RowSet) string {
 	return b.String()
 }
 
-// HashRowSet returns a hex SHA-256 of the normalised RowSet. Stable
-// across runs; sensitive to any column-shape or value change.
-// Useful for golden-hash regression detection of Java-side outputs.
-func HashRowSet(r RowSet) string {
-	h := sha256.Sum256([]byte(normaliseRows(r)))
-	return hex.EncodeToString(h[:])
-}
-
 // RunCorpusWithSetup is RunCorpus's sibling for SeedRunCorpus-style
 // queries that need INSERT before SELECT. Calls Java's runWithSetup
 // step. The Go side returns ErrGoUnimplemented today (Track C2).
@@ -449,31 +439,6 @@ func RunCorpusWithSetup(ctx context.Context, queries []RunQuery, goR, javaR Setu
 	}
 	out.Summary = summariseRun(out.Cases)
 	return out
-}
-
-// HashRunCorpus returns a stable hex hash over (Query.Name,
-// Java-side normalised RowSet) pairs in name-sorted order. Useful
-// as a corpus-level regression sentinel — any Java-side output
-// drift surfaces as a single hash diff.
-func HashRunCorpus(r RunReport) string {
-	cases := append([]RunDiff(nil), r.Cases...)
-	sortRunDiffsByName(cases)
-	h := sha256.New()
-	for _, c := range cases {
-		fmt.Fprintf(h, "%s\n%s\n---\n", c.Query.Name, normaliseRows(c.Java.Rows))
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// sortRunDiffsByName sorts in place by Query.Name. Insertion sort
-// keeps the dependency footprint minimal (no `sort` package import
-// needed yet); n is small (corpus ≤ 100 entries), so O(n²) is fine.
-func sortRunDiffsByName(cases []RunDiff) {
-	for i := 1; i < len(cases); i++ {
-		for j := i; j > 0 && cases[j-1].Query.Name > cases[j].Query.Name; j-- {
-			cases[j-1], cases[j] = cases[j], cases[j-1]
-		}
-	}
 }
 
 // noopSetupRunner is the fallback when RunCorpusWithSetup is called
