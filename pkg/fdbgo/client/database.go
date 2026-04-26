@@ -327,6 +327,13 @@ func (db *database) bootstrap(ctx context.Context) error {
 // tryAllCoordinators races all coordinators in parallel, returning the first
 // successful response. Matches C++ quorum(ok,1) pattern.
 func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
+	if len(db.clusterFile.Coordinators) == 0 {
+		// Defensive — production cluster-file parsing rejects empty
+		// coordinator lists, but a hand-constructed *database in tests can
+		// reach this path. Without the guard, the for-loop below returns
+		// (nil, nil) and refreshTopology eventually nil-derefs in dbInfoEqual.
+		return nil, fmt.Errorf("no coordinators configured")
+	}
 	if len(db.clusterFile.Coordinators) == 1 {
 		// Fast path: single coordinator, no goroutine overhead.
 		return db.tryOneCoordinator(ctx, db.clusterFile.Coordinators[0])

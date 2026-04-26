@@ -654,11 +654,18 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 }
 
 // 11. GetKeyServerLocationsReply
-// FuzzGetKeyServerLocationsReply is intentionally omitted — all fields are deeply
-// nested structured vectors (vector<pair<KeyRangeRef, vector<StorageServerInterface>>>)
-// that neither the C++ oracle nor Go side can populate without deep type support.
-// The deterministic TestDiffGetKeyServerLocationsReply covers the empty-message case.
-// Re-add when the oracle supports structured vector construction.
+// FuzzGetKeyServerLocationsReply is intentionally omitted from the differential
+// oracle — all fields are deeply nested structured vectors
+// (vector<pair<KeyRangeRef, vector<StorageServerInterface>>>) that neither the
+// C++ oracle nor Go side can populate without deep type support.
+// The deterministic TestDiffGetKeyServerLocationsReply covers the empty-message
+// case. Round-trip coverage is provided by
+// FuzzGetKeyServerLocationsReply_RoundTrip in
+// pkg/fdbgo/wire/types/marshal_fuzz_test.go (the four fields are opaque []byte
+// blobs at the outer-wrapper layer; round-trip catches vtable/slot/padding bugs
+// in the wrapper without needing the inner payload to be valid).
+// Re-add a differential variant here when the oracle supports structured
+// vector construction.
 
 // 12. CommitID
 func FuzzCommitID(f *testing.F) {

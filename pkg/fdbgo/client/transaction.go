@@ -798,6 +798,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 
 	// Auto-reset for reuse — clear mutations and conflicts but preserve
 	// committedVersion/txnBatchId for GetCommittedVersion/GetVersionstamp.
+	//
+	// Divergence from C++ (audit item #6): the C++ NativeAPI client leaves
+	// the transaction in a fully-committed state and requires the caller to
+	// either Reset() or destroy it before the next use. We auto-reset here
+	// to match the C-binding contract observed by the binding tester (which
+	// reuses the same fdb_transaction_t handle across `_RESET` instructions
+	// without explicit reset between commits) and the Go-idiomatic
+	// `db.Run(func(tx)…)` callers that expect a single tx object to be
+	// reusable. The accepted cost is one extra `slice = slice[:0]` and a
+	// pool-return per commit, which is amortised by the savings on the
+	// retry path. See TODO.md "Document accepted divergences inline" for
+	// the open question of whether to also expose a no-reset variant.
 	tx.postCommitReset()
 	return nil
 }

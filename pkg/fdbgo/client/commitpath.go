@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"time"
 	"unsafe"
@@ -159,7 +160,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		if err := dummy.Commit(ctx); err != nil {
 			var fdbErr *wire.FDBError
 			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
-				if backoffSleep(ctx, backoff) != nil {
+				if backoffSleep(ctx, jitterBackoff(backoff)) != nil {
 					return // ctx cancelled — caller gave up
 				}
 				backoff = min(backoff*2, maxBackoff)
@@ -169,6 +170,23 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		}
 		return // dummy committed successfully — original is no longer in-flight
 	}
+}
+
+// jitterBackoff returns d scaled by a uniform-random factor in [0.9, 1.1].
+// Under coordinated retry storms — multiple clients hitting the same hot
+// range simultaneously and all hitting commit_unknown_result — deterministic
+// exponential backoff causes thundering herds: every client sleeps the same
+// duration and all retries land on the proxy at the same instant. ±10%
+// jitter spreads them across a 200ms-wide window at d=1s, breaking the
+// lockstep. Cheap (one rand.Float64 per retry) and per-call independent so
+// goroutines on the same process also desync.
+func jitterBackoff(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	// Range [0.9, 1.1).
+	factor := 0.9 + 0.2*rand.Float64()
+	return time.Duration(float64(d) * factor)
 }
 
 // isRetryable returns true if the FDB error code is retryable.
@@ -213,9 +231,21 @@ var metadataVersionKey = []byte("\xff/metadataVersion")
 
 // buildCommitTransactionRequest constructs the full request with
 // typed mutations and conflict ranges — no pre-serialization blobs.
-// Compile-time assertion: Mutation and MutationRef must have identical size.
-// The zero-copy unsafe cast in buildCommitTransactionRequest depends on this.
-var _ [unsafe.Sizeof(Mutation{})]byte = [unsafe.Sizeof(types.MutationRef{})]byte{}
+//
+// The zero-copy unsafe cast in buildCommitTransactionRequest depends on
+// Mutation and MutationRef having BIT-IDENTICAL memory layouts. A size
+// match alone is insufficient — a field reorder that preserves total
+// size would break silently. Pin per-field offsets at compile time so
+// any future field addition / reorder / type swap fails the build.
+var (
+	_ [unsafe.Sizeof(Mutation{})]byte         = [unsafe.Sizeof(types.MutationRef{})]byte{}
+	_ [unsafe.Offsetof(Mutation{}.Type)]byte  = [unsafe.Offsetof(types.MutationRef{}.MutType)]byte{}
+	_ [unsafe.Offsetof(Mutation{}.Key)]byte   = [unsafe.Offsetof(types.MutationRef{}.Param1)]byte{}
+	_ [unsafe.Offsetof(Mutation{}.Value)]byte = [unsafe.Offsetof(types.MutationRef{}.Param2)]byte{}
+	_ [unsafe.Sizeof(Mutation{}.Type)]byte    = [unsafe.Sizeof(types.MutationRef{}.MutType)]byte{}
+	_ [unsafe.Sizeof(Mutation{}.Key)]byte     = [unsafe.Sizeof(types.MutationRef{}.Param1)]byte{}
+	_ [unsafe.Sizeof(Mutation{}.Value)]byte   = [unsafe.Sizeof(types.MutationRef{}.Param2)]byte{}
+)
 
 // Pool for conflict range slices. Avoids per-commit alloc.
 var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
