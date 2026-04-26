@@ -61,7 +61,7 @@ func TestExplainValue(t *testing.T) {
 func TestNullValue(t *testing.T) {
 	t.Parallel()
 	nv := NewNullValue(TypeInt)
-	if nv.Type() != TypeInt {
+	if nv.Type().Code() != TypeCodeLong {
 		t.Fatal("Type should match constructor")
 	}
 	if nv.Name() != "null" {
@@ -199,8 +199,8 @@ func TestBooleanValue(t *testing.T) {
 	if got := uv.Evaluate(nil); got != nil {
 		t.Fatalf("UNKNOWN literal: got %v", got)
 	}
-	if tv.Type() != TypeBool {
-		t.Fatal("BooleanValue.Type should be TypeBool")
+	if tv.Type().Code() != TypeCodeBoolean {
+		t.Fatal("BooleanValue.Type should be a boolean type")
 	}
 }
 
@@ -335,7 +335,7 @@ func TestCastValue(t *testing.T) {
 	if len(strC.Children()) != 1 {
 		t.Fatalf("cast children: expected 1, got %d", len(strC.Children()))
 	}
-	if strC.Type() != TypeString {
+	if strC.Type().Code() != TypeCodeString {
 		t.Fatal("cast.Type should be Target")
 	}
 }
@@ -403,10 +403,11 @@ func TestAggregateValue_Shape(t *testing.T) {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 
-	// COUNT(*) — no operand.
+	// COUNT(*) — no operand. Type is NotNullLong (zero on empty
+	// groups, never NULL) — compare by code to ignore nullability.
 	cstar := NewAggregateValue(AggCountStar, nil)
-	if got, want := cstar.Type(), TypeInt; got != want {
-		t.Fatalf("COUNT(*) Type: got %v, want %v", got, want)
+	if got := cstar.Type(); got.Code() != TypeCodeLong {
+		t.Fatalf("COUNT(*) Type code: got %v, want %v", got.Code(), TypeCodeLong)
 	}
 	if len(cstar.Children()) != 0 {
 		t.Fatalf("COUNT(*) children: expected 0, got %d", len(cstar.Children()))
@@ -417,7 +418,7 @@ func TestAggregateValue_Shape(t *testing.T) {
 
 	// MIN inherits operand type.
 	minAge := NewAggregateValue(AggMin, &FieldValue{Field: "age", Typ: TypeInt})
-	if minAge.Type() != TypeInt {
+	if minAge.Type().Code() != TypeCodeLong {
 		t.Fatal("MIN should inherit operand type")
 	}
 }
@@ -472,8 +473,8 @@ func TestQuantifiedObjectValue_Shape(t *testing.T) {
 	if got, want := q.Name(), "quantifier"; got != want {
 		t.Fatalf("Name: got %q, want %q", got, want)
 	}
-	if q.Type() != TypeUnknown {
-		t.Fatal("seed quantifier Type should be TypeUnknown")
+	if q.Type().Code() != TypeCodeUnknown {
+		t.Fatal("seed quantifier Type should be UnknownType")
 	}
 	if len(q.Children()) != 0 {
 		t.Fatal("quantifier has no Value children")
@@ -608,6 +609,24 @@ func TestPromoteValue_UnknownTargetPanics(t *testing.T) {
 
 var _ Value = (*RecordConstructorValue)(nil)
 
+// Compile-time assertions that every other Value impl in this
+// package satisfies Value. Post-G1 (swingshift-52), Value includes
+// Type() Type — this list also pins that every impl returns rich
+// Type without needing a separate Typed-interface assertion. New
+// Value impls in this package MUST add themselves here.
+var (
+	_ Value = (*ConstantValue)(nil)
+	_ Value = (*FieldValue)(nil)
+	_ Value = (*NullValue)(nil)
+	_ Value = (*ParameterValue)(nil)
+	_ Value = (*ScalarFunctionValue)(nil)
+	_ Value = (*ArithmeticValue)(nil)
+	_ Value = (*BooleanValue)(nil)
+	_ Value = (*CastValue)(nil)
+	_ Value = (*QuantifiedObjectValue)(nil)
+	// NotValue is in value_not_test.go.
+)
+
 func TestRecordConstructorValue_Shape(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
@@ -622,8 +641,8 @@ func TestRecordConstructorValue_Shape(t *testing.T) {
 	if got, want := r.Name(), "record"; got != want {
 		t.Fatalf("Name: got %q, want %q", got, want)
 	}
-	if r.Type() != TypeUnknown {
-		t.Fatal("seed RecordConstructor should have Type TypeUnknown")
+	if r.Type().Code() != TypeCodeRecord {
+		t.Fatal("RecordConstructor.Type should be a RecordType")
 	}
 	if len(r.Children()) != 2 {
 		t.Fatalf("Children: got %d, want 2", len(r.Children()))
@@ -880,14 +899,14 @@ func TestScalarFunctionValue_Evaluate_NilArg(t *testing.T) {
 	}
 }
 
-// TestValueType_String pins the SQL-text rendering for each
-// ValueType + the unknown fall-through. Used by ExplainValue's
-// CAST(_ AS X) renderer; if these strings change the plandiff
-// hash baseline shifts.
-func TestValueType_String(t *testing.T) {
+// TestExplainTypeName pins the SQL-text rendering for each TypeCode
+// the seed CAST/PROMOTE renderer covers + the unknown fall-through.
+// Used by ExplainValue's CAST(_ AS X) renderer; if these strings
+// change the plandiff hash baseline shifts.
+func TestExplainTypeName(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		t    ValueType
+		t    Type
 		want string
 	}{
 		{TypeInt, "INT"},
@@ -895,38 +914,40 @@ func TestValueType_String(t *testing.T) {
 		{TypeBool, "BOOL"},
 		{TypeFloat, "FLOAT"},
 		{TypeUnknown, "UNKNOWN"},
-		{ValueType(99), "UNKNOWN"}, // out-of-range default arm
+		{nil, "UNKNOWN"},
+		{NotNullBytes, "UNKNOWN"}, // out-of-renderer-set default arm
 	}
 	for _, tc := range cases {
-		if got := tc.t.String(); got != tc.want {
-			t.Fatalf("ValueType(%d).String() = %q, want %q", tc.t, got, tc.want)
+		if got := explainTypeName(tc.t); got != tc.want {
+			t.Fatalf("explainTypeName(%v) = %q, want %q", tc.t, got, tc.want)
 		}
 	}
 }
 
-// TestAggregateValue_Type_UnknownOpIsTypeUnknown pins the default
-// arm of AggregateValue.Type — a hand-constructed AggregateValue with
+// TestAggregateValue_Type_UnknownOpIsUnknown pins the default arm
+// of AggregateValue.Type — a hand-constructed AggregateValue with
 // an out-of-range Op (e.g. AggInvalid or any future-but-unknown
-// enum value) returns TypeUnknown rather than panicking. The proper
+// enum value) returns UnknownType rather than panicking. The proper
 // constructor NewAggregateValue rejects AggInvalid, but this test
 // pins the fall-through arm for raw struct-construction.
-func TestAggregateValue_Type_UnknownOpIsTypeUnknown(t *testing.T) {
+func TestAggregateValue_Type_UnknownOpIsUnknown(t *testing.T) {
 	t.Parallel()
 	a := &AggregateValue{Op: AggInvalid, Operand: &FieldValue{Field: "x", Typ: TypeInt}}
 	if got := a.Type(); got != TypeUnknown {
-		t.Fatalf("AggInvalid.Type() = %v, want TypeUnknown", got)
+		t.Fatalf("AggInvalid.Type() = %v, want UnknownType", got)
 	}
 }
 
-// TestAggregateValue_Type_SumWithoutOperandFallsBackToTypeInt pins
-// the seed contract: SUM/MIN/MAX/AVG with no Operand defaults to
-// TypeInt. Unusual shape (the proper constructor demands an operand)
-// but the fall-through is part of the function's documented behavior.
-func TestAggregateValue_Type_SumWithoutOperandFallsBackToTypeInt(t *testing.T) {
+// TestAggregateValue_Type_SumWithoutOperandFallsBackToLong pins the
+// seed contract: SUM/MIN/MAX/AVG with no Operand defaults to
+// NullableLong. Unusual shape (the proper constructor demands an
+// operand) but the fall-through is part of the function's documented
+// behavior.
+func TestAggregateValue_Type_SumWithoutOperandFallsBackToLong(t *testing.T) {
 	t.Parallel()
 	a := &AggregateValue{Op: AggSum, Operand: nil}
-	if got := a.Type(); got != TypeInt {
-		t.Fatalf("Sum without operand: got %v, want TypeInt", got)
+	if got := a.Type(); got != NullableLong {
+		t.Fatalf("Sum without operand: got %v, want NullableLong", got)
 	}
 }
 
@@ -957,7 +978,7 @@ type panicValue struct {
 
 func (p *panicValue) Children() []Value { return []Value{p.child} }
 func (p *panicValue) Evaluate(any) any  { panic("test-only: Evaluate must not run") }
-func (p *panicValue) Type() ValueType   { return TypeUnknown }
+func (p *panicValue) Type() Type        { return TypeUnknown }
 func (p *panicValue) Name() string      { return "panic-value" }
 
 // --- ParameterValue -----------------------------------------------
@@ -985,8 +1006,8 @@ func TestParameterValue_Shape(t *testing.T) {
 	if pos.Ordinal != 1 || pos.ParamName != "" {
 		t.Fatalf("positional: got Ordinal=%d ParamName=%q", pos.Ordinal, pos.ParamName)
 	}
-	if pos.Type() != TypeUnknown {
-		t.Fatalf("positional Type: want TypeUnknown, got %v", pos.Type())
+	if pos.Type().Code() != TypeCodeUnknown {
+		t.Fatalf("positional Type: want UnknownType, got %v", pos.Type())
 	}
 	if pos.Name() != "param" {
 		t.Fatalf("Name: want 'param', got %q", pos.Name())
@@ -1078,8 +1099,8 @@ func TestScalarFunctionValue_Shape(t *testing.T) {
 	if v.FuncName != "UPPER" {
 		t.Fatalf("FuncName: got %q, want 'UPPER'", v.FuncName)
 	}
-	if v.Type() != TypeString {
-		t.Fatalf("Type: got %v, want TypeString", v.Type())
+	if v.Type().Code() != TypeCodeString {
+		t.Fatalf("Type: got %v, want STRING", v.Type())
 	}
 	if v.Name() != "scalarfn" {
 		t.Fatalf("Name: got %q", v.Name())

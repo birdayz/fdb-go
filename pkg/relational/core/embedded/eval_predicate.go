@@ -64,7 +64,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		// Qualifier taken from the proto descriptor name (single-source
 		// FROM without an explicit AS alias — the common case).
 		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		_, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
+		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
 		if subErr != nil {
 			return triFalse, subErr
 		}
@@ -152,6 +152,17 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (triBool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
+		// Bare column reference as a predicate (`WHERE flag` for a
+		// BOOLEAN column) is rejected by fdb-relational with
+		// "expected BooleanValue but got FieldValue". The planner
+		// requires explicit comparisons (`WHERE flag = TRUE`) — a
+		// FieldValue can't be implicitly coerced into a boolean
+		// predicate. Match that strictness here so cross-engine
+		// behaviour stays in lockstep.
+		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"expected BooleanValue but got FieldValue: bare column reference cannot be used as a predicate; use an explicit comparison (e.g. col = TRUE)")
+		}
 		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`)
 		// — evaluate as a value. NULL result is UNKNOWN; else use truthiness.
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
@@ -250,7 +261,7 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
 		}
 		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		subCols, subRows, err := conn.execQueryBodyRows(ctx, qb)
+		subCols, _, subRows, err := conn.execQueryBodyRows(ctx, qb)
 		if err != nil {
 			return triFalse, err
 		}

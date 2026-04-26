@@ -40,6 +40,12 @@ java_library(
 
 java_binary(
     name = "conformance_server",
+    # The conformance server handles 200+ requests in one suite run.
+    # Default JVM heap (~256MB) hits GC pressure after ~80-100 requests
+    # and per-request latency grows past the 30s HTTP timeout. -Xmx2g
+    # gives enough headroom for the full corpus without running into
+    # GC stalls.
+    jvm_flags = ["-Xmx2g"],
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
     runtime_deps = [":conformance_lib"],
@@ -91,6 +97,7 @@ go_test(
         "rank_index_conformance_test.go",
         "rebuild_index_conformance_test.go",
         "reverse_scan_conformance_test.go",
+        "run_sql_conformance_test.go",
         "scan_conformance_test.go",
         "split_conformance_test.go",
         "store_header_conformance_test.go",

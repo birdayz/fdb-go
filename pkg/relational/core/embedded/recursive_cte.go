@@ -82,7 +82,7 @@ func (c *EmbeddedConnection) materializeRecursiveCTE(
 	// Evaluate the seed with cteName unbound. A stray self-reference in
 	// the seed surfaces as a normal table-not-found error — standard SQL
 	// forbids seed self-reference, and we get that enforcement for free.
-	seedCols, seedRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
+	seedCols, _, seedRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -162,7 +162,7 @@ func (c *EmbeddedConnection) recursiveCTELevelOrder(
 				cteName, recursiveCTEIterationLimit)
 		}
 		c.ctes[cteName] = &cteData{cols: seedCols, rows: working}
-		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
+		iterCols, _, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
 		if iErr != nil {
 			return nil, iErr
 		}
@@ -231,7 +231,7 @@ func (c *EmbeddedConnection) recursiveCTEDFS(
 			cumulative = append(cumulative, row)
 		}
 		c.ctes[cteName] = &cteData{cols: seedCols, rows: [][]driver.Value{row}}
-		iterCols, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
+		iterCols, _, iterRows, iErr := c.execQueryBodyRows(ctx, setQ.GetRight())
 		if iErr != nil {
 			return iErr
 		}

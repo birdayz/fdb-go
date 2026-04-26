@@ -15,6 +15,8 @@ go_library(
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/core/parser/gen",
+        "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )

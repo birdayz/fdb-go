@@ -54,6 +54,21 @@ func NewJavaInvoker() *JavaInvoker {
 	return globalInvoker
 }
 
+// NewIsolatedJavaInvoker spawns a FRESH Java conformance server,
+// independent of the global singleton. Use it when the test needs
+// pristine Java state — e.g. the cross-engine corpus test, where
+// state-leaks from prior conformance specs (existence_check_*,
+// error_*, the dropped setup-INSERT-error corpus entries before they
+// were dropped, etc.) compound into Java-side hangs at >30s
+// per-request latency. The investigation in shifts/ uncovered the
+// trigger: ~11 setup-time INSERT errors compound state in
+// fdb-relational 4.11.1.0's error-path teardown.
+//
+// Caller is responsible for Close()-ing the returned invoker.
+func NewIsolatedJavaInvoker() (*JavaInvoker, error) {
+	return startJavaServer()
+}
+
 // startJavaServer launches the Java HTTP server and waits for it to be ready
 func startJavaServer() (*JavaInvoker, error) {
 	// Find the Bazel-built conformance server binary via runfiles

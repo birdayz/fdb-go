@@ -22,12 +22,19 @@ import com.apple.foundationdb.relational.recordlayer.ddl.RecordLayerMetadataOper
 import com.apple.foundationdb.relational.recordlayer.query.cache.RelationalPlanCache;
 import com.codahale.metrics.MetricRegistry;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.sql.DriverManager;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -72,8 +79,23 @@ class SqlPlanSteps {
             }
 
             // Mirror EmbeddedRelationalExtension.setup() but as a non-JUnit
-            // resource — register the driver once and leave it.
-            FDBDatabaseFactory.instance().setAPIVersion(APIVersion.API_VERSION_7_1);
+            // resource — register the driver once and leave it. The
+            // conformance server is shared across many test suites; a
+            // sibling test may have already initialised the FDB client
+            // before we get here, in which case setAPIVersion would
+            // throw RecordCoreException("API version cannot be changed
+            // after client has already started"). Tolerate that — the
+            // existing API version is fine for our purposes (we only
+            // need a working FDBDatabaseFactory; the relational driver
+            // doesn't depend on a specific API version).
+            try {
+                FDBDatabaseFactory.instance().setAPIVersion(APIVersion.API_VERSION_7_1);
+            } catch (Exception e) {
+                if (e.getMessage() == null || !e.getMessage().contains("API version cannot be changed")) {
+                    throw e;
+                }
+                // already inited with some other API version — fine.
+            }
 
             File tempFile = new File("/tmp/fdb_sql_plan_steps.cluster");
             try (FileWriter writer = new FileWriter(tempFile)) {
@@ -135,6 +157,87 @@ class SqlPlanSteps {
      */
     @ConformanceStep("planSql")
     public String planSql(String clusterFile, String schemaTemplate, String sql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> runExplain(conn, sql));
+    }
+
+    /**
+     * Run a SQL statement and return the result set as a JSON object with
+     * {@code columns} and {@code rows} fields (Phase B / Track A1 of TODO.md).
+     * Mirrors {@link #planSql} but executes the SQL instead of EXPLAINing it.
+     *
+     * <p>Result shape:
+     * <pre>
+     * {
+     *   "columns": [{"name": "ID", "type": "BIGINT"}, ...],
+     *   "rows":    [[1, "alice"], [2, null], ...]
+     * }
+     * </pre>
+     *
+     * <p>Type coverage: Number / Boolean / String values pass through as
+     * native JSON; {@code byte[]} values are base64-encoded; SQL NULL maps to
+     * JSON null. Anything else (java.sql.Array / Struct / vendor types) is
+     * encoded as {@code {"__unsupported__": "<class>"}} so the diff harness
+     * can flag it without crashing.
+     *
+     * @param clusterFile     cluster-file content (string, not path)
+     * @param schemaTemplate  body of CREATE SCHEMA TEMPLATE — sequence of
+     *                        DDL statements. Empty for SELECT-with-no-FROM.
+     * @param sql             the SQL to run.
+     * @return                a {@link JsonObject} (gson serialises directly).
+     */
+    @ConformanceStep("runSql")
+    public JsonObject runSql(String clusterFile, String schemaTemplate, String sql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> runQuery(conn, sql));
+    }
+
+    /**
+     * Run a sequence of setup DMLs (INSERT / UPDATE / DELETE) followed by
+     * a SELECT — all in the same ephemeral schema. Returns the SELECT's
+     * result set in the same JSON shape as {@link #runSql}.
+     *
+     * <p>Used by round-trip type-coverage tests: each {@link #runSql} call
+     * uses a fresh ephemeral schema, so INSERT-then-SELECT in two calls
+     * doesn't share state. {@code runWithSetup} keeps the schema alive
+     * for the whole sequence.
+     *
+     * <p>Setup statements run via {@link Statement#executeUpdate}; the
+     * affected-row count is discarded. Errors during setup propagate as
+     * {@link SQLException} and are returned as a typed Java exception by
+     * the conformance server.
+     *
+     * @param clusterFile     cluster-file content (string, not path)
+     * @param schemaTemplate  body of CREATE SCHEMA TEMPLATE
+     * @param setupSqls       DML statements to run before the query
+     * @param querySql        the SELECT to run; its RowSet is returned
+     * @return                JSON RowSet of the {@code querySql} result
+     */
+    @ConformanceStep("runWithSetup")
+    public JsonObject runWithSetup(String clusterFile, String schemaTemplate,
+                                    java.util.List<String> setupSqls, String querySql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    st.executeUpdate(setup);
+                }
+            }
+            return runQuery(conn, querySql);
+        });
+    }
+
+    /**
+     * Wraps a JDBC operation in the ephemeral schema-template / database /
+     * schema lifecycle. Both {@link #planSql} and {@link #runSql} drive
+     * fdb-relational the same way: create a uniquely-named template + db
+     * + schema if a {@code schemaTemplate} is supplied, run the operation,
+     * tear everything down in {@code finally}. Empty template falls back to
+     * the {@code /__SYS} connection.
+     */
+    @FunctionalInterface
+    private interface ConnectionOp<T> {
+        T run(java.sql.Connection conn) throws SQLException;
+    }
+
+    private <T> T runWithEphemeralSchema(String clusterFile, String schemaTemplate, ConnectionOp<T> op) throws Exception {
         ensureDriverRegistered(clusterFile);
 
         String suffix = UUID.randomUUID().toString().replace("-", "");
@@ -146,7 +249,13 @@ class SqlPlanSteps {
 
         try {
             if (schemaTemplate != null && !schemaTemplate.isEmpty()) {
-                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
+                // The /__SYS database has a system "CATALOG" schema that
+                // accepts CREATE SCHEMA TEMPLATE / CREATE DATABASE / CREATE
+                // SCHEMA DDL. AbstractEmbeddedStatement#executeInternal
+                // requires conn.getSchema() to be non-null, so we MUST set
+                // the schema before executing DDL — fdb-relational tests
+                // do the same (SchemaTemplateRule#beforeEach).
+                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS?schema=CATALOG");
                      Statement st = sysConn.createStatement()) {
                     st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplate);
                     templateCreated = true;
@@ -155,15 +264,21 @@ class SqlPlanSteps {
                     st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\"");
                 }
 
-                try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath)) {
-                    conn.setSchema(schemaName);
-                    return runExplain(conn, sql);
+                // fdb-relational reads the active schema from the
+                // JDBC URL's query string (`?schema=NAME`, case-
+                // insensitive — RecordLayerStorageCluster#parseConnectionQueryString).
+                // Calling Connection.setSchema() on the JDBC wrapper
+                // does NOT propagate to EmbeddedRelationalConnection's
+                // currentSchemaLabel — every executeQuery / executeUpdate
+                // would fail with "No Schema specified".
+                try (java.sql.Connection conn = DriverManager.getConnection(
+                        "jdbc:embed:" + dbPath + "?schema=" + schemaName)) {
+                    return op.run(conn);
                 }
             }
-            // No schema — connect to __SYS and run EXPLAIN against whatever
-            // the SQL refers to. SELECT-without-FROM works here.
+            // No schema — fall back to __SYS. SELECT-without-FROM works here.
             try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:/__SYS")) {
-                return runExplain(conn, sql);
+                return op.run(conn);
             }
         } finally {
             if (dbCreated) {
@@ -200,5 +315,80 @@ class SqlPlanSteps {
             String plan = rs.getString("PLAN");
             return plan == null ? "" : plan;
         }
+    }
+
+    /**
+     * Execute a SQL query and serialise the result set as JSON. Encoder rules
+     * are documented on {@link #runSql}.
+     */
+    private JsonObject runQuery(java.sql.Connection conn, String sql) throws SQLException {
+        RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+        try (RelationalPreparedStatement ps = rconn.prepareStatement(sql);
+             RelationalResultSet rs = ps.executeQuery()) {
+            return resultSetToJson(rs);
+        }
+    }
+
+    /**
+     * Encode a {@link RelationalResultSet} as a {@link JsonObject} with
+     * {@code columns} (name + JDBC type-name) and {@code rows} (array of
+     * value arrays). Visible for tests via reflection.
+     */
+    static JsonObject resultSetToJson(RelationalResultSet rs) throws SQLException {
+        ResultSetMetaData md = rs.getMetaData();
+        int n = md.getColumnCount();
+
+        JsonArray cols = new JsonArray(n);
+        for (int i = 1; i <= n; i++) {
+            JsonObject c = new JsonObject();
+            c.addProperty("name", md.getColumnName(i));
+            c.addProperty("type", md.getColumnTypeName(i));
+            cols.add(c);
+        }
+
+        JsonArray rows = new JsonArray();
+        while (rs.next()) {
+            JsonArray row = new JsonArray(n);
+            for (int i = 1; i <= n; i++) {
+                row.add(encodeValue(rs.getObject(i)));
+            }
+            rows.add(row);
+        }
+
+        JsonObject out = new JsonObject();
+        out.add("columns", cols);
+        out.add("rows", rows);
+        return out;
+    }
+
+    /**
+     * Encode a single column value. Numbers, booleans, and strings pass
+     * through as native JSON. {@code byte[]} is base64-encoded as a string.
+     * SQL NULL → JSON null. Unknown types render as
+     * {@code {"__unsupported__": "<class>"}} so the diff harness can flag
+     * them rather than crash.
+     */
+    private static com.google.gson.JsonElement encodeValue(Object v) {
+        if (v == null) {
+            return JsonNull.INSTANCE;
+        }
+        if (v instanceof Number) {
+            return new JsonPrimitive((Number) v);
+        }
+        if (v instanceof Boolean) {
+            return new JsonPrimitive((Boolean) v);
+        }
+        if (v instanceof String) {
+            return new JsonPrimitive((String) v);
+        }
+        if (v instanceof byte[]) {
+            return new JsonPrimitive(Base64.getEncoder().encodeToString((byte[]) v));
+        }
+        if (v instanceof java.util.UUID) {
+            return new JsonPrimitive(v.toString());
+        }
+        JsonObject marker = new JsonObject();
+        marker.addProperty("__unsupported__", v.getClass().getName());
+        return marker;
     }
 }

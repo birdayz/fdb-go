@@ -42,7 +42,7 @@ import (
 // the end without parentheses), so we do not expect valid SQL to hit
 // the degenerate case.
 func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQueryContext) (driver.Rows, error) {
-	leftCols, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
+	leftCols, leftColTypes, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 		sr := rows.(*staticRows)
 		rightCols, rightRows = sr.cols, sr.rows
 	} else {
-		rightCols, rightRows, err = c.execQueryBodyRows(ctx, setQ.GetRight())
+		rightCols, _, rightRows, err = c.execQueryBodyRows(ctx, setQ.GetRight())
 		if err != nil {
 			return nil, err
 		}
@@ -198,5 +198,5 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 		combined = combined[:unionLimit]
 	}
 
-	return &staticRows{cols: leftCols, rows: combined}, nil
+	return &staticRows{cols: leftCols, colTypes: leftColTypes, rows: combined}, nil
 }

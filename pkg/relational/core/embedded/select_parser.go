@@ -495,16 +495,26 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 					colName, alias, nameErr := selectExprToColumnName(e)
 					var expr antlrgen.IExpressionContext
 					if nameErr != nil {
-						// Not a plain column name — treat as a computed expression.
-						// Use alias as the output name; fall back to the raw expression text.
+						// Not a plain column name — treat as a computed
+						// expression. The internal column name uses
+						// either the user-given AS alias (preserves the
+						// user's chosen identifier) or the raw expression
+						// text as a unique-per-slot internal token. Keep
+						// `alias` empty when no user alias was provided
+						// — downstream projection-binding distinguishes
+						// "user gave an alias" from "we fabricated a
+						// name" via this empty-string convention. The
+						// JDBC name layer (jdbcColumnName) emits "_N"
+						// for anonymous-computed slots.
 						alias = ""
 						if e.Uid() != nil {
 							alias = functions.StripIdentifierQuotes(e.Uid().GetText())
 						}
-						if alias == "" {
-							alias = e.Expression().GetText()
+						if alias != "" {
+							colName = alias
+						} else {
+							colName = e.Expression().GetText()
 						}
-						colName = alias
 						expr = e.Expression()
 					}
 					if len(aggCols) > 0 {

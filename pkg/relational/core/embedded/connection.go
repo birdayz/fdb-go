@@ -27,8 +27,9 @@ import (
 
 // cteData holds the materialized result of a WITH clause named query.
 type cteData struct {
-	cols []string
-	rows [][]driver.Value
+	cols     []string
+	colTypes []string // parallel to cols; "" entries mean "type unknown"
+	rows     [][]driver.Value
 }
 
 // ambiguousColumnMarker is the sentinel stored in a JOIN row map's bare

@@ -50,17 +50,26 @@ gh pr create --draft --title "{shift-name}: {one-line goal from handover priorit
 
 ## Step 4: Work
 
-**THE CADENCE — three phases, time-driven, not vibe-driven.** A shift is 8 hours. The clock owns the boundaries; "feels done" / "PR is mature" / "reviewer is happy" do NOT.
+**A shift is 8 hours of continuous work.** Work doesn't pause for clock checks. Stopping happens for two reasons only: the user explicitly intervenes (mid-shift review prompt, feedback, redirect), or wind-down begins. Everything else is "keep working."
 
-| Phase | When | What |
+### Mid-shift check-in — event-driven, NOT timer-driven
+
+There IS a mid-shift check-in concept — a quality gate where the user (or a reviewer process) evaluates what's been shipped so far. **Critical rules:**
+
+- **DO NOT watch the clock for it.** Don't compute a T+3:30 mark, don't ScheduleWakeup for it, don't refuse to start new work because "mid-shift is in 30 min." You'll just burn shift time pacing.
+- **DO NOT stop working in anticipation.** Keep shipping commits. The check-in happens when it happens — when the user pings, when a reviewer comment arrives, when an external trigger fires. Until then, work.
+- **Late is fine.** Better to be 30 min late on a check-in (because you were heads-down on a substantive piece) than to idle for 30 min watching the clock.
+- **When the check-in DOES happen** — pause, request `@claude review` on the PR, iterate with the reviewer until LGTM, then keep going. The review is a quality gate, not a stop signal.
+
+The wall-clock numbers below are descriptive context, NOT triggers:
+
+| Phase | Approx when | What |
 |---|---|---|
-| Active work | T+0:00 — T+3:30 | Work the highest-priority TODOs. Ship features. One thing at a time. |
-| Mid-shift check-in | T+3:30 (≈ 4.5h before end) | Get the current PR state reviewed. Iterate with reviewer until LGTM. **Then KEEP GOING** with the next TODOs — the check-in is a quality gate, not a stop signal. |
-| Wind-down | last 30 min (T+7:30 — T+8:00) | Stop starting NEW features. Final review iteration, verification (fuzz / stress are fine — they're passive), write handover, merge. |
+| Active work | most of the shift | Work the highest-priority TODOs. Ship features. One thing at a time. |
+| Mid-shift check-in | somewhere around the middle (event-driven) | Reviewer evaluates state, you iterate to LGTM, then keep going. |
+| Wind-down | last 30 min (T+7:30 — T+8:00) | Stop starting NEW features. Final review iteration, verification (fuzz / stress are passive — fine), write handover, merge. |
 
-Compute the wall-clock T+3:30 and T+7:30 marks at shift start so you don't drift. **Wind-down is the last 30 min — not the last hour, not "when the PR feels mature."** Anything before T+7:30 is active-work or mid-shift-check-in time; the only valid reason to coast is the clock.
-
-**Mid-shift check-in failure mode to avoid:** after the reviewer LGTMs, do NOT treat it as permission to coast for the rest of the shift. A clean review at the 3.5h mark means you have 4h of runway left to ship more — go pick up the next TODO. The check-in exists so quality issues surface mid-shift instead of all at once at the end, NOT to drain the rest of the shift.
+Wind-down DOES have a clock trigger (last 30 min) because the shift literally ends. Mid-shift does NOT — that one's event-driven.
 
 If you finish the handover's priorities early, keep working — see "When the main task is done, keep working" below. Idling until the shift clock runs out is a failure mode.
 
@@ -81,7 +90,7 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **Never force-push master.** Always verify branch before amend/force: `git branch --show-current`
 - **C++ is the spec.** If our Go client diverges from C++, fix our code. Never skip tests.
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
-- **Mid-shift review is mandatory.** At T+3:30 request a full review on whatever you've shipped so far. Iterate with reviewer until LGTM. Then KEEP GOING — pick up the next TODO. A clean mid-shift review is a quality signal, not a stop signal.
+- **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, request `@claude review`, iterate to LGTM, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 - **You MUST keep working until wind-down.** Idling "because piling on more changes risks regressions" or "because the reviewer already approved" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.
 - **Wind down 30 min before shift end.** Stop starting NEW features at the T+7:30 mark. Use the last 30 min for: final review iteration, verification (fuzz / stress are passive — fine), handover doc, merge. New code stops; passive verification continues.

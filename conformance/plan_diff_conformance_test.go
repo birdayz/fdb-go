@@ -66,29 +66,21 @@ var _ = Describe("Plan Equivalence Harness", func() {
 	})
 
 	It("captures Java plan output via the SqlPlanSteps step", func() {
-		// Simplest end-to-end path: schema-less SELECT-without-FROM.
-		// fdb-relational accepts this on the __SYS database — no
-		// schema template required. Verifies the JSON wire shape +
-		// Java step lifecycle without depending on planner output
-		// equivalence.
+		// fdb-relational rejects schema-less executeQuery (and
+		// EXPLAIN goes through the same statement check), so SELECT 1
+		// without a schema surfaces a typed RelationalException with
+		// "No Schema specified". That's the documented behaviour, not
+		// a harness bug — pin it explicitly. Transport-level failures
+		// remain real harness bugs.
 		eng := plandiff.NewJavaEngineHTTP(javaBaseURL(java), env.ClusterFile)
 		got := eng.Plan(ctx, plandiff.Query{
 			Name: "select_constant",
 			SQL:  "SELECT 1",
 		})
-		// Java may either return a plan tree or surface an error (the
-		// planner's behaviour on bare-constant SELECT is version-
-		// dependent and not the assertion under test). What we DO
-		// require is that the wire path works — either we got a tree
-		// or we got a typed error, never a transport-level failure.
-		if got.Err != nil {
-			GinkgoWriter.Printf("Java engine error on SELECT 1 (acceptable, planner-version-dependent): %v\n", got.Err)
-			Expect(got.Err.Error()).NotTo(ContainSubstring("HTTP "), "transport-level failure indicates harness wiring is broken")
-			Expect(got.Err.Error()).NotTo(ContainSubstring("dial tcp"), "Java server not reachable")
-			return
-		}
-		Expect(got.Tree).NotTo(BeEmpty(), "Java engine returned empty tree without an error")
-		Expect(got.Hash).To(HaveLen(64), "Hash should be 64-hex SHA-256")
+		Expect(got.Err).To(HaveOccurred(), "fdb-relational rejects schema-less EXPLAIN")
+		Expect(got.Err.Error()).To(ContainSubstring("No Schema specified"))
+		Expect(got.Err.Error()).NotTo(ContainSubstring("HTTP "), "transport-level failure")
+		Expect(got.Err.Error()).NotTo(ContainSubstring("dial tcp"), "Java server not reachable")
 	})
 
 	It("runs both engines on a single-table SELECT and produces a Diff", func() {
@@ -101,12 +93,16 @@ var _ = Describe("Plan Equivalence Harness", func() {
 		// so WHERE/DELETE/UPDATE shapes route through the catalog-
 		// aware logical builder and predicates render via
 		// cascades.QueryPredicate.Explain.
+		//
+		// fdb-relational reserves NOT NULL for ARRAY column types in
+		// CREATE TABLE syntax — primary-key columns are implicitly
+		// NOT NULL. Drop the explicit annotation; otherwise the DDL
+		// phase fails inside the Java step.
 		corpus := []plandiff.Query{
 			{
-				Name: "select_single_table",
-				SQL:  "SELECT id FROM Item",
-				SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, " +
-					"name STRING, PRIMARY KEY (id))",
+				Name:           "select_single_table",
+				SQL:            "SELECT id FROM Item",
+				SchemaTemplate: "CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))",
 			},
 		}
 

@@ -35,8 +35,25 @@ func (n *NotValue) Children() []Value {
 	return []Value{n.Child}
 }
 
-func (*NotValue) Type() ValueType { return TypeBool }
-func (*NotValue) Name() string    { return "not" }
+func (*NotValue) Name() string { return "not" }
+
+// Type preserves the child's nullability — NOT of a nullable boolean
+// is a nullable boolean (NOT of NULL is NULL). When the child is nil
+// or its Type isn't a boolean shape, fall back to NullableBoolean
+// (NOT is always boolean-shaped at the Value layer).
+func (n *NotValue) Type() Type {
+	if n.Child == nil {
+		return NullableBoolean
+	}
+	ct := n.Child.Type()
+	if ct == nil {
+		return NullableBoolean
+	}
+	if ct.Code() == TypeCodeBoolean {
+		return ct
+	}
+	return NullableBoolean
+}
 
 func (n *NotValue) Evaluate(evalCtx any) any {
 	if n.Child == nil {

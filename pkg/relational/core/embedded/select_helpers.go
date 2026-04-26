@@ -3,14 +3,463 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"fmt"
 	"strconv"
 	"strings"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
+
+// jdbcColumnName transforms an internal projection name into the
+// JDBC-style result-set metadata name that fdb-relational emits.
+// Java uppercases unquoted identifiers, strips qualifiers from
+// projected columns, and synthesises `_N` (zero-based position) for
+// anonymous expression projections (CASE, COUNT(*), arithmetic, etc.).
+//
+// Rules:
+//   - Bare simple identifier ("id", "name") → upper-cased ("ID").
+//   - Qualified column ("t.id", "u.name") → strip qualifier, upper.
+//   - Anything containing operators / parens / spaces → "_<pos>".
+//
+// Idempotent: applying twice yields the same result, so it's safe
+// to chain through multiple staticRows wrappers (CTE → SELECT, UNION
+// over already-transformed sources).
+func jdbcColumnName(name string, position int) string {
+	base := name
+	if dot := strings.LastIndex(name, "."); dot >= 0 {
+		base = name[dot+1:]
+	}
+	if isSimpleIdentifier(base) {
+		return strings.ToUpper(base)
+	}
+	return fmt.Sprintf("_%d", position)
+}
+
+// isSimpleIdentifier reports whether s matches `[A-Za-z_][A-Za-z0-9_]*`.
+// Empty strings, leading digits, and any non-ASCII / punctuation
+// characters fail the check.
+func isSimpleIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// jdbcizeColumnNames returns a copy of cols with each entry transformed
+// via jdbcColumnName. Used at the driver-output boundary so the
+// internal column-name flow (used for ORDER BY resolution, alias
+// remapping, etc.) stays unchanged.
+func jdbcizeColumnNames(cols []string) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = jdbcColumnName(c, i)
+	}
+	return out
+}
+
+// jdbcTypeMax implements the SQL type-promotion lattice over JDBC
+// type-name strings. Mirrors cascades.MaximumType for primitives —
+// strings are used here instead of the cascades Type enum to avoid
+// a package dependency from the embedded engine into cascades/values.
+//
+// Numeric promotion: DOUBLE > FLOAT > BIGINT > INTEGER (lower
+// promotes upward). Non-numeric types (STRING, BOOLEAN, BYTES,
+// OTHER): identity — same type returns itself, mismatched returns
+// empty. Mixing numeric with non-numeric returns empty.
+//
+// "" on either side propagates as "" (unknown).
+func jdbcTypeMax(a, b string) string {
+	if a == "" || b == "" {
+		return ""
+	}
+	if a == b {
+		return a
+	}
+	rank := func(t string) int {
+		switch t {
+		case "INTEGER":
+			return 1
+		case "BIGINT":
+			return 2
+		case "FLOAT":
+			return 3
+		case "DOUBLE":
+			return 4
+		}
+		return 0
+	}
+	ra, rb := rank(a), rank(b)
+	if ra == 0 || rb == 0 {
+		return ""
+	}
+	if ra >= rb {
+		return a
+	}
+	return b
+}
+
+// inferProjectionJDBCType walks an expression AST and returns the
+// JDBC-style type name of the expression's result, or "" when the
+// type can't be inferred (deep / unrecognised shapes fall through to
+// the runner's value-based inference).
+//
+// Handles: bare column refs (looked up in msgDesc), math operators
+// (+ - * /, lattice via jdbcTypeMax), bit operators (always
+// integer), CAST(expr AS type), parenthesised single-element record
+// constructors, and simple constant literals.
+//
+// Used by the SELECT-path projection-binding step in
+// select_query_full.go to populate staticRows.colTypes for computed-
+// expression projections that don't carry a FieldDescriptor.
+func inferProjectionJDBCType(expr antlrgen.IExpressionContext, msgDesc protoreflect.MessageDescriptor) string {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok {
+		// Logical / boolean expressions (AND/OR/NOT, comparisons) —
+		// not a value, treat as BOOLEAN.
+		return "BOOLEAN"
+	}
+	if pred.Predicate() != nil {
+		// IN, IS, LIKE, BETWEEN — boolean modifier.
+		return "BOOLEAN"
+	}
+	return inferAtomJDBCType(pred.ExpressionAtom(), msgDesc)
+}
+
+// inferAtomJDBCType is the recursion entry point for ExpressionAtom
+// nodes. Mirrors evalExprAtom's switch in eval_proto.go but returns
+// types instead of values.
+func inferAtomJDBCType(atom antlrgen.IExpressionAtomContext, msgDesc protoreflect.MessageDescriptor) string {
+	switch a := atom.(type) {
+	case *antlrgen.ConstantExpressionAtomContext:
+		return inferConstantJDBCType(a.Constant())
+	case *antlrgen.FullColumnNameExpressionAtomContext:
+		colName := functions.FullIdToName(a.FullColumnName().FullId())
+		// Strip qualifier for the field lookup, same as the SELECT-path
+		// projection-binding does at line 853 of select_query_full.go.
+		bare := colName
+		if dot := strings.LastIndex(colName, "."); dot >= 0 {
+			bare = colName[dot+1:]
+		}
+		if msgDesc != nil {
+			fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
+			if fd != nil {
+				return jdbcTypeNameForFD(fd)
+			}
+		}
+		return ""
+	case *antlrgen.MathExpressionAtomContext:
+		l := inferAtomJDBCType(a.GetLeft(), msgDesc)
+		r := inferAtomJDBCType(a.GetRight(), msgDesc)
+		return jdbcTypeMax(l, r)
+	case *antlrgen.BitExpressionAtomContext:
+		// Bit operators (& | ^ << >>) always produce integer; Java
+		// promotes both operands to BIGINT before the op so the
+		// result is BIGINT regardless of operand widths.
+		return "BIGINT"
+	case *antlrgen.RecordConstructorExpressionAtomContext:
+		// Single-field parenthesised group `(expr)` — recurse inner.
+		// Multi-field record constructors don't appear at the
+		// projection-name boundary so we ignore them here.
+		rc := a.RecordConstructor()
+		if rc == nil {
+			return ""
+		}
+		fields := rc.AllExpressionWithOptionalName()
+		if len(fields) != 1 {
+			return ""
+		}
+		return inferProjectionJDBCType(fields[0].Expression(), msgDesc)
+	case *antlrgen.FunctionCallExpressionAtomContext:
+		return inferFunctionCallJDBCType(a.FunctionCall(), msgDesc)
+	}
+	return ""
+}
+
+// inferConstantJDBCType maps a literal AST node to its JDBC type.
+// Negative numbers (NegativeDecimalConstantContext) follow the same
+// numeric-vs-decimal split as positive ones.
+func inferConstantJDBCType(c antlrgen.IConstantContext) string {
+	switch cv := c.(type) {
+	case *antlrgen.DecimalConstantContext:
+		text := cv.DecimalLiteral().GetText()
+		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return "BIGINT"
+		}
+		return "DOUBLE"
+	case *antlrgen.NegativeDecimalConstantContext:
+		text := "-" + cv.DecimalLiteral().GetText()
+		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return "BIGINT"
+		}
+		return "DOUBLE"
+	case *antlrgen.StringConstantContext:
+		return "STRING"
+	case *antlrgen.BooleanConstantContext:
+		return "BOOLEAN"
+	case *antlrgen.BytesConstantContext:
+		return "BINARY"
+	case *antlrgen.NullConstantContext:
+		return "" // NULL has no type until promoted by an outer op
+	}
+	return ""
+}
+
+// inferFunctionCallJDBCType handles the function-call subtree:
+// scalar functions (UPPER, LOWER, COALESCE, ...) and CASE / CAST forms.
+// Walks into the SpecificFunctionContext for CAST and CASE.
+func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
+	switch fc := fc.(type) {
+	case *antlrgen.SpecificFunctionCallContext:
+		return inferSpecificFunctionJDBCType(fc.SpecificFunction(), msgDesc)
+	case *antlrgen.ScalarFunctionCallContext:
+		return inferScalarFunctionJDBCType(fc, msgDesc)
+	}
+	return ""
+}
+
+// inferScalarFunctionJDBCType handles UPPER / LOWER / SUBSTRING /
+// COALESCE / etc. by name. Functions whose name we don't recognise
+// fall through to "" — caller's value-based inference can take over.
+func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
+	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
+	switch name {
+	case "UPPER", "LOWER", "SUBSTRING", "TRIM", "LTRIM", "RTRIM", "CONCAT", "REPLACE":
+		return "STRING"
+	case "LENGTH", "CHAR_LENGTH", "OCTET_LENGTH":
+		return "BIGINT"
+	case "ABS":
+		// ABS preserves operand type. Recurse into first arg.
+		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)
+	case "COALESCE", "IFNULL":
+		// Result type = MaximumType of all arguments. Walk each arg.
+		args := fc.FunctionArgs()
+		if args == nil {
+			return ""
+		}
+		var resultType string
+		for _, a := range args.AllFunctionArg() {
+			t := inferFunctionArgJDBCType(a, msgDesc)
+			if resultType == "" {
+				resultType = t
+			} else if t != "" {
+				resultType = jdbcTypeMax(resultType, t)
+				if resultType == "" {
+					return ""
+				}
+			}
+		}
+		return resultType
+	case "NULLIF":
+		// NULLIF returns the type of the first argument (which is
+		// also the type the second argument was compared against).
+		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)
+	}
+	return ""
+}
+
+// firstFunctionArgType returns the inferred type of args[0] or "" if
+// the args list is empty.
+func firstFunctionArgType(args antlrgen.IFunctionArgsContext, msgDesc protoreflect.MessageDescriptor) string {
+	if args == nil {
+		return ""
+	}
+	all := args.AllFunctionArg()
+	if len(all) == 0 {
+		return ""
+	}
+	return inferFunctionArgJDBCType(all[0], msgDesc)
+}
+
+// inferSpecificFunctionJDBCType handles CAST and CASE shapes.
+//   - CAST(expr AS T): result type is T, mapped from the parser's
+//     ConvertedDataType text via convertedDataTypeToJDBC.
+//   - CASE WHEN ... THEN x ... ELSE y END: result type is the
+//     MaximumType of all THEN / ELSE branches.
+func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc protoreflect.MessageDescriptor) string {
+	switch sf := sf.(type) {
+	case *antlrgen.DataTypeFunctionCallContext:
+		// CAST(expr AS dataType). Pull the target type's text and
+		// canonicalise to a JDBC name.
+		if cdt := sf.ConvertedDataType(); cdt != nil {
+			return convertedDataTypeToJDBC(cdt.GetText())
+		}
+	case *antlrgen.CaseFunctionCallContext:
+		// Searched CASE: each WHEN-clause has THEN expr; optional ELSE expr.
+		// Result type = MaximumType of all branches.
+		var resultType string
+		for _, alt := range sf.AllCaseFuncAlternative() {
+			t := inferFunctionArgJDBCType(alt.GetConsequent(), msgDesc)
+			if resultType == "" {
+				resultType = t
+			} else if t != "" {
+				resultType = jdbcTypeMax(resultType, t)
+				if resultType == "" {
+					// Non-numeric branches with different types — fall
+					// through to "" for the runner.
+					return ""
+				}
+			}
+		}
+		if elseArg := sf.GetElseArg(); elseArg != nil {
+			t := inferFunctionArgJDBCType(elseArg, msgDesc)
+			if resultType == "" {
+				resultType = t
+			} else if t != "" {
+				if max := jdbcTypeMax(resultType, t); max != "" {
+					resultType = max
+				}
+			}
+		}
+		return resultType
+	}
+	return ""
+}
+
+// inferFunctionArgJDBCType extracts the inner expression from a
+// function-arg node and recurses. Used by CASE-branch traversal.
+func inferFunctionArgJDBCType(arg antlrgen.IFunctionArgContext, msgDesc protoreflect.MessageDescriptor) string {
+	if arg == nil {
+		return ""
+	}
+	if e := arg.Expression(); e != nil {
+		return inferProjectionJDBCType(e, msgDesc)
+	}
+	return ""
+}
+
+// convertedDataTypeToJDBC maps the parser's ConvertedDataType text
+// (the type-name appearing in `CAST(expr AS T)`) to the JDBC type
+// name fdb-relational reports for the result. The parser preserves
+// case, so we upper-case before matching.
+func convertedDataTypeToJDBC(text string) string {
+	switch strings.ToUpper(strings.TrimSpace(text)) {
+	case "INTEGER", "INT":
+		return "INTEGER"
+	case "BIGINT", "LONG":
+		return "BIGINT"
+	case "FLOAT":
+		return "FLOAT"
+	case "DOUBLE", "DOUBLEPRECISION", "DOUBLE PRECISION":
+		return "DOUBLE"
+	case "STRING", "VARCHAR", "CHAR", "TEXT":
+		return "STRING"
+	case "BOOLEAN", "BOOL":
+		return "BOOLEAN"
+	case "BYTES":
+		return "BINARY"
+	case "UUID":
+		return "OTHER"
+	}
+	return ""
+}
+
+// aggregateResultJDBCType returns the JDBC result-set type name for
+// an aggregate-column slot. Handles GROUP-BY columns (look up the
+// underlying field's type), pure aggregates (COUNT → BIGINT;
+// SUM/MIN/MAX → operand type; AVG → DOUBLE), and outExpr post-
+// aggregation slots (heuristic: BIGINT). Empty string for shapes
+// where the type can't be determined statically — the runner-side
+// fallback handles those (no slot today).
+func aggregateResultJDBCType(ac aggSelectCol, msgDesc protoreflect.MessageDescriptor) string {
+	// GROUP BY column: type comes from the underlying field.
+	if ac.groupCol != "" {
+		bare := ac.groupCol
+		if dot := strings.LastIndex(bare, "."); dot >= 0 {
+			bare = bare[dot+1:]
+		}
+		if msgDesc != nil {
+			if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
+				return jdbcTypeNameForFD(fd)
+			}
+		}
+		return ""
+	}
+	// outExpr post-aggregation: walking the expression isn't trivial
+	// because operand columns reference aggregator slots, not table
+	// fields. Default to BIGINT — covers SUM(a) + SUM(b) shapes.
+	if ac.outExpr != nil {
+		return "BIGINT"
+	}
+	// Pure aggregate.
+	switch ac.aggFunc {
+	case "COUNT":
+		return "BIGINT"
+	case "AVG":
+		return "DOUBLE"
+	case "SUM", "MIN", "MAX":
+		// Result inherits the operand's type. Fast path: bare column
+		// argument → look up the FieldDescriptor. Expression arg
+		// (SUM(qty * price)) walks the expression AST.
+		if ac.aggArg != "" {
+			bare := ac.aggArg
+			if dot := strings.LastIndex(bare, "."); dot >= 0 {
+				bare = bare[dot+1:]
+			}
+			if msgDesc != nil {
+				if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
+					return jdbcTypeNameForFD(fd)
+				}
+			}
+		}
+		if ac.aggExpr != nil {
+			return inferProjectionJDBCType(ac.aggExpr, msgDesc)
+		}
+		return "BIGINT" // best-effort default
+	}
+	return ""
+}
+
+// jdbcTypeNameForFD maps a protoreflect FieldDescriptor's kind to the
+// JDBC-style type name fdb-relational reports via
+// ResultSetMetaData.getColumnTypeName(). Empty string for unmappable /
+// nil descriptors — the staticRows.ColumnTypeDatabaseTypeName implementation
+// treats "" as "type unknown".
+func jdbcTypeNameForFD(fd protoreflect.FieldDescriptor) string {
+	if fd == nil {
+		return ""
+	}
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return "BOOLEAN"
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return "INTEGER"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "BIGINT"
+	case protoreflect.FloatKind:
+		return "FLOAT"
+	case protoreflect.DoubleKind:
+		return "DOUBLE"
+	case protoreflect.StringKind:
+		return "STRING"
+	case protoreflect.BytesKind:
+		// JDBC standard for variable-length byte arrays is BINARY; this
+		// is what fdb-relational's ResultSetMetaData reports.
+		return "BINARY"
+	case protoreflect.MessageKind:
+		// UUID columns are stored as the tuple_fields.UUID message
+		// and reported as JDBC's catch-all "OTHER" type name (matches
+		// Java's java.sql.Types.OTHER for UUIDs).
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
+			return "OTHER"
+		}
+	}
+	return ""
+}
 
 // SELECT-path helpers shared by the single-table / JOIN / CTE
 // executors in select_query_full.go / join.go / cte_scan.go.

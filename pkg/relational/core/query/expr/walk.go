@@ -246,7 +246,7 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (v
 	target, ok := primitiveTypeToValueType(pt)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{
-			Shape: fmt.Sprintf("CAST target not in seed ValueType (INT/STRING/BOOL); got %q", pt.GetText()),
+			Shape: fmt.Sprintf("CAST target not in seed Type set (INT/STRING/BOOL/FLOAT); got %q", pt.GetText()),
 		}
 	}
 	return r.ResolveCast(inner, target)
@@ -302,11 +302,10 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 // function. Unknown name → (_, false) so the walker declines.
 //
 // Polymorphic returns (ABS / CEILING / FLOOR / ROUND / COALESCE /
-// NULLIF) carry TypeUnknown because the result type depends on the
-// input — int input stays int, float input stays float. Once the Type
-// hierarchy port lands the walker will infer per-arg types and surface
-// the precise result type instead.
-func scalarFunctionResultType(name string) (values.ValueType, bool) {
+// NULLIF) carry UnknownType because the result type depends on the
+// input — int input stays int, float input stays float. Real
+// per-arg inference is future work.
+func scalarFunctionResultType(name string) (values.Type, bool) {
 	switch name {
 	case "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
 		"CONCAT", "CONCAT_WS", "SUBSTRING", "SUBSTR", "REPLACE",
@@ -327,10 +326,9 @@ func scalarFunctionResultType(name string) (values.ValueType, bool) {
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
-// values.ValueType. FLOAT / DOUBLE / BYTES / UUID / VECTOR aren't
-// in the seed ValueType enum (Phase 4.0 Type hierarchy port) — they
-// return (_, false) so the walker declines.
-func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.ValueType, bool) {
+// values.Type. BYTES / UUID / VECTOR aren't in the seed CAST set —
+// they return (_, false) so the walker declines.
+func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, bool) {
 	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
 	if !ok {
 		return values.TypeUnknown, false

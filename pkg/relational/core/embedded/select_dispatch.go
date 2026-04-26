@@ -40,30 +40,34 @@ import (
 //                              references (RECURSIVE is a scope
 //                              enabler, not a requirement).
 
-// execQueryBodyRows executes a queryExpressionBody and returns (colNames, rows).
+// execQueryBodyRows executes a queryExpressionBody and returns
+// (colNames, colTypes, rows). colTypes is parallel to colNames, with
+// "" entries meaning "type unknown" — callers that materialize the
+// result as a CTE / derived table propagate the types so a downstream
+// SELECT against the materialised relation can report typed metadata.
 // Handles both simple queries (QueryTermDefaultContext) and UNION (SetQueryContext).
-func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrgen.IQueryExpressionBodyContext) ([]string, [][]driver.Value, error) {
+func (c *EmbeddedConnection) execQueryBodyRows(ctx context.Context, body antlrgen.IQueryExpressionBodyContext) ([]string, []string, [][]driver.Value, error) {
 	switch b := body.(type) {
 	case *antlrgen.QueryTermDefaultContext:
 		sq, err := extractFromQueryTerm(b)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		rows, err := c.execSelectQuery(ctx, sq)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		sr := rows.(*staticRows)
-		return sr.cols, sr.rows, nil
+		return sr.cols, sr.colTypes, sr.rows, nil
 	case *antlrgen.SetQueryContext:
 		r, err := c.execUnion(ctx, b)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		sr := r.(*staticRows)
-		return sr.cols, sr.rows, nil
+		return sr.cols, sr.colTypes, sr.rows, nil
 	default:
-		return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		return nil, nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported query expression type %T", body)
 	}
 }
@@ -167,7 +171,7 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		// Push a CTE scope so the derived-table alias is visible during this
 		// query's evaluation without leaking back out to an enclosing scope.
 		defer c.pushCTEScope()()
-		cols, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
+		cols, colTypes, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter,
 				"derived table %q", sq.tableName)
@@ -193,7 +197,7 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 				seen[key] = true
 			}
 		}
-		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, rows: rows}
+		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, colTypes: colTypes, rows: rows}
 	}
 
 	// Check if the table name resolves to a CTE. Only route to the
@@ -291,10 +295,11 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			// RECURSIVE is a scope enabler, not a requirement: a CTE
 			// marked RECURSIVE that does not actually self-reference is
 			// evaluated non-recursively (matches Postgres / SQL spec).
+			var cteColTypes []string
 			if recursiveKeyword && containsTableRef(body, cteName) {
 				cteCols, cteRows, cteErr = c.materializeRecursiveCTE(ctx, body, cteName, renameList, traversalOrder)
 			} else {
-				cteCols, cteRows, cteErr = c.execQueryBodyRows(ctx, body)
+				cteCols, cteColTypes, cteRows, cteErr = c.execQueryBodyRows(ctx, body)
 				// Apply non-recursive rename here; the recursive path
 				// handled it internally.
 				if cteErr == nil && renameList != nil {
@@ -326,7 +331,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				}
 				return nil, api.WrapErrorf(cteErr, innerCode, "CTE %q", cteName)
 			}
-			c.ctes[cteName] = &cteData{cols: cteCols, rows: cteRows}
+			c.ctes[cteName] = &cteData{cols: cteCols, colTypes: cteColTypes, rows: cteRows}
 		}
 	}
 

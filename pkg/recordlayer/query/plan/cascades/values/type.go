@@ -1,27 +1,37 @@
 package values
 
-// Phase 4.0 Type hierarchy seed.
+// Phase 4.0 Type hierarchy.
 //
-// Mirrors the bare-minimum surface of Java's
+// Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.typing.Type` —
-// the rich type system that replaces today's flat `ValueType` enum.
-// The interim `ValueType` continues to coexist; this file adds the
-// richer `Type` interface alongside it so new code can carry full
-// type information (notably nullability) while old call sites keep
-// working unchanged. Migration is incremental.
+// the rich type system used throughout the planner. Post-swingshift-52
+// (Track G1) this is the ONLY type representation in the package —
+// the legacy `ValueType` enum + `FromValueType` / `ToValueType` /
+// `ValueRichType` bridges retired. Each Value impl's `Type()` now
+// returns a rich Type directly.
 //
-// Seed scope (this file): TypeCode enum mirroring Java's
-// well-known codes, the Type interface (Code + IsNullable + a few
-// shape predicates), the PrimitiveType impl plus singletons for the
-// common primitives, and adapter functions to / from the legacy
-// ValueType enum so callers can bridge piecewise.
+// File contents: TypeCode enum mirroring Java's well-known codes,
+// the Type interface (Code + IsNullable + a few shape predicates),
+// concrete impls (PrimitiveType, RecordType, ArrayType, EnumType,
+// RelationType), canonical singletons for every primitive, the
+// IsPromotable / MaximumType / MaximumTypeOfMany promotion lattice,
+// and TypeRepository for named-type lookup.
 //
-// Out of scope (Phase 4.0 follow-ups): RecordType, ArrayType,
-// EnumType, UuidType, RelationType, TypeRepository, plan-
-// serialisation hooks, the full Java conversion / coercion lattice.
-// Per RFC-025 §"typing/" the file stays in cascades/values/ until
-// the contents grow past ~300 LOC; only then does typing/ become
-// its own sub-package.
+// Status (post-swingshift-52):
+//   - Structured types: RecordType, ArrayType, EnumType, RelationType ✅
+//   - Primitive singletons: NullableX / NotNullX for every primitive,
+//     plus NullType, UnknownType, NoneType, AnyType ✅
+//   - Promotion lattice: IsPromotable, MaximumType, MaximumTypeOfMany ✅
+//   - TypeRepository (named-type registry) ✅
+//   - Erased-type helpers: ArrayType.IsErased, RelationType.IsErased ✅
+//   - Value.Type() returns rich Type (legacy enum retired) ✅
+//
+// Still ahead:
+//   - Plan-serialisation hooks (proto encoding for plan-cache).
+//
+// Per RFC-025 §"typing/" this file stays in cascades/values/ until
+// it grows past ~1500 LOC; only then does typing/ become its own
+// sub-package.
 
 // TypeCode enumerates the well-known SQL types. Mirrors Java's
 // `Type.TypeCode`; numeric values are NOT wire-stable (we don't
@@ -234,6 +244,19 @@ var (
 	// NotNullBytes is BYTES NOT NULL.
 	NotNullBytes Type = &PrimitiveType{TypeCode: TypeCodeBytes, Nullable: false}
 
+	// NullableUuid is UUID NULL — 16-byte primitive, NOT a structured
+	// type in fdb-relational's grammar (RelationalParser.g4 lists UUID
+	// among primitiveType siblings).
+	NullableUuid Type = &PrimitiveType{TypeCode: TypeCodeUuid, Nullable: true}
+	// NotNullUuid is UUID NOT NULL.
+	NotNullUuid Type = &PrimitiveType{TypeCode: TypeCodeUuid, Nullable: false}
+
+	// NullableVersion is VERSION NULL — fdb-record-layer's 12-byte
+	// FDBRecordVersion (10-byte global versionstamp + 2-byte local).
+	NullableVersion Type = &PrimitiveType{TypeCode: TypeCodeVersion, Nullable: true}
+	// NotNullVersion is VERSION NOT NULL.
+	NotNullVersion Type = &PrimitiveType{TypeCode: TypeCodeVersion, Nullable: false}
+
 	// NullType is the type of the NULL literal — always nullable
 	// (a NULL is by definition not a value of a specific type, but
 	// can be assigned to any nullable column). Distinct from
@@ -242,62 +265,21 @@ var (
 
 	// UnknownType is the placeholder for "type not yet inferred" —
 	// used by Value impls that don't yet have a real type computed.
-	// Pre-Phase-4.0 the legacy `ValueType` had a TypeUnknown that
-	// served the same purpose; this is the new-API replacement.
 	UnknownType Type = &PrimitiveType{TypeCode: TypeCodeUnknown, Nullable: true}
+
+	// NoneType is the type of the untyped empty array literal `[]`.
+	// Identity-promotes to any ARRAY type without changing
+	// nullability — when an empty array appears in a context that
+	// expects ARRAY<T>, NONE adopts T as its element type.
+	// Always non-nullable. Mirrors Java's `Type.NONE`.
+	NoneType Type = &PrimitiveType{TypeCode: TypeCodeNone, Nullable: false}
+
+	// AnyType is the universal supertype — every Type is assignable
+	// to it. Used by quantifiers and pre-resolution placeholders
+	// where a concrete type isn't known at construction. Always
+	// nullable. Mirrors Java's `Type.ANY`.
+	AnyType Type = &PrimitiveType{TypeCode: TypeCodeAny, Nullable: true}
 )
-
-// Typed is the interface things-with-a-type implement. Mirrors Java's
-// Typed. Values, expressions, and table columns will eventually all
-// implement it; today it's a forward-compat hook so call sites can
-// start writing `t.Type()` against the rich Type instead of the
-// legacy ValueType.
-type Typed interface {
-	// Type returns this thing's Type. Never nil — implementations
-	// return UnknownType when the type genuinely isn't known yet.
-	RichType() Type
-}
-
-// FromValueType bridges the legacy ValueType to the new Type
-// interface. nullable lets the caller carry NOT NULL information
-// from the schema; ValueType itself doesn't track nullability.
-//
-// Used by call sites that have a ValueType in hand (existing API
-// surface) and need to feed a Type to a new-API consumer. Once the
-// migration is complete the legacy ValueType retires and this
-// adapter goes with it.
-func FromValueType(vt ValueType, nullable bool) Type {
-	switch vt {
-	case TypeBool:
-		if nullable {
-			return NullableBoolean
-		}
-		return NotNullBoolean
-	case TypeInt:
-		// The seed ValueType conflates INT and LONG. Map to LONG
-		// since BIGINT is the Java Record Layer's default integer
-		// width and it round-trips int64 cleanly.
-		if nullable {
-			return NullableLong
-		}
-		return NotNullLong
-	case TypeFloat:
-		// Same conflation: ValueType.TypeFloat covers both FLOAT
-		// (32-bit) and DOUBLE (64-bit). Map to DOUBLE since Java's
-		// Record Layer defaults to double-precision and our runtime
-		// representation is float64.
-		if nullable {
-			return NullableDouble
-		}
-		return NotNullDouble
-	case TypeString:
-		if nullable {
-			return NullableString
-		}
-		return NotNullString
-	}
-	return UnknownType
-}
 
 // --- RecordType ----------------------------------------------------
 
@@ -502,6 +484,14 @@ func (*ArrayType) Code() TypeCode { return TypeCodeArray }
 // IsNullable implements Type.
 func (a *ArrayType) IsNullable() bool { return a.Nullable }
 
+// IsErased reports whether the array's element type isn't filled
+// in yet. Mirrors Java's `Type.Array.isErased()` — typically true
+// for the empty-array literal `[]` before inference resolves what
+// it should adopt from context (target column / sibling expression).
+func (a *ArrayType) IsErased() bool {
+	return a.ElementType == nil
+}
+
 // Equals implements Type. Structural — Nullable + ElementType.Equals.
 // Two ArrayTypes both with nil ElementType are equal; one nil + one
 // non-nil are not.
@@ -676,6 +666,392 @@ func (e *EnumType) LookupValueByNumber(number int32) (EnumValue, bool) {
 	return EnumValue{}, false
 }
 
+// --- RelationType -------------------------------------------------
+
+// RelationType is the type of a stream of rows — typically the
+// result of SELECT, the materialised value of a CTE, or the type
+// of a subquery. Mirrors Java's `Type.Relation`.
+//
+// Always non-nullable: a relation is always defined as a stream of
+// rows, even if that stream happens to be empty. NULL relations
+// don't exist in the type system. WithNullability(true) on a
+// RelationType panics.
+//
+// InnerType is the type of each row in the stream — typically a
+// RecordType. nil InnerType means "erased" — Java treats this as
+// "the inner type was once known but has been intentionally
+// dropped" (e.g. when crossing an API boundary that doesn't preserve
+// it). Two erased relations compare equal regardless of what their
+// inner types USED to be.
+type RelationType struct {
+	// InnerType is the row type. nil for erased relations.
+	InnerType Type
+}
+
+// NewRelationType constructs a RelationType with the given inner
+// row type. nil inner is allowed and produces an erased relation.
+func NewRelationType(inner Type) *RelationType {
+	return &RelationType{InnerType: inner}
+}
+
+// Code implements Type — always TypeCodeRelation.
+func (*RelationType) Code() TypeCode { return TypeCodeRelation }
+
+// IsNullable implements Type — always false. RELATION is never
+// nullable per Java's contract.
+func (*RelationType) IsNullable() bool { return false }
+
+// Equals implements Type. Two RelationTypes are equal iff their
+// inner types are structurally equal (or both erased).
+func (r *RelationType) Equals(other Type) bool {
+	if other == nil {
+		return false
+	}
+	or, ok := other.(*RelationType)
+	if !ok {
+		return false
+	}
+	if r.IsErased() != or.IsErased() {
+		return false
+	}
+	if r.IsErased() {
+		return true
+	}
+	return r.InnerType.Equals(or.InnerType)
+}
+
+// String implements Type. Renders as `RELATION<inner>` for typed
+// relations and `RELATION<?>` for erased ones.
+func (r *RelationType) String() string {
+	if r.IsErased() {
+		return "RELATION<?>"
+	}
+	return "RELATION<" + r.InnerType.String() + ">"
+}
+
+// IsErased reports whether the relation has no concrete inner row
+// type. Mirrors Java's Type.Erasable.isErased().
+func (r *RelationType) IsErased() bool {
+	return r.InnerType == nil
+}
+
+// --- Shape predicates (free functions over Type) ------------------
+//
+// Mirror Java's default methods on Type (isNull, isPrimitive,
+// isArray, isRecord, isEnum, isUuid). Free functions so callers can
+// compose without forcing every Type impl to gain a default-method
+// implementation. nil t safely returns false.
+
+// IsNull reports whether t is the NULL literal's type (TypeCodeNull).
+// Mirrors Java's `Type.isNull()`.
+func IsNull(t Type) bool {
+	return t != nil && t.Code() == TypeCodeNull
+}
+
+// IsNone reports whether t is the NONE type (untyped empty array).
+// Mirrors Java's `Type.isNone()`.
+func IsNone(t Type) bool {
+	return t != nil && t.Code() == TypeCodeNone
+}
+
+// IsAny reports whether t is the universal supertype.
+// Mirrors Java's `Type.isAny()`.
+func IsAny(t Type) bool {
+	return t != nil && t.Code() == TypeCodeAny
+}
+
+// IsUnresolved reports whether t is one of the placeholder types
+// (UNKNOWN / NULL / NONE / ANY) — i.e. the type isn't a concrete
+// shape that can carry data on its own. Mirrors Java's
+// `Type.isUnresolved()`.
+func IsUnresolved(t Type) bool {
+	if t == nil {
+		return true
+	}
+	switch t.Code() {
+	case TypeCodeUnknown, TypeCodeNull, TypeCodeNone, TypeCodeAny:
+		return true
+	}
+	return false
+}
+
+// IsArray reports whether t is an ARRAY (concrete or erased).
+// Mirrors Java's `Type.isArray()`.
+func IsArray(t Type) bool {
+	return t != nil && t.Code() == TypeCodeArray
+}
+
+// IsRecord reports whether t is a RECORD.
+// Mirrors Java's `Type.isRecord()`.
+func IsRecord(t Type) bool {
+	return t != nil && t.Code() == TypeCodeRecord
+}
+
+// IsEnum reports whether t is an ENUM.
+// Mirrors Java's `Type.isEnum()`.
+func IsEnum(t Type) bool {
+	return t != nil && t.Code() == TypeCodeEnum
+}
+
+// IsUuid reports whether t is a UUID.
+// Mirrors Java's `Type.isUuid()`.
+func IsUuid(t Type) bool {
+	return t != nil && t.Code() == TypeCodeUuid
+}
+
+// IsRelation reports whether t is a RELATION.
+// Mirrors Java's `Type.isRelation()`.
+func IsRelation(t Type) bool {
+	return t != nil && t.Code() == TypeCodeRelation
+}
+
+// --- Promotion lattice --------------------------------------------
+
+// promotionEdge is a (from-code, to-code) pair representing a
+// single allowed implicit promotion. Used as a map key.
+type promotionEdge struct {
+	from TypeCode
+	to   TypeCode
+}
+
+// promotionMap mirrors Java's PromoteValue.PROMOTION_MAP — the
+// hardcoded set of TypeCode → TypeCode promotions the planner
+// considers loss-free / safe. Used for arithmetic operand
+// homogenisation (INT + LONG → LONG + LONG → LONG) and assignment
+// compatibility (`INSERT INTO T(LongCol) VALUES (intLiteral)`).
+//
+// The set:
+//   - Numeric widening: INT → LONG / FLOAT / DOUBLE; LONG → FLOAT /
+//     DOUBLE; FLOAT → DOUBLE.
+//   - NULL is assignable to any nullable type (NULL → INT / LONG /
+//     FLOAT / DOUBLE / BOOLEAN / STRING / BYTES / ARRAY / RECORD /
+//     ENUM / VECTOR / VERSION).
+//   - NONE → ARRAY (the untyped empty literal `[]` adopts the
+//     target array's element type).
+//   - STRING → ENUM (lookup by name) and STRING → UUID (parse).
+//
+// Identity (T → T) is NOT in the map — IsPromotable handles that
+// trivially before consulting the map.
+var promotionMap = map[promotionEdge]struct{}{
+	{TypeCodeInt, TypeCodeLong}:     {},
+	{TypeCodeInt, TypeCodeFloat}:    {},
+	{TypeCodeInt, TypeCodeDouble}:   {},
+	{TypeCodeLong, TypeCodeFloat}:   {},
+	{TypeCodeLong, TypeCodeDouble}:  {},
+	{TypeCodeFloat, TypeCodeDouble}: {},
+	{TypeCodeNull, TypeCodeInt}:     {},
+	{TypeCodeNull, TypeCodeLong}:    {},
+	{TypeCodeNull, TypeCodeFloat}:   {},
+	{TypeCodeNull, TypeCodeDouble}:  {},
+	{TypeCodeNull, TypeCodeBoolean}: {},
+	{TypeCodeNull, TypeCodeString}:  {},
+	{TypeCodeNull, TypeCodeBytes}:   {},
+	{TypeCodeNull, TypeCodeArray}:   {},
+	{TypeCodeNull, TypeCodeRecord}:  {},
+	{TypeCodeNull, TypeCodeEnum}:    {},
+	{TypeCodeNull, TypeCodeVersion}: {},
+	{TypeCodeNone, TypeCodeArray}:   {},
+	{TypeCodeString, TypeCodeEnum}:  {},
+	{TypeCodeString, TypeCodeUuid}:  {},
+}
+
+// IsPromotable reports whether `from` can be implicitly promoted
+// to `to` without an explicit CAST. Returns true when:
+//   - from.Code() == to.Code() (identity, same type code).
+//   - The (from.Code, to.Code) pair is in the promotionMap.
+//
+// Mirrors Java's `PromoteValue.isPromotable`. Nullability is NOT
+// part of the promotion check — a NOT NULL value can always be
+// stored in a nullable slot of the same code, and a nullable value
+// being stored in a NOT NULL slot is rejected at the caller (NOT
+// NULL constraint), not by promotion.
+//
+// Arrays / records / enums / vectors with structural inner types
+// need element-by-element checks done by the caller (Java's
+// isPromotionNeeded recurses for these); IsPromotable only handles
+// the top-level code pair.
+func IsPromotable(from, to Type) bool {
+	if from == nil || to == nil {
+		return false
+	}
+	if from.Code() == to.Code() {
+		return true
+	}
+	_, ok := promotionMap[promotionEdge{from.Code(), to.Code()}]
+	return ok
+}
+
+// MaximumType returns the smallest Type both `t1` and `t2` can be
+// promoted to without explicit CAST, or nil if no such type exists.
+// Used during arithmetic / comparison planning to homogenise
+// operand types: `INT + LONG` plans as `LONG + LONG → LONG`,
+// `FLOAT + DOUBLE` plans as `DOUBLE + DOUBLE → DOUBLE`, etc.
+//
+// Nullability rule: result is nullable iff EITHER input is nullable.
+//
+// NULL handling: if one side is the NULL literal type and the other
+// is promotable, the result is the other side made nullable. Both
+// NULL → NULL.
+//
+// NONE handling: NONE is the type of the untyped empty array `[]`;
+// it identity-promotes to any ARRAY type without changing
+// nullability. (NOT yet implemented for arrays — primitives only
+// for now; structured-type recursion lands with the next port.)
+//
+// This is the primitive-only version. RECORD / ARRAY recursion is
+// future work — caller should fall back to nil for compound types
+// and let the caller decide how to handle the gap.
+//
+// Mirrors Java's `Type.maximumType(t1, t2)`.
+func MaximumType(t1, t2 Type) Type {
+	if t1 == nil || t2 == nil {
+		return nil
+	}
+	c1, c2 := t1.Code(), t2.Code()
+	resultNullable := t1.IsNullable() || t2.IsNullable()
+
+	// NULL handling.
+	if c1 == TypeCodeNull && c2 == TypeCodeNull {
+		return NullType
+	}
+	if c1 == TypeCodeNull && IsPromotable(t1, t2) {
+		return WithNullability(t2, true)
+	}
+	if c2 == TypeCodeNull && IsPromotable(t2, t1) {
+		return WithNullability(t1, true)
+	}
+
+	// Identity — same code → result is the more permissive nullability.
+	if c1 == c2 {
+		// ARRAY × ARRAY: recurse into element type. Erased element on
+		// either side blocks the operation (caller is asking for a
+		// concrete result type that one side can't provide).
+		if c1 == TypeCodeArray {
+			a1 := t1.(*ArrayType)
+			a2 := t2.(*ArrayType)
+			if a1.IsErased() || a2.IsErased() {
+				return nil
+			}
+			elemMax := MaximumType(a1.ElementType, a2.ElementType)
+			if elemMax == nil {
+				return nil
+			}
+			return &ArrayType{Nullable: resultNullable, ElementType: elemMax}
+		}
+		// RECORD × RECORD: recurse field-by-field. Field count must
+		// match (Java rejects field-count mismatch); each field's type
+		// is recursively maxed; field names are resolved t1-wins-when-
+		// equal-or-t2-anonymous, else anonymised.
+		if c1 == TypeCodeRecord {
+			r1 := t1.(*RecordType)
+			r2 := t2.(*RecordType)
+			if len(r1.Fields) != len(r2.Fields) {
+				return nil
+			}
+			out := make([]Field, len(r1.Fields))
+			for i := range r1.Fields {
+				f1, f2 := r1.Fields[i], r2.Fields[i]
+				ft := MaximumType(f1.FieldType, f2.FieldType)
+				if ft == nil {
+					return nil
+				}
+				name := ""
+				switch {
+				case f1.Name == "":
+					name = f2.Name
+				case f2.Name == "" || f1.Name == f2.Name:
+					name = f1.Name
+				}
+				out[i] = Field{Name: name, FieldType: ft, Ordinal: i}
+			}
+			// Result record name: use t1's when both agree or t2 is
+			// anonymous; use t2's when t1 is anonymous; anonymise on
+			// disagreement (per Java's Record.fromFields shape — the
+			// merged record loses its origin identity unless both
+			// inputs agree).
+			resultRecordName := ""
+			switch {
+			case r1.RecordName == "":
+				resultRecordName = r2.RecordName
+			case r2.RecordName == "" || r1.RecordName == r2.RecordName:
+				resultRecordName = r1.RecordName
+			}
+			return &RecordType{
+				RecordName: resultRecordName,
+				Nullable:   resultNullable,
+				Fields:     out,
+			}
+		}
+		// ENUM × ENUM: structurally equal value lists → one with the
+		// adjusted nullability; different values → nil.
+		if c1 == TypeCodeEnum {
+			e1 := t1.(*EnumType)
+			e2 := t2.(*EnumType)
+			if len(e1.Values) != len(e2.Values) {
+				return nil
+			}
+			for i := range e1.Values {
+				if !e1.Values[i].Equals(e2.Values[i]) {
+					return nil
+				}
+			}
+			// EnumName resolution uses Java's withNullability(t1)
+			// shape — keep t1's name. (No anonymous-enum handling
+			// here; if names differ, Equals on the EnumType would
+			// already report inequality at the call site.)
+			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values}
+		}
+		// RELATION × RELATION: recurse on the inner row type. Both
+		// erased on either side blocks the operation. RelationType is
+		// always non-nullable so result nullability isn't a knob.
+		if c1 == TypeCodeRelation {
+			r1 := t1.(*RelationType)
+			r2 := t2.(*RelationType)
+			if r1.IsErased() || r2.IsErased() {
+				return nil
+			}
+			innerMax := MaximumType(r1.InnerType, r2.InnerType)
+			if innerMax == nil {
+				return nil
+			}
+			return &RelationType{InnerType: innerMax}
+		}
+		return WithNullability(t1, resultNullable)
+	}
+
+	// Promotion lattice: try each direction.
+	if IsPromotable(t1, t2) {
+		return WithNullability(t2, resultNullable)
+	}
+	if IsPromotable(t2, t1) {
+		return WithNullability(t1, resultNullable)
+	}
+
+	return nil
+}
+
+// MaximumTypeOfMany folds MaximumType across all `types`. Returns
+// nil if any pair is incompatible, or if the slice is empty. Useful
+// for IN-list analysis (`x IN (1, 2L, 3.0)` needs the lifted type
+// for x to compare against), CASE expressions (every WHEN's result
+// must be promotable to a common type), and UNION column-type
+// reconciliation.
+//
+// Mirrors Java's `Type.maximumType(Iterable<Type>)`.
+func MaximumTypeOfMany(types ...Type) Type {
+	if len(types) == 0 {
+		return nil
+	}
+	result := types[0]
+	for i := 1; i < len(types); i++ {
+		result = MaximumType(result, types[i])
+		if result == nil {
+			return nil
+		}
+	}
+	return result
+}
+
 // --- Nullability helpers ------------------------------------------
 
 // WithNullability returns a Type with the same shape as t but the
@@ -734,6 +1110,31 @@ func WithNullability(t Type, nullable bool) Type {
 				return NullableBytes
 			}
 			return NotNullBytes
+		case TypeCodeUuid:
+			if nullable {
+				return NullableUuid
+			}
+			return NotNullUuid
+		case TypeCodeVersion:
+			if nullable {
+				return NullableVersion
+			}
+			return NotNullVersion
+		case TypeCodeNone:
+			// NONE is the type of the untyped empty array `[]` —
+			// always non-nullable per Java's contract. Asking for a
+			// nullable NONE is a programming error.
+			if nullable {
+				panic("WithNullability: NONE type cannot be nullable")
+			}
+			return NoneType
+		case TypeCodeAny:
+			// ANY is always nullable per Java's contract. Asking for
+			// a non-nullable ANY is a programming error.
+			if !nullable {
+				panic("WithNullability: ANY type must be nullable")
+			}
+			return AnyType
 		}
 		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
 	case *RecordType:
@@ -742,6 +1143,13 @@ func WithNullability(t Type, nullable bool) Type {
 		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
 	case *EnumType:
 		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values}
+	case *RelationType:
+		// RELATION is always non-nullable per Java's contract. Asking
+		// to flip to nullable is a programming error — fail loud.
+		if nullable {
+			panic("WithNullability: RelationType cannot be nullable")
+		}
+		return tt
 	}
 	// Unknown impl — fall back to whatever the original was. Future
 	// impls should add their own arm here.
@@ -825,131 +1233,4 @@ func (e *TypeRegistrationError) Error() string {
 		return "TypeRepository.Register: " + e.Reason
 	}
 	return "TypeRepository.Register " + e.Name + ": " + e.Reason
-}
-
-// --- Value → Type bridge ------------------------------------------
-
-// ValueRichType returns the rich Type for v, mapping every Value
-// impl in the seed to a concrete Type. Mirrors what Java's Typed
-// interface produces from the same node — but as a free function
-// rather than an interface method so existing Value impls don't
-// need their interfaces extended (avoids a breaking change).
-//
-// Nil v returns UnknownType; an unrecognised concrete type degrades
-// to UnknownType so callers don't have to nil-check + type-switch
-// everywhere. The Type returned is best-effort: the seed's int-only
-// arithmetic / int-only aggregate evaluation produces TypeCodeLong
-// even though true SQL semantics depend on operand widths. The
-// Type hierarchy port replaces this with proper inference once
-// every Value subtype carries enough information to derive a
-// precise Type.
-//
-// Nullability rules are conservative: literal values are NOT NULL
-// (the literal carries a concrete value); column references and
-// parameter bindings are nullable (the database column / bound
-// parameter could be NULL); intermediate computed values inherit
-// their inputs' nullability. NullValue is always nullable.
-func ValueRichType(v Value) Type {
-	if v == nil {
-		return UnknownType
-	}
-	switch x := v.(type) {
-	case *ConstantValue:
-		// Literal constant — NOT NULL when the literal carries a value;
-		// nullable when Value==nil (representing a typed-NULL literal,
-		// distinct from NullValue which is the SQL NULL keyword).
-		nullable := x.Value == nil
-		return FromValueType(x.Typ, nullable)
-	case *BooleanValue:
-		// Literal TRUE/FALSE — NOT NULL.
-		return NotNullBoolean
-	case *NullValue:
-		// SQL NULL — always nullable, type comes from the typed-NULL
-		// annotation (TypeUnknown when unannotated).
-		return WithNullability(FromValueType(x.Typ, true), true)
-	case *FieldValue:
-		// Column reference — nullable until the catalog proves NOT NULL.
-		// The seed's FieldValue doesn't track nullability; future
-		// Type-hierarchy migration carries the column's NOT NULL flag
-		// from the metadata into the Field's RichType result.
-		return FromValueType(x.Typ, true)
-	case *ArithmeticValue:
-		// Int-only arithmetic in the seed. NULL propagates through Eval
-		// (`int + NULL = NULL`), so the result is nullable when either
-		// operand is. Conservative: assume nullable.
-		return NullableLong
-	case *CastValue:
-		// CAST may produce NULL on out-of-range / unsupported source
-		// (Evaluate returns nil in those cases), so cast results are
-		// always nullable in the seed.
-		return FromValueType(x.Target, true)
-	case *PromoteValue:
-		// Promote inherits nullability from its child.
-		return FromValueType(x.Target, ValueRichType(x.Child).IsNullable())
-	case *ParameterValue:
-		// Parameter bindings can be NULL.
-		return WithNullability(FromValueType(x.Typ, true), true)
-	case *ScalarFunctionValue:
-		// Most scalar functions can return NULL on NULL input — be
-		// conservative and assume nullable.
-		return FromValueType(x.Typ, true)
-	case *NotValue:
-		// NOT preserves the child's type + nullability (NOT NULL → NULL).
-		return ValueRichType(x.Child)
-	case *AggregateValue:
-		// COUNT / COUNT(*) are NOT NULL longs (zero on empty groups).
-		// SUM / MIN / MAX / AVG return NULL on empty groups, so
-		// nullable. Use the operand's type when available.
-		switch x.Op {
-		case AggCount, AggCountStar:
-			return NotNullLong
-		case AggSum, AggMin, AggMax, AggAvg:
-			if x.Operand != nil {
-				return WithNullability(ValueRichType(x.Operand), true)
-			}
-			return NullableLong
-		}
-		return UnknownType
-	case *QuantifiedObjectValue:
-		// Row reference — nullable rows pass-through (e.g. LEFT JOIN's
-		// right side).
-		return WithNullability(FromValueType(x.Typ, true), true)
-	case *RecordConstructorValue:
-		// Synthesise a RecordType from the constructor's fields. The
-		// outer record is anonymous + nullable (we can't prove an
-		// inferred record is NOT NULL).
-		fields := make([]Field, len(x.Fields))
-		for i, f := range x.Fields {
-			fields[i] = Field{
-				Name:      f.Name,
-				FieldType: ValueRichType(f.Value),
-				Ordinal:   i,
-			}
-		}
-		return NewRecordType("", true, fields)
-	}
-	return UnknownType
-}
-
-// ToValueType bridges the new Type back to the legacy ValueType.
-// LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
-// legacy enum doesn't distinguish widths). Structured types and
-// special placeholders (NULL, ANY, NONE, RECORD, ARRAY, ENUM,
-// RELATION, UUID, VERSION) all degrade to TypeUnknown — the legacy
-// enum has no representation for them.
-func ToValueType(t Type) ValueType {
-	if t == nil {
-		return TypeUnknown
-	}
-	switch t.Code() {
-	case TypeCodeBoolean:
-		return TypeBool
-	case TypeCodeInt, TypeCodeLong:
-		return TypeInt
-	case TypeCodeFloat, TypeCodeDouble:
-		return TypeFloat
-	case TypeCodeString:
-		return TypeString
-	}
-	return TypeUnknown
 }

@@ -235,7 +235,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 	// Execute the SELECT in a separate transaction from the INSERT. The two operations are
 	// not atomic — a concurrent writer may modify rows between the SELECT and INSERT
 	// (TOCTOU window). This is a known limitation of the current implementation.
-	srcCols, srcRows, err := c.execQueryBodyRows(ctx, body)
+	srcCols, _, srcRows, err := c.execQueryBodyRows(ctx, body)
 	if err != nil {
 		return 0, err
 	}

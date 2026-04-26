@@ -177,68 +177,64 @@ func TestNewPrimitiveType_RejectsStructured(t *testing.T) {
 	}
 }
 
-// TestFromValueType pins the legacy-to-new bridge. Each ValueType
-// maps to a concrete Type, and nullability comes from the caller
-// (since ValueType doesn't track it).
-func TestFromValueType(t *testing.T) {
+// TestConstantValue_Type_OverridesTypField pins the contract: the
+// presence/absence of Value is the AUTHORITATIVE nullability signal,
+// regardless of which singleton the caller stored in Typ. So
+// ConstantValue with Typ=NotNullLong + Value=nil is nullable
+// (typed-NULL), and ConstantValue with Typ=NullableLong + Value=5
+// is NOT NULL (literal carries a value).
+//
+// Without this override, callers would have to pre-pick the right
+// NotNull/Nullable singleton for Typ — error-prone and unnecessary.
+func TestConstantValue_Type_OverridesTypField(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		vt       ValueType
-		nullable bool
-		wantCode TypeCode
-		wantNull bool
+		name    string
+		typ     Type
+		value   any
+		wantStr string
 	}{
-		{TypeBool, true, TypeCodeBoolean, true},
-		{TypeBool, false, TypeCodeBoolean, false},
-		{TypeInt, true, TypeCodeLong, true},
-		{TypeInt, false, TypeCodeLong, false},
-		{TypeFloat, true, TypeCodeDouble, true},
-		{TypeFloat, false, TypeCodeDouble, false},
-		{TypeString, true, TypeCodeString, true},
-		{TypeString, false, TypeCodeString, false},
-		// TypeUnknown maps to UnknownType regardless of the nullable
-		// flag — the bridge can't synthesise a code that isn't there.
-		{TypeUnknown, true, TypeCodeUnknown, true},
-		{TypeUnknown, false, TypeCodeUnknown, true}, // UnknownType is always nullable
+		{"NotNullLong + 5 → NOT NULL", NotNullLong, int64(5), "LONG NOT NULL"},
+		{"NotNullLong + nil → NULL", NotNullLong, nil, "LONG NULL"},
+		{"NullableLong + 5 → NOT NULL", NullableLong, int64(5), "LONG NOT NULL"},
+		{"NullableLong + nil → NULL", NullableLong, nil, "LONG NULL"},
+		{"NullableString + \"hi\" → NOT NULL", NullableString, "hi", "STRING NOT NULL"},
+		{"NotNullBoolean + nil → NULL", NotNullBoolean, nil, "BOOLEAN NULL"},
 	}
 	for _, tc := range cases {
-		got := FromValueType(tc.vt, tc.nullable)
-		if got.Code() != tc.wantCode {
-			t.Errorf("FromValueType(%v, %v).Code(): got %v, want %v", tc.vt, tc.nullable, got.Code(), tc.wantCode)
-		}
-		if got.IsNullable() != tc.wantNull {
-			t.Errorf("FromValueType(%v, %v).IsNullable(): got %v, want %v", tc.vt, tc.nullable, got.IsNullable(), tc.wantNull)
-		}
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := &ConstantValue{Value: tc.value, Typ: tc.typ}
+			if got := c.Type().String(); got != tc.wantStr {
+				t.Errorf("got %q, want %q", got, tc.wantStr)
+			}
+		})
 	}
 }
 
-// TestToValueType pins the reverse bridge. LONG / DOUBLE collapse
-// into the seed's TypeInt / TypeFloat (the legacy enum has no
-// width distinction). Special / structured codes degrade to
-// TypeUnknown.
-func TestToValueType(t *testing.T) {
+// TestLegacyConstants_Aliases pins that the legacy ValueType-named
+// constants (TypeInt / TypeBool / TypeString / TypeFloat / TypeUnknown)
+// continue to point at the canonical Type singletons after the Track
+// G1 retirement (swingshift-52). Existing call sites of the form
+// `Typ: values.TypeInt` keep working — only the value's Go type
+// changes (`Type` instead of the retired `ValueType`).
+func TestLegacyConstants_Aliases(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		t    Type
-		want ValueType
-	}{
-		{NotNullInt, TypeInt},
-		{NullableInt, TypeInt},
-		{NotNullLong, TypeInt}, // collapse
-		{NotNullFloat, TypeFloat},
-		{NotNullDouble, TypeFloat}, // collapse
-		{NotNullString, TypeString},
-		// BYTES has no legacy ValueType — degrades to TypeUnknown.
-		{NotNullBytes, TypeUnknown},
-		{NotNullBoolean, TypeBool},
-		{NullType, TypeUnknown},
-		{UnknownType, TypeUnknown},
-		{nil, TypeUnknown},
+	if TypeBool != NullableBoolean {
+		t.Errorf("TypeBool should alias NullableBoolean; got %v", TypeBool)
 	}
-	for _, tc := range cases {
-		if got := ToValueType(tc.t); got != tc.want {
-			t.Errorf("ToValueType(%v): got %v, want %v", tc.t, got, tc.want)
-		}
+	if TypeInt != NullableLong {
+		t.Errorf("TypeInt should alias NullableLong; got %v", TypeInt)
+	}
+	if TypeFloat != NullableDouble {
+		t.Errorf("TypeFloat should alias NullableDouble; got %v", TypeFloat)
+	}
+	if TypeString != NullableString {
+		t.Errorf("TypeString should alias NullableString; got %v", TypeString)
+	}
+	if TypeUnknown != UnknownType {
+		t.Errorf("TypeUnknown should alias UnknownType; got %v", TypeUnknown)
 	}
 }
 
@@ -673,6 +669,8 @@ func TestWithNullability_Primitive(t *testing.T) {
 		NotNullLong, NullableLong,
 		NotNullDouble, NullableDouble,
 		NotNullBytes, NullableBytes,
+		NotNullUuid, NullableUuid,
+		NotNullVersion, NullableVersion,
 	} {
 		flipped := WithNullability(sing, !sing.IsNullable())
 		if flipped.IsNullable() == sing.IsNullable() {
@@ -681,6 +679,38 @@ func TestWithNullability_Primitive(t *testing.T) {
 		if !WithNullability(flipped, sing.IsNullable()).Equals(sing) {
 			t.Errorf("Round-trip lost shape for %v", sing)
 		}
+	}
+}
+
+// TestUuidVersionSingletons pins that NullableUuid / NotNullUuid /
+// NullableVersion / NotNullVersion are real canonical singletons:
+// WithNullability returns THE singleton (pointer-equal), not a fresh
+// PrimitiveType. Without these arms in the WithNullability switch the
+// primitive types fell through to a fresh allocation, breaking
+// pointer-equality fast paths in callers.
+func TestUuidVersionSingletons(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		notNull, nullable Type
+	}{
+		{"UUID", NotNullUuid, NullableUuid},
+		{"VERSION", NotNullVersion, NullableVersion},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if WithNullability(tc.notNull, true) != tc.nullable {
+				t.Errorf("%s NOT NULL → nullable did not return canonical singleton", tc.name)
+			}
+			if WithNullability(tc.nullable, false) != tc.notNull {
+				t.Errorf("%s NULLABLE → not-null did not return canonical singleton", tc.name)
+			}
+			// No-op (same nullability) returns same instance.
+			if WithNullability(tc.notNull, false) != tc.notNull {
+				t.Errorf("%s NOT NULL → not-null (no-op) returned a different instance", tc.name)
+			}
+		})
 	}
 }
 
@@ -718,6 +748,785 @@ func TestWithNullability_Structured(t *testing.T) {
 	}
 	if eNullable.(*EnumType).EnumName != "E" {
 		t.Errorf("Enum: name changed")
+	}
+}
+
+// TestShapePredicates pins the IsNull / IsNone / IsAny / IsUnresolved
+// / IsArray / IsRecord / IsEnum / IsUuid / IsRelation free functions.
+// All safely return false for nil. Each matches the corresponding
+// TypeCode shape.
+func TestShapePredicates(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		t       Type
+		isNull  bool
+		isNone  bool
+		isAny   bool
+		isUnres bool
+		isArr   bool
+		isRec   bool
+		isEnum  bool
+		isUuid  bool
+		isRel   bool
+	}{
+		{name: "nil", t: nil, isUnres: true},
+		{name: "INT", t: NotNullInt},
+		{name: "NULL", t: NullType, isNull: true, isUnres: true},
+		{name: "NONE", t: NoneType, isNone: true, isUnres: true},
+		{name: "ANY", t: AnyType, isAny: true, isUnres: true},
+		{name: "UNKNOWN", t: UnknownType, isUnres: true},
+		{name: "ARRAY<INT>", t: NewArrayType(false, NotNullInt), isArr: true},
+		{name: "RECORD", t: &RecordType{}, isRec: true},
+		{name: "ENUM", t: NewEnumType("E", false, []EnumValue{{Name: "A", Number: 0}}), isEnum: true},
+		{name: "UUID", t: NotNullUuid, isUuid: true},
+		{name: "RELATION", t: NewRelationType(NotNullLong), isRel: true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if IsNull(tc.t) != tc.isNull {
+				t.Errorf("IsNull: got %v, want %v", IsNull(tc.t), tc.isNull)
+			}
+			if IsNone(tc.t) != tc.isNone {
+				t.Errorf("IsNone: got %v, want %v", IsNone(tc.t), tc.isNone)
+			}
+			if IsAny(tc.t) != tc.isAny {
+				t.Errorf("IsAny: got %v, want %v", IsAny(tc.t), tc.isAny)
+			}
+			if IsUnresolved(tc.t) != tc.isUnres {
+				t.Errorf("IsUnresolved: got %v, want %v", IsUnresolved(tc.t), tc.isUnres)
+			}
+			if IsArray(tc.t) != tc.isArr {
+				t.Errorf("IsArray: got %v, want %v", IsArray(tc.t), tc.isArr)
+			}
+			if IsRecord(tc.t) != tc.isRec {
+				t.Errorf("IsRecord: got %v, want %v", IsRecord(tc.t), tc.isRec)
+			}
+			if IsEnum(tc.t) != tc.isEnum {
+				t.Errorf("IsEnum: got %v, want %v", IsEnum(tc.t), tc.isEnum)
+			}
+			if IsUuid(tc.t) != tc.isUuid {
+				t.Errorf("IsUuid: got %v, want %v", IsUuid(tc.t), tc.isUuid)
+			}
+			if IsRelation(tc.t) != tc.isRel {
+				t.Errorf("IsRelation: got %v, want %v", IsRelation(tc.t), tc.isRel)
+			}
+		})
+	}
+}
+
+// TestIsPromotable pins the type-promotion lattice — Java's
+// PromoteValue.PROMOTION_MAP shape ported to Go. Each row is a
+// (from-code, to-code, expected) triple. Identity is always
+// promotable; the rest must match Java's hardcoded set exactly.
+func TestIsPromotable(t *testing.T) {
+	t.Parallel()
+
+	primAt := func(c TypeCode) Type { return &PrimitiveType{TypeCode: c, Nullable: false} }
+
+	cases := []struct {
+		from TypeCode
+		to   TypeCode
+		want bool
+	}{
+		// Identity — every code can hold its own values.
+		{TypeCodeInt, TypeCodeInt, true},
+		{TypeCodeLong, TypeCodeLong, true},
+		{TypeCodeString, TypeCodeString, true},
+
+		// Numeric widening.
+		{TypeCodeInt, TypeCodeLong, true},
+		{TypeCodeInt, TypeCodeFloat, true},
+		{TypeCodeInt, TypeCodeDouble, true},
+		{TypeCodeLong, TypeCodeFloat, true},
+		{TypeCodeLong, TypeCodeDouble, true},
+		{TypeCodeFloat, TypeCodeDouble, true},
+
+		// Numeric narrowing — NOT promotable (would lose precision).
+		{TypeCodeLong, TypeCodeInt, false},
+		{TypeCodeFloat, TypeCodeInt, false},
+		{TypeCodeFloat, TypeCodeLong, false},
+		{TypeCodeDouble, TypeCodeFloat, false},
+
+		// NULL → any.
+		{TypeCodeNull, TypeCodeInt, true},
+		{TypeCodeNull, TypeCodeString, true},
+		{TypeCodeNull, TypeCodeBoolean, true},
+		{TypeCodeNull, TypeCodeArray, true},
+
+		// STRING → ENUM / UUID (lookup by name / parse).
+		{TypeCodeString, TypeCodeEnum, true},
+		{TypeCodeString, TypeCodeUuid, true},
+		// Reverse direction NOT allowed — explicit CAST required.
+		{TypeCodeEnum, TypeCodeString, false},
+		{TypeCodeUuid, TypeCodeString, false},
+
+		// Cross-category not allowed.
+		{TypeCodeBoolean, TypeCodeInt, false},
+		{TypeCodeString, TypeCodeInt, false},
+		{TypeCodeInt, TypeCodeBoolean, false},
+		{TypeCodeBytes, TypeCodeString, false},
+	}
+	for _, tc := range cases {
+		got := IsPromotable(primAt(tc.from), primAt(tc.to))
+		if got != tc.want {
+			t.Errorf("IsPromotable(%v, %v): got %v, want %v", tc.from, tc.to, got, tc.want)
+		}
+	}
+}
+
+// TestIsPromotable_NilHandling pins the contract: nil from/to
+// returns false (not panic). Promotion never makes sense across a
+// nil type.
+func TestIsPromotable_NilHandling(t *testing.T) {
+	t.Parallel()
+	if IsPromotable(nil, NotNullInt) {
+		t.Error("IsPromotable(nil, ...) should be false")
+	}
+	if IsPromotable(NotNullInt, nil) {
+		t.Error("IsPromotable(..., nil) should be false")
+	}
+	if IsPromotable(nil, nil) {
+		t.Error("IsPromotable(nil, nil) should be false")
+	}
+}
+
+// TestMaximumType pins the binary "common supertype" function.
+// Mirrors Java's Type.maximumType for primitives.
+func TestMaximumType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		t1   Type
+		t2   Type
+		want Type
+	}{
+		// Identity — same code, same nullability.
+		{"INT NOT NULL × INT NOT NULL", NotNullInt, NotNullInt, NotNullInt},
+		{"INT NULL × INT NULL", NullableInt, NullableInt, NullableInt},
+		// Identity — same code, mixed nullability → nullable wins.
+		{"INT NOT NULL × INT NULL", NotNullInt, NullableInt, NullableInt},
+		{"LONG NOT NULL × LONG NULL", NotNullLong, NullableLong, NullableLong},
+
+		// Numeric widening.
+		{"INT × LONG → LONG", NotNullInt, NotNullLong, NotNullLong},
+		{"INT × FLOAT → FLOAT", NotNullInt, NotNullFloat, NotNullFloat},
+		{"INT × DOUBLE → DOUBLE", NotNullInt, NotNullDouble, NotNullDouble},
+		{"LONG × FLOAT → FLOAT", NotNullLong, NotNullFloat, NotNullFloat},
+		{"LONG × DOUBLE → DOUBLE", NotNullLong, NotNullDouble, NotNullDouble},
+		{"FLOAT × DOUBLE → DOUBLE", NotNullFloat, NotNullDouble, NotNullDouble},
+		// Nullability propagates through promotion.
+		{"INT NULL × LONG NOT NULL → LONG NULL", NullableInt, NotNullLong, NullableLong},
+		{"INT NOT NULL × LONG NULL → LONG NULL", NotNullInt, NullableLong, NullableLong},
+
+		// Symmetric.
+		{"LONG × INT → LONG", NotNullLong, NotNullInt, NotNullLong},
+		{"DOUBLE × FLOAT → DOUBLE", NotNullDouble, NotNullFloat, NotNullDouble},
+
+		// NULL × T.
+		{"NULL × INT → INT NULL", NullType, NotNullInt, NullableInt},
+		{"INT × NULL → INT NULL", NotNullInt, NullType, NullableInt},
+		{"NULL × NULL → NULL", NullType, NullType, NullType},
+
+		// Cross-category — no common supertype.
+		{"INT × STRING → nil", NotNullInt, NotNullString, nil},
+		{"BOOLEAN × INT → nil", NotNullBoolean, NotNullInt, nil},
+		{"STRING × INT → nil", NotNullString, NotNullInt, nil},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := MaximumType(tc.t1, tc.t2)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("got %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Errorf("got nil, want %v", tc.want)
+				return
+			}
+			if !got.Equals(tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaximumTypeOfMany pins variadic fold semantics: identity for
+// length 1, transitive promotion across many, nil on empty input
+// or any incompatible pair.
+func TestMaximumTypeOfMany(t *testing.T) {
+	t.Parallel()
+	// Empty.
+	if MaximumTypeOfMany() != nil {
+		t.Error("empty input should return nil")
+	}
+	// Length 1 — identity.
+	if MaximumTypeOfMany(NotNullInt) != NotNullInt {
+		t.Error("length-1 should return the input")
+	}
+	// All same.
+	got := MaximumTypeOfMany(NotNullInt, NotNullInt, NotNullInt)
+	if !got.Equals(NotNullInt) {
+		t.Errorf("all INT → INT, got %v", got)
+	}
+	// Transitive widening: INT, LONG, DOUBLE → DOUBLE.
+	got = MaximumTypeOfMany(NotNullInt, NotNullLong, NotNullDouble)
+	if !got.Equals(NotNullDouble) {
+		t.Errorf("INT, LONG, DOUBLE → DOUBLE, got %v", got)
+	}
+	// Order-independent: DOUBLE first should still settle to DOUBLE.
+	got = MaximumTypeOfMany(NotNullDouble, NotNullInt, NotNullLong)
+	if !got.Equals(NotNullDouble) {
+		t.Errorf("DOUBLE, INT, LONG → DOUBLE, got %v", got)
+	}
+	// Nullability propagates through any nullable input.
+	got = MaximumTypeOfMany(NotNullInt, NullableLong)
+	if !got.Equals(NullableLong) {
+		t.Errorf("nullability should propagate, got %v", got)
+	}
+	// Incompatible pair anywhere → nil.
+	if MaximumTypeOfMany(NotNullInt, NotNullString) != nil {
+		t.Error("incompatible pair should return nil")
+	}
+	if MaximumTypeOfMany(NotNullInt, NotNullLong, NotNullString) != nil {
+		t.Error("incompatible pair late in fold should return nil")
+	}
+}
+
+// TestMaximumType_ArrayRecursion pins ARRAY × ARRAY → ARRAY where
+// the element type is the recursive max. Mirrors Java's array case.
+func TestMaximumType_ArrayRecursion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		t1   Type
+		t2   Type
+		want Type
+	}{
+		{
+			"ARRAY<INT> × ARRAY<INT> → ARRAY<INT>",
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullInt),
+		},
+		{
+			"ARRAY<INT> × ARRAY<LONG> → ARRAY<LONG>",
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullLong),
+			NewArrayType(false, NotNullLong),
+		},
+		{
+			"ARRAY<INT> NULL × ARRAY<LONG> NOT NULL → ARRAY<LONG> NULL",
+			NewArrayType(true, NotNullInt),
+			NewArrayType(false, NotNullLong),
+			NewArrayType(true, NotNullLong),
+		},
+		{
+			"ARRAY<INT> × ARRAY<STRING> → nil (incompatible elements)",
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullString),
+			nil,
+		},
+		{
+			"ARRAY<?> × ARRAY<INT> → nil (erased blocks)",
+			NewArrayType(false, nil),
+			NewArrayType(false, NotNullInt),
+			nil,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := MaximumType(tc.t1, tc.t2)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("got %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Errorf("got nil, want %v", tc.want)
+				return
+			}
+			if !got.Equals(tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaximumType_RecordRecursion pins RECORD × RECORD → RECORD
+// where each field's type is the recursive max. Mirrors Java's
+// record case in Type.maximumType.
+func TestMaximumType_RecordRecursion(t *testing.T) {
+	t.Parallel()
+	mk := func(nullable bool, fields ...Field) *RecordType {
+		return &RecordType{Nullable: nullable, Fields: fields}
+	}
+	f := func(name string, ft Type, ord int) Field {
+		return Field{Name: name, FieldType: ft, Ordinal: ord}
+	}
+
+	t.Run("identical fields", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0), f("y", NotNullString, 1))
+		r2 := mk(false, f("x", NotNullInt, 0), f("y", NotNullString, 1))
+		got := MaximumType(r1, r2).(*RecordType)
+		if !got.Equals(r1) {
+			t.Errorf("got %v, want %v", got, r1)
+		}
+	})
+	t.Run("widening fields", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullLong, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if !got.Fields[0].FieldType.Equals(NotNullLong) {
+			t.Errorf("field type: got %v, want NotNullLong", got.Fields[0].FieldType)
+		}
+	})
+	t.Run("nullability propagation", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(true, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if !got.Nullable {
+			t.Error("nullability should propagate")
+		}
+	})
+	t.Run("field count mismatch", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullInt, 0), f("y", NotNullInt, 1))
+		if MaximumType(r1, r2) != nil {
+			t.Error("field count mismatch should return nil")
+		}
+	})
+	t.Run("incompatible field types", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullString, 0))
+		if MaximumType(r1, r2) != nil {
+			t.Error("incompatible field type should return nil")
+		}
+	})
+	t.Run("name resolution: t1 anonymous → use t2", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.Fields[0].Name != "x" {
+			t.Errorf("field name: got %q, want %q", got.Fields[0].Name, "x")
+		}
+	})
+	t.Run("name resolution: t2 anonymous → use t1", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.Fields[0].Name != "x" {
+			t.Errorf("field name: got %q, want %q", got.Fields[0].Name, "x")
+		}
+	})
+	t.Run("name resolution: different names → anonymise", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("y", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.Fields[0].Name != "" {
+			t.Errorf("field name: got %q, want empty (anonymised)", got.Fields[0].Name)
+		}
+	})
+
+	t.Run("record name: both agree → keep", func(t *testing.T) {
+		t.Parallel()
+		r1 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		r2 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.RecordName != "User" {
+			t.Errorf("record name: got %q, want User", got.RecordName)
+		}
+	})
+	t.Run("record name: r1 anonymous → use r2", func(t *testing.T) {
+		t.Parallel()
+		r1 := &RecordType{RecordName: "", Fields: []Field{f("x", NotNullInt, 0)}}
+		r2 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.RecordName != "User" {
+			t.Errorf("record name: got %q, want User", got.RecordName)
+		}
+	})
+	t.Run("record name: different names → anonymise", func(t *testing.T) {
+		t.Parallel()
+		r1 := &RecordType{RecordName: "User", Fields: []Field{f("x", NotNullInt, 0)}}
+		r2 := &RecordType{RecordName: "Order", Fields: []Field{f("x", NotNullInt, 0)}}
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.RecordName != "" {
+			t.Errorf("record name: got %q, want empty", got.RecordName)
+		}
+	})
+}
+
+// TestMaximumType_EnumRecursion pins ENUM × ENUM:
+// - same value list → single ENUM with adjusted nullability.
+// - different value list → nil.
+// Mirrors Java's enum case in Type.maximumType.
+func TestMaximumType_EnumRecursion(t *testing.T) {
+	t.Parallel()
+	colours := []EnumValue{{Name: "RED", Number: 0}, {Name: "GREEN", Number: 1}}
+	moods := []EnumValue{{Name: "HAPPY", Number: 0}, {Name: "SAD", Number: 1}}
+
+	t.Run("identical → equal", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("Color", false, colours)
+		e2 := NewEnumType("Color", false, colours)
+		got := MaximumType(e1, e2).(*EnumType)
+		if !got.Equals(e1) {
+			t.Errorf("got %v, want %v", got, e1)
+		}
+	})
+	t.Run("nullability propagation", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("Color", true, colours)
+		e2 := NewEnumType("Color", false, colours)
+		got := MaximumType(e1, e2).(*EnumType)
+		if !got.Nullable {
+			t.Error("nullability should propagate")
+		}
+	})
+	t.Run("different values → nil", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("X", false, colours)
+		e2 := NewEnumType("X", false, moods)
+		if MaximumType(e1, e2) != nil {
+			t.Error("different values should return nil")
+		}
+	})
+	t.Run("different value count → nil", func(t *testing.T) {
+		t.Parallel()
+		e1 := NewEnumType("X", false, colours)
+		e2 := NewEnumType("X", false, []EnumValue{{Name: "RED", Number: 0}})
+		if MaximumType(e1, e2) != nil {
+			t.Error("different value count should return nil")
+		}
+	})
+}
+
+// TestMaximumType_RelationRecursion pins RELATION × RELATION:
+// recurse on inner row type, erased on either side blocks.
+// (Java's maximumType doesn't have a RELATION branch, but our
+// port adds it for completeness — useful when comparing two
+// table-valued expressions' types.)
+func TestMaximumType_RelationRecursion(t *testing.T) {
+	t.Parallel()
+	t.Run("identical inner → equal", func(t *testing.T) {
+		t.Parallel()
+		r1 := NewRelationType(NotNullLong)
+		r2 := NewRelationType(NotNullLong)
+		got := MaximumType(r1, r2).(*RelationType)
+		if !got.Equals(r1) {
+			t.Errorf("got %v, want %v", got, r1)
+		}
+	})
+	t.Run("widening inner", func(t *testing.T) {
+		t.Parallel()
+		r1 := NewRelationType(NotNullInt)
+		r2 := NewRelationType(NotNullLong)
+		got := MaximumType(r1, r2).(*RelationType)
+		if !got.InnerType.Equals(NotNullLong) {
+			t.Errorf("inner type: got %v, want NotNullLong", got.InnerType)
+		}
+	})
+	t.Run("incompatible inner → nil", func(t *testing.T) {
+		t.Parallel()
+		if MaximumType(NewRelationType(NotNullInt), NewRelationType(NotNullString)) != nil {
+			t.Error("incompatible inner should return nil")
+		}
+	})
+	t.Run("erased blocks", func(t *testing.T) {
+		t.Parallel()
+		if MaximumType(NewRelationType(nil), NewRelationType(NotNullLong)) != nil {
+			t.Error("erased should return nil")
+		}
+	})
+}
+
+// TestMaximumType_NilHandling pins that nil inputs return nil
+// (defensive — never panic on a missing operand).
+func TestMaximumType_NilHandling(t *testing.T) {
+	t.Parallel()
+	if MaximumType(nil, NotNullInt) != nil {
+		t.Error("nil left → nil")
+	}
+	if MaximumType(NotNullInt, nil) != nil {
+		t.Error("nil right → nil")
+	}
+	if MaximumType(nil, nil) != nil {
+		t.Error("both nil → nil")
+	}
+}
+
+// FuzzMaximumType_Properties pins three invariants the lattice
+// must hold for primitive Type pairs:
+//
+//  1. Symmetry: MaximumType(a, b).Equals(MaximumType(b, a)).
+//  2. Idempotence: MaximumType(a, a) preserves a's Code (and is
+//     never nil — at minimum identity always succeeds).
+//  3. Closure: when MaximumType returns non-nil, both inputs must
+//     be IsPromotable to the result.
+//
+// Fuzz inputs are byte pairs interpreted as (low-4-bit code-index,
+// high-bit nullable) and mapped to canonical primitive singletons.
+// Structured types are out of scope — recursion's invariants don't
+// fit a simple property predicate.
+func FuzzMaximumType_Properties(f *testing.F) {
+	// Seed corpus picks pairs that exercise interesting lattice
+	// transitions: identity, every adjacent widening edge, NULL × T,
+	// and cross-category rejection.
+	f.Add(byte(0), byte(0))    // INT × INT (identity)
+	f.Add(byte(0), byte(1))    // INT × LONG (widen)
+	f.Add(byte(0), byte(2))    // INT × FLOAT (widen)
+	f.Add(byte(0), byte(3))    // INT × DOUBLE (widen)
+	f.Add(byte(1), byte(2))    // LONG × FLOAT (widen)
+	f.Add(byte(1), byte(3))    // LONG × DOUBLE (widen)
+	f.Add(byte(2), byte(3))    // FLOAT × DOUBLE (widen)
+	f.Add(byte(7), byte(0))    // NULL × INT (NULL → T-nullable)
+	f.Add(byte(7), byte(7))    // NULL × NULL (NULL identity)
+	f.Add(byte(0), byte(4))    // INT × STRING (incompatible)
+	f.Add(byte(0x80), byte(0)) // INT NULL × INT NOT NULL (nullability fold)
+	f.Add(byte(255), byte(255))
+
+	pickType := func(b byte) Type {
+		nullable := b&0x80 != 0
+		switch b & 0x0f {
+		case 0:
+			if nullable {
+				return NullableInt
+			}
+			return NotNullInt
+		case 1:
+			if nullable {
+				return NullableLong
+			}
+			return NotNullLong
+		case 2:
+			if nullable {
+				return NullableFloat
+			}
+			return NotNullFloat
+		case 3:
+			if nullable {
+				return NullableDouble
+			}
+			return NotNullDouble
+		case 4:
+			if nullable {
+				return NullableString
+			}
+			return NotNullString
+		case 5:
+			if nullable {
+				return NullableBoolean
+			}
+			return NotNullBoolean
+		case 6:
+			if nullable {
+				return NullableBytes
+			}
+			return NotNullBytes
+		case 7:
+			return NullType
+		}
+		return UnknownType
+	}
+
+	f.Fuzz(func(t *testing.T, b1, b2 byte) {
+		t1 := pickType(b1)
+		t2 := pickType(b2)
+
+		// 1. Symmetry.
+		ab := MaximumType(t1, t2)
+		ba := MaximumType(t2, t1)
+		if (ab == nil) != (ba == nil) {
+			t.Fatalf("symmetry: %v × %v = %v but reverse = %v", t1, t2, ab, ba)
+		}
+		if ab != nil && !ab.Equals(ba) {
+			t.Fatalf("symmetry: %v vs %v", ab, ba)
+		}
+
+		// 2. Idempotence — a × a never nil, preserves Code.
+		aa := MaximumType(t1, t1)
+		if aa == nil {
+			t.Fatalf("idempotence: %v × %v should not be nil", t1, t1)
+		}
+		if aa.Code() != t1.Code() {
+			t.Fatalf("idempotence Code: %v vs %v", aa.Code(), t1.Code())
+		}
+
+		// 3. Closure: result is promotable from both inputs.
+		if ab != nil {
+			if !IsPromotable(t1, ab) {
+				t.Fatalf("closure: %v not promotable to %v (max of %v × %v)", t1, ab, t1, t2)
+			}
+			if !IsPromotable(t2, ab) {
+				t.Fatalf("closure: %v not promotable to %v (max of %v × %v)", t2, ab, t1, t2)
+			}
+		}
+	})
+}
+
+// TestAnyType_Singleton pins ANY: the universal supertype.
+// Always nullable; WithNullability(AnyType, false) panics. Mirrors
+// Java's Type.ANY contract.
+func TestAnyType_Singleton(t *testing.T) {
+	t.Parallel()
+	if AnyType.Code() != TypeCodeAny {
+		t.Errorf("AnyType.Code(): got %v, want ANY", AnyType.Code())
+	}
+	if !AnyType.IsNullable() {
+		t.Error("AnyType is always nullable")
+	}
+	if WithNullability(AnyType, true) != AnyType {
+		t.Error("WithNullability(AnyType, true) should return the same singleton")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic from WithNullability(AnyType, false)")
+		}
+	}()
+	_ = WithNullability(AnyType, false)
+}
+
+// TestNoneType_Singleton pins NONE: the type of the untyped empty
+// array `[]`. Always non-nullable; WithNullability(NoneType, true)
+// panics. Mirrors Java's Type.NONE contract.
+func TestNoneType_Singleton(t *testing.T) {
+	t.Parallel()
+	if NoneType.Code() != TypeCodeNone {
+		t.Errorf("NoneType.Code(): got %v, want NONE", NoneType.Code())
+	}
+	if NoneType.IsNullable() {
+		t.Error("NoneType is always non-nullable")
+	}
+	// WithNullability(NoneType, false) is a no-op.
+	if WithNullability(NoneType, false) != NoneType {
+		t.Error("WithNullability(NoneType, false) should return the same singleton")
+	}
+	// WithNullability(NoneType, true) panics.
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic from WithNullability(NoneType, true)")
+		}
+	}()
+	_ = WithNullability(NoneType, true)
+}
+
+// TestArrayType_IsErased pins the typed/erased distinction for
+// ArrayType. Mirrors Java's Type.Array.isErased().
+func TestArrayType_IsErased(t *testing.T) {
+	t.Parallel()
+	if !NewArrayType(false, nil).IsErased() {
+		t.Error("nil ElementType → IsErased() = true")
+	}
+	if NewArrayType(false, NotNullLong).IsErased() {
+		t.Error("typed ElementType → IsErased() = false")
+	}
+	if !NewArrayType(true, nil).IsErased() {
+		t.Error("nullable + nil element → IsErased() = true")
+	}
+}
+
+// TestRelationType_Shape pins the basic getters + Equals + String.
+// Mirrors Java's Type.Relation contract — always non-nullable,
+// inner-type-driven equality, erased-relation handling.
+func TestRelationType_Shape(t *testing.T) {
+	t.Parallel()
+
+	// Concrete inner type.
+	r1 := NewRelationType(NotNullLong)
+	if r1.Code() != TypeCodeRelation {
+		t.Errorf("Code(): got %v, want RELATION", r1.Code())
+	}
+	if r1.IsNullable() {
+		t.Errorf("RelationType is always non-nullable")
+	}
+	if r1.IsErased() {
+		t.Errorf("RelationType with InnerType is not erased")
+	}
+	if r1.String() != "RELATION<LONG NOT NULL>" {
+		t.Errorf("String(): got %q", r1.String())
+	}
+
+	// Erased.
+	r2 := NewRelationType(nil)
+	if !r2.IsErased() {
+		t.Errorf("RelationType with nil InnerType IS erased")
+	}
+	if r2.String() != "RELATION<?>" {
+		t.Errorf("Erased String(): got %q", r2.String())
+	}
+}
+
+// TestRelationType_Equals pins structural equality semantics:
+// same inner type → equal; different inner → unequal; both erased
+// → equal.
+func TestRelationType_Equals(t *testing.T) {
+	t.Parallel()
+	a := NewRelationType(NotNullLong)
+	b := NewRelationType(NotNullLong)
+	c := NewRelationType(NotNullString)
+	d := NewRelationType(nil)
+	e := NewRelationType(nil)
+
+	if !a.Equals(b) {
+		t.Errorf("same inner type should be equal")
+	}
+	if a.Equals(c) {
+		t.Errorf("different inner type should not be equal")
+	}
+	if !d.Equals(e) {
+		t.Errorf("two erased relations should be equal")
+	}
+	if a.Equals(d) {
+		t.Errorf("typed and erased relations should not be equal")
+	}
+	if a.Equals(nil) {
+		t.Errorf("Equals(nil) should be false")
+	}
+	// Mixing types — RelationType is never equal to a non-Relation.
+	if a.Equals(NotNullLong) {
+		t.Errorf("RelationType should not equal a non-Relation Type")
+	}
+}
+
+// TestRelationType_WithNullabilityPanics pins the contract: asking
+// for a nullable relation is a programming error and panics.
+func TestRelationType_WithNullabilityPanics(t *testing.T) {
+	t.Parallel()
+	r := NewRelationType(NotNullLong)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected WithNullability(RelationType, true) to panic")
+		}
+	}()
+	_ = WithNullability(r, true)
+}
+
+// TestRelationType_WithNullabilityNoOp pins that WithNullability(r, false)
+// is a no-op (RelationType is already non-nullable).
+func TestRelationType_WithNullabilityNoOp(t *testing.T) {
+	t.Parallel()
+	r := NewRelationType(NotNullLong)
+	out := WithNullability(r, false)
+	if out != Type(r) {
+		t.Errorf("WithNullability(r, false) should return the same instance")
 	}
 }
 
@@ -852,14 +1661,18 @@ func errorsAs(err error, target any) bool {
 	return false
 }
 
-// --- ValueRichType tests ------------------------------------------
+// --- Value.Type() tests -------------------------------------------
+//
+// Post-Track-G1 (swingshift-52) every Value impl's Type() returns
+// the rich Type directly. The tests below pin the per-impl
+// type/nullability outputs against the legacy (now-retired)
+// `ValueRichType` semantics where each impl forced nullable on
+// outputs that could be NULL (CAST, PARAMETER, NULL literal,
+// scalar fn over NULL inputs, aggregate operands).
 
-// TestValueRichType_Leaves pins the leaf-Value mappings: literals,
-// columns, and parameters. Nullability follows the documented rule:
-// literal TRUE → NOT NULL; ConstantValue with nil Value → nullable;
-// FieldValue → nullable (until catalog-NOT-NULL propagates);
-// NullValue → always nullable.
-func TestValueRichType_Leaves(t *testing.T) {
+// TestValue_Type_Leaves pins the leaf-Value Type() outputs:
+// literals, columns, parameters, NULL.
+func TestValue_Type_Leaves(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -868,6 +1681,11 @@ func TestValueRichType_Leaves(t *testing.T) {
 	}{
 		{"BooleanValue(true)", NewBooleanValue(true), "BOOLEAN NOT NULL"},
 		{"BooleanValue(false)", NewBooleanValue(false), "BOOLEAN NOT NULL"},
+		{"BooleanValue(nil)", &BooleanValue{Value: nil}, "BOOLEAN NULL"},
+		// ConstantValue: nullability is derived from Value (non-nil
+		// → NOT NULL, nil → NULL). The Typ field's own nullability
+		// is overridden — callers don't need to pre-pick the right
+		// NotNull/Nullable singleton.
 		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NOT NULL"},
 		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NOT NULL"},
 		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: TypeInt}, "LONG NULL"},
@@ -876,22 +1694,18 @@ func TestValueRichType_Leaves(t *testing.T) {
 		{"FieldValue(int)", &FieldValue{Field: "x", Typ: TypeInt}, "LONG NULL"},
 		{"FieldValue(bool)", &FieldValue{Field: "active", Typ: TypeBool}, "BOOLEAN NULL"},
 		{"ParameterValue(int)", &ParameterValue{Ordinal: 1, Typ: TypeInt}, "LONG NULL"},
-		{"nil Value", nil, "UNKNOWN NULL"},
 	}
 	for _, tc := range cases {
-		got := ValueRichType(tc.v)
+		got := tc.v.Type()
 		if got.String() != tc.wantStr {
 			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
 		}
 	}
 }
 
-// TestValueRichType_Composites pins the composite-Value mappings:
-// ArithmeticValue (int-only seed → nullable LONG); CastValue
-// (target + nullable since CAST may produce NULL); PromoteValue
-// (inherits child nullability); NotValue (passes child through);
-// ScalarFunctionValue (target + nullable).
-func TestValueRichType_Composites(t *testing.T) {
+// TestValue_Type_Composites pins the composite-Value Type() outputs:
+// ArithmeticValue, CastValue, PromoteValue, NotValue, ScalarFunctionValue.
+func TestValue_Type_Composites(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -913,9 +1727,10 @@ func TestValueRichType_Composites(t *testing.T) {
 			"STRING NULL",
 		},
 		{
-			"PromoteValue(NOT NULL int → FLOAT)",
+			"PromoteValue(NOT NULL bool → FLOAT)",
+			// BooleanValue(true).Type() == NotNullBoolean → promote
+			// inherits NOT NULL → DOUBLE NOT NULL.
 			NewPromoteValue(NewBooleanValue(true), TypeFloat),
-			// Boolean is NOT NULL → promote inherits NOT NULL → DOUBLE NOT NULL.
 			"DOUBLE NOT NULL",
 		},
 		{
@@ -936,18 +1751,18 @@ func TestValueRichType_Composites(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		got := ValueRichType(tc.v)
+		got := tc.v.Type()
 		if got.String() != tc.wantStr {
 			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
 		}
 	}
 }
 
-// TestValueRichType_Aggregate pins the aggregate-specific rules:
+// TestValue_Type_Aggregate pins the aggregate-specific rules:
 // COUNT / COUNT(*) → NOT NULL long; SUM / MIN / MAX / AVG with an
 // operand → operand-type but nullable (returns NULL on empty
 // groups).
-func TestValueRichType_Aggregate(t *testing.T) {
+func TestValue_Type_Aggregate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -972,23 +1787,23 @@ func TestValueRichType_Aggregate(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		got := ValueRichType(tc.v)
+		got := tc.v.Type()
 		if got.String() != tc.wantStr {
 			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
 		}
 	}
 }
 
-// TestValueRichType_RecordConstructor pins the synthesised RecordType
+// TestValue_Type_RecordConstructor pins the synthesised RecordType
 // path: the constructor produces an anonymous nullable RecordType
 // whose Fields carry per-field types derived from each child Value.
-func TestValueRichType_RecordConstructor(t *testing.T) {
+func TestValue_Type_RecordConstructor(t *testing.T) {
 	t.Parallel()
 	rcv := NewRecordConstructorValue(
 		RecordConstructorField{Name: "id", Value: NewBooleanValue(true)},
 		RecordConstructorField{Name: "v", Value: &ConstantValue{Value: int64(42), Typ: TypeInt}},
 	)
-	got := ValueRichType(rcv)
+	got := rcv.Type()
 	rt, ok := got.(*RecordType)
 	if !ok {
 		t.Fatalf("expected RecordType, got %T", got)
@@ -1002,25 +1817,13 @@ func TestValueRichType_RecordConstructor(t *testing.T) {
 	if len(rt.Fields) != 2 {
 		t.Fatalf("Fields len: got %d, want 2", len(rt.Fields))
 	}
+	// First field: BooleanValue(true).Type() == NotNullBoolean.
 	if rt.Fields[0].Name != "id" || !rt.Fields[0].FieldType.Equals(NotNullBoolean) {
 		t.Errorf("Fields[0]: got %v", rt.Fields[0])
 	}
+	// Second field: ConstantValue(int64=5, Typ=TypeInt).Type() ==
+	// NotNullLong (non-nil Value → NOT NULL per ConstantValue.Type()).
 	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NotNullLong) {
 		t.Errorf("Fields[1]: got %v", rt.Fields[1])
-	}
-}
-
-// TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
-// invariant for the value types the legacy enum actually
-// represents. NotNull bit is inferable from the round-trip target
-// — we always feed nullable=false in this direction.
-func TestType_RoundTrip(t *testing.T) {
-	t.Parallel()
-	for _, vt := range []ValueType{TypeBool, TypeInt, TypeFloat, TypeString} {
-		t1 := FromValueType(vt, false)
-		got := ToValueType(t1)
-		if got != vt {
-			t.Errorf("ValueType(%v) -> Type(%v) -> ValueType(%v): not a round-trip", vt, t1, got)
-		}
 	}
 }

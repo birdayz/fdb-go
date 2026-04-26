@@ -60,7 +60,7 @@ func evalScalarSubquery(ctx context.Context, conn *EmbeddedConnection, q antlrge
 // Called both during pre-evaluation (before any outer runInTx) and as a
 // fallback from evalScalarSubquery.
 func runScalarSubqueryOnce(ctx context.Context, conn *EmbeddedConnection, q antlrgen.IQueryContext) (any, error) {
-	cols, rows, err := conn.execQueryBodyRows(ctx, q.QueryExpressionBody())
+	cols, _, rows, err := conn.execQueryBodyRows(ctx, q.QueryExpressionBody())
 	if err != nil {
 		return nil, err
 	}

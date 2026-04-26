@@ -47,8 +47,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// extra sort-only fields like `ORDER BY v * 2`). Evaluated against
 		// the current message in the scan loop; fd is nil in that case.
 		expr antlrgen.IExpressionContext
+		// jdbcTyp carries the JDBC result-set type name for computed
+		// expression slots whose result type was inferable at parse
+		// time (`x + y` of two DOUBLE → "DOUBLE"). Empty for typed
+		// columns (where the type comes from `fd`) and for shapes
+		// the inferer didn't recognise.
+		jdbcTyp string
 	}
 	var cols []string
+	var colTypes []string // parallel to cols; "" entries mean "type unknown"
 	var data []row
 	var extraSortFields []outField
 	// naturalOrder holds the column names the chosen scan cursor emits
@@ -80,6 +87,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	_, runErr := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		data = nil // reset on retry so duplicate rows aren't appended
 		cols = nil
+		colTypes = nil
 		extraSortFields = nil
 		naturalOrder = nil
 		naturalOrderAliases = nil
@@ -377,6 +385,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		if sq.countStar {
 			cols = []string{countStarOutName(sq)}
+			colTypes = []string{"BIGINT"}
 			var count int64
 			for {
 				result, nextErr := cursor.OnNext(ctx)
@@ -710,8 +719,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 			cols = make([]string, len(emitIdx))
+			colTypes = make([]string, len(emitIdx))
 			for out, i := range emitIdx {
-				cols[out] = sq.aggCols[i].outName
+				ac := sq.aggCols[i]
+				cols[out] = ac.outName
+				colTypes[out] = aggregateResultJDBCType(ac, msgDesc)
 			}
 
 			// Emit one row per group (with HAVING filter). Two passes:
@@ -820,11 +832,34 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			for i, colName := range sq.projCols {
 				// Computed expression: no field descriptor needed.
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-					outName := colName
+					var outName string
 					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 						outName = sq.projAliases[i]
+					} else {
+						// Anonymous computed projection. The internal
+						// name needs to be unique-per-slot for ORDER
+						// BY / dedup keying, but it must NOT pass
+						// jdbcColumnName's isSimpleIdentifier check —
+						// that would surface the parser's whitespace-
+						// stripped text (e.g. "name IS NULL" →
+						// "nameISNULL") as the JDBC metadata name,
+						// diverging from Java which emits "_N" for
+						// every non-aliased computed expression.
+						// Including a `$` makes the name non-simple
+						// while still unique. jdbcColumnName falls
+						// through to its `_<position>` synthesis.
+						outName = fmt.Sprintf("$expr_%d", i)
 					}
-					outFields[i] = outField{name: outName}
+					// Infer the expression's result type so the JDBC
+					// metadata layer can report it (e.g. `x + y` of
+					// two DOUBLE columns → DOUBLE). Falls through to
+					// empty when the AST shape isn't recognised; the
+					// runner-side fallback then infers from the
+					// runtime value.
+					outFields[i] = outField{
+						name:    outName,
+						jdbcTyp: inferProjectionJDBCType(sq.projExprs[i], msgDesc),
+					}
 					// Don't add to projByCol (computed cols can't be in ORDER BY as proto fields).
 					continue
 				}
@@ -907,8 +942,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// fullFields = projected + extra sort columns; output strips extra at end.
 		fullFields := append(outFields, extraSortFields...) //nolint:gocritic
 		cols = make([]string, len(outFields))
+		colTypes = make([]string, len(outFields))
 		for i, f := range outFields {
 			cols[i] = f.name
+			// Typed columns (with a FieldDescriptor) take the type
+			// straight from proto. Computed expressions use the
+			// inferred jdbcTyp captured during projection-binding.
+			if f.fd != nil {
+				colTypes[i] = jdbcTypeNameForFD(f.fd)
+			} else {
+				colTypes[i] = f.jdbcTyp
+			}
 		}
 
 		// Early-termination target: when the scan's natural order
@@ -1114,5 +1158,5 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		cols, data = stripAggregateSortOnly(sq, cols, data)
 	}
 
-	return &staticRows{cols: cols, rows: data}, nil
+	return &staticRows{cols: cols, colTypes: colTypes, rows: data}, nil
 }

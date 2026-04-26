@@ -69,13 +69,13 @@ func TestNotValue_Evaluate_FieldLookup(t *testing.T) {
 	}
 }
 
-// TestNotValue_Type pins that NotValue always reports TypeBool —
+// TestNotValue_Type pins that NotValue always reports a boolean Type —
 // independent of the child's type. NOT is a boolean-typed operator.
 func TestNotValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewNotValue(&ConstantValue{Value: int64(1), Typ: TypeInt})
-	if v.Type() != TypeBool {
-		t.Fatalf("Type: got %v, want TypeBool", v.Type())
+	if v.Type().Code() != TypeCodeBoolean {
+		t.Fatalf("Type: got %v, want a boolean type", v.Type())
 	}
 }
 

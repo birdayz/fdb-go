@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
@@ -112,6 +114,21 @@ func CastValue(v any, typeName string) (any, error) {
 				return "true", nil
 			}
 			return "false", nil
+		}
+	case typeName == "UUID":
+		// CAST(<expr> AS UUID): only string → UUID is supported (matches
+		// Java's CastValue.STRING_TO_UUID via java.util.UUID.fromString).
+		// Validate the canonical 36-char form; the SQL layer carries
+		// UUID values as canonical strings, with the proto-write
+		// boundary in ConvertToProtoValue encoding them as the
+		// tuple_fields.UUID message.
+		if n, ok := v.(string); ok {
+			u, err := uuid.Parse(strings.TrimSpace(n))
+			if err != nil {
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"cannot CAST %q to UUID: %v", n, err)
+			}
+			return u.String(), nil
 		}
 	case typeName == "BOOLEAN", typeName == "BOOL":
 		switch n := v.(type) {

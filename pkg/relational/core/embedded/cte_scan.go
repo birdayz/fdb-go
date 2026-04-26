@@ -57,7 +57,23 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 
 	// Determine output columns and build output rows.
 	var colNames []string
+	var colTypes []string
 	var outRows [][]driver.Value
+
+	// Build a CTE-column → JDBC-type lookup so projection paths can
+	// propagate types from the materialised relation. Bare column
+	// names match directly; qualified `alias.col` strips the qualifier.
+	cteTypeByCol := make(map[string]string, len(cte.cols))
+	for i, col := range cte.cols {
+		t := ""
+		if i < len(cte.colTypes) {
+			t = cte.colTypes[i]
+		}
+		cteTypeByCol[col] = t
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			cteTypeByCol[col[dot+1:]] = t
+		}
+	}
 
 	if len(sq.aggCols) > 0 || sq.countStar {
 		aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, mapRows)
@@ -65,10 +81,17 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 			return nil, aggErr
 		}
 		colNames = aggCols
+		// Aggregates over a CTE: COUNT/SUM/MIN/MAX of integral or
+		// inferred-numeric → BIGINT; matches the proto-path heuristic.
+		colTypes = make([]string, len(aggCols))
+		for i := range colTypes {
+			colTypes[i] = "BIGINT"
+		}
 		outRows = aggData
 	} else if sq.projCols == nil {
 		// SELECT * — emit all CTE columns in definition order.
 		colNames = cte.cols
+		colTypes = append([]string{}, cte.colTypes...)
 		for _, row := range mapRows {
 			outRow := make([]driver.Value, len(cte.cols))
 			for j, col := range cte.cols {
@@ -78,12 +101,26 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		}
 	} else {
 		colNames = make([]string, len(sq.projCols))
+		colTypes = make([]string, len(sq.projCols))
 		for j, col := range sq.projCols {
 			if j < len(sq.projAliases) && sq.projAliases[j] != "" {
 				colNames[j] = sq.projAliases[j]
 			} else {
 				colNames[j] = col
 			}
+			// Type comes from the CTE's column types when this slot
+			// is a bare column ref; computed-expression slots
+			// (projExprs[j] != nil) leave colTypes[j] = "" — the
+			// expression evaluator can't yet infer types over CTE
+			// rows.
+			if j < len(sq.projExprs) && sq.projExprs[j] != nil {
+				continue
+			}
+			bare := col
+			if dot := strings.LastIndex(col, "."); dot >= 0 {
+				bare = col[dot+1:]
+			}
+			colTypes[j] = cteTypeByCol[bare]
 		}
 		// Java alignment (cte.yamsql line 111,114): when a WITH rename
 		// renames the CTE columns (e.g. `WITH c1(w, z) AS (SELECT id,
@@ -264,5 +301,5 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 		colNames, outRows = stripAggregateSortOnly(sq, colNames, outRows)
 	}
 
-	return &staticRows{cols: colNames, rows: outRows}, nil
+	return &staticRows{cols: colNames, colTypes: colTypes, rows: outRows}, nil
 }

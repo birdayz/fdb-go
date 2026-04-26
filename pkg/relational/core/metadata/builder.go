@@ -242,45 +242,59 @@ func (b *Builder) buildFileDescriptor() (protoreflect.FileDescriptor, error) {
 	return fd, nil
 }
 
+// uuidProtoTypeName is the fully-qualified proto message name for the
+// tuple_fields.UUID record (sfixed64 most/least bits). Matches Java's
+// Type.uuidType lowering — fdb-relational stores UUID column values
+// as TupleFieldsProto.UUID instances.
+const uuidProtoTypeName = ".com.apple.foundationdb.record.UUID"
+
 // buildMessageDescriptor converts a tableSpec into a proto DescriptorProto.
 func buildMessageDescriptor(tbl tableSpec) (*descriptorpb.DescriptorProto, error) {
 	msg := &descriptorpb.DescriptorProto{Name: proto.String(tbl.name)}
 	for _, col := range tbl.columns {
-		ft, err := datatypeToProtoFieldType(col.dt)
+		ft, typeName, err := datatypeToProtoFieldType(col.dt)
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 				"column %q", col.name)
 		}
-		msg.Field = append(msg.Field, &descriptorpb.FieldDescriptorProto{
+		field := &descriptorpb.FieldDescriptorProto{
 			Name:   proto.String(col.name),
 			Number: proto.Int32(col.fieldNum),
 			Label:  datatypeToLabel(col.dt).Enum(),
 			Type:   ft.Enum(),
-		})
+		}
+		if typeName != "" {
+			field.TypeName = proto.String(typeName)
+		}
+		msg.Field = append(msg.Field, field)
 	}
 	return msg, nil
 }
 
 // datatypeToProtoFieldType maps an api.DataType to the corresponding
-// proto field type. Scalar primitives only.
-func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProto_Type, error) {
+// proto field type and (for message-typed fields) the fully-qualified
+// type name. Scalar primitives return (TYPE_*, "", nil); message types
+// return (TYPE_MESSAGE, ".pkg.Name", nil).
+func datatypeToProtoFieldType(dt api.DataType) (descriptorpb.FieldDescriptorProto_Type, string, error) {
 	switch dt.Code() {
 	case api.CodeBoolean:
-		return descriptorpb.FieldDescriptorProto_TYPE_BOOL, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_BOOL, "", nil
 	case api.CodeInteger:
-		return descriptorpb.FieldDescriptorProto_TYPE_INT32, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_INT32, "", nil
 	case api.CodeLong:
-		return descriptorpb.FieldDescriptorProto_TYPE_INT64, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_INT64, "", nil
 	case api.CodeFloat:
-		return descriptorpb.FieldDescriptorProto_TYPE_FLOAT, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_FLOAT, "", nil
 	case api.CodeDouble:
-		return descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, "", nil
 	case api.CodeString:
-		return descriptorpb.FieldDescriptorProto_TYPE_STRING, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil
 	case api.CodeBytes:
-		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, nil
+		return descriptorpb.FieldDescriptorProto_TYPE_BYTES, "", nil
+	case api.CodeUUID:
+		return descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, uuidProtoTypeName, nil
 	default:
-		return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		return 0, "", api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"unsupported DataType code %v", dt.Code())
 	}
 }
