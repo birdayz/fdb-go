@@ -220,16 +220,69 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 }
 
 // inferFunctionCallJDBCType handles the function-call subtree:
-// scalar functions (UPPER, LOWER, ...) and CASE / CAST forms. Walks
-// into the SpecificFunctionContext for CAST and CASE; for scalar /
-// aggregate function calls returns "" (unknown — runner-side
-// fallback covers via runtime-value inference).
+// scalar functions (UPPER, LOWER, COALESCE, ...) and CASE / CAST forms.
+// Walks into the SpecificFunctionContext for CAST and CASE.
 func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	switch fc := fc.(type) {
 	case *antlrgen.SpecificFunctionCallContext:
 		return inferSpecificFunctionJDBCType(fc.SpecificFunction(), msgDesc)
+	case *antlrgen.ScalarFunctionCallContext:
+		return inferScalarFunctionJDBCType(fc, msgDesc)
 	}
 	return ""
+}
+
+// inferScalarFunctionJDBCType handles UPPER / LOWER / SUBSTRING /
+// COALESCE / etc. by name. Functions whose name we don't recognise
+// fall through to "" — caller's value-based inference can take over.
+func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
+	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
+	switch name {
+	case "UPPER", "LOWER", "SUBSTRING", "TRIM", "LTRIM", "RTRIM", "CONCAT", "REPLACE":
+		return "STRING"
+	case "LENGTH", "CHAR_LENGTH", "OCTET_LENGTH":
+		return "BIGINT"
+	case "ABS":
+		// ABS preserves operand type. Recurse into first arg.
+		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)
+	case "COALESCE", "IFNULL":
+		// Result type = MaximumType of all arguments. Walk each arg.
+		args := fc.FunctionArgs()
+		if args == nil {
+			return ""
+		}
+		var resultType string
+		for _, a := range args.AllFunctionArg() {
+			t := inferFunctionArgJDBCType(a, msgDesc)
+			if resultType == "" {
+				resultType = t
+			} else if t != "" {
+				resultType = jdbcTypeMax(resultType, t)
+				if resultType == "" {
+					return ""
+				}
+			}
+		}
+		return resultType
+	case "NULLIF":
+		// NULLIF returns the type of the first argument (which is
+		// also the type the second argument was compared against).
+		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)
+	}
+	return ""
+}
+
+// firstFunctionArgType returns the inferred type of args[0] or "" if
+// the args list is empty.
+func firstFunctionArgType(args antlrgen.IFunctionArgsContext, msgDesc protoreflect.MessageDescriptor) string {
+	if args == nil {
+		return ""
+	}
+	all := args.AllFunctionArg()
+	if len(all) == 0 {
+		return ""
+	}
+	return inferFunctionArgJDBCType(all[0], msgDesc)
 }
 
 // inferSpecificFunctionJDBCType handles CAST and CASE shapes.

@@ -224,7 +224,20 @@ var _ = Describe("RunSql Harness", func() {
 		// Adding a new test case is just appending {Name, Schema,
 		// Setup, Query[, ExpectErrorContains]} to SeedRunCorpus().
 		// No baseline RowSet to capture, no conformance-test wiring.
-		javaR := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
+		//
+		// ISOLATION: this corpus runs ~170 queries through fdb-relational
+		// in a single It block. The shared Java server is polluted by
+		// prior conformance specs (existence_check_*, error_*, etc.)
+		// which have already exercised fdb-relational's error-path
+		// teardown. Cumulative state-leak from those plus our own
+		// corpus's negative entries pushes per-request Java latency past
+		// the 30s HTTP timeout — making innocuous specs like
+		// bare_bool_where_rejected appear to "hang" in //... mode but
+		// pass under focused execution. Use a fresh Java server here.
+		isoJava, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred(), "failed to spawn isolated Java conformance server")
+		defer func() { _ = isoJava.Close() }()
+		javaR := plandiff.NewJavaRunnerHTTP(javaBaseURL(isoJava), env.ClusterFile).(plandiff.SetupRunner)
 		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
 		defer os.Remove(clusterFilePath)
 		goR := plandiff.NewGoSQLSetupRunner(clusterFilePath)
@@ -232,24 +245,6 @@ var _ = Describe("RunSql Harness", func() {
 		corpus := plandiff.SeedRunCorpus()
 		for _, rq := range corpus {
 			rq := rq
-			// TEMP swingshift-52 numeric: only run new T_N* entries
-			if !strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N1 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N2 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N3 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N4 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N5 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N6 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N7 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N8 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N9 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N10 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N11 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N12 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N13 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N14 ") &&
-				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N15 ") {
-				continue
-			}
 			By(rq.Name, func() {
 				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)

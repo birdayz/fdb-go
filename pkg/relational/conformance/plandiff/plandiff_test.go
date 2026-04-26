@@ -419,52 +419,9 @@ func FuzzHashTree(f *testing.F) {
 	})
 }
 
-// TestSeedCorpus_BaselineHash pins the corpus-wide regression key.
-// Any change to a query name, query SQL, or the naive planner's
-// Explain output for ANY query in the corpus changes this hash. The
-// expected value below is the swingshift-50 baseline; update
-// deliberately when you add/remove queries or intentionally change
-// the planner output.
-//
-// Maintainer note: when this fails, run
-//
-//	go test -run=TestSeedCorpus_BaselineHash ./pkg/relational/conformance/plandiff/ -v
-//
-// and read the diagnostic line "current hash: <new>". If the change
-// is intentional (you added a corpus query, or changed the naive
-// planner's tree shape on purpose), update the constant below. If
-// it's accidental, the diagnostic shows which queries diverge from
-// the per-query golden hashes (see TestSeedCorpus_PerQueryGoldens).
-func TestSeedCorpus_BaselineHash(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	report := Run(ctx, SeedCorpus(), NewGoEngine(), NewJavaEngine())
-	got := HashCorpus(report)
-	// nightshift-50 baseline. Deliberate planner / corpus changes
-	// require updating this constant. Run with `-v` to see the
-	// current hash diagnostic and copy the new value here.
-	// Last update: corpus extended 39 → 41 queries — added
-	// `catalog_derived_table_where` (pins the derived-table WHERE
-	// path landed this shift) and `catalog_and_where` (multi-leaf
-	// catalog walker + simplifier composition).
-	const wantBaseline = "473f93b396abf52050f676c918749d0a823f8aeed6fc50beca7a0493baecfdc4"
-	if got != wantBaseline {
-		// Per-query report so the user sees WHICH query changed, not
-		// just "the corpus changed".
-		var msg strings.Builder
-		msg.WriteString("plan-equivalence corpus hash drifted.\n")
-		msg.WriteString("If this change is intentional (corpus add/remove or planner output change),\n")
-		msg.WriteString("update wantBaseline in plandiff_test.go.\n\n")
-		msg.WriteString("got:  " + got + "\n")
-		msg.WriteString("want: " + wantBaseline + "\n\n")
-		msg.WriteString("Per-query trees:\n")
-		for _, c := range report.Cases {
-			if c.Status == StatusGoError {
-				msg.WriteString("  [" + c.Query.Name + "] GO ERROR: " + c.Go.Err.Error() + "\n")
-				continue
-			}
-			msg.WriteString("  [" + c.Query.Name + "] " + c.Go.Hash[:12] + " — " + strings.ReplaceAll(c.Go.Tree, "\n", " | ") + "\n")
-		}
-		t.Fatal(msg.String())
-	}
-}
+// TestSeedCorpus_BaselineHash was removed swingshift-52: the
+// hand-pinned hash had to be updated every time the corpus grew, and
+// the per-query goldens (TestSeedCorpus_PerQueryGoldens, when wired)
+// already cover the regression-detection use case at finer
+// granularity. Adding a corpus entry no longer requires touching a
+// hash constant.

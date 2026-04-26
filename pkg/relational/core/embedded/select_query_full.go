@@ -832,9 +832,23 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			for i, colName := range sq.projCols {
 				// Computed expression: no field descriptor needed.
 				if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-					outName := colName
+					var outName string
 					if i < len(sq.projAliases) && sq.projAliases[i] != "" {
 						outName = sq.projAliases[i]
+					} else {
+						// Anonymous computed projection. The internal
+						// name needs to be unique-per-slot for ORDER
+						// BY / dedup keying, but it must NOT pass
+						// jdbcColumnName's isSimpleIdentifier check —
+						// that would surface the parser's whitespace-
+						// stripped text (e.g. "name IS NULL" →
+						// "nameISNULL") as the JDBC metadata name,
+						// diverging from Java which emits "_N" for
+						// every non-aliased computed expression.
+						// Including a `$` makes the name non-simple
+						// while still unique. jdbcColumnName falls
+						// through to its `_<position>` synthesis.
+						outName = fmt.Sprintf("$expr_%d", i)
 					}
 					// Infer the expression's result type so the JDBC
 					// metadata layer can report it (e.g. `x + y` of
