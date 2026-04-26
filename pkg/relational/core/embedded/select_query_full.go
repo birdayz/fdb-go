@@ -721,14 +721,9 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cols = make([]string, len(emitIdx))
 			colTypes = make([]string, len(emitIdx))
 			for out, i := range emitIdx {
-				cols[out] = sq.aggCols[i].outName
-				// Heuristic: COUNT is always BIGINT; SUM/MIN/MAX/AVG
-				// over typed columns inherit the operand's type. Today
-				// we don't track operand types through the aggregator
-				// pipeline, so default to BIGINT — covers the common
-				// case (SUM/MIN/MAX over INT/BIGINT). When numeric-type
-				// inference for aggregates lands, replace this default.
-				colTypes[out] = "BIGINT"
+				ac := sq.aggCols[i]
+				cols[out] = ac.outName
+				colTypes[out] = aggregateResultJDBCType(ac, msgDesc)
 			}
 
 			// Emit one row per group (with HAVING filter). Two passes:

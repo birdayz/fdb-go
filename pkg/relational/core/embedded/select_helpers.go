@@ -212,7 +212,7 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 	case *antlrgen.BooleanConstantContext:
 		return "BOOLEAN"
 	case *antlrgen.BytesConstantContext:
-		return "BYTES"
+		return "BINARY"
 	case *antlrgen.NullConstantContext:
 		return "" // NULL has no type until promoted by an outer op
 	}
@@ -308,9 +308,65 @@ func convertedDataTypeToJDBC(text string) string {
 	case "BOOLEAN", "BOOL":
 		return "BOOLEAN"
 	case "BYTES":
-		return "BYTES"
+		return "BINARY"
 	case "UUID":
 		return "OTHER"
+	}
+	return ""
+}
+
+// aggregateResultJDBCType returns the JDBC result-set type name for
+// an aggregate-column slot. Handles GROUP-BY columns (look up the
+// underlying field's type), pure aggregates (COUNT → BIGINT;
+// SUM/MIN/MAX → operand type; AVG → DOUBLE), and outExpr post-
+// aggregation slots (heuristic: BIGINT). Empty string for shapes
+// where the type can't be determined statically — the runner-side
+// fallback handles those (no slot today).
+func aggregateResultJDBCType(ac aggSelectCol, msgDesc protoreflect.MessageDescriptor) string {
+	// GROUP BY column: type comes from the underlying field.
+	if ac.groupCol != "" {
+		bare := ac.groupCol
+		if dot := strings.LastIndex(bare, "."); dot >= 0 {
+			bare = bare[dot+1:]
+		}
+		if msgDesc != nil {
+			if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
+				return jdbcTypeNameForFD(fd)
+			}
+		}
+		return ""
+	}
+	// outExpr post-aggregation: walking the expression isn't trivial
+	// because operand columns reference aggregator slots, not table
+	// fields. Default to BIGINT — covers SUM(a) + SUM(b) shapes.
+	if ac.outExpr != nil {
+		return "BIGINT"
+	}
+	// Pure aggregate.
+	switch ac.aggFunc {
+	case "COUNT":
+		return "BIGINT"
+	case "AVG":
+		return "DOUBLE"
+	case "SUM", "MIN", "MAX":
+		// Result inherits the operand's type. Fast path: bare column
+		// argument → look up the FieldDescriptor. Expression arg
+		// (SUM(qty * price)) walks the expression AST.
+		if ac.aggArg != "" {
+			bare := ac.aggArg
+			if dot := strings.LastIndex(bare, "."); dot >= 0 {
+				bare = bare[dot+1:]
+			}
+			if msgDesc != nil {
+				if fd := msgDesc.Fields().ByName(protoreflect.Name(bare)); fd != nil {
+					return jdbcTypeNameForFD(fd)
+				}
+			}
+		}
+		if ac.aggExpr != nil {
+			return inferProjectionJDBCType(ac.aggExpr, msgDesc)
+		}
+		return "BIGINT" // best-effort default
 	}
 	return ""
 }
@@ -338,7 +394,9 @@ func jdbcTypeNameForFD(fd protoreflect.FieldDescriptor) string {
 	case protoreflect.StringKind:
 		return "STRING"
 	case protoreflect.BytesKind:
-		return "BYTES"
+		// JDBC standard for variable-length byte arrays is BINARY; this
+		// is what fdb-relational's ResultSetMetaData reports.
+		return "BINARY"
 	case protoreflect.MessageKind:
 		// UUID columns are stored as the tuple_fields.UUID message
 		// and reported as JDBC's catch-all "OTHER" type name (matches

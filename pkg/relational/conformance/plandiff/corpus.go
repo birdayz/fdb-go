@@ -432,6 +432,125 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_NA WHERE val > 100 AND NOT val = 300 ORDER BY id",
 		},
+		{
+			// INTEGER (32-bit) round-trip — exercises INSERT range-check
+			// + storage as proto INT32 + read-back narrowing. Bare ints
+			// are typed BIGINT in fdb-relational so explicit CAST is
+			// required for INSERT into INTEGER columns.
+			Name:           "integer_column",
+			SchemaTemplate: "CREATE TABLE T_INT (id BIGINT, val INTEGER, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INT VALUES (1, CAST(2147483647 AS INTEGER))",
+				"INSERT INTO T_INT VALUES (2, CAST(-2147483648 AS INTEGER))",
+				"INSERT INTO T_INT VALUES (3, CAST(0 AS INTEGER))",
+			},
+			Query: "SELECT id, val FROM T_INT ORDER BY id",
+		},
+		{
+			// FLOAT (32-bit) round-trip — DOUBLE-typed literals narrowed
+			// via CAST into FLOAT storage, read back as float32 promoted
+			// to float64 on the wire.
+			Name:           "float_column",
+			SchemaTemplate: "CREATE TABLE T_FLT (id BIGINT, val FLOAT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FLT VALUES (1, CAST(1.5 AS FLOAT))",
+				"INSERT INTO T_FLT VALUES (2, CAST(0.0 AS FLOAT))",
+			},
+			Query: "SELECT id, val FROM T_FLT ORDER BY id",
+		},
+		{
+			// BYTES round-trip with X'...' hex literal — pins the byte
+			// → base64 wire encoding both engines emit. "hi" → 0x6869
+			// → base64 "aGk=".
+			Name:           "bytes_round_trip",
+			SchemaTemplate: "CREATE TABLE T_BYTES (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BYTES VALUES (1, X'6869')",
+				"INSERT INTO T_BYTES VALUES (2, X'')",
+			},
+			Query: "SELECT id, payload FROM T_BYTES ORDER BY id",
+		},
+		{
+			// String comparison: ORDER-preserving WHERE on STRING.
+			// Tests that lexicographic byte-order matches across both
+			// engines.
+			Name:           "string_comparison",
+			SchemaTemplate: "CREATE TABLE T_SCMP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCMP VALUES (1, 'apple')",
+				"INSERT INTO T_SCMP VALUES (2, 'banana')",
+				"INSERT INTO T_SCMP VALUES (3, 'cherry')",
+				"INSERT INTO T_SCMP VALUES (4, 'date')",
+			},
+			Query: "SELECT id, name FROM T_SCMP WHERE name > 'b' AND name < 'd' ORDER BY id",
+		},
+		{
+			// SUM over DOUBLE — pins DOUBLE-aggregate result type +
+			// floating-point accumulation order across engines.
+			Name:           "sum_double",
+			SchemaTemplate: "CREATE TABLE T_SD (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SD VALUES (1, 1.5)",
+				"INSERT INTO T_SD VALUES (2, 2.25)",
+				"INSERT INTO T_SD VALUES (3, -0.75)",
+			},
+			Query: "SELECT sum(val) FROM T_SD",
+		},
+		// Multi-column ORDER BY (any direction combination) hits an
+		// UnableToPlanException in fdb-relational 4.11.1.0's Cascades
+		// planner — single-column ORDER BY only. Documented in
+		// CLAUDE.md "Java↔Go conformance gotchas". Re-add when the
+		// planner supports it.
+		{
+			// CASE with multiple WHEN branches + ELSE — pins branch
+			// evaluation order and result-type lattice over multi-WHEN.
+			Name:           "case_multi_when",
+			SchemaTemplate: "CREATE TABLE T_CMW (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMW VALUES (1, 5)",
+				"INSERT INTO T_CMW VALUES (2, 15)",
+				"INSERT INTO T_CMW VALUES (3, 25)",
+				"INSERT INTO T_CMW VALUES (4, 35)",
+			},
+			Query: "SELECT id, CASE WHEN val < 10 THEN 'tiny' WHEN val < 20 THEN 'small' WHEN val < 30 THEN 'medium' ELSE 'large' END FROM T_CMW ORDER BY id",
+		},
+		{
+			// LIKE with _ single-char wildcard — pins the per-char
+			// matching, distinct from % multi-char.
+			Name:           "like_underscore",
+			SchemaTemplate: "CREATE TABLE T_LU (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LU VALUES (1, 'cat')",
+				"INSERT INTO T_LU VALUES (2, 'cot')",
+				"INSERT INTO T_LU VALUES (3, 'cart')",
+				"INSERT INTO T_LU VALUES (4, 'cup')",
+			},
+			Query: "SELECT id, name FROM T_LU WHERE name LIKE 'c_t' ORDER BY id",
+		},
+		{
+			// NULL three-valued logic — `WHERE val = NULL` returns no
+			// rows (NULL = NULL is UNKNOWN, not TRUE). Pins Kleene
+			// propagation across engines.
+			Name:           "null_eq_yields_empty",
+			SchemaTemplate: "CREATE TABLE T_NE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE VALUES (1, 10)",
+				"INSERT INTO T_NE VALUES (2, NULL)",
+				"INSERT INTO T_NE VALUES (3, 30)",
+			},
+			Query: "SELECT id FROM T_NE WHERE val = NULL ORDER BY id",
+		},
+		{
+			// Nested arithmetic — pins associativity / operator
+			// precedence across engines.
+			Name:           "nested_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_NEST (id BIGINT, x BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NEST VALUES (1, 2, 3, 4)",
+				"INSERT INTO T_NEST VALUES (2, 5, 6, 7)",
+			},
+			Query: "SELECT id, (x + y) * z, x + y * z FROM T_NEST ORDER BY id",
+		},
 	}
 }
 
