@@ -419,6 +419,12 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **`NOT NULL` is reserved for `ARRAY` column types in `CREATE TABLE`.** Plain `id BIGINT NOT NULL` fails with `RelationalException: NOT NULL is only allowed for ARRAY column type`. Primary-key columns are implicitly NOT NULL, so just write `id BIGINT, ..., PRIMARY KEY (id)` and trust the implicit constraint.
 - **`VALUES` clause is restricted in fdb-relational SQL.** `SELECT ... FROM (VALUES (...)) AS T(col)` raises a syntax error. Use real tables for end-to-end tests; in-line constant tables aren't a portable substitute.
 - **fdb-relational uppercases identifiers.** Column metadata returned from JDBC has uppercase names (`ID` not `id`). Pin uppercase in cross-engine assertions.
+- **No INTEGER/FLOAT auto-promotion at INSERT time.** `INSERT INTO T (i) VALUES (42)` where `i INTEGER` fails with `SemanticException: A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable`. Bare numeric literals are typed BIGINT (for ints) and DOUBLE (for decimals); narrowing requires an explicit `CAST(42 AS INTEGER)` / `CAST(1.5 AS FLOAT)`.
+- **BYTES literal syntax: `X'<hex>'`** (uppercase X) per `RelationalLexer.g4#HEXADECIMAL_LITERAL`. Lowercase `x'...'` is rejected. Base64 form is `B64'<base64>'`.
+- **`blob` is reserved.** Use a different column name for BYTES columns — `BLOB`, `TINYBLOB`, `MEDIUMBLOB`, `LONGBLOB` are all keywords. `payload`, `data`, `bytes_value` are fine.
+- **Each `runSql` / `runWithSetup` call uses a fresh ephemeral schema.** State (rows, schema) does NOT persist between calls. For INSERT-then-SELECT round-trip tests use `runWithSetup(setupSqls[], querySql)` — both phases share the schema.
+- **`API_VERSION_7_3` does not exist.** fdb-record-layer 4.11.1.0's `APIVersion` enum has only `6_3`, `7_0`, `7_1` — there is no 7.3 enum. The FDB SERVER 7.3.75 supports older API versions. Don't try to bump unless we upgrade fdb-record-layer.
+- **`setAPIVersion` throws if client already started.** When the conformance server runs many test suites in one process, a sibling test may init FDB first; `setAPIVersion` then throws `RecordCoreException("API version cannot be changed after client has already started")`. The shared driver-init helper catches this specific exception and proceeds.
 
 ## Error handling
 

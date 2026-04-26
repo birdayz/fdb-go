@@ -149,6 +149,53 @@ var _ = Describe("RunSql Harness", func() {
 		Expect(got.Rows.Rows[2][3]).To(BeNil(), "flag NULL must round-trip")
 	})
 
+	It("round-trips INTEGER and FLOAT columns", func() {
+		// fdb-relational distinguishes INTEGER (32-bit) from BIGINT
+		// (64-bit) and FLOAT (32-bit) from DOUBLE (64-bit) in the
+		// grammar (RelationalParser.g4 columnType). Both narrow types
+		// arrive over JDBC as Number, so the JSON encoder treats them
+		// uniformly — this test pins that behaviour.
+		// fdb-relational doesn't auto-promote BIGINT literals to INTEGER
+		// or DOUBLE literals to FLOAT — explicit CAST is required at
+		// INSERT time. (`A value cannot be assigned to a variable
+		// because the type of the value does not match the type of the
+		// variable and cannot be promoted to the type of the variable`).
+		runner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
+		got := runner.RunWithSetup(ctx,
+			"CREATE TABLE Numeric_T (id BIGINT, i INTEGER, f FLOAT, PRIMARY KEY (id))",
+			[]string{"INSERT INTO Numeric_T VALUES (1, CAST(42 AS INTEGER), CAST(1.5 AS FLOAT))"},
+			"SELECT id, i, f FROM Numeric_T",
+		)
+		Expect(got.Err).NotTo(HaveOccurred())
+		Expect(got.Rows.Rows).To(HaveLen(1))
+		Expect(got.Rows.Rows[0][1].(float64)).To(Equal(float64(42)))
+		Expect(got.Rows.Rows[0][2].(float64)).To(BeNumerically("~", 1.5, 1e-6))
+		// Pin the JDBC type names — divergence here would surface a
+		// cross-engine type-name mismatch when Go-side runners land.
+		Expect(got.Rows.Columns[1].Type).NotTo(BeEmpty())
+		Expect(got.Rows.Columns[2].Type).NotTo(BeEmpty())
+	})
+
+	It("round-trips BYTES columns as base64", func() {
+		// SqlPlanSteps#encodeValue base64-encodes byte[] values. This
+		// pins that encoding path against real fdb-relational data.
+		// The string "hi" → base64 "aGk=".
+		// `blob` is a reserved keyword in fdb-relational's grammar
+		// (RelationalLexer.g4#BLOB). Use `payload` for the column name.
+		// Hex literal syntax: X'...' (uppercase) per
+		// RelationalLexer.g4#HEXADECIMAL_LITERAL.
+		runner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
+		got := runner.RunWithSetup(ctx,
+			"CREATE TABLE Bin_T (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			[]string{"INSERT INTO Bin_T VALUES (1, X'6869')"},
+			"SELECT id, payload FROM Bin_T",
+		)
+		Expect(got.Err).NotTo(HaveOccurred())
+		Expect(got.Rows.Rows).To(HaveLen(1))
+		// "hi" (0x68 0x69) → base64 "aGk=".
+		Expect(got.Rows.Rows[0][1].(string)).To(Equal("aGk="))
+	})
+
 	It("returns an empty result set for SELECT with no matching rows", func() {
 		runner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile)
 		// Pin zero-row handling: an empty table SELECT returns
