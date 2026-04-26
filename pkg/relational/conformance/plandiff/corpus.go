@@ -413,6 +413,20 @@ func SeedRunCorpus() []RunQuery {
 		// different probe shape — investigate the catalog access
 		// path in a follow-up shift.
 		{
+			Name:           "subquery_in_from",
+			SchemaTemplate: "CREATE TABLE T_SUB (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SUB VALUES (1, 100)",
+				"INSERT INTO T_SUB VALUES (2, 200)",
+				"INSERT INTO T_SUB VALUES (3, 300)",
+			},
+			Query: "SELECT t.id FROM (SELECT id, val FROM T_SUB WHERE val > 100) AS t WHERE t.val < 300 ORDER BY t.id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(2)}},
+			},
+		},
+		{
 			Name:           "sum_min_max",
 			SchemaTemplate: "CREATE TABLE T_AGG (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
