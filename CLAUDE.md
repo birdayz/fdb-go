@@ -454,6 +454,7 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **`IS TRUE` / `IS FALSE` predicate forms are unsupported on BOOLEAN columns.** fdb-relational 4.11.1.0 rejects `WHERE flag IS TRUE` at the planner. The supported form is `WHERE flag = TRUE`.
 - **Division-by-zero error messages differ.** Java's stock `ArithmeticException` says `"/ by zero"`; Go's eval says `"division by zero"`. Cross-engine error-substring assertions should use the case-insensitive substring `"zero"`.
 - **CAST-overflow error messages differ.** Java's CastValue says `"Value out of range for INT"`; Go says `"value … out of range for INTEGER"`. Common substring: `"out of range"`.
+- **`IN (..., NULL, ...)` lists diverge.** SQL standard + Go propagate UNKNOWN through three-valued logic, so `WHERE x IN (1, NULL)` matches `x=1` and yields UNKNOWN otherwise (`NOT IN (1, NULL)` therefore yields UNKNOWN ⇒ empty result). fdb-relational 4.11.1.0 rejects NULL in the IN list outright with `"NULL values are not allowed in the IN list"`. The divergence is one-sided (Java rejects, Go accepts) — not expressible in `ExpectErrorContains` (would need both engines to fail) and not a positive entry (Java rejects). No cross-engine corpus entry possible until one side aligns.
 
 ### Go embedded SQL engine — Java conformance status
 
