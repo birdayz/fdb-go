@@ -99,7 +99,7 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	}
 	r := expr.New(a, s)
 
-	cases := map[string]values.ValueType{
+	cases := map[string]values.Type{
 		"i":   values.TypeInt,
 		"s":   values.TypeString,
 		"e":   values.TypeString,
@@ -143,7 +143,7 @@ func TestResolver_ResolveConstant(t *testing.T) {
 	cases := []struct {
 		name string
 		lit  any
-		want values.ValueType
+		want values.Type
 	}{
 		{"int64", int64(42), values.TypeInt},
 		{"int", 42, values.TypeInt},
@@ -159,8 +159,13 @@ func TestResolver_ResolveConstant(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v: %v", tc.lit, err)
 			}
-			if v.Type() != tc.want {
-				t.Fatalf("Type: got %v, want %v", v.Type(), tc.want)
+			// Compare by code only — BooleanValue's Type() is
+			// NotNullBoolean (literals are NOT NULL); the table's
+			// `want` carries the nullable singleton (TypeBool ≡
+			// NullableBoolean). Same code, different nullability —
+			// the .Code() check is the right migration shape.
+			if v.Type().Code() != tc.want.Code() {
+				t.Fatalf("Type code: got %v, want %v", v.Type().Code(), tc.want.Code())
 			}
 		})
 	}

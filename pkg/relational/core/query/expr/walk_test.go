@@ -1226,7 +1226,7 @@ func TestWalkExpression_CastTargets(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	cases := map[string]values.ValueType{
+	cases := map[string]values.Type{
 		"CAST(name AS STRING)":  values.TypeString,
 		"CAST(name AS BOOLEAN)": values.TypeBool,
 		"CAST(name AS BIGINT)":  values.TypeInt,
@@ -1345,7 +1345,7 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 	cases := []struct {
 		sql  string
 		fn   string
-		typ  values.ValueType
+		typ  values.Type
 		args int
 	}{
 		{"SELECT * FROM users WHERE UPPER(name)", "UPPER", values.TypeString, 1},
@@ -1372,8 +1372,8 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 			if sf.FuncName != tc.fn {
 				t.Fatalf("FuncName: got %q, want %q", sf.FuncName, tc.fn)
 			}
-			if sf.Type() != tc.typ {
-				t.Fatalf("Type: got %v, want %v", sf.Type(), tc.typ)
+			if sf.Type().Code() != tc.typ.Code() {
+				t.Fatalf("Type code: got %v, want %v", sf.Type().Code(), tc.typ.Code())
 			}
 			if got := len(sf.Args); got != tc.args {
 				t.Fatalf("len(Args): got %d, want %d", got, tc.args)
@@ -1395,7 +1395,7 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 	cases := []struct {
 		sql  string
 		fn   string
-		typ  values.ValueType
+		typ  values.Type
 		args int
 	}{
 		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.TypeUnknown, 1},
@@ -1441,8 +1441,8 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 			if sf.FuncName != tc.fn {
 				t.Fatalf("FuncName: got %q, want %q", sf.FuncName, tc.fn)
 			}
-			if sf.Type() != tc.typ {
-				t.Fatalf("Type: got %v, want %v", sf.Type(), tc.typ)
+			if sf.Type().Code() != tc.typ.Code() {
+				t.Fatalf("Type code: got %v, want %v", sf.Type().Code(), tc.typ.Code())
 			}
 			if got := len(sf.Args); got != tc.args {
 				t.Fatalf("len(Args): got %d, want %d", got, tc.args)

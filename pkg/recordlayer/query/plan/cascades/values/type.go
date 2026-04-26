@@ -1,38 +1,33 @@
 package values
 
-// Phase 4.0 Type hierarchy seed.
+// Phase 4.0 Type hierarchy.
 //
-// Mirrors the bare-minimum surface of Java's
+// Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.typing.Type` —
-// the rich type system that replaces today's flat `ValueType` enum.
-// The interim `ValueType` continues to coexist; this file adds the
-// richer `Type` interface alongside it so new code can carry full
-// type information (notably nullability) while old call sites keep
-// working unchanged. Migration is incremental.
+// the rich type system used throughout the planner. Post-swingshift-52
+// (Track G1) this is the ONLY type representation in the package —
+// the legacy `ValueType` enum + `FromValueType` / `ToValueType` /
+// `ValueRichType` bridges retired. Each Value impl's `Type()` now
+// returns a rich Type directly.
 //
-// Seed scope (this file): TypeCode enum mirroring Java's
-// well-known codes, the Type interface (Code + IsNullable + a few
-// shape predicates), the PrimitiveType impl plus singletons for the
-// common primitives, and adapter functions to / from the legacy
-// ValueType enum so callers can bridge piecewise.
+// File contents: TypeCode enum mirroring Java's well-known codes,
+// the Type interface (Code + IsNullable + a few shape predicates),
+// concrete impls (PrimitiveType, RecordType, ArrayType, EnumType,
+// RelationType), canonical singletons for every primitive, the
+// IsPromotable / MaximumType / MaximumTypeOfMany promotion lattice,
+// and TypeRepository for named-type lookup.
 //
-// Phase 4.0 status (as of swingshift-52):
+// Status (post-swingshift-52):
 //   - Structured types: RecordType, ArrayType, EnumType, RelationType ✅
 //   - Primitive singletons: NullableX / NotNullX for every primitive,
 //     plus NullType, UnknownType, NoneType, AnyType ✅
 //   - Promotion lattice: IsPromotable, MaximumType, MaximumTypeOfMany ✅
 //   - TypeRepository (named-type registry) ✅
-//   - Legacy bridge: FromValueType / ToValueType / ValueRichType ✅
 //   - Erased-type helpers: ArrayType.IsErased, RelationType.IsErased ✅
+//   - Value.Type() returns rich Type (legacy enum retired) ✅
 //
-// Still ahead (later follow-ons):
-//   - Type inference on Value.Type() returning rich Type (vs the
-//     legacy ValueType enum) — biggest piece, requires every Value
-//     impl to gain a RichType() method (or stay served by the
-//     ValueRichType free function as today).
+// Still ahead:
 //   - Plan-serialisation hooks (proto encoding for plan-cache).
-//   - Structured-type recursion in MaximumType (RECORD field-by-field,
-//     ARRAY element-by-element).
 //
 // Per RFC-025 §"typing/" this file stays in cascades/values/ until
 // it grows past ~1500 LOC; only then does typing/ become its own
@@ -270,8 +265,6 @@ var (
 
 	// UnknownType is the placeholder for "type not yet inferred" —
 	// used by Value impls that don't yet have a real type computed.
-	// Pre-Phase-4.0 the legacy `ValueType` had a TypeUnknown that
-	// served the same purpose; this is the new-API replacement.
 	UnknownType Type = &PrimitiveType{TypeCode: TypeCodeUnknown, Nullable: true}
 
 	// NoneType is the type of the untyped empty array literal `[]`.
@@ -287,63 +280,6 @@ var (
 	// nullable. Mirrors Java's `Type.ANY`.
 	AnyType Type = &PrimitiveType{TypeCode: TypeCodeAny, Nullable: true}
 )
-
-// Typed is the interface things-with-a-type implement. Mirrors Java's
-// Typed. Every Value impl in `cascades/values/` implements it post-
-// swingshift-52. Future Value impls and other things-with-a-type
-// (expressions, table columns) MUST implement it.
-//
-// Distinct from the legacy `Value.Type() ValueType` method — `Type()`
-// returns the (deprecated, width-conflating) `ValueType` enum, while
-// `RichType()` returns the rich Type (with full nullability and
-// structural detail).
-type Typed interface {
-	// RichType returns this thing's rich Type. Never nil —
-	// implementations return UnknownType when the type genuinely
-	// isn't known yet.
-	RichType() Type
-}
-
-// FromValueType bridges the legacy ValueType to the new Type
-// interface. nullable lets the caller carry NOT NULL information
-// from the schema; ValueType itself doesn't track nullability.
-//
-// Used by call sites that have a ValueType in hand (existing API
-// surface) and need to feed a Type to a new-API consumer. Once the
-// migration is complete the legacy ValueType retires and this
-// adapter goes with it.
-func FromValueType(vt ValueType, nullable bool) Type {
-	switch vt {
-	case TypeBool:
-		if nullable {
-			return NullableBoolean
-		}
-		return NotNullBoolean
-	case TypeInt:
-		// The seed ValueType conflates INT and LONG. Map to LONG
-		// since BIGINT is the Java Record Layer's default integer
-		// width and it round-trips int64 cleanly.
-		if nullable {
-			return NullableLong
-		}
-		return NotNullLong
-	case TypeFloat:
-		// Same conflation: ValueType.TypeFloat covers both FLOAT
-		// (32-bit) and DOUBLE (64-bit). Map to DOUBLE since Java's
-		// Record Layer defaults to double-precision and our runtime
-		// representation is float64.
-		if nullable {
-			return NullableDouble
-		}
-		return NotNullDouble
-	case TypeString:
-		if nullable {
-			return NullableString
-		}
-		return NotNullString
-	}
-	return UnknownType
-}
 
 // --- RecordType ----------------------------------------------------
 
@@ -1297,63 +1233,4 @@ func (e *TypeRegistrationError) Error() string {
 		return "TypeRepository.Register: " + e.Reason
 	}
 	return "TypeRepository.Register " + e.Name + ": " + e.Reason
-}
-
-// --- Value → Type bridge ------------------------------------------
-
-// ValueRichType returns the rich Type for v. Post-swingshift-52,
-// this is a thin dispatch over the Typed interface — every Value
-// impl in this package implements `RichType()` directly. The
-// previous type-switch dispatch retired in commit 66cd492c.
-//
-// Kept as a free function (rather than just calling
-// `v.(Typed).RichType()` inline) so callers don't have to type-
-// assert + nil-check; ValueRichType handles both ergonomically.
-//
-// Nil v returns UnknownType; a Value that DOESN'T implement Typed
-// (e.g. a future Value impl outside this package that forgot to
-// implement RichType) also returns UnknownType — caller can't
-// distinguish "missing implementation" from "intentionally
-// unknown." If you need that distinction, type-assert directly.
-//
-// The returned Type is best-effort: the seed's int-only arithmetic
-// always reports NullableLong even though true SQL would track
-// operand width promotion. Per-Value RichType() impls capture
-// this approximation; tightening them is future work.
-func ValueRichType(v Value) Type {
-	if v == nil {
-		return UnknownType
-	}
-	// Phase 4.0 migration complete (swingshift-52): every Value impl
-	// in this package implements Typed. The type-switch dispatch
-	// retired with the same shift. Future Value impls outside this
-	// package MUST implement Typed; the type-switch here intentionally
-	// has no fallback so a missing RichType() surfaces immediately.
-	if t, ok := v.(Typed); ok {
-		return t.RichType()
-	}
-	return UnknownType
-}
-
-// ToValueType bridges the new Type back to the legacy ValueType.
-// LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
-// legacy enum doesn't distinguish widths). Structured types and
-// special placeholders (NULL, ANY, NONE, RECORD, ARRAY, ENUM,
-// RELATION, UUID, VERSION) all degrade to TypeUnknown — the legacy
-// enum has no representation for them.
-func ToValueType(t Type) ValueType {
-	if t == nil {
-		return TypeUnknown
-	}
-	switch t.Code() {
-	case TypeCodeBoolean:
-		return TypeBool
-	case TypeCodeInt, TypeCodeLong:
-		return TypeInt
-	case TypeCodeFloat, TypeCodeDouble:
-		return TypeFloat
-	case TypeCodeString:
-		return TypeString
-	}
-	return TypeUnknown
 }

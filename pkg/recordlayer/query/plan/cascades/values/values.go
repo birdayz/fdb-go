@@ -5,10 +5,10 @@
 //
 // Contents:
 //
-//   - Value interface (Children, Type, Name, Evaluate) + ValueType
-//     enum + concrete subtypes: Constant, Field, Arithmetic, Boolean,
-//     Cast, Null, Aggregate, QuantifiedObject, Promote,
-//     RecordConstructor, Parameter, ScalarFunction, Not.
+//   - Value interface (Children, Type, Name, Evaluate) + concrete
+//     subtypes: Constant, Field, Arithmetic, Boolean, Cast, Null,
+//     Aggregate, QuantifiedObject, Promote, RecordConstructor,
+//     Parameter, ScalarFunction, Not.
 //   - ExplainValue — SQL-ish renderer used by plan-cache keying and
 //     EXPLAIN output.
 //   - SimplifyValue — standalone constant-fold over a Value tree
@@ -27,17 +27,16 @@
 //     interface + `TypeCode` enum + concrete impls (`PrimitiveType`,
 //     `RecordType`, `ArrayType`, `EnumType`, `RelationType`),
 //     canonical singletons for every primitive (incl. UUID, VERSION,
-//     None, Any), `TypeRepository`, `WithNullability`, `Typed`
-//     interface, the `IsPromotable` / `MaximumType` /
-//     `MaximumTypeOfMany` promotion lattice (with structural
-//     recursion through ARRAY / RECORD / ENUM / RELATION), and
-//     shape predicates (`IsNull`, `IsArray`, …). Every Value impl
-//     in this package implements `Typed`; `ValueRichType` is now a
-//     thin Typed-interface dispatch. Coexists with the legacy
-//     `ValueType` enum; `FromValueType` / `ToValueType` adapters
-//     bridge the two while migration proceeds. Once `type.go`
-//     exceeds ~1500 LOC it splits into a dedicated
-//     `cascades/typing/` sub-package per RFC-025.
+//     None, Any), `TypeRepository`, `WithNullability`, the
+//     `IsPromotable` / `MaximumType` / `MaximumTypeOfMany`
+//     promotion lattice (with structural recursion through ARRAY /
+//     RECORD / ENUM / RELATION), and shape predicates (`IsNull`,
+//     `IsArray`, …). Post-swingshift-52, every Value impl's `Type()`
+//     returns the rich `Type` directly — the legacy `ValueType`
+//     enum + `FromValueType` / `ToValueType` bridges retired.
+//     Track G1 in TODO.md. Once `type.go` exceeds ~1500 LOC it
+//     splits into a dedicated `cascades/typing/` sub-package per
+//     RFC-025.
 //
 // Imports: nothing else from `pkg/recordlayer/query/plan/cascades/...`.
 // `predicates/`, `matching/`, and root `cascades` all import this
@@ -52,17 +51,34 @@ import (
 	"unicode/utf8"
 )
 
-// ValueType is a stand-in for the full Cascades Type hierarchy. The
-// production port adds `Type` / `TypeRepository` / `Typed`, at which
-// point this enum goes away. See TODO.md Phase 4.0.
-type ValueType int
-
-const (
-	TypeUnknown ValueType = iota
-	TypeInt
-	TypeString
-	TypeBool
-	TypeFloat
+// Legacy `ValueType` enum (TypeUnknown / TypeInt / TypeString /
+// TypeBool / TypeFloat) retired in swingshift-52 — every Value impl's
+// Type() now returns the rich Type directly. The names below remain
+// as Type-typed vars so existing call sites (`Typ: values.TypeInt`)
+// keep working — the value's Go type changes (Type instead of int),
+// the constant name doesn't.
+//
+// Track G1 / RFC-025: legacy bridge retirement.
+var (
+	// TypeUnknown is the placeholder for "type not yet inferred".
+	// Maps to the canonical UnknownType singleton.
+	TypeUnknown Type = UnknownType
+	// TypeInt is the legacy name for the seed's default integer
+	// width — bridged to LONG (BIGINT default; matches Java Record
+	// Layer's int64 representation).
+	TypeInt Type = NullableLong
+	// TypeString is the legacy name for STRING — bridged to
+	// NullableString.
+	TypeString Type = NullableString
+	// TypeBool is the legacy name for BOOLEAN — bridged to
+	// NullableBoolean. Note BooleanValue's Type() returns
+	// NotNullBoolean (literals are NOT NULL); compare via
+	// `.Code() != TypeCodeBoolean` when nullability is irrelevant.
+	TypeBool Type = NullableBoolean
+	// TypeFloat is the legacy name for the seed's default float
+	// width — bridged to DOUBLE (matches Java Record Layer's
+	// float64 representation).
+	TypeFloat Type = NullableDouble
 )
 
 // Value is the root of the Phase 4.0 seed Value hierarchy.
@@ -81,8 +97,12 @@ type Value interface {
 	// Leaf Values return an empty slice (never nil — keeps matcher
 	// code free of nil checks).
 	Children() []Value
-	// Type is the result type of evaluating this Value.
-	Type() ValueType
+	// Type is the rich result Type of evaluating this Value
+	// (post-swingshift-52: the legacy ValueType enum retired and
+	// Type() now returns the rich Type directly). Never nil —
+	// implementations return UnknownType when the type genuinely
+	// isn't known yet.
+	Type() Type
 	// Name is a debug string for error messages + explain output.
 	// Not part of the matcher DSL.
 	Name() string
@@ -98,23 +118,32 @@ type Value interface {
 // --- Concrete values ------------------------------------------------
 
 // ConstantValue is a literal. Evaluate returns Value verbatim.
+//
+// Typ carries the literal's rich Type. NULL constants
+// (`Value == nil`) keep Typ for the typed-NULL case (e.g.
+// `CAST(NULL AS INT)`); the constructor / call sites set
+// the canonical singleton appropriate for the literal's Go
+// runtime type.
 type ConstantValue struct {
 	Value any
-	Typ   ValueType
+	Typ   Type
 }
 
 func (c *ConstantValue) Children() []Value { return []Value{} }
-func (c *ConstantValue) Type() ValueType   { return c.Typ }
 func (c *ConstantValue) Name() string      { return "constant" }
 func (c *ConstantValue) Evaluate(any) any  { return c.Value }
 
-// RichType implements the Typed interface — Phase 4.0 type-system
-// migration. Returns the rich Type (with nullability) instead of
-// the legacy ValueType enum. NULL when Value is nil; otherwise the
-// non-nullable form of the legacy type's bridged Type.
-func (c *ConstantValue) RichType() Type {
-	nullable := c.Value == nil
-	return FromValueType(c.Typ, nullable)
+// Type returns the constant's rich Type. NULL value flips the
+// nullability (a NULL constant is, by definition, nullable); a
+// non-NULL value returns the constant's stored Type verbatim.
+func (c *ConstantValue) Type() Type {
+	if c.Typ == nil {
+		return UnknownType
+	}
+	if c.Value == nil {
+		return WithNullability(c.Typ, true)
+	}
+	return c.Typ
 }
 
 // FieldValue references a column by name. Evaluate expects a
@@ -131,17 +160,21 @@ func (c *ConstantValue) RichType() Type {
 // single canonical casing at the evaluation boundary.
 type FieldValue struct {
 	Field string
-	Typ   ValueType
+	Typ   Type
 }
 
 func (f *FieldValue) Children() []Value { return []Value{} }
-func (f *FieldValue) Type() ValueType   { return f.Typ }
 func (f *FieldValue) Name() string      { return "field" }
 
-// RichType implements Typed (Phase 4.0). FieldValue is nullable
-// until the catalog proves NOT NULL — the seed's FieldValue
-// doesn't track nullability, so be conservative.
-func (f *FieldValue) RichType() Type { return FromValueType(f.Typ, true) }
+// Type returns the field's rich Type. The seed's FieldValue stores
+// the column type as-is; callers that know NOT NULL information
+// from the catalog set Typ to the non-nullable form.
+func (f *FieldValue) Type() Type {
+	if f.Typ == nil {
+		return UnknownType
+	}
+	return f.Typ
+}
 
 func (f *FieldValue) Evaluate(evalCtx any) any {
 	if evalCtx == nil {
@@ -303,9 +336,9 @@ func ExplainValue(v Value) string {
 		}
 		return "FALSE"
 	case *CastValue:
-		return "CAST(" + ExplainValue(cv.Child) + " AS " + cv.Target.String() + ")"
+		return "CAST(" + ExplainValue(cv.Child) + " AS " + explainTypeName(cv.Target) + ")"
 	case *PromoteValue:
-		return "PROMOTE(" + ExplainValue(cv.Child) + " TO " + cv.Target.String() + ")"
+		return "PROMOTE(" + ExplainValue(cv.Child) + " TO " + explainTypeName(cv.Target) + ")"
 	case *RecordConstructorValue:
 		parts := make([]string, 0, len(cv.Fields))
 		for _, f := range cv.Fields {
@@ -346,17 +379,25 @@ func ExplainValue(v Value) string {
 	return v.Name()
 }
 
-// String renders ValueType as a human-readable name (used by
-// ExplainValue for CAST rendering).
-func (t ValueType) String() string {
-	switch t {
-	case TypeInt:
+// explainTypeName renders a Type as a short SQL-ish name for the
+// CAST / PROMOTE rendering in ExplainValue. Mirrors the legacy
+// ValueType.String() output (`INT` / `STRING` / `BOOL` / `FLOAT` /
+// `UNKNOWN`) — the seed conflates LONG/INT into INT and DOUBLE/FLOAT
+// into FLOAT here so the rendered output stays stable across the
+// ValueType retirement (Track G1, swingshift-52). Plan-cache keys
+// derived via ExplainValue stay byte-stable across the migration.
+func explainTypeName(t Type) string {
+	if t == nil {
+		return "UNKNOWN"
+	}
+	switch t.Code() {
+	case TypeCodeInt, TypeCodeLong:
 		return "INT"
-	case TypeString:
+	case TypeCodeString:
 		return "STRING"
-	case TypeBool:
+	case TypeCodeBoolean:
 		return "BOOL"
-	case TypeFloat:
+	case TypeCodeFloat, TypeCodeDouble:
 		return "FLOAT"
 	}
 	return "UNKNOWN"
@@ -459,24 +500,26 @@ func intToDec(n int64) string {
 // that happen to represent a NULL literal in a non-type-annotated
 // way).
 type NullValue struct {
-	Typ ValueType // type NULL was cast to; TypeUnknown when unconstrained
+	Typ Type // type NULL was cast to; UnknownType when unconstrained
 }
 
 // NewNullValue constructs a NullValue of the given type.
-func NewNullValue(typ ValueType) *NullValue {
+func NewNullValue(typ Type) *NullValue {
 	return &NullValue{Typ: typ}
 }
 
 func (*NullValue) Children() []Value { return []Value{} }
-func (n *NullValue) Type() ValueType { return n.Typ }
 func (*NullValue) Name() string      { return "null" }
 func (*NullValue) Evaluate(any) any  { return nil }
 
-// RichType implements Typed (Phase 4.0). SQL NULL — always nullable;
-// type comes from the typed-NULL annotation (TypeUnknown when
-// unannotated, which bridges to UnknownType).
-func (n *NullValue) RichType() Type {
-	return WithNullability(FromValueType(n.Typ, true), true)
+// Type returns the typed-NULL annotation (UnknownType when
+// unannotated). SQL NULL is always nullable so the result is forced
+// to nullable regardless of how the caller stored Typ.
+func (n *NullValue) Type() Type {
+	if n.Typ == nil {
+		return UnknownType
+	}
+	return WithNullability(n.Typ, true)
 }
 
 // ParameterValue is a placeholder for a prepared-statement parameter
@@ -497,19 +540,19 @@ func (n *NullValue) RichType() Type {
 // degrades to NULL at exec time, which is harmless for the
 // plan-time / explain-time work this type unblocks.
 type ParameterValue struct {
-	Ordinal   int       // 1-based positional index; 0 ⇒ named parameter
-	ParamName string    // populated when Ordinal == 0
-	Typ       ValueType // TypeUnknown until upstream type inference fills it
+	Ordinal   int    // 1-based positional index; 0 ⇒ named parameter
+	ParamName string // populated when Ordinal == 0
+	Typ       Type   // UnknownType until upstream type inference fills it
 }
 
 // NewParameterValue constructs a positional `?` parameter (1-based).
 func NewParameterValue(ordinal int) *ParameterValue {
-	return &ParameterValue{Ordinal: ordinal, Typ: TypeUnknown}
+	return &ParameterValue{Ordinal: ordinal, Typ: UnknownType}
 }
 
 // NewNamedParameterValue constructs a named `:name` parameter.
 func NewNamedParameterValue(name string) *ParameterValue {
-	return &ParameterValue{ParamName: name, Typ: TypeUnknown}
+	return &ParameterValue{ParamName: name, Typ: UnknownType}
 }
 
 // ParameterBinder is an optional eval-context capability: when
@@ -522,13 +565,16 @@ type ParameterBinder interface {
 }
 
 func (*ParameterValue) Children() []Value { return []Value{} }
-func (p *ParameterValue) Type() ValueType { return p.Typ }
 func (*ParameterValue) Name() string      { return "param" }
 
-// RichType implements Typed (Phase 4.0). Parameter bindings can be
-// NULL — always nullable.
-func (p *ParameterValue) RichType() Type {
-	return WithNullability(FromValueType(p.Typ, true), true)
+// Type returns the parameter's rich Type. Parameter bindings can be
+// NULL so the result is forced to nullable regardless of how the
+// caller stored Typ.
+func (p *ParameterValue) Type() Type {
+	if p.Typ == nil {
+		return UnknownType
+	}
+	return WithNullability(p.Typ, true)
 }
 
 func (p *ParameterValue) Evaluate(evalCtx any) any {
@@ -559,12 +605,12 @@ func (p *ParameterValue) Evaluate(evalCtx any) any {
 type ScalarFunctionValue struct {
 	FuncName string
 	Args     []Value
-	Typ      ValueType
+	Typ      Type
 }
 
 // NewScalarFunctionValue builds a ScalarFunctionValue. The function
 // name is upper-cased so callers can pass case-insensitive identifiers.
-func NewScalarFunctionValue(name string, typ ValueType, args ...Value) *ScalarFunctionValue {
+func NewScalarFunctionValue(name string, typ Type, args ...Value) *ScalarFunctionValue {
 	return &ScalarFunctionValue{FuncName: strings.ToUpper(name), Args: args, Typ: typ}
 }
 
@@ -574,13 +620,16 @@ func (s *ScalarFunctionValue) Children() []Value {
 	}
 	return s.Args
 }
-func (s *ScalarFunctionValue) Type() ValueType { return s.Typ }
-func (*ScalarFunctionValue) Name() string      { return "scalarfn" }
+func (*ScalarFunctionValue) Name() string { return "scalarfn" }
 
-// RichType implements Typed (Phase 4.0). Most scalar functions can
-// return NULL on NULL input — be conservative and assume nullable.
-func (s *ScalarFunctionValue) RichType() Type {
-	return FromValueType(s.Typ, true)
+// Type returns the scalar function's rich result Type. Most scalar
+// functions can return NULL on NULL input — the result is forced to
+// nullable regardless of how the caller stored Typ.
+func (s *ScalarFunctionValue) Type() Type {
+	if s.Typ == nil {
+		return UnknownType
+	}
+	return WithNullability(s.Typ, true)
 }
 
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
@@ -1255,13 +1304,12 @@ type ArithmeticValue struct {
 }
 
 func (a *ArithmeticValue) Children() []Value { return []Value{a.Left, a.Right} }
-func (a *ArithmeticValue) Type() ValueType   { return TypeInt }
 func (a *ArithmeticValue) Name() string      { return "arith" }
 
-// RichType implements Typed (Phase 4.0). Int-only arithmetic in
+// Type returns the arithmetic result Type. Int-only arithmetic in
 // the seed; NULL propagates through Evaluate, so the result is
-// nullable. Conservative: assume nullable Long.
-func (a *ArithmeticValue) RichType() Type { return NullableLong }
+// nullable. Conservative: assume NullableLong.
+func (a *ArithmeticValue) Type() Type { return NullableLong }
 
 func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	l := a.Left.Evaluate(evalCtx)
@@ -1380,11 +1428,17 @@ func NewBooleanValue(v bool) *BooleanValue {
 }
 
 func (*BooleanValue) Children() []Value { return []Value{} }
-func (*BooleanValue) Type() ValueType   { return TypeBool }
 func (*BooleanValue) Name() string      { return "bool" }
 
-// RichType implements Typed (Phase 4.0). Literal TRUE/FALSE — NOT NULL.
-func (*BooleanValue) RichType() Type { return NotNullBoolean }
+// Type returns the boolean literal's Type — NotNullBoolean for
+// concrete TRUE/FALSE; NullableBoolean when Value is nil (the
+// SQL UNKNOWN-at-Value-layer case).
+func (b *BooleanValue) Type() Type {
+	if b.Value == nil {
+		return NullableBoolean
+	}
+	return NotNullBoolean
+}
 
 func (b *BooleanValue) Evaluate(any) any {
 	if b.Value == nil {
@@ -1393,37 +1447,44 @@ func (b *BooleanValue) Evaluate(any) any {
 	return *b.Value
 }
 
-// CastValue converts a child Value's result to a target ValueType.
+// CastValue converts a child Value's result to a target Type.
 // Seed handles the trivial conversions our existing corpus needs:
 // int ↔ string (via strconv-free formatting for the seed), bool ↔
 // int (false=0, true=1). Unknown conversions return nil (UNKNOWN).
 // Full type tower lands with the Type hierarchy.
 type CastValue struct {
 	Child  Value
-	Target ValueType
+	Target Type
 }
 
 // NewCastValue constructs a CastValue.
-func NewCastValue(child Value, target ValueType) *CastValue {
+func NewCastValue(child Value, target Type) *CastValue {
 	return &CastValue{Child: child, Target: target}
 }
 
 func (c *CastValue) Children() []Value { return []Value{c.Child} }
-func (c *CastValue) Type() ValueType   { return c.Target }
 func (c *CastValue) Name() string      { return "cast" }
 
-// RichType implements Typed (Phase 4.0). CAST may produce NULL on
+// Type returns the cast's target Type. CAST may produce NULL on
 // out-of-range / unsupported source (Evaluate returns nil), so cast
 // results are always nullable in the seed.
-func (c *CastValue) RichType() Type { return FromValueType(c.Target, true) }
+func (c *CastValue) Type() Type {
+	if c.Target == nil {
+		return UnknownType
+	}
+	return WithNullability(c.Target, true)
+}
 
 func (c *CastValue) Evaluate(evalCtx any) any {
 	v := c.Child.Evaluate(evalCtx)
 	if v == nil {
 		return nil
 	}
-	switch c.Target {
-	case TypeInt:
+	if c.Target == nil {
+		return nil
+	}
+	switch c.Target.Code() {
+	case TypeCodeInt, TypeCodeLong:
 		switch val := v.(type) {
 		case int64:
 			return val
@@ -1440,7 +1501,7 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return int64(val)
 		}
-	case TypeBool:
+	case TypeCodeBoolean:
 		switch val := v.(type) {
 		case bool:
 			return val
@@ -1449,7 +1510,7 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		case float64:
 			return val != 0
 		}
-	case TypeString:
+	case TypeCodeString:
 		if s, ok := v.(string); ok {
 			return s
 		}
@@ -1474,7 +1535,7 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			}
 			return "false"
 		}
-	case TypeFloat:
+	case TypeCodeFloat, TypeCodeDouble:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
 		// integral types to float64. Without this case, the walker's
 		// shiny new CastValue{TypeFloat} path silently returns nil
@@ -1549,20 +1610,19 @@ func (r *RecordConstructorValue) Children() []Value {
 	return out
 }
 
-// Type returns TypeUnknown — record type is a struct shape which
-// the seed's flat ValueType enum can't express. The Type hierarchy
-// port replaces this with a real StructType.
-func (*RecordConstructorValue) Type() ValueType { return TypeUnknown }
-
-// RichType implements Typed (Phase 4.0). Synthesises a RecordType
-// from the constructor's fields. The outer record is anonymous +
-// nullable (we can't prove an inferred record is NOT NULL).
-func (r *RecordConstructorValue) RichType() Type {
+// Type synthesises a RecordType from the constructor's fields. The
+// outer record is anonymous + nullable (we can't prove an inferred
+// record is NOT NULL).
+func (r *RecordConstructorValue) Type() Type {
 	fields := make([]Field, len(r.Fields))
 	for i, f := range r.Fields {
+		var ft Type = UnknownType
+		if f.Value != nil {
+			ft = f.Value.Type()
+		}
 		fields[i] = Field{
 			Name:      f.Name,
-			FieldType: ValueRichType(f.Value),
+			FieldType: ft,
 			Ordinal:   i,
 		}
 	}
@@ -1601,17 +1661,17 @@ func (r *RecordConstructorValue) Evaluate(evalCtx any) any {
 // simplify `Promote(x, x.Type)` → `x`.
 type PromoteValue struct {
 	Child  Value
-	Target ValueType
+	Target Type
 }
 
 // NewPromoteValue constructs a PromoteValue. Rejects nil child and
-// zero-value Target — both are programmer errors.
-func NewPromoteValue(child Value, target ValueType) *PromoteValue {
+// nil / Unknown Target — both are programmer errors.
+func NewPromoteValue(child Value, target Type) *PromoteValue {
 	if child == nil {
 		panic("NewPromoteValue: child is nil")
 	}
-	if target == TypeUnknown {
-		panic("NewPromoteValue: target is TypeUnknown; use CastValue if target is genuinely unknown")
+	if target == nil || target.Code() == TypeCodeUnknown {
+		panic("NewPromoteValue: target is UnknownType; use CastValue if target is genuinely unknown")
 	}
 	return &PromoteValue{Child: child, Target: target}
 }
@@ -1619,13 +1679,19 @@ func NewPromoteValue(child Value, target ValueType) *PromoteValue {
 // Children returns the single child as a one-element slice.
 func (p *PromoteValue) Children() []Value { return []Value{p.Child} }
 
-// Type returns the promotion target.
-func (p *PromoteValue) Type() ValueType { return p.Target }
-
-// RichType implements Typed (Phase 4.0). Promote inherits
-// nullability from its child.
-func (p *PromoteValue) RichType() Type {
-	return FromValueType(p.Target, ValueRichType(p.Child).IsNullable())
+// Type returns the promotion target. Nullability is inherited from
+// the child — promoting a NOT NULL value preserves NOT NULL.
+func (p *PromoteValue) Type() Type {
+	if p.Target == nil {
+		return UnknownType
+	}
+	childNullable := true
+	if p.Child != nil {
+		if ct := p.Child.Type(); ct != nil {
+			childNullable = ct.IsNullable()
+		}
+	}
+	return WithNullability(p.Target, childNullable)
 }
 
 // Name returns the debug-print kind.
@@ -1656,9 +1722,10 @@ func (p *PromoteValue) Evaluate(evalCtx any) any {
 type QuantifiedObjectValue struct {
 	Correlation CorrelationIdentifier
 	// Typ is the row type (struct shape) this quantifier produces.
-	// Seed keeps it as TypeUnknown until the Type hierarchy port
-	// lands — the test surface doesn't need real struct types yet.
-	Typ ValueType
+	// Seed keeps it as UnknownType until proper struct-type
+	// inference lands — the test surface doesn't need real struct
+	// types yet.
+	Typ Type
 }
 
 // NewQuantifiedObjectValue constructs a QuantifiedObjectValue. Zero
@@ -1668,7 +1735,7 @@ func NewQuantifiedObjectValue(corr CorrelationIdentifier) *QuantifiedObjectValue
 	if corr.IsZero() {
 		panic("NewQuantifiedObjectValue: correlation is zero-value; use NamedCorrelationIdentifier or UniqueCorrelationIdentifier")
 	}
-	return &QuantifiedObjectValue{Correlation: corr, Typ: TypeUnknown}
+	return &QuantifiedObjectValue{Correlation: corr, Typ: UnknownType}
 }
 
 // Children returns an empty slice — the quantifier is a leaf in
@@ -1676,13 +1743,13 @@ func NewQuantifiedObjectValue(corr CorrelationIdentifier) *QuantifiedObjectValue
 // (not a child Value).
 func (*QuantifiedObjectValue) Children() []Value { return []Value{} }
 
-// Type returns the seed's placeholder TypeUnknown for the row type.
-func (q *QuantifiedObjectValue) Type() ValueType { return q.Typ }
-
-// RichType implements Typed (Phase 4.0). Row reference — nullable
-// (rows pass through as nullable, e.g. LEFT JOIN's right side).
-func (q *QuantifiedObjectValue) RichType() Type {
-	return WithNullability(FromValueType(q.Typ, true), true)
+// Type returns the row reference Type. Always nullable — rows pass
+// through as nullable (e.g. LEFT JOIN's right side).
+func (q *QuantifiedObjectValue) Type() Type {
+	if q.Typ == nil {
+		return UnknownType
+	}
+	return WithNullability(q.Typ, true)
 }
 
 // Name returns the debug-print kind.
@@ -1804,43 +1871,29 @@ func (a *AggregateValue) Children() []Value {
 	return []Value{a.Operand}
 }
 
-// Type returns the SQL type the aggregate produces. COUNT / COUNT(*)
-// always produce int; SUM / MIN / MAX inherit from the operand
-// (seed assumes int — grows with the Type hierarchy port); AVG
-// stays int in the seed even though true SQL AVG returns a rational.
-func (a *AggregateValue) Type() ValueType {
-	switch a.Op {
-	case AggCount, AggCountStar:
-		return TypeInt
-	case AggSum, AggMin, AggMax, AggAvg:
-		if a.Operand != nil {
-			return a.Operand.Type()
-		}
-		return TypeInt
-	}
-	return TypeUnknown
-}
-
-// Name returns the debug-print kind.
-func (*AggregateValue) Name() string { return "agg" }
-
-// RichType implements Typed (Phase 4.0). Aggregates have op-specific
-// nullability:
-//   - COUNT / COUNT(*): NOT NULL Long (zero on empty groups).
-//   - SUM / MIN / MAX / AVG: nullable; type from the operand when
-//     available, else nullable Long.
-func (a *AggregateValue) RichType() Type {
+// Type returns the rich Type the aggregate produces:
+//   - COUNT / COUNT(*): NotNullLong (zero on empty groups).
+//   - SUM / MIN / MAX / AVG: nullable; Type derived from the
+//     operand when available, else NullableLong.
+func (a *AggregateValue) Type() Type {
 	switch a.Op {
 	case AggCount, AggCountStar:
 		return NotNullLong
 	case AggSum, AggMin, AggMax, AggAvg:
 		if a.Operand != nil {
-			return WithNullability(ValueRichType(a.Operand), true)
+			ot := a.Operand.Type()
+			if ot == nil {
+				return NullableLong
+			}
+			return WithNullability(ot, true)
 		}
 		return NullableLong
 	}
 	return UnknownType
 }
+
+// Name returns the debug-print kind.
+func (*AggregateValue) Name() string { return "agg" }
 
 // Evaluate panics — aggregates are multi-row and don't have a
 // single-row Evaluate semantics. Rule / plan code type-asserts

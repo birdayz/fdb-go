@@ -213,14 +213,14 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 }
 
 // ResolveCast wraps v in a CastValue with the target type. Rejects
-// nil child (programmer error) and TypeUnknown target (use the
-// direct Value if the target is genuinely unknown).
-func (r *Resolver) ResolveCast(v values.Value, target values.ValueType) (values.Value, error) {
+// nil child (programmer error) and Unknown target (use the direct
+// Value if the target is genuinely unknown).
+func (r *Resolver) ResolveCast(v values.Value, target values.Type) (values.Value, error) {
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveCast: child is nil")
 	}
-	if target == values.TypeUnknown {
-		return nil, fmt.Errorf("expr.ResolveCast: target TypeUnknown")
+	if target == nil || target.Code() == values.TypeCodeUnknown {
+		return nil, fmt.Errorf("expr.ResolveCast: target UnknownType")
 	}
 	return values.NewCastValue(v, target), nil
 }
@@ -420,11 +420,12 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 }
 
 // sqlTypeToCascadesValueType maps the seed's string-valued SQL type
-// (from semantic.Column.Type) to values.ValueType. Coarse — the
-// seed ValueType enum has only Int / String / Bool; everything else
-// falls through to TypeUnknown. Real type inference lands with the
-// Type hierarchy port.
-func sqlTypeToCascadesValueType(sqlType string) values.ValueType {
+// (from semantic.Column.Type) to a cascades values.Type. Coarse —
+// the seed maps INT/STRING/BOOL/ENUM to the matching primitive
+// singletons; everything else falls through to UnknownType. Real
+// type inference (proper nullability + structured-type recursion)
+// is future work.
+func sqlTypeToCascadesValueType(sqlType string) values.Type {
 	switch sqlType {
 	case "INT":
 		return values.TypeInt
@@ -433,10 +434,10 @@ func sqlTypeToCascadesValueType(sqlType string) values.ValueType {
 	case "BOOL":
 		return values.TypeBool
 	case "FLOAT", "BYTES", "RECORD":
-		// Seed enum lacks dedicated Float/Bytes/Record types. Fall
-		// through to Unknown rather than silently lie about INT / STRING
-		// representation — a mistyped column at the resolver boundary
-		// would cascade into wrong comparator picks downstream.
+		// Fall through to Unknown rather than silently lie about
+		// INT / STRING representation — a mistyped column at the
+		// resolver boundary would cascade into wrong comparator
+		// picks downstream.
 		return values.TypeUnknown
 	}
 	return values.TypeUnknown

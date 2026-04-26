@@ -274,8 +274,8 @@ func TestBooleanValue_KleeneTriBool(t *testing.T) {
 			if got := bv.Evaluate(nil); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
-			if bv.Type() != TypeBool {
-				t.Fatalf("Type: got %v, want TypeBool", bv.Type())
+			if bv.Type().Code() != TypeCodeBoolean {
+				t.Fatalf("Type: got %v, want a boolean type", bv.Type())
 			}
 		})
 	}
@@ -317,7 +317,7 @@ func TestCastValue_Identity_Parameterised(t *testing.T) {
 	cases := []struct {
 		name string
 		v    any
-		typ  ValueType
+		typ  Type
 	}{
 		{"int → int", int64(42), TypeInt},
 		{"string → string", "hello", TypeString},
@@ -342,17 +342,19 @@ func TestCastValue_Identity_Parameterised(t *testing.T) {
 // nullPropagationTest and SQL §6.13 General Rule 1.
 func TestCastValue_NullPropagation(t *testing.T) {
 	t.Parallel()
-	for _, target := range []ValueType{TypeInt, TypeString, TypeBool, TypeFloat} {
+	for _, target := range []Type{TypeInt, TypeString, TypeBool, TypeFloat} {
 		target := target
-		t.Run(target.String(), func(t *testing.T) {
+		t.Run(target.Code().String(), func(t *testing.T) {
 			t.Parallel()
 			null := &NullValue{Typ: TypeUnknown}
 			c := NewCastValue(null, target)
 			if got := c.Evaluate(nil); got != nil {
 				t.Fatalf("CAST(NULL AS %v): got %v, want nil", target, got)
 			}
-			if c.Type() != target {
-				t.Fatalf("CastValue.Type after NULL propagation: got %v, want %v", c.Type(), target)
+			// CastValue.Type() forces nullable; the targets above are
+			// already nullable singletons, so equality holds.
+			if c.Type().Code() != target.Code() {
+				t.Fatalf("CastValue.Type after NULL propagation: got %v, want code %v", c.Type(), target.Code())
 			}
 		})
 	}

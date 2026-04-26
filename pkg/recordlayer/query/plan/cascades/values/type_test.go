@@ -177,68 +177,28 @@ func TestNewPrimitiveType_RejectsStructured(t *testing.T) {
 	}
 }
 
-// TestFromValueType pins the legacy-to-new bridge. Each ValueType
-// maps to a concrete Type, and nullability comes from the caller
-// (since ValueType doesn't track it).
-func TestFromValueType(t *testing.T) {
+// TestLegacyConstants_Aliases pins that the legacy ValueType-named
+// constants (TypeInt / TypeBool / TypeString / TypeFloat / TypeUnknown)
+// continue to point at the canonical Type singletons after the Track
+// G1 retirement (swingshift-52). Existing call sites of the form
+// `Typ: values.TypeInt` keep working — only the value's Go type
+// changes (`Type` instead of the retired `ValueType`).
+func TestLegacyConstants_Aliases(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		vt       ValueType
-		nullable bool
-		wantCode TypeCode
-		wantNull bool
-	}{
-		{TypeBool, true, TypeCodeBoolean, true},
-		{TypeBool, false, TypeCodeBoolean, false},
-		{TypeInt, true, TypeCodeLong, true},
-		{TypeInt, false, TypeCodeLong, false},
-		{TypeFloat, true, TypeCodeDouble, true},
-		{TypeFloat, false, TypeCodeDouble, false},
-		{TypeString, true, TypeCodeString, true},
-		{TypeString, false, TypeCodeString, false},
-		// TypeUnknown maps to UnknownType regardless of the nullable
-		// flag — the bridge can't synthesise a code that isn't there.
-		{TypeUnknown, true, TypeCodeUnknown, true},
-		{TypeUnknown, false, TypeCodeUnknown, true}, // UnknownType is always nullable
+	if TypeBool != NullableBoolean {
+		t.Errorf("TypeBool should alias NullableBoolean; got %v", TypeBool)
 	}
-	for _, tc := range cases {
-		got := FromValueType(tc.vt, tc.nullable)
-		if got.Code() != tc.wantCode {
-			t.Errorf("FromValueType(%v, %v).Code(): got %v, want %v", tc.vt, tc.nullable, got.Code(), tc.wantCode)
-		}
-		if got.IsNullable() != tc.wantNull {
-			t.Errorf("FromValueType(%v, %v).IsNullable(): got %v, want %v", tc.vt, tc.nullable, got.IsNullable(), tc.wantNull)
-		}
+	if TypeInt != NullableLong {
+		t.Errorf("TypeInt should alias NullableLong; got %v", TypeInt)
 	}
-}
-
-// TestToValueType pins the reverse bridge. LONG / DOUBLE collapse
-// into the seed's TypeInt / TypeFloat (the legacy enum has no
-// width distinction). Special / structured codes degrade to
-// TypeUnknown.
-func TestToValueType(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		t    Type
-		want ValueType
-	}{
-		{NotNullInt, TypeInt},
-		{NullableInt, TypeInt},
-		{NotNullLong, TypeInt}, // collapse
-		{NotNullFloat, TypeFloat},
-		{NotNullDouble, TypeFloat}, // collapse
-		{NotNullString, TypeString},
-		// BYTES has no legacy ValueType — degrades to TypeUnknown.
-		{NotNullBytes, TypeUnknown},
-		{NotNullBoolean, TypeBool},
-		{NullType, TypeUnknown},
-		{UnknownType, TypeUnknown},
-		{nil, TypeUnknown},
+	if TypeFloat != NullableDouble {
+		t.Errorf("TypeFloat should alias NullableDouble; got %v", TypeFloat)
 	}
-	for _, tc := range cases {
-		if got := ToValueType(tc.t); got != tc.want {
-			t.Errorf("ToValueType(%v): got %v, want %v", tc.t, got, tc.want)
-		}
+	if TypeString != NullableString {
+		t.Errorf("TypeString should alias NullableString; got %v", TypeString)
+	}
+	if TypeUnknown != UnknownType {
+		t.Errorf("TypeUnknown should alias UnknownType; got %v", TypeUnknown)
 	}
 }
 
@@ -1665,14 +1625,18 @@ func errorsAs(err error, target any) bool {
 	return false
 }
 
-// --- ValueRichType tests ------------------------------------------
+// --- Value.Type() tests -------------------------------------------
+//
+// Post-Track-G1 (swingshift-52) every Value impl's Type() returns
+// the rich Type directly. The tests below pin the per-impl
+// type/nullability outputs against the legacy (now-retired)
+// `ValueRichType` semantics where each impl forced nullable on
+// outputs that could be NULL (CAST, PARAMETER, NULL literal,
+// scalar fn over NULL inputs, aggregate operands).
 
-// TestValueRichType_Leaves pins the leaf-Value mappings: literals,
-// columns, and parameters. Nullability follows the documented rule:
-// literal TRUE → NOT NULL; ConstantValue with nil Value → nullable;
-// FieldValue → nullable (until catalog-NOT-NULL propagates);
-// NullValue → always nullable.
-func TestValueRichType_Leaves(t *testing.T) {
+// TestValue_Type_Leaves pins the leaf-Value Type() outputs:
+// literals, columns, parameters, NULL.
+func TestValue_Type_Leaves(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -1681,30 +1645,30 @@ func TestValueRichType_Leaves(t *testing.T) {
 	}{
 		{"BooleanValue(true)", NewBooleanValue(true), "BOOLEAN NOT NULL"},
 		{"BooleanValue(false)", NewBooleanValue(false), "BOOLEAN NOT NULL"},
-		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NOT NULL"},
-		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NOT NULL"},
+		{"BooleanValue(nil)", &BooleanValue{Value: nil}, "BOOLEAN NULL"},
+		// ConstantValue Typ now carries the nullable-bridged singleton
+		// (TypeInt → NullableLong); Type() flips to nullable on a
+		// NULL Value, returns Typ verbatim otherwise.
+		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NULL"},
+		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NULL"},
 		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: TypeInt}, "LONG NULL"},
 		{"NullValue(typed-INT)", &NullValue{Typ: TypeInt}, "LONG NULL"},
 		{"NullValue(unknown)", &NullValue{Typ: TypeUnknown}, "UNKNOWN NULL"},
 		{"FieldValue(int)", &FieldValue{Field: "x", Typ: TypeInt}, "LONG NULL"},
 		{"FieldValue(bool)", &FieldValue{Field: "active", Typ: TypeBool}, "BOOLEAN NULL"},
 		{"ParameterValue(int)", &ParameterValue{Ordinal: 1, Typ: TypeInt}, "LONG NULL"},
-		{"nil Value", nil, "UNKNOWN NULL"},
 	}
 	for _, tc := range cases {
-		got := ValueRichType(tc.v)
+		got := tc.v.Type()
 		if got.String() != tc.wantStr {
 			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
 		}
 	}
 }
 
-// TestValueRichType_Composites pins the composite-Value mappings:
-// ArithmeticValue (int-only seed → nullable LONG); CastValue
-// (target + nullable since CAST may produce NULL); PromoteValue
-// (inherits child nullability); NotValue (passes child through);
-// ScalarFunctionValue (target + nullable).
-func TestValueRichType_Composites(t *testing.T) {
+// TestValue_Type_Composites pins the composite-Value Type() outputs:
+// ArithmeticValue, CastValue, PromoteValue, NotValue, ScalarFunctionValue.
+func TestValue_Type_Composites(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -1726,9 +1690,10 @@ func TestValueRichType_Composites(t *testing.T) {
 			"STRING NULL",
 		},
 		{
-			"PromoteValue(NOT NULL int → FLOAT)",
+			"PromoteValue(NOT NULL bool → FLOAT)",
+			// BooleanValue(true).Type() == NotNullBoolean → promote
+			// inherits NOT NULL → DOUBLE NOT NULL.
 			NewPromoteValue(NewBooleanValue(true), TypeFloat),
-			// Boolean is NOT NULL → promote inherits NOT NULL → DOUBLE NOT NULL.
 			"DOUBLE NOT NULL",
 		},
 		{
@@ -1749,18 +1714,18 @@ func TestValueRichType_Composites(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		got := ValueRichType(tc.v)
+		got := tc.v.Type()
 		if got.String() != tc.wantStr {
 			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
 		}
 	}
 }
 
-// TestValueRichType_Aggregate pins the aggregate-specific rules:
+// TestValue_Type_Aggregate pins the aggregate-specific rules:
 // COUNT / COUNT(*) → NOT NULL long; SUM / MIN / MAX / AVG with an
 // operand → operand-type but nullable (returns NULL on empty
 // groups).
-func TestValueRichType_Aggregate(t *testing.T) {
+func TestValue_Type_Aggregate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -1785,23 +1750,23 @@ func TestValueRichType_Aggregate(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		got := ValueRichType(tc.v)
+		got := tc.v.Type()
 		if got.String() != tc.wantStr {
 			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
 		}
 	}
 }
 
-// TestValueRichType_RecordConstructor pins the synthesised RecordType
+// TestValue_Type_RecordConstructor pins the synthesised RecordType
 // path: the constructor produces an anonymous nullable RecordType
 // whose Fields carry per-field types derived from each child Value.
-func TestValueRichType_RecordConstructor(t *testing.T) {
+func TestValue_Type_RecordConstructor(t *testing.T) {
 	t.Parallel()
 	rcv := NewRecordConstructorValue(
 		RecordConstructorField{Name: "id", Value: NewBooleanValue(true)},
 		RecordConstructorField{Name: "v", Value: &ConstantValue{Value: int64(42), Typ: TypeInt}},
 	)
-	got := ValueRichType(rcv)
+	got := rcv.Type()
 	rt, ok := got.(*RecordType)
 	if !ok {
 		t.Fatalf("expected RecordType, got %T", got)
@@ -1815,25 +1780,13 @@ func TestValueRichType_RecordConstructor(t *testing.T) {
 	if len(rt.Fields) != 2 {
 		t.Fatalf("Fields len: got %d, want 2", len(rt.Fields))
 	}
+	// First field: BooleanValue(true).Type() == NotNullBoolean.
 	if rt.Fields[0].Name != "id" || !rt.Fields[0].FieldType.Equals(NotNullBoolean) {
 		t.Errorf("Fields[0]: got %v", rt.Fields[0])
 	}
-	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NotNullLong) {
+	// Second field: ConstantValue(int64=5, Typ=TypeInt).Type() ==
+	// NullableLong (TypeInt is the nullable singleton).
+	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NullableLong) {
 		t.Errorf("Fields[1]: got %v", rt.Fields[1])
-	}
-}
-
-// TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
-// invariant for the value types the legacy enum actually
-// represents. NotNull bit is inferable from the round-trip target
-// — we always feed nullable=false in this direction.
-func TestType_RoundTrip(t *testing.T) {
-	t.Parallel()
-	for _, vt := range []ValueType{TypeBool, TypeInt, TypeFloat, TypeString} {
-		t1 := FromValueType(vt, false)
-		got := ToValueType(t1)
-		if got != vt {
-			t.Errorf("ValueType(%v) -> Type(%v) -> ValueType(%v): not a round-trip", vt, t1, got)
-		}
 	}
 }

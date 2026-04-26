@@ -77,9 +77,12 @@ func FuzzSimplifyValue_CastChain(f *testing.F) {
 	f.Add(int64(-1), uint8(3), uint8(4)) // int→string→float
 
 	f.Fuzz(func(t *testing.T, n int64, t1raw, t2raw uint8) {
-		// 5 ValueTypes: Unknown, Int, String, Bool, Float
-		t1 := ValueType(t1raw % 5)
-		t2 := ValueType(t2raw % 5)
+		// Pool of cascades Types the seed CAST evaluator handles.
+		// NewCastValue rejects nil / UnknownType — pick from the
+		// concrete primitive singletons only.
+		pool := []Type{TypeInt, TypeString, TypeBool, TypeFloat}
+		t1 := pool[int(t1raw)%len(pool)]
+		t2 := pool[int(t2raw)%len(pool)]
 
 		tree := NewCastValue(
 			NewCastValue(
