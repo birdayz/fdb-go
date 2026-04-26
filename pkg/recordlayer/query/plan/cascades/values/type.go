@@ -16,12 +16,27 @@ package values
 // common primitives, and adapter functions to / from the legacy
 // ValueType enum so callers can bridge piecewise.
 //
-// Out of scope (Phase 4.0 follow-ups): RecordType, ArrayType,
-// EnumType, UuidType, RelationType, TypeRepository, plan-
-// serialisation hooks, the full Java conversion / coercion lattice.
-// Per RFC-025 §"typing/" the file stays in cascades/values/ until
-// the contents grow past ~300 LOC; only then does typing/ become
-// its own sub-package.
+// Phase 4.0 status (as of swingshift-52):
+//   - Structured types: RecordType, ArrayType, EnumType, RelationType ✅
+//   - Primitive singletons: NullableX / NotNullX for every primitive,
+//     plus NullType, UnknownType, NoneType, AnyType ✅
+//   - Promotion lattice: IsPromotable, MaximumType, MaximumTypeOfMany ✅
+//   - TypeRepository (named-type registry) ✅
+//   - Legacy bridge: FromValueType / ToValueType / ValueRichType ✅
+//   - Erased-type helpers: ArrayType.IsErased, RelationType.IsErased ✅
+//
+// Still ahead (later follow-ons):
+//   - Type inference on Value.Type() returning rich Type (vs the
+//     legacy ValueType enum) — biggest piece, requires every Value
+//     impl to gain a RichType() method (or stay served by the
+//     ValueRichType free function as today).
+//   - Plan-serialisation hooks (proto encoding for plan-cache).
+//   - Structured-type recursion in MaximumType (RECORD field-by-field,
+//     ARRAY element-by-element).
+//
+// Per RFC-025 §"typing/" this file stays in cascades/values/ until
+// it grows past ~1500 LOC; only then does typing/ become its own
+// sub-package.
 
 // TypeCode enumerates the well-known SQL types. Mirrors Java's
 // `Type.TypeCode`; numeric values are NOT wire-stable (we don't
