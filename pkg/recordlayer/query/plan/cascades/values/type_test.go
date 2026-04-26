@@ -1129,6 +1129,45 @@ func TestMaximumType_EnumRecursion(t *testing.T) {
 	})
 }
 
+// TestMaximumType_RelationRecursion pins RELATION × RELATION:
+// recurse on inner row type, erased on either side blocks.
+// (Java's maximumType doesn't have a RELATION branch, but our
+// port adds it for completeness — useful when comparing two
+// table-valued expressions' types.)
+func TestMaximumType_RelationRecursion(t *testing.T) {
+	t.Parallel()
+	t.Run("identical inner → equal", func(t *testing.T) {
+		t.Parallel()
+		r1 := NewRelationType(NotNullLong)
+		r2 := NewRelationType(NotNullLong)
+		got := MaximumType(r1, r2).(*RelationType)
+		if !got.Equals(r1) {
+			t.Errorf("got %v, want %v", got, r1)
+		}
+	})
+	t.Run("widening inner", func(t *testing.T) {
+		t.Parallel()
+		r1 := NewRelationType(NotNullInt)
+		r2 := NewRelationType(NotNullLong)
+		got := MaximumType(r1, r2).(*RelationType)
+		if !got.InnerType.Equals(NotNullLong) {
+			t.Errorf("inner type: got %v, want NotNullLong", got.InnerType)
+		}
+	})
+	t.Run("incompatible inner → nil", func(t *testing.T) {
+		t.Parallel()
+		if MaximumType(NewRelationType(NotNullInt), NewRelationType(NotNullString)) != nil {
+			t.Error("incompatible inner should return nil")
+		}
+	})
+	t.Run("erased blocks", func(t *testing.T) {
+		t.Parallel()
+		if MaximumType(NewRelationType(nil), NewRelationType(NotNullLong)) != nil {
+			t.Error("erased should return nil")
+		}
+	})
+}
+
 // TestMaximumType_NilHandling pins that nil inputs return nil
 // (defensive — never panic on a missing operand).
 func TestMaximumType_NilHandling(t *testing.T) {

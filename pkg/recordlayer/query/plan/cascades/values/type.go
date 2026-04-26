@@ -978,10 +978,20 @@ func MaximumType(t1, t2 Type) Type {
 			// already report inequality at the call site.)
 			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values}
 		}
-		// RELATION recursion is future work — return nil so the
-		// caller knows the seed can't compute it.
+		// RELATION × RELATION: recurse on the inner row type. Both
+		// erased on either side blocks the operation. RelationType is
+		// always non-nullable so result nullability isn't a knob.
 		if c1 == TypeCodeRelation {
-			return nil
+			r1 := t1.(*RelationType)
+			r2 := t2.(*RelationType)
+			if r1.IsErased() || r2.IsErased() {
+				return nil
+			}
+			innerMax := MaximumType(r1.InnerType, r2.InnerType)
+			if innerMax == nil {
+				return nil
+			}
+			return &RelationType{InnerType: innerMax}
 		}
 		return WithNullability(t1, resultNullable)
 	}
