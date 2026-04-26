@@ -430,6 +430,7 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **`SELECT DISTINCT` is not supported by the planner.** Returns `UnableToPlanException`, same as GROUP BY. Wait until RFC-022 §4.5 Batch B rules port the distinct rule.
 - **Common SQL scalar functions (lower/upper/length/...) are NOT registered.** Returns `RelationalException: Unsupported operator <name>`. fdb-relational's function registry is small in 4.11.1.0; CASE expressions and basic arithmetic work, but most string/date/numeric helpers don't.
 - **UUID columns report JDBC type-name `"OTHER"`, not `"UUID"`.** JDBC's standard for vendor-specific types is `Types.OTHER`; UUID's getColumnTypeName() returns "OTHER". UUID values come through as `java.util.UUID` instances; our encoder converts via `toString()` (e.g. `"00000000-0000-0000-0000-000000000042"`). UUID literal syntax is `CAST('<text>' AS UUID)` — no dedicated UUID literal in the grammar.
+- **`INFORMATION_SCHEMA.*` is GO-side only — fdb-relational doesn't implement it at all.** Our Go embedded engine handles `INFORMATION_SCHEMA.SCHEMATA / TABLES / COLUMNS` (see `pkg/relational/core/embedded/system_tables.go`); fdb-relational 4.11.1.0's parser rejects `SELECT ... FROM INFORMATION_SCHEMA.TABLES` with a syntax error. Track A4 (system-table byte-equivalence) is therefore Go-only today and gated on adding INFORMATION_SCHEMA support to fdb-relational upstream — NOT something a Go-side shift can fix unilaterally without divergence.
 
 ## Error handling
 
