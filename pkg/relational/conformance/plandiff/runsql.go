@@ -3,19 +3,15 @@ package plandiff
 // Phase B / Track A1 of TODO.md: drive a SQL statement through both engines'
 // EXECUTION paths (not just planning) and capture the result set.
 //
-// The plan-tree diff (Engine + PlanResult above) tells us "did the planners
-// agree on the plan shape". The result-set diff (Runner + RunResult below)
-// tells us "do the engines compute the same answer". They're parallel
+// The plan-tree diff (Engine + PlanResult in plandiff.go) tells us "did the
+// planners agree on the plan shape". The result-set diff (Runner + RunResult
+// here) tells us "do the engines compute the same answer". They're parallel
 // abstractions; a corpus query can be run through one or both.
 //
-// First-cut scope (this commit, swingshift-52): Java-side `runSql` step lands
-// in conformance/sql_plan_steps.java and the Go side gets the HTTP plumbing
-// to call it. The Go runner is intentionally NOT shipped here — the embedded
-// engine's read path is exercised by other tests, and a dedicated diff
-// runner that brings up an in-process FDBRecordStore behind a SchemaTemplate
-// is its own multi-shift workstream (Track C2 — QueryExecutor). Until that
-// lands, NewGoRunner() returns ErrGoUnimplemented for symmetry with
-// NewJavaEngine()'s unwired form.
+// Java side: SqlPlanSteps#runSql / runWithSetup in conformance/sql_plan_steps.java.
+// Go side: NewJavaRunnerHTTP for the wired form, NewGoRunner stubbed until
+// Track C2 (QueryExecutor) lands an in-process executor — mirrors the
+// NewJavaEngine() unwired form's contract.
 
 import (
 	"context"
