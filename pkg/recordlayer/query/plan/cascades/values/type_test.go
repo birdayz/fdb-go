@@ -755,6 +755,82 @@ func TestWithNullability_Structured(t *testing.T) {
 	}
 }
 
+// TestIsPromotable pins the type-promotion lattice — Java's
+// PromoteValue.PROMOTION_MAP shape ported to Go. Each row is a
+// (from-code, to-code, expected) triple. Identity is always
+// promotable; the rest must match Java's hardcoded set exactly.
+func TestIsPromotable(t *testing.T) {
+	t.Parallel()
+
+	primAt := func(c TypeCode) Type { return &PrimitiveType{TypeCode: c, Nullable: false} }
+
+	cases := []struct {
+		from TypeCode
+		to   TypeCode
+		want bool
+	}{
+		// Identity — every code can hold its own values.
+		{TypeCodeInt, TypeCodeInt, true},
+		{TypeCodeLong, TypeCodeLong, true},
+		{TypeCodeString, TypeCodeString, true},
+
+		// Numeric widening.
+		{TypeCodeInt, TypeCodeLong, true},
+		{TypeCodeInt, TypeCodeFloat, true},
+		{TypeCodeInt, TypeCodeDouble, true},
+		{TypeCodeLong, TypeCodeFloat, true},
+		{TypeCodeLong, TypeCodeDouble, true},
+		{TypeCodeFloat, TypeCodeDouble, true},
+
+		// Numeric narrowing — NOT promotable (would lose precision).
+		{TypeCodeLong, TypeCodeInt, false},
+		{TypeCodeFloat, TypeCodeInt, false},
+		{TypeCodeFloat, TypeCodeLong, false},
+		{TypeCodeDouble, TypeCodeFloat, false},
+
+		// NULL → any.
+		{TypeCodeNull, TypeCodeInt, true},
+		{TypeCodeNull, TypeCodeString, true},
+		{TypeCodeNull, TypeCodeBoolean, true},
+		{TypeCodeNull, TypeCodeArray, true},
+
+		// STRING → ENUM / UUID (lookup by name / parse).
+		{TypeCodeString, TypeCodeEnum, true},
+		{TypeCodeString, TypeCodeUuid, true},
+		// Reverse direction NOT allowed — explicit CAST required.
+		{TypeCodeEnum, TypeCodeString, false},
+		{TypeCodeUuid, TypeCodeString, false},
+
+		// Cross-category not allowed.
+		{TypeCodeBoolean, TypeCodeInt, false},
+		{TypeCodeString, TypeCodeInt, false},
+		{TypeCodeInt, TypeCodeBoolean, false},
+		{TypeCodeBytes, TypeCodeString, false},
+	}
+	for _, tc := range cases {
+		got := IsPromotable(primAt(tc.from), primAt(tc.to))
+		if got != tc.want {
+			t.Errorf("IsPromotable(%v, %v): got %v, want %v", tc.from, tc.to, got, tc.want)
+		}
+	}
+}
+
+// TestIsPromotable_NilHandling pins the contract: nil from/to
+// returns false (not panic). Promotion never makes sense across a
+// nil type.
+func TestIsPromotable_NilHandling(t *testing.T) {
+	t.Parallel()
+	if IsPromotable(nil, NotNullInt) {
+		t.Error("IsPromotable(nil, ...) should be false")
+	}
+	if IsPromotable(NotNullInt, nil) {
+		t.Error("IsPromotable(..., nil) should be false")
+	}
+	if IsPromotable(nil, nil) {
+		t.Error("IsPromotable(nil, nil) should be false")
+	}
+}
+
 // TestRelationType_Shape pins the basic getters + Equals + String.
 // Mirrors Java's Type.Relation contract — always non-nullable,
 // inner-type-driven equality, erased-relation handling.

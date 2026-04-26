@@ -758,6 +758,82 @@ func (r *RelationType) IsErased() bool {
 	return r.InnerType == nil
 }
 
+// --- Promotion lattice --------------------------------------------
+
+// promotionEdge is a (from-code, to-code) pair representing a
+// single allowed implicit promotion. Used as a map key.
+type promotionEdge struct {
+	from TypeCode
+	to   TypeCode
+}
+
+// promotionMap mirrors Java's PromoteValue.PROMOTION_MAP — the
+// hardcoded set of TypeCode → TypeCode promotions the planner
+// considers loss-free / safe. Used for arithmetic operand
+// homogenisation (INT + LONG → LONG + LONG → LONG) and assignment
+// compatibility (`INSERT INTO T(LongCol) VALUES (intLiteral)`).
+//
+// The set:
+//   - Numeric widening: INT → LONG / FLOAT / DOUBLE; LONG → FLOAT /
+//     DOUBLE; FLOAT → DOUBLE.
+//   - NULL is assignable to any nullable type (NULL → INT / LONG /
+//     FLOAT / DOUBLE / BOOLEAN / STRING / BYTES / ARRAY / RECORD /
+//     ENUM / VECTOR / VERSION).
+//   - NONE → ARRAY (the untyped empty literal `[]` adopts the
+//     target array's element type).
+//   - STRING → ENUM (lookup by name) and STRING → UUID (parse).
+//
+// Identity (T → T) is NOT in the map — IsPromotable handles that
+// trivially before consulting the map.
+var promotionMap = map[promotionEdge]struct{}{
+	{TypeCodeInt, TypeCodeLong}:     {},
+	{TypeCodeInt, TypeCodeFloat}:    {},
+	{TypeCodeInt, TypeCodeDouble}:   {},
+	{TypeCodeLong, TypeCodeFloat}:   {},
+	{TypeCodeLong, TypeCodeDouble}:  {},
+	{TypeCodeFloat, TypeCodeDouble}: {},
+	{TypeCodeNull, TypeCodeInt}:     {},
+	{TypeCodeNull, TypeCodeLong}:    {},
+	{TypeCodeNull, TypeCodeFloat}:   {},
+	{TypeCodeNull, TypeCodeDouble}:  {},
+	{TypeCodeNull, TypeCodeBoolean}: {},
+	{TypeCodeNull, TypeCodeString}:  {},
+	{TypeCodeNull, TypeCodeBytes}:   {},
+	{TypeCodeNull, TypeCodeArray}:   {},
+	{TypeCodeNull, TypeCodeRecord}:  {},
+	{TypeCodeNull, TypeCodeEnum}:    {},
+	{TypeCodeNull, TypeCodeVersion}: {},
+	{TypeCodeNone, TypeCodeArray}:   {},
+	{TypeCodeString, TypeCodeEnum}:  {},
+	{TypeCodeString, TypeCodeUuid}:  {},
+}
+
+// IsPromotable reports whether `from` can be implicitly promoted
+// to `to` without an explicit CAST. Returns true when:
+//   - from.Code() == to.Code() (identity, same type code).
+//   - The (from.Code, to.Code) pair is in the promotionMap.
+//
+// Mirrors Java's `PromoteValue.isPromotable`. Nullability is NOT
+// part of the promotion check — a NOT NULL value can always be
+// stored in a nullable slot of the same code, and a nullable value
+// being stored in a NOT NULL slot is rejected at the caller (NOT
+// NULL constraint), not by promotion.
+//
+// Arrays / records / enums / vectors with structural inner types
+// need element-by-element checks done by the caller (Java's
+// isPromotionNeeded recurses for these); IsPromotable only handles
+// the top-level code pair.
+func IsPromotable(from, to Type) bool {
+	if from == nil || to == nil {
+		return false
+	}
+	if from.Code() == to.Code() {
+		return true
+	}
+	_, ok := promotionMap[promotionEdge{from.Code(), to.Code()}]
+	return ok
+}
+
 // --- Nullability helpers ------------------------------------------
 
 // WithNullability returns a Type with the same shape as t but the
