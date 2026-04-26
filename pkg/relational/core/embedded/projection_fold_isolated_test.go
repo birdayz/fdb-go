@@ -20,7 +20,7 @@ import (
 	"errors"
 	"testing"
 
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
@@ -37,14 +37,14 @@ import (
 type fakeResolver struct {
 	calls   int
 	results map[antlrgen.IExpressionContext]struct {
-		v   cascades.Value
+		v   values.Value
 		err error
 	}
-	defaultV   cascades.Value
+	defaultV   values.Value
 	defaultErr error
 }
 
-func (f *fakeResolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades.Value, error) {
+func (f *fakeResolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
 	f.calls++
 	if r, ok := f.results[ctx]; ok {
 		return r.v, r.err
@@ -53,16 +53,16 @@ func (f *fakeResolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades
 }
 
 // fakeFolder returns canned (foldedValue, ok) keyed by the input
-// Value pointer. Implements cascades.ExpressionFolder.
+// Value pointer. Implements values.ExpressionFolder.
 type fakeFolder struct {
 	calls   int
-	results map[cascades.Value]struct {
+	results map[values.Value]struct {
 		v  any
 		ok bool
 	}
 }
 
-func (f *fakeFolder) Fold(v cascades.Value) (any, bool) {
+func (f *fakeFolder) Fold(v values.Value) (any, bool) {
 	f.calls++
 	if r, ok := f.results[v]; ok {
 		return r.v, r.ok
@@ -134,15 +134,15 @@ func TestFoldConstantProjectionsWith_NilDeps_NoOp(t *testing.T) {
 func TestFoldConstantProjectionsWith_HappyPath(t *testing.T) {
 	t.Parallel()
 	expr1 := newStubExpr()
-	v1 := &cascades.ConstantValue{Value: int64(42), Typ: cascades.TypeInt}
+	v1 := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
 	resolver := &fakeResolver{
 		results: map[antlrgen.IExpressionContext]struct {
-			v   cascades.Value
+			v   values.Value
 			err error
 		}{expr1: {v: v1}},
 	}
 	folder := &fakeFolder{
-		results: map[cascades.Value]struct {
+		results: map[values.Value]struct {
 			v  any
 			ok bool
 		}{v1: {v: int64(42), ok: true}},
@@ -170,10 +170,10 @@ func TestFoldConstantProjectionsWith_ResolverError_SkipsSlot(t *testing.T) {
 	t.Parallel()
 	expr1 := newStubExpr()
 	expr2 := newStubExpr()
-	v2 := &cascades.ConstantValue{Value: int64(2), Typ: cascades.TypeInt}
+	v2 := &values.ConstantValue{Value: int64(2), Typ: values.TypeInt}
 	resolver := &fakeResolver{
 		results: map[antlrgen.IExpressionContext]struct {
-			v   cascades.Value
+			v   values.Value
 			err error
 		}{
 			expr1: {err: errors.New("walker decline")},
@@ -181,7 +181,7 @@ func TestFoldConstantProjectionsWith_ResolverError_SkipsSlot(t *testing.T) {
 		},
 	}
 	folder := &fakeFolder{
-		results: map[cascades.Value]struct {
+		results: map[values.Value]struct {
 			v  any
 			ok bool
 		}{v2: {v: int64(2), ok: true}},
@@ -205,15 +205,15 @@ func TestFoldConstantProjectionsWith_ResolverError_SkipsSlot(t *testing.T) {
 func TestFoldConstantProjectionsWith_FolderDecline_SkipsSlot(t *testing.T) {
 	t.Parallel()
 	expr1 := newStubExpr()
-	v1 := &cascades.FieldValue{Field: "X", Typ: cascades.TypeInt}
+	v1 := &values.FieldValue{Field: "X", Typ: values.TypeInt}
 	resolver := &fakeResolver{
 		results: map[antlrgen.IExpressionContext]struct {
-			v   cascades.Value
+			v   values.Value
 			err error
 		}{expr1: {v: v1}},
 	}
 	folder := &fakeFolder{
-		results: map[cascades.Value]struct {
+		results: map[values.Value]struct {
 			v  any
 			ok bool
 		}{v1: {ok: false}}, // folder declines (e.g. it's a FieldValue)
@@ -230,15 +230,15 @@ func TestFoldConstantProjectionsWith_FolderDecline_SkipsSlot(t *testing.T) {
 func TestFoldConstantProjectionsWith_NilSlotSkipped(t *testing.T) {
 	t.Parallel()
 	expr1 := newStubExpr()
-	v1 := &cascades.ConstantValue{Value: int64(1), Typ: cascades.TypeInt}
+	v1 := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
 	resolver := &fakeResolver{
 		results: map[antlrgen.IExpressionContext]struct {
-			v   cascades.Value
+			v   values.Value
 			err error
 		}{expr1: {v: v1}},
 	}
 	folder := &fakeFolder{
-		results: map[cascades.Value]struct {
+		results: map[values.Value]struct {
 			v  any
 			ok bool
 		}{v1: {v: int64(1), ok: true}},
@@ -296,15 +296,15 @@ func TestFoldConstantProjectionsWith_GrowsCacheSlice(t *testing.T) {
 	t.Parallel()
 	expr1 := newStubExpr()
 	expr2 := newStubExpr()
-	v2 := &cascades.ConstantValue{Value: int64(99), Typ: cascades.TypeInt}
+	v2 := &values.ConstantValue{Value: int64(99), Typ: values.TypeInt}
 	resolver := &fakeResolver{
 		results: map[antlrgen.IExpressionContext]struct {
-			v   cascades.Value
+			v   values.Value
 			err error
 		}{expr2: {v: v2}},
 	}
 	folder := &fakeFolder{
-		results: map[cascades.Value]struct {
+		results: map[values.Value]struct {
 			v  any
 			ok bool
 		}{v2: {v: int64(99), ok: true}},

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -61,7 +62,7 @@ func BenchmarkResolveConstant_Int64(b *testing.B) {
 }
 
 // BenchmarkWalkPredicate_Comparison measures the full parse-tree →
-// cascades.ComparisonPredicate path on a representative WHERE clause.
+// predicates.ComparisonPredicate path on a representative WHERE clause.
 func BenchmarkWalkPredicate_Comparison(b *testing.B) {
 	a, s := buildScopeForBench(b)
 	r := expr.New(a, s)
@@ -133,6 +134,6 @@ func BenchmarkResolveComparison(b *testing.B) {
 	lhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	rhs, _ := r.ResolveConstant(int64(5))
 	for i := 0; i < b.N; i++ {
-		_, _ = r.ResolveComparison(cascades.ComparisonEquals, lhs, rhs)
+		_, _ = r.ResolveComparison(predicates.ComparisonEquals, lhs, rhs)
 	}
 }

@@ -1,5 +1,10 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+)
+
 // CascadesRule — seed.
 //
 // Ports Java's
@@ -32,7 +37,7 @@ type RuleCall struct {
 	// Bindings is the PlannerBindings the rule's matcher built up
 	// during BindMatches. Rule bodies use Get[T] / Get to retrieve
 	// matched values.
-	Bindings *PlannerBindings
+	Bindings *matching.PlannerBindings
 
 	// yielded holds replacement expressions the rule produces. One
 	// rule call can yield zero, one, or many (AnyOf-style rules).
@@ -60,7 +65,7 @@ type CascadesRule interface {
 	// walks every expression in the memo, runs every rule's
 	// matcher against it, and invokes OnMatch on successful
 	// bindings.
-	Matcher() BindingMatcher
+	Matcher() matching.BindingMatcher
 
 	// OnMatch is the rule body. It reads call.Bindings to retrieve
 	// the matched expression shape and calls call.Yield for each
@@ -77,7 +82,7 @@ type CascadesRule interface {
 // exists so the seed has a testable entry point.
 func FireRule(rule CascadesRule, in any) []any {
 	matcher := rule.Matcher()
-	matches := matcher.BindMatches(NewBindings(), in)
+	matches := matcher.BindMatches(matching.NewBindings(), in)
 	var all []any
 	for _, b := range matches {
 		call := &RuleCall{Bindings: b}
@@ -85,4 +90,28 @@ func FireRule(rule CascadesRule, in any) []any {
 		all = append(all, call.Yielded()...)
 	}
 	return all
+}
+
+// predicateMatcher is the generic single-type matcher: type-asserts
+// `in` to T (any QueryPredicate concrete type) and binds the host on
+// success. Replaces 5 hand-written near-identical matchers
+// (notPredicateMatcher, comparisonPredicateMatcher, andPredicateMatcher,
+// orPredicateMatcher, valuePredicateMatcher).
+//
+// rootType is kept as a field rather than computed via reflect so
+// debug output stays cheap and the struct has non-zero size (no
+// zero-size-struct aliasing — see AnyValue at matching/matcher.go).
+//
+// Each rule's `new...` factory returns a distinct allocation so
+// pointer-identity comparisons stay distinct across rule instances.
+type predicateMatcher[T predicates.QueryPredicate] struct {
+	rootType string
+}
+
+func (m *predicateMatcher[T]) RootType() string { return m.rootType }
+func (m *predicateMatcher[T]) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
+	if _, ok := in.(T); !ok {
+		return nil
+	}
+	return []*matching.PlannerBindings{outer.Bind(m, in)}
 }

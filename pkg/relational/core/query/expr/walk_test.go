@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -39,7 +41,7 @@ func TestWalkExpression_BareColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	fv, ok := v.(*cascades.FieldValue)
+	fv, ok := v.(*values.FieldValue)
 	if !ok {
 		t.Fatalf("expected *FieldValue, got %T", v)
 	}
@@ -58,7 +60,7 @@ func TestWalkExpression_QualifiedColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	fv := v.(*cascades.FieldValue)
+	fv := v.(*values.FieldValue)
 	if fv.Field != "NAME" {
 		t.Fatalf("qualified column Field: got %q, want NAME", fv.Field)
 	}
@@ -74,14 +76,14 @@ func TestWalkExpression_IntegerLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cv, ok := v.(*cascades.ConstantValue)
+	cv, ok := v.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", v)
 	}
 	if cv.Value != int64(42) {
 		t.Fatalf("Value: got %v, want 42", cv.Value)
 	}
-	if cv.Typ != cascades.TypeInt {
+	if cv.Typ != values.TypeInt {
 		t.Fatalf("Typ: got %v, want TypeInt", cv.Typ)
 	}
 }
@@ -96,11 +98,11 @@ func TestWalkExpression_StringLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cv := v.(*cascades.ConstantValue)
+	cv := v.(*values.ConstantValue)
 	if cv.Value != "hello" {
 		t.Fatalf("Value: got %v, want 'hello'", cv.Value)
 	}
-	if cv.Typ != cascades.TypeString {
+	if cv.Typ != values.TypeString {
 		t.Fatalf("Typ: got %v", cv.Typ)
 	}
 }
@@ -116,7 +118,7 @@ func TestWalkExpression_NullLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if _, ok := v.(*cascades.NullValue); !ok {
+	if _, ok := v.(*values.NullValue); !ok {
 		t.Fatalf("expected *NullValue, got %T", v)
 	}
 }
@@ -132,7 +134,7 @@ func TestWalkExpression_StringLiteral_EscapedQuote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cv := v.(*cascades.ConstantValue)
+	cv := v.(*values.ConstantValue)
 	if cv.Value != "it's" {
 		t.Fatalf("Value: got %q, want \"it's\"", cv.Value)
 	}
@@ -186,19 +188,19 @@ func TestWalkPredicate_Comparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if cp.Comparison.Type != cascades.ComparisonEquals {
+	if cp.Comparison.Type != predicates.ComparisonEquals {
 		t.Fatalf("Type: got %v, want Equals", cp.Comparison.Type)
 	}
-	rhsLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	rhsLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok || rhsLit != int64(1) {
 		t.Fatalf("Operand: got %v, want 1", cp.Comparison.Operand)
 	}
 	// Evaluate.
-	if got := pred.Eval(map[string]any{"ID": int64(1)}); got != cascades.TriTrue {
+	if got := pred.Eval(map[string]any{"ID": int64(1)}); got != predicates.TriTrue {
 		t.Fatalf("1 = 1: got %v", got)
 	}
 }
@@ -210,15 +212,15 @@ func TestWalkPredicate_ComparisonOperators(t *testing.T) {
 
 	cases := []struct {
 		sql  string
-		want cascades.ComparisonType
+		want predicates.ComparisonType
 	}{
-		{"SELECT * FROM users WHERE id = 1", cascades.ComparisonEquals},
-		{"SELECT * FROM users WHERE id > 1", cascades.ComparisonGreaterThan},
-		{"SELECT * FROM users WHERE id < 1", cascades.ComparisonLessThan},
-		{"SELECT * FROM users WHERE id >= 1", cascades.ComparisonGreaterThanEq},
-		{"SELECT * FROM users WHERE id <= 1", cascades.ComparisonLessThanOrEq},
-		{"SELECT * FROM users WHERE id <> 1", cascades.ComparisonNotEquals},
-		{"SELECT * FROM users WHERE id != 1", cascades.ComparisonNotEquals},
+		{"SELECT * FROM users WHERE id = 1", predicates.ComparisonEquals},
+		{"SELECT * FROM users WHERE id > 1", predicates.ComparisonGreaterThan},
+		{"SELECT * FROM users WHERE id < 1", predicates.ComparisonLessThan},
+		{"SELECT * FROM users WHERE id >= 1", predicates.ComparisonGreaterThanEq},
+		{"SELECT * FROM users WHERE id <= 1", predicates.ComparisonLessThanOrEq},
+		{"SELECT * FROM users WHERE id <> 1", predicates.ComparisonNotEquals},
+		{"SELECT * FROM users WHERE id != 1", predicates.ComparisonNotEquals},
 	}
 	for _, tc := range cases {
 		t.Run(tc.sql, func(t *testing.T) {
@@ -228,7 +230,7 @@ func TestWalkPredicate_ComparisonOperators(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk %q: %v", tc.sql, err)
 			}
-			cp := pred.(*cascades.ComparisonPredicate)
+			cp := pred.(*predicates.ComparisonPredicate)
 			if cp.Comparison.Type != tc.want {
 				t.Fatalf("Type: got %v, want %v", cp.Comparison.Type, tc.want)
 			}
@@ -247,7 +249,7 @@ func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	// Bare column predicate → ValuePredicate.
-	if _, ok := pred.(*cascades.ValuePredicate); !ok {
+	if _, ok := pred.(*predicates.ValuePredicate); !ok {
 		t.Fatalf("expected *ValuePredicate, got %T", pred)
 	}
 }
@@ -262,7 +264,7 @@ func TestWalkPredicate_LogicalAnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", pred)
 	}
@@ -281,7 +283,7 @@ func TestWalkPredicate_LogicalOr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	or, ok := pred.(*cascades.OrPredicate)
+	or, ok := pred.(*predicates.OrPredicate)
 	if !ok {
 		t.Fatalf("expected *OrPredicate, got %T", pred)
 	}
@@ -304,17 +306,17 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate at root, got %T", pred)
 	}
 	if len(and.SubPredicates) != 2 {
 		t.Fatalf("AND children: got %d, want 2", len(and.SubPredicates))
 	}
-	if _, ok := and.SubPredicates[0].(*cascades.OrPredicate); !ok {
+	if _, ok := and.SubPredicates[0].(*predicates.OrPredicate); !ok {
 		t.Fatalf("first child: got %T, want *OrPredicate", and.SubPredicates[0])
 	}
-	if _, ok := and.SubPredicates[1].(*cascades.NotPredicate); !ok {
+	if _, ok := and.SubPredicates[1].(*predicates.NotPredicate); !ok {
 		t.Fatalf("second child: got %T, want *NotPredicate", and.SubPredicates[1])
 	}
 	// Pin the Explain output so Simplify / Explain-format regressions
@@ -328,17 +330,17 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 	type row = map[string]any
 	cases := []struct {
 		active, admin any
-		want          cascades.TriBool
+		want          predicates.TriBool
 	}{
-		{true, true, cascades.TriFalse},
-		{true, false, cascades.TriTrue},
-		{false, true, cascades.TriTrue},
-		{false, false, cascades.TriFalse},
-		{nil, true, cascades.TriUnknown},
-		{nil, false, cascades.TriUnknown},
-		{true, nil, cascades.TriUnknown},
-		{false, nil, cascades.TriUnknown},
-		{nil, nil, cascades.TriUnknown},
+		{true, true, predicates.TriFalse},
+		{true, false, predicates.TriTrue},
+		{false, true, predicates.TriTrue},
+		{false, false, predicates.TriFalse},
+		{nil, true, predicates.TriUnknown},
+		{nil, false, predicates.TriUnknown},
+		{true, nil, predicates.TriUnknown},
+		{false, nil, predicates.TriUnknown},
+		{nil, nil, predicates.TriUnknown},
 	}
 	for _, tc := range cases {
 		got := pred.Eval(row{"ACTIVE": tc.active, "ADMIN": tc.admin})
@@ -360,7 +362,7 @@ func TestWalkPredicate_AndChainFlattens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", pred)
 	}
@@ -399,7 +401,7 @@ func TestWalkPredicate_Not(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if _, ok := pred.(*cascades.NotPredicate); !ok {
+	if _, ok := pred.(*predicates.NotPredicate); !ok {
 		t.Fatalf("expected *NotPredicate, got %T", pred)
 	}
 }
@@ -414,11 +416,11 @@ func TestWalkPredicate_ParenWrappedComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("parens should unwrap: expected *ComparisonPredicate, got %T", pred)
 	}
-	if cp.Comparison.Type != cascades.ComparisonEquals {
+	if cp.Comparison.Type != predicates.ComparisonEquals {
 		t.Fatal("Type mismatch")
 	}
 }
@@ -436,11 +438,11 @@ func TestWalkPredicate_NotParenComparison(t *testing.T) {
 	// Through the simplifier: NOT(id = 1) → id <> 1 via
 	// NotComparisonRewriteRule.
 	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
-	cp, ok := simplified.(*cascades.ComparisonPredicate)
+	cp, ok := simplified.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate after simplify, got %T", simplified)
 	}
-	if cp.Comparison.Type != cascades.ComparisonNotEquals {
+	if cp.Comparison.Type != predicates.ComparisonNotEquals {
 		t.Fatalf("expected <>, got %v", cp.Comparison.Type)
 	}
 }
@@ -457,7 +459,7 @@ func TestWalkPredicate_NotAndCombo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", pred)
 	}
@@ -465,7 +467,7 @@ func TestWalkPredicate_NotAndCombo(t *testing.T) {
 		t.Fatalf("AND children: got %d, want 2", len(and.SubPredicates))
 	}
 	// First child should be a NOT wrapping a ValuePredicate.
-	if _, ok := and.SubPredicates[0].(*cascades.NotPredicate); !ok {
+	if _, ok := and.SubPredicates[0].(*predicates.NotPredicate); !ok {
 		t.Fatalf("first child: expected NotPredicate, got %T", and.SubPredicates[0])
 	}
 }
@@ -486,11 +488,11 @@ func TestWalkPredicate_NotParenAnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	not, ok := pred.(*cascades.NotPredicate)
+	not, ok := pred.(*predicates.NotPredicate)
 	if !ok {
 		t.Fatalf("expected *NotPredicate, got %T", pred)
 	}
-	and, ok := not.Child.(*cascades.AndPredicate)
+	and, ok := not.Child.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("NOT.Child: expected *AndPredicate, got %T", not.Child)
 	}
@@ -501,11 +503,11 @@ func TestWalkPredicate_NotParenAnd(t *testing.T) {
 	// NOT(TRUE AND FALSE) = TRUE, NOT(FALSE AND _) = TRUE.
 	cases := []struct {
 		row  map[string]any
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
-		{map[string]any{"ID": int64(1), "NAME": "bob"}, cascades.TriFalse},
-		{map[string]any{"ID": int64(1), "NAME": "eve"}, cascades.TriTrue},
-		{map[string]any{"ID": int64(2), "NAME": "bob"}, cascades.TriTrue},
+		{map[string]any{"ID": int64(1), "NAME": "bob"}, predicates.TriFalse},
+		{map[string]any{"ID": int64(1), "NAME": "eve"}, predicates.TriTrue},
+		{map[string]any{"ID": int64(2), "NAME": "bob"}, predicates.TriTrue},
 	}
 	for _, tc := range cases {
 		if got := pred.Eval(tc.row); got != tc.want {
@@ -524,7 +526,7 @@ func TestWalkPredicate_Between(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("BETWEEN → AND(>=, <=): expected AndPredicate, got %T", pred)
 	}
@@ -534,14 +536,14 @@ func TestWalkPredicate_Between(t *testing.T) {
 	// Eval.
 	for _, tc := range []struct {
 		id      int64
-		want    cascades.TriBool
+		want    predicates.TriBool
 		comment string
 	}{
-		{1, cascades.TriTrue, "lower bound inclusive"},
-		{5, cascades.TriTrue, "middle"},
-		{10, cascades.TriTrue, "upper bound inclusive"},
-		{11, cascades.TriFalse, "above"},
-		{0, cascades.TriFalse, "below"},
+		{1, predicates.TriTrue, "lower bound inclusive"},
+		{5, predicates.TriTrue, "middle"},
+		{10, predicates.TriTrue, "upper bound inclusive"},
+		{11, predicates.TriFalse, "above"},
+		{0, predicates.TriFalse, "below"},
 	} {
 		got := pred.Eval(map[string]any{"ID": tc.id})
 		if got != tc.want {
@@ -561,14 +563,14 @@ func TestWalkPredicate_NotBetween(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	// NOT wraps the AND.
-	if _, ok := pred.(*cascades.NotPredicate); !ok {
+	if _, ok := pred.(*predicates.NotPredicate); !ok {
 		t.Fatalf("expected NotPredicate wrapping, got %T", pred)
 	}
 	// Eval: id=5 is in [1,10] so NOT BETWEEN is FALSE.
-	if got := pred.Eval(map[string]any{"ID": int64(5)}); got != cascades.TriFalse {
+	if got := pred.Eval(map[string]any{"ID": int64(5)}); got != predicates.TriFalse {
 		t.Fatalf("5 NOT BETWEEN 1 AND 10: got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ID": int64(15)}); got != cascades.TriTrue {
+	if got := pred.Eval(map[string]any{"ID": int64(15)}); got != predicates.TriTrue {
 		t.Fatalf("15 NOT BETWEEN 1 AND 10: got %v, want TRUE", got)
 	}
 }
@@ -583,11 +585,11 @@ func TestWalkPredicate_In(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonIn {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIn {
 		t.Fatalf("Type: got %v, want In", cp.Comparison.Type)
 	}
-	lit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	lit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok {
 		t.Fatalf("Operand not constant: %v", cp.Comparison.Operand)
 	}
@@ -596,11 +598,11 @@ func TestWalkPredicate_In(t *testing.T) {
 		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
 	}
 	// Evaluate.
-	for id, want := range map[int64]cascades.TriBool{
-		1: cascades.TriTrue,
-		2: cascades.TriTrue,
-		3: cascades.TriTrue,
-		4: cascades.TriFalse,
+	for id, want := range map[int64]predicates.TriBool{
+		1: predicates.TriTrue,
+		2: predicates.TriTrue,
+		3: predicates.TriTrue,
+		4: predicates.TriFalse,
 	} {
 		got := pred.Eval(map[string]any{"ID": id})
 		if got != want {
@@ -619,7 +621,7 @@ func TestWalkPredicate_NotIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if _, ok := pred.(*cascades.NotPredicate); !ok {
+	if _, ok := pred.(*predicates.NotPredicate); !ok {
 		t.Fatalf("expected *NotPredicate, got %T", pred)
 	}
 }
@@ -634,11 +636,11 @@ func TestWalkPredicate_Like(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonLike {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
 	}
-	patLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	patLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok || patLit != "hel%" {
 		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
 	}
@@ -654,7 +656,7 @@ func TestWalkPredicate_NotLike(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if _, ok := pred.(*cascades.NotPredicate); !ok {
+	if _, ok := pred.(*predicates.NotPredicate); !ok {
 		t.Fatalf("expected *NotPredicate, got %T", pred)
 	}
 }
@@ -674,11 +676,11 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if cp.Comparison.Type != cascades.ComparisonLike {
+	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
 	}
 	if cp.Comparison.Escape != '\\' {
@@ -689,11 +691,11 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 	// matches `a%b` and rejects `axb` (the `\` did NOT mean wildcard).
 	cases := []struct {
 		s    string
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
-		{"a%b", cascades.TriTrue},
-		{"axb", cascades.TriFalse}, // wildcard interpretation would say true; escape blocks it
-		{"a%bb", cascades.TriFalse},
+		{"a%b", predicates.TriTrue},
+		{"axb", predicates.TriFalse}, // wildcard interpretation would say true; escape blocks it
+		{"a%bb", predicates.TriFalse},
 	}
 	for _, tc := range cases {
 		got := pred.Eval(map[string]any{"NAME": tc.s})
@@ -716,15 +718,15 @@ func TestWalkPredicate_NotLikeEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	not, ok := pred.(*cascades.NotPredicate)
+	not, ok := pred.(*predicates.NotPredicate)
 	if !ok {
 		t.Fatalf("expected *NotPredicate, got %T", pred)
 	}
-	cp, ok := not.Child.(*cascades.ComparisonPredicate)
+	cp, ok := not.Child.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected NOT to wrap ComparisonPredicate, got %T", not.Child)
 	}
-	if cp.Comparison.Type != cascades.ComparisonLike {
+	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatalf("inner Type: got %v, want Like", cp.Comparison.Type)
 	}
 	if cp.Comparison.Escape != '\\' {
@@ -734,11 +736,11 @@ func TestWalkPredicate_NotLikeEscape(t *testing.T) {
 	// → NOT LIKE = FALSE; `axb` doesn't match (LIKE=FALSE) → NOT LIKE = TRUE.
 	cases := []struct {
 		s    string
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
-		{"a%b", cascades.TriFalse},
-		{"axb", cascades.TriTrue}, // escape blocks wildcard, so axb is NOT a match for `a\%b`
-		{"a%bb", cascades.TriTrue},
+		{"a%b", predicates.TriFalse},
+		{"axb", predicates.TriTrue}, // escape blocks wildcard, so axb is NOT a match for `a\%b`
+		{"a%bb", predicates.TriTrue},
 	}
 	for _, tc := range cases {
 		if got := pred.Eval(map[string]any{"NAME": tc.s}); got != tc.want {
@@ -769,8 +771,8 @@ func TestWalkPredicate_IsNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonIsNull {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIsNull {
 		t.Fatalf("Type: got %v, want IsNull", cp.Comparison.Type)
 	}
 }
@@ -789,16 +791,16 @@ func TestWalkPredicate_IsTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if _, ok := pred.(*cascades.AndPredicate); !ok {
+	if _, ok := pred.(*predicates.AndPredicate); !ok {
 		t.Fatalf("expected *AndPredicate (IS-NOT-NULL AND =literal), got %T", pred)
 	}
 	cases := []struct {
 		in   any
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
-		{true, cascades.TriTrue},
-		{false, cascades.TriFalse},
-		{nil, cascades.TriFalse}, // 2VL: NULL IS TRUE → FALSE
+		{true, predicates.TriTrue},
+		{false, predicates.TriFalse},
+		{nil, predicates.TriFalse}, // 2VL: NULL IS TRUE → FALSE
 	}
 	for _, tc := range cases {
 		got := pred.Eval(map[string]any{"ADMIN": tc.in})
@@ -820,11 +822,11 @@ func TestWalkPredicate_IsFalse(t *testing.T) {
 	}
 	cases := []struct {
 		in   any
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
-		{false, cascades.TriTrue},
-		{true, cascades.TriFalse},
-		{nil, cascades.TriFalse}, // 2VL: NULL IS FALSE → FALSE
+		{false, predicates.TriTrue},
+		{true, predicates.TriFalse},
+		{nil, predicates.TriFalse}, // 2VL: NULL IS FALSE → FALSE
 	}
 	for _, tc := range cases {
 		got := pred.Eval(map[string]any{"ADMIN": tc.in})
@@ -847,13 +849,13 @@ func TestWalkPredicate_IsTrue_NegatedNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if got := pred.Eval(map[string]any{"ADMIN": nil}); got != cascades.TriTrue {
+	if got := pred.Eval(map[string]any{"ADMIN": nil}); got != predicates.TriTrue {
 		t.Errorf("NOT (NULL IS TRUE): got %v, want TRUE", got)
 	}
-	if got := pred.Eval(map[string]any{"ADMIN": true}); got != cascades.TriFalse {
+	if got := pred.Eval(map[string]any{"ADMIN": true}); got != predicates.TriFalse {
 		t.Errorf("NOT (TRUE IS TRUE): got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ADMIN": false}); got != cascades.TriTrue {
+	if got := pred.Eval(map[string]any{"ADMIN": false}); got != predicates.TriTrue {
 		t.Errorf("NOT (FALSE IS TRUE): got %v, want TRUE", got)
 	}
 }
@@ -868,8 +870,8 @@ func TestWalkPredicate_IsNotNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonIsNotNull {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIsNotNull {
 		t.Fatalf("Type: got %v, want IsNotNull", cp.Comparison.Type)
 	}
 }
@@ -889,13 +891,13 @@ func TestWalkPredicate_XOR_SelfIsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if got := pred.Eval(map[string]any{"ACTIVE": true}); got != cascades.TriFalse {
+	if got := pred.Eval(map[string]any{"ACTIVE": true}); got != predicates.TriFalse {
 		t.Errorf("true XOR true: got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ACTIVE": false}); got != cascades.TriFalse {
+	if got := pred.Eval(map[string]any{"ACTIVE": false}); got != predicates.TriFalse {
 		t.Errorf("false XOR false: got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ACTIVE": nil}); got != cascades.TriUnknown {
+	if got := pred.Eval(map[string]any{"ACTIVE": nil}); got != predicates.TriUnknown {
 		t.Errorf("NULL XOR NULL: got %v, want UNKNOWN", got)
 	}
 }
@@ -917,12 +919,12 @@ func TestWalkExpression_Arithmetic(t *testing.T) {
 
 	cases := []struct {
 		sql string
-		op  cascades.ArithmeticOp
+		op  values.ArithmeticOp
 	}{
-		{"SELECT * FROM users WHERE id + 1", cascades.OpAdd},
-		{"SELECT * FROM users WHERE id - 1", cascades.OpSub},
-		{"SELECT * FROM users WHERE id * 2", cascades.OpMul},
-		{"SELECT * FROM users WHERE id / 2", cascades.OpDiv},
+		{"SELECT * FROM users WHERE id + 1", values.OpAdd},
+		{"SELECT * FROM users WHERE id - 1", values.OpSub},
+		{"SELECT * FROM users WHERE id * 2", values.OpMul},
+		{"SELECT * FROM users WHERE id / 2", values.OpDiv},
 	}
 	for _, tc := range cases {
 		t.Run(tc.sql, func(t *testing.T) {
@@ -932,7 +934,7 @@ func TestWalkExpression_Arithmetic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			av, ok := v.(*cascades.ArithmeticValue)
+			av, ok := v.(*values.ArithmeticValue)
 			if !ok {
 				t.Fatalf("expected *ArithmeticValue, got %T", v)
 			}
@@ -954,18 +956,18 @@ func TestWalkExpression_Arithmetic_Nested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	outer, ok := v.(*cascades.ArithmeticValue)
+	outer, ok := v.(*values.ArithmeticValue)
 	if !ok {
 		t.Fatalf("expected *ArithmeticValue, got %T", v)
 	}
-	if outer.Op != cascades.OpMul {
+	if outer.Op != values.OpMul {
 		t.Fatalf("outer Op: got %v, want OpMul", outer.Op)
 	}
-	inner, ok := outer.Left.(*cascades.ArithmeticValue)
+	inner, ok := outer.Left.(*values.ArithmeticValue)
 	if !ok {
 		t.Fatalf("inner: expected *ArithmeticValue, got %T", outer.Left)
 	}
-	if inner.Op != cascades.OpAdd {
+	if inner.Op != values.OpAdd {
 		t.Fatalf("inner Op: got %v, want OpAdd", inner.Op)
 	}
 }
@@ -978,14 +980,14 @@ func TestWalkExpression_AggregateFunctions(t *testing.T) {
 
 	cases := []struct {
 		sql  string
-		want cascades.AggregateOp
+		want values.AggregateOp
 	}{
-		{"SELECT * FROM users WHERE COUNT(*)", cascades.AggCountStar},
-		{"SELECT * FROM users WHERE COUNT(id)", cascades.AggCount},
-		{"SELECT * FROM users WHERE SUM(id)", cascades.AggSum},
-		{"SELECT * FROM users WHERE MIN(id)", cascades.AggMin},
-		{"SELECT * FROM users WHERE MAX(id)", cascades.AggMax},
-		{"SELECT * FROM users WHERE AVG(id)", cascades.AggAvg},
+		{"SELECT * FROM users WHERE COUNT(*)", values.AggCountStar},
+		{"SELECT * FROM users WHERE COUNT(id)", values.AggCount},
+		{"SELECT * FROM users WHERE SUM(id)", values.AggSum},
+		{"SELECT * FROM users WHERE MIN(id)", values.AggMin},
+		{"SELECT * FROM users WHERE MAX(id)", values.AggMax},
+		{"SELECT * FROM users WHERE AVG(id)", values.AggAvg},
 	}
 	for _, tc := range cases {
 		t.Run(tc.sql, func(t *testing.T) {
@@ -995,7 +997,7 @@ func TestWalkExpression_AggregateFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			av, ok := v.(*cascades.AggregateValue)
+			av, ok := v.(*values.AggregateValue)
 			if !ok {
 				t.Fatalf("expected *AggregateValue, got %T", v)
 			}
@@ -1045,7 +1047,7 @@ func TestWalker_E2E_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", pred)
 	}
@@ -1055,16 +1057,16 @@ func TestWalker_E2E_Integration(t *testing.T) {
 
 	// Evaluate against some rows.
 	row := map[string]any{"ID": int64(5), "NAME": "bob"}
-	if got := pred.Eval(row); got != cascades.TriTrue {
+	if got := pred.Eval(row); got != predicates.TriTrue {
 		t.Fatalf("id=5, name=bob: got %v, want TRUE", got)
 	}
 	row["NAME"] = nil
-	if got := pred.Eval(row); got != cascades.TriFalse {
+	if got := pred.Eval(row); got != predicates.TriFalse {
 		t.Fatalf("id=5, name=NULL: got %v, want FALSE", got)
 	}
 	row["NAME"] = "bob"
 	row["ID"] = int64(11)
-	if got := pred.Eval(row); got != cascades.TriFalse {
+	if got := pred.Eval(row); got != predicates.TriFalse {
 		t.Fatalf("id=11, name=bob: got %v, want FALSE", got)
 	}
 }
@@ -1101,11 +1103,11 @@ func TestWalkExpression_FloatLiteral(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk %q: %v", sql, err)
 			}
-			cv, ok := v.(*cascades.ConstantValue)
+			cv, ok := v.(*values.ConstantValue)
 			if !ok {
 				t.Fatalf("expected *ConstantValue, got %T", v)
 			}
-			if cv.Typ != cascades.TypeFloat {
+			if cv.Typ != values.TypeFloat {
 				t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
 			}
 			if cv.Value != want {
@@ -1135,11 +1137,11 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			av, ok := v.(*cascades.ArithmeticValue)
+			av, ok := v.(*values.ArithmeticValue)
 			if !ok {
 				t.Fatalf("expected *ArithmeticValue, got %T", v)
 			}
-			if av.Op != cascades.OpDiv {
+			if av.Op != values.OpDiv {
 				t.Fatalf("Op: got %v, want OpDiv", av.Op)
 			}
 			// 23 / 7 → 3 (truncated toward zero).
@@ -1151,10 +1153,10 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 				t.Errorf("-23/7: got %v, want -3", got)
 			}
 			// Divide by zero → nil (NULL).
-			divZero := &cascades.ArithmeticValue{
-				Op:    cascades.OpDiv,
-				Left:  &cascades.ConstantValue{Value: int64(5), Typ: cascades.TypeInt},
-				Right: &cascades.ConstantValue{Value: int64(0), Typ: cascades.TypeInt},
+			divZero := &values.ArithmeticValue{
+				Op:    values.OpDiv,
+				Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+				Right: &values.ConstantValue{Value: int64(0), Typ: values.TypeInt},
 			}
 			if got := divZero.Evaluate(nil); got != nil {
 				t.Errorf("5/0: got %v, want nil", got)
@@ -1180,11 +1182,11 @@ func TestWalkExpression_ModuloOperator(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			av, ok := v.(*cascades.ArithmeticValue)
+			av, ok := v.(*values.ArithmeticValue)
 			if !ok {
 				t.Fatalf("expected *ArithmeticValue, got %T", v)
 			}
-			if av.Op != cascades.OpMod {
+			if av.Op != values.OpMod {
 				t.Fatalf("Op: got %v, want OpMod", av.Op)
 			}
 			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(2) {
@@ -1206,14 +1208,14 @@ func TestWalkExpression_CastInteger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cv, ok := v.(*cascades.CastValue)
+	cv, ok := v.(*values.CastValue)
 	if !ok {
 		t.Fatalf("expected *CastValue, got %T", v)
 	}
-	if cv.Target != cascades.TypeInt {
+	if cv.Target != values.TypeInt {
 		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
 	}
-	fv, ok := cv.Child.(*cascades.FieldValue)
+	fv, ok := cv.Child.(*values.FieldValue)
 	if !ok || fv.Field != "NAME" {
 		t.Fatalf("Child: got %v", cv.Child)
 	}
@@ -1224,10 +1226,10 @@ func TestWalkExpression_CastTargets(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	cases := map[string]cascades.ValueType{
-		"CAST(name AS STRING)":  cascades.TypeString,
-		"CAST(name AS BOOLEAN)": cascades.TypeBool,
-		"CAST(name AS BIGINT)":  cascades.TypeInt,
+	cases := map[string]values.ValueType{
+		"CAST(name AS STRING)":  values.TypeString,
+		"CAST(name AS BOOLEAN)": values.TypeBool,
+		"CAST(name AS BIGINT)":  values.TypeInt,
 	}
 	for sql, want := range cases {
 		t.Run(sql, func(t *testing.T) {
@@ -1237,7 +1239,7 @@ func TestWalkExpression_CastTargets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			cv := v.(*cascades.CastValue)
+			cv := v.(*values.CastValue)
 			if cv.Target != want {
 				t.Fatalf("%q: got %v, want %v", sql, cv.Target, want)
 			}
@@ -1283,11 +1285,11 @@ func TestWalkExpression_CastFloat(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			cv, ok := v.(*cascades.CastValue)
+			cv, ok := v.(*values.CastValue)
 			if !ok {
 				t.Fatalf("expected *CastValue, got %T", v)
 			}
-			if cv.Target != cascades.TypeFloat {
+			if cv.Target != values.TypeFloat {
 				t.Fatalf("Target: got %v, want TypeFloat", cv.Target)
 			}
 		})
@@ -1306,11 +1308,11 @@ func TestWalkExpression_ConvertSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cv, ok := v.(*cascades.CastValue)
+	cv, ok := v.(*values.CastValue)
 	if !ok {
 		t.Fatalf("expected *CastValue, got %T", v)
 	}
-	if cv.Target != cascades.TypeInt {
+	if cv.Target != values.TypeInt {
 		t.Fatalf("Target: got %v, want TypeInt", cv.Target)
 	}
 }
@@ -1326,11 +1328,11 @@ func TestWalkPredicate_CastInComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if _, ok := cp.Operand.(*cascades.CastValue); !ok {
+	if _, ok := cp.Operand.(*values.CastValue); !ok {
 		t.Fatalf("expected Operand to be *CastValue, got %T", cp.Operand)
 	}
 }
@@ -1343,15 +1345,15 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 	cases := []struct {
 		sql  string
 		fn   string
-		typ  cascades.ValueType
+		typ  values.ValueType
 		args int
 	}{
-		{"SELECT * FROM users WHERE UPPER(name)", "UPPER", cascades.TypeString, 1},
-		{"SELECT * FROM users WHERE LOWER(name)", "LOWER", cascades.TypeString, 1},
-		{"SELECT * FROM users WHERE LENGTH(name)", "LENGTH", cascades.TypeInt, 1},
-		{"SELECT * FROM users WHERE CHAR_LENGTH(name)", "CHAR_LENGTH", cascades.TypeInt, 1},
-		{"SELECT * FROM users WHERE CHARACTER_LENGTH(name)", "CHARACTER_LENGTH", cascades.TypeInt, 1},
-		{"SELECT * FROM users WHERE OCTET_LENGTH(name)", "OCTET_LENGTH", cascades.TypeInt, 1},
+		{"SELECT * FROM users WHERE UPPER(name)", "UPPER", values.TypeString, 1},
+		{"SELECT * FROM users WHERE LOWER(name)", "LOWER", values.TypeString, 1},
+		{"SELECT * FROM users WHERE LENGTH(name)", "LENGTH", values.TypeInt, 1},
+		{"SELECT * FROM users WHERE CHAR_LENGTH(name)", "CHAR_LENGTH", values.TypeInt, 1},
+		{"SELECT * FROM users WHERE CHARACTER_LENGTH(name)", "CHARACTER_LENGTH", values.TypeInt, 1},
+		{"SELECT * FROM users WHERE OCTET_LENGTH(name)", "OCTET_LENGTH", values.TypeInt, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn, func(t *testing.T) {
@@ -1363,7 +1365,7 @@ func TestWalkExpression_ScalarFunctions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			sf, ok := v.(*cascades.ScalarFunctionValue)
+			sf, ok := v.(*values.ScalarFunctionValue)
 			if !ok {
 				t.Fatalf("expected *ScalarFunctionValue, got %T", v)
 			}
@@ -1393,34 +1395,34 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 	cases := []struct {
 		sql  string
 		fn   string
-		typ  cascades.ValueType
+		typ  values.ValueType
 		args int
 	}{
-		{"SELECT * FROM users WHERE ABS(id)", "ABS", cascades.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", cascades.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", cascades.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", cascades.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", cascades.TypeUnknown, 1},
-		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", cascades.TypeUnknown, 2},
-		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", cascades.TypeFloat, 1},
-		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", cascades.TypeFloat, 2},
-		{"SELECT * FROM users WHERE POW(id, 2)", "POW", cascades.TypeFloat, 2},
-		{"SELECT * FROM users WHERE COALESCE(name, 'default')", "COALESCE", cascades.TypeUnknown, 2},
-		{"SELECT * FROM users WHERE NULLIF(name, 'admin')", "NULLIF", cascades.TypeUnknown, 2},
-		{"SELECT * FROM users WHERE TRIM(name)", "TRIM", cascades.TypeString, 1},
-		{"SELECT * FROM users WHERE LTRIM(name)", "LTRIM", cascades.TypeString, 1},
-		{"SELECT * FROM users WHERE RTRIM(name)", "RTRIM", cascades.TypeString, 1},
-		{"SELECT * FROM users WHERE CONCAT(name, '_v2')", "CONCAT", cascades.TypeString, 2},
-		{"SELECT * FROM users WHERE SUBSTRING(name, 1, 3)", "SUBSTRING", cascades.TypeString, 3},
-		{"SELECT * FROM users WHERE SUBSTR(name, 1)", "SUBSTR", cascades.TypeString, 2},
-		{"SELECT * FROM users WHERE REPLACE(name, 'a', 'b')", "REPLACE", cascades.TypeString, 3},
+		{"SELECT * FROM users WHERE ABS(id)", "ABS", values.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE FLOOR(id)", "FLOOR", values.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE CEIL(id)", "CEIL", values.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE CEILING(id)", "CEILING", values.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE ROUND(id)", "ROUND", values.TypeUnknown, 1},
+		{"SELECT * FROM users WHERE ROUND(id, 2)", "ROUND", values.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE SQRT(id)", "SQRT", values.TypeFloat, 1},
+		{"SELECT * FROM users WHERE POWER(id, 2)", "POWER", values.TypeFloat, 2},
+		{"SELECT * FROM users WHERE POW(id, 2)", "POW", values.TypeFloat, 2},
+		{"SELECT * FROM users WHERE COALESCE(name, 'default')", "COALESCE", values.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE NULLIF(name, 'admin')", "NULLIF", values.TypeUnknown, 2},
+		{"SELECT * FROM users WHERE TRIM(name)", "TRIM", values.TypeString, 1},
+		{"SELECT * FROM users WHERE LTRIM(name)", "LTRIM", values.TypeString, 1},
+		{"SELECT * FROM users WHERE RTRIM(name)", "RTRIM", values.TypeString, 1},
+		{"SELECT * FROM users WHERE CONCAT(name, '_v2')", "CONCAT", values.TypeString, 2},
+		{"SELECT * FROM users WHERE SUBSTRING(name, 1, 3)", "SUBSTRING", values.TypeString, 3},
+		{"SELECT * FROM users WHERE SUBSTR(name, 1)", "SUBSTR", values.TypeString, 2},
+		{"SELECT * FROM users WHERE REPLACE(name, 'a', 'b')", "REPLACE", values.TypeString, 3},
 		// swingshift-50 additions: walker must build ScalarFunctionValue
 		// for the new fn names so the cascades fold path can fire.
-		{"SELECT * FROM users WHERE LEN(name)", "LEN", cascades.TypeInt, 1},
-		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", cascades.TypeString, 3},
+		{"SELECT * FROM users WHERE LEN(name)", "LEN", values.TypeInt, 1},
+		{"SELECT * FROM users WHERE CONCAT_WS('-', name, name)", "CONCAT_WS", values.TypeString, 3},
 		// PI() is a zero-arg function — exercises the no-args branch
 		// of the function-call walker (Java's `PI()` parse shape).
-		{"SELECT * FROM users WHERE PI()", "PI", cascades.TypeFloat, 0},
+		{"SELECT * FROM users WHERE PI()", "PI", values.TypeFloat, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fn+"_"+tc.sql, func(t *testing.T) {
@@ -1432,7 +1434,7 @@ func TestWalkExpression_ScalarFunctionsExtended(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walk: %v", err)
 			}
-			sf, ok := v.(*cascades.ScalarFunctionValue)
+			sf, ok := v.(*values.ScalarFunctionValue)
 			if !ok {
 				t.Fatalf("expected *ScalarFunctionValue, got %T", v)
 			}
@@ -1474,7 +1476,7 @@ func TestWalkExpression_ScalarFunctionLowerCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	sf := v.(*cascades.ScalarFunctionValue)
+	sf := v.(*values.ScalarFunctionValue)
 	if sf.FuncName != "UPPER" {
 		t.Fatalf("FuncName: got %q, want UPPER", sf.FuncName)
 	}
@@ -1492,11 +1494,11 @@ func TestWalkPredicate_ScalarFunctionInComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if _, ok := cp.Operand.(*cascades.ScalarFunctionValue); !ok {
+	if _, ok := cp.Operand.(*values.ScalarFunctionValue); !ok {
 		t.Fatalf("expected LHS *ScalarFunctionValue, got %T", cp.Operand)
 	}
 	want := "UPPER(NAME) = 'ALICE'"
@@ -1516,7 +1518,7 @@ func TestWalkExpression_PositionalParameter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	pv, ok := v.(*cascades.ParameterValue)
+	pv, ok := v.(*values.ParameterValue)
 	if !ok {
 		t.Fatalf("expected *ParameterValue, got %T", v)
 	}
@@ -1537,7 +1539,7 @@ func TestWalkExpression_NamedParameter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	pv, ok := v.(*cascades.ParameterValue)
+	pv, ok := v.(*values.ParameterValue)
 	if !ok {
 		t.Fatalf("expected *ParameterValue, got %T", v)
 	}
@@ -1557,14 +1559,14 @@ func TestWalkPredicate_ParameterizedComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if _, ok := cp.Operand.(*cascades.FieldValue); !ok {
+	if _, ok := cp.Operand.(*values.FieldValue); !ok {
 		t.Fatalf("expected LHS *FieldValue, got %T", cp.Operand)
 	}
-	pv, ok := cp.Comparison.Operand.(*cascades.ParameterValue)
+	pv, ok := cp.Comparison.Operand.(*values.ParameterValue)
 	if !ok {
 		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
 	}
@@ -1592,7 +1594,7 @@ func TestWalkPredicate_MultiplePositionalParameters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	and, ok := pred.(*cascades.AndPredicate)
+	and, ok := pred.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected *AndPredicate, got %T", pred)
 	}
@@ -1601,8 +1603,8 @@ func TestWalkPredicate_MultiplePositionalParameters(t *testing.T) {
 	}
 	got := []int{}
 	for _, sp := range and.SubPredicates {
-		cp := sp.(*cascades.ComparisonPredicate)
-		pv := cp.Comparison.Operand.(*cascades.ParameterValue)
+		cp := sp.(*predicates.ComparisonPredicate)
+		pv := cp.Comparison.Operand.(*values.ParameterValue)
 		got = append(got, pv.Ordinal)
 	}
 	if got[0] != 1 || got[1] != 2 {
@@ -1624,8 +1626,8 @@ func TestWalkPredicate_NamedParameterizedComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	pv, ok := cp.Comparison.Operand.(*cascades.ParameterValue)
+	cp := pred.(*predicates.ComparisonPredicate)
+	pv, ok := cp.Comparison.Operand.(*values.ParameterValue)
 	if !ok {
 		t.Fatalf("expected RHS *ParameterValue, got %T", cp.Comparison.Operand)
 	}

@@ -94,8 +94,13 @@ var _ = Describe("Plan Equivalence Harness", func() {
 	It("runs both engines on a single-table SELECT and produces a Diff", func() {
 		// A synthetic schema for a single-table SELECT — exercises the
 		// SqlPlanSteps DDL path (CREATE SCHEMA TEMPLATE / DATABASE /
-		// SCHEMA) and the EXPLAIN path. The Go side ignores the
-		// SchemaTemplate (text-only logical builder).
+		// SCHEMA) and the EXPLAIN path. Both engines now consume the
+		// SchemaTemplate: the Java side wraps it via
+		// sql_plan_steps.java#planSql; the Go side, post-RFC-022 §4.-1
+		// Phase 3, parses it into a synthetic in-memory schema cache
+		// so WHERE/DELETE/UPDATE shapes route through the catalog-
+		// aware logical builder and predicates render via
+		// cascades.QueryPredicate.Explain.
 		corpus := []plandiff.Query{
 			{
 				Name: "select_single_table",

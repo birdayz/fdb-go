@@ -374,7 +374,7 @@ func TestCachedMetaData_NilSchemaInCache(t *testing.T) {
 }
 
 // Warm-cache Explain — SELECT WHERE renders the predicate via
-// cascades.QueryPredicate.Explain() instead of canonical SQL text.
+// cascades.predicates.QueryPredicate.Explain() instead of canonical SQL text.
 // Pins the round-trip through naive_generator → cachedMetaData →
 // catalog-aware builder → LogicalFilter.Predicate.
 func TestNaiveGenerator_Explain_WarmCache_SelectWhere(t *testing.T) {
@@ -524,7 +524,7 @@ func TestNaiveGenerator_Explain_ExplainCTE(t *testing.T) {
 }
 
 // EXPLAIN over a WHERE with constant arithmetic — warm-cache
-// catalog-aware path → cascades.SimplifyValue folds 1+2 to 3.
+// catalog-aware path → cascades.values.SimplifyValue folds 1+2 to 3.
 // The user-visible PLAN row should show the folded form, not the
 // pre-fold tree.
 func TestNaiveGenerator_Explain_ExplainConstantFold(t *testing.T) {
@@ -537,7 +537,7 @@ func TestNaiveGenerator_Explain_ExplainConstantFold(t *testing.T) {
 	if !strings.HasPrefix(got, "EXPLAIN: ") {
 		t.Fatalf("got %q, want EXPLAIN: prefix", got)
 	}
-	// Folded predicate: PRICE > 3 (cascades.SimplifyValue collapsed 1+2).
+	// Folded predicate: PRICE > 3 (cascades.values.SimplifyValue collapsed 1+2).
 	if !strings.Contains(got, "PRICE > 3") {
 		t.Fatalf("expected folded predicate (PRICE > 3) in EXPLAIN output, got %q", got)
 	}

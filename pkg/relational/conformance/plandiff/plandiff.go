@@ -365,7 +365,9 @@ func FormatReport(r Report) string {
 }
 
 // goEngine is the Go-side implementation. Uses
-// embedded.NewExplainOnlyGenerator to produce a plan without execution.
+// embedded.NewExplainOnlyGenerator (or the catalog-aware variant
+// NewExplainOnlyGeneratorWithSchema when Query.SchemaTemplate is non-
+// empty) to produce a plan without execution. RFC-022 §4.-1 Phase 3.
 type goEngine struct{}
 
 // NewGoEngine returns the Go-side Engine. It is stateless and safe
@@ -373,13 +375,28 @@ type goEngine struct{}
 func NewGoEngine() Engine { return goEngine{} }
 
 func (goEngine) Plan(ctx context.Context, q Query) PlanResult {
-	gen := embedded.NewExplainOnlyGenerator()
+	gen, err := buildGoGenerator(q)
+	if err != nil {
+		return PlanResult{Engine: "go", Err: err}
+	}
 	plan, err := gen.Plan(ctx, q.SQL)
 	if err != nil {
 		return PlanResult{Engine: "go", Err: err}
 	}
 	tree := plan.Explain()
 	return PlanResult{Engine: "go", Tree: tree, Hash: hashTree(tree)}
+}
+
+// buildGoGenerator picks the catalog-aware constructor when the
+// Query carries a SchemaTemplate (so WHERE / DELETE / UPDATE shapes
+// route through buildLogicalPlanFor*WithCatalog and produce real
+// cascades.predicates.QueryPredicate trees in Explain output) and falls back
+// to the text-only generator otherwise.
+func buildGoGenerator(q Query) (query.Generator, error) {
+	if q.SchemaTemplate == "" {
+		return embedded.NewExplainOnlyGenerator(), nil
+	}
+	return embedded.NewExplainOnlyGeneratorWithSchema(q.SchemaTemplate)
 }
 
 // javaEngine talks to the conformance Java server's `planSql` step

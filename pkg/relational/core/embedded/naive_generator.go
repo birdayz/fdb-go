@@ -4,12 +4,27 @@ import (
 	"context"
 	"database/sql/driver"
 	"fmt"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
 )
+
+// startsWithCreateSchemaTemplate reports whether ddl begins (after
+// leading whitespace) with the case-insensitive "CREATE SCHEMA
+// TEMPLATE" header. Used to decide whether buildSchemaTemplateFromDDL
+// must auto-wrap a bare body.
+func startsWithCreateSchemaTemplate(ddl string) bool {
+	t := strings.TrimSpace(ddl)
+	if len(t) < len("CREATE SCHEMA TEMPLATE") {
+		return false
+	}
+	return strings.EqualFold(t[:len("CREATE SCHEMA TEMPLATE")], "CREATE SCHEMA TEMPLATE")
+}
 
 // naiveGenerator is the Phase 1a implementation of query.Generator. It
 // parses SQL via the existing parser package, dispatches each parsed
@@ -35,10 +50,112 @@ type naiveGenerator struct {
 //
 // Catalog-aware predicate trees (`buildLogicalPlanFor*WithCatalog`
 // paths) require non-nil RecordMetaData; this constructor always
-// produces text-only logical plans. A future variant taking a synthetic
-// schema cache will unlock the catalog-aware branch for the harness.
+// produces text-only logical plans. Use NewExplainOnlyGeneratorWithSchema
+// to unlock the catalog-aware branch.
 func NewExplainOnlyGenerator() query.Generator {
 	return &naiveGenerator{c: &EmbeddedConnection{}}
+}
+
+// NewExplainOnlyGeneratorWithSchema is the catalog-aware companion to
+// NewExplainOnlyGenerator. It parses the supplied CREATE SCHEMA
+// TEMPLATE DDL into an in-memory RecordLayerSchemaTemplate (no FDB
+// write), wraps it in an api.Schema bound to a synthetic database +
+// schema, and seeds the connection's SchemaCache. Subsequent
+// statements planned through the returned Generator route through the
+// `buildLogicalPlanFor*WithCatalog` paths so WHERE clauses appear as
+// real cascades.predicates.QueryPredicate trees in the Explain output.
+//
+// schemaDDL must contain exactly one CREATE SCHEMA TEMPLATE
+// statement. Multiple-statement DDL or any non-CREATE-SCHEMA-TEMPLATE
+// shape returns an error — callers should isolate the schema DDL from
+// the SELECT/DML they intend to plan.
+//
+// Per RFC-022 §4.-1 Phase 3 — catalog-aware mode for the plan-
+// equivalence harness's Go side.
+func NewExplainOnlyGeneratorWithSchema(schemaDDL string) (query.Generator, error) {
+	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
+	if err != nil {
+		return nil, err
+	}
+	const dbPath = "/explain"
+	const schemaName = "s"
+	sess := &session.Session{
+		DBPath: dbPath,
+		Schema: schemaName,
+		SchemaCache: map[string]api.Schema{
+			session.SchemaCacheKey(dbPath, schemaName): tmpl.GenerateSchema(dbPath, schemaName),
+		},
+	}
+	return &naiveGenerator{c: &EmbeddedConnection{sess: sess}}, nil
+}
+
+// buildSchemaTemplateFromDDL parses schemaDDL as a single
+// CREATE SCHEMA TEMPLATE statement and builds a
+// RecordLayerSchemaTemplate without performing any catalog write.
+// Mirrors the in-memory portion of execCreateSchemaTemplate (the
+// parse + builder population). The Factory.SaveSchemaTemplate step
+// is deliberately skipped — this path is for the explain-only
+// harness, which has no FDB to write to.
+//
+// Bare bodies (a sequence of CREATE TABLE / CREATE INDEX clauses
+// without the surrounding `CREATE SCHEMA TEMPLATE <name>` header)
+// are accepted and auto-wrapped, matching the corpus shape used by
+// the conformance harness's Java side
+// (conformance/sql_plan_steps.java#planSql wraps the same body).
+func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
+	wrapped := schemaDDL
+	if !startsWithCreateSchemaTemplate(schemaDDL) {
+		wrapped = "CREATE SCHEMA TEMPLATE auto_template " + schemaDDL
+	}
+	root, err := parser.Parse(wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("parse schema DDL: %w", err)
+	}
+	stmts := root.Statements()
+	if stmts == nil {
+		return nil, fmt.Errorf("schema DDL must contain exactly one statement, got 0")
+	}
+	if len(stmts.AllStatement()) != 1 {
+		return nil, fmt.Errorf("schema DDL must contain exactly one statement, got %d",
+			len(stmts.AllStatement()))
+	}
+	create := stmts.AllStatement()[0].DdlStatement()
+	if create == nil {
+		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement")
+	}
+	cs := create.CreateStatement()
+	if cs == nil {
+		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement")
+	}
+	stCtx, ok := cs.(*antlrgen.CreateSchemaTemplateStatementContext)
+	if !ok {
+		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
+	}
+
+	templateID := stCtx.SchemaTemplateId().GetText()
+	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
+	for _, clause := range stCtx.AllTemplateClause() {
+		td := clause.TableDefinition()
+		if td == nil {
+			continue
+		}
+		tableName := td.Uid().GetText()
+		cols, pkCols, err := parseTableDefinition(td)
+		if err != nil {
+			return nil, fmt.Errorf("table %q: %w", tableName, err)
+		}
+		b.AddTable(tableName, cols, pkCols)
+	}
+	for _, clause := range stCtx.AllTemplateClause() {
+		idxDef := clause.IndexDefinition()
+		if idxDef == nil {
+			continue
+		}
+		if err := parseIndexDefinition(idxDef, b); err != nil {
+			return nil, fmt.Errorf("index: %w", err)
+		}
+	}
+	return b.Build()
 }
 
 // Plan parses the SQL and returns a Plan whose Execute dispatches to
@@ -127,7 +244,7 @@ func (g *naiveGenerator) planOne(stmt antlrgen.IStatementContext) (query.Plan, e
 				// When the session schema cache already holds the
 				// active schema, route through the catalog-aware
 				// builder so WHERE clauses become real
-				// cascades.QueryPredicate trees in the Explain
+				// cascades.predicates.QueryPredicate trees in the Explain
 				// output. Cold cache → text builder (deterministic
 				// fallback, never blocks on a catalog fetch).
 				if q := sel.Query(); q != nil {
@@ -288,7 +405,7 @@ func (g *naiveGenerator) planExplain(full antlrgen.IFullDescribeStatementContext
 // computeExplainText builds the plan-tree text for the inner
 // statement of an EXPLAIN. Routes through the catalog-aware builder
 // when the schema cache is warm (so WHERE clauses become
-// cascades.QueryPredicate trees) and falls back to the text builder
+// cascades.predicates.QueryPredicate trees) and falls back to the text builder
 // otherwise.
 func (g *naiveGenerator) computeExplainText(d *antlrgen.DescribeStatementsContext) string {
 	c := g.c

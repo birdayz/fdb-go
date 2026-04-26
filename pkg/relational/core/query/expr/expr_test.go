@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
@@ -40,14 +42,14 @@ func TestResolver_ResolveIdentifier_Bare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("name: %v", err)
 	}
-	fv, ok := v.(*cascades.FieldValue)
+	fv, ok := v.(*values.FieldValue)
 	if !ok {
 		t.Fatalf("expected *FieldValue, got %T", v)
 	}
 	if fv.Field != "NAME" {
 		t.Fatalf("Field: got %q, want NAME", fv.Field)
 	}
-	if fv.Typ != cascades.TypeString {
+	if fv.Typ != values.TypeString {
 		t.Fatalf("Typ: got %v, want TypeString", fv.Typ)
 	}
 }
@@ -61,17 +63,17 @@ func TestResolver_ResolveIdentifier_Qualified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("u.active: %v", err)
 	}
-	fv := v.(*cascades.FieldValue)
+	fv := v.(*values.FieldValue)
 	if fv.Field != "ACTIVE" {
 		t.Fatalf("Field: got %q", fv.Field)
 	}
-	if fv.Typ != cascades.TypeBool {
+	if fv.Typ != values.TypeBool {
 		t.Fatalf("Typ: got %v, want TypeBool", fv.Typ)
 	}
 }
 
 // sqlTypeToCascadesValueType is exercised via ResolveIdentifier (it's
-// unexported). Pin the SQL-string → cascades.ValueType mapping so
+// unexported). Pin the SQL-string → values.ValueType mapping so
 // any drift (including misses like the old BYTES→TypeInt lie) surfaces
 // at test time. Downstream comparators dispatch on ValueType; a bad
 // mapping would silently pick the wrong path.
@@ -97,21 +99,21 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	}
 	r := expr.New(a, s)
 
-	cases := map[string]cascades.ValueType{
-		"i":   cascades.TypeInt,
-		"s":   cascades.TypeString,
-		"e":   cascades.TypeString,
-		"b":   cascades.TypeBool,
-		"f":   cascades.TypeUnknown, // no TypeFloat yet
-		"by":  cascades.TypeUnknown, // no TypeBytes yet — prior code lied and said TypeInt
-		"rec": cascades.TypeUnknown, // no struct/record type yet
+	cases := map[string]values.ValueType{
+		"i":   values.TypeInt,
+		"s":   values.TypeString,
+		"e":   values.TypeString,
+		"b":   values.TypeBool,
+		"f":   values.TypeUnknown, // no TypeFloat yet
+		"by":  values.TypeUnknown, // no TypeBytes yet — prior code lied and said TypeInt
+		"rec": values.TypeUnknown, // no struct/record type yet
 	}
 	for col, want := range cases {
 		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))
 		if err != nil {
 			t.Fatalf("resolve %q: %v", col, err)
 		}
-		fv := v.(*cascades.FieldValue)
+		fv := v.(*values.FieldValue)
 		if fv.Typ != want {
 			t.Errorf("%s: got %v, want %v", col, fv.Typ, want)
 		}
@@ -141,14 +143,14 @@ func TestResolver_ResolveConstant(t *testing.T) {
 	cases := []struct {
 		name string
 		lit  any
-		want cascades.ValueType
+		want values.ValueType
 	}{
-		{"int64", int64(42), cascades.TypeInt},
-		{"int", 42, cascades.TypeInt},
-		{"int32", int32(42), cascades.TypeInt},
-		{"string", "hello", cascades.TypeString},
-		{"true", true, cascades.TypeBool},
-		{"false", false, cascades.TypeBool},
+		{"int64", int64(42), values.TypeInt},
+		{"int", 42, values.TypeInt},
+		{"int32", int32(42), values.TypeInt},
+		{"string", "hello", values.TypeString},
+		{"true", true, values.TypeBool},
+		{"false", false, values.TypeBool},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,7 +175,7 @@ func TestResolver_ResolveConstant_Nil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nil: %v", err)
 	}
-	if _, ok := v.(*cascades.NullValue); !ok {
+	if _, ok := v.(*values.NullValue); !ok {
 		t.Fatalf("nil should produce *NullValue, got %T", v)
 	}
 }
@@ -199,11 +201,11 @@ func TestResolver_ResolveConstant_Float(t *testing.T) {
 	if err != nil {
 		t.Fatalf("float64: %v", err)
 	}
-	cv, ok := v.(*cascades.ConstantValue)
+	cv, ok := v.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", v)
 	}
-	if cv.Typ != cascades.TypeFloat {
+	if cv.Typ != values.TypeFloat {
 		t.Fatalf("Typ: got %v, want TypeFloat", cv.Typ)
 	}
 	if cv.Value != float64(3.14) {
@@ -215,7 +217,7 @@ func TestResolver_ResolveConstant_Float(t *testing.T) {
 	if err != nil {
 		t.Fatalf("float32: %v", err)
 	}
-	cv32 := v32.(*cascades.ConstantValue)
+	cv32 := v32.(*values.ConstantValue)
 	if cv32.Value != float64(2.5) {
 		t.Fatalf("float32 widening: got %v", cv32.Value)
 	}
@@ -228,15 +230,15 @@ func TestResolver_ResolveArithmetic(t *testing.T) {
 
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	right, _ := r.ResolveConstant(int64(1))
-	v, err := r.ResolveArithmetic(cascades.OpAdd, left, right)
+	v, err := r.ResolveArithmetic(values.OpAdd, left, right)
 	if err != nil {
 		t.Fatalf("arith: %v", err)
 	}
-	av, ok := v.(*cascades.ArithmeticValue)
+	av, ok := v.(*values.ArithmeticValue)
 	if !ok {
 		t.Fatalf("expected *ArithmeticValue, got %T", v)
 	}
-	if av.Op != cascades.OpAdd {
+	if av.Op != values.OpAdd {
 		t.Fatalf("Op: got %v, want OpAdd", av.Op)
 	}
 	if av.Left == nil || av.Right == nil {
@@ -248,7 +250,7 @@ func TestResolver_ResolveArithmetic_NilOperand(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	if _, err := r.ResolveArithmetic(cascades.OpAdd, nil, nil); err == nil {
+	if _, err := r.ResolveArithmetic(values.OpAdd, nil, nil); err == nil {
 		t.Fatal("expected error for nil operands")
 	}
 }
@@ -260,18 +262,18 @@ func TestResolver_ResolveComparison(t *testing.T) {
 
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	right, _ := r.ResolveConstant(int64(5))
-	pred, err := r.ResolveComparison(cascades.ComparisonEquals, left, right)
+	pred, err := r.ResolveComparison(predicates.ComparisonEquals, left, right)
 	if err != nil {
 		t.Fatalf("cmp: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if cp.Comparison.Type != cascades.ComparisonEquals {
+	if cp.Comparison.Type != predicates.ComparisonEquals {
 		t.Fatalf("Type: got %v", cp.Comparison.Type)
 	}
-	rhsLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	rhsLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok || rhsLit != int64(5) {
 		t.Fatalf("Operand: got %v", cp.Comparison.Operand)
 	}
@@ -289,11 +291,11 @@ func TestResolver_ResolveComparison_NonConstantRHS(t *testing.T) {
 
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	rhs, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
-	pred, err := r.ResolveComparison(cascades.ComparisonEquals, left, rhs)
+	pred, err := r.ResolveComparison(predicates.ComparisonEquals, left, rhs)
 	if err != nil {
 		t.Fatalf("ResolveComparison: %v", err)
 	}
-	cp, ok := pred.(*cascades.ComparisonPredicate)
+	cp, ok := pred.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
@@ -313,8 +315,8 @@ func TestResolver_ResolveFunctionCall_CountStar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("COUNT(*): %v", err)
 	}
-	agg := v.(*cascades.AggregateValue)
-	if agg.Op != cascades.AggCountStar {
+	agg := v.(*values.AggregateValue)
+	if agg.Op != values.AggCountStar {
 		t.Fatalf("Op: got %v, want AggCountStar", agg.Op)
 	}
 	if agg.Operand != nil {
@@ -330,12 +332,12 @@ func TestResolver_ResolveFunctionCall_CountCol(t *testing.T) {
 	fc.RegisterDefaults()
 
 	arg, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
-	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("count"), false, []cascades.Value{arg})
+	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("count"), false, []values.Value{arg})
 	if err != nil {
 		t.Fatalf("COUNT(id): %v", err)
 	}
-	agg := v.(*cascades.AggregateValue)
-	if agg.Op != cascades.AggCount {
+	agg := v.(*values.AggregateValue)
+	if agg.Op != values.AggCount {
 		t.Fatalf("Op: got %v, want AggCount", agg.Op)
 	}
 }
@@ -348,11 +350,11 @@ func TestResolver_ResolveFunctionCall_Sum(t *testing.T) {
 	fc.RegisterDefaults()
 
 	arg, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
-	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("SUM"), false, []cascades.Value{arg})
+	v, err := r.ResolveFunctionCall(fc, semantic.NewUnquoted("SUM"), false, []values.Value{arg})
 	if err != nil {
 		t.Fatalf("SUM(id): %v", err)
 	}
-	if v.(*cascades.AggregateValue).Op != cascades.AggSum {
+	if v.(*values.AggregateValue).Op != values.AggSum {
 		t.Fatalf("Op mismatch")
 	}
 }
@@ -411,21 +413,21 @@ func TestResolver_ResolveCast(t *testing.T) {
 	r := expr.New(a, s)
 
 	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
-	v, err := r.ResolveCast(id, cascades.TypeString)
+	v, err := r.ResolveCast(id, values.TypeString)
 	if err != nil {
 		t.Fatalf("CAST: %v", err)
 	}
-	cv := v.(*cascades.CastValue)
-	if cv.Target != cascades.TypeString {
+	cv := v.(*values.CastValue)
+	if cv.Target != values.TypeString {
 		t.Fatalf("Target: got %v, want TypeString", cv.Target)
 	}
 
 	// Unknown target rejected.
-	if _, err := r.ResolveCast(id, cascades.TypeUnknown); err == nil {
+	if _, err := r.ResolveCast(id, values.TypeUnknown); err == nil {
 		t.Fatal("expected error for TypeUnknown target")
 	}
 	// Nil child rejected.
-	if _, err := r.ResolveCast(nil, cascades.TypeInt); err == nil {
+	if _, err := r.ResolveCast(nil, values.TypeInt); err == nil {
 		t.Fatal("expected error for nil child")
 	}
 }
@@ -440,16 +442,16 @@ func TestResolver_ResolveIsNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IS NULL: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonIsNull {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIsNull {
 		t.Fatalf("Type: got %v, want IsNull", cp.Comparison.Type)
 	}
 
 	// Evaluate.
-	if cp.Eval(map[string]any{"NAME": nil}) != cascades.TriTrue {
+	if cp.Eval(map[string]any{"NAME": nil}) != predicates.TriTrue {
 		t.Fatal("NULL IS NULL should be TRUE")
 	}
-	if cp.Eval(map[string]any{"NAME": "foo"}) != cascades.TriFalse {
+	if cp.Eval(map[string]any{"NAME": "foo"}) != predicates.TriFalse {
 		t.Fatal("'foo' IS NULL should be FALSE")
 	}
 }
@@ -464,7 +466,7 @@ func TestResolver_ResolveIsNotNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IS NOT NULL: %v", err)
 	}
-	if pred.(*cascades.ComparisonPredicate).Comparison.Type != cascades.ComparisonIsNotNull {
+	if pred.(*predicates.ComparisonPredicate).Comparison.Type != predicates.ComparisonIsNotNull {
 		t.Fatal("Type mismatch")
 	}
 }
@@ -480,11 +482,11 @@ func TestResolver_ResolveLike(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LIKE: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonLike {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatal("Type mismatch")
 	}
-	patLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	patLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok || patLit != "hel%" {
 		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
 	}
@@ -507,11 +509,11 @@ func TestResolver_ResolveStartsWith(t *testing.T) {
 	if err != nil {
 		t.Fatalf("STARTS_WITH: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonStartsWith {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonStartsWith {
 		t.Fatal("Type mismatch")
 	}
-	pfxLit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	pfxLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok || pfxLit != "hel" {
 		t.Fatalf("prefix: got %v", cp.Comparison.Operand)
 	}
@@ -527,15 +529,15 @@ func TestResolver_ResolveIn(t *testing.T) {
 	two, _ := r.ResolveConstant(int64(2))
 	three, _ := r.ResolveConstant(int64(3))
 
-	pred, err := r.ResolveIn(left, []cascades.Value{one, two, three})
+	pred, err := r.ResolveIn(left, []values.Value{one, two, three})
 	if err != nil {
 		t.Fatalf("IN: %v", err)
 	}
-	cp := pred.(*cascades.ComparisonPredicate)
-	if cp.Comparison.Type != cascades.ComparisonIn {
+	cp := pred.(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIn {
 		t.Fatalf("Type: got %v, want ComparisonIn", cp.Comparison.Type)
 	}
-	lit, ok := cascades.EvaluateConstant(cp.Comparison.Operand)
+	lit, ok := values.EvaluateConstant(cp.Comparison.Operand)
 	if !ok {
 		t.Fatalf("Operand not constant: %v", cp.Comparison.Operand)
 	}
@@ -549,11 +551,11 @@ func TestResolver_ResolveIn(t *testing.T) {
 
 	// Eval against a row.
 	row := map[string]any{"ID": int64(2)}
-	if cp.Eval(row) != cascades.TriTrue {
+	if cp.Eval(row) != predicates.TriTrue {
 		t.Fatal("2 IN (1,2,3) should be TRUE")
 	}
 	row["ID"] = int64(9)
-	if cp.Eval(row) != cascades.TriFalse {
+	if cp.Eval(row) != predicates.TriFalse {
 		t.Fatal("9 IN (1,2,3) should be FALSE")
 	}
 }
@@ -565,7 +567,7 @@ func TestResolver_ResolveIn_NonConstantRHS(t *testing.T) {
 
 	left, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	fieldRef, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("name"))
-	if _, err := r.ResolveIn(left, []cascades.Value{fieldRef}); err == nil {
+	if _, err := r.ResolveIn(left, []values.Value{fieldRef}); err == nil {
 		t.Fatal("expected error for non-constant IN element")
 	}
 }
@@ -586,23 +588,23 @@ func TestResolver_ResolveAnd(t *testing.T) {
 
 	// Empty → TRUE (AND identity).
 	p := r.ResolveAnd()
-	cp, ok := p.(*cascades.ConstantPredicate)
-	if !ok || cp.Value != cascades.TriTrue {
+	cp, ok := p.(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriTrue {
 		t.Fatalf("empty AND: got %T %v, want TRUE", p, p)
 	}
 
 	// Single predicate returns verbatim (no And wrapping).
-	inner := cascades.NewConstantPredicate(cascades.TriFalse)
-	if p := r.ResolveAnd(inner); p != cascades.QueryPredicate(inner) {
+	inner := predicates.NewConstantPredicate(predicates.TriFalse)
+	if p := r.ResolveAnd(inner); p != predicates.QueryPredicate(inner) {
 		t.Fatal("single-element AND should return the predicate verbatim")
 	}
 
 	// Multi wraps.
 	multi := r.ResolveAnd(
-		cascades.NewConstantPredicate(cascades.TriTrue),
-		cascades.NewConstantPredicate(cascades.TriFalse),
+		predicates.NewConstantPredicate(predicates.TriTrue),
+		predicates.NewConstantPredicate(predicates.TriFalse),
 	)
-	if _, ok := multi.(*cascades.AndPredicate); !ok {
+	if _, ok := multi.(*predicates.AndPredicate); !ok {
 		t.Fatalf("multi AND: got %T, want *AndPredicate", multi)
 	}
 }
@@ -613,8 +615,8 @@ func TestResolver_ResolveOr(t *testing.T) {
 	r := expr.New(a, s)
 
 	p := r.ResolveOr()
-	cp, ok := p.(*cascades.ConstantPredicate)
-	if !ok || cp.Value != cascades.TriFalse {
+	cp, ok := p.(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriFalse {
 		t.Fatalf("empty OR: got %T %v, want FALSE", p, p)
 	}
 }
@@ -626,15 +628,15 @@ func TestResolver_ResolveNot(t *testing.T) {
 
 	// Nil → UNKNOWN.
 	p := r.ResolveNot(nil)
-	cp, ok := p.(*cascades.ConstantPredicate)
-	if !ok || cp.Value != cascades.TriUnknown {
+	cp, ok := p.(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriUnknown {
 		t.Fatalf("nil NOT: got %T %v, want UNKNOWN", p, p)
 	}
 
 	// Wrapping.
-	inner := cascades.NewConstantPredicate(cascades.TriTrue)
+	inner := predicates.NewConstantPredicate(predicates.TriTrue)
 	wrapped := r.ResolveNot(inner)
-	if _, ok := wrapped.(*cascades.NotPredicate); !ok {
+	if _, ok := wrapped.(*predicates.NotPredicate); !ok {
 		t.Fatalf("expected NotPredicate, got %T", wrapped)
 	}
 }
@@ -650,12 +652,12 @@ func TestResolver_FeedsCascadesSimplify(t *testing.T) {
 	// (5 = 5)
 	five1, _ := r.ResolveConstant(int64(5))
 	five2, _ := r.ResolveConstant(int64(5))
-	tautology, _ := r.ResolveComparison(cascades.ComparisonEquals, five1, five2)
+	tautology, _ := r.ResolveComparison(predicates.ComparisonEquals, five1, five2)
 
 	// (id > 0)
 	id, _ := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted("id"))
 	zero, _ := r.ResolveConstant(int64(0))
-	nonFold, _ := r.ResolveComparison(cascades.ComparisonGreaterThan, id, zero)
+	nonFold, _ := r.ResolveComparison(predicates.ComparisonGreaterThan, id, zero)
 
 	// Combined AND.
 	combined := r.ResolveAnd(tautology, nonFold)
@@ -685,24 +687,24 @@ func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
 		t.Fatal(err)
 	}
 	one, _ := r.ResolveConstant(int64(1))
-	sum, err := r.ResolveArithmetic(cascades.OpAdd, idRef, one)
+	sum, err := r.ResolveArithmetic(values.OpAdd, idRef, one)
 	if err != nil {
 		t.Fatal(err)
 	}
 	five, _ := r.ResolveConstant(int64(5))
-	pred, err := r.ResolveComparison(cascades.ComparisonGreaterThan, sum, five)
+	pred, err := r.ResolveComparison(predicates.ComparisonGreaterThan, sum, five)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	row := map[string]any{"ID": int64(7)} // id+1 = 8 > 5 → TRUE
 	got := pred.Eval(row)
-	if got != cascades.TriTrue {
+	if got != predicates.TriTrue {
 		t.Fatalf("8 > 5: expected TRUE, got %v", got)
 	}
 	row["ID"] = int64(2) // 2+1 = 3 > 5 → FALSE
 	got = pred.Eval(row)
-	if got != cascades.TriFalse {
+	if got != predicates.TriFalse {
 		t.Fatalf("3 > 5: expected FALSE, got %v", got)
 	}
 

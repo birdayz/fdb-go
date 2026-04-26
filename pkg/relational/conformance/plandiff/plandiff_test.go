@@ -440,14 +440,14 @@ func TestSeedCorpus_BaselineHash(t *testing.T) {
 	ctx := context.Background()
 	report := Run(ctx, SeedCorpus(), NewGoEngine(), NewJavaEngine())
 	got := HashCorpus(report)
-	// swingshift-50 baseline. Deliberate planner / corpus changes
+	// nightshift-50 baseline. Deliberate planner / corpus changes
 	// require updating this constant. Run with `-v` to see the
 	// current hash diagnostic and copy the new value here.
-	// Last update: corpus extended from 26 → 35 queries
-	// (RIGHT OUTER JOIN, arithmetic / function / CASE projections,
-	// IN / EXISTS subqueries, recursive CTE, multi-aggregate
-	// GROUP BY, UNION DISTINCT).
-	const wantBaseline = "631267125aab018edc1687acec924f2e5af2070366c9bdcae77140f31918a877"
+	// Last update: corpus extended 39 → 41 queries — added
+	// `catalog_derived_table_where` (pins the derived-table WHERE
+	// path landed this shift) and `catalog_and_where` (multi-leaf
+	// catalog walker + simplifier composition).
+	const wantBaseline = "473f93b396abf52050f676c918749d0a823f8aeed6fc50beca7a0493baecfdc4"
 	if got != wantBaseline {
 		// Per-query report so the user sees WHICH query changed, not
 		// just "the corpus changed".

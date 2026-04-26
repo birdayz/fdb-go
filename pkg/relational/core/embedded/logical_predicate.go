@@ -10,7 +10,7 @@ package embedded
 // This file is the catalog-aware variant: when a *recordlayer.RecordMetaData
 // is in scope, WHERE clauses walk through expr.WalkPredicate (via
 // rlcatalog → semantic.Analyzer + Scope) and produce a real
-// cascades.QueryPredicate tree on LogicalFilter.Predicate alongside
+// predicates.QueryPredicate tree on LogicalFilter.Predicate alongside
 // the source text. Best-effort throughout — any walker error,
 // catalog miss, ambiguous column ref, or shape outside the walker's
 // support degrades to text fallback rather than failing the build.
@@ -39,7 +39,7 @@ import (
 	"strings"
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -49,7 +49,7 @@ import (
 )
 
 // buildWherePredicateForTable converts a WHERE expression context
-// into a cascades.QueryPredicate using the expr walker, with a
+// into a predicates.QueryPredicate using the expr walker, with a
 // single-source scope over the named table. Returns (nil, false) on
 // any shape the walker can't handle, on a catalog lookup miss, or
 // when metadata is nil.
@@ -66,7 +66,7 @@ func buildWherePredicateForTable(
 	md *recordlayer.RecordMetaData,
 	tableName, tableAlias string,
 	whereExpr antlrgen.IWhereExprContext,
-) (cascades.QueryPredicate, bool) {
+) (predicates.QueryPredicate, bool) {
 	if md == nil || tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
 		return nil, false
 	}
@@ -99,27 +99,162 @@ func buildWherePredicateForTable(
 	// Plan-time fold of constant Value sub-trees inside the predicate
 	// (`name = 1+2` → `name = 3`). Best-effort — SimplifyPredicateValues
 	// is pointer-stable when nothing folds.
-	pred = cascades.SimplifyPredicateValues(pred)
+	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
 // buildWherePredicate is the selectQuery-shaped adapter over the
 // walker. Single-table FROM uses buildWherePredicateForTable;
 // JOIN-shape FROM (sq.joins non-empty) builds a multi-source scope
-// — one ScopeSource per primary + JOIN. Derived tables still
-// decline (they need an inner-plan source, not a Table).
+// — one ScopeSource per primary + JOIN. Derived-table FROM routes
+// through buildWherePredicateForDerived which synthesises a virtual
+// ScopeSource from the inner query's projection schema (basic
+// shapes only — see buildDerivedTableSource).
 func buildWherePredicate(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
-) (cascades.QueryPredicate, bool) {
-	if sq == nil || sq.derivedQuery != nil {
+) (predicates.QueryPredicate, bool) {
+	if sq == nil {
 		return nil, false
+	}
+	if sq.derivedQuery != nil {
+		return buildWherePredicateForDerived(md, sq, whereExpr)
 	}
 	if len(sq.joins) == 0 {
 		return buildWherePredicateForTable(md, sq.tableName, sq.tableAlias, whereExpr)
 	}
 	return buildWherePredicateForJoins(md, sq, whereExpr)
+}
+
+// buildWherePredicateForDerived handles `FROM (SELECT ...) AS alias`.
+// Synthesises a virtual ScopeSource from the inner query's projection
+// schema (via buildDerivedTableSource — basic shapes only) and then
+// walks the WHERE under that scope.
+//
+// Anything richer than `(SELECT col1, col2 FROM realtable) AS alias`
+// — joins, derived-of-derived, SELECT *, aggregates, computed
+// projections — declines and the caller falls back to the text
+// builder. Phase 4.0 Type hierarchy port unlocks computed
+// projections (the seed has no way to infer the projected
+// expression's result type).
+func buildWherePredicateForDerived(
+	md *recordlayer.RecordMetaData,
+	sq *selectQuery,
+	whereExpr antlrgen.IWhereExprContext,
+) (predicates.QueryPredicate, bool) {
+	if md == nil || sq == nil || sq.tableName == "" || sq.derivedQuery == nil ||
+		whereExpr == nil || whereExpr.Expression() == nil {
+		return nil, false
+	}
+	src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery)
+	if !ok {
+		return nil, false
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+	if err := scope.AddSource(src); err != nil {
+		return nil, false
+	}
+	resolver := expr.New(analyzer, scope)
+	pred, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil {
+		return nil, false
+	}
+	pred = predicates.SimplifyPredicateValues(pred)
+	return pred, true
+}
+
+// buildDerivedTableSource synthesises a virtual ScopeSource for
+// `FROM (SELECT col1, col2 FROM realtable) AS alias`. Walks the inner
+// query's parse tree via extractFromQueryTerm, then builds a
+// semantic.StaticTable whose columns inherit the inner-table column
+// types. Anything outside the basic shape — derived-of-derived,
+// joins, SELECT *, aggregates, computed projections, qualified-star
+// projections — declines with (zero, false).
+//
+// alias is the outer FROM clause's alias for the derived table; the
+// virtual table's name + visibility are bound to that alias.
+func buildDerivedTableSource(
+	md *recordlayer.RecordMetaData,
+	alias string,
+	inner antlrgen.IQueryContext,
+) (semantic.ScopeSource, bool) {
+	if md == nil || alias == "" || inner == nil {
+		return semantic.ScopeSource{}, false
+	}
+	body, ok := inner.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return semantic.ScopeSource{}, false
+	}
+	innerSQ, err := extractFromQueryTerm(body)
+	if err != nil || innerSQ == nil {
+		return semantic.ScopeSource{}, false
+	}
+	// Decline shapes the seed can't safely synthesise a column schema for.
+	if innerSQ.derivedQuery != nil ||
+		len(innerSQ.joins) > 0 ||
+		innerSQ.projCols == nil || // SELECT *
+		len(innerSQ.aggCols) > 0 ||
+		innerSQ.countStar ||
+		innerSQ.tableName == "" {
+		return semantic.ScopeSource{}, false
+	}
+	for _, e := range innerSQ.projExprs {
+		if e != nil {
+			// Computed expression — type unknown without Phase 4.0 Type
+			// hierarchy. Decline so the caller falls back to text.
+			return semantic.ScopeSource{}, false
+		}
+	}
+	for _, qual := range innerSQ.projStarQualifiers {
+		if qual != "" {
+			return semantic.ScopeSource{}, false
+		}
+	}
+
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	innerTbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(innerSQ.tableName, "."), false))
+	if err != nil {
+		return semantic.ScopeSource{}, false
+	}
+
+	columns := make([]semantic.Column, 0, len(innerSQ.projCols))
+	for i, col := range innerSQ.projCols {
+		// Strip the qualifier from `t.col` references — projCols stores
+		// the raw text including any qualifier; the inner table's
+		// LookupColumn wants the bare name.
+		bareName := col
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			bareName = col[dot+1:]
+		}
+		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
+		if !found {
+			return semantic.ScopeSource{}, false
+		}
+		outName := bareName
+		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
+			outName = innerSQ.projAliases[i]
+		}
+		columns = append(columns, semantic.Column{
+			Id:       semantic.NewUnquoted(outName),
+			Type:     innerCol.Type,
+			Nullable: innerCol.Nullable,
+		})
+	}
+
+	aliasID := semantic.NewUnquoted(alias)
+	virtualTable := &semantic.StaticTable{
+		TableName:    semantic.FromSegments([]string{alias}, false),
+		TableColumns: columns,
+	}
+	return semantic.ScopeSource{
+		Table:           virtualTable,
+		Alias:           aliasID,
+		CorrelationName: aliasID.Name(),
+	}, true
 }
 
 // buildWherePredicateForJoins handles the JOIN case: builds a scope
@@ -135,7 +270,7 @@ func buildWherePredicateForJoins(
 	md *recordlayer.RecordMetaData,
 	sq *selectQuery,
 	whereExpr antlrgen.IWhereExprContext,
-) (cascades.QueryPredicate, bool) {
+) (predicates.QueryPredicate, bool) {
 	if md == nil || sq == nil || sq.tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
 		return nil, false
 	}
@@ -171,13 +306,13 @@ func buildWherePredicateForJoins(
 	if err != nil {
 		return nil, false
 	}
-	pred = cascades.SimplifyPredicateValues(pred)
+	pred = predicates.SimplifyPredicateValues(pred)
 	return pred, true
 }
 
 // buildLogicalPlanForSelectWithCatalog is the catalog-aware variant
 // of buildLogicalPlanForSelect. It walks the WHERE predicate through
-// the expr package and attaches a cascades.QueryPredicate tree to
+// the expr package and attaches a predicates.QueryPredicate tree to
 // LogicalFilter when the walker succeeds; on any walker failure the
 // filter falls back to the canonical source text (identical output
 // to buildLogicalPlanForSelect for the WHERE shape alone).
@@ -218,7 +353,7 @@ func buildLogicalPlanForSelectWithCatalog(sq *selectQuery, md *recordlayer.Recor
 // signals the invariant broke — tests assert on it so a future
 // builder change that drops the Filter doesn't silently throw
 // away the predicate.
-func upgradeFirstFilter(op logical.LogicalOperator, pred cascades.QueryPredicate) bool {
+func upgradeFirstFilter(op logical.LogicalOperator, pred predicates.QueryPredicate) bool {
 	for cur := op; cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
 			f.Predicate = pred

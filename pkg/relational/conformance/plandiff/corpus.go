@@ -171,5 +171,56 @@ func SeedCorpus() []Query {
 			Name: "select_group_by_multi_agg",
 			SQL:  "SELECT status, COUNT(*), SUM(price), AVG(price) FROM orders GROUP BY status",
 		},
+		// --- Catalog-aware shapes (RFC-022 §4.-1 Phase 3) -----------------
+		// These queries carry a SchemaTemplate so the Go side routes
+		// through buildLogicalPlanFor*WithCatalog and emits real
+		// cascades.predicates.QueryPredicate trees in Explain output. Without the
+		// SchemaTemplate the Go side falls back to text-only PredicateText
+		// — these entries are the regression sentinels for the
+		// catalog-aware rendering.
+		{
+			Name: "catalog_select_eq_filter",
+			SQL:  "SELECT id FROM Item WHERE val = 5",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			Name: "catalog_select_arith_filter",
+			SQL:  "SELECT id FROM Item WHERE val + 1 > 10",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			Name: "catalog_delete_filter",
+			SQL:  "DELETE FROM Item WHERE val = 0",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			Name: "catalog_update_filter",
+			SQL:  "UPDATE Item SET val = 100 WHERE id = 1",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			// Pins the derived-table WHERE path landed nightshift-50:
+			// `(SELECT col, col FROM real) AS x WHERE x.col = ?` synth-
+			// esises a virtual ScopeSource so the WHERE walks through
+			// the catalog-aware path (rather than degrading to text
+			// fallback as it did pre-this-shift).
+			Name: "catalog_derived_table_where",
+			SQL:  "SELECT id FROM (SELECT id, val FROM Item) AS x WHERE val = 5",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
+		{
+			// AND-chain WHERE — exercises the multi-leaf catalog walker
+			// + simplifier composition (each leaf goes through the
+			// walker, then the simplifier dedups / folds).
+			Name: "catalog_and_where",
+			SQL:  "SELECT id FROM Item WHERE val > 5 AND val < 100",
+			SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, val BIGINT, " +
+				"PRIMARY KEY (id))",
+		},
 	}
 }

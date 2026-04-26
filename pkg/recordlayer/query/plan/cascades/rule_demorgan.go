@@ -1,5 +1,10 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+)
+
 // DeMorganRule applies De Morgan's law to push a NOT past an AND or
 // OR boundary:
 //
@@ -18,7 +23,7 @@ package cascades
 // absorbing-element + leaf-NOT-rewrite. Use NormalizationRules() (or
 // build a custom rule list) when De Morgan is desired.
 type DeMorganRule struct {
-	matcher BindingMatcher
+	matcher matching.BindingMatcher
 }
 
 // NewDeMorganRule constructs the rule.
@@ -26,25 +31,25 @@ func NewDeMorganRule() *DeMorganRule {
 	return &DeMorganRule{matcher: newNotPredicateMatcher()}
 }
 
-func (r *DeMorganRule) Matcher() BindingMatcher { return r.matcher }
+func (r *DeMorganRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *DeMorganRule) OnMatch(call *RuleCall) {
-	not := call.Bindings.Get(r.matcher).(*NotPredicate)
+	not := call.Bindings.Get(r.matcher).(*predicates.NotPredicate)
 	switch child := not.Child.(type) {
-	case *AndPredicate:
+	case *predicates.AndPredicate:
 		// NOT(AND(...)) → OR(NOT ..., NOT ..., ...).
-		negated := make([]QueryPredicate, len(child.SubPredicates))
+		negated := make([]predicates.QueryPredicate, len(child.SubPredicates))
 		for i, sp := range child.SubPredicates {
-			negated[i] = &NotPredicate{Child: sp}
+			negated[i] = &predicates.NotPredicate{Child: sp}
 		}
-		call.Yield(&OrPredicate{SubPredicates: negated})
-	case *OrPredicate:
+		call.Yield(&predicates.OrPredicate{SubPredicates: negated})
+	case *predicates.OrPredicate:
 		// NOT(OR(...)) → AND(NOT ..., NOT ..., ...).
-		negated := make([]QueryPredicate, len(child.SubPredicates))
+		negated := make([]predicates.QueryPredicate, len(child.SubPredicates))
 		for i, sp := range child.SubPredicates {
-			negated[i] = &NotPredicate{Child: sp}
+			negated[i] = &predicates.NotPredicate{Child: sp}
 		}
-		call.Yield(&AndPredicate{SubPredicates: negated})
+		call.Yield(&predicates.AndPredicate{SubPredicates: negated})
 	default:
 		// NOT over a non-And/Or child — out of scope; let
 		// NotConstantSimplifyRule / NotComparisonRewriteRule handle

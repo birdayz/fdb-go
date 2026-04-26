@@ -6,7 +6,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -508,7 +508,7 @@ func TestUpgradeFirstFilter_Invariants(t *testing.T) {
 		"SELECT id, COUNT(*) FROM t WHERE id > 5 GROUP BY id",
 		"SELECT id FROM t WHERE id > 5 AND name = 'x'",
 	}
-	dummyPred := cascades.NewConstantPredicate(cascades.TriTrue)
+	dummyPred := predicates.NewConstantPredicate(predicates.TriTrue)
 	for _, sql := range cases {
 		t.Run(sql, func(t *testing.T) {
 			t.Parallel()

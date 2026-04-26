@@ -1,6 +1,11 @@
 package cascades
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
 
 var (
 	_ CascadesRule = (*AndConstantSimplifyRule)(nil)
@@ -20,21 +25,21 @@ var (
 func TestAndDedup_RemovesDuplicates(t *testing.T) {
 	t.Parallel()
 	rule := NewAndDedupRule()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "x", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "y", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "y", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	// Four children, two distinct: p and q.
-	and := NewAnd(p, p, q, p)
+	and := predicates.NewAnd(p, p, q, p)
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	deduped, ok := got[0].(*AndPredicate)
+	deduped, ok := got[0].(*predicates.AndPredicate)
 	if !ok || len(deduped.SubPredicates) != 2 {
 		t.Fatalf("expected AND with 2 children, got %v", got[0])
 	}
@@ -44,13 +49,13 @@ func TestAndDedup_RemovesDuplicates(t *testing.T) {
 func TestAndDedup_AllSameCollapses(t *testing.T) {
 	t.Parallel()
 	rule := NewAndDedupRule()
-	p := NewConstantPredicate(TriUnknown)
-	and := NewAnd(p, p, p)
+	p := predicates.NewConstantPredicate(predicates.TriUnknown)
+	and := predicates.NewAnd(p, p, p)
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	if got[0] != QueryPredicate(p) {
+	if got[0] != predicates.QueryPredicate(p) {
 		t.Fatalf("expected p, got %v", got[0])
 	}
 }
@@ -59,7 +64,7 @@ func TestAndDedup_AllSameCollapses(t *testing.T) {
 func TestAndDedup_NoChange(t *testing.T) {
 	t.Parallel()
 	rule := NewAndDedupRule()
-	and := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	and := predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewConstantPredicate(predicates.TriFalse))
 	if got := FireRule(rule, and); len(got) != 0 {
 		t.Fatalf("expected rule to decline, got %d yields", len(got))
 	}
@@ -69,13 +74,13 @@ func TestAndDedup_NoChange(t *testing.T) {
 func TestOrDedup_RemovesDuplicates(t *testing.T) {
 	t.Parallel()
 	rule := NewOrDedupRule()
-	p := NewConstantPredicate(TriUnknown)
-	or := NewOr(p, p, p)
+	p := predicates.NewConstantPredicate(predicates.TriUnknown)
+	or := predicates.NewOr(p, p, p)
 	got := FireRule(rule, or)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	if got[0] != QueryPredicate(p) {
+	if got[0] != predicates.QueryPredicate(p) {
 		t.Fatalf("expected p, got %v", got[0])
 	}
 }
@@ -87,14 +92,14 @@ func TestOrDedup_RemovesDuplicates(t *testing.T) {
 func TestOrDedup_PartialDedupKeepsRemaining(t *testing.T) {
 	t.Parallel()
 	rule := NewOrDedupRule()
-	p1 := NewConstantPredicate(TriTrue)
-	p2 := NewConstantPredicate(TriFalse)
-	or := NewOr(p1, p2, p1) // p1 appears twice
+	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
+	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
+	or := predicates.NewOr(p1, p2, p1) // p1 appears twice
 	got := FireRule(rule, or)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	out, ok := got[0].(*OrPredicate)
+	out, ok := got[0].(*predicates.OrPredicate)
 	if !ok {
 		t.Fatalf("expected *OrPredicate, got %T", got[0])
 	}
@@ -102,7 +107,7 @@ func TestOrDedup_PartialDedupKeepsRemaining(t *testing.T) {
 		t.Fatalf("expected 2 subpredicates after dedup, got %d", len(out.SubPredicates))
 	}
 	// First-occurrence order preserved.
-	if out.SubPredicates[0] != QueryPredicate(p1) || out.SubPredicates[1] != QueryPredicate(p2) {
+	if out.SubPredicates[0] != predicates.QueryPredicate(p1) || out.SubPredicates[1] != predicates.QueryPredicate(p2) {
 		t.Fatalf("dedup did not preserve first-occurrence order")
 	}
 }
@@ -114,7 +119,7 @@ func TestOrDedup_PartialDedupKeepsRemaining(t *testing.T) {
 func TestOrDedup_NoChange(t *testing.T) {
 	t.Parallel()
 	rule := NewOrDedupRule()
-	or := NewOr(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
+	or := predicates.NewOr(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewConstantPredicate(predicates.TriFalse))
 	if got := FireRule(rule, or); len(got) != 0 {
 		t.Fatalf("expected no yield (no dups), got %d", len(got))
 	}
@@ -126,15 +131,15 @@ func TestAndFlatten_NestedBecomesFlat(t *testing.T) {
 	t.Parallel()
 	rule := NewAndFlattenRule()
 	// AND(AND(a, b), c)  →  AND(a, b, c)
-	a := NewConstantPredicate(TriUnknown)
-	b := NewConstantPredicate(TriUnknown)
-	c := NewConstantPredicate(TriUnknown)
-	nested := NewAnd(NewAnd(a, b), c)
+	a := predicates.NewConstantPredicate(predicates.TriUnknown)
+	b := predicates.NewConstantPredicate(predicates.TriUnknown)
+	c := predicates.NewConstantPredicate(predicates.TriUnknown)
+	nested := predicates.NewAnd(predicates.NewAnd(a, b), c)
 	got := FireRule(rule, nested)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	flat, ok := got[0].(*AndPredicate)
+	flat, ok := got[0].(*predicates.AndPredicate)
 	if !ok || len(flat.SubPredicates) != 3 {
 		t.Fatalf("expected flat AND with 3 children, got %v", got[0])
 	}
@@ -144,7 +149,7 @@ func TestAndFlatten_NestedBecomesFlat(t *testing.T) {
 func TestAndFlatten_AlreadyFlat(t *testing.T) {
 	t.Parallel()
 	rule := NewAndFlattenRule()
-	flat := NewAnd(NewConstantPredicate(TriUnknown), NewConstantPredicate(TriUnknown))
+	flat := predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriUnknown), predicates.NewConstantPredicate(predicates.TriUnknown))
 	if got := FireRule(rule, flat); len(got) != 0 {
 		t.Fatalf("expected 0 yields, got %d", len(got))
 	}
@@ -154,15 +159,15 @@ func TestAndFlatten_AlreadyFlat(t *testing.T) {
 func TestOrFlatten_NestedBecomesFlat(t *testing.T) {
 	t.Parallel()
 	rule := NewOrFlattenRule()
-	a := NewConstantPredicate(TriUnknown)
-	b := NewConstantPredicate(TriUnknown)
-	c := NewConstantPredicate(TriUnknown)
-	nested := NewOr(NewOr(a, b), c)
+	a := predicates.NewConstantPredicate(predicates.TriUnknown)
+	b := predicates.NewConstantPredicate(predicates.TriUnknown)
+	c := predicates.NewConstantPredicate(predicates.TriUnknown)
+	nested := predicates.NewOr(predicates.NewOr(a, b), c)
 	got := FireRule(rule, nested)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	flat, ok := got[0].(*OrPredicate)
+	flat, ok := got[0].(*predicates.OrPredicate)
 	if !ok || len(flat.SubPredicates) != 3 {
 		t.Fatalf("expected flat OR with 3 children, got %v", got[0])
 	}
@@ -177,36 +182,36 @@ func TestComparisonConstSimplify_Folds(t *testing.T) {
 	cases := []struct {
 		name string
 		lhs  any
-		op   ComparisonType
+		op   predicates.ComparisonType
 		rhs  any
-		want TriBool
+		want predicates.TriBool
 	}{
-		{"5=5→TRUE", int64(5), ComparisonEquals, int64(5), TriTrue},
-		{"5=3→FALSE", int64(5), ComparisonEquals, int64(3), TriFalse},
-		{"5>3→TRUE", int64(5), ComparisonGreaterThan, int64(3), TriTrue},
-		{"1<2→TRUE", int64(1), ComparisonLessThan, int64(2), TriTrue},
-		{"NULL=1→UNKNOWN", nil, ComparisonEquals, int64(1), TriUnknown},
+		{"5=5→TRUE", int64(5), predicates.ComparisonEquals, int64(5), predicates.TriTrue},
+		{"5=3→FALSE", int64(5), predicates.ComparisonEquals, int64(3), predicates.TriFalse},
+		{"5>3→TRUE", int64(5), predicates.ComparisonGreaterThan, int64(3), predicates.TriTrue},
+		{"1<2→TRUE", int64(1), predicates.ComparisonLessThan, int64(2), predicates.TriTrue},
+		{"NULL=1→UNKNOWN", nil, predicates.ComparisonEquals, int64(1), predicates.TriUnknown},
 		// Round out the operator matrix so every ComparisonType this
 		// package ships has a documented fold.
-		{"5<>3→TRUE", int64(5), ComparisonNotEquals, int64(3), TriTrue},
-		{"5<>5→FALSE", int64(5), ComparisonNotEquals, int64(5), TriFalse},
-		{"5>=5→TRUE", int64(5), ComparisonGreaterThanEq, int64(5), TriTrue},
-		{"5<=5→TRUE", int64(5), ComparisonLessThanOrEq, int64(5), TriTrue},
-		{"5<=3→FALSE", int64(5), ComparisonLessThanOrEq, int64(3), TriFalse},
-		{"1=NULL→UNKNOWN", int64(1), ComparisonEquals, nil, TriUnknown},
+		{"5<>3→TRUE", int64(5), predicates.ComparisonNotEquals, int64(3), predicates.TriTrue},
+		{"5<>5→FALSE", int64(5), predicates.ComparisonNotEquals, int64(5), predicates.TriFalse},
+		{"5>=5→TRUE", int64(5), predicates.ComparisonGreaterThanEq, int64(5), predicates.TriTrue},
+		{"5<=5→TRUE", int64(5), predicates.ComparisonLessThanOrEq, int64(5), predicates.TriTrue},
+		{"5<=3→FALSE", int64(5), predicates.ComparisonLessThanOrEq, int64(3), predicates.TriFalse},
+		{"1=NULL→UNKNOWN", int64(1), predicates.ComparisonEquals, nil, predicates.TriUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pred := NewComparisonPredicate(
-				&ConstantValue{Value: tc.lhs, Typ: TypeInt},
-				Comparison{Type: tc.op, Operand: LiteralValue(tc.rhs)},
+			pred := predicates.NewComparisonPredicate(
+				&values.ConstantValue{Value: tc.lhs, Typ: values.TypeInt},
+				predicates.Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)},
 			)
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
-			cp, ok := got[0].(*ConstantPredicate)
+			cp, ok := got[0].(*predicates.ConstantPredicate)
 			if !ok {
 				t.Fatalf("expected ConstantPredicate, got %T", got[0])
 			}
@@ -225,27 +230,27 @@ func TestComparisonConstSimplify_UnaryIsNull(t *testing.T) {
 	rule := NewComparisonConstantSimplifyRule()
 	cases := []struct {
 		name    string
-		operand Value
-		op      ComparisonType
-		want    TriBool
+		operand values.Value
+		op      predicates.ComparisonType
+		want    predicates.TriBool
 	}{
-		{"NULL IS NULL → TRUE", NewNullValue(TypeInt), ComparisonIsNull, TriTrue},
-		{"NULL IS NOT NULL → FALSE", NewNullValue(TypeInt), ComparisonIsNotNull, TriFalse},
-		{"ConstantValue(5) IS NULL → FALSE", &ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonIsNull, TriFalse},
-		{"ConstantValue(5) IS NOT NULL → TRUE", &ConstantValue{Value: int64(5), Typ: TypeInt}, ComparisonIsNotNull, TriTrue},
-		{"ConstantValue(nil) IS NULL → TRUE", &ConstantValue{Value: nil, Typ: TypeInt}, ComparisonIsNull, TriTrue},
-		{"BooleanValue(true) IS NOT NULL → TRUE", NewBooleanValue(true), ComparisonIsNotNull, TriTrue},
-		{"BooleanValue(nil) IS NULL → TRUE", &BooleanValue{Value: nil}, ComparisonIsNull, TriTrue},
+		{"NULL IS NULL → TRUE", values.NewNullValue(values.TypeInt), predicates.ComparisonIsNull, predicates.TriTrue},
+		{"NULL IS NOT NULL → FALSE", values.NewNullValue(values.TypeInt), predicates.ComparisonIsNotNull, predicates.TriFalse},
+		{"ConstantValue(5) IS NULL → FALSE", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, predicates.ComparisonIsNull, predicates.TriFalse},
+		{"ConstantValue(5) IS NOT NULL → TRUE", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt}, predicates.ComparisonIsNotNull, predicates.TriTrue},
+		{"ConstantValue(nil) IS NULL → TRUE", &values.ConstantValue{Value: nil, Typ: values.TypeInt}, predicates.ComparisonIsNull, predicates.TriTrue},
+		{"BooleanValue(true) IS NOT NULL → TRUE", values.NewBooleanValue(true), predicates.ComparisonIsNotNull, predicates.TriTrue},
+		{"BooleanValue(nil) IS NULL → TRUE", &values.BooleanValue{Value: nil}, predicates.ComparisonIsNull, predicates.TriTrue},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pred := NewComparisonPredicate(tc.operand, Comparison{Type: tc.op})
+			pred := predicates.NewComparisonPredicate(tc.operand, predicates.Comparison{Type: tc.op})
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
-			cp, ok := got[0].(*ConstantPredicate)
+			cp, ok := got[0].(*predicates.ConstantPredicate)
 			if !ok || cp.Value != tc.want {
 				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
 			}
@@ -263,42 +268,42 @@ func TestComparisonConstSimplify_StartsWithAndIn(t *testing.T) {
 	cases := []struct {
 		name string
 		lhs  any
-		cmp  Comparison
-		want TriBool
+		cmp  predicates.Comparison
+		want predicates.TriBool
 	}{
 		{
 			"'hello' STARTS_WITH 'hel'", "hello",
-			Comparison{Type: ComparisonStartsWith, Operand: LiteralValue("hel")},
-			TriTrue,
+			predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("hel")},
+			predicates.TriTrue,
 		},
 		{
 			"'world' STARTS_WITH 'hel'", "world",
-			Comparison{Type: ComparisonStartsWith, Operand: LiteralValue("hel")},
-			TriFalse,
+			predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("hel")},
+			predicates.TriFalse,
 		},
 		{
 			"5 IN (1,5,9)", int64(5),
-			Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(5), int64(9)})},
-			TriTrue,
+			predicates.Comparison{Type: predicates.ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(5), int64(9)})},
+			predicates.TriTrue,
 		},
 		{
 			"5 IN (1,NULL)", int64(5),
-			Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), nil})},
-			TriUnknown,
+			predicates.Comparison{Type: predicates.ComparisonIn, Operand: values.LiteralValue([]any{int64(1), nil})},
+			predicates.TriUnknown,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pred := NewComparisonPredicate(
-				&ConstantValue{Value: tc.lhs, Typ: TypeString},
+			pred := predicates.NewComparisonPredicate(
+				&values.ConstantValue{Value: tc.lhs, Typ: values.TypeString},
 				tc.cmp,
 			)
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
-			cp, ok := got[0].(*ConstantPredicate)
+			cp, ok := got[0].(*predicates.ConstantPredicate)
 			if !ok || cp.Value != tc.want {
 				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
 			}
@@ -314,24 +319,24 @@ func TestComparisonConstSimplify_Like(t *testing.T) {
 		name    string
 		s       string
 		pattern string
-		want    TriBool
+		want    predicates.TriBool
 	}{
-		{"'hello' LIKE 'h_llo'", "hello", "h_llo", TriTrue},
-		{"'hello' LIKE 'w%d'", "hello", "w%d", TriFalse},
-		{"'hello' LIKE '%ll%'", "hello", "%ll%", TriTrue},
+		{"'hello' LIKE 'h_llo'", "hello", "h_llo", predicates.TriTrue},
+		{"'hello' LIKE 'w%d'", "hello", "w%d", predicates.TriFalse},
+		{"'hello' LIKE '%ll%'", "hello", "%ll%", predicates.TriTrue},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pred := NewComparisonPredicate(
-				&ConstantValue{Value: tc.s, Typ: TypeString},
-				Comparison{Type: ComparisonLike, Operand: LiteralValue(tc.pattern)},
+			pred := predicates.NewComparisonPredicate(
+				&values.ConstantValue{Value: tc.s, Typ: values.TypeString},
+				predicates.Comparison{Type: predicates.ComparisonLike, Operand: values.LiteralValue(tc.pattern)},
 			)
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
-			cp, ok := got[0].(*ConstantPredicate)
+			cp, ok := got[0].(*predicates.ConstantPredicate)
 			if !ok || cp.Value != tc.want {
 				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
 			}
@@ -347,40 +352,40 @@ func TestComparisonConstSimplify_IsDistinctFrom(t *testing.T) {
 	rule := NewComparisonConstantSimplifyRule()
 	cases := []struct {
 		name    string
-		operand Value
-		cmp     Comparison
-		want    TriBool
+		operand values.Value
+		cmp     predicates.Comparison
+		want    predicates.TriBool
 	}{
 		{
-			"NULL IS DISTINCT FROM NULL", NewNullValue(TypeInt),
-			Comparison{Type: ComparisonIsDistinctFrom, Operand: LiteralValue(nil)},
-			TriFalse,
+			"NULL IS DISTINCT FROM NULL", values.NewNullValue(values.TypeInt),
+			predicates.Comparison{Type: predicates.ComparisonIsDistinctFrom, Operand: values.LiteralValue(nil)},
+			predicates.TriFalse,
 		},
 		{
-			"NULL IS NOT DISTINCT FROM NULL", NewNullValue(TypeInt),
-			Comparison{Type: ComparisonNotDistinctFrom, Operand: LiteralValue(nil)},
-			TriTrue,
+			"NULL IS NOT DISTINCT FROM NULL", values.NewNullValue(values.TypeInt),
+			predicates.Comparison{Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(nil)},
+			predicates.TriTrue,
 		},
 		{
-			"5 IS NOT DISTINCT FROM 5", &ConstantValue{Value: int64(5), Typ: TypeInt},
-			Comparison{Type: ComparisonNotDistinctFrom, Operand: LiteralValue(int64(5))},
-			TriTrue,
+			"5 IS NOT DISTINCT FROM 5", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			predicates.Comparison{Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(int64(5))},
+			predicates.TriTrue,
 		},
 		{
-			"5 IS DISTINCT FROM NULL", &ConstantValue{Value: int64(5), Typ: TypeInt},
-			Comparison{Type: ComparisonIsDistinctFrom, Operand: LiteralValue(nil)},
-			TriTrue,
+			"5 IS DISTINCT FROM NULL", &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+			predicates.Comparison{Type: predicates.ComparisonIsDistinctFrom, Operand: values.LiteralValue(nil)},
+			predicates.TriTrue,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			pred := NewComparisonPredicate(tc.operand, tc.cmp)
+			pred := predicates.NewComparisonPredicate(tc.operand, tc.cmp)
 			got := FireRule(rule, pred)
 			if len(got) != 1 {
 				t.Fatalf("expected 1 yield, got %d", len(got))
 			}
-			cp, ok := got[0].(*ConstantPredicate)
+			cp, ok := got[0].(*predicates.ConstantPredicate)
 			if !ok || cp.Value != tc.want {
 				t.Fatalf("got %T %v, want ConstantPredicate(%v)", got[0], got[0], tc.want)
 			}
@@ -392,9 +397,9 @@ func TestComparisonConstSimplify_IsDistinctFrom(t *testing.T) {
 func TestComparisonConstSimplify_FieldWithIsNullDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
-	pred := NewComparisonPredicate(
-		&FieldValue{Field: "middle_name", Typ: TypeString},
-		Comparison{Type: ComparisonIsNull},
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "middle_name", Typ: values.TypeString},
+		predicates.Comparison{Type: predicates.ComparisonIsNull},
 	)
 	if got := FireRule(rule, pred); len(got) != 0 {
 		t.Fatalf("expected 0 yields (field operand), got %d", len(got))
@@ -405,9 +410,9 @@ func TestComparisonConstSimplify_FieldWithIsNullDeclines(t *testing.T) {
 func TestComparisonConstSimplify_FieldOperandDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewComparisonConstantSimplifyRule()
-	pred := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	if got := FireRule(rule, pred); len(got) != 0 {
 		t.Fatalf("expected 0 yields (field operand), got %d", len(got))
@@ -418,19 +423,19 @@ func TestNotSimplify_ConstantFold(t *testing.T) {
 	t.Parallel()
 	rule := NewNotConstantSimplifyRule()
 	cases := []struct {
-		in   TriBool
-		want TriBool
+		in   predicates.TriBool
+		want predicates.TriBool
 	}{
-		{TriTrue, TriFalse},
-		{TriFalse, TriTrue},
-		{TriUnknown, TriUnknown},
+		{predicates.TriTrue, predicates.TriFalse},
+		{predicates.TriFalse, predicates.TriTrue},
+		{predicates.TriUnknown, predicates.TriUnknown},
 	}
 	for _, tc := range cases {
-		got := FireRule(rule, NewNot(NewConstantPredicate(tc.in)))
+		got := FireRule(rule, predicates.NewNot(predicates.NewConstantPredicate(tc.in)))
 		if len(got) != 1 {
 			t.Fatalf("%v: expected 1 replacement, got %d", tc.in, len(got))
 		}
-		cp, ok := got[0].(*ConstantPredicate)
+		cp, ok := got[0].(*predicates.ConstantPredicate)
 		if !ok || cp.Value != tc.want {
 			t.Fatalf("%v: got %v, want ConstantPredicate(%v)", tc.in, got[0], tc.want)
 		}
@@ -441,12 +446,12 @@ func TestNotSimplify_ConstantFold(t *testing.T) {
 func TestNotSimplify_DoubleNegation(t *testing.T) {
 	t.Parallel()
 	rule := NewNotConstantSimplifyRule()
-	inner := NewConstantPredicate(TriUnknown)
-	got := FireRule(rule, NewNot(NewNot(inner)))
+	inner := predicates.NewConstantPredicate(predicates.TriUnknown)
+	got := FireRule(rule, predicates.NewNot(predicates.NewNot(inner)))
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
-	if got[0] != QueryPredicate(inner) {
+	if got[0] != predicates.QueryPredicate(inner) {
 		t.Fatalf("double-negation: expected inner predicate, got %T", got[0])
 	}
 }
@@ -455,10 +460,10 @@ func TestNotSimplify_DoubleNegation(t *testing.T) {
 func TestNotSimplify_NoChange(t *testing.T) {
 	t.Parallel()
 	rule := NewNotConstantSimplifyRule()
-	and := NewAnd(NewConstantPredicate(TriTrue))
+	and := predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue))
 	// NewNot(AndPredicate) — inner is neither ConstantPredicate nor
 	// another NotPredicate, so NotConstantSimplifyRule declines.
-	if got := FireRule(rule, NewNot(and)); len(got) != 0 {
+	if got := FireRule(rule, predicates.NewNot(and)); len(got) != 0 {
 		t.Fatalf("expected 0 yields, got %d", len(got))
 	}
 }
@@ -467,16 +472,16 @@ func TestNotSimplify_NoChange(t *testing.T) {
 func TestAndSimplify_AllTrueToConstant(t *testing.T) {
 	t.Parallel()
 	rule := NewAndConstantSimplifyRule()
-	and := NewAnd(
-		NewConstantPredicate(TriTrue),
-		NewConstantPredicate(TriTrue),
+	and := predicates.NewAnd(
+		predicates.NewConstantPredicate(predicates.TriTrue),
+		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
-	cp, ok := got[0].(*ConstantPredicate)
-	if !ok || cp.Value != TriTrue {
+	cp, ok := got[0].(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriTrue {
 		t.Fatalf("expected ConstantPredicate(TRUE), got %v", got[0])
 	}
 }
@@ -485,17 +490,17 @@ func TestAndSimplify_AllTrueToConstant(t *testing.T) {
 func TestAndSimplify_FalseShortCircuit(t *testing.T) {
 	t.Parallel()
 	rule := NewAndConstantSimplifyRule()
-	and := NewAnd(
-		NewConstantPredicate(TriTrue),
-		NewConstantPredicate(TriFalse),
-		NewConstantPredicate(TriTrue),
+	and := predicates.NewAnd(
+		predicates.NewConstantPredicate(predicates.TriTrue),
+		predicates.NewConstantPredicate(predicates.TriFalse),
+		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
-	cp, ok := got[0].(*ConstantPredicate)
-	if !ok || cp.Value != TriFalse {
+	cp, ok := got[0].(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriFalse {
 		t.Fatalf("expected ConstantPredicate(FALSE), got %v", got[0])
 	}
 }
@@ -508,18 +513,18 @@ func TestAndSimplify_DropTrueChildren(t *testing.T) {
 	// rule keeps it — only TRUE (identity-drop) and FALSE
 	// (absorbing) trigger folds. UNKNOWN-leaf stands in here for
 	// any predicate the rule treats as opaque.
-	leaf := NewConstantPredicate(TriUnknown)
-	and := NewAnd(
-		NewConstantPredicate(TriTrue),
+	leaf := predicates.NewConstantPredicate(predicates.TriUnknown)
+	and := predicates.NewAnd(
+		predicates.NewConstantPredicate(predicates.TriTrue),
 		leaf,
-		NewConstantPredicate(TriTrue),
+		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
 	// Single non-constant child remains — rule yields it directly.
-	if got[0] != QueryPredicate(leaf) {
+	if got[0] != predicates.QueryPredicate(leaf) {
 		t.Fatalf("expected the UNKNOWN leaf, got %T %v", got[0], got[0])
 	}
 }
@@ -528,8 +533,8 @@ func TestAndSimplify_DropTrueChildren(t *testing.T) {
 func TestAndSimplify_NoChange(t *testing.T) {
 	t.Parallel()
 	rule := NewAndConstantSimplifyRule()
-	leaf := NewConstantPredicate(TriUnknown)
-	and := NewAnd(leaf, leaf)
+	leaf := predicates.NewConstantPredicate(predicates.TriUnknown)
+	and := predicates.NewAnd(leaf, leaf)
 	got := FireRule(rule, and)
 	if len(got) != 0 {
 		t.Fatalf("expected rule to decline (0 yields), got %d", len(got))
@@ -540,16 +545,16 @@ func TestAndSimplify_NoChange(t *testing.T) {
 func TestOrSimplify_TrueShortCircuit(t *testing.T) {
 	t.Parallel()
 	rule := NewOrConstantSimplifyRule()
-	or := NewOr(
-		NewConstantPredicate(TriFalse),
-		NewConstantPredicate(TriTrue),
+	or := predicates.NewOr(
+		predicates.NewConstantPredicate(predicates.TriFalse),
+		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
 	got := FireRule(rule, or)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
-	cp, ok := got[0].(*ConstantPredicate)
-	if !ok || cp.Value != TriTrue {
+	cp, ok := got[0].(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriTrue {
 		t.Fatalf("expected ConstantPredicate(TRUE), got %v", got[0])
 	}
 }
@@ -559,17 +564,17 @@ func TestOrSimplify_TrueShortCircuit(t *testing.T) {
 func TestOrSimplify_DropFalseChildren(t *testing.T) {
 	t.Parallel()
 	rule := NewOrConstantSimplifyRule()
-	leaf := NewConstantPredicate(TriUnknown)
-	or := NewOr(
-		NewConstantPredicate(TriFalse),
+	leaf := predicates.NewConstantPredicate(predicates.TriUnknown)
+	or := predicates.NewOr(
+		predicates.NewConstantPredicate(predicates.TriFalse),
 		leaf,
-		NewConstantPredicate(TriFalse),
+		predicates.NewConstantPredicate(predicates.TriFalse),
 	)
 	got := FireRule(rule, or)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
-	if got[0] != QueryPredicate(leaf) {
+	if got[0] != predicates.QueryPredicate(leaf) {
 		t.Fatalf("expected the UNKNOWN leaf, got %T %v", got[0], got[0])
 	}
 }
@@ -579,8 +584,8 @@ func TestOrSimplify_DropFalseChildren(t *testing.T) {
 func TestOrSimplify_NoChange(t *testing.T) {
 	t.Parallel()
 	rule := NewOrConstantSimplifyRule()
-	leaf := NewConstantPredicate(TriUnknown)
-	or := NewOr(leaf, leaf)
+	leaf := predicates.NewConstantPredicate(predicates.TriUnknown)
+	or := predicates.NewOr(leaf, leaf)
 	got := FireRule(rule, or)
 	if len(got) != 0 {
 		t.Fatalf("expected rule to decline (0 yields), got %d", len(got))
@@ -591,16 +596,16 @@ func TestOrSimplify_NoChange(t *testing.T) {
 func TestOrSimplify_AllFalseToConstant(t *testing.T) {
 	t.Parallel()
 	rule := NewOrConstantSimplifyRule()
-	or := NewOr(
-		NewConstantPredicate(TriFalse),
-		NewConstantPredicate(TriFalse),
+	or := predicates.NewOr(
+		predicates.NewConstantPredicate(predicates.TriFalse),
+		predicates.NewConstantPredicate(predicates.TriFalse),
 	)
 	got := FireRule(rule, or)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 replacement, got %d", len(got))
 	}
-	cp, ok := got[0].(*ConstantPredicate)
-	if !ok || cp.Value != TriFalse {
+	cp, ok := got[0].(*predicates.ConstantPredicate)
+	if !ok || cp.Value != predicates.TriFalse {
 		t.Fatalf("expected ConstantPredicate(FALSE), got %v", got[0])
 	}
 }
@@ -610,7 +615,7 @@ func TestAndSimplify_WrongType(t *testing.T) {
 	t.Parallel()
 	rule := NewAndConstantSimplifyRule()
 	// Feed an OrPredicate — AND rule's matcher should bail.
-	or := NewOr(NewConstantPredicate(TriTrue))
+	or := predicates.NewOr(predicates.NewConstantPredicate(predicates.TriTrue))
 	if got := FireRule(rule, or); len(got) != 0 {
 		t.Fatalf("expected AND rule to not fire on OR, got %d yields", len(got))
 	}
@@ -620,20 +625,20 @@ func TestAndSimplify_WrongType(t *testing.T) {
 func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
-	and := NewAnd(p, NewOr(p, q))
+	and := predicates.NewAnd(p, predicates.NewOr(p, q))
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	if got[0] != QueryPredicate(p) {
+	if got[0] != predicates.QueryPredicate(p) {
 		t.Fatalf("expected p, got %T %v", got[0], got[0])
 	}
 }
@@ -648,31 +653,31 @@ func TestAndAbsorbOr_DropsRedundantOrChild(t *testing.T) {
 func TestAndAbsorbOr_KeepsMultipleSurvivors(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
-	r := NewComparisonPredicate(
-		&FieldValue{Field: "score", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))},
+	r := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "score", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))},
 	)
-	and := NewAnd(p, NewOr(p, q), r) // p AND (p OR q) AND r
+	and := predicates.NewAnd(p, predicates.NewOr(p, q), r) // p AND (p OR q) AND r
 	got := FireRule(rule, and)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	out, ok := got[0].(*AndPredicate)
+	out, ok := got[0].(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected AndPredicate, got %T", got[0])
 	}
 	if len(out.SubPredicates) != 2 {
 		t.Fatalf("expected 2 surviving children (p, r), got %d", len(out.SubPredicates))
 	}
-	if out.SubPredicates[0] != QueryPredicate(p) || out.SubPredicates[1] != QueryPredicate(r) {
+	if out.SubPredicates[0] != predicates.QueryPredicate(p) || out.SubPredicates[1] != predicates.QueryPredicate(r) {
 		t.Fatalf("survivors out of order: got [%T, %T]", out.SubPredicates[0], out.SubPredicates[1])
 	}
 }
@@ -680,19 +685,19 @@ func TestAndAbsorbOr_KeepsMultipleSurvivors(t *testing.T) {
 func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
 	t.Parallel()
 	rule := NewAndAbsorbOrRule()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
-	r := NewComparisonPredicate(
-		&FieldValue{Field: "score", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))},
+	r := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "score", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))},
 	)
-	and := NewAnd(p, NewOr(q, r))
+	and := predicates.NewAnd(p, predicates.NewOr(q, r))
 	if got := FireRule(rule, and); len(got) != 0 {
 		t.Fatalf("expected rule to decline, got %d yields", len(got))
 	}
@@ -702,20 +707,20 @@ func TestAndAbsorbOr_NoOpWhenNoSharedOperand(t *testing.T) {
 func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
 	t.Parallel()
 	rule := NewOrAbsorbAndRule()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
-	or := NewOr(p, NewAnd(p, q))
+	or := predicates.NewOr(p, predicates.NewAnd(p, q))
 	got := FireRule(rule, or)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	if got[0] != QueryPredicate(p) {
+	if got[0] != predicates.QueryPredicate(p) {
 		t.Fatalf("expected p, got %T %v", got[0], got[0])
 	}
 }
@@ -724,22 +729,22 @@ func TestOrAbsorbAnd_DropsRedundantAndChild(t *testing.T) {
 // dedup cooperation.
 func TestSimplify_Absorption_EndToEnd(t *testing.T) {
 	t.Parallel()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "rank", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(0))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(0))},
 	)
 	// AND(p, OR(p, q), TRUE) → AND(p, TRUE) → p.
-	pred := NewAnd(
+	pred := predicates.NewAnd(
 		p,
-		NewOr(p, q),
-		NewConstantPredicate(TriTrue),
+		predicates.NewOr(p, q),
+		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
 	got := Simplify(pred, DefaultSimplifyRules())
-	if got != QueryPredicate(p) {
+	if got != predicates.QueryPredicate(p) {
 		t.Fatalf("expected p to survive, got %T %s", got, got.Explain())
 	}
 }
@@ -748,22 +753,22 @@ func TestSimplify_Absorption_EndToEnd(t *testing.T) {
 func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
-	cp := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
+	cp := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 	)
-	got := FireRule(rule, NewNot(cp))
+	got := FireRule(rule, predicates.NewNot(cp))
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	out, ok := got[0].(*ComparisonPredicate)
+	out, ok := got[0].(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected ComparisonPredicate, got %T", got[0])
 	}
-	if out.Comparison.Type != ComparisonNotEquals {
+	if out.Comparison.Type != predicates.ComparisonNotEquals {
 		t.Fatalf("got %s, want <>", out.Comparison.Type.Symbol())
 	}
-	rhsLit, ok := EvaluateConstant(out.Comparison.Operand)
+	rhsLit, ok := values.EvaluateConstant(out.Comparison.Operand)
 	if !ok || rhsLit != int64(5) {
 		t.Fatalf("operand changed: got %v", out.Comparison.Operand)
 	}
@@ -773,16 +778,16 @@ func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 func TestNotComparisonRewrite_NegatesIsNull(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
-	cp := NewComparisonPredicate(
-		&FieldValue{Field: "email", Typ: TypeString},
-		Comparison{Type: ComparisonIsNull},
+	cp := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "email", Typ: values.TypeString},
+		predicates.Comparison{Type: predicates.ComparisonIsNull},
 	)
-	got := FireRule(rule, NewNot(cp))
+	got := FireRule(rule, predicates.NewNot(cp))
 	if len(got) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(got))
 	}
-	out := got[0].(*ComparisonPredicate)
-	if out.Comparison.Type != ComparisonIsNotNull {
+	out := got[0].(*predicates.ComparisonPredicate)
+	if out.Comparison.Type != predicates.ComparisonIsNotNull {
 		t.Fatalf("got %s, want IS NOT NULL", out.Comparison.Type.Symbol())
 	}
 }
@@ -792,11 +797,11 @@ func TestNotComparisonRewrite_NegatesIsNull(t *testing.T) {
 func TestNotComparisonRewrite_InDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
-	cp := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonIn, Operand: LiteralValue([]any{int64(1), int64(2)})},
+	cp := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2)})},
 	)
-	if got := FireRule(rule, NewNot(cp)); len(got) != 0 {
+	if got := FireRule(rule, predicates.NewNot(cp)); len(got) != 0 {
 		t.Fatalf("expected rule to decline, got %d yields", len(got))
 	}
 }
@@ -805,8 +810,8 @@ func TestNotComparisonRewrite_InDeclines(t *testing.T) {
 func TestNotComparisonRewrite_NonComparisonDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()
-	inner := NewAnd(NewConstantPredicate(TriTrue), NewConstantPredicate(TriFalse))
-	if got := FireRule(rule, NewNot(inner)); len(got) != 0 {
+	inner := predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewConstantPredicate(predicates.TriFalse))
+	if got := FireRule(rule, predicates.NewNot(inner)); len(got) != 0 {
 		t.Fatalf("expected rule to decline on NOT(AND), got %d yields", len(got))
 	}
 }
@@ -815,16 +820,16 @@ func TestNotComparisonRewrite_NonComparisonDeclines(t *testing.T) {
 // `age <> 18` and the outer NOT vanishes.
 func TestSimplify_NotComparisonEndToEnd(t *testing.T) {
 	t.Parallel()
-	age := &FieldValue{Field: "age", Typ: TypeInt}
+	age := &values.FieldValue{Field: "age", Typ: values.TypeInt}
 	got := Simplify(
-		NewNot(NewComparisonPredicate(age, Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(18))})),
+		predicates.NewNot(predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(18))})),
 		DefaultSimplifyRules(),
 	)
-	cp, ok := got.(*ComparisonPredicate)
+	cp, ok := got.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected ComparisonPredicate, got %T %s", got, got.Explain())
 	}
-	if cp.Comparison.Type != ComparisonLessThanOrEq {
+	if cp.Comparison.Type != predicates.ComparisonLessThanOrEq {
 		t.Fatalf("expected age <= 18, got %s", got.Explain())
 	}
 }

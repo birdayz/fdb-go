@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
@@ -70,27 +71,27 @@ func TestFullStack_Pipeline(t *testing.T) {
 	cases := []struct {
 		name string
 		row  row
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
 		{
 			name: "adult with name",
 			row:  row{"ID": int64(25), "NAME": "alice", "ACTIVE": true, "AGE": int64(30)},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "adult without name but active",
 			row:  row{"ID": int64(25), "NAME": nil, "ACTIVE": true, "AGE": int64(30)},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "adult without name and inactive",
 			row:  row{"ID": int64(25), "NAME": nil, "ACTIVE": false, "AGE": int64(30)},
-			want: cascades.TriFalse,
+			want: predicates.TriFalse,
 		},
 		{
 			name: "minor",
 			row:  row{"ID": int64(10), "NAME": "child", "ACTIVE": true, "AGE": int64(10)},
-			want: cascades.TriFalse,
+			want: predicates.TriFalse,
 		},
 	}
 	for _, tc := range cases {
@@ -107,7 +108,7 @@ func TestFullStack_Pipeline(t *testing.T) {
 	// 8. Bonus: `5 = 5` tautology should have been dropped by the
 	// simplifier — the surviving AND should have at most 2 children
 	// (id >= 18 AND (name IS NOT NULL OR active)).
-	and, ok := simplified.(*cascades.AndPredicate)
+	and, ok := simplified.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected AND at top, got %T", simplified)
 	}
@@ -148,79 +149,79 @@ func TestFullStack_RichPredicates(t *testing.T) {
 		name string
 		sql  string
 		row  map[string]any
-		want cascades.TriBool
+		want predicates.TriBool
 	}{
 		{
 			name: "BETWEEN hit",
 			sql:  "SELECT * FROM users WHERE id BETWEEN 10 AND 20",
 			row:  map[string]any{"ID": int64(15)},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "BETWEEN upper exclusive? no — SQL BETWEEN is inclusive",
 			sql:  "SELECT * FROM users WHERE id BETWEEN 10 AND 20",
 			row:  map[string]any{"ID": int64(20)},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "BETWEEN miss",
 			sql:  "SELECT * FROM users WHERE id BETWEEN 10 AND 20",
 			row:  map[string]any{"ID": int64(5)},
-			want: cascades.TriFalse,
+			want: predicates.TriFalse,
 		},
 		{
 			name: "IN list hit",
 			sql:  "SELECT * FROM users WHERE role IN ('admin', 'owner')",
 			row:  map[string]any{"ROLE": "owner"},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "IN list miss",
 			sql:  "SELECT * FROM users WHERE role IN ('admin', 'owner')",
 			row:  map[string]any{"ROLE": "viewer"},
-			want: cascades.TriFalse,
+			want: predicates.TriFalse,
 		},
 		{
 			name: "LIKE prefix",
 			sql:  "SELECT * FROM users WHERE name LIKE 'al%'",
 			row:  map[string]any{"NAME": "alice"},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "LIKE with single-char wildcard",
 			sql:  "SELECT * FROM users WHERE name LIKE 'b_b'",
 			row:  map[string]any{"NAME": "bob"},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "NOT IN list",
 			sql:  "SELECT * FROM users WHERE role NOT IN ('banned', 'guest')",
 			row:  map[string]any{"ROLE": "admin"},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "XOR true/false",
 			sql:  "SELECT * FROM users WHERE active XOR admin",
 			row:  map[string]any{"ACTIVE": true, "ADMIN": false},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "XOR NULL propagates to UNKNOWN",
 			sql:  "SELECT * FROM users WHERE active XOR admin",
 			row:  map[string]any{"ACTIVE": true, "ADMIN": nil},
-			want: cascades.TriUnknown,
+			want: predicates.TriUnknown,
 		},
 		{
 			name: "BETWEEN combined with IS NOT NULL",
 			sql:  "SELECT * FROM users WHERE id BETWEEN 1 AND 100 AND name IS NOT NULL",
 			row:  map[string]any{"ID": int64(42), "NAME": "alice"},
-			want: cascades.TriTrue,
+			want: predicates.TriTrue,
 		},
 		{
 			name: "NULL name breaks IS NOT NULL half",
 			sql:  "SELECT * FROM users WHERE id BETWEEN 1 AND 100 AND name IS NOT NULL",
 			row:  map[string]any{"ID": int64(42), "NAME": nil},
-			want: cascades.TriFalse,
+			want: predicates.TriFalse,
 		},
 	}
 	for _, tc := range cases {

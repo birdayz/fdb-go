@@ -1,4 +1,4 @@
-// Package expr is the parse-tree → cascades.Value resolver. It
+// Package expr is the parse-tree → values.Value resolver. It
 // bridges the two main Phase 3 seam packages:
 //
 //   - pkg/relational/core/query/semantic — identifier resolution,
@@ -67,7 +67,8 @@ import (
 	"fmt"
 	"sync"
 
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
 
@@ -145,7 +146,7 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // qualified identifier reference. qualifier may be the zero
 // Identifier for bare lookups.
 //
-// Currently produces a cascades.FieldValue for scope-resolved
+// Currently produces a values.FieldValue for scope-resolved
 // columns. Once QuantifiedObjectValue lookup lands in the logical-
 // builder, this will produce a FieldValue wrapping a
 // QuantifiedObjectValue to carry the source correlation.
@@ -160,12 +161,12 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 //
 // Returns the underlying semantic errors verbatim so callers can
 // match via errors.As.
-func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (cascades.Value, error) {
+func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.Value, error) {
 	col, _, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
 	if err != nil {
 		return nil, err
 	}
-	return &cascades.FieldValue{
+	return &values.FieldValue{
 		Field: col.Id.Name(),
 		Typ:   sqlTypeToCascadesValueType(col.Type),
 	}, nil
@@ -179,11 +180,11 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (cascade
 // Operand types aren't cross-checked in the seed (both assumed
 // int); real type inference replaces this when the Type hierarchy
 // port lands.
-func (r *Resolver) ResolveArithmetic(op cascades.ArithmeticOp, left, right cascades.Value) (cascades.Value, error) {
+func (r *Resolver) ResolveArithmetic(op values.ArithmeticOp, left, right values.Value) (values.Value, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveArithmetic: operand is nil")
 	}
-	return &cascades.ArithmeticValue{Op: op, Left: left, Right: right}, nil
+	return &values.ArithmeticValue{Op: op, Left: left, Right: right}, nil
 }
 
 // ResolveComparison wraps left/right Values in a cascades
@@ -202,11 +203,11 @@ func (r *Resolver) ResolveArithmetic(op cascades.ArithmeticOp, left, right casca
 // folds it to TRUE via ComparisonConstantSimplifyRule. Eager
 // folding here would hide foldable shapes from rule matchers that
 // expect to see them.
-func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cascades.Value) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right values.Value) (predicates.QueryPredicate, error) {
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
-	return cascades.NewComparisonPredicate(left, cascades.Comparison{
+	return predicates.NewComparisonPredicate(left, predicates.Comparison{
 		Type: op, Operand: right,
 	}), nil
 }
@@ -214,37 +215,37 @@ func (r *Resolver) ResolveComparison(op cascades.ComparisonType, left, right cas
 // ResolveCast wraps v in a CastValue with the target type. Rejects
 // nil child (programmer error) and TypeUnknown target (use the
 // direct Value if the target is genuinely unknown).
-func (r *Resolver) ResolveCast(v cascades.Value, target cascades.ValueType) (cascades.Value, error) {
+func (r *Resolver) ResolveCast(v values.Value, target values.ValueType) (values.Value, error) {
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveCast: child is nil")
 	}
-	if target == cascades.TypeUnknown {
+	if target == values.TypeUnknown {
 		return nil, fmt.Errorf("expr.ResolveCast: target TypeUnknown")
 	}
-	return cascades.NewCastValue(v, target), nil
+	return values.NewCastValue(v, target), nil
 }
 
 // ResolveIsNull builds `v IS NULL`. Unary — Comparison.Operand is
 // nil (Eval ignores it for unary types).
-func (r *Resolver) ResolveIsNull(v cascades.Value) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveIsNull(v values.Value) (predicates.QueryPredicate, error) {
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveIsNull: operand is nil")
 	}
-	return cascades.NewComparisonPredicate(v, cascades.Comparison{Type: cascades.ComparisonIsNull}), nil
+	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNull}), nil
 }
 
 // ResolveIsNotNull builds `v IS NOT NULL`. Unary.
-func (r *Resolver) ResolveIsNotNull(v cascades.Value) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveIsNotNull(v values.Value) (predicates.QueryPredicate, error) {
 	if v == nil {
 		return nil, fmt.Errorf("expr.ResolveIsNotNull: operand is nil")
 	}
-	return cascades.NewComparisonPredicate(v, cascades.Comparison{Type: cascades.ComparisonIsNotNull}), nil
+	return predicates.NewComparisonPredicate(v, predicates.Comparison{Type: predicates.ComparisonIsNotNull}), nil
 }
 
 // ResolveLike builds `lhs LIKE pattern`. Pattern must be a plan-time
 // constant string (parameter-bound patterns land with the
 // parameter-Comparison design).
-func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveLike(lhs values.Value, pattern values.Value) (predicates.QueryPredicate, error) {
 	return r.ResolveLikeWithEscape(lhs, pattern, 0)
 }
 
@@ -252,11 +253,11 @@ func (r *Resolver) ResolveLike(lhs cascades.Value, pattern cascades.Value) (casc
 // equivalent to ResolveLike. Pattern must be a plan-time constant
 // string. The escape rune is carried verbatim on the resulting
 // Comparison.
-func (r *Resolver) ResolveLikeWithEscape(lhs cascades.Value, pattern cascades.Value, escape rune) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveLikeWithEscape(lhs values.Value, pattern values.Value, escape rune) (predicates.QueryPredicate, error) {
 	if lhs == nil || pattern == nil {
 		return nil, fmt.Errorf("expr.ResolveLike: operand is nil")
 	}
-	lit, ok := cascades.EvaluateConstant(pattern)
+	lit, ok := values.EvaluateConstant(pattern)
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a constant in the seed; got %T", pattern)
 	}
@@ -264,20 +265,20 @@ func (r *Resolver) ResolveLikeWithEscape(lhs cascades.Value, pattern cascades.Va
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveLike: pattern must be a string; got %T", lit)
 	}
-	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-		Type:    cascades.ComparisonLike,
-		Operand: cascades.LiteralValue(s),
+	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
+		Type:    predicates.ComparisonLike,
+		Operand: values.LiteralValue(s),
 		Escape:  escape,
 	}), nil
 }
 
 // ResolveStartsWith builds `lhs STARTS_WITH prefix`. Prefix must be
 // a constant string.
-func (r *Resolver) ResolveStartsWith(lhs cascades.Value, prefix cascades.Value) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveStartsWith(lhs values.Value, prefix values.Value) (predicates.QueryPredicate, error) {
 	if lhs == nil || prefix == nil {
 		return nil, fmt.Errorf("expr.ResolveStartsWith: operand is nil")
 	}
-	lit, ok := cascades.EvaluateConstant(prefix)
+	lit, ok := values.EvaluateConstant(prefix)
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveStartsWith: prefix must be a constant in the seed; got %T", prefix)
 	}
@@ -285,74 +286,74 @@ func (r *Resolver) ResolveStartsWith(lhs cascades.Value, prefix cascades.Value) 
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveStartsWith: prefix must be a string; got %T", lit)
 	}
-	return cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-		Type: cascades.ComparisonStartsWith, Operand: cascades.LiteralValue(s),
+	return predicates.NewComparisonPredicate(lhs, predicates.Comparison{
+		Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue(s),
 	}), nil
 }
 
 // ResolveIn builds a ComparisonPredicate{ComparisonIn} from a left
 // Value and a list of constant RHS values. Every RHS must be a
-// plan-time constant (per cascades.EvaluateConstant); non-constant
+// plan-time constant (per values.EvaluateConstant); non-constant
 // elements return an error so callers lift the expression-based
 // IN-list to the value-space form explicitly.
 //
 // The RHS Operand is a []any of evaluated literals.
-func (r *Resolver) ResolveIn(left cascades.Value, rhs []cascades.Value) (cascades.QueryPredicate, error) {
+func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.QueryPredicate, error) {
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
 	list := make([]any, 0, len(rhs))
 	for i, v := range rhs {
-		lit, ok := cascades.EvaluateConstant(v)
+		lit, ok := values.EvaluateConstant(v)
 		if !ok {
 			return nil, fmt.Errorf("expr.ResolveIn: element %d is not constant (%T)", i, v)
 		}
 		list = append(list, lit)
 	}
-	return cascades.NewComparisonPredicate(left, cascades.Comparison{
-		Type:    cascades.ComparisonIn,
-		Operand: &cascades.ConstantValue{Value: list, Typ: cascades.TypeUnknown},
+	return predicates.NewComparisonPredicate(left, predicates.Comparison{
+		Type:    predicates.ComparisonIn,
+		Operand: &values.ConstantValue{Value: list, Typ: values.TypeUnknown},
 	}), nil
 }
 
 // ResolveAnd combines N predicates via Kleene AND. A single
 // predicate returns verbatim (no wrapping); empty list returns
 // ConstantPredicate(TRUE) — the AND identity.
-func (r *Resolver) ResolveAnd(preds ...cascades.QueryPredicate) cascades.QueryPredicate {
+func (r *Resolver) ResolveAnd(preds ...predicates.QueryPredicate) predicates.QueryPredicate {
 	switch len(preds) {
 	case 0:
-		return cascades.NewConstantPredicate(cascades.TriTrue)
+		return predicates.NewConstantPredicate(predicates.TriTrue)
 	case 1:
 		return preds[0]
 	}
-	return cascades.NewAnd(preds...)
+	return predicates.NewAnd(preds...)
 }
 
 // ResolveOr combines N predicates via Kleene OR. Empty list returns
 // ConstantPredicate(FALSE) — the OR identity. Single predicate
 // returns verbatim.
-func (r *Resolver) ResolveOr(preds ...cascades.QueryPredicate) cascades.QueryPredicate {
+func (r *Resolver) ResolveOr(preds ...predicates.QueryPredicate) predicates.QueryPredicate {
 	switch len(preds) {
 	case 0:
-		return cascades.NewConstantPredicate(cascades.TriFalse)
+		return predicates.NewConstantPredicate(predicates.TriFalse)
 	case 1:
 		return preds[0]
 	}
-	return cascades.NewOr(preds...)
+	return predicates.NewOr(preds...)
 }
 
 // ResolveNot wraps a predicate in a Kleene NOT. Nil child returns
 // ConstantPredicate(UNKNOWN) — the only sensible interpretation.
-func (r *Resolver) ResolveNot(pred cascades.QueryPredicate) cascades.QueryPredicate {
+func (r *Resolver) ResolveNot(pred predicates.QueryPredicate) predicates.QueryPredicate {
 	if pred == nil {
-		return cascades.NewConstantPredicate(cascades.TriUnknown)
+		return predicates.NewConstantPredicate(predicates.TriUnknown)
 	}
-	return cascades.NewNot(pred)
+	return predicates.NewNot(pred)
 }
 
 // ResolveFunctionCall dispatches a function call against the given
 // catalogue. For known aggregates (COUNT/SUM/MIN/MAX/AVG) it returns
-// the corresponding cascades.AggregateValue. Scalar function support
+// the corresponding values.AggregateValue. Scalar function support
 // comes once the scalar-function catalogue is wired in.
 //
 // isStar=true signals the argument was `*` (COUNT(*)) — args must be
@@ -361,8 +362,8 @@ func (r *Resolver) ResolveFunctionCall(
 	funcCatalog *semantic.FunctionCatalog,
 	name semantic.Identifier,
 	isStar bool,
-	args []cascades.Value,
-) (cascades.Value, error) {
+	args []values.Value,
+) (values.Value, error) {
 	if funcCatalog == nil {
 		return nil, fmt.Errorf("expr.ResolveFunctionCall: function catalog is nil")
 	}
@@ -390,55 +391,55 @@ func (r *Resolver) ResolveFunctionCall(
 	if !ok {
 		return nil, fmt.Errorf("expr.ResolveFunctionCall: unknown aggregate %s", spec.Name)
 	}
-	if op == cascades.AggCountStar {
-		return cascades.NewAggregateValue(op, nil), nil
+	if op == values.AggCountStar {
+		return values.NewAggregateValue(op, nil), nil
 	}
-	return cascades.NewAggregateValue(op, args[0]), nil
+	return values.NewAggregateValue(op, args[0]), nil
 }
 
 // aggregateOpForName maps a normalized aggregate function name +
-// star flag to the corresponding cascades.AggregateOp. Not exported
+// star flag to the corresponding values.AggregateOp. Not exported
 // — called via ResolveFunctionCall.
-func aggregateOpForName(name string, isStar bool) (cascades.AggregateOp, bool) {
+func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 	switch name {
 	case "COUNT":
 		if isStar {
-			return cascades.AggCountStar, true
+			return values.AggCountStar, true
 		}
-		return cascades.AggCount, true
+		return values.AggCount, true
 	case "SUM":
-		return cascades.AggSum, true
+		return values.AggSum, true
 	case "MIN":
-		return cascades.AggMin, true
+		return values.AggMin, true
 	case "MAX":
-		return cascades.AggMax, true
+		return values.AggMax, true
 	case "AVG":
-		return cascades.AggAvg, true
+		return values.AggAvg, true
 	}
-	return cascades.AggInvalid, false
+	return values.AggInvalid, false
 }
 
 // sqlTypeToCascadesValueType maps the seed's string-valued SQL type
-// (from semantic.Column.Type) to cascades.ValueType. Coarse — the
+// (from semantic.Column.Type) to values.ValueType. Coarse — the
 // seed ValueType enum has only Int / String / Bool; everything else
 // falls through to TypeUnknown. Real type inference lands with the
 // Type hierarchy port.
-func sqlTypeToCascadesValueType(sqlType string) cascades.ValueType {
+func sqlTypeToCascadesValueType(sqlType string) values.ValueType {
 	switch sqlType {
 	case "INT":
-		return cascades.TypeInt
+		return values.TypeInt
 	case "STRING", "ENUM":
-		return cascades.TypeString
+		return values.TypeString
 	case "BOOL":
-		return cascades.TypeBool
+		return values.TypeBool
 	case "FLOAT", "BYTES", "RECORD":
 		// Seed enum lacks dedicated Float/Bytes/Record types. Fall
 		// through to Unknown rather than silently lie about INT / STRING
 		// representation — a mistyped column at the resolver boundary
 		// would cascade into wrong comparator picks downstream.
-		return cascades.TypeUnknown
+		return values.TypeUnknown
 	}
-	return cascades.TypeUnknown
+	return values.TypeUnknown
 }
 
 // ResolveConstant wraps a Go-native literal in a cascades
@@ -453,24 +454,24 @@ func sqlTypeToCascadesValueType(sqlType string) cascades.ValueType {
 // int-only Eval (mixed-type arith returns nil per the seed
 // contract — a real arithmetic-over-float requires the Type
 // hierarchy port to set up coercion).
-func (r *Resolver) ResolveConstant(lit any) (cascades.Value, error) {
+func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	switch v := lit.(type) {
 	case nil:
-		return cascades.NewNullValue(cascades.TypeUnknown), nil
+		return values.NewNullValue(values.TypeUnknown), nil
 	case bool:
-		return cascades.NewBooleanValue(v), nil
+		return values.NewBooleanValue(v), nil
 	case int:
-		return &cascades.ConstantValue{Value: int64(v), Typ: cascades.TypeInt}, nil
+		return &values.ConstantValue{Value: int64(v), Typ: values.TypeInt}, nil
 	case int32:
-		return &cascades.ConstantValue{Value: int64(v), Typ: cascades.TypeInt}, nil
+		return &values.ConstantValue{Value: int64(v), Typ: values.TypeInt}, nil
 	case int64:
-		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeInt}, nil
+		return &values.ConstantValue{Value: v, Typ: values.TypeInt}, nil
 	case string:
-		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeString}, nil
+		return &values.ConstantValue{Value: v, Typ: values.TypeString}, nil
 	case float32:
-		return &cascades.ConstantValue{Value: float64(v), Typ: cascades.TypeFloat}, nil
+		return &values.ConstantValue{Value: float64(v), Typ: values.TypeFloat}, nil
 	case float64:
-		return &cascades.ConstantValue{Value: v, Typ: cascades.TypeFloat}, nil
+		return &values.ConstantValue{Value: v, Typ: values.TypeFloat}, nil
 	}
 	return nil, fmt.Errorf("expr.ResolveConstant: unsupported literal type %T", lit)
 }

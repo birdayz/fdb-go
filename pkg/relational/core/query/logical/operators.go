@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // --- Leaf operators (no children) ----------------------------------
@@ -46,14 +46,14 @@ func (s *LogicalScan) Explain(indent string) string {
 // naive_generator Explain path, which has no transaction in scope).
 type LogicalFilter struct {
 	Input         LogicalOperator
-	Predicate     cascades.QueryPredicate // preferred when non-nil
-	PredicateText string                  // source-text fallback
+	Predicate     predicates.QueryPredicate // preferred when non-nil
+	PredicateText string                    // source-text fallback
 }
 
 // NewFilter constructs a text-only LogicalFilter — used by the
 // non-catalog-aware logical-builder path where only canonical
 // source text is available. Pair with NewFilterWithPredicate when
-// a cascades.QueryPredicate tree is in scope (catalog-aware
+// a predicates.QueryPredicate tree is in scope (catalog-aware
 // builder); the predicate-tree form takes precedence in Explain
 // output when both are set.
 func NewFilter(input LogicalOperator, pred string) *LogicalFilter {
@@ -65,7 +65,7 @@ func NewFilter(input LogicalOperator, pred string) *LogicalFilter {
 // diagnostics so Explain output stays stable even when the
 // Predicate render differs from the source text (e.g. after
 // tautology-folding).
-func NewFilterWithPredicate(input LogicalOperator, pred cascades.QueryPredicate, text string) *LogicalFilter {
+func NewFilterWithPredicate(input LogicalOperator, pred predicates.QueryPredicate, text string) *LogicalFilter {
 	return &LogicalFilter{Input: input, Predicate: pred, PredicateText: text}
 }
 

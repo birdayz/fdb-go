@@ -1,6 +1,12 @@
 package cascades
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // Micro-benchmarks for the Phase 4.0 cascades seed. These aren't
 // a performance gate today — they're here so subsequent shifts can
@@ -8,14 +14,14 @@ import "testing"
 // land.
 
 func BenchmarkConstantValue_Evaluate(b *testing.B) {
-	v := &ConstantValue{Value: int64(42), Typ: TypeInt}
+	v := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
 	for i := 0; i < b.N; i++ {
 		_ = v.Evaluate(nil)
 	}
 }
 
 func BenchmarkFieldValue_Evaluate(b *testing.B) {
-	v := &FieldValue{Field: "age", Typ: TypeInt}
+	v := &values.FieldValue{Field: "age", Typ: values.TypeInt}
 	row := map[string]any{"age": int64(30)}
 	for i := 0; i < b.N; i++ {
 		_ = v.Evaluate(row)
@@ -24,17 +30,17 @@ func BenchmarkFieldValue_Evaluate(b *testing.B) {
 
 func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 	// (a + b) * (c - d)
-	v := &ArithmeticValue{
-		Op: OpMul,
-		Left: &ArithmeticValue{
-			Op:    OpAdd,
-			Left:  &FieldValue{Field: "a", Typ: TypeInt},
-			Right: &FieldValue{Field: "b", Typ: TypeInt},
+	v := &values.ArithmeticValue{
+		Op: values.OpMul,
+		Left: &values.ArithmeticValue{
+			Op:    values.OpAdd,
+			Left:  &values.FieldValue{Field: "a", Typ: values.TypeInt},
+			Right: &values.FieldValue{Field: "b", Typ: values.TypeInt},
 		},
-		Right: &ArithmeticValue{
-			Op:    OpSub,
-			Left:  &FieldValue{Field: "c", Typ: TypeInt},
-			Right: &FieldValue{Field: "d", Typ: TypeInt},
+		Right: &values.ArithmeticValue{
+			Op:    values.OpSub,
+			Left:  &values.FieldValue{Field: "c", Typ: values.TypeInt},
+			Right: &values.FieldValue{Field: "d", Typ: values.TypeInt},
 		},
 	}
 	row := map[string]any{"a": int64(3), "b": int64(4), "c": int64(10), "d": int64(5)}
@@ -44,9 +50,9 @@ func BenchmarkArithmeticValue_Evaluate(b *testing.B) {
 }
 
 func BenchmarkComparisonPredicate_Eval(b *testing.B) {
-	pred := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	row := map[string]any{"age": int64(30)}
 	for i := 0; i < b.N; i++ {
@@ -63,9 +69,9 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 // both fields. Eval reads both LHS and RHS via map lookup before
 // EvalAgainst's int64 promotion and comparison.
 func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
-	pred := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: &FieldValue{Field: "cutoff", Typ: TypeInt}},
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.TypeInt}},
 	)
 	row := map[string]any{"age": int64(18), "cutoff": int64(18)}
 	for i := 0; i < b.N; i++ {
@@ -75,13 +81,13 @@ func BenchmarkComparisonPredicate_Eval_NonConstantRHS(b *testing.B) {
 
 func BenchmarkKleeneAnd_Eval(b *testing.B) {
 	// (age >= 18) AND (rank < 5) AND (score > 50)
-	tree := NewAnd(
-		NewComparisonPredicate(&FieldValue{Field: "age", Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))}),
-		NewComparisonPredicate(&FieldValue{Field: "rank", Typ: TypeInt},
-			Comparison{Type: ComparisonLessThan, Operand: LiteralValue(int64(5))}),
-		NewComparisonPredicate(&FieldValue{Field: "score", Typ: TypeInt},
-			Comparison{Type: ComparisonGreaterThan, Operand: LiteralValue(int64(50))}),
+	tree := predicates.NewAnd(
+		predicates.NewComparisonPredicate(&values.FieldValue{Field: "age", Typ: values.TypeInt},
+			predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))}),
+		predicates.NewComparisonPredicate(&values.FieldValue{Field: "rank", Typ: values.TypeInt},
+			predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
+		predicates.NewComparisonPredicate(&values.FieldValue{Field: "score", Typ: values.TypeInt},
+			predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(50))}),
 	)
 	row := map[string]any{"age": int64(30), "rank": int64(3), "score": int64(80)}
 	for i := 0; i < b.N; i++ {
@@ -96,15 +102,15 @@ func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
 	// which matters for the stated regression-detection goal.
 	b.ReportAllocs()
 	// Match `ArithmeticValue(Add, ConstantValue, FieldValue)`.
-	lhs := NewConstantMatcher()
-	rhs := NewFieldMatcher()
-	matcher := &ArithmeticMatcher{Op: OpAdd, Left: lhs, Right: rhs}
-	expr := &ArithmeticValue{
-		Op:    OpAdd,
-		Left:  &ConstantValue{Value: int64(5), Typ: TypeInt},
-		Right: &FieldValue{Field: "x", Typ: TypeInt},
+	lhs := matching.NewConstantMatcher()
+	rhs := matching.NewFieldMatcher()
+	matcher := &matching.ArithmeticMatcher{Op: values.OpAdd, Left: lhs, Right: rhs}
+	expr := &values.ArithmeticValue{
+		Op:    values.OpAdd,
+		Left:  &values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		Right: &values.FieldValue{Field: "x", Typ: values.TypeInt},
 	}
-	outer := NewBindings()
+	outer := matching.NewBindings()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, expr)
 	}
@@ -113,9 +119,9 @@ func BenchmarkArithmeticMatcher_BindMatches(b *testing.B) {
 func BenchmarkAllOf_BindMatches(b *testing.B) {
 	b.ReportAllocs()
 	// AllOf(ConstantMatcher, AnyValue) against a ConstantValue.
-	pattern := NewAllOf("ConstantValue", NewConstantMatcher(), NewAnyValue())
-	cv := &ConstantValue{Value: int64(7), Typ: TypeInt}
-	outer := NewBindings()
+	pattern := matching.NewAllOf("ConstantValue", matching.NewConstantMatcher(), matching.NewAnyValue())
+	cv := &values.ConstantValue{Value: int64(7), Typ: values.TypeInt}
+	outer := matching.NewBindings()
 	for i := 0; i < b.N; i++ {
 		_ = pattern.BindMatches(outer, cv)
 	}
@@ -127,25 +133,25 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 // known capstone.
 func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	b.ReportAllocs()
-	agePred := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	agePred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	// Build fresh each iter — Simplify sees a pristine tree, not a
 	// memoised folded one.
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {
-		pred := NewAnd(
-			NewAnd(
-				NewComparisonPredicate(
-					&ConstantValue{Value: int64(5), Typ: TypeInt},
-					Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(5))},
+		pred := predicates.NewAnd(
+			predicates.NewAnd(
+				predicates.NewComparisonPredicate(
+					&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+					predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))},
 				),
-				NewNot(NewNot(NewConstantPredicate(TriTrue))),
+				predicates.NewNot(predicates.NewNot(predicates.NewConstantPredicate(predicates.TriTrue))),
 			),
 			agePred,
 			agePred,
-			NewConstantPredicate(TriTrue),
+			predicates.NewConstantPredicate(predicates.TriTrue),
 		)
 		_ = Simplify(pred, rules)
 	}
@@ -157,18 +163,18 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 // shift post-compaction).
 func BenchmarkSimplify_Absorption(b *testing.B) {
 	b.ReportAllocs()
-	p := NewComparisonPredicate(
-		&FieldValue{Field: "a", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))},
+	p := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "a", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	)
-	q := NewComparisonPredicate(
-		&FieldValue{Field: "b", Typ: TypeInt},
-		Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(2))},
+	q := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "b", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))},
 	)
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {
 		// Fresh per-iteration so we don't memoise.
-		pred := NewAnd(p, NewOr(p, q))
+		pred := predicates.NewAnd(p, predicates.NewOr(p, q))
 		_ = Simplify(pred, rules)
 	}
 }
@@ -179,13 +185,13 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 // host-bind alloc counts.
 func BenchmarkListMatcher_BindMatches(b *testing.B) {
 	b.ReportAllocs()
-	matcher := NewListMatcher(NewConstantMatcher(), NewFieldMatcher(), NewConstantMatcher())
+	matcher := matching.NewListMatcher(matching.NewConstantMatcher(), matching.NewFieldMatcher(), matching.NewConstantMatcher())
 	in := []any{
-		&ConstantValue{Value: int64(1), Typ: TypeInt},
-		&FieldValue{Field: "x", Typ: TypeInt},
-		&ConstantValue{Value: int64(2), Typ: TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+		&values.FieldValue{Field: "x", Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
 	}
-	outer := NewBindings()
+	outer := matching.NewBindings()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, in)
 	}
@@ -195,15 +201,15 @@ func BenchmarkListMatcher_BindMatches(b *testing.B) {
 // cost of the all-same-downstream matcher. 5 elements, all match.
 func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 	b.ReportAllocs()
-	matcher := NewAllElementsMatcher(NewConstantMatcher())
+	matcher := matching.NewAllElementsMatcher(matching.NewConstantMatcher())
 	in := []any{
-		&ConstantValue{Value: int64(1), Typ: TypeInt},
-		&ConstantValue{Value: int64(2), Typ: TypeInt},
-		&ConstantValue{Value: int64(3), Typ: TypeInt},
-		&ConstantValue{Value: int64(4), Typ: TypeInt},
-		&ConstantValue{Value: int64(5), Typ: TypeInt},
+		&values.ConstantValue{Value: int64(1), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(2), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(3), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(4), Typ: values.TypeInt},
+		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
 	}
-	outer := NewBindings()
+	outer := matching.NewBindings()
 	for i := 0; i < b.N; i++ {
 		_ = matcher.BindMatches(outer, in)
 	}
@@ -215,14 +221,14 @@ func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 // extra rule set's overhead vs DefaultSimplifyRules-only.
 func BenchmarkSimplify_DeMorgan(b *testing.B) {
 	b.ReportAllocs()
-	a := &FieldValue{Field: "a", Typ: TypeInt}
-	bb := &FieldValue{Field: "b", Typ: TypeInt}
+	a := &values.FieldValue{Field: "a", Typ: values.TypeInt}
+	bb := &values.FieldValue{Field: "b", Typ: values.TypeInt}
 	rules := NormalizationRules()
 	for i := 0; i < b.N; i++ {
 		// Fresh tree per iter — Simplify mutates via rebuild.
-		pred := NewNot(NewAnd(
-			NewComparisonPredicate(a, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(1))}),
-			NewComparisonPredicate(bb, Comparison{Type: ComparisonEquals, Operand: LiteralValue(int64(2))}),
+		pred := predicates.NewNot(predicates.NewAnd(
+			predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))}),
+			predicates.NewComparisonPredicate(bb, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))}),
 		))
 		_ = Simplify(pred, rules)
 	}
@@ -233,9 +239,9 @@ func BenchmarkSimplify_DeMorgan(b *testing.B) {
 // pays per predicate that can't be folded.
 func BenchmarkSimplify_NoOp(b *testing.B) {
 	b.ReportAllocs()
-	pred := NewComparisonPredicate(
-		&FieldValue{Field: "age", Typ: TypeInt},
-		Comparison{Type: ComparisonGreaterThanEq, Operand: LiteralValue(int64(18))},
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "age", Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {

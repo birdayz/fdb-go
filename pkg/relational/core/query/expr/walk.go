@@ -5,12 +5,13 @@ import (
 	"strconv"
 	"strings"
 
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
 
-// WalkExpression is the parse-tree → cascades.Value entry point.
+// WalkExpression is the parse-tree → values.Value entry point.
 // For expressions that are semantically boolean predicates (bare
 // column comparisons, AND/OR/NOT), use WalkPredicate instead —
 // WalkExpression returns a Value, not a QueryPredicate.
@@ -36,7 +37,7 @@ import (
 //
 // Everything else returns UnsupportedExpressionShapeError so the
 // caller can fall back to the existing logical-builder path.
-func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades.Value, error) {
+func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
@@ -52,11 +53,11 @@ func (r *Resolver) WalkExpression(ctx antlrgen.IExpressionContext) (cascades.Val
 
 // walkAtom dispatches concrete ExpressionAtom variants. Returns a
 // Value OR — for BinaryComparisonPredicate atoms — a
-// *cascades.ComparisonPredicate wrapped as a Value, since the
+// *predicates.ComparisonPredicate wrapped as a Value, since the
 // grammar treats binary comparisons as atoms but the analyzer
 // surfaces them as predicates. Callers should type-switch the
 // return to pick up both shapes.
-func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Value, error) {
+func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (values.Value, error) {
 	if atom == nil {
 		return nil, fmt.Errorf("expr.walkAtom: nil atom")
 	}
@@ -75,7 +76,7 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 	case *antlrgen.MathExpressionAtomContext:
 		// `a + b`, `a * b`, etc. Recurse on both operands and
 		// resolve via ResolveArithmetic. MOD / DIV / MODULE +
-		// integer div are not wired yet — cascades.ArithmeticOp
+		// integer div are not wired yet — values.ArithmeticOp
 		// doesn't expose them.
 		return r.walkMathExpression(a)
 	case *antlrgen.FunctionCallExpressionAtomContext:
@@ -89,7 +90,7 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 	case *antlrgen.PreparedStatementParameterAtomContext:
 		// `?` (positional) or `?name` / `$name` (named, per the
 		// grammar's NAMED_PARAMETER rule [?$][A-Za-z]…) prepared-
-		// statement parameter. Surfaces as a cascades.ParameterValue
+		// statement parameter. Surfaces as a values.ParameterValue
 		// — Operand composes through the comparison resolver,
 		// IsConstantValue declines, ExplainValue renders `?N` /
 		// `?name` for plan-cache keying.
@@ -109,7 +110,7 @@ func (r *Resolver) walkAtom(atom antlrgen.IExpressionAtomContext) (cascades.Valu
 // statement-wide cursor today). The seed assigns ordinal 0 and
 // records the literal text — sufficient for plan-time wiring; the
 // per-statement counter lands when the binder is plumbed.
-func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameterContext) (cascades.Value, error) {
+func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameterContext) (values.Value, error) {
 	if pp == nil {
 		return nil, fmt.Errorf("expr.walkPreparedParameter: nil")
 	}
@@ -128,7 +129,7 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 		if len(text) < 2 || (text[0] != '?' && text[0] != '$') {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("NAMED_PARAMETER token %q", text)}
 		}
-		return cascades.NewNamedParameterValue(text[1:]), nil
+		return values.NewNamedParameterValue(text[1:]), nil
 	}
 	if ppc.QUESTION() != nil {
 		// 1-based ordinal, statement-scoped — matches Go's
@@ -139,7 +140,7 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 		// bind values share one cache entry, but `WHERE x=? AND y=?`
 		// stays distinct from `WHERE x=?`.
 		r.nextOrdinal++
-		return cascades.NewParameterValue(r.nextOrdinal), nil
+		return values.NewParameterValue(r.nextOrdinal), nil
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: "PreparedStatementParameter with no QUESTION/NAMED_PARAMETER"}
 }
@@ -151,7 +152,7 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 // Uses the Resolver's cached FunctionCatalog (built lazily on first
 // use, or provided via NewWithFunctionCatalog) so the walker
 // amortises catalog construction across calls.
-func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.Value, error) {
+func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Value, error) {
 	if fc == nil {
 		return nil, fmt.Errorf("expr.walkFunctionCall: nil")
 	}
@@ -184,7 +185,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 	fcat := r.functionCatalog()
 	// COUNT(*) — the `STAR()` accessor, which I cross-checked earlier.
 	isStar := awfc.STAR() != nil
-	var args []cascades.Value
+	var args []values.Value
 	if !isStar && awfc.FunctionArg() != nil {
 		// FunctionArg wraps an expression or a * sentinel — we only
 		// walk the expression form; the star path is the isStar flag.
@@ -199,7 +200,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 		if err != nil {
 			return nil, err
 		}
-		args = []cascades.Value{v}
+		args = []values.Value{v}
 	}
 	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
 }
@@ -209,7 +210,7 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (cascades.
 // (CASE, current_user, EXTRACT, …) returns an
 // UnsupportedExpressionShapeError so the logical-builder text
 // fallback catches it.
-func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (cascades.Value, error) {
+func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (values.Value, error) {
 	if sf == nil {
 		return nil, fmt.Errorf("expr.walkSpecificFunction: nil")
 	}
@@ -261,7 +262,7 @@ func (r *Resolver) walkSpecificFunction(sf antlrgen.ISpecificFunctionContext) (c
 // Args walk through the standard WalkExpression dispatch so nested
 // expressions (`UPPER(name)`, `LENGTH(CAST(x AS STRING))`) compose
 // without further plumbing.
-func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (cascades.Value, error) {
+func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (values.Value, error) {
 	if s == nil {
 		return nil, fmt.Errorf("expr.walkScalarFunction: nil")
 	}
@@ -273,7 +274,7 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (ca
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("scalar function %q (not in seed catalogue)", name)}
 	}
-	args := []cascades.Value{}
+	args := []values.Value{}
 	if fa := s.FunctionArgs(); fa != nil {
 		fac, ok := fa.(*antlrgen.FunctionArgsContext)
 		if !ok {
@@ -294,7 +295,7 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (ca
 			args = append(args, v)
 		}
 	}
-	return cascades.NewScalarFunctionValue(name, typ, args...), nil
+	return values.NewScalarFunctionValue(name, typ, args...), nil
 }
 
 // scalarFunctionResultType returns the result type of a seed scalar
@@ -305,46 +306,46 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (ca
 // input — int input stays int, float input stays float. Once the Type
 // hierarchy port lands the walker will infer per-arg types and surface
 // the precise result type instead.
-func scalarFunctionResultType(name string) (cascades.ValueType, bool) {
+func scalarFunctionResultType(name string) (values.ValueType, bool) {
 	switch name {
 	case "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
 		"CONCAT", "CONCAT_WS", "SUBSTRING", "SUBSTR", "REPLACE",
 		"REVERSE", "LEFT", "RIGHT":
-		return cascades.TypeString, true
+		return values.TypeString, true
 	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH", "OCTET_LENGTH",
 		"POSITION":
-		return cascades.TypeInt, true
+		return values.TypeInt, true
 	case "SQRT", "POWER", "POW", "EXP", "LN", "LOG", "PI":
-		return cascades.TypeFloat, true
+		return values.TypeFloat, true
 	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND",
 		"SIGN", "MOD",
 		"COALESCE", "NULLIF", "IFNULL",
 		"IF", "IIF", "GREATEST", "LEAST":
-		return cascades.TypeUnknown, true
+		return values.TypeUnknown, true
 	}
-	return cascades.TypeUnknown, false
+	return values.TypeUnknown, false
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
-// cascades.ValueType. FLOAT / DOUBLE / BYTES / UUID / VECTOR aren't
+// values.ValueType. FLOAT / DOUBLE / BYTES / UUID / VECTOR aren't
 // in the seed ValueType enum (Phase 4.0 Type hierarchy port) — they
 // return (_, false) so the walker declines.
-func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (cascades.ValueType, bool) {
+func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.ValueType, bool) {
 	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
 	if !ok {
-		return cascades.TypeUnknown, false
+		return values.TypeUnknown, false
 	}
 	switch {
 	case ptc.INTEGER() != nil, ptc.BIGINT() != nil:
-		return cascades.TypeInt, true
+		return values.TypeInt, true
 	case ptc.STRING() != nil:
-		return cascades.TypeString, true
+		return values.TypeString, true
 	case ptc.BOOLEAN() != nil:
-		return cascades.TypeBool, true
+		return values.TypeBool, true
 	case ptc.FLOAT() != nil, ptc.DOUBLE() != nil:
-		return cascades.TypeFloat, true
+		return values.TypeFloat, true
 	}
-	return cascades.TypeUnknown, false
+	return values.TypeUnknown, false
 }
 
 // aggregateFunctionName reads which terminal is present on the
@@ -367,12 +368,12 @@ func aggregateFunctionName(awf *antlrgen.AggregateWindowedFunctionContext) (stri
 }
 
 // walkMathExpression walks an arithmetic atom (`a + b`, `a * b`)
-// into a cascades.ArithmeticValue. Operator resolution reads the
+// into a values.ArithmeticValue. Operator resolution reads the
 // MathOperator context's terminal tokens. MOD / MODULE / DIV
-// (integer division) aren't mapped to cascades.ArithmeticOp yet —
+// (integer division) aren't mapped to values.ArithmeticOp yet —
 // the cascades enum covers +, -, *, / and grows with the Type
 // hierarchy port.
-func (r *Resolver) walkMathExpression(m *antlrgen.MathExpressionAtomContext) (cascades.Value, error) {
+func (r *Resolver) walkMathExpression(m *antlrgen.MathExpressionAtomContext) (values.Value, error) {
 	op, err := arithmeticOpFromCtx(m.MathOperator())
 	if err != nil {
 		return nil, err
@@ -390,22 +391,22 @@ func (r *Resolver) walkMathExpression(m *antlrgen.MathExpressionAtomContext) (ca
 
 // arithmeticOpFromCtx reads the MathOperator terminal tokens.
 // Returns UnsupportedExpressionShapeError for operators not yet
-// present in cascades.ArithmeticOp.
-func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticOp, error) {
+// present in values.ArithmeticOp.
+func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (values.ArithmeticOp, error) {
 	if op == nil {
-		return cascades.OpAdd, fmt.Errorf("arithmeticOpFromCtx: nil")
+		return values.OpAdd, fmt.Errorf("arithmeticOpFromCtx: nil")
 	}
 	mo, ok := op.(*antlrgen.MathOperatorContext)
 	if !ok {
-		return cascades.OpAdd, fmt.Errorf("arithmeticOpFromCtx: unexpected ctx %T", op)
+		return values.OpAdd, fmt.Errorf("arithmeticOpFromCtx: unexpected ctx %T", op)
 	}
 	switch {
 	case mo.PLUS() != nil:
-		return cascades.OpAdd, nil
+		return values.OpAdd, nil
 	case mo.MINUS() != nil:
-		return cascades.OpSub, nil
+		return values.OpSub, nil
 	case mo.STAR() != nil:
-		return cascades.OpMul, nil
+		return values.OpMul, nil
 	case mo.DIVIDE() != nil, mo.DIV() != nil:
 		// `/` and `DIV` both map to OpDiv. In MySQL `DIV` is the
 		// integer-truncated division operator while `/` is true
@@ -415,22 +416,22 @@ func arithmeticOpFromCtx(op antlrgen.IMathOperatorContext) (cascades.ArithmeticO
 		// lands and float arithmetic is wired, DIV will need its own
 		// op (OpIntDiv) that coerces float operands to int before
 		// dividing.
-		return cascades.OpDiv, nil
+		return values.OpDiv, nil
 	case mo.MOD() != nil, mo.MODULE() != nil:
 		// MOD / MODULE / `%` all map to OpMod. The grammar treats
 		// `MOD` as a keyword and `MODULE` as the synonym, plus `%`
 		// as the operator (covered by mo.MODULE() in this grammar).
-		return cascades.OpMod, nil
+		return values.OpMod, nil
 	}
-	return cascades.OpAdd, &UnsupportedExpressionShapeError{Shape: "MathOperator: " + mo.GetText()}
+	return values.OpAdd, &UnsupportedExpressionShapeError{Shape: "MathOperator: " + mo.GetText()}
 }
 
 // walkRecordConstructor unwraps a single-element, unnamed-field,
 // un-typed record constructor — the parser's shape for
 // parenthesised expressions `(expr)`. Multi-element or annotated
-// record constructors require dedicated cascades.RecordConstructorValue
+// record constructors require dedicated values.RecordConstructorValue
 // support, not wired yet.
-func (r *Resolver) walkRecordConstructor(rc antlrgen.IRecordConstructorContext) (cascades.Value, error) {
+func (r *Resolver) walkRecordConstructor(rc antlrgen.IRecordConstructorContext) (values.Value, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("expr.walkRecordConstructor: nil")
 	}
@@ -471,7 +472,7 @@ func (r *Resolver) walkRecordConstructor(rc antlrgen.IRecordConstructorContext) 
 //
 // Other shapes (BETWEEN, IN, LIKE, IS NULL via grammar's Predicate
 // node; NOT; XOR) return UnsupportedExpressionShapeError.
-func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (cascades.QueryPredicate, error) {
+func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (predicates.QueryPredicate, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkPredicate: nil context")
 	}
@@ -493,7 +494,7 @@ func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (cascades.Quer
 // walkPredicatedExpression handles the leaf case — a bare value or
 // a BinaryComparisonPredicate atom, plus grammar Predicate shapes
 // (IS NULL / IS NOT NULL) that modify the preceding atom.
-func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionContext) (cascades.QueryPredicate, error) {
+func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionContext) (predicates.QueryPredicate, error) {
 	if p := pred.Predicate(); p != nil {
 		return r.walkGrammarPredicate(pred.ExpressionAtom(), p)
 	}
@@ -520,20 +521,20 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	// not ValuePredicate. This is what the simplifier's constant-
 	// fold rules expect to see; a ValuePredicate-wrapped boolean
 	// would be treated as opaque and not simplified.
-	if bv, ok := v.(*cascades.BooleanValue); ok && bv.Value != nil {
+	if bv, ok := v.(*values.BooleanValue); ok && bv.Value != nil {
 		if *bv.Value {
-			return cascades.NewConstantPredicate(cascades.TriTrue), nil
+			return predicates.NewConstantPredicate(predicates.TriTrue), nil
 		}
-		return cascades.NewConstantPredicate(cascades.TriFalse), nil
+		return predicates.NewConstantPredicate(predicates.TriFalse), nil
 	}
-	return cascades.NewValuePredicate(v), nil
+	return predicates.NewValuePredicate(v), nil
 }
 
 // unwrapParenPredicate recurses WalkPredicate on a single-element
 // parenthesised expression. Returns error if the RecordConstructor
 // shape isn't a simple paren-wrap (multi-element, named field,
 // OfType clause).
-func (r *Resolver) unwrapParenPredicate(rc antlrgen.IRecordConstructorContext) (cascades.QueryPredicate, error) {
+func (r *Resolver) unwrapParenPredicate(rc antlrgen.IRecordConstructorContext) (predicates.QueryPredicate, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("unwrapParenPredicate: nil")
 	}
@@ -559,7 +560,7 @@ func (r *Resolver) unwrapParenPredicate(rc antlrgen.IRecordConstructorContext) (
 // LogicalExpression (`a AND b` / `a OR b`). Left-associative chains
 // in the grammar mean `a AND b AND c` nests as `(a AND b) AND c`;
 // we flatten on the fly when the LHS is already the same kind.
-func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) (cascades.QueryPredicate, error) {
+func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) (predicates.QueryPredicate, error) {
 	op := le.LogicalOperator()
 	if op == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "LogicalExpression with nil operator"}
@@ -604,10 +605,10 @@ func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) 
 // return [a b c] so ResolveAnd produces a single 3-child And
 // rather than nested pairs. AndFlattenRule in cascades would fix
 // it later anyway, but seeding the flat shape avoids fixpoint work.
-func flattenAnd(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
-	var out []cascades.QueryPredicate
+func flattenAnd(preds ...predicates.QueryPredicate) []predicates.QueryPredicate {
+	var out []predicates.QueryPredicate
 	for _, p := range preds {
-		if and, ok := p.(*cascades.AndPredicate); ok {
+		if and, ok := p.(*predicates.AndPredicate); ok {
 			out = append(out, and.SubPredicates...)
 		} else {
 			out = append(out, p)
@@ -616,10 +617,10 @@ func flattenAnd(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
 	return out
 }
 
-func flattenOr(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
-	var out []cascades.QueryPredicate
+func flattenOr(preds ...predicates.QueryPredicate) []predicates.QueryPredicate {
+	var out []predicates.QueryPredicate
 	for _, p := range preds {
-		if or, ok := p.(*cascades.OrPredicate); ok {
+		if or, ok := p.(*predicates.OrPredicate); ok {
 			out = append(out, or.SubPredicates...)
 		} else {
 			out = append(out, p)
@@ -631,7 +632,7 @@ func flattenOr(preds ...cascades.QueryPredicate) []cascades.QueryPredicate {
 // walkGrammarPredicate handles PredicateContext shapes that modify
 // a preceding atom — IS [NOT] NULL today, BETWEEN / IN / LIKE in
 // follow-up commits.
-func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pred antlrgen.IPredicateContext) (cascades.QueryPredicate, error) {
+func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pred antlrgen.IPredicateContext) (predicates.QueryPredicate, error) {
 	if atom == nil {
 		return nil, fmt.Errorf("expr.walkGrammarPredicate: nil atom")
 	}
@@ -676,7 +677,7 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		if err != nil {
 			return nil, err
 		}
-		list := make([]cascades.Value, 0, len(ec.AllExpression()))
+		list := make([]values.Value, 0, len(ec.AllExpression()))
 		for _, e := range ec.AllExpression() {
 			v, err := r.WalkExpression(e)
 			if err != nil {
@@ -748,11 +749,11 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		if err != nil {
 			return nil, err
 		}
-		lowerBound, err := r.ResolveComparison(cascades.ComparisonGreaterThanEq, lhsVal, loVal)
+		lowerBound, err := r.ResolveComparison(predicates.ComparisonGreaterThanEq, lhsVal, loVal)
 		if err != nil {
 			return nil, err
 		}
-		upperBound, err := r.ResolveComparison(cascades.ComparisonLessThanOrEq, lhsVal, hiVal)
+		upperBound, err := r.ResolveComparison(predicates.ComparisonLessThanOrEq, lhsVal, hiVal)
 		if err != nil {
 			return nil, err
 		}
@@ -778,13 +779,13 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 // predicate is nested under NOT, OR, or any downstream expression
 // that distinguishes UNKNOWN from FALSE. The explicit null-check
 // forces the correct 2VL outcome.
-func (r *Resolver) resolveIsBoolean(lhs cascades.Value, literal, negated bool) (cascades.QueryPredicate, error) {
+func (r *Resolver) resolveIsBoolean(lhs values.Value, literal, negated bool) (predicates.QueryPredicate, error) {
 	notNull, err := r.ResolveIsNotNull(lhs)
 	if err != nil {
 		return nil, err
 	}
-	eq := cascades.NewComparisonPredicate(lhs, cascades.Comparison{
-		Type: cascades.ComparisonEquals, Operand: cascades.NewBooleanValue(literal),
+	eq := predicates.NewComparisonPredicate(lhs, predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: values.NewBooleanValue(literal),
 	})
 	isBool := r.ResolveAnd(notNull, eq)
 	if negated {
@@ -798,7 +799,7 @@ func (r *Resolver) resolveIsBoolean(lhs cascades.Value, literal, negated bool) (
 // reads ComparisonOperator's terminal-token accessors — there's no
 // single GetText we can rely on since `!=`, `<>`, `>=` all span
 // two tokens.
-func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateContext) (cascades.QueryPredicate, error) {
+func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateContext) (predicates.QueryPredicate, error) {
 	op, err := comparisonOpFromCtx(bc.ComparisonOperator())
 	if err != nil {
 		return nil, err
@@ -819,13 +820,13 @@ func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateCo
 // the grammar:
 //
 //	= | > | < | >= | <= | <> | != | IS [NOT] DISTINCT FROM
-func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (cascades.ComparisonType, error) {
+func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
 	if op == nil {
-		return cascades.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: nil operator")
+		return predicates.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: nil operator")
 	}
 	c, ok := op.(*antlrgen.ComparisonOperatorContext)
 	if !ok {
-		return cascades.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: unexpected ctx %T", op)
+		return predicates.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: unexpected ctx %T", op)
 	}
 	hasEq := c.EQUAL_SYMBOL() != nil
 	hasGt := c.GREATER_SYMBOL() != nil
@@ -835,27 +836,27 @@ func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (cascades.Compa
 	// grammar emits <= as '<' '=', not '=' '<'.
 	if c.IS() != nil && c.DISTINCT() != nil && c.FROM() != nil {
 		if c.NOT() != nil {
-			return cascades.ComparisonNotDistinctFrom, nil
+			return predicates.ComparisonNotDistinctFrom, nil
 		}
-		return cascades.ComparisonIsDistinctFrom, nil
+		return predicates.ComparisonIsDistinctFrom, nil
 	}
 	switch {
 	case hasEq && !hasGt && !hasLt && !hasNot:
-		return cascades.ComparisonEquals, nil
+		return predicates.ComparisonEquals, nil
 	case hasNot && hasEq:
-		return cascades.ComparisonNotEquals, nil
+		return predicates.ComparisonNotEquals, nil
 	case hasLt && hasGt: // <>
-		return cascades.ComparisonNotEquals, nil
+		return predicates.ComparisonNotEquals, nil
 	case hasLt && hasEq:
-		return cascades.ComparisonLessThanOrEq, nil
+		return predicates.ComparisonLessThanOrEq, nil
 	case hasGt && hasEq:
-		return cascades.ComparisonGreaterThanEq, nil
+		return predicates.ComparisonGreaterThanEq, nil
 	case hasLt:
-		return cascades.ComparisonLessThan, nil
+		return predicates.ComparisonLessThan, nil
 	case hasGt:
-		return cascades.ComparisonGreaterThan, nil
+		return predicates.ComparisonGreaterThan, nil
 	}
-	return cascades.ComparisonEquals, &UnsupportedExpressionShapeError{
+	return predicates.ComparisonEquals, &UnsupportedExpressionShapeError{
 		Shape: "ComparisonOperator: " + c.GetText(),
 	}
 }
@@ -863,7 +864,7 @@ func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (cascades.Compa
 // walkColumnRef: an identifier from the parse tree → ResolveIdentifier.
 // Handles both bare (`col`) and qualified (`t.col`) via the number
 // of Uid segments.
-func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (cascades.Value, error) {
+func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (values.Value, error) {
 	if fullId == nil {
 		return nil, fmt.Errorf("expr.walkColumnRef: nil FullId")
 	}
@@ -892,7 +893,7 @@ func (r *Resolver) walkColumnRef(fullId antlrgen.IFullIdContext) (cascades.Value
 // DecimalConstant covers both DECIMAL_LITERAL (int) and REAL_LITERAL
 // (float) — DecimalLiteralContext exposes both terminal accessors
 // and we dispatch by which is set.
-func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (cascades.Value, error) {
+func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, error) {
 	if c == nil {
 		return nil, fmt.Errorf("expr.walkConstant: nil Constant")
 	}

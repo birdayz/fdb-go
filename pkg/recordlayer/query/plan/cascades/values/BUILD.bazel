@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "values",
+    srcs = [
+        "coercion.go",
+        "correlation.go",
+        "folder.go",
+        "simplifier_value.go",
+        "type.go",
+        "value_not.go",
+        "values.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "values_test",
+    srcs = [
+        "correlation_test.go",
+        "folder_test.go",
+        "scalar_functions_extra2_test.go",
+        "scalar_functions_extra_test.go",
+        "simplifier_value_test.go",
+        "type_test.go",
+        "value_literal_string_test.go",
+        "value_not_test.go",
+        "values_fuzz_test.go",
+        "values_java_inspired_test.go",
+        "values_test.go",
+    ],
+    embed = [":values"],
+)
