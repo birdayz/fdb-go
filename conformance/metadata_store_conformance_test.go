@@ -139,6 +139,62 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	// proto level while the on-disk subspace LAYOUT is incompatible.
 	// This functional test catches that class of bug — the loaded metadata
 	// has to drive a real record store at the right subspace tuple shape.
+	//
+	// HOW TO ADD A NEW CROSS-LANGUAGE SPEC:
+	//
+	//   1. Pick the shape of the test:
+	//        a. Records-only (just save + scan records)
+	//        b. With an index (save records, then scan the index)
+	//        c. With a non-VALUE maintainer (COUNT/SUM/MAX_EVER — atomic-mutation,
+	//           BY_GROUP scan, value is the atomic counter)
+	//        d. Wire-format flag (e.g. splitLongRecords) where the metadata
+	//           bool is what controls receiving-engine decode behaviour.
+	//
+	//   2. If the shape isn't already covered, add a Java step in
+	//      `conformance/metadata_store_conformance.java` modeled on
+	//      `loadMetaDataAndScanOrdersJava` (records) / `loadMetaDataAndScanIndexJava`
+	//      (VALUE) / `loadMetaDataAndScanCountIndexJava` (atomic-mutation /
+	//      BY_GROUP) / `loadMetaDataAndScanAllRecordsJava` (multi-type
+	//      classification). All steps follow the same pattern:
+	//        - read metadata bytes at unsplit key under mdSubspace
+	//        - parseFrom WITH `EXTENSION_REGISTRY` (CRITICAL — see CLAUDE.md
+	//          "Cross-language metadata wire-format gotchas")
+	//        - RecordMetaData.build(proto)
+	//        - open FDBRecordStore at storeSubspace with that metadata,
+	//          ALWAYS_READABLE_CHECKER
+	//        - read records / scan index / inspect type tags as appropriate
+	//        - DynamicMessage workaround for record content: round-trip
+	//          via `Order.parseFrom(rec.getRecord().toByteArray())`,
+	//          NEVER `Order.newBuilder().mergeFrom(rec.getRecord())`
+	//
+	//   3. Add the corresponding Go-side spec here. Follow the existing
+	//      pattern: build metadata, save proto, derive runtime metadata
+	//      via `RecordMetaDataFromProto(mdProto)` (NOT a parallel builder
+	//      rebuild — single-source-of-truth schema), open store, save
+	//      records, then call `java.InvokeAs(ctx, "<stepName>", params, &result)`.
+	//
+	//   4. For the reverse direction (Java writes, Go reads), add a
+	//      `save*Java` step that does the metadata save + the record
+	//      writes from the Java side; the Go-side spec then loads the
+	//      metadata via `LoadRecordMetaDataProto` + `RecordMetaDataFromProto`
+	//      and exercises whatever read path you want to pin.
+	//
+	// The harness already covers (as of nightshift-53):
+	//   - Records (Go→Java, Java→Go)
+	//   - VALUE index (Go→Java, Java→Go)
+	//   - Multi-record-type type-tag dispatch (Go→Java)
+	//   - Split records (Go→Java)
+	//   - COUNT index BY_GROUP (Go→Java)
+	//
+	// Mechanical follow-ons (same pattern, no new harness mechanism needed):
+	//   - SUM / MAX_EVER / MIN_EVER index BY_GROUP (atomic-mutation)
+	//   - Reverse direction for COUNT / multi-type / split records
+	//
+	// What this harness does NOT yet cover (gated work):
+	//   - SchemaTemplateCatalog wire format (the relational/SQL catalog).
+	//     Blocked on Go sqldriver keyspace divergence — Go writes to
+	//     `__SYS/__SYS/CATALOG` while Java reads from `(NULL, NULL,
+	//     int64(0))`. See `pkg/relational/core/catalog/fdb_store_catalog.go:62-67`.
 	Describe("Cross-language functional round-trip (A2)", func() {
 		It("Java loads Go-written metadata and scans Go-written records", func() {
 			// Direction: Go saves both metadata and Order records; Java
