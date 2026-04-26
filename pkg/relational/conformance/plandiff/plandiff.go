@@ -24,14 +24,11 @@
 package plandiff
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -454,75 +451,17 @@ func (e javaEngine) Plan(ctx context.Context, q Query) PlanResult {
 	return PlanResult{Engine: "java", Tree: tree, Hash: hashTree(tree)}
 }
 
-// invokePlanSql is the per-call HTTP dance. Body shape mirrors the
-// existing JavaInvoker pattern in conformance/java_invoker_test.go —
-// kept inline here so plandiff doesn't depend on test-only code.
+// invokePlanSql posts to the conformance server's `planSql` step
+// (see conformance/sql_plan_steps.java#planSql) and decodes the bare
+// JSON-string result (the PLAN column text).
 func (e javaEngine) invokePlanSql(ctx context.Context, q Query) (string, error) {
-	type request struct {
-		Step   string         `json:"step"`
-		Params map[string]any `json:"params"`
-	}
-	type response struct {
-		Success            bool            `json:"success"`
-		Result             json.RawMessage `json:"result"`
-		Error              string          `json:"error"`
-		ExceptionClass     string          `json:"exceptionClass"`
-		ExceptionFullClass string          `json:"exceptionFullClass"`
-	}
-
-	reqBody, err := json.Marshal(request{
-		Step: "planSql",
-		Params: map[string]any{
-			"clusterFile":    e.clusterFile,
-			"schemaTemplate": q.SchemaTemplate,
-			"sql":            q.SQL,
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("plandiff: marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", e.baseURL+"/invoke", bytes.NewReader(reqBody))
-	if err != nil {
-		return "", fmt.Errorf("plandiff: build HTTP request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := e.httpClient.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("plandiff: HTTP POST: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	body, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return "", fmt.Errorf("plandiff: read body: %w", err)
-	}
-	if httpResp.StatusCode != 200 {
-		return "", fmt.Errorf("plandiff: HTTP %d: %s", httpResp.StatusCode, string(body))
-	}
-
-	var resp response
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("plandiff: unmarshal response: %w (body=%q)", err, string(body))
-	}
-	if !resp.Success {
-		// Surface the Java exception class so the harness can
-		// distinguish planner errors (UNSUPPORTED_OPERATION,
-		// SYNTAX_ERROR) from infrastructure errors (cluster file
-		// missing, FDB unavailable).
-		if resp.ExceptionClass != "" {
-			return "", fmt.Errorf("plandiff: java %s: %s", resp.ExceptionClass, resp.Error)
-		}
-		return "", fmt.Errorf("plandiff: java error: %s", resp.Error)
-	}
-
-	// `planSql` returns a bare JSON string (the PLAN column text).
 	var plan string
-	if err := json.Unmarshal(resp.Result, &plan); err != nil {
-		return "", fmt.Errorf("plandiff: parse plan from result: %w (result=%q)", err, string(resp.Result))
-	}
-	return plan, nil
+	err := invokeStep(ctx, e.httpClient, e.baseURL, "planSql", map[string]any{
+		"clusterFile":    e.clusterFile,
+		"schemaTemplate": q.SchemaTemplate,
+		"sql":            q.SQL,
+	}, &plan)
+	return plan, err
 }
 
 // noopEngine is the fallback when Run is called with a nil Engine. It

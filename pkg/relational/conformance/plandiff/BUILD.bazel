@@ -4,6 +4,7 @@ go_library(
     name = "plandiff",
     srcs = [
         "corpus.go",
+        "httpclient.go",
         "plandiff.go",
         "runsql.go",
     ],

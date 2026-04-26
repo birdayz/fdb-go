@@ -18,12 +18,10 @@ package plandiff
 // NewJavaEngine()'s unwired form.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -141,137 +139,30 @@ func (r javaRunner) RunWithSetup(ctx context.Context, schemaTemplate string, set
 }
 
 func (r javaRunner) invokeRunSql(ctx context.Context, q Query) (RowSet, error) {
-	type request struct {
-		Step   string         `json:"step"`
-		Params map[string]any `json:"params"`
-	}
-	type response struct {
-		Success            bool            `json:"success"`
-		Result             json.RawMessage `json:"result"`
-		Error              string          `json:"error"`
-		ExceptionClass     string          `json:"exceptionClass"`
-		ExceptionFullClass string          `json:"exceptionFullClass"`
-	}
-
-	reqBody, err := json.Marshal(request{
-		Step: "runSql",
-		Params: map[string]any{
-			"clusterFile":    r.clusterFile,
-			"schemaTemplate": q.SchemaTemplate,
-			"sql":            q.SQL,
-		},
-	})
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/invoke", bytes.NewReader(reqBody))
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: build HTTP request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := r.httpClient.Do(httpReq)
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: HTTP POST: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	body, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: read body: %w", err)
-	}
-	if httpResp.StatusCode != 200 {
-		return RowSet{}, fmt.Errorf("plandiff: HTTP %d: %s", httpResp.StatusCode, string(body))
-	}
-
-	var resp response
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: unmarshal response: %w (body=%q)", err, string(body))
-	}
-	if !resp.Success {
-		if resp.ExceptionClass != "" {
-			return RowSet{}, fmt.Errorf("plandiff: java %s: %s", resp.ExceptionClass, resp.Error)
-		}
-		return RowSet{}, fmt.Errorf("plandiff: java error: %s", resp.Error)
-	}
-
 	var rows RowSet
-	if err := json.Unmarshal(resp.Result, &rows); err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: parse rows from result: %w (result=%q)", err, string(resp.Result))
-	}
-	return rows, nil
+	err := invokeStep(ctx, r.httpClient, r.baseURL, "runSql", map[string]any{
+		"clusterFile":    r.clusterFile,
+		"schemaTemplate": q.SchemaTemplate,
+		"sql":            q.SQL,
+	}, &rows)
+	return rows, err
 }
 
 func (r javaRunner) invokeRunWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string) (RowSet, error) {
-	type request struct {
-		Step   string         `json:"step"`
-		Params map[string]any `json:"params"`
-	}
-	type response struct {
-		Success            bool            `json:"success"`
-		Result             json.RawMessage `json:"result"`
-		Error              string          `json:"error"`
-		ExceptionClass     string          `json:"exceptionClass"`
-		ExceptionFullClass string          `json:"exceptionFullClass"`
-	}
-
 	if setupSqls == nil {
-		// Java's deserializeArgs treats missing param as null; List<String>
-		// param then arrives as null, NPE inside the for-each. Send an
-		// empty array instead so the Java side iterates zero times.
+		// Java's deserializeArgs treats missing param as null; the
+		// List<String> param would arrive as null and NPE inside the
+		// for-each. Send an empty array instead.
 		setupSqls = []string{}
 	}
-
-	reqBody, err := json.Marshal(request{
-		Step: "runWithSetup",
-		Params: map[string]any{
-			"clusterFile":    r.clusterFile,
-			"schemaTemplate": schemaTemplate,
-			"setupSqls":      setupSqls,
-			"querySql":       querySql,
-		},
-	})
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/invoke", bytes.NewReader(reqBody))
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: build HTTP request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	httpResp, err := r.httpClient.Do(httpReq)
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: HTTP POST: %w", err)
-	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	body, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: read body: %w", err)
-	}
-	if httpResp.StatusCode != 200 {
-		return RowSet{}, fmt.Errorf("plandiff: HTTP %d: %s", httpResp.StatusCode, string(body))
-	}
-
-	var resp response
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: unmarshal response: %w (body=%q)", err, string(body))
-	}
-	if !resp.Success {
-		if resp.ExceptionClass != "" {
-			return RowSet{}, fmt.Errorf("plandiff: java %s: %s", resp.ExceptionClass, resp.Error)
-		}
-		return RowSet{}, fmt.Errorf("plandiff: java error: %s", resp.Error)
-	}
-
 	var rows RowSet
-	if err := json.Unmarshal(resp.Result, &rows); err != nil {
-		return RowSet{}, fmt.Errorf("plandiff: parse rows from result: %w (result=%q)", err, string(resp.Result))
-	}
-	return rows, nil
+	err := invokeStep(ctx, r.httpClient, r.baseURL, "runWithSetup", map[string]any{
+		"clusterFile":    r.clusterFile,
+		"schemaTemplate": schemaTemplate,
+		"setupSqls":      setupSqls,
+		"querySql":       querySql,
+	}, &rows)
+	return rows, err
 }
 
 // RunDiff is the per-Query verdict for the runSql harness — parallel
