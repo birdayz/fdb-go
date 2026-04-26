@@ -413,6 +413,23 @@ func SeedRunCorpus() []RunQuery {
 		// different probe shape — investigate the catalog access
 		// path in a follow-up shift.
 		{
+			Name:           "null_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_NA (id BIGINT, x BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NA VALUES (1, 5)",
+				"INSERT INTO T_NA VALUES (2, NULL)",
+			},
+			Query: "SELECT id, x + 10 FROM T_NA ORDER BY id",
+			Expected: RowSet{
+				// SQL Kleene three-valued: NULL + integer = NULL.
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "_1", Type: "BIGINT"}},
+				Rows: [][]any{
+					{float64(1), float64(15)},
+					{float64(2), nil},
+				},
+			},
+		},
+		{
 			Name:           "math_in_where",
 			SchemaTemplate: "CREATE TABLE T_MATH (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
