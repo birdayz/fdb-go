@@ -408,6 +408,24 @@ func SeedRunCorpus() []RunQuery {
 			},
 		},
 		{
+			Name:           "sum_min_max",
+			SchemaTemplate: "CREATE TABLE T_AGG (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGG VALUES (1, 10)",
+				"INSERT INTO T_AGG VALUES (2, 20)",
+				"INSERT INTO T_AGG VALUES (3, 30)",
+			},
+			Query: "SELECT sum(val), min(val), max(val) FROM T_AGG",
+			Expected: RowSet{
+				Columns: []Column{
+					{Name: "_0", Type: "BIGINT"},
+					{Name: "_1", Type: "BIGINT"},
+					{Name: "_2", Type: "BIGINT"},
+				},
+				Rows: [][]any{{float64(60), float64(10), float64(30)}},
+			},
+		},
+		{
 			Name:           "uuid_round_trip",
 			SchemaTemplate: "CREATE TABLE T_UUID (id BIGINT, key UUID, PRIMARY KEY (id))",
 			SetupSqls: []string{
