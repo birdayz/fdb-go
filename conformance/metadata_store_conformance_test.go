@@ -209,6 +209,163 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(result.Rows[2].Price).To(Equal(int64(50)))
 		})
 
+		It("Java scans Go-built VALUE index using cross-language metadata", func() {
+			// Stricter: Go saves metadata WITH a VALUE index on Order.price,
+			// inserts records (which builds the index entries), and Java
+			// LOADS the metadata fresh, opens the store at the records
+			// subspace, and scans the index. Pins:
+			//   - record-layer index subspace layout (matches across engines)
+			//   - VALUE-index key tuple shape
+			//   - per-record index entries written by Go are readable by Java
+			//     using only the proto-serialized metadata.
+			orders := []*gen.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+				{OrderId: proto.Int64(3), Price: proto.Int32(150)},
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				// Build metadata with a VALUE index — same shape as
+				// Java's createCompositeIndexedMetaData uses
+				// "Order$price_id" so the index name is byte-identical
+				// across the wire and the Java step can reference it.
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				idx := recordlayer.NewIndex("Order$price",
+					recordlayer.Field("price"))
+				builder.AddIndex("Order", idx)
+				md, buildErr := builder.Build()
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				mdProto, protoErr := md.ToProto()
+				if protoErr != nil {
+					return nil, protoErr
+				}
+				mdProto.Version = proto.Int32(13)
+
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, o := range orders {
+					if _, saveErr := store.SaveRecord(o); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"indexName":     "Order$price",
+			}
+			var result struct {
+				Found           bool `json:"found"`
+				MetadataVersion int  `json:"metadataVersion"`
+				Rows            []struct {
+					IndexKey   []any `json:"indexKey"`
+					PrimaryKey []any `json:"primaryKey"`
+				} `json:"rows"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanIndexJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue())
+			Expect(result.MetadataVersion).To(Equal(13))
+			Expect(result.Rows).To(HaveLen(3))
+			// VALUE-index ordered by price: [50, 2], [100, 1], [150, 3].
+			// JSON unmarshal renders longs as float64.
+			Expect(result.Rows[0].IndexKey[0]).To(BeNumerically("==", 50))
+			Expect(result.Rows[0].PrimaryKey[0]).To(BeNumerically("==", 2))
+			Expect(result.Rows[1].IndexKey[0]).To(BeNumerically("==", 100))
+			Expect(result.Rows[1].PrimaryKey[0]).To(BeNumerically("==", 1))
+			Expect(result.Rows[2].IndexKey[0]).To(BeNumerically("==", 150))
+			Expect(result.Rows[2].PrimaryKey[0]).To(BeNumerically("==", 3))
+		})
+
+		It("Go scans Java-built VALUE index using cross-language metadata", func() {
+			// Reverse direction of the index test: Java saves metadata
+			// (with VALUE index) + records; Go LOADS the metadata fresh,
+			// opens the store, scans the index. Pins symmetry of the
+			// Java→Go index path.
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"orderIds":      []int64{1, 2, 3},
+				"prices":        []int64{100, 50, 150},
+				"version":       17,
+			}
+			var saveResult struct {
+				MetadataBytes int `json:"metadataBytes"`
+				RecordsSaved  int `json:"recordsSaved"`
+			}
+			err := java.InvokeAs(ctx, "saveMetaDataWithIndexAndOrdersJava", params, &saveResult)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(saveResult.RecordsSaved).To(Equal(3))
+
+			type entry struct {
+				priceKey int64
+				pk       int64
+			}
+			var indexEntries []entry
+			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				loaded, loadErr := mdStore.LoadRecordMetaDataProto(rtx.Transaction())
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				if loaded == nil {
+					return nil, fmt.Errorf("Go: no metadata at subspace")
+				}
+				md, buildErr := recordlayer.RecordMetaDataFromProto(loaded)
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				idx := md.GetIndex("Order$price")
+				cursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
+				entries, scanErr := recordlayer.AsList(ctx, cursor)
+				if scanErr != nil {
+					return nil, scanErr
+				}
+				for _, e := range entries {
+					var price, pk int64
+					if v, ok := e.Key[0].(int64); ok {
+						price = v
+					}
+					if v, ok := e.PrimaryKey()[0].(int64); ok {
+						pk = v
+					}
+					indexEntries = append(indexEntries, entry{priceKey: price, pk: pk})
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(indexEntries).To(HaveLen(3))
+			// VALUE-index ordered by price: [50→2], [100→1], [150→3].
+			Expect(indexEntries[0].priceKey).To(Equal(int64(50)))
+			Expect(indexEntries[0].pk).To(Equal(int64(2)))
+			Expect(indexEntries[1].priceKey).To(Equal(int64(100)))
+			Expect(indexEntries[1].pk).To(Equal(int64(1)))
+			Expect(indexEntries[2].priceKey).To(Equal(int64(150)))
+			Expect(indexEntries[2].pk).To(Equal(int64(3)))
+		})
+
 		It("Go loads Java-written metadata and scans Java-written records", func() {
 			// Direction: Java saves both metadata and Orders; Go LOADS the
 			// metadata fresh and uses it to scan.

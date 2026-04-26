@@ -456,6 +456,13 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **CAST-overflow error messages differ.** Java's CastValue says `"Value out of range for INT"`; Go says `"value … out of range for INTEGER"`. Common substring: `"out of range"`.
 - **`IN (..., NULL, ...)` lists diverge.** SQL standard + Go propagate UNKNOWN through three-valued logic, so `WHERE x IN (1, NULL)` matches `x=1` and yields UNKNOWN otherwise (`NOT IN (1, NULL)` therefore yields UNKNOWN ⇒ empty result). fdb-relational 4.11.1.0 rejects NULL in the IN list outright with `"NULL values are not allowed in the IN list"`. The divergence is one-sided (Java rejects, Go accepts) — not expressible in `ExpectErrorContains` (would need both engines to fail) and not a positive entry (Java rejects). No cross-engine corpus entry possible until one side aligns.
 
+### Cross-language metadata wire-format (FDBMetaDataStore) gotchas
+
+Surfaced by Track A2 (nightshift-53). Apply to any Java step that loads a serialized `RecordMetaData` proto produced by Go (or vice versa).
+
+- **`parseFrom(bytes)` MUST be called with an `ExtensionRegistry` that includes `RecordMetaDataOptionsProto.registerAllExtensions(...)`.** Without it, `RecordMetaData.build(proto)` raises `MetaDataException: Union descriptor is required` because the `[record].usage = UNION` extension on `UnionDescriptor` (the union message in `RecordLayerDemo.proto`) is dropped during parsing — Java then falls back to looking for a literal `RecordTypeUnion` message name and finds none. The `metadata_proto_conformance.java` and `metadata_store_conformance.java` Java steps both pin this pattern.
+- **Java-loaded `RecordMetaData` produces `DynamicMessage`, NOT the static generated class.** When you `scanRecords` against a metadata that was built from a serialized proto (instead of `setRecords(StaticClass.getDescriptor())`), the records returned by `record.getRecord()` are `DynamicMessage` instances bound to the parsed `FileDescriptor`. Calling `Order.newBuilder().mergeFrom(record.getRecord())` then fails with `"can only merge messages of the same type"` because the descriptors are distinct instances even though the wire format matches. **Workaround**: round-trip via raw bytes — `Order.parseFrom(record.getRecord().toByteArray())`. Proto wire format is the cross-descriptor contract.
+
 ### Go embedded SQL engine — Java conformance status
 
 The plandiff Go-vs-Java result-set harness lives in two halves:
