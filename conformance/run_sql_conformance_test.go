@@ -225,7 +225,7 @@ var _ = Describe("RunSql Harness", func() {
 		// updating intentionally (added/removed entry, deliberate
 		// engine behaviour change), run with `-v`, copy the
 		// diagnostic-printed hash, and update wantBaseline below.
-		const wantBaseline = "09a5867e8cf7c04bc0062f6e76198f59f20d941e01be1b270dd343d54a2fa4a6"
+		const wantBaseline = "39ad05fda97fe426a404a8f604800f154503df7eaa50f8a628a5a60c16cb99e7"
 		got := plandiff.HashRunCorpus(report)
 		if got != wantBaseline {
 			GinkgoWriter.Printf("[runSql] SeedRunCorpus hash drift\n  got:  %s\n  want: %s\n", got, wantBaseline)

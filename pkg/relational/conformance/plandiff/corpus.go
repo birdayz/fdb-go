@@ -71,6 +71,52 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T6 ORDER BY id",
 		},
+		{
+			Name:           "order_by_desc",
+			SchemaTemplate: "CREATE TABLE T7 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T7 VALUES (1, 'a')",
+				"INSERT INTO T7 VALUES (2, 'b')",
+				"INSERT INTO T7 VALUES (3, 'c')",
+			},
+			Query: "SELECT id FROM T7 ORDER BY id DESC",
+		},
+		{
+			Name:           "where_filter",
+			SchemaTemplate: "CREATE TABLE T8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T8 VALUES (1, 100)",
+				"INSERT INTO T8 VALUES (2, 200)",
+				"INSERT INTO T8 VALUES (3, 300)",
+			},
+			Query: "SELECT id, val FROM T8 WHERE val > 150 ORDER BY id",
+		},
+		{
+			Name:           "multi_column_pk",
+			SchemaTemplate: "CREATE TABLE T9 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T9 VALUES ('us', 1, 'alice')",
+				"INSERT INTO T9 VALUES ('us', 2, 'bob')",
+				"INSERT INTO T9 VALUES ('eu', 1, 'carol')",
+			},
+			Query: "SELECT region, id, name FROM T9 ORDER BY region, id",
+		},
+		{
+			Name:           "select_constant_expr",
+			SchemaTemplate: "CREATE TABLE T10 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T10 VALUES (5)"},
+			Query:          "SELECT id, id + 10 FROM T10",
+		},
+		{
+			Name:           "string_filter",
+			SchemaTemplate: "CREATE TABLE T11 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T11 VALUES (1, 'apple')",
+				"INSERT INTO T11 VALUES (2, 'banana')",
+				"INSERT INTO T11 VALUES (3, 'cherry')",
+			},
+			Query: "SELECT id, name FROM T11 WHERE name = 'banana'",
+		},
 	}
 }
 
