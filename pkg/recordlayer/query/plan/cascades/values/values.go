@@ -134,6 +134,11 @@ func (f *FieldValue) Children() []Value { return []Value{} }
 func (f *FieldValue) Type() ValueType   { return f.Typ }
 func (f *FieldValue) Name() string      { return "field" }
 
+// RichType implements Typed (Phase 4.0). FieldValue is nullable
+// until the catalog proves NOT NULL — the seed's FieldValue
+// doesn't track nullability, so be conservative.
+func (f *FieldValue) RichType() Type { return FromValueType(f.Typ, true) }
+
 func (f *FieldValue) Evaluate(evalCtx any) any {
 	if evalCtx == nil {
 		return nil
@@ -463,6 +468,13 @@ func (n *NullValue) Type() ValueType { return n.Typ }
 func (*NullValue) Name() string      { return "null" }
 func (*NullValue) Evaluate(any) any  { return nil }
 
+// RichType implements Typed (Phase 4.0). SQL NULL — always nullable;
+// type comes from the typed-NULL annotation (TypeUnknown when
+// unannotated, which bridges to UnknownType).
+func (n *NullValue) RichType() Type {
+	return WithNullability(FromValueType(n.Typ, true), true)
+}
+
 // ParameterValue is a placeholder for a prepared-statement parameter
 // — `?` (positional, Ordinal>=1) or `:name` (named, Ordinal=0).
 // Its concrete value is unknown at plan time, so Evaluate returns
@@ -509,6 +521,12 @@ func (*ParameterValue) Children() []Value { return []Value{} }
 func (p *ParameterValue) Type() ValueType { return p.Typ }
 func (*ParameterValue) Name() string      { return "param" }
 
+// RichType implements Typed (Phase 4.0). Parameter bindings can be
+// NULL — always nullable.
+func (p *ParameterValue) RichType() Type {
+	return WithNullability(FromValueType(p.Typ, true), true)
+}
+
 func (p *ParameterValue) Evaluate(evalCtx any) any {
 	if evalCtx == nil {
 		return nil
@@ -554,6 +572,12 @@ func (s *ScalarFunctionValue) Children() []Value {
 }
 func (s *ScalarFunctionValue) Type() ValueType { return s.Typ }
 func (*ScalarFunctionValue) Name() string      { return "scalarfn" }
+
+// RichType implements Typed (Phase 4.0). Most scalar functions can
+// return NULL on NULL input — be conservative and assume nullable.
+func (s *ScalarFunctionValue) RichType() Type {
+	return FromValueType(s.Typ, true)
+}
 
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
 	args := make([]any, len(s.Args))
@@ -1350,6 +1374,9 @@ func (*BooleanValue) Children() []Value { return []Value{} }
 func (*BooleanValue) Type() ValueType   { return TypeBool }
 func (*BooleanValue) Name() string      { return "bool" }
 
+// RichType implements Typed (Phase 4.0). Literal TRUE/FALSE — NOT NULL.
+func (*BooleanValue) RichType() Type { return NotNullBoolean }
+
 func (b *BooleanValue) Evaluate(any) any {
 	if b.Value == nil {
 		return nil
@@ -1375,6 +1402,11 @@ func NewCastValue(child Value, target ValueType) *CastValue {
 func (c *CastValue) Children() []Value { return []Value{c.Child} }
 func (c *CastValue) Type() ValueType   { return c.Target }
 func (c *CastValue) Name() string      { return "cast" }
+
+// RichType implements Typed (Phase 4.0). CAST may produce NULL on
+// out-of-range / unsupported source (Evaluate returns nil), so cast
+// results are always nullable in the seed.
+func (c *CastValue) RichType() Type { return FromValueType(c.Target, true) }
 
 func (c *CastValue) Evaluate(evalCtx any) any {
 	v := c.Child.Evaluate(evalCtx)
