@@ -412,6 +412,14 @@ func SeedRunCorpus() []RunQuery {
 		// reference (syntax error on TABLES). Track A4 needs a
 		// different probe shape — investigate the catalog access
 		// path in a follow-up shift.
+		// LEFT JOIN deferred: fdb-relational 4.11.1.0 returns
+		// `RelationalException: Attempting to query non existing
+		// column CUSTOMERS.CID` — the planner's column resolution
+		// for JOIN ON clauses doesn't see PK columns at the
+		// ON-clause level. Inner join via `FROM A, B WHERE` works
+		// (see inner_join entry above); explicit JOIN ON syntax
+		// has a planner gap. Re-add when the planner ports the
+		// JOIN-ON resolution rule.
 		{
 			Name:           "null_in_equality",
 			SchemaTemplate: "CREATE TABLE T_NEQ (id BIGINT, x BIGINT, PRIMARY KEY (id))",
