@@ -358,6 +358,30 @@ func SeedRunCorpus() []RunQuery {
 				Rows:    [][]any{{float64(2)}},
 			},
 		},
+		// LIMIT deferred: fdb-relational 4.11.1.0 returns
+		// `RelationalException: LIMIT clause is not supported.` —
+		// it's a JDBC-only knob exposed via Statement.setMaxRows.
+		// Re-add when the planner adds LIMIT-as-SQL support.
+		{
+			Name:           "math_in_projection",
+			SchemaTemplate: "CREATE TABLE T22 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T22 VALUES (1, 3, 5)",
+				"INSERT INTO T22 VALUES (2, 7, 2)",
+			},
+			Query: "SELECT id, x + y, x * y FROM T22 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{
+					{Name: "ID", Type: "BIGINT"},
+					{Name: "_1", Type: "BIGINT"},
+					{Name: "_2", Type: "BIGINT"},
+				},
+				Rows: [][]any{
+					{float64(1), float64(8), float64(15)},
+					{float64(2), float64(9), float64(14)},
+				},
+			},
+		},
 	}
 }
 
