@@ -1277,6 +1277,104 @@ func TestMaximumType_NilHandling(t *testing.T) {
 	}
 }
 
+// FuzzMaximumType_Properties pins three invariants the lattice
+// must hold for primitive Type pairs:
+//
+//  1. Symmetry: MaximumType(a, b).Equals(MaximumType(b, a)).
+//  2. Idempotence: MaximumType(a, a) preserves a's Code (and is
+//     never nil — at minimum identity always succeeds).
+//  3. Closure: when MaximumType returns non-nil, both inputs must
+//     be IsPromotable to the result.
+//
+// Fuzz inputs are byte pairs interpreted as (low-4-bit code-index,
+// high-bit nullable) and mapped to canonical primitive singletons.
+// Structured types are out of scope — recursion's invariants don't
+// fit a simple property predicate.
+func FuzzMaximumType_Properties(f *testing.F) {
+	f.Add(byte(0), byte(0))
+	f.Add(byte(1), byte(2))
+	f.Add(byte(3), byte(7))
+	f.Add(byte(255), byte(255))
+
+	pickType := func(b byte) Type {
+		nullable := b&0x80 != 0
+		switch b & 0x0f {
+		case 0:
+			if nullable {
+				return NullableInt
+			}
+			return NotNullInt
+		case 1:
+			if nullable {
+				return NullableLong
+			}
+			return NotNullLong
+		case 2:
+			if nullable {
+				return NullableFloat
+			}
+			return NotNullFloat
+		case 3:
+			if nullable {
+				return NullableDouble
+			}
+			return NotNullDouble
+		case 4:
+			if nullable {
+				return NullableString
+			}
+			return NotNullString
+		case 5:
+			if nullable {
+				return NullableBoolean
+			}
+			return NotNullBoolean
+		case 6:
+			if nullable {
+				return NullableBytes
+			}
+			return NotNullBytes
+		case 7:
+			return NullType
+		}
+		return UnknownType
+	}
+
+	f.Fuzz(func(t *testing.T, b1, b2 byte) {
+		t1 := pickType(b1)
+		t2 := pickType(b2)
+
+		// 1. Symmetry.
+		ab := MaximumType(t1, t2)
+		ba := MaximumType(t2, t1)
+		if (ab == nil) != (ba == nil) {
+			t.Fatalf("symmetry: %v × %v = %v but reverse = %v", t1, t2, ab, ba)
+		}
+		if ab != nil && !ab.Equals(ba) {
+			t.Fatalf("symmetry: %v vs %v", ab, ba)
+		}
+
+		// 2. Idempotence — a × a never nil, preserves Code.
+		aa := MaximumType(t1, t1)
+		if aa == nil {
+			t.Fatalf("idempotence: %v × %v should not be nil", t1, t1)
+		}
+		if aa.Code() != t1.Code() {
+			t.Fatalf("idempotence Code: %v vs %v", aa.Code(), t1.Code())
+		}
+
+		// 3. Closure: result is promotable from both inputs.
+		if ab != nil {
+			if !IsPromotable(t1, ab) {
+				t.Fatalf("closure: %v not promotable to %v (max of %v × %v)", t1, ab, t1, t2)
+			}
+			if !IsPromotable(t2, ab) {
+				t.Fatalf("closure: %v not promotable to %v (max of %v × %v)", t2, ab, t1, t2)
+			}
+		}
+	})
+}
+
 // TestAnyType_Singleton pins ANY: the universal supertype.
 // Always nullable; WithNullability(AnyType, false) panics. Mirrors
 // Java's Type.ANY contract.
