@@ -398,11 +398,11 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-				md, buildErr := builder.Build()
+				built, buildErr := builder.Build()
 				if buildErr != nil {
 					return nil, buildErr
 				}
-				mdProto, protoErr := md.ToProto()
+				mdProto, protoErr := built.ToProto()
 				if protoErr != nil {
 					return nil, protoErr
 				}
@@ -411,6 +411,13 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				mdStore := recordlayer.NewFDBMetaDataStore(ss)
 				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
 					return nil, saveErr
+				}
+				// Re-derive the runtime metadata from the persisted proto
+				// (consistent with the records-only test): the store's
+				// schema is now byte-identical to what crossed the wire.
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				if fromProtoErr != nil {
+					return nil, fromProtoErr
 				}
 				store, openErr := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
