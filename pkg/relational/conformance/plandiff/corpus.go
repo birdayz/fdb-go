@@ -366,6 +366,10 @@ func SeedRunCorpus() []RunQuery {
 		// planner returns UnableToPlanException for "SELECT DISTINCT
 		// region FROM T". Re-add when the planner ports the
 		// distinct rule (RFC-022 §4.5).
+		// Common SQL scalar string functions (lower/upper/length, etc.)
+		// are NOT registered in fdb-relational 4.11.1.0:
+		// `RelationalException: Unsupported operator lower`. Re-add
+		// when the function registry expands.
 		{
 			Name:           "case_expression",
 			SchemaTemplate: "CREATE TABLE T_CASE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
