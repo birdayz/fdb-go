@@ -1660,6 +1660,117 @@ func SeedRunCorpus() []RunQuery {
 		// permanently or paper over the divergence. Tracked in
 		// CLAUDE.md gotchas. Same shape applies to `IS TRUE` / `IS
 		// FALSE` on BOOLEAN — Java's planner rejects, Go's accepts.
+
+		// ===== WITH / CTE coverage =====
+		{
+			// Simplest WITH: bind a name to a SELECT, query it.
+			Name:           "cte_basic",
+			SchemaTemplate: "CREATE TABLE T_CTE1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE1 VALUES (1, 100)",
+				"INSERT INTO T_CTE1 VALUES (2, 200)",
+				"INSERT INTO T_CTE1 VALUES (3, 300)",
+			},
+			Query: "WITH cte AS (SELECT id, val FROM T_CTE1 WHERE val > 100) SELECT id FROM cte ORDER BY id",
+		},
+		{
+			// CTE with column rename — the WITH name(...) form.
+			Name:           "cte_column_rename",
+			SchemaTemplate: "CREATE TABLE T_CTE2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE2 VALUES (1, 10)",
+				"INSERT INTO T_CTE2 VALUES (2, 20)",
+			},
+			Query: "WITH renamed(a, b) AS (SELECT id, val FROM T_CTE2) SELECT a, b FROM renamed ORDER BY a",
+		},
+		{
+			// CTE with aggregate — pins aggregation flowing through
+			// the materialised relation.
+			Name:           "cte_with_aggregate",
+			SchemaTemplate: "CREATE TABLE T_CTE3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE3 VALUES (1, 10)",
+				"INSERT INTO T_CTE3 VALUES (2, 20)",
+				"INSERT INTO T_CTE3 VALUES (3, 30)",
+			},
+			Query: "WITH s AS (SELECT id, val FROM T_CTE3 WHERE val >= 20) SELECT count(*) FROM s",
+		},
+		{
+			// Two CTEs in one WITH — pins the comma-separated form.
+			Name:           "cte_multiple",
+			SchemaTemplate: "CREATE TABLE T_CTE4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE4 VALUES (1, 100)",
+				"INSERT INTO T_CTE4 VALUES (2, 200)",
+				"INSERT INTO T_CTE4 VALUES (3, 300)",
+			},
+			Query: "WITH small AS (SELECT id FROM T_CTE4 WHERE val <= 150), big AS (SELECT id FROM T_CTE4 WHERE val > 250) SELECT id FROM big ORDER BY id",
+		},
+		{
+			// CTE + final WHERE — pins predicate composition over a
+			// CTE.
+			Name:           "cte_filtered_then_filtered",
+			SchemaTemplate: "CREATE TABLE T_CTE5 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE5 VALUES (1, 'us', 100)",
+				"INSERT INTO T_CTE5 VALUES (2, 'us', 200)",
+				"INSERT INTO T_CTE5 VALUES (3, 'eu', 300)",
+				"INSERT INTO T_CTE5 VALUES (4, 'eu', 400)",
+			},
+			Query: "WITH us AS (SELECT id, val FROM T_CTE5 WHERE region = 'us') SELECT id FROM us WHERE val > 100 ORDER BY id",
+		},
+
+		// ===== Subquery-in-FROM (derived table) coverage =====
+		{
+			// Derived table with WHERE — pins the inner-WHERE +
+			// outer-WHERE composition. Already covered by
+			// subquery_in_from earlier; this variant uses a different
+			// table and column shape.
+			Name:           "derived_table_aggregate_outer_filter",
+			SchemaTemplate: "CREATE TABLE T_DT1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DT1 VALUES (1, 50)",
+				"INSERT INTO T_DT1 VALUES (2, 150)",
+				"INSERT INTO T_DT1 VALUES (3, 250)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_DT1 WHERE val > 100) AS x",
+		},
+
+		// ===== UNION coverage =====
+		{
+			// UNION ALL — preserves duplicates, no sort.
+			Name:           "union_all_basic",
+			SchemaTemplate: "CREATE TABLE T_UA (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA VALUES (1, 100)",
+				"INSERT INTO T_UA VALUES (2, 200)",
+			},
+			Query: "SELECT id FROM T_UA WHERE val = 100 UNION ALL SELECT id FROM T_UA WHERE val = 200 ORDER BY id",
+		},
+		{
+			// UNION (DISTINCT implied) — dedupes.
+			Name:           "union_distinct_basic",
+			SchemaTemplate: "CREATE TABLE T_UD (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UD VALUES (1, 10)",
+				"INSERT INTO T_UD VALUES (2, 20)",
+			},
+			Query: "SELECT val FROM T_UD WHERE id = 1 UNION SELECT val FROM T_UD WHERE id = 1 ORDER BY val",
+		},
+
+		// ===== INSERT...SELECT coverage =====
+		{
+			// INSERT INTO target SELECT FROM source — pins DML that
+			// writes from a query rather than VALUES.
+			Name:           "insert_select_from",
+			SchemaTemplate: "CREATE TABLE T_IS_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS_SRC VALUES (1, 100)",
+				"INSERT INTO T_IS_SRC VALUES (2, 200)",
+				"INSERT INTO T_IS_DST SELECT id, val FROM T_IS_SRC WHERE val >= 150",
+			},
+			Query: "SELECT id, val FROM T_IS_DST ORDER BY id",
+		},
 	}
 }
 
