@@ -408,6 +408,17 @@ Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag
 6. **Proto fidelity** — respect protobuf semantics (open enums, field presence, wire compat)
 7. **Test hard** — t.Parallel() where possible, cover edge cases, test Java interop
 8. **Error types, not sentinels** — see Error handling section below
+9. **NEVER paper over bugs** — if a test silently tolerates an error via early-return ("typed Java error acceptable, transport is not"), that test isn't testing anything. Fix the underlying bug or pin the actual expected behaviour explicitly. Tolerance gates compound: every shift after the original "papered over" gets to inherit the bug AND the false positive. Strict assertions surface real failures. swingshift-52 found two long-standing bugs — fdb-relational schema-URL parsing + NOT NULL syntax restriction — that had been silently tolerated since planSql was first written, because every conformance test had an `if got.Err != nil { return }` early-return. Don't do this.
+
+## Java↔Go conformance gotchas (fdb-relational)
+
+These are the integration constraints that bit us hard in swingshift-52. Add to this list when you find more.
+
+- **Schema MUST be on the JDBC URL, not via `setSchema()`.** fdb-relational's `EmbeddedRelationalDriver.connect()` reads the schema from the URL query string (`?schema=NAME`, case-insensitive — see `RecordLayerStorageCluster#parseConnectionQueryString`). Calling `Connection.setSchema()` on the JDBC wrapper does NOT propagate to `EmbeddedRelationalConnection.currentSchemaLabel`. Every subsequent `executeQuery` / `executeUpdate` would fail with `RelationalException: No Schema specified` — the check is in `AbstractEmbeddedStatement#executeInternal`.
+- **DDL needs the system "CATALOG" schema.** `CREATE SCHEMA TEMPLATE` / `CREATE DATABASE` / `CREATE SCHEMA` must run against `jdbc:embed:/__SYS?schema=CATALOG`. Without `?schema=CATALOG`, even DDL fails with "No Schema specified" because `executeInternal` rejects null-schema unconditionally. fdb-relational's own tests do this (`SchemaTemplateRule#beforeEach` calls `setSchema("CATALOG")` first).
+- **`NOT NULL` is reserved for `ARRAY` column types in `CREATE TABLE`.** Plain `id BIGINT NOT NULL` fails with `RelationalException: NOT NULL is only allowed for ARRAY column type`. Primary-key columns are implicitly NOT NULL, so just write `id BIGINT, ..., PRIMARY KEY (id)` and trust the implicit constraint.
+- **`VALUES` clause is restricted in fdb-relational SQL.** `SELECT ... FROM (VALUES (...)) AS T(col)` raises a syntax error. Use real tables for end-to-end tests; in-line constant tables aren't a portable substitute.
+- **fdb-relational uppercases identifiers.** Column metadata returned from JDBC has uppercase names (`ID` not `id`). Pin uppercase in cross-engine assertions.
 
 ## Error handling
 

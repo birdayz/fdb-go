@@ -79,8 +79,23 @@ class SqlPlanSteps {
             }
 
             // Mirror EmbeddedRelationalExtension.setup() but as a non-JUnit
-            // resource — register the driver once and leave it.
-            FDBDatabaseFactory.instance().setAPIVersion(APIVersion.API_VERSION_7_1);
+            // resource — register the driver once and leave it. The
+            // conformance server is shared across many test suites; a
+            // sibling test may have already initialised the FDB client
+            // before we get here, in which case setAPIVersion would
+            // throw RecordCoreException("API version cannot be changed
+            // after client has already started"). Tolerate that — the
+            // existing API version is fine for our purposes (we only
+            // need a working FDBDatabaseFactory; the relational driver
+            // doesn't depend on a specific API version).
+            try {
+                FDBDatabaseFactory.instance().setAPIVersion(APIVersion.API_VERSION_7_1);
+            } catch (Exception e) {
+                if (e.getMessage() == null || !e.getMessage().contains("API version cannot be changed")) {
+                    throw e;
+                }
+                // already inited with some other API version — fine.
+            }
 
             File tempFile = new File("/tmp/fdb_sql_plan_steps.cluster");
             try (FileWriter writer = new FileWriter(tempFile)) {
@@ -200,7 +215,13 @@ class SqlPlanSteps {
 
         try {
             if (schemaTemplate != null && !schemaTemplate.isEmpty()) {
-                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
+                // The /__SYS database has a system "CATALOG" schema that
+                // accepts CREATE SCHEMA TEMPLATE / CREATE DATABASE / CREATE
+                // SCHEMA DDL. AbstractEmbeddedStatement#executeInternal
+                // requires conn.getSchema() to be non-null, so we MUST set
+                // the schema before executing DDL — fdb-relational tests
+                // do the same (SchemaTemplateRule#beforeEach).
+                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS?schema=CATALOG");
                      Statement st = sysConn.createStatement()) {
                     st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplate);
                     templateCreated = true;
@@ -209,8 +230,15 @@ class SqlPlanSteps {
                     st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\"");
                 }
 
-                try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath)) {
-                    conn.setSchema(schemaName);
+                // fdb-relational reads the active schema from the
+                // JDBC URL's query string (`?schema=NAME`, case-
+                // insensitive — RecordLayerStorageCluster#parseConnectionQueryString).
+                // Calling Connection.setSchema() on the JDBC wrapper
+                // does NOT propagate to EmbeddedRelationalConnection's
+                // currentSchemaLabel — every executeQuery / executeUpdate
+                // would fail with "No Schema specified".
+                try (java.sql.Connection conn = DriverManager.getConnection(
+                        "jdbc:embed:" + dbPath + "?schema=" + schemaName)) {
                     return op.run(conn);
                 }
             }
