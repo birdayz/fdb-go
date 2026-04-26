@@ -74,6 +74,7 @@ go_test(
         "tag_throttle_test.go",
         "tenant_commit_test.go",
         "testmain_test.go",
+        "topology_unit2_test.go",
         "topology_unit_test.go",
         "transaction_options_test.go",
         "transaction_unit_test.go",
