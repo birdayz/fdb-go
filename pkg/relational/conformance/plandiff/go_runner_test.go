@@ -139,6 +139,16 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 		t.Run(q.Name, func(t *testing.T) {
 			t.Parallel()
 			got := r.RunWithSetup(context.Background(), q.SchemaTemplate, q.SetupSqls, q.Query)
+			if q.ExpectErrorContains != "" {
+				// Negative entry: Go must reject. The substring match
+				// is asserted in the cross-engine conformance test;
+				// here we just confirm Go doesn't silently accept.
+				if got.Err == nil {
+					t.Fatalf("Go engine accepted a query expected to fail with %q\nQuery: %s",
+						q.ExpectErrorContains, q.Query)
+				}
+				return
+			}
 			if got.Err != nil {
 				if isGoFeatureGap(got.Err) {
 					t.Skipf("Go-engine feature gap: %v", got.Err)

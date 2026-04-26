@@ -152,6 +152,17 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (triBool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
+		// Bare column reference as a predicate (`WHERE flag` for a
+		// BOOLEAN column) is rejected by fdb-relational with
+		// "expected BooleanValue but got FieldValue". The planner
+		// requires explicit comparisons (`WHERE flag = TRUE`) — a
+		// FieldValue can't be implicitly coerced into a boolean
+		// predicate. Match that strictness here so cross-engine
+		// behaviour stays in lockstep.
+		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue {
+			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"expected BooleanValue but got FieldValue: bare column reference cannot be used as a predicate; use an explicit comparison (e.g. col = TRUE)")
+		}
 		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`)
 		// — evaluate as a value. NULL result is UNKNOWN; else use truthiness.
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())

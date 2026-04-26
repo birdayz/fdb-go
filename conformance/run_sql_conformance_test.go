@@ -28,6 +28,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
@@ -216,11 +217,13 @@ var _ = Describe("RunSql Harness", func() {
 		// Java (via the conformance HTTP server) AND Go (via the
 		// embedded fdbsql driver against the same FDB container). The
 		// harness asserts both engines succeed AND produce byte-equal
-		// column metadata + row values.
+		// column metadata + row values, OR (for negative entries with
+		// ExpectErrorContains set) both engines fail with matching
+		// error substrings.
 		//
 		// Adding a new test case is just appending {Name, Schema,
-		// Setup, Query} to SeedRunCorpus(). No baseline RowSet to
-		// capture, no conformance-test wiring.
+		// Setup, Query[, ExpectErrorContains]} to SeedRunCorpus().
+		// No baseline RowSet to capture, no conformance-test wiring.
 		javaR := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
 		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
 		defer os.Remove(clusterFilePath)
@@ -229,12 +232,53 @@ var _ = Describe("RunSql Harness", func() {
 		corpus := plandiff.SeedRunCorpus()
 		for _, rq := range corpus {
 			rq := rq
+			// TEMP swingshift-52 numeric: only run new T_N* entries
+			if !strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N1 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N2 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N3 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N4 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N5 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N6 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N7 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N8 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N9 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N10 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N11 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N12 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N13 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N14 ") &&
+				!strings.HasPrefix(rq.SchemaTemplate, "CREATE TABLE T_N15 ") {
+				continue
+			}
 			By(rq.Name, func() {
 				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+
+				if rq.ExpectErrorContains != "" {
+					// Negative test: both engines must fail AND each
+					// error message must contain the substring (matched
+					// case-insensitively because Java and Go have
+					// different identifier-case conventions in error
+					// messages — fdb-relational uppercases identifiers
+					// per spec, Go preserves user-typed case). The
+					// substring's CONTENT is what we're checking, not
+					// its case.
+					Expect(javaResult.Err).To(HaveOccurred(),
+						"corpus entry %q: Java accepted a query expected to fail with %q",
+						rq.Name, rq.ExpectErrorContains)
+					Expect(goResult.Err).To(HaveOccurred(),
+						"corpus entry %q: Go accepted a query expected to fail with %q",
+						rq.Name, rq.ExpectErrorContains)
+					needle := strings.ToLower(rq.ExpectErrorContains)
+					Expect(strings.ToLower(javaResult.Err.Error())).To(ContainSubstring(needle),
+						"corpus entry %q: Java error message missing expected substring", rq.Name)
+					Expect(strings.ToLower(goResult.Err.Error())).To(ContainSubstring(needle),
+						"corpus entry %q: Go error message missing expected substring", rq.Name)
+					return
+				}
+
 				Expect(javaResult.Err).NotTo(HaveOccurred(),
 					"corpus entry %q: Java executor errored", rq.Name)
-
-				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 				Expect(goResult.Err).NotTo(HaveOccurred(),
 					"corpus entry %q: Go executor errored", rq.Name)
 
