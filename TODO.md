@@ -331,10 +331,10 @@ Only used by Java's query planner / SQL layer, not by core CRUD. Defer until Cas
 
 ### Pure Go FDB Client — quality polish (2026-04-25 audit)
 
-- [ ] **Split `transaction.go` (1464 lines)** — mixes state machine, retry, conflict tracking, options, version handling. Pure refactor into ~400 LOC files makes the next bug easier to find. Sized 1 shift.
-- [ ] **Document accepted divergences inline** — items #6 (auto-reset), #18 (wrong-shard cap), #19 (GRV refresh, partially closed by swingshift-50) need inline comments at the divergent code site explaining why we differ. Today the rationales live only in handovers / commit messages.
-- [ ] **Backoff jitter** — `commitDummyTransaction` exponential backoff lacks jitter. Under coordinated retry storms (multiple clients hitting same hot range) all clients back off in lockstep. Add ±10% jitter.
-- [ ] **`unsafe.Pointer` `[]Mutation`→`[]MutationRef` reinterpret guard** — `commitpath.go:235` uses `unsafe.Pointer` cast guarded by compile-time size assertion. A field-order or alignment change breaks silently. Add a startup runtime assert that compares one mutation's serialized bytes both ways, OR replace with a typed conversion loop and benchmark the actual cost.
+- [ ] **Split `transaction.go` (1495 lines)** — mixes state machine, retry, conflict tracking, options, version handling. Pure refactor into ~400 LOC files makes the next bug easier to find. Sized 1 shift.
+- [ ] **Document accepted divergences inline** — items #6 (auto-reset), #18 (wrong-shard cap), #19 (GRV refresh, partially closed by swingshift-50) need inline comments at the divergent code site explaining why we differ. Today the rationales live only in handovers / commit messages. Partial: #18's `MaxWrongShardRetries` (transaction.go:55) carries an inline note now (`C++ is unbounded (relies on tx 5s timeout); 50×10ms = 500ms, generous safety margin`); #19's `nextGRVRefreshDelay` (grv.go:280) is documented by the swingshift-50 port of C++'s formula. #6 still needs an inline note at `Commit`'s `postCommitReset` call site.
+- [x] **Backoff jitter** — `commitDummyTransaction` exponential backoff now has ±10% jitter via `jitterBackoff(d)` helper (commitpath.go, dayshift-51). 1000-sample range test pins the bounds. One `rand.Float64` per retry, per-call independent so concurrent goroutines also desync.
+- [x] **`unsafe.Pointer` `[]Mutation`→`[]MutationRef` reinterpret guard** — dayshift-51: replaced the single size-only compile-time assertion with five additional per-field offset and per-field size assertions in commitpath.go, AND added `TestMutationLayout_BitIdenticalRoundTrip` (commitpath_unit_test.go) which serializes 3 mutations through the production unsafe-cast path (Set/ClearRange/AddValue) and asserts every (MutType, Param1, Param2) tuple matches the original (Type, Key, Value). Compile-time pins catch field reorders; runtime pin catches type-swaps that preserve offsets.
 
 ### Record Layer — niche
 
