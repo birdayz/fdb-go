@@ -895,6 +895,28 @@ func MaximumType(t1, t2 Type) Type {
 	return nil
 }
 
+// MaximumTypeOfMany folds MaximumType across all `types`. Returns
+// nil if any pair is incompatible, or if the slice is empty. Useful
+// for IN-list analysis (`x IN (1, 2L, 3.0)` needs the lifted type
+// for x to compare against), CASE expressions (every WHEN's result
+// must be promotable to a common type), and UNION column-type
+// reconciliation.
+//
+// Mirrors Java's `Type.maximumType(Iterable<Type>)`.
+func MaximumTypeOfMany(types ...Type) Type {
+	if len(types) == 0 {
+		return nil
+	}
+	result := types[0]
+	for i := 1; i < len(types); i++ {
+		result = MaximumType(result, types[i])
+		if result == nil {
+			return nil
+		}
+	}
+	return result
+}
+
 // --- Nullability helpers ------------------------------------------
 
 // WithNullability returns a Type with the same shape as t but the

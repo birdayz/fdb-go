@@ -895,6 +895,48 @@ func TestMaximumType(t *testing.T) {
 	}
 }
 
+// TestMaximumTypeOfMany pins variadic fold semantics: identity for
+// length 1, transitive promotion across many, nil on empty input
+// or any incompatible pair.
+func TestMaximumTypeOfMany(t *testing.T) {
+	t.Parallel()
+	// Empty.
+	if MaximumTypeOfMany() != nil {
+		t.Error("empty input should return nil")
+	}
+	// Length 1 — identity.
+	if MaximumTypeOfMany(NotNullInt) != NotNullInt {
+		t.Error("length-1 should return the input")
+	}
+	// All same.
+	got := MaximumTypeOfMany(NotNullInt, NotNullInt, NotNullInt)
+	if !got.Equals(NotNullInt) {
+		t.Errorf("all INT → INT, got %v", got)
+	}
+	// Transitive widening: INT, LONG, DOUBLE → DOUBLE.
+	got = MaximumTypeOfMany(NotNullInt, NotNullLong, NotNullDouble)
+	if !got.Equals(NotNullDouble) {
+		t.Errorf("INT, LONG, DOUBLE → DOUBLE, got %v", got)
+	}
+	// Order-independent: DOUBLE first should still settle to DOUBLE.
+	got = MaximumTypeOfMany(NotNullDouble, NotNullInt, NotNullLong)
+	if !got.Equals(NotNullDouble) {
+		t.Errorf("DOUBLE, INT, LONG → DOUBLE, got %v", got)
+	}
+	// Nullability propagates through any nullable input.
+	got = MaximumTypeOfMany(NotNullInt, NullableLong)
+	if !got.Equals(NullableLong) {
+		t.Errorf("nullability should propagate, got %v", got)
+	}
+	// Incompatible pair anywhere → nil.
+	if MaximumTypeOfMany(NotNullInt, NotNullString) != nil {
+		t.Error("incompatible pair should return nil")
+	}
+	if MaximumTypeOfMany(NotNullInt, NotNullLong, NotNullString) != nil {
+		t.Error("incompatible pair late in fold should return nil")
+	}
+}
+
 // TestMaximumType_NilHandling pins that nil inputs return nil
 // (defensive — never panic on a missing operand).
 func TestMaximumType_NilHandling(t *testing.T) {
