@@ -76,6 +76,7 @@ go_test(
         "testmain_test.go",
         "topology_unit_test.go",
         "transaction_options_test.go",
+        "transaction_unit_test.go",
     ],
     args = [
         "-test.parallel=4",
