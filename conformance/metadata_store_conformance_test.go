@@ -365,6 +365,92 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(indexEntries[2].pk).To(Equal(int64(3)))
 		})
 
+		It("Java scans Go-built COUNT index using cross-language metadata", func() {
+			// COUNT indexes use the atomic-mutation maintainer — entries
+			// are atomic counters stored at one key per grouping value
+			// (vs VALUE which stores one entry per record). Different
+			// maintainer + different scan type (BY_GROUP) than the prior
+			// VALUE-index test. Pins that COUNT wire format AND atomic
+			// counter values round-trip across engines.
+			//
+			// Setup: 3 Orders at price=100, 1 at price=50, 1 at price=150
+			// → COUNT(price=100)=3, COUNT(price=50)=1, COUNT(price=150)=1.
+			orders := []*gen.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(2), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(3), Price: proto.Int32(50)},
+				{OrderId: proto.Int64(4), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(5), Price: proto.Int32(150)},
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				idx := recordlayer.NewCountIndex("Order$count_by_price",
+					recordlayer.GroupAll(recordlayer.Field("price")))
+				builder.AddIndex("Order", idx)
+				built, buildErr := builder.Build()
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				mdProto, protoErr := built.ToProto()
+				if protoErr != nil {
+					return nil, protoErr
+				}
+				mdProto.Version = proto.Int32(37)
+
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				if fromProtoErr != nil {
+					return nil, fromProtoErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, o := range orders {
+					if _, saveErr := store.SaveRecord(o); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"indexName":     "Order$count_by_price",
+			}
+			var result struct {
+				Found           bool `json:"found"`
+				MetadataVersion int  `json:"metadataVersion"`
+				Rows            []struct {
+					Key   []any `json:"key"`
+					Count int64 `json:"count"`
+				} `json:"rows"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanCountIndexJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue())
+			Expect(result.MetadataVersion).To(Equal(37))
+			// Three groups (price=50, 100, 150), tuple-ordered by price.
+			Expect(result.Rows).To(HaveLen(3))
+			Expect(result.Rows[0].Key[0]).To(BeNumerically("==", 50))
+			Expect(result.Rows[0].Count).To(Equal(int64(1)))
+			Expect(result.Rows[1].Key[0]).To(BeNumerically("==", 100))
+			Expect(result.Rows[1].Count).To(Equal(int64(3)))
+			Expect(result.Rows[2].Key[0]).To(BeNumerically("==", 150))
+			Expect(result.Rows[2].Count).To(Equal(int64(1)))
+		})
+
 		It("Java scans multi-record-type store (Orders + Customers) using cross-language metadata", func() {
 			// The union-descriptor wire-format covers ALL record types in
 			// one descriptor. This test pins that the multi-type union

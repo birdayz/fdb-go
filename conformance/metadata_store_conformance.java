@@ -249,6 +249,67 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     /**
+     * Load metadata, open store, scan a COUNT index BY_GROUP, return
+     * per-group counts. Used by A2 to pin that COUNT-index wire format
+     * (atomic-mutation maintainer, different from VALUE) round-trips
+     * correctly across engines. Returns rows of {key: [groupKeyParts],
+     * count: <long>}.
+     */
+    @ConformanceStep("loadMetaDataAndScanCountIndexJava")
+    public Map<String, Object> loadMetaDataAndScanCountIndexJava(String clusterFile,
+                                                                 byte[] mdSubspace,
+                                                                 byte[] storeSubspace,
+                                                                 String indexName) {
+        return runInContext(clusterFile, null, context -> {
+            Subspace mdSS = new Subspace(mdSubspace);
+            byte[] unsplitKey = mdSS.pack(Tuple.from((Object) null, 0L));
+            byte[] data = context.ensureActive().get(unsplitKey).join();
+            Map<String, Object> result = new HashMap<>();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaData metaData = RecordMetaData.build(proto);
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metaData.getIndex(indexName);
+            List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null,
+                ScanProperties.FORWARD_SCAN
+            ).asList().join();
+
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (IndexEntry e : entries) {
+                Map<String, Object> row = new HashMap<>();
+                List<Object> keyValues = new ArrayList<>();
+                for (Object o : e.getKey()) {
+                    keyValues.add(o);
+                }
+                row.put("key", keyValues);
+                // COUNT-index value is the atomic counter (a long stored
+                // as the first tuple element).
+                row.put("count", e.getValue().getLong(0));
+                rows.add(row);
+            }
+            result.put("found", true);
+            result.put("metadataVersion", proto.getVersion());
+            result.put("rows", rows);
+            return result;
+        });
+    }
+
+    /**
      * Multi-record-type variant: load metadata, scan ALL records (no
      * type filter), classify each by record-type tag and return per-type
      * row counts + summaries. Used to verify that the union descriptor
