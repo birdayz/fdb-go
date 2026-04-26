@@ -23,6 +23,17 @@
 //     correlation-shape preservation.
 //   - ExpressionFolder + DefaultFolder — testable seam for plan-time
 //     constant folding (RFC-025 §"Closing the leaks").
+//   - Phase 4.0 Type hierarchy seed (`type.go`) — the rich
+//     `Type` interface + `TypeCode` enum + concrete impls
+//     (`PrimitiveType`, `RecordType`, `ArrayType`, `EnumType`),
+//     `TypeRepository`, `WithNullability`, `Typed` interface,
+//     and `ValueRichType` bridge mapping every Value impl to its
+//     rich Type. Coexists with the legacy `ValueType` enum;
+//     `FromValueType` / `ToValueType` adapters bridge the two
+//     while migration proceeds. Phase 4.0 follow-on lifts more
+//     impls (RelationType, UuidType) and ports the conversion
+//     lattice; once the file exceeds ~1500 LOC it splits into a
+//     dedicated `cascades/typing/` sub-package per RFC-025.
 //
 // Imports: nothing else from `pkg/recordlayer/query/plan/cascades/...`.
 // `predicates/`, `matching/`, and root `cascades` all import this
