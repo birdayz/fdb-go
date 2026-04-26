@@ -38,6 +38,16 @@ func (n *NotValue) Children() []Value {
 func (*NotValue) Type() ValueType { return TypeBool }
 func (*NotValue) Name() string    { return "not" }
 
+// RichType implements Typed (Phase 4.0). NOT preserves the child's
+// type + nullability (NOT of nullable boolean is nullable boolean —
+// NOT of NULL is NULL).
+func (n *NotValue) RichType() Type {
+	if n.Child == nil {
+		return UnknownType
+	}
+	return ValueRichType(n.Child)
+}
+
 func (n *NotValue) Evaluate(evalCtx any) any {
 	if n.Child == nil {
 		return nil

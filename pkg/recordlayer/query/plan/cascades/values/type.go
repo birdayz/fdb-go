@@ -1320,86 +1320,13 @@ func ValueRichType(v Value) Type {
 	if v == nil {
 		return UnknownType
 	}
-	// Phase 4.0 migration: Value impls that opt into the Typed
-	// interface compute their RichType() directly. Skip the
-	// type-switch dispatch for those.
+	// Phase 4.0 migration complete (swingshift-52): every Value impl
+	// in this package implements Typed. The type-switch dispatch
+	// retired with the same shift. Future Value impls outside this
+	// package MUST implement Typed; the type-switch here intentionally
+	// has no fallback so a missing RichType() surfaces immediately.
 	if t, ok := v.(Typed); ok {
 		return t.RichType()
-	}
-	switch x := v.(type) {
-	case *ConstantValue:
-		// Literal constant — NOT NULL when the literal carries a value;
-		// nullable when Value==nil (representing a typed-NULL literal,
-		// distinct from NullValue which is the SQL NULL keyword).
-		nullable := x.Value == nil
-		return FromValueType(x.Typ, nullable)
-	case *BooleanValue:
-		// Literal TRUE/FALSE — NOT NULL.
-		return NotNullBoolean
-	case *NullValue:
-		// SQL NULL — always nullable, type comes from the typed-NULL
-		// annotation (TypeUnknown when unannotated).
-		return WithNullability(FromValueType(x.Typ, true), true)
-	case *FieldValue:
-		// Column reference — nullable until the catalog proves NOT NULL.
-		// The seed's FieldValue doesn't track nullability; future
-		// Type-hierarchy migration carries the column's NOT NULL flag
-		// from the metadata into the Field's RichType result.
-		return FromValueType(x.Typ, true)
-	case *ArithmeticValue:
-		// Int-only arithmetic in the seed. NULL propagates through Eval
-		// (`int + NULL = NULL`), so the result is nullable when either
-		// operand is. Conservative: assume nullable.
-		return NullableLong
-	case *CastValue:
-		// CAST may produce NULL on out-of-range / unsupported source
-		// (Evaluate returns nil in those cases), so cast results are
-		// always nullable in the seed.
-		return FromValueType(x.Target, true)
-	case *PromoteValue:
-		// Promote inherits nullability from its child.
-		return FromValueType(x.Target, ValueRichType(x.Child).IsNullable())
-	case *ParameterValue:
-		// Parameter bindings can be NULL.
-		return WithNullability(FromValueType(x.Typ, true), true)
-	case *ScalarFunctionValue:
-		// Most scalar functions can return NULL on NULL input — be
-		// conservative and assume nullable.
-		return FromValueType(x.Typ, true)
-	case *NotValue:
-		// NOT preserves the child's type + nullability (NOT NULL → NULL).
-		return ValueRichType(x.Child)
-	case *AggregateValue:
-		// COUNT / COUNT(*) are NOT NULL longs (zero on empty groups).
-		// SUM / MIN / MAX / AVG return NULL on empty groups, so
-		// nullable. Use the operand's type when available.
-		switch x.Op {
-		case AggCount, AggCountStar:
-			return NotNullLong
-		case AggSum, AggMin, AggMax, AggAvg:
-			if x.Operand != nil {
-				return WithNullability(ValueRichType(x.Operand), true)
-			}
-			return NullableLong
-		}
-		return UnknownType
-	case *QuantifiedObjectValue:
-		// Row reference — nullable rows pass-through (e.g. LEFT JOIN's
-		// right side).
-		return WithNullability(FromValueType(x.Typ, true), true)
-	case *RecordConstructorValue:
-		// Synthesise a RecordType from the constructor's fields. The
-		// outer record is anonymous + nullable (we can't prove an
-		// inferred record is NOT NULL).
-		fields := make([]Field, len(x.Fields))
-		for i, f := range x.Fields {
-			fields[i] = Field{
-				Name:      f.Name,
-				FieldType: ValueRichType(f.Value),
-				Ordinal:   i,
-			}
-		}
-		return NewRecordType("", true, fields)
 	}
 	return UnknownType
 }

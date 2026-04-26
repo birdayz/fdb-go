@@ -1254,6 +1254,11 @@ func (a *ArithmeticValue) Children() []Value { return []Value{a.Left, a.Right} }
 func (a *ArithmeticValue) Type() ValueType   { return TypeInt }
 func (a *ArithmeticValue) Name() string      { return "arith" }
 
+// RichType implements Typed (Phase 4.0). Int-only arithmetic in
+// the seed; NULL propagates through Evaluate, so the result is
+// nullable. Conservative: assume nullable Long.
+func (a *ArithmeticValue) RichType() Type { return NullableLong }
+
 func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 	l := a.Left.Evaluate(evalCtx)
 	r := a.Right.Evaluate(evalCtx)
@@ -1545,6 +1550,21 @@ func (r *RecordConstructorValue) Children() []Value {
 // port replaces this with a real StructType.
 func (*RecordConstructorValue) Type() ValueType { return TypeUnknown }
 
+// RichType implements Typed (Phase 4.0). Synthesises a RecordType
+// from the constructor's fields. The outer record is anonymous +
+// nullable (we can't prove an inferred record is NOT NULL).
+func (r *RecordConstructorValue) RichType() Type {
+	fields := make([]Field, len(r.Fields))
+	for i, f := range r.Fields {
+		fields[i] = Field{
+			Name:      f.Name,
+			FieldType: ValueRichType(f.Value),
+			Ordinal:   i,
+		}
+	}
+	return &RecordType{Nullable: true, Fields: fields}
+}
+
 // Name returns the debug-print kind.
 func (*RecordConstructorValue) Name() string { return "record" }
 
@@ -1598,6 +1618,12 @@ func (p *PromoteValue) Children() []Value { return []Value{p.Child} }
 // Type returns the promotion target.
 func (p *PromoteValue) Type() ValueType { return p.Target }
 
+// RichType implements Typed (Phase 4.0). Promote inherits
+// nullability from its child.
+func (p *PromoteValue) RichType() Type {
+	return FromValueType(p.Target, ValueRichType(p.Child).IsNullable())
+}
+
 // Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
 
@@ -1648,6 +1674,12 @@ func (*QuantifiedObjectValue) Children() []Value { return []Value{} }
 
 // Type returns the seed's placeholder TypeUnknown for the row type.
 func (q *QuantifiedObjectValue) Type() ValueType { return q.Typ }
+
+// RichType implements Typed (Phase 4.0). Row reference — nullable
+// (rows pass through as nullable, e.g. LEFT JOIN's right side).
+func (q *QuantifiedObjectValue) RichType() Type {
+	return WithNullability(FromValueType(q.Typ, true), true)
+}
 
 // Name returns the debug-print kind.
 func (*QuantifiedObjectValue) Name() string { return "quantifier" }
@@ -1787,6 +1819,24 @@ func (a *AggregateValue) Type() ValueType {
 
 // Name returns the debug-print kind.
 func (*AggregateValue) Name() string { return "agg" }
+
+// RichType implements Typed (Phase 4.0). Aggregates have op-specific
+// nullability:
+//   - COUNT / COUNT(*): NOT NULL Long (zero on empty groups).
+//   - SUM / MIN / MAX / AVG: nullable; type from the operand when
+//     available, else nullable Long.
+func (a *AggregateValue) RichType() Type {
+	switch a.Op {
+	case AggCount, AggCountStar:
+		return NotNullLong
+	case AggSum, AggMin, AggMax, AggAvg:
+		if a.Operand != nil {
+			return WithNullability(ValueRichType(a.Operand), true)
+		}
+		return NullableLong
+	}
+	return UnknownType
+}
 
 // Evaluate panics — aggregates are multi-row and don't have a
 // single-row Evaluate semantics. Rule / plan code type-asserts
