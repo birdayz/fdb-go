@@ -937,6 +937,69 @@ func TestMaximumTypeOfMany(t *testing.T) {
 	}
 }
 
+// TestMaximumType_ArrayRecursion pins ARRAY × ARRAY → ARRAY where
+// the element type is the recursive max. Mirrors Java's array case.
+func TestMaximumType_ArrayRecursion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		t1   Type
+		t2   Type
+		want Type
+	}{
+		{
+			"ARRAY<INT> × ARRAY<INT> → ARRAY<INT>",
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullInt),
+		},
+		{
+			"ARRAY<INT> × ARRAY<LONG> → ARRAY<LONG>",
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullLong),
+			NewArrayType(false, NotNullLong),
+		},
+		{
+			"ARRAY<INT> NULL × ARRAY<LONG> NOT NULL → ARRAY<LONG> NULL",
+			NewArrayType(true, NotNullInt),
+			NewArrayType(false, NotNullLong),
+			NewArrayType(true, NotNullLong),
+		},
+		{
+			"ARRAY<INT> × ARRAY<STRING> → nil (incompatible elements)",
+			NewArrayType(false, NotNullInt),
+			NewArrayType(false, NotNullString),
+			nil,
+		},
+		{
+			"ARRAY<?> × ARRAY<INT> → nil (erased blocks)",
+			NewArrayType(false, nil),
+			NewArrayType(false, NotNullInt),
+			nil,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := MaximumType(tc.t1, tc.t2)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("got %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Errorf("got nil, want %v", tc.want)
+				return
+			}
+			if !got.Equals(tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMaximumType_NilHandling pins that nil inputs return nil
 // (defensive — never panic on a missing operand).
 func TestMaximumType_NilHandling(t *testing.T) {

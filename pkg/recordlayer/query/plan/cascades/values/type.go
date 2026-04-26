@@ -912,9 +912,24 @@ func MaximumType(t1, t2 Type) Type {
 
 	// Identity — same code → result is the more permissive nullability.
 	if c1 == c2 {
-		// For structured types, defer to future structural-recursion.
-		// For primitives, return one of the canonical singletons.
-		if c1 == TypeCodeRecord || c1 == TypeCodeArray || c1 == TypeCodeRelation || c1 == TypeCodeEnum {
+		// ARRAY × ARRAY: recurse into element type. Erased element on
+		// either side blocks the operation (caller is asking for a
+		// concrete result type that one side can't provide).
+		if c1 == TypeCodeArray {
+			a1 := t1.(*ArrayType)
+			a2 := t2.(*ArrayType)
+			if a1.IsErased() || a2.IsErased() {
+				return nil
+			}
+			elemMax := MaximumType(a1.ElementType, a2.ElementType)
+			if elemMax == nil {
+				return nil
+			}
+			return &ArrayType{Nullable: resultNullable, ElementType: elemMax}
+		}
+		// RECORD / RELATION / ENUM structural recursion is future work
+		// — return nil so the caller knows the seed can't compute it.
+		if c1 == TypeCodeRecord || c1 == TypeCodeRelation || c1 == TypeCodeEnum {
 			return nil
 		}
 		return WithNullability(t1, resultNullable)
