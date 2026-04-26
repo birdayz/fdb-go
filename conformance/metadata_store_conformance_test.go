@@ -366,6 +366,85 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(indexEntries[2].pk).To(Equal(int64(3)))
 		})
 
+		It("Java reads Go-written split records (>100KB) using cross-language metadata", func() {
+			// Stricter still: split-long-records is a wire-format feature
+			// — records >100KB are split across keys with suffixes 1, 2,
+			// 3 etc. (vs the unsplit suffix 0). The metadata flag
+			// `splitLongRecords` flips this behaviour. This test pins
+			// that:
+			//   - Go-saved metadata's `splitLongRecords=true` flag survives
+			//     the proto wire format;
+			//   - the loaded RecordMetaData on Java's side respects that
+			//     flag when decoding records;
+			//   - split-record reassembly works cross-engine.
+			// We craft a >100KB Order via the `tags` repeated-string field.
+			largeTag := make([]byte, 1024)
+			for i := range largeTag {
+				largeTag[i] = byte('A' + (i % 26))
+			}
+			tags := make([]string, 130) // 130 * 1KB ≈ 130KB > 100KB
+			for i := range tags {
+				tags[i] = string(largeTag)
+			}
+			bigOrder := &gen.Order{
+				OrderId: proto.Int64(7),
+				Price:   proto.Int32(999),
+				Tags:    tags,
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				builder := recordlayer.NewRecordMetaDataBuilder().
+					SetRecords(gen.File_record_layer_demo_proto).
+					SetSplitLongRecords(true)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				md, buildErr := builder.Build()
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				mdProto, protoErr := md.ToProto()
+				if protoErr != nil {
+					return nil, protoErr
+				}
+				mdProto.Version = proto.Int32(23)
+
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				_, saveErr := store.SaveRecord(bigOrder)
+				return nil, saveErr
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+			}
+			var result struct {
+				Found           bool `json:"found"`
+				MetadataVersion int  `json:"metadataVersion"`
+				Rows            []struct {
+					OrderId int64 `json:"orderId"`
+					Price   int64 `json:"price"`
+				} `json:"rows"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanOrdersJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue())
+			Expect(result.MetadataVersion).To(Equal(23))
+			Expect(result.Rows).To(HaveLen(1), "expected exactly one Order; split-record reassembly should yield a single record")
+			Expect(result.Rows[0].OrderId).To(Equal(int64(7)))
+			Expect(result.Rows[0].Price).To(Equal(int64(999)))
+		})
+
 		It("Go loads Java-written metadata and scans Java-written records", func() {
 			// Direction: Java saves both metadata and Orders; Go LOADS the
 			// metadata fresh and uses it to scan.
