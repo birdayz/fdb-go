@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"time"
 	"unsafe"
@@ -159,7 +160,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		if err := dummy.Commit(ctx); err != nil {
 			var fdbErr *wire.FDBError
 			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
-				if backoffSleep(ctx, backoff) != nil {
+				if backoffSleep(ctx, jitterBackoff(backoff)) != nil {
 					return // ctx cancelled — caller gave up
 				}
 				backoff = min(backoff*2, maxBackoff)
@@ -169,6 +170,23 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		}
 		return // dummy committed successfully — original is no longer in-flight
 	}
+}
+
+// jitterBackoff returns d scaled by a uniform-random factor in [0.9, 1.1].
+// Under coordinated retry storms — multiple clients hitting the same hot
+// range simultaneously and all hitting commit_unknown_result — deterministic
+// exponential backoff causes thundering herds: every client sleeps the same
+// duration and all retries land on the proxy at the same instant. ±10%
+// jitter spreads them across a 200ms-wide window at d=1s, breaking the
+// lockstep. Cheap (one rand.Float64 per retry) and per-call independent so
+// goroutines on the same process also desync.
+func jitterBackoff(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	// Range [0.9, 1.1).
+	factor := 0.9 + 0.2*rand.Float64()
+	return time.Duration(float64(d) * factor)
 }
 
 // isRetryable returns true if the FDB error code is retryable.

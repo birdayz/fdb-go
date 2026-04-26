@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -274,6 +275,54 @@ func TestGetVersionstamp_FormatBigEndian(t *testing.T) {
 	want := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x00}
 	if !bytesEqual(vs, want) {
 		t.Errorf("versionstamp: got %x, want %x", vs, want)
+	}
+}
+
+// ============================================================================
+// jitterBackoff — ±10% jitter on the dummy-transaction retry sleep.
+// ============================================================================
+
+func TestJitterBackoff_Bounds(t *testing.T) {
+	t.Parallel()
+	base := 100 * time.Millisecond
+	floor := time.Duration(float64(base) * 0.9)
+	ceiling := time.Duration(float64(base)*1.1) + time.Microsecond // tiny float fudge
+	// 1000 samples should cover both extremes of the [0.9, 1.1) range.
+	var minSeen, maxSeen time.Duration = base * 2, 0
+	for i := 0; i < 1000; i++ {
+		got := jitterBackoff(base)
+		if got < floor {
+			t.Errorf("jitterBackoff = %v, below floor %v", got, floor)
+		}
+		if got > ceiling {
+			t.Errorf("jitterBackoff = %v, above ceiling %v", got, ceiling)
+		}
+		if got < minSeen {
+			minSeen = got
+		}
+		if got > maxSeen {
+			maxSeen = got
+		}
+	}
+	// Sanity: spread of 1000 samples should reach BOTH halves of the band.
+	// Probability of failure (all samples in just one half) ~= 2^-999.
+	if minSeen >= base {
+		t.Errorf("1000 samples never went below base — RNG dead? min=%v", minSeen)
+	}
+	if maxSeen <= base {
+		t.Errorf("1000 samples never went above base — RNG dead? max=%v", maxSeen)
+	}
+}
+
+func TestJitterBackoff_ZeroAndNegative(t *testing.T) {
+	t.Parallel()
+	// d <= 0 must short-circuit (multiplying by random factor would still
+	// give 0, but the explicit guard documents the contract).
+	if got := jitterBackoff(0); got != 0 {
+		t.Errorf("jitterBackoff(0) = %v, want 0", got)
+	}
+	if got := jitterBackoff(-1); got != -1 {
+		t.Errorf("jitterBackoff(-1) = %v, want -1", got)
 	}
 }
 
