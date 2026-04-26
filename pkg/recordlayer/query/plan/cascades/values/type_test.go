@@ -852,6 +852,164 @@ func errorsAs(err error, target any) bool {
 	return false
 }
 
+// --- ValueRichType tests ------------------------------------------
+
+// TestValueRichType_Leaves pins the leaf-Value mappings: literals,
+// columns, and parameters. Nullability follows the documented rule:
+// literal TRUE → NOT NULL; ConstantValue with nil Value → nullable;
+// FieldValue → nullable (until catalog-NOT-NULL propagates);
+// NullValue → always nullable.
+func TestValueRichType_Leaves(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		v       Value
+		wantStr string
+	}{
+		{"BooleanValue(true)", NewBooleanValue(true), "BOOLEAN NOT NULL"},
+		{"BooleanValue(false)", NewBooleanValue(false), "BOOLEAN NOT NULL"},
+		{"ConstantValue(int64=5)", &ConstantValue{Value: int64(5), Typ: TypeInt}, "LONG NOT NULL"},
+		{"ConstantValue(string=hello)", &ConstantValue{Value: "hello", Typ: TypeString}, "STRING NOT NULL"},
+		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: TypeInt}, "LONG NULL"},
+		{"NullValue(typed-INT)", &NullValue{Typ: TypeInt}, "LONG NULL"},
+		{"NullValue(unknown)", &NullValue{Typ: TypeUnknown}, "UNKNOWN NULL"},
+		{"FieldValue(int)", &FieldValue{Field: "x", Typ: TypeInt}, "LONG NULL"},
+		{"FieldValue(bool)", &FieldValue{Field: "active", Typ: TypeBool}, "BOOLEAN NULL"},
+		{"ParameterValue(int)", &ParameterValue{Ordinal: 1, Typ: TypeInt}, "LONG NULL"},
+		{"nil Value", nil, "UNKNOWN NULL"},
+	}
+	for _, tc := range cases {
+		got := ValueRichType(tc.v)
+		if got.String() != tc.wantStr {
+			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
+		}
+	}
+}
+
+// TestValueRichType_Composites pins the composite-Value mappings:
+// ArithmeticValue (int-only seed → nullable LONG); CastValue
+// (target + nullable since CAST may produce NULL); PromoteValue
+// (inherits child nullability); NotValue (passes child through);
+// ScalarFunctionValue (target + nullable).
+func TestValueRichType_Composites(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		v       Value
+		wantStr string
+	}{
+		{
+			"ArithmeticValue(c+c)",
+			&ArithmeticValue{
+				Op:    OpAdd,
+				Left:  &ConstantValue{Value: int64(1), Typ: TypeInt},
+				Right: &ConstantValue{Value: int64(2), Typ: TypeInt},
+			},
+			"LONG NULL",
+		},
+		{
+			"CastValue(int → STRING)",
+			NewCastValue(&ConstantValue{Value: int64(42), Typ: TypeInt}, TypeString),
+			"STRING NULL",
+		},
+		{
+			"PromoteValue(NOT NULL int → FLOAT)",
+			NewPromoteValue(NewBooleanValue(true), TypeFloat),
+			// Boolean is NOT NULL → promote inherits NOT NULL → DOUBLE NOT NULL.
+			"DOUBLE NOT NULL",
+		},
+		{
+			"PromoteValue(NULL field → FLOAT)",
+			NewPromoteValue(&FieldValue{Field: "x", Typ: TypeFloat}, TypeFloat),
+			"DOUBLE NULL",
+		},
+		{
+			"NotValue(BooleanValue)",
+			NewNotValue(NewBooleanValue(true)),
+			"BOOLEAN NOT NULL",
+		},
+		{
+			"ScalarFunctionValue(UPPER)",
+			NewScalarFunctionValue("UPPER", TypeString,
+				&ConstantValue{Value: "x", Typ: TypeString}),
+			"STRING NULL",
+		},
+	}
+	for _, tc := range cases {
+		got := ValueRichType(tc.v)
+		if got.String() != tc.wantStr {
+			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
+		}
+	}
+}
+
+// TestValueRichType_Aggregate pins the aggregate-specific rules:
+// COUNT / COUNT(*) → NOT NULL long; SUM / MIN / MAX / AVG with an
+// operand → operand-type but nullable (returns NULL on empty
+// groups).
+func TestValueRichType_Aggregate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		v       Value
+		wantStr string
+	}{
+		{"COUNT(*)", NewAggregateValue(AggCountStar, nil), "LONG NOT NULL"},
+		{
+			"COUNT(col)",
+			NewAggregateValue(AggCount, &FieldValue{Field: "x", Typ: TypeInt}),
+			"LONG NOT NULL",
+		},
+		{
+			"SUM(col)",
+			NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt}),
+			"LONG NULL",
+		},
+		{
+			"MIN(string)",
+			NewAggregateValue(AggMin, &FieldValue{Field: "name", Typ: TypeString}),
+			"STRING NULL",
+		},
+	}
+	for _, tc := range cases {
+		got := ValueRichType(tc.v)
+		if got.String() != tc.wantStr {
+			t.Errorf("%s: got %q, want %q", tc.name, got.String(), tc.wantStr)
+		}
+	}
+}
+
+// TestValueRichType_RecordConstructor pins the synthesised RecordType
+// path: the constructor produces an anonymous nullable RecordType
+// whose Fields carry per-field types derived from each child Value.
+func TestValueRichType_RecordConstructor(t *testing.T) {
+	t.Parallel()
+	rcv := NewRecordConstructorValue(
+		RecordConstructorField{Name: "id", Value: NewBooleanValue(true)},
+		RecordConstructorField{Name: "v", Value: &ConstantValue{Value: int64(42), Typ: TypeInt}},
+	)
+	got := ValueRichType(rcv)
+	rt, ok := got.(*RecordType)
+	if !ok {
+		t.Fatalf("expected RecordType, got %T", got)
+	}
+	if rt.RecordName != "" {
+		t.Errorf("RecordName: got %q, want \"\"", rt.RecordName)
+	}
+	if !rt.Nullable {
+		t.Errorf("Nullable: got false, want true (synthesised record always nullable)")
+	}
+	if len(rt.Fields) != 2 {
+		t.Fatalf("Fields len: got %d, want 2", len(rt.Fields))
+	}
+	if rt.Fields[0].Name != "id" || !rt.Fields[0].FieldType.Equals(NotNullBoolean) {
+		t.Errorf("Fields[0]: got %v", rt.Fields[0])
+	}
+	if rt.Fields[1].Name != "v" || !rt.Fields[1].FieldType.Equals(NotNullLong) {
+		t.Errorf("Fields[1]: got %v", rt.Fields[1])
+	}
+}
+
 // TestType_RoundTrip pins the (FromValueType ∘ ToValueType) ≈ id
 // invariant for the value types the legacy enum actually
 // represents. NotNull bit is inferable from the round-trip target

@@ -827,6 +827,110 @@ func (e *TypeRegistrationError) Error() string {
 	return "TypeRepository.Register " + e.Name + ": " + e.Reason
 }
 
+// --- Value → Type bridge ------------------------------------------
+
+// ValueRichType returns the rich Type for v, mapping every Value
+// impl in the seed to a concrete Type. Mirrors what Java's Typed
+// interface produces from the same node — but as a free function
+// rather than an interface method so existing Value impls don't
+// need their interfaces extended (avoids a breaking change).
+//
+// Nil v returns UnknownType; an unrecognised concrete type degrades
+// to UnknownType so callers don't have to nil-check + type-switch
+// everywhere. The Type returned is best-effort: the seed's int-only
+// arithmetic / int-only aggregate evaluation produces TypeCodeLong
+// even though true SQL semantics depend on operand widths. The
+// Type hierarchy port replaces this with proper inference once
+// every Value subtype carries enough information to derive a
+// precise Type.
+//
+// Nullability rules are conservative: literal values are NOT NULL
+// (the literal carries a concrete value); column references and
+// parameter bindings are nullable (the database column / bound
+// parameter could be NULL); intermediate computed values inherit
+// their inputs' nullability. NullValue is always nullable.
+func ValueRichType(v Value) Type {
+	if v == nil {
+		return UnknownType
+	}
+	switch x := v.(type) {
+	case *ConstantValue:
+		// Literal constant — NOT NULL when the literal carries a value;
+		// nullable when Value==nil (representing a typed-NULL literal,
+		// distinct from NullValue which is the SQL NULL keyword).
+		nullable := x.Value == nil
+		return FromValueType(x.Typ, nullable)
+	case *BooleanValue:
+		// Literal TRUE/FALSE — NOT NULL.
+		return NotNullBoolean
+	case *NullValue:
+		// SQL NULL — always nullable, type comes from the typed-NULL
+		// annotation (TypeUnknown when unannotated).
+		return WithNullability(FromValueType(x.Typ, true), true)
+	case *FieldValue:
+		// Column reference — nullable until the catalog proves NOT NULL.
+		// The seed's FieldValue doesn't track nullability; future
+		// Type-hierarchy migration carries the column's NOT NULL flag
+		// from the metadata into the Field's RichType result.
+		return FromValueType(x.Typ, true)
+	case *ArithmeticValue:
+		// Int-only arithmetic in the seed. NULL propagates through Eval
+		// (`int + NULL = NULL`), so the result is nullable when either
+		// operand is. Conservative: assume nullable.
+		return NullableLong
+	case *CastValue:
+		// CAST may produce NULL on out-of-range / unsupported source
+		// (Evaluate returns nil in those cases), so cast results are
+		// always nullable in the seed.
+		return FromValueType(x.Target, true)
+	case *PromoteValue:
+		// Promote inherits nullability from its child.
+		return FromValueType(x.Target, ValueRichType(x.Child).IsNullable())
+	case *ParameterValue:
+		// Parameter bindings can be NULL.
+		return WithNullability(FromValueType(x.Typ, true), true)
+	case *ScalarFunctionValue:
+		// Most scalar functions can return NULL on NULL input — be
+		// conservative and assume nullable.
+		return FromValueType(x.Typ, true)
+	case *NotValue:
+		// NOT preserves the child's type + nullability (NOT NULL → NULL).
+		return ValueRichType(x.Child)
+	case *AggregateValue:
+		// COUNT / COUNT(*) are NOT NULL longs (zero on empty groups).
+		// SUM / MIN / MAX / AVG return NULL on empty groups, so
+		// nullable. Use the operand's type when available.
+		switch x.Op {
+		case AggCount, AggCountStar:
+			return NotNullLong
+		case AggSum, AggMin, AggMax, AggAvg:
+			if x.Operand != nil {
+				return WithNullability(ValueRichType(x.Operand), true)
+			}
+			return NullableLong
+		}
+		return UnknownType
+	case *QuantifiedObjectValue:
+		// Row reference — nullable rows pass-through (e.g. LEFT JOIN's
+		// right side).
+		return WithNullability(FromValueType(x.Typ, true), true)
+	case *RecordConstructorValue:
+		// Synthesise a RecordType from the constructor's fields. The
+		// outer record is anonymous + nullable (we can't prove an
+		// inferred record is NOT NULL).
+		fields := make([]Field, len(x.Fields))
+		for i, f := range x.Fields {
+			fields[i] = Field{
+				Name:      f.Name,
+				FieldType: ValueRichType(f.Value),
+				Ordinal:   i,
+			}
+		}
+		return NewRecordType("", true, fields)
+	}
+	return UnknownType
+}
+
 // ToValueType bridges the new Type back to the legacy ValueType.
 // LONG / DOUBLE both fold into the seed's TypeInt / TypeFloat (the
 // legacy enum doesn't distinguish widths). Structured types and
