@@ -39,6 +39,14 @@ func (f *fuzzData) int64() int64 {
 	return v
 }
 
+func (f *fuzzData) int32() int32 {
+	var v int32
+	for i := 0; i < 4; i++ {
+		v |= int32(f.byte()) << (i * 8)
+	}
+	return v
+}
+
 // bytesN returns up to maxLen bytes; cap protects against pathological inputs.
 func (f *fuzzData) bytesN(maxLen int) []byte {
 	n := int(f.byte())
@@ -192,4 +200,138 @@ func equalBytes(a, b []byte) bool {
 		return true
 	}
 	return bytes.Equal(a, b)
+}
+
+// FuzzKeyRangeRef_SingleKeyOptimization specifically forces the
+// (begin, begin+\\x00) shape that triggers the optimized writer branch
+// AND the corresponding reader-side reconstruction. Without the custom
+// override on the reader (keyrangeref_custom.go), this case would have
+// round-tripped as (begin, end) swapped — that is the regression we are
+// pinning. Wrapped in SplitRangeRequest because KeyRangeRef has no
+// public MarshalFDB; the existing TestKeyRangeRef_RoundTrip uses the
+// same wrapper for the same reason.
+func FuzzKeyRangeRef_SingleKeyOptimization(f *testing.F) {
+	f.Add([]byte{0x42})
+	f.Add([]byte{1, 2, 3, 4})
+	f.Add([]byte{0xFF, 0xFF, 0xFF})
+
+	f.Fuzz(func(t *testing.T, begin []byte) {
+		if len(begin) > 1024 {
+			begin = begin[:1024]
+		}
+		end := append(append([]byte{}, begin...), 0)
+		// Sanity: this input MUST trigger the optimization. If our helper
+		// disagrees, the test is no longer pinning the right path and we
+		// should hear about it.
+		if !keyRangeEqualsKeyAfter(begin, end) {
+			t.Fatalf("setup: begin=%x end=%x not recognized as single-key range", begin, end)
+		}
+
+		req := &SplitRangeRequest{Keys: KeyRangeRef{Begin: begin, End: end}, ChunkSize: 1}
+		bs := req.MarshalFDB()
+		var got SplitRangeRequest
+		if err := got.UnmarshalFDB(bs); err != nil {
+			t.Fatalf("UnmarshalFDB: %v", err)
+		}
+		if !equalBytes(got.Keys.Begin, begin) {
+			t.Errorf("Begin: got %x, want %x", got.Keys.Begin, begin)
+		}
+		if !equalBytes(got.Keys.End, end) {
+			t.Errorf("End: got %x, want %x", got.Keys.End, end)
+		}
+	})
+}
+
+// FuzzGetKeyRequest_RoundTrip pins KeySelectorRef + Version round-trip
+// through the smallest wrapper that exposes both. KeySelectorRef does
+// not have a top-level MarshalFDB; the read path also does not exercise
+// the wrapper. GetKey is on the read hot path so the round-trip matters.
+func FuzzGetKeyRequest_RoundTrip(f *testing.F) {
+	f.Add([]byte{3, 1, 2, 3, 1, 0xFF, 0xFF, 0xFF, 0x7F, 8, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fd := &fuzzData{b: data}
+		req := &GetKeyRequest{
+			Sel: KeySelectorRef{
+				Key:     fd.bytesN(64),
+				OrEqual: fd.bool(),
+				Offset:  fd.int32(),
+			},
+			Version:    fd.int64(),
+			TenantInfo: TenantInfo{TenantId: fd.int64()},
+		}
+		bs := req.MarshalFDB()
+
+		var got GetKeyRequest
+		if err := got.UnmarshalFDB(bs); err != nil {
+			t.Fatalf("UnmarshalFDB: %v", err)
+		}
+		if !equalBytes(got.Sel.Key, req.Sel.Key) {
+			t.Errorf("Sel.Key: got %x, want %x", got.Sel.Key, req.Sel.Key)
+		}
+		if got.Sel.OrEqual != req.Sel.OrEqual {
+			t.Errorf("Sel.OrEqual: got %v, want %v", got.Sel.OrEqual, req.Sel.OrEqual)
+		}
+		if got.Sel.Offset != req.Sel.Offset {
+			t.Errorf("Sel.Offset: got %d, want %d", got.Sel.Offset, req.Sel.Offset)
+		}
+		if got.Version != req.Version {
+			t.Errorf("Version: got %d, want %d", got.Version, req.Version)
+		}
+		if got.TenantInfo.TenantId != req.TenantInfo.TenantId {
+			t.Errorf("TenantId: got %d, want %d", got.TenantInfo.TenantId, req.TenantInfo.TenantId)
+		}
+	})
+}
+
+// FuzzGetKeyServerLocationsReply_RoundTrip — the diff-oracle skips this
+// type because constructing the deeply-nested vector<pair<KeyRangeRef,
+// vector<StorageServerInterface>>> shape on the C++ side is impractical.
+// The Go side stores all four wire-serialized fields as opaque []byte blobs
+// (the parent reply layer; the inner vectors are decoded later via the
+// location-cache helpers). Round-tripping the outer wrapper is still
+// valuable: catches vtable/slot-index typos and padding bugs without
+// needing the inner payload to be valid.
+//
+// NOTE on the Arena field: in FDB's C++ wire protocol, Arena is a
+// memory-ownership marker carried alongside the deserialized message —
+// it is NOT serialized into outbound bytes (the generated MarshalFDB
+// correctly omits it from precomputeSize and writeToBuffer). After a
+// round-trip, Arena is always empty regardless of input. This fuzzer
+// reflects that contract by leaving Arena unset on the input side.
+func FuzzGetKeyServerLocationsReply_RoundTrip(f *testing.F) {
+	f.Add([]byte{4, 1, 2, 3, 4, 0, 0, 4, 5, 6, 7, 8})
+	f.Add([]byte{0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fd := &fuzzData{b: data}
+		reply := &GetKeyServerLocationsReply{
+			Results:           fd.bytesN(64),
+			ResultsTssMapping: fd.bytesN(64),
+			ResultsTagMapping: fd.bytesN(64),
+		}
+		bs := reply.MarshalFDB()
+
+		var got GetKeyServerLocationsReply
+		if err := got.UnmarshalFDB(bs); err != nil {
+			t.Fatalf("UnmarshalFDB: %v", err)
+		}
+		if !equalBytes(got.Results, reply.Results) {
+			t.Errorf("Results: got %x, want %x", got.Results, reply.Results)
+		}
+		if !equalBytes(got.ResultsTssMapping, reply.ResultsTssMapping) {
+			t.Errorf("ResultsTssMapping: got %x, want %x", got.ResultsTssMapping, reply.ResultsTssMapping)
+		}
+		if !equalBytes(got.ResultsTagMapping, reply.ResultsTagMapping) {
+			t.Errorf("ResultsTagMapping: got %x, want %x", got.ResultsTagMapping, reply.ResultsTagMapping)
+		}
+		if len(got.Arena) != 0 {
+			// Wire contract: Arena must always come back empty regardless of
+			// what the Go struct held going in. This pin catches a future
+			// generator change that would (incorrectly) emit Arena into the
+			// outbound bytes.
+			t.Errorf("Arena should be empty after round-trip, got %x", got.Arena)
+		}
+	})
 }
