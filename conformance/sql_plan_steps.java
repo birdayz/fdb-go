@@ -191,6 +191,40 @@ class SqlPlanSteps {
     }
 
     /**
+     * Run a sequence of setup DMLs (INSERT / UPDATE / DELETE) followed by
+     * a SELECT — all in the same ephemeral schema. Returns the SELECT's
+     * result set in the same JSON shape as {@link #runSql}.
+     *
+     * <p>Used by round-trip type-coverage tests: each {@link #runSql} call
+     * uses a fresh ephemeral schema, so INSERT-then-SELECT in two calls
+     * doesn't share state. {@code runWithSetup} keeps the schema alive
+     * for the whole sequence.
+     *
+     * <p>Setup statements run via {@link Statement#executeUpdate}; the
+     * affected-row count is discarded. Errors during setup propagate as
+     * {@link SQLException} and are returned as a typed Java exception by
+     * the conformance server.
+     *
+     * @param clusterFile     cluster-file content (string, not path)
+     * @param schemaTemplate  body of CREATE SCHEMA TEMPLATE
+     * @param setupSqls       DML statements to run before the query
+     * @param querySql        the SELECT to run; its RowSet is returned
+     * @return                JSON RowSet of the {@code querySql} result
+     */
+    @ConformanceStep("runWithSetup")
+    public JsonObject runWithSetup(String clusterFile, String schemaTemplate,
+                                    java.util.List<String> setupSqls, String querySql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    st.executeUpdate(setup);
+                }
+            }
+            return runQuery(conn, querySql);
+        });
+    }
+
+    /**
      * Wraps a JDBC operation in the ephemeral schema-template / database /
      * schema lifecycle. Both {@link #planSql} and {@link #runSql} drive
      * fdb-relational the same way: create a uniquely-named template + db

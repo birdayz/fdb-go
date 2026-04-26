@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -197,5 +198,111 @@ func TestGoRunner_Unimplemented(t *testing.T) {
 	got := r.Run(context.Background(), Query{Name: "x", SQL: "SELECT 1"})
 	if !errors.Is(got.Err, ErrGoUnimplemented) {
 		t.Fatalf("expected ErrGoUnimplemented, got %v", got.Err)
+	}
+}
+
+// TestJavaRunner_RunWithSetup_HappyPath pins the wire shape for the
+// runWithSetup step: POSTs step="runWithSetup" + params{clusterFile,
+// schemaTemplate, setupSqls, querySql}, parses the same RowSet result
+// as runSql.
+func TestJavaRunner_RunWithSetup_HappyPath(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Step   string         `json:"step"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Step != "runWithSetup" {
+			http.Error(w, "unexpected step "+req.Step, http.StatusBadRequest)
+			return
+		}
+		// Verify params include the setup-list shape.
+		setups, ok := req.Params["setupSqls"].([]any)
+		if !ok || len(setups) != 2 {
+			http.Error(w, fmt.Sprintf("setupSqls: got %v", req.Params["setupSqls"]), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"columns": []map[string]any{{"name": "ID", "type": "BIGINT"}},
+				"rows":    [][]any{{1}, {2}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	r, ok := NewJavaRunnerHTTP(srv.URL, "fake-cluster").(SetupRunner)
+	if !ok {
+		t.Fatal("javaRunner does not satisfy SetupRunner")
+	}
+	got := r.RunWithSetup(
+		context.Background(),
+		"CREATE TABLE T (id BIGINT, PRIMARY KEY (id))",
+		[]string{"INSERT INTO T VALUES (1)", "INSERT INTO T VALUES (2)"},
+		"SELECT id FROM T ORDER BY id",
+	)
+	if got.Err != nil {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	if len(got.Rows.Rows) != 2 {
+		t.Fatalf("Rows: got %d, want 2", len(got.Rows.Rows))
+	}
+}
+
+// TestJavaRunner_RunWithSetup_NilBaseURL pins that the unwired runner
+// surfaces ErrJavaRunUnimplemented for RunWithSetup as well as Run.
+func TestJavaRunner_RunWithSetup_NilBaseURL(t *testing.T) {
+	t.Parallel()
+	r, ok := NewJavaRunner().(SetupRunner)
+	if !ok {
+		t.Fatal("javaRunner does not satisfy SetupRunner")
+	}
+	got := r.RunWithSetup(context.Background(), "", nil, "SELECT 1")
+	if !errors.Is(got.Err, ErrJavaRunUnimplemented) {
+		t.Fatalf("expected ErrJavaRunUnimplemented, got %v", got.Err)
+	}
+}
+
+// TestJavaRunner_RunWithSetup_EmptySetup pins that a nil setup list
+// is sent as an empty JSON array (not null) — the Java side iterates
+// the list and would NPE on null.
+func TestJavaRunner_RunWithSetup_EmptySetup(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		setups, ok := req.Params["setupSqls"].([]any)
+		if !ok {
+			http.Error(w, "setupSqls missing or not an array", http.StatusBadRequest)
+			return
+		}
+		if len(setups) != 0 {
+			http.Error(w, fmt.Sprintf("setupSqls: want empty array, got %v", setups), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"columns": []map[string]any{{"name": "X", "type": "INTEGER"}},
+				"rows":    []any{},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	r := NewJavaRunnerHTTP(srv.URL, "").(SetupRunner)
+	got := r.RunWithSetup(context.Background(), "", nil, "SELECT 1")
+	if got.Err != nil {
+		t.Fatalf("unexpected error: %v", got.Err)
 	}
 }

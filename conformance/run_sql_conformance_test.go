@@ -103,6 +103,52 @@ var _ = Describe("RunSql Harness", func() {
 		Expect(got.Rows.Rows).To(BeEmpty(), "ephemeral schema is fresh — Item is empty")
 	})
 
+	It("round-trips a row with multiple primitive types via runWithSetup", func() {
+		// Pins type encoding end-to-end: INSERT a row with values across
+		// fdb-relational's primitive type set, SELECT it back via the
+		// shared ephemeral schema, verify each column's JSON-encoded
+		// representation. Surfaces any encoder gap in
+		// SqlPlanSteps#resultSetToJson — JDBC types that fall through
+		// to the {"__unsupported__": ...} marker would fail the asserts.
+		//
+		// Coverage: BIGINT (long), DOUBLE, STRING (varchar), BOOLEAN.
+		// Skipped (not supported by fdb-relational CREATE TABLE in
+		// 4.11.1.0): BYTES NOT NULL, DATE, TIMESTAMP — these wait
+		// on a follow-up shift.
+		runner, ok := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile).(plandiff.SetupRunner)
+		Expect(ok).To(BeTrue(), "javaRunner must satisfy SetupRunner")
+
+		got := runner.RunWithSetup(ctx,
+			"CREATE TABLE T (id BIGINT, score DOUBLE, label STRING, flag BOOLEAN, PRIMARY KEY (id))",
+			[]string{
+				"INSERT INTO T VALUES (1, 3.5, 'alice', TRUE)",
+				"INSERT INTO T VALUES (2, -7.25, 'bob', FALSE)",
+				"INSERT INTO T VALUES (3, 0.0, NULL, NULL)",
+			},
+			"SELECT id, score, label, flag FROM T ORDER BY id",
+		)
+		Expect(got.Err).NotTo(HaveOccurred(), "INSERT-then-SELECT must succeed")
+		Expect(got.Rows.Columns).To(HaveLen(4))
+		Expect(got.Rows.Rows).To(HaveLen(3))
+
+		// Row 0: (1, 3.5, "alice", TRUE)
+		Expect(got.Rows.Rows[0][0].(float64)).To(Equal(float64(1)))
+		Expect(got.Rows.Rows[0][1].(float64)).To(Equal(3.5))
+		Expect(got.Rows.Rows[0][2].(string)).To(Equal("alice"))
+		Expect(got.Rows.Rows[0][3].(bool)).To(BeTrue())
+
+		// Row 1: (2, -7.25, "bob", FALSE)
+		Expect(got.Rows.Rows[1][0].(float64)).To(Equal(float64(2)))
+		Expect(got.Rows.Rows[1][1].(float64)).To(Equal(-7.25))
+		Expect(got.Rows.Rows[1][3].(bool)).To(BeFalse())
+
+		// Row 2: (3, 0.0, NULL, NULL) — null preservation across two
+		// nullable columns (one STRING, one BOOLEAN).
+		Expect(got.Rows.Rows[2][1].(float64)).To(Equal(float64(0)))
+		Expect(got.Rows.Rows[2][2]).To(BeNil(), "label NULL must round-trip")
+		Expect(got.Rows.Rows[2][3]).To(BeNil(), "flag NULL must round-trip")
+	})
+
 	It("returns an empty result set for SELECT with no matching rows", func() {
 		runner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), env.ClusterFile)
 		// Pin zero-row handling: an empty table SELECT returns

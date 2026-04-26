@@ -64,6 +64,19 @@ type Runner interface {
 	Run(ctx context.Context, q Query) RunResult
 }
 
+// SetupRunner extends Runner with a setup-then-query mode that keeps a
+// single ephemeral schema alive across multiple SQL statements. Used by
+// round-trip type-coverage tests where a SELECT depends on prior INSERTs.
+//
+// `setupSqls` are run via JDBC executeUpdate (DML); `querySql` is run
+// via executeQuery and its RowSet is returned. All statements run on
+// the same JDBC connection, so the ephemeral schema persists for the
+// whole sequence.
+type SetupRunner interface {
+	Runner
+	RunWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string) RunResult
+}
+
 // ErrJavaRunUnimplemented is returned by NewJavaRunner() (the no-baseURL
 // form) so a Go-only CI gate can run plandiff infrastructure without a
 // Java conformance server.
@@ -105,6 +118,21 @@ func (r javaRunner) Run(ctx context.Context, q Query) RunResult {
 		return RunResult{Engine: "java", Err: ErrJavaRunUnimplemented}
 	}
 	rows, err := r.invokeRunSql(ctx, q)
+	if err != nil {
+		return RunResult{Engine: "java", Err: err}
+	}
+	return RunResult{Engine: "java", Rows: rows}
+}
+
+// RunWithSetup posts to the conformance server's `runWithSetup` step
+// (see conformance/sql_plan_steps.java#runWithSetup). All `setupSqls`
+// run via executeUpdate; `querySql` runs via executeQuery and its
+// RowSet is returned.
+func (r javaRunner) RunWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string) RunResult {
+	if r.baseURL == "" {
+		return RunResult{Engine: "java", Err: ErrJavaRunUnimplemented}
+	}
+	rows, err := r.invokeRunWithSetup(ctx, schemaTemplate, setupSqls, querySql)
 	if err != nil {
 		return RunResult{Engine: "java", Err: err}
 	}
@@ -174,6 +202,77 @@ func (r javaRunner) invokeRunSql(ctx context.Context, q Query) (RowSet, error) {
 	return rows, nil
 }
 
+func (r javaRunner) invokeRunWithSetup(ctx context.Context, schemaTemplate string, setupSqls []string, querySql string) (RowSet, error) {
+	type request struct {
+		Step   string         `json:"step"`
+		Params map[string]any `json:"params"`
+	}
+	type response struct {
+		Success            bool            `json:"success"`
+		Result             json.RawMessage `json:"result"`
+		Error              string          `json:"error"`
+		ExceptionClass     string          `json:"exceptionClass"`
+		ExceptionFullClass string          `json:"exceptionFullClass"`
+	}
+
+	if setupSqls == nil {
+		// Java's deserializeArgs treats missing param as null; List<String>
+		// param then arrives as null, NPE inside the for-each. Send an
+		// empty array instead so the Java side iterates zero times.
+		setupSqls = []string{}
+	}
+
+	reqBody, err := json.Marshal(request{
+		Step: "runWithSetup",
+		Params: map[string]any{
+			"clusterFile":    r.clusterFile,
+			"schemaTemplate": schemaTemplate,
+			"setupSqls":      setupSqls,
+			"querySql":       querySql,
+		},
+	})
+	if err != nil {
+		return RowSet{}, fmt.Errorf("plandiff: marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/invoke", bytes.NewReader(reqBody))
+	if err != nil {
+		return RowSet{}, fmt.Errorf("plandiff: build HTTP request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := r.httpClient.Do(httpReq)
+	if err != nil {
+		return RowSet{}, fmt.Errorf("plandiff: HTTP POST: %w", err)
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return RowSet{}, fmt.Errorf("plandiff: read body: %w", err)
+	}
+	if httpResp.StatusCode != 200 {
+		return RowSet{}, fmt.Errorf("plandiff: HTTP %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	var resp response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return RowSet{}, fmt.Errorf("plandiff: unmarshal response: %w (body=%q)", err, string(body))
+	}
+	if !resp.Success {
+		if resp.ExceptionClass != "" {
+			return RowSet{}, fmt.Errorf("plandiff: java %s: %s", resp.ExceptionClass, resp.Error)
+		}
+		return RowSet{}, fmt.Errorf("plandiff: java error: %s", resp.Error)
+	}
+
+	var rows RowSet
+	if err := json.Unmarshal(resp.Result, &rows); err != nil {
+		return RowSet{}, fmt.Errorf("plandiff: parse rows from result: %w (result=%q)", err, string(resp.Result))
+	}
+	return rows, nil
+}
+
 // goRunner is the unwired Go runner. Returns ErrGoUnimplemented for
 // every call. Track C2 (QueryExecutor) replaces this with a real
 // in-process executor.
@@ -187,3 +286,14 @@ func NewGoRunner() Runner { return goRunner{} }
 func (goRunner) Run(_ context.Context, _ Query) RunResult {
 	return RunResult{Engine: "go", Err: ErrGoUnimplemented}
 }
+
+func (goRunner) RunWithSetup(_ context.Context, _ string, _ []string, _ string) RunResult {
+	return RunResult{Engine: "go", Err: ErrGoUnimplemented}
+}
+
+// Compile-time assertion that javaRunner / goRunner satisfy SetupRunner.
+// Catches a future RunWithSetup signature drift at build time.
+var (
+	_ SetupRunner = javaRunner{}
+	_ SetupRunner = goRunner{}
+)
