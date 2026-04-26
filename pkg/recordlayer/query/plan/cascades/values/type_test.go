@@ -952,6 +952,30 @@ func TestMaximumType_NilHandling(t *testing.T) {
 	}
 }
 
+// TestNoneType_Singleton pins NONE: the type of the untyped empty
+// array `[]`. Always non-nullable; WithNullability(NoneType, true)
+// panics. Mirrors Java's Type.NONE contract.
+func TestNoneType_Singleton(t *testing.T) {
+	t.Parallel()
+	if NoneType.Code() != TypeCodeNone {
+		t.Errorf("NoneType.Code(): got %v, want NONE", NoneType.Code())
+	}
+	if NoneType.IsNullable() {
+		t.Error("NoneType is always non-nullable")
+	}
+	// WithNullability(NoneType, false) is a no-op.
+	if WithNullability(NoneType, false) != NoneType {
+		t.Error("WithNullability(NoneType, false) should return the same singleton")
+	}
+	// WithNullability(NoneType, true) panics.
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic from WithNullability(NoneType, true)")
+		}
+	}()
+	_ = WithNullability(NoneType, true)
+}
+
 // TestArrayType_IsErased pins the typed/erased distinction for
 // ArrayType. Mirrors Java's Type.Array.isErased().
 func TestArrayType_IsErased(t *testing.T) {

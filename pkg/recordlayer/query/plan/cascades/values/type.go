@@ -258,6 +258,13 @@ var (
 	// Pre-Phase-4.0 the legacy `ValueType` had a TypeUnknown that
 	// served the same purpose; this is the new-API replacement.
 	UnknownType Type = &PrimitiveType{TypeCode: TypeCodeUnknown, Nullable: true}
+
+	// NoneType is the type of the untyped empty array literal `[]`.
+	// Identity-promotes to any ARRAY type without changing
+	// nullability — when an empty array appears in a context that
+	// expects ARRAY<T>, NONE adopts T as its element type.
+	// Always non-nullable. Mirrors Java's `Type.NONE`.
+	NoneType Type = &PrimitiveType{TypeCode: TypeCodeNone, Nullable: false}
 )
 
 // Typed is the interface things-with-a-type implement. Mirrors Java's
@@ -993,6 +1000,14 @@ func WithNullability(t Type, nullable bool) Type {
 				return NullableVersion
 			}
 			return NotNullVersion
+		case TypeCodeNone:
+			// NONE is the type of the untyped empty array `[]` —
+			// always non-nullable per Java's contract. Asking for a
+			// nullable NONE is a programming error.
+			if nullable {
+				panic("WithNullability: NONE type cannot be nullable")
+			}
+			return NoneType
 		}
 		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
 	case *RecordType:
