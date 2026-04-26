@@ -96,6 +96,13 @@ func jdbcTypeNameForFD(fd protoreflect.FieldDescriptor) string {
 		return "STRING"
 	case protoreflect.BytesKind:
 		return "BYTES"
+	case protoreflect.MessageKind:
+		// UUID columns are stored as the tuple_fields.UUID message
+		// and reported as JDBC's catch-all "OTHER" type name (matches
+		// Java's java.sql.Types.OTHER for UUIDs).
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
+			return "OTHER"
+		}
 	}
 	return ""
 }

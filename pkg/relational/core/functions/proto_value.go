@@ -2,11 +2,71 @@ package functions
 
 import (
 	"database/sql/driver"
+	"encoding/binary"
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
+
+// UUIDProtoMessageName is the fully-qualified name of the
+// tuple_fields.UUID proto message that fdb-relational uses to store
+// UUID column values (matches Java's TupleFieldsProto.UUID).
+const UUIDProtoMessageName = "com.apple.foundationdb.record.UUID"
+
+// isUUIDMessageField reports whether fd is a UUID-typed field — a
+// MessageKind whose message-descriptor's full name matches the
+// tuple_fields.UUID type. Used by ConvertToProtoValue / ProtoValueToDriver
+// / jdbcTypeNameForFD to recognise UUID fields without taking a
+// dependency on the gen package's typed message.
+func isUUIDMessageField(fd protoreflect.FieldDescriptor) bool {
+	if fd == nil || fd.Kind() != protoreflect.MessageKind {
+		return false
+	}
+	if msg := fd.Message(); msg != nil {
+		return string(msg.FullName()) == UUIDProtoMessageName
+	}
+	return false
+}
+
+// uuidStringToProtoMessage parses a canonical UUID string and builds
+// a dynamicpb message matching the tuple_fields.UUID descriptor.
+// Returns the Go uuid.UUID value too, for callers that want both.
+func uuidStringToProtoMessage(fd protoreflect.FieldDescriptor, s string) (protoreflect.Value, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidCast,
+			"cannot CAST %q to UUID: %v", s, err)
+	}
+	msgDesc := fd.Message()
+	dynMsg := dynamicpb.NewMessage(msgDesc)
+	mostFD := msgDesc.Fields().ByName("most_significant_bits")
+	leastFD := msgDesc.Fields().ByName("least_significant_bits")
+	if mostFD == nil || leastFD == nil {
+		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
+			"UUID message descriptor missing most/least_significant_bits fields")
+	}
+	dynMsg.Set(mostFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(u[0:8]))))   //nolint:gosec
+	dynMsg.Set(leastFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(u[8:16])))) //nolint:gosec
+	return protoreflect.ValueOfMessage(dynMsg), nil
+}
+
+// uuidProtoMessageToString reads a UUID proto message and returns the
+// canonical 36-char string form. The message is identified by its
+// most/least_significant_bits fields; other shapes panic.
+func uuidProtoMessageToString(msg protoreflect.Message) string {
+	mostFD := msg.Descriptor().Fields().ByName("most_significant_bits")
+	leastFD := msg.Descriptor().Fields().ByName("least_significant_bits")
+	most := uint64(msg.Get(mostFD).Int())   //nolint:gosec
+	least := uint64(msg.Get(leastFD).Int()) //nolint:gosec
+	var u uuid.UUID
+	binary.BigEndian.PutUint64(u[0:8], most)
+	binary.BigEndian.PutUint64(u[8:16], least)
+	return u.String()
+}
 
 // LiteralMatchesPKKind reports whether a driver-value literal is a
 // safe tuple element for a column of the given proto kind. Only
@@ -55,6 +115,15 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 		return v.String()
 	case protoreflect.BytesKind:
 		return []byte(v.Bytes())
+	case protoreflect.MessageKind:
+		// UUID columns return the canonical 36-char string form for
+		// SQL consumption — matches Java's getString(uuidColumn) and
+		// our cross-engine plandiff harness's expectation. Other
+		// MessageKind fields are not supported as SQL columns.
+		if isUUIDMessageField(fd) {
+			return uuidProtoMessageToString(v.Message())
+		}
+		return v.Interface()
 	default:
 		return v.Interface()
 	}
@@ -172,6 +241,16 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		}
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfBytes([]byte(v)), nil
+		}
+	case protoreflect.MessageKind:
+		// UUID columns are stored as the tuple_fields.UUID message
+		// (most_significant_bits, least_significant_bits). The SQL
+		// layer carries the value as the canonical 36-char string;
+		// convert here at the proto-write boundary.
+		if isUUIDMessageField(fd) {
+			if s, ok := val.(string); ok {
+				return uuidStringToProtoMessage(fd, s)
+			}
 		}
 	}
 	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,

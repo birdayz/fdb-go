@@ -444,9 +444,9 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **`INFORMATION_SCHEMA.*` is GO-side only — fdb-relational doesn't implement it at all.** Our Go embedded engine handles `INFORMATION_SCHEMA.SCHEMATA / TABLES / COLUMNS` (see `pkg/relational/core/embedded/system_tables.go`); fdb-relational 4.11.1.0's parser rejects `SELECT ... FROM INFORMATION_SCHEMA.TABLES` with a syntax error. Track A4 (system-table byte-equivalence) is therefore Go-only today and gated on adding INFORMATION_SCHEMA support to fdb-relational upstream — NOT something a Go-side shift can fix unilaterally without divergence.
 - **Explicit `JOIN ... ON` is broken in fdb-relational 4.11.1.0.** Even fully-qualified column names (`Customers.cid`) raise `RelationalException: Attempting to query non existing column CUSTOMERS.CID` from the JOIN ON clause's column resolution. Use comma-separated table list with `WHERE` instead: `FROM Customers, Sales WHERE Customers.cid = Sales.cid`. (Inner-join semantics only — LEFT/RIGHT/FULL OUTER need explicit JOIN syntax and are therefore unavailable.)
 
-### Go embedded SQL engine — known divergences from fdb-relational
+### Go embedded SQL engine — Java conformance status
 
-The plandiff Go-vs-Java result-set harness (`pkg/relational/conformance/plandiff/go_runner_test.go`) drives every SeedRunCorpus entry through both engines and asserts byte-equivalence on column metadata + row values. As of swingshift-52, **30/31 corpus entries pass strict end-to-end equivalence**. The remaining outlier (`uuid_round_trip`) is a documented feature gap, not a value divergence.
+The plandiff Go-vs-Java result-set harness (`pkg/relational/conformance/plandiff/go_runner_test.go`) drives every SeedRunCorpus entry through both engines and asserts byte-equivalence on column metadata + row values. As of swingshift-52, **all 31 corpus entries pass strict end-to-end equivalence** (column names + JDBC type names + row values, all strict, per-entry). When new gaps emerge (e.g. when a corpus entry pulls in a not-yet-supported type), they're surfaced via `isGoFeatureGap` skips, never silent passes.
 
 Conformance gaps **closed** in swingshift-52:
 
@@ -455,12 +455,9 @@ Conformance gaps **closed** in swingshift-52:
 - ✅ **Anonymous projection naming** — same normalizer emits synthetic `_N` (zero-based position) for any expression that isn't a simple identifier (`COUNT(*)` → `_0`, `id+10` → `_1`, `CASE ... END` → `_<pos>`).
 - ✅ **JDBC type-name plumbing** — embedded driver implements `RowsColumnTypeDatabaseTypeName`. `staticRows.colTypes` populated from proto FieldDescriptor in the SELECT path; aggregate columns default to BIGINT (covers SUM/MIN/MAX/COUNT over integral types).
 - ✅ **Empty result-set type inference** — same driver method, no longer dependent on first-row value inspection.
+- ✅ **`UUID` column type — full end-to-end** — DDL parser accepts `key UUID`; metadata builder emits the `tuple_fields.UUID` proto sub-message reference (`.com.apple.foundationdb.record.UUID` with sfixed64 most/least bits, matching Java's `Type.uuidType` lowering); `CAST(string AS UUID)` validates and returns the canonical 36-char form; `ConvertToProtoValue` encodes the canonical string into the proto UUID message via `most_significant_bits` / `least_significant_bits` derived big-endian from the 16-byte UUID; `ProtoValueToDriver` reverses on read; `jdbcTypeNameForFD` reports `OTHER` (matching `java.sql.Types.OTHER` for UUID). See `pkg/relational/core/functions/proto_value.go`.
 
-The transformation is applied at the driver-output boundary (`staticRows.Columns()` and `ColumnTypeDatabaseTypeName`), NOT at the internal `.cols` field. Internal callers (CTE row-map keying, ORDER BY resolution against unqualified names, alias remapping) read `.cols` directly and bypass normalization, preserving correctness of internal lookups.
-
-Conformance gaps **still open**:
-
-- **`UUID` column type** — DDL parser hook landed swingshift-52 (`pkg/relational/core/embedded/ddl.go` accepts `key UUID` syntax), but the metadata builder (`pkg/relational/core/metadata/builder.go#datatypeToProtoFieldType`) doesn't yet emit the `tuple_fields.UUID` proto sub-message reference (sfixed64 most/least bits, matching Java's `Type.uuidType` lowering). The plandiff `uuid_round_trip` entry is t.Skipf'd via `isGoFeatureGap` until the proto layer lands. Tracked in TODO.md.
+The projection-name + type-name transformation is applied at the driver-output boundary (`staticRows.Columns()` and `ColumnTypeDatabaseTypeName`), NOT at the internal `.cols` field. Internal callers (CTE row-map keying, ORDER BY resolution against unqualified names, alias remapping) read `.cols` directly and bypass normalization, preserving correctness of internal lookups.
 
 ## Error handling
 

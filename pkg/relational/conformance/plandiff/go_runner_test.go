@@ -132,10 +132,11 @@ func TestGoSQLRunner_HappyPath(t *testing.T) {
 // diverges is a real cross-engine regression — fix the underlying
 // engine bug, do not relax this test.
 //
-// Entries that hit feature gaps in the Go engine (today: UUID
-// columns) are classified via isGoFeatureGap and t.Skipf'd with a
-// note. When a gap closes, the corresponding entry will start
-// passing automatically.
+// Entries that hit feature gaps in the Go engine are classified
+// via isGoFeatureGap and t.Skipf'd with a note. As of swingshift-52
+// no entries hit the gap path — UUID DDL/INSERT/SELECT all landed —
+// but the gate stays in place so future corpus additions surfacing
+// new gaps don't fail the build until the gap is closed.
 func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 	t.Parallel()
 	if goSQLClusterFilePath == "" {
@@ -187,15 +188,15 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 
 // isGoFeatureGap recognises errors that mean "the Go embedded engine
 // doesn't support this feature yet" (vs. an unexpected runtime error).
-// Today's gaps:
+// Patterns:
 //   - "unsupported column type": DDL parser-level rejection.
 //   - "unsupported DataType code": metadata-builder-level rejection
-//     for types whose DDL is accepted but proto-mapping isn't wired
-//     (e.g. UUID after swingshift-52's ddl.go fix — the parser accepts
-//     UUID, the proto-builder doesn't yet map it to a field type).
+//     for types whose DDL is accepted but proto-mapping isn't wired.
 //
-// Extend as new gap categories emerge. Each entry points at a tracked
-// TODO.md item so closing it removes the skip path.
+// Currently no SeedRunCorpus entries hit this path — UUID end-to-end
+// landed swingshift-52. Kept as a gate so adding a corpus entry that
+// exercises a not-yet-supported type produces a clear "feature gap"
+// skip instead of cascading into a noisy strict-equivalence failure.
 func isGoFeatureGap(err error) bool {
 	if err == nil {
 		return false
