@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -1165,6 +1166,17 @@ func normalizeSubspaceKey(key any) any {
 		return k
 	case []byte:
 		return string(k)
+	case tuple.Tuple:
+		// Nested tuples are produced by `fastDecodeTuple` when the
+		// proto-encoded subspace key carries an FDB nested-tuple type
+		// code. Like `[]byte`, a `tuple.Tuple` (= []any) is unhashable
+		// in Go and would panic on map insert. Java doesn't currently
+		// emit nested tuples as subspace keys, so this is preemptive
+		// hardening rather than a known-triggering case (the fuzz has
+		// run 16M+ iterations without finding one), but the cost is
+		// trivial and the alternative is a surprise panic if the input
+		// ever takes that shape.
+		return fmt.Sprintf("%v", k)
 	default:
 		return key
 	}
