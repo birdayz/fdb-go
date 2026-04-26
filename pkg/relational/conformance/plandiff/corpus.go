@@ -408,6 +408,27 @@ func SeedRunCorpus() []RunQuery {
 			},
 		},
 		{
+			Name:           "uuid_round_trip",
+			SchemaTemplate: "CREATE TABLE T_UUID (id BIGINT, key UUID, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UUID VALUES (1, CAST('00000000-0000-0000-0000-000000000042' AS UUID))",
+			},
+			Query: "SELECT id, key FROM T_UUID ORDER BY id",
+			Expected: RowSet{
+				// fdb-relational reports UUID columns as JDBC type "OTHER"
+				// (the standard JDBC type code for vendor-specific types).
+				// java.util.UUID values are encoded via toString() by
+				// SqlPlanSteps#encodeValue's UUID arm.
+				Columns: []Column{
+					{Name: "ID", Type: "BIGINT"},
+					{Name: "KEY", Type: "OTHER"},
+				},
+				Rows: [][]any{
+					{float64(1), "00000000-0000-0000-0000-000000000042"},
+				},
+			},
+		},
+		{
 			Name:           "case_expression",
 			SchemaTemplate: "CREATE TABLE T_CASE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{

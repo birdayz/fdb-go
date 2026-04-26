@@ -429,6 +429,7 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **`LIMIT N` clause is not supported in SQL.** Returns `RelationalException: LIMIT clause is not supported.` — pagination is exposed as a JDBC `Statement.setMaxRows` knob, not SQL syntax. Don't add `... LIMIT N` corpus entries until this changes.
 - **`SELECT DISTINCT` is not supported by the planner.** Returns `UnableToPlanException`, same as GROUP BY. Wait until RFC-022 §4.5 Batch B rules port the distinct rule.
 - **Common SQL scalar functions (lower/upper/length/...) are NOT registered.** Returns `RelationalException: Unsupported operator <name>`. fdb-relational's function registry is small in 4.11.1.0; CASE expressions and basic arithmetic work, but most string/date/numeric helpers don't.
+- **UUID columns report JDBC type-name `"OTHER"`, not `"UUID"`.** JDBC's standard for vendor-specific types is `Types.OTHER`; UUID's getColumnTypeName() returns "OTHER". UUID values come through as `java.util.UUID` instances; our encoder converts via `toString()` (e.g. `"00000000-0000-0000-0000-000000000042"`). UUID literal syntax is `CAST('<text>' AS UUID)` — no dedicated UUID literal in the grammar.
 
 ## Error handling
 
