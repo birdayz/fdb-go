@@ -831,6 +831,85 @@ func TestIsPromotable_NilHandling(t *testing.T) {
 	}
 }
 
+// TestMaximumType pins the binary "common supertype" function.
+// Mirrors Java's Type.maximumType for primitives.
+func TestMaximumType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		t1   Type
+		t2   Type
+		want Type
+	}{
+		// Identity — same code, same nullability.
+		{"INT NOT NULL × INT NOT NULL", NotNullInt, NotNullInt, NotNullInt},
+		{"INT NULL × INT NULL", NullableInt, NullableInt, NullableInt},
+		// Identity — same code, mixed nullability → nullable wins.
+		{"INT NOT NULL × INT NULL", NotNullInt, NullableInt, NullableInt},
+		{"LONG NOT NULL × LONG NULL", NotNullLong, NullableLong, NullableLong},
+
+		// Numeric widening.
+		{"INT × LONG → LONG", NotNullInt, NotNullLong, NotNullLong},
+		{"INT × FLOAT → FLOAT", NotNullInt, NotNullFloat, NotNullFloat},
+		{"INT × DOUBLE → DOUBLE", NotNullInt, NotNullDouble, NotNullDouble},
+		{"LONG × FLOAT → FLOAT", NotNullLong, NotNullFloat, NotNullFloat},
+		{"LONG × DOUBLE → DOUBLE", NotNullLong, NotNullDouble, NotNullDouble},
+		{"FLOAT × DOUBLE → DOUBLE", NotNullFloat, NotNullDouble, NotNullDouble},
+		// Nullability propagates through promotion.
+		{"INT NULL × LONG NOT NULL → LONG NULL", NullableInt, NotNullLong, NullableLong},
+		{"INT NOT NULL × LONG NULL → LONG NULL", NotNullInt, NullableLong, NullableLong},
+
+		// Symmetric.
+		{"LONG × INT → LONG", NotNullLong, NotNullInt, NotNullLong},
+		{"DOUBLE × FLOAT → DOUBLE", NotNullDouble, NotNullFloat, NotNullDouble},
+
+		// NULL × T.
+		{"NULL × INT → INT NULL", NullType, NotNullInt, NullableInt},
+		{"INT × NULL → INT NULL", NotNullInt, NullType, NullableInt},
+		{"NULL × NULL → NULL", NullType, NullType, NullType},
+
+		// Cross-category — no common supertype.
+		{"INT × STRING → nil", NotNullInt, NotNullString, nil},
+		{"BOOLEAN × INT → nil", NotNullBoolean, NotNullInt, nil},
+		{"STRING × INT → nil", NotNullString, NotNullInt, nil},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := MaximumType(tc.t1, tc.t2)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("got %v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Errorf("got nil, want %v", tc.want)
+				return
+			}
+			if !got.Equals(tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaximumType_NilHandling pins that nil inputs return nil
+// (defensive — never panic on a missing operand).
+func TestMaximumType_NilHandling(t *testing.T) {
+	t.Parallel()
+	if MaximumType(nil, NotNullInt) != nil {
+		t.Error("nil left → nil")
+	}
+	if MaximumType(NotNullInt, nil) != nil {
+		t.Error("nil right → nil")
+	}
+	if MaximumType(nil, nil) != nil {
+		t.Error("both nil → nil")
+	}
+}
+
 // TestRelationType_Shape pins the basic getters + Equals + String.
 // Mirrors Java's Type.Relation contract — always non-nullable,
 // inner-type-driven equality, erased-relation handling.

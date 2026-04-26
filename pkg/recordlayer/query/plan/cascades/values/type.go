@@ -834,6 +834,67 @@ func IsPromotable(from, to Type) bool {
 	return ok
 }
 
+// MaximumType returns the smallest Type both `t1` and `t2` can be
+// promoted to without explicit CAST, or nil if no such type exists.
+// Used during arithmetic / comparison planning to homogenise
+// operand types: `INT + LONG` plans as `LONG + LONG → LONG`,
+// `FLOAT + DOUBLE` plans as `DOUBLE + DOUBLE → DOUBLE`, etc.
+//
+// Nullability rule: result is nullable iff EITHER input is nullable.
+//
+// NULL handling: if one side is the NULL literal type and the other
+// is promotable, the result is the other side made nullable. Both
+// NULL → NULL.
+//
+// NONE handling: NONE is the type of the untyped empty array `[]`;
+// it identity-promotes to any ARRAY type without changing
+// nullability. (NOT yet implemented for arrays — primitives only
+// for now; structured-type recursion lands with the next port.)
+//
+// This is the primitive-only version. RECORD / ARRAY recursion is
+// future work — caller should fall back to nil for compound types
+// and let the caller decide how to handle the gap.
+//
+// Mirrors Java's `Type.maximumType(t1, t2)`.
+func MaximumType(t1, t2 Type) Type {
+	if t1 == nil || t2 == nil {
+		return nil
+	}
+	c1, c2 := t1.Code(), t2.Code()
+	resultNullable := t1.IsNullable() || t2.IsNullable()
+
+	// NULL handling.
+	if c1 == TypeCodeNull && c2 == TypeCodeNull {
+		return NullType
+	}
+	if c1 == TypeCodeNull && IsPromotable(t1, t2) {
+		return WithNullability(t2, true)
+	}
+	if c2 == TypeCodeNull && IsPromotable(t2, t1) {
+		return WithNullability(t1, true)
+	}
+
+	// Identity — same code → result is the more permissive nullability.
+	if c1 == c2 {
+		// For structured types, defer to future structural-recursion.
+		// For primitives, return one of the canonical singletons.
+		if c1 == TypeCodeRecord || c1 == TypeCodeArray || c1 == TypeCodeRelation || c1 == TypeCodeEnum {
+			return nil
+		}
+		return WithNullability(t1, resultNullable)
+	}
+
+	// Promotion lattice: try each direction.
+	if IsPromotable(t1, t2) {
+		return WithNullability(t2, resultNullable)
+	}
+	if IsPromotable(t2, t1) {
+		return WithNullability(t1, resultNullable)
+	}
+
+	return nil
+}
+
 // --- Nullability helpers ------------------------------------------
 
 // WithNullability returns a Type with the same shape as t but the
