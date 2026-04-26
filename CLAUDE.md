@@ -425,6 +425,7 @@ These are the integration constraints that bit us hard in swingshift-52. Add to 
 - **Each `runSql` / `runWithSetup` call uses a fresh ephemeral schema.** State (rows, schema) does NOT persist between calls. For INSERT-then-SELECT round-trip tests use `runWithSetup(setupSqls[], querySql)` — both phases share the schema.
 - **`API_VERSION_7_3` does not exist.** fdb-record-layer 4.11.1.0's `APIVersion` enum has only `6_3`, `7_0`, `7_1` — there is no 7.3 enum. The FDB SERVER 7.3.75 supports older API versions. Don't try to bump unless we upgrade fdb-record-layer.
 - **`setAPIVersion` throws if client already started.** When the conformance server runs many test suites in one process, a sibling test may init FDB first; `setAPIVersion` then throws `RecordCoreException("API version cannot be changed after client has already started")`. The shared driver-init helper catches this specific exception and proceeds.
+- **`GROUP BY <col>` is not supported by fdb-relational 4.11.1.0's planner.** Returns `UnableToPlanException: Cascades planner could not plan query`. Bare `SELECT count(*)` (no GROUP BY) works. Wait until the planner ports the relevant rule (RFC-022 §4.5 Batch B) before adding GROUP BY corpus entries.
 
 ## Error handling
 

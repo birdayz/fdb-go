@@ -242,6 +242,46 @@ func SeedRunCorpus() []RunQuery {
 				Rows:    [][]any{{float64(3)}},
 			},
 		},
+		{
+			Name:           "like_pattern",
+			SchemaTemplate: "CREATE TABLE T13 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T13 VALUES (1, 'apple')",
+				"INSERT INTO T13 VALUES (2, 'apricot')",
+				"INSERT INTO T13 VALUES (3, 'banana')",
+			},
+			Query: "SELECT id, name FROM T13 WHERE name LIKE 'ap%' ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
+				Rows: [][]any{
+					{float64(1), "apple"},
+					{float64(2), "apricot"},
+				},
+			},
+		},
+		{
+			Name:           "in_list",
+			SchemaTemplate: "CREATE TABLE T14 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T14 VALUES (1, 'a')",
+				"INSERT INTO T14 VALUES (2, 'b')",
+				"INSERT INTO T14 VALUES (3, 'c')",
+				"INSERT INTO T14 VALUES (4, 'd')",
+			},
+			Query: "SELECT id, name FROM T14 WHERE id IN (1, 3) ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}, {Name: "NAME", Type: "STRING"}},
+				Rows: [][]any{
+					{float64(1), "a"},
+					{float64(3), "c"},
+				},
+			},
+		},
+		// GROUP BY <col> deferred: fdb-relational 4.11.1.0's Cascades
+		// planner returns UnableToPlanException for "SELECT region,
+		// count(*) FROM T GROUP BY region". The unaggregated count(*)
+		// works (see count_aggregate above). Re-add when the planner
+		// learns the GROUP BY rule.
 	}
 }
 
