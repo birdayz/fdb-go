@@ -289,13 +289,18 @@ var (
 )
 
 // Typed is the interface things-with-a-type implement. Mirrors Java's
-// Typed. Values, expressions, and table columns will eventually all
-// implement it; today it's a forward-compat hook so call sites can
-// start writing `t.Type()` against the rich Type instead of the
-// legacy ValueType.
+// Typed. Every Value impl in `cascades/values/` implements it post-
+// swingshift-52. Future Value impls and other things-with-a-type
+// (expressions, table columns) MUST implement it.
+//
+// Distinct from the legacy `Value.Type() ValueType` method — `Type()`
+// returns the (deprecated, width-conflating) `ValueType` enum, while
+// `RichType()` returns the rich Type (with full nullability and
+// structural detail).
 type Typed interface {
-	// Type returns this thing's Type. Never nil — implementations
-	// return UnknownType when the type genuinely isn't known yet.
+	// RichType returns this thing's rich Type. Never nil —
+	// implementations return UnknownType when the type genuinely
+	// isn't known yet.
 	RichType() Type
 }
 
