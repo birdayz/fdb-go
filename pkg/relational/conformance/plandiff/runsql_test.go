@@ -1,0 +1,201 @@
+package plandiff
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// TestJavaRunner_HappyPath pins the HTTP wire shape for runSql: the runner
+// POSTs to /invoke with step="runSql" + params{clusterFile, schemaTemplate,
+// sql}, parses {success: true, result: {columns, rows}}, and returns a
+// RunResult with Rows populated. Mirrors TestJavaEngine_HappyPath.
+func TestJavaRunner_HappyPath(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/invoke" {
+			http.Error(w, "wrong path", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Step   string         `json:"step"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Step != "runSql" {
+			http.Error(w, "unexpected step "+req.Step, http.StatusBadRequest)
+			return
+		}
+		for _, k := range []string{"clusterFile", "schemaTemplate", "sql"} {
+			if _, ok := req.Params[k]; !ok {
+				http.Error(w, "missing param "+k, http.StatusBadRequest)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Result mirrors what conformance/sql_plan_steps.java#runSql
+		// produces via gson serialization of the JsonObject.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"columns": []map[string]any{
+					{"name": "ID", "type": "BIGINT"},
+					{"name": "NAME", "type": "VARCHAR"},
+				},
+				"rows": [][]any{
+					{1, "alice"},
+					{2, nil},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	runner := NewJavaRunnerHTTP(srv.URL, "fake-cluster-file-content")
+	got := runner.Run(context.Background(), Query{
+		Name:           "x",
+		SQL:            "SELECT id, name FROM Item",
+		SchemaTemplate: "CREATE TABLE Item (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))",
+	})
+	if got.Err != nil {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	if len(got.Rows.Columns) != 2 {
+		t.Fatalf("Columns: got %d, want 2 (%+v)", len(got.Rows.Columns), got.Rows.Columns)
+	}
+	if got.Rows.Columns[0].Name != "ID" || got.Rows.Columns[0].Type != "BIGINT" {
+		t.Fatalf("Columns[0]: got %+v, want {ID BIGINT}", got.Rows.Columns[0])
+	}
+	if got.Rows.Columns[1].Name != "NAME" || got.Rows.Columns[1].Type != "VARCHAR" {
+		t.Fatalf("Columns[1]: got %+v, want {NAME VARCHAR}", got.Rows.Columns[1])
+	}
+	if len(got.Rows.Rows) != 2 {
+		t.Fatalf("Rows: got %d, want 2", len(got.Rows.Rows))
+	}
+	// Numbers come back as float64 through encoding/json; that's the
+	// universal JSON-numeric semantic — callers that want exact integers
+	// downcast at compare time. Pin float64 here so the test reflects
+	// reality and a future "switch to json.Number" change is a deliberate
+	// API break, not silent.
+	if got.Rows.Rows[0][0].(float64) != 1 {
+		t.Fatalf("Rows[0][0]: got %v, want 1", got.Rows.Rows[0][0])
+	}
+	if got.Rows.Rows[0][1].(string) != "alice" {
+		t.Fatalf("Rows[0][1]: got %v, want alice", got.Rows.Rows[0][1])
+	}
+	if got.Rows.Rows[1][1] != nil {
+		t.Fatalf("Rows[1][1]: got %v, want nil", got.Rows.Rows[1][1])
+	}
+}
+
+// TestJavaRunner_JavaError pins the failure shape: Java step returns
+// {success: false, exceptionClass, error}, runner surfaces the exception
+// class in the error message. Mirrors TestJavaEngine_JavaError.
+func TestJavaRunner_JavaError(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":            false,
+			"error":              "Table not found: nonexistent",
+			"exceptionClass":     "RelationalException",
+			"exceptionFullClass": "com.apple.foundationdb.relational.api.exceptions.RelationalException",
+		})
+	}))
+	defer srv.Close()
+
+	runner := NewJavaRunnerHTTP(srv.URL, "")
+	got := runner.Run(context.Background(), Query{Name: "x", SQL: "SELECT * FROM nonexistent"})
+	if got.Err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(got.Err.Error(), "RelationalException") {
+		t.Fatalf("error missing exception class: %v", got.Err)
+	}
+	if !strings.Contains(got.Err.Error(), "Table not found") {
+		t.Fatalf("error missing original message: %v", got.Err)
+	}
+}
+
+// TestJavaRunner_HTTPNon200 pins that a non-200 server response surfaces
+// as a plandiff: HTTP <code> error. Mirrors TestJavaEngine_HTTPNon200.
+func TestJavaRunner_HTTPNon200(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "step not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	runner := NewJavaRunnerHTTP(srv.URL, "")
+	got := runner.Run(context.Background(), Query{Name: "x", SQL: "SELECT 1"})
+	if got.Err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(got.Err.Error(), "HTTP 404") {
+		t.Fatalf("expected HTTP 404 in error: %v", got.Err)
+	}
+}
+
+// TestJavaRunner_NilBaseURL pins the Go-only-CI fallback: NewJavaRunner()
+// surfaces ErrJavaRunUnimplemented for every call.
+func TestJavaRunner_NilBaseURL(t *testing.T) {
+	t.Parallel()
+	runner := NewJavaRunner()
+	got := runner.Run(context.Background(), Query{Name: "x", SQL: "SELECT 1"})
+	if !errors.Is(got.Err, ErrJavaRunUnimplemented) {
+		t.Fatalf("expected ErrJavaRunUnimplemented, got %v", got.Err)
+	}
+}
+
+// TestJavaRunner_EmptyResultSet pins zero-row handling: a SELECT that
+// returns no rows produces RowSet with non-nil Columns and an empty
+// (or nil) Rows slice. Caller must not crash on len(Rows)==0.
+func TestJavaRunner_EmptyResultSet(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"columns": []map[string]any{
+					{"name": "ID", "type": "BIGINT"},
+				},
+				"rows": []any{},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	runner := NewJavaRunnerHTTP(srv.URL, "")
+	got := runner.Run(context.Background(), Query{Name: "x", SQL: "SELECT id FROM Item WHERE id = -1"})
+	if got.Err != nil {
+		t.Fatalf("unexpected error: %v", got.Err)
+	}
+	if len(got.Rows.Columns) != 1 {
+		t.Fatalf("Columns: got %d, want 1", len(got.Rows.Columns))
+	}
+	if len(got.Rows.Rows) != 0 {
+		t.Fatalf("Rows: got %d, want 0", len(got.Rows.Rows))
+	}
+}
+
+// TestGoRunner_Unimplemented pins that NewGoRunner() returns
+// ErrGoUnimplemented until Track C2 lands the real executor.
+func TestGoRunner_Unimplemented(t *testing.T) {
+	t.Parallel()
+	r := NewGoRunner()
+	got := r.Run(context.Background(), Query{Name: "x", SQL: "SELECT 1"})
+	if !errors.Is(got.Err, ErrGoUnimplemented) {
+		t.Fatalf("expected ErrGoUnimplemented, got %v", got.Err)
+	}
+}

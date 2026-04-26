@@ -22,12 +22,19 @@ import com.apple.foundationdb.relational.recordlayer.ddl.RecordLayerMetadataOper
 import com.apple.foundationdb.relational.recordlayer.query.cache.RelationalPlanCache;
 import com.codahale.metrics.MetricRegistry;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.sql.DriverManager;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -135,6 +142,53 @@ class SqlPlanSteps {
      */
     @ConformanceStep("planSql")
     public String planSql(String clusterFile, String schemaTemplate, String sql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> runExplain(conn, sql));
+    }
+
+    /**
+     * Run a SQL statement and return the result set as a JSON object with
+     * {@code columns} and {@code rows} fields (Phase B / Track A1 of TODO.md).
+     * Mirrors {@link #planSql} but executes the SQL instead of EXPLAINing it.
+     *
+     * <p>Result shape:
+     * <pre>
+     * {
+     *   "columns": [{"name": "ID", "type": "BIGINT"}, ...],
+     *   "rows":    [[1, "alice"], [2, null], ...]
+     * }
+     * </pre>
+     *
+     * <p>Type coverage: Number / Boolean / String values pass through as
+     * native JSON; {@code byte[]} values are base64-encoded; SQL NULL maps to
+     * JSON null. Anything else (java.sql.Array / Struct / vendor types) is
+     * encoded as {@code {"__unsupported__": "<class>"}} so the diff harness
+     * can flag it without crashing.
+     *
+     * @param clusterFile     cluster-file content (string, not path)
+     * @param schemaTemplate  body of CREATE SCHEMA TEMPLATE — sequence of
+     *                        DDL statements. Empty for SELECT-with-no-FROM.
+     * @param sql             the SQL to run.
+     * @return                a {@link JsonObject} (gson serialises directly).
+     */
+    @ConformanceStep("runSql")
+    public JsonObject runSql(String clusterFile, String schemaTemplate, String sql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> runQuery(conn, sql));
+    }
+
+    /**
+     * Wraps a JDBC operation in the ephemeral schema-template / database /
+     * schema lifecycle. Both {@link #planSql} and {@link #runSql} drive
+     * fdb-relational the same way: create a uniquely-named template + db
+     * + schema if a {@code schemaTemplate} is supplied, run the operation,
+     * tear everything down in {@code finally}. Empty template falls back to
+     * the {@code /__SYS} connection.
+     */
+    @FunctionalInterface
+    private interface ConnectionOp<T> {
+        T run(java.sql.Connection conn) throws SQLException;
+    }
+
+    private <T> T runWithEphemeralSchema(String clusterFile, String schemaTemplate, ConnectionOp<T> op) throws Exception {
         ensureDriverRegistered(clusterFile);
 
         String suffix = UUID.randomUUID().toString().replace("-", "");
@@ -157,13 +211,12 @@ class SqlPlanSteps {
 
                 try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath)) {
                     conn.setSchema(schemaName);
-                    return runExplain(conn, sql);
+                    return op.run(conn);
                 }
             }
-            // No schema — connect to __SYS and run EXPLAIN against whatever
-            // the SQL refers to. SELECT-without-FROM works here.
+            // No schema — fall back to __SYS. SELECT-without-FROM works here.
             try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:/__SYS")) {
-                return runExplain(conn, sql);
+                return op.run(conn);
             }
         } finally {
             if (dbCreated) {
@@ -200,5 +253,80 @@ class SqlPlanSteps {
             String plan = rs.getString("PLAN");
             return plan == null ? "" : plan;
         }
+    }
+
+    /**
+     * Execute a SQL query and serialise the result set as JSON. Encoder rules
+     * are documented on {@link #runSql}.
+     */
+    private JsonObject runQuery(java.sql.Connection conn, String sql) throws SQLException {
+        RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+        try (RelationalPreparedStatement ps = rconn.prepareStatement(sql);
+             RelationalResultSet rs = ps.executeQuery()) {
+            return resultSetToJson(rs);
+        }
+    }
+
+    /**
+     * Encode a {@link RelationalResultSet} as a {@link JsonObject} with
+     * {@code columns} (name + JDBC type-name) and {@code rows} (array of
+     * value arrays). Visible for tests via reflection.
+     */
+    static JsonObject resultSetToJson(RelationalResultSet rs) throws SQLException {
+        ResultSetMetaData md = rs.getMetaData();
+        int n = md.getColumnCount();
+
+        JsonArray cols = new JsonArray(n);
+        for (int i = 1; i <= n; i++) {
+            JsonObject c = new JsonObject();
+            c.addProperty("name", md.getColumnName(i));
+            c.addProperty("type", md.getColumnTypeName(i));
+            cols.add(c);
+        }
+
+        JsonArray rows = new JsonArray();
+        while (rs.next()) {
+            JsonArray row = new JsonArray(n);
+            for (int i = 1; i <= n; i++) {
+                row.add(encodeValue(rs.getObject(i)));
+            }
+            rows.add(row);
+        }
+
+        JsonObject out = new JsonObject();
+        out.add("columns", cols);
+        out.add("rows", rows);
+        return out;
+    }
+
+    /**
+     * Encode a single column value. Numbers, booleans, and strings pass
+     * through as native JSON. {@code byte[]} is base64-encoded as a string.
+     * SQL NULL → JSON null. Unknown types render as
+     * {@code {"__unsupported__": "<class>"}} so the diff harness can flag
+     * them rather than crash.
+     */
+    private static com.google.gson.JsonElement encodeValue(Object v) {
+        if (v == null) {
+            return JsonNull.INSTANCE;
+        }
+        if (v instanceof Number) {
+            return new JsonPrimitive((Number) v);
+        }
+        if (v instanceof Boolean) {
+            return new JsonPrimitive((Boolean) v);
+        }
+        if (v instanceof String) {
+            return new JsonPrimitive((String) v);
+        }
+        if (v instanceof byte[]) {
+            return new JsonPrimitive(Base64.getEncoder().encodeToString((byte[]) v));
+        }
+        if (v instanceof java.util.UUID) {
+            return new JsonPrimitive(v.toString());
+        }
+        JsonObject marker = new JsonObject();
+        marker.addProperty("__unsupported__", v.getClass().getName());
+        return marker;
     }
 }

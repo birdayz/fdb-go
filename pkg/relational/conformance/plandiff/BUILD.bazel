@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "corpus.go",
         "plandiff.go",
+        "runsql.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff",
     visibility = ["//visibility:public"],
@@ -19,6 +20,7 @@ go_test(
     srcs = [
         "catalog_aware_test.go",
         "plandiff_test.go",
+        "runsql_test.go",
     ],
     embed = [":plandiff"],
 )
