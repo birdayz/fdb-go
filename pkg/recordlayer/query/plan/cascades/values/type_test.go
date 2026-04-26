@@ -673,6 +673,8 @@ func TestWithNullability_Primitive(t *testing.T) {
 		NotNullLong, NullableLong,
 		NotNullDouble, NullableDouble,
 		NotNullBytes, NullableBytes,
+		NotNullUuid, NullableUuid,
+		NotNullVersion, NullableVersion,
 	} {
 		flipped := WithNullability(sing, !sing.IsNullable())
 		if flipped.IsNullable() == sing.IsNullable() {
@@ -681,6 +683,38 @@ func TestWithNullability_Primitive(t *testing.T) {
 		if !WithNullability(flipped, sing.IsNullable()).Equals(sing) {
 			t.Errorf("Round-trip lost shape for %v", sing)
 		}
+	}
+}
+
+// TestUuidVersionSingletons pins that NullableUuid / NotNullUuid /
+// NullableVersion / NotNullVersion are real canonical singletons:
+// WithNullability returns THE singleton (pointer-equal), not a fresh
+// PrimitiveType. Without these arms in the WithNullability switch the
+// primitive types fell through to a fresh allocation, breaking
+// pointer-equality fast paths in callers.
+func TestUuidVersionSingletons(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name              string
+		notNull, nullable Type
+	}{
+		{"UUID", NotNullUuid, NullableUuid},
+		{"VERSION", NotNullVersion, NullableVersion},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if WithNullability(tc.notNull, true) != tc.nullable {
+				t.Errorf("%s NOT NULL → nullable did not return canonical singleton", tc.name)
+			}
+			if WithNullability(tc.nullable, false) != tc.notNull {
+				t.Errorf("%s NULLABLE → not-null did not return canonical singleton", tc.name)
+			}
+			// No-op (same nullability) returns same instance.
+			if WithNullability(tc.notNull, false) != tc.notNull {
+				t.Errorf("%s NOT NULL → not-null (no-op) returned a different instance", tc.name)
+			}
+		})
 	}
 }
 

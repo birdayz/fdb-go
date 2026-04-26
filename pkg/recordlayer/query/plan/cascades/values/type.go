@@ -234,6 +234,19 @@ var (
 	// NotNullBytes is BYTES NOT NULL.
 	NotNullBytes Type = &PrimitiveType{TypeCode: TypeCodeBytes, Nullable: false}
 
+	// NullableUuid is UUID NULL — 16-byte primitive, NOT a structured
+	// type in fdb-relational's grammar (RelationalParser.g4 lists UUID
+	// among primitiveType siblings).
+	NullableUuid Type = &PrimitiveType{TypeCode: TypeCodeUuid, Nullable: true}
+	// NotNullUuid is UUID NOT NULL.
+	NotNullUuid Type = &PrimitiveType{TypeCode: TypeCodeUuid, Nullable: false}
+
+	// NullableVersion is VERSION NULL — fdb-record-layer's 12-byte
+	// FDBRecordVersion (10-byte global versionstamp + 2-byte local).
+	NullableVersion Type = &PrimitiveType{TypeCode: TypeCodeVersion, Nullable: true}
+	// NotNullVersion is VERSION NOT NULL.
+	NotNullVersion Type = &PrimitiveType{TypeCode: TypeCodeVersion, Nullable: false}
+
 	// NullType is the type of the NULL literal — always nullable
 	// (a NULL is by definition not a value of a specific type, but
 	// can be assigned to any nullable column). Distinct from
@@ -734,6 +747,16 @@ func WithNullability(t Type, nullable bool) Type {
 				return NullableBytes
 			}
 			return NotNullBytes
+		case TypeCodeUuid:
+			if nullable {
+				return NullableUuid
+			}
+			return NotNullUuid
+		case TypeCodeVersion:
+			if nullable {
+				return NullableVersion
+			}
+			return NotNullVersion
 		}
 		return &PrimitiveType{TypeCode: tt.TypeCode, Nullable: nullable}
 	case *RecordType:
