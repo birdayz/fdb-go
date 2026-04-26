@@ -413,6 +413,23 @@ func SeedRunCorpus() []RunQuery {
 		// different probe shape — investigate the catalog access
 		// path in a follow-up shift.
 		{
+			Name:           "null_in_equality",
+			SchemaTemplate: "CREATE TABLE T_NEQ (id BIGINT, x BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NEQ VALUES (1, 5)",
+				"INSERT INTO T_NEQ VALUES (2, NULL)",
+				"INSERT INTO T_NEQ VALUES (3, 5)",
+			},
+			// SQL Kleene 3VL: x = 5 is UNKNOWN when x IS NULL —
+			// UNKNOWN is filtered out (treated as false) by WHERE.
+			// Only id=1 and id=3 (where x is genuinely 5) match.
+			Query: "SELECT id FROM T_NEQ WHERE x = 5 ORDER BY id",
+			Expected: RowSet{
+				Columns: []Column{{Name: "ID", Type: "BIGINT"}},
+				Rows:    [][]any{{float64(1)}, {float64(3)}},
+			},
+		},
+		{
 			Name:           "null_arithmetic",
 			SchemaTemplate: "CREATE TABLE T_NA (id BIGINT, x BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
