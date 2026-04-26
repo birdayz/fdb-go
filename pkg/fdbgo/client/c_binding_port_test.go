@@ -1258,7 +1258,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 	isRetryable := func(code int) bool {
 		tx := &Transaction{}
 		err := &wire.FDBError{Code: code}
-		return tx.OnError(err) == nil
+		return tx.OnError(context.Background(), err) == nil
 	}
 
 	// RETRYABLE errors (matches FDB_ERROR_PREDICATE_RETRYABLE).
@@ -1314,7 +1314,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 	// Non-FDB error should not be retryable.
 	tx := &Transaction{}
 	plainErr := fmt.Errorf("some random error")
-	if tx.OnError(plainErr) == nil {
+	if tx.OnError(context.Background(), plainErr) == nil {
 		t.Error("non-FDB error should not be retryable")
 	}
 }
@@ -1354,7 +1354,7 @@ func TestSetTimeout_CPort(t *testing.T) {
 	}
 
 	// OnError(1031) should NOT retry — error must escape.
-	retryErr := tx.OnError(err)
+	retryErr := tx.OnError(context.Background(), err)
 	if retryErr == nil {
 		t.Fatal("OnError should not retry transaction_timed_out")
 	}
@@ -1375,7 +1375,7 @@ func TestSetRetryLimit(t *testing.T) {
 	retryableErr := &wire.FDBError{Code: ErrNotCommitted}
 
 	// First retry — should succeed.
-	if err := tx.OnError(retryableErr); err != nil {
+	if err := tx.OnError(context.Background(), retryableErr); err != nil {
 		t.Fatalf("retry 1 should succeed, got: %v", err)
 	}
 	if tx.retryCount != 1 {
@@ -1383,7 +1383,7 @@ func TestSetRetryLimit(t *testing.T) {
 	}
 
 	// Second retry — should succeed.
-	if err := tx.OnError(retryableErr); err != nil {
+	if err := tx.OnError(context.Background(), retryableErr); err != nil {
 		t.Fatalf("retry 2 should succeed, got: %v", err)
 	}
 	if tx.retryCount != 2 {
@@ -1391,7 +1391,7 @@ func TestSetRetryLimit(t *testing.T) {
 	}
 
 	// Third attempt — retryCount(2) >= retryLimit(2), should fail.
-	err := tx.OnError(retryableErr)
+	err := tx.OnError(context.Background(), retryableErr)
 	if err == nil {
 		t.Fatal("retry 3 should fail (limit reached)")
 	}
@@ -1408,7 +1408,7 @@ func TestSetRetryLimit_Zero(t *testing.T) {
 	tx := &Transaction{}
 	tx.SetRetryLimit(0) // no retries
 
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err == nil {
 		t.Fatal("retryLimit=0 should not allow any retries")
 	}
@@ -1447,7 +1447,7 @@ func TestSetTimeout_Preserved(t *testing.T) {
 	tx.SetTimeout(500) // 500ms — long enough to not fire during test
 
 	// Force a retryable error.
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err != nil {
 		t.Fatalf("OnError should retry: %v", err)
 	}
@@ -1484,7 +1484,7 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 
 	// OnError resets the tx for retry but should NOT restart the timer.
 	// creationTime stays at -200ms, deadline stays at creationTime + 500ms.
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err != nil {
 		t.Fatalf("OnError should retry: %v", err)
 	}
@@ -1564,7 +1564,7 @@ func TestSetRetryLimit_Unlimited(t *testing.T) {
 	tx.SetRetryLimit(0) // set limit to 0
 
 	// Should not retry.
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err == nil {
 		t.Fatal("retryLimit=0 should not retry")
 	}
@@ -1574,7 +1574,7 @@ func TestSetRetryLimit_Unlimited(t *testing.T) {
 	tx.SetRetryLimit(-1)
 
 	// Should retry now.
-	if err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted}); err != nil {
+	if err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted}); err != nil {
 		t.Fatalf("unlimited retry should succeed: %v", err)
 	}
 }
@@ -1592,7 +1592,7 @@ func TestSetMaxRetryDelay(t *testing.T) {
 
 	// Retry several times to grow the backoff.
 	for i := 0; i < 10; i++ {
-		if err := tx.OnError(retryableErr); err != nil {
+		if err := tx.OnError(context.Background(), retryableErr); err != nil {
 			t.Fatalf("retry %d: %v", i, err)
 		}
 	}
@@ -2871,7 +2871,7 @@ func TestResetClearsRetryCount_CPort(t *testing.T) {
 	tx.SetRetryLimit(0) // no retries allowed
 
 	// OnError with a retryable error should fail (retry limit 0).
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err == nil {
 		t.Fatal("expected OnError to fail with retry limit 0")
 	}
@@ -2879,7 +2879,7 @@ func TestResetClearsRetryCount_CPort(t *testing.T) {
 	// After Reset, retry count is cleared. Set limit=1 and verify OnError succeeds.
 	tx.Reset()
 	tx.SetRetryLimit(1)
-	err = tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err = tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err != nil {
 		t.Fatalf("OnError after reset: %v", err)
 	}
@@ -3194,7 +3194,7 @@ func TestDatabaseLevelRetryLimit_CPort(t *testing.T) {
 	db.SetTransactionRetryLimit(0)
 
 	tx := db.CreateTransaction()
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err == nil {
 		t.Fatal("expected OnError to fail with retry limit 0 from database default")
 	}
@@ -3242,14 +3242,14 @@ func TestOnErrorRetryWithBackoff_CPort(t *testing.T) {
 
 	// Three OnError calls should succeed (retries 0, 1, 2).
 	for i := 0; i < 3; i++ {
-		err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 		if err != nil {
 			t.Fatalf("OnError retry %d: unexpected error: %v", i, err)
 		}
 	}
 
 	// Fourth call should fail (retry 3 >= limit 3).
-	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 	if err == nil {
 		t.Fatal("expected OnError to fail after retry limit exhausted")
 	}
@@ -3266,7 +3266,7 @@ func TestOnErrorNonRetryable_CPort(t *testing.T) {
 	tx := db.CreateTransaction()
 
 	// transaction_timed_out (1031) is never retryable.
-	err := tx.OnError(&wire.FDBError{Code: ErrTransactionTimedOut})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrTransactionTimedOut})
 	if err == nil {
 		t.Fatal("expected transaction_timed_out to be non-retryable")
 	}
@@ -3288,7 +3288,7 @@ func TestOnErrorNonFDBError_CPort(t *testing.T) {
 
 	tx := db.CreateTransaction()
 
-	err := tx.OnError(fmt.Errorf("some non-FDB error"))
+	err := tx.OnError(context.Background(), fmt.Errorf("some non-FDB error"))
 	if err == nil {
 		t.Fatal("expected non-FDB error to be returned")
 	}
@@ -3342,7 +3342,7 @@ func TestBlobGranuleRetryable_CPort(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{creationTime: time.Now()}
-	err := tx.OnError(&wire.FDBError{Code: ErrBlobGranuleRequestFailed})
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrBlobGranuleRequestFailed})
 	if err != nil {
 		t.Fatalf("blob_granule_request_failed should be retryable, got: %v", err)
 	}
@@ -3671,7 +3671,7 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 	// 1020 (not_committed) is RETRYABLE_NOT_COMMITTED: OnError returns nil.
 	{
 		tx := db.CreateTransaction()
-		err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 		if err != nil {
 			t.Errorf("1020 (not_committed) should be retryable, got: %v", err)
 		}
@@ -3685,7 +3685,7 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 		if len(tx.writeConflicts) == 0 {
 			t.Fatal("Set should have added a write conflict")
 		}
-		_ = tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		_ = tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
 		if len(tx.readConflicts) != 0 {
 			t.Errorf("1020 must NOT inject self-conflicts, got %d readConflicts", len(tx.readConflicts))
 		}
@@ -3694,7 +3694,7 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 	// 1021 (commit_unknown_result) is MAYBE_COMMITTED: OnError returns nil.
 	{
 		tx := db.CreateTransaction()
-		err := tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+		err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrCommitUnknownResult})
 		if err != nil {
 			t.Errorf("1021 (commit_unknown_result) should be retryable, got: %v", err)
 		}
@@ -3710,7 +3710,7 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 		if len(origWC) == 0 {
 			t.Fatal("Set should have added a write conflict")
 		}
-		_ = tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+		_ = tx.OnError(context.Background(), &wire.FDBError{Code: ErrCommitUnknownResult})
 		if len(tx.readConflicts) != len(origWC) {
 			t.Errorf("1021 self-conflict: got %d readConflicts, want %d",
 				len(tx.readConflicts), len(origWC))
@@ -3727,7 +3727,7 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 	{
 		const errAccessedUnreadable = 1036
 		tx := db.CreateTransaction()
-		err := tx.OnError(&wire.FDBError{Code: errAccessedUnreadable})
+		err := tx.OnError(context.Background(), &wire.FDBError{Code: errAccessedUnreadable})
 		if err == nil {
 			t.Error("1036 (accessed_unreadable) should NOT be retryable")
 		}

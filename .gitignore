@@ -48,6 +48,7 @@ bazel-bin
 bazel-out
 bazel-testlogs
 bazel-fdb-record-layer-go
+bazel-client-qualit
 .bazel-bep.jsonl
 test-report.html
 .tools/

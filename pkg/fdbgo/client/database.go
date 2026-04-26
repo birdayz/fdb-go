@@ -467,14 +467,14 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 
 		result, err := fn(tx)
 		if err != nil {
-			if retryErr := tx.OnError(err); retryErr != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr // non-retryable
 			}
 			continue // tx has been reset in place, retryCount/backoff preserved
 		}
 
 		if err := tx.Commit(ctx); err != nil {
-			if retryErr := tx.OnError(err); retryErr != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
 			continue // for commit_unknown_result: self-conflicting applied
@@ -495,7 +495,7 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 
 		result, err := fn(tx)
 		if err != nil {
-			if retryErr := tx.OnError(err); retryErr != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
 			continue

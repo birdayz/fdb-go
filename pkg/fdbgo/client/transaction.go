@@ -868,9 +868,28 @@ func (tx *Transaction) GetVersionstamp() ([]byte, error) {
 	return vs, nil
 }
 
+// backoffSleep waits for `d` or until ctx fires, whichever comes first.
+// Returns ctx.Err() on cancellation so callers can propagate it; nil on
+// natural elapse. Used by OnError and commitDummyTransaction so a cancelled
+// context doesn't keep clients pinned through a 1–30s backoff window.
+func backoffSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // OnError handles a transaction error. Returns nil if the error is retryable
-// (the transaction has been reset for retry). Returns the error if non-retryable.
-func (tx *Transaction) OnError(err error) error {
+// (the transaction has been reset for retry). Returns the error if non-retryable
+// or ctx.Err() if ctx fires during the backoff sleep.
+func (tx *Transaction) OnError(ctx context.Context, err error) error {
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
 		tx.state.Store(int32(txStateErrored))
@@ -899,7 +918,10 @@ func (tx *Transaction) OnError(err error) error {
 			delay = tx.maxRetryDelay
 		}
 		tx.retryCount++
-		time.Sleep(delay)
+		if cerr := backoffSleep(ctx, delay); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		return nil
 
@@ -909,7 +931,10 @@ func (tx *Transaction) OnError(err error) error {
 		// RETRYABLE_NOT_COMMITTED: exponential backoff.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		return nil
 
@@ -920,7 +945,10 @@ func (tx *Transaction) OnError(err error) error {
 		// hot_shard and range_locked use the same 30s cap to avoid
 		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		return nil
 
@@ -942,7 +970,10 @@ func (tx *Transaction) OnError(err error) error {
 		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
 		tx.reset()
 		tx.conflictMu.Lock()
 		tx.readConflicts = append(tx.readConflicts, selfConflicts...)

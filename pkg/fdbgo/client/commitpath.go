@@ -159,7 +159,9 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		if err := dummy.Commit(ctx); err != nil {
 			var fdbErr *wire.FDBError
 			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
-				time.Sleep(backoff)
+				if backoffSleep(ctx, backoff) != nil {
+					return // ctx cancelled — caller gave up
+				}
 				backoff = min(backoff*2, maxBackoff)
 				continue
 			}
