@@ -1000,6 +1000,90 @@ func TestMaximumType_ArrayRecursion(t *testing.T) {
 	}
 }
 
+// TestMaximumType_RecordRecursion pins RECORD × RECORD → RECORD
+// where each field's type is the recursive max. Mirrors Java's
+// record case in Type.maximumType.
+func TestMaximumType_RecordRecursion(t *testing.T) {
+	t.Parallel()
+	mk := func(nullable bool, fields ...Field) *RecordType {
+		return &RecordType{Nullable: nullable, Fields: fields}
+	}
+	f := func(name string, ft Type, ord int) Field {
+		return Field{Name: name, FieldType: ft, Ordinal: ord}
+	}
+
+	t.Run("identical fields", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0), f("y", NotNullString, 1))
+		r2 := mk(false, f("x", NotNullInt, 0), f("y", NotNullString, 1))
+		got := MaximumType(r1, r2).(*RecordType)
+		if !got.Equals(r1) {
+			t.Errorf("got %v, want %v", got, r1)
+		}
+	})
+	t.Run("widening fields", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullLong, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if !got.Fields[0].FieldType.Equals(NotNullLong) {
+			t.Errorf("field type: got %v, want NotNullLong", got.Fields[0].FieldType)
+		}
+	})
+	t.Run("nullability propagation", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(true, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if !got.Nullable {
+			t.Error("nullability should propagate")
+		}
+	})
+	t.Run("field count mismatch", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullInt, 0), f("y", NotNullInt, 1))
+		if MaximumType(r1, r2) != nil {
+			t.Error("field count mismatch should return nil")
+		}
+	})
+	t.Run("incompatible field types", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullString, 0))
+		if MaximumType(r1, r2) != nil {
+			t.Error("incompatible field type should return nil")
+		}
+	})
+	t.Run("name resolution: t1 anonymous → use t2", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("", NotNullInt, 0))
+		r2 := mk(false, f("x", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.Fields[0].Name != "x" {
+			t.Errorf("field name: got %q, want %q", got.Fields[0].Name, "x")
+		}
+	})
+	t.Run("name resolution: t2 anonymous → use t1", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.Fields[0].Name != "x" {
+			t.Errorf("field name: got %q, want %q", got.Fields[0].Name, "x")
+		}
+	})
+	t.Run("name resolution: different names → anonymise", func(t *testing.T) {
+		t.Parallel()
+		r1 := mk(false, f("x", NotNullInt, 0))
+		r2 := mk(false, f("y", NotNullInt, 0))
+		got := MaximumType(r1, r2).(*RecordType)
+		if got.Fields[0].Name != "" {
+			t.Errorf("field name: got %q, want empty (anonymised)", got.Fields[0].Name)
+		}
+	})
+}
+
 // TestMaximumType_NilHandling pins that nil inputs return nil
 // (defensive — never panic on a missing operand).
 func TestMaximumType_NilHandling(t *testing.T) {

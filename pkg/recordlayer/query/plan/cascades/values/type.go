@@ -927,9 +927,41 @@ func MaximumType(t1, t2 Type) Type {
 			}
 			return &ArrayType{Nullable: resultNullable, ElementType: elemMax}
 		}
-		// RECORD / RELATION / ENUM structural recursion is future work
-		// — return nil so the caller knows the seed can't compute it.
-		if c1 == TypeCodeRecord || c1 == TypeCodeRelation || c1 == TypeCodeEnum {
+		// RECORD × RECORD: recurse field-by-field. Field count must
+		// match (Java rejects field-count mismatch); each field's type
+		// is recursively maxed; field names are resolved t1-wins-when-
+		// equal-or-t2-anonymous, else anonymised.
+		if c1 == TypeCodeRecord {
+			r1 := t1.(*RecordType)
+			r2 := t2.(*RecordType)
+			if len(r1.Fields) != len(r2.Fields) {
+				return nil
+			}
+			out := make([]Field, len(r1.Fields))
+			for i := range r1.Fields {
+				f1, f2 := r1.Fields[i], r2.Fields[i]
+				ft := MaximumType(f1.FieldType, f2.FieldType)
+				if ft == nil {
+					return nil
+				}
+				name := ""
+				switch {
+				case f1.Name == "":
+					name = f2.Name
+				case f2.Name == "" || f1.Name == f2.Name:
+					name = f1.Name
+				}
+				out[i] = Field{Name: name, FieldType: ft, Ordinal: i}
+			}
+			return &RecordType{
+				RecordName: r1.RecordName, // t1's name; could anonymise if mismatched
+				Nullable:   resultNullable,
+				Fields:     out,
+			}
+		}
+		// RELATION / ENUM structural recursion is future work — return
+		// nil so the caller knows the seed can't compute it.
+		if c1 == TypeCodeRelation || c1 == TypeCodeEnum {
 			return nil
 		}
 		return WithNullability(t1, resultNullable)
