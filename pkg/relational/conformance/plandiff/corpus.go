@@ -551,6 +551,103 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, (x + y) * z, x + y * z FROM T_NEST ORDER BY id",
 		},
+		{
+			// BOOLEAN column with explicit `= TRUE` comparison.
+			// fdb-relational rejects bare `WHERE flag` ("expected
+			// BooleanValue but got FieldValue") — boolean columns
+			// must be compared explicitly.
+			Name:           "boolean_in_where",
+			SchemaTemplate: "CREATE TABLE T_BWH (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BWH VALUES (1, TRUE)",
+				"INSERT INTO T_BWH VALUES (2, FALSE)",
+				"INSERT INTO T_BWH VALUES (3, TRUE)",
+			},
+			Query: "SELECT id FROM T_BWH WHERE flag = TRUE ORDER BY id",
+		},
+		{
+			// SUM over INTEGER (32-bit) operand — pins SUM result-type
+			// inheritance for INTEGER (different from BIGINT).
+			Name:           "sum_integer",
+			SchemaTemplate: "CREATE TABLE T_SI (id BIGINT, val INTEGER, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SI VALUES (1, CAST(10 AS INTEGER))",
+				"INSERT INTO T_SI VALUES (2, CAST(20 AS INTEGER))",
+				"INSERT INTO T_SI VALUES (3, CAST(30 AS INTEGER))",
+			},
+			Query: "SELECT sum(val) FROM T_SI",
+		},
+		// MIN/MAX over non-numeric types (STRING, BYTES, BOOLEAN)
+		// is unsupported by fdb-relational 4.11.1.0:
+		// "VerifyException: unable to encapsulate aggregate operation
+		// due to type mismatch(es)". Numeric MIN/MAX only — pinned by
+		// sum_min_max above.
+		{
+			// Three-way AND chain — pins multi-leaf AND simplification.
+			Name:           "three_way_and",
+			SchemaTemplate: "CREATE TABLE T_TWA (id BIGINT, x BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_TWA VALUES (1, 1, 1, 1)",
+				"INSERT INTO T_TWA VALUES (2, 1, 1, 0)",
+				"INSERT INTO T_TWA VALUES (3, 1, 0, 1)",
+				"INSERT INTO T_TWA VALUES (4, 1, 1, 1)",
+			},
+			Query: "SELECT id FROM T_TWA WHERE x = 1 AND y = 1 AND z = 1 ORDER BY id",
+		},
+		{
+			// Negative literal in WHERE — exercises the
+			// NegativeDecimalConstant lexer path against signed BIGINT.
+			Name:           "negative_in_where",
+			SchemaTemplate: "CREATE TABLE T_NW (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NW VALUES (1, -50)",
+				"INSERT INTO T_NW VALUES (2, 0)",
+				"INSERT INTO T_NW VALUES (3, 50)",
+			},
+			Query: "SELECT id, val FROM T_NW WHERE val >= -10 ORDER BY id",
+		},
+		{
+			// CASE returning INTEGER branches with explicit cast —
+			// pins the CASE-result type lattice over INTEGER (which
+			// is narrower than the implicit BIGINT default).
+			Name:           "case_integer_branches",
+			SchemaTemplate: "CREATE TABLE T_CIB (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CIB VALUES (1, 5)",
+				"INSERT INTO T_CIB VALUES (2, 15)",
+			},
+			Query: "SELECT id, CASE WHEN val < 10 THEN CAST(1 AS INTEGER) ELSE CAST(2 AS INTEGER) END FROM T_CIB ORDER BY id",
+		},
+		{
+			// Mixed-type comparison: BIGINT col vs DOUBLE literal.
+			// Both engines must promote BIGINT → DOUBLE for the
+			// comparison without erroring.
+			Name:           "bigint_vs_double_literal",
+			SchemaTemplate: "CREATE TABLE T_BDL (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BDL VALUES (1, 10)",
+				"INSERT INTO T_BDL VALUES (2, 20)",
+				"INSERT INTO T_BDL VALUES (3, 30)",
+			},
+			Query: "SELECT id FROM T_BDL WHERE val > 15.5 ORDER BY id",
+		},
+		{
+			// COUNT(*) with predicate over JOIN — exercises the
+			// JOIN-with-aggregate path. Comma-separated FROM (only
+			// inner-join syntax supported by fdb-relational).
+			Name: "count_star_join",
+			SchemaTemplate: "CREATE TABLE Buyers (bid BIGINT, name STRING, PRIMARY KEY (bid)) " +
+				"CREATE TABLE Sales (sid BIGINT, bid BIGINT, amt BIGINT, PRIMARY KEY (sid))",
+			SetupSqls: []string{
+				"INSERT INTO Buyers VALUES (1, 'alice')",
+				"INSERT INTO Buyers VALUES (2, 'bob')",
+				"INSERT INTO Sales VALUES (10, 1, 100)",
+				"INSERT INTO Sales VALUES (11, 1, 200)",
+				"INSERT INTO Sales VALUES (12, 2, 300)",
+				"INSERT INTO Sales VALUES (13, 2, 400)",
+			},
+			Query: "SELECT count(*) FROM Buyers b, Sales s WHERE b.bid = s.bid AND s.amt > 150",
+		},
 	}
 }
 
