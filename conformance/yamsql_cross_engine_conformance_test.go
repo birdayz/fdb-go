@@ -192,6 +192,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		correlatedSubqueryProbesScenario(),
 		unionColumnsRenamedScenario(),
 		joinChainedScenario(),
+		multiFeatureSelectScenario(),
 	}
 }
 
@@ -1723,6 +1724,30 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 				Query:     "SELECT v FROM a UNION ALL SELECT w FROM b",
 				Unordered: true,
 				Rows:      [][]any{{10}, {20}, {100}, {200}},
+			},
+		},
+	}
+}
+
+// multiFeatureSelectScenario is a column-to-column comparison test
+// lifted from testdata/multi_feature.yaml. The full file uses GROUP
+// BY + HAVING + LIMIT (all blocked by fdb-relational planner gaps);
+// this single SELECT pins the predicate evaluator's handling of
+// WHERE col1 > col2 with NULL on either side (UNKNOWN filtered out).
+// Drops NOT NULL on PK.
+func multiFeatureSelectScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "multi_feature_select",
+		SchemaTemplate: "CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO orders VALUES (1, 100, 50), (2, 100, 75), (3, 100, null), (4, 200, 30), (5, 200, 30), (6, 300, 10)",
+		},
+		Tests: []yamsql.Test{
+			// id=3 has total=NULL → 100 > NULL = UNKNOWN ⇒ filtered.
+			{
+				Query:     "SELECT id FROM orders WHERE customer_id > total",
+				Unordered: true,
+				Rows:      [][]any{{1}, {2}, {4}, {5}, {6}},
 			},
 		},
 	}
