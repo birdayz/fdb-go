@@ -145,6 +145,46 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		orderByEliminationScenario(),
 		bugHuntProbesScenario(),
 		wrongQualifierScenario(),
+		unionScenario(),
+		qualifiedStarMoreScenario(),
+	}
+}
+
+// unionScenario mirrors testdata/union.yaml. Drops the UNION (distinct)
+// test — fdb-relational 4.11.1.0 raises `only UNION ALL is supported`
+// (new CLAUDE.md gotcha). UNION ALL works on both engines. Drops NOT
+// NULL on PK.
+func unionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)",
+			"INSERT INTO b VALUES (101, 20), (102, 30), (103, 40)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT v FROM a UNION ALL SELECT v FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {30}, {20}, {30}, {40}}},
+		},
+	}
+}
+
+// qualifiedStarMoreScenario mirrors testdata/qualified_star_more.yaml.
+// Comma-join with qualified-star, both unaliased and aliased forms.
+// Drops NOT NULL on PK. Skips the GROUP BY error_code tests.
+func qualifiedStarMoreScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "qualified_star_more",
+		SchemaTemplate: "CREATE TABLE a (a1 BIGINT, a2 BIGINT, PRIMARY KEY (a1))" +
+			" CREATE TABLE b (b1 BIGINT, b2 BIGINT, PRIMARY KEY (b1))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)",
+			"INSERT INTO b VALUES (1, 100), (2, 200), (3, 300)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 ORDER BY a.a1", Rows: [][]any{{1, 10, 1, 100}, {2, 20, 2, 200}, {3, 30, 3, 300}}},
+			{Query: "SELECT x.*, y.* FROM a AS x, b AS y WHERE x.a1 = y.b1 ORDER BY x.a1", Rows: [][]any{{1, 10, 1, 100}, {2, 20, 2, 200}, {3, 30, 3, 300}}},
+		},
 	}
 }
 
