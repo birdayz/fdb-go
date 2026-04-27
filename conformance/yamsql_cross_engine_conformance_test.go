@@ -131,6 +131,71 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		pkPushdownScenario(),
 		secondaryIndexPushdownScenario(),
 		likePrefixPushdownScenario(),
+		inListAdvancedScenario(),
+		compositeSecondaryIndexPrefixPushdownScenario(),
+	}
+}
+
+// inListAdvancedScenario mirrors testdata/in_list_advanced.yaml. Drops
+// NOT NULL on PK. Tests IN-list pushdown edge cases: arithmetic in the
+// list, duplicates (post-dedup semantics), singleton, no-match. Skips
+// the empty-IN-list and mixed-type error_code tests via per-test Skip.
+func inListAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "in_list_advanced",
+		SchemaTemplate: "CREATE TABLE ta (a BIGINT, b BIGINT, PRIMARY KEY (a))",
+		Setup: []string{
+			"INSERT INTO ta VALUES (1, 8), (2, 7), (3, 6), (4, 5), (5, 4), (6, 3), (7, 2), (8, 1)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a, b FROM ta WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a", Rows: [][]any{{2, 7}, {4, 5}, {6, 3}, {8, 1}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (6)", Rows: [][]any{{3, 6}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (10, 33, 66)", Rows: [][]any{}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (1, 1, 1, 1)", Rows: [][]any{{8, 1}}},
+			{Query: "SELECT a, b FROM ta WHERE a IN (1, 1, 1) ORDER BY a", Rows: [][]any{{1, 8}}},
+			{Query: "SELECT a, b FROM ta WHERE a IN (2, 1, 2, 3, 1) ORDER BY a", Rows: [][]any{{1, 8}, {2, 7}, {3, 6}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (1 + 0, 0 + 1)", Rows: [][]any{{8, 1}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (1, 2, 1, 3) ORDER BY a", Rows: [][]any{{6, 3}, {7, 2}, {8, 1}}},
+			{Query: "SELECT a FROM ta WHERE b IN ()", ErrorCode: "42601"},
+			{Query: "SELECT a FROM ta WHERE b IN ('foo', 3)", ErrorCode: "22000"},
+		},
+	}
+}
+
+// compositeSecondaryIndexPrefixPushdownScenario mirrors
+// testdata/composite_secondary_index_prefix_pushdown.yaml. Drops NOT
+// NULL on PK. Renames the `plan` column to `tag` per the swingshift-56
+// gotcha (`plan` reserved by fdb-relational's lexer); this also frees
+// the original `tier` to stay as the third index col of the 3-col
+// composite index. Skips DML count-checking tests (DML — runWithSetup
+// expects exactly one query). The original yamsql file uses `count: N`
+// to assert affected-row counts; that's a separate harness shape.
+func compositeSecondaryIndexPrefixPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "composite_secondary_index_prefix_pushdown",
+		SchemaTemplate: "CREATE TABLE rp (id BIGINT, region STRING, tag STRING, score BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tag ON rp (region, tag)" +
+			" CREATE INDEX idx_region_tag_score ON rp (region, tag, score)",
+		Setup: []string{
+			"INSERT INTO rp VALUES (1, 'us', 'pro', 1), (2, 'us', 'pro', 2), (3, 'us', 'free', 1), (4, 'eu', 'pro', 1), (5, 'eu', 'free', 2), (6, 'us', 'pro', 3)",
+		},
+		Tests: []yamsql.Test{
+			// 2-col index, equality on leading col only — prefix narrow.
+			{Query: "SELECT id FROM rp WHERE region = 'us' ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {6}}},
+			// Prefix + residual on trailing col.
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND score = 1 ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// Leading col mismatch — full scan with post-filter.
+			{Query: "SELECT id FROM rp WHERE tag = 'pro' ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {6}}},
+			// 3-col index, equality on first col only.
+			{Query: "SELECT id FROM rp WHERE region = 'eu' ORDER BY id", Rows: [][]any{{4}, {5}}},
+			// 2-col equality on (region, tag).
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND tag = 'pro' ORDER BY id", Rows: [][]any{{1}, {2}, {6}}},
+			// Full equality on (region, tag, score).
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND tag = 'pro' AND score = 1 ORDER BY id", Rows: [][]any{{1}}},
+			// Equality gap — eq on first + third, second unequated. Prefix
+			// only narrows by region; score=2 stays post-filter.
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND score = 2 ORDER BY id", Rows: [][]any{{2}}},
+		},
 	}
 }
 
