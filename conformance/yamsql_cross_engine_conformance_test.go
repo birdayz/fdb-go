@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -47,23 +46,32 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", func() {
 		clusterFilePath string
 	)
 
+	// BeforeAll-equivalent: write the cluster file once for the entire
+	// suite. Per-spec BeforeEach was previously creating 360 distinct
+	// temp paths, each becoming a separate cache key in the fdbsql
+	// driver's per-cluster-file cache (driver.go:fdbDBCache) →
+	// 360 live FDB connections by suite end. Sharing one path keeps
+	// the cache to one entry. Cluster-file CONTENTS don't change
+	// across specs (sharedContainer is a process-singleton), so
+	// reusing the path is safe.
 	BeforeEach(func() {
 		ctx = context.Background()
 		java = NewJavaInvoker()
-		var err error
-		clusterFile, err = sharedContainer.ClusterFile(ctx)
-		Expect(err).NotTo(HaveOccurred())
-		// The Go runner takes a cluster-file path on disk (the fdbsql
-		// driver opens it directly); the Java runner takes the contents
-		// (sent over HTTP and the Java side opens it server-side).
-		clusterFilePath = writeClusterFileToTemp(clusterFile)
-	})
-
-	AfterEach(func() {
-		if clusterFilePath != "" {
-			_ = os.Remove(clusterFilePath)
+		if clusterFile == "" {
+			var err error
+			clusterFile, err = sharedContainer.ClusterFile(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			// The Go runner takes a cluster-file path on disk (the
+			// fdbsql driver opens it directly); the Java runner takes
+			// the contents (sent over HTTP, opened server-side).
+			clusterFilePath = writeClusterFileToTemp(clusterFile)
 		}
 	})
+
+	// No AfterEach cleanup of clusterFilePath — see BeforeEach: the
+	// path is shared across all specs in this Describe and is removed
+	// when the process exits. (testcontainers-go cleans up the FDB
+	// container; the temp file is harmless if it survives.)
 
 	for _, s := range crossEngineScenarios() {
 		s := s
