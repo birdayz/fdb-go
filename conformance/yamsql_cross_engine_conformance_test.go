@@ -87,6 +87,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		castScenario,
 		compositePKScenario,
 		bytesScenario,
+		betweenScenario,
 	}
 }
 
@@ -225,6 +226,37 @@ func bytesScenario() *yamsql.Scenario {
 			{Query: "SELECT a FROM lb WHERE b IS DISTINCT FROM null ORDER BY a", Rows: [][]any{{1}, {2}}},
 			{Query: "SELECT a FROM lb WHERE b = null", Rows: [][]any{}},
 			{Query: "SELECT X'cafe' = b FROM lb WHERE a = 2", Rows: [][]any{{true}}},
+		},
+	}
+}
+
+// betweenScenario mirrors testdata/between.yaml. Drops NOT NULL on PK.
+// Drops the Kleene-NULL-bound tests (untyped NULL hits the same planner
+// "unable to encapsulate" error documented for arithmetic), the ABS()
+// test (function not in fdb-relational's registry per CLAUDE.md), and
+// the subquery-bound test (uncertain support). Keeps the geometry-of-
+// BETWEEN tests, the error_code type-mismatch tests (skipped), and the
+// COUNT(*) constant-fold tests.
+func betweenScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "between",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 0), (2, 5), (3, 10), (4, 15), (5, 100)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE v BETWEEN 5 AND 15", Unordered: true, Rows: [][]any{{2}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE v NOT BETWEEN 5 AND 15", Unordered: true, Rows: [][]any{{1}, {5}}},
+			{Query: "SELECT id FROM t WHERE v BETWEEN 15 AND 5", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE v NOT BETWEEN 15 AND 5 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE v BETWEEN 10 AND 10", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE v BETWEEN (2+3) AND (10*2) ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE v BETWEEN 10 AND 'a'", ErrorCode: "22000"},
+			{Query: "SELECT id FROM t WHERE 'a' BETWEEN 10 AND 20", ErrorCode: "22000"},
+			{Query: "SELECT id FROM t WHERE v BETWEEN 0 AND 5 OR v BETWEEN 90 AND 100 ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			{Query: "SELECT id FROM t WHERE v BETWEEN 4 AND 6.2", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE 4.5 BETWEEN 4 AND 6", Rows: [][]any{{5}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE 2+2 BETWEEN 1+1 AND 3+3", Rows: [][]any{{5}}},
 		},
 	}
 }
