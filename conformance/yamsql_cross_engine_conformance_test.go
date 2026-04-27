@@ -139,8 +139,68 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		numericTypesScenario(),
 		isDistinctFromScenario(),
 		inListPushdownScenario(),
+		aggregateExprScenario(),
 	}
 }
+
+// aggregateExprScenario mirrors testdata/aggregate_expr.yaml — the no-
+// GROUP-BY no-DISTINCT subset. Drops NOT NULL on PK. Drops the GROUP BY,
+// SUM(DISTINCT), error_code, and aggregate-of-aggregate-with-ORDER-BY
+// tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
+// ORDER BY <aggregate> requires the natural-order continuation).
+//
+// New gotcha (swingshift-56): `SUM(BIGINT) / COUNT(*)` diverges between
+// engines. Java does integer division on BIGINT/BIGINT (returns 3 for
+// SUM=10, COUNT=3); Go's SUM accumulator is float64 so the result is
+// 3.333... — the yamsql YAML comment flags this as a Go-side divergence
+// pending an int-preserving SUM for int-only inputs. Cross-engine drop.
+func aggregateExprScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "aggregate_expr",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 2, 100), (2, 3, 50), (3, 5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// Plain-column aggregates.
+			{Query: "SELECT SUM(qty) FROM t", Rows: [][]any{{10}}},
+			{Query: "SELECT MIN(price), MAX(price) FROM t", Rows: [][]any{{20, 100}}},
+			{Query: "SELECT AVG(price) FROM t", Rows: [][]any{{56.666666666666664}}},
+			// Aggregates over arithmetic expression.
+			{Query: "SELECT SUM(qty * price) FROM t", Rows: [][]any{{450}}},
+			{Query: "SELECT AVG(price / 2) FROM t", Rows: [][]any{{28.333333333333332}}},
+			{Query: "SELECT MIN(qty * price), MAX(qty * price) FROM t", Rows: [][]any{{100, 200}}},
+			// Alias.
+			{Query: "SELECT SUM(qty * price) AS revenue FROM t", Rows: [][]any{{450}}},
+			// Multi-aggregate.
+			{Query: "SELECT SUM(qty), SUM(qty * price) FROM t", Rows: [][]any{{10, 450}}},
+			// COUNT over expression.
+			{Query: "SELECT COUNT(qty * price) FROM t", Rows: [][]any{{3}}},
+			// Empty group / NULL.
+			{Query: "SELECT SUM(qty * price), COUNT(qty * price) FROM t WHERE id < 0", Rows: [][]any{{nil, 0}}},
+			// CASE-based aggregates.
+			{Query: "SELECT SUM(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{150}}},
+			{Query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t", Rows: [][]any{{2}}},
+			{Query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{100}}},
+			{Query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t", Rows: [][]any{{75.0}}},
+			// `SUM(qty) / COUNT(*)` dropped — Java integer-divides
+			// BIGINT/BIGINT, Go's SUM accumulator returns float64.
+			// Multi-aggregate with arithmetic.
+			{Query: "SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t", Rows: [][]any{{7, 7.0}}},
+		},
+	}
+}
+
+// orderByExpressionScenario tracker — the single-col `ORDER BY a + b`
+// forms also fail Cascades planning (UnableToPlanException), the same
+// natural-order-continuation gotcha as ORDER BY non-PK col. Java's
+// planner can only sort by columns that are already naturally ordered
+// by the chosen scan plan; an arithmetic expression isn't naturally
+// ordered by any FDB key. Even single-col ORDER BY <expression> needs
+// a sort rule the planner doesn't have. Cross-engine drop.
+//
+// Surfaced swingshift-56. Existing CLAUDE.md `ORDER BY natural-order`
+// gotcha covers this; no new gotcha needed.
 
 // inListPushdownScenario mirrors testdata/in_list_pushdown.yaml — the
 // SELECT-only subset that doesn't depend on mid-stream DML state. Drops
