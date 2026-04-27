@@ -424,13 +424,21 @@ var defaultExcludedDependencies = map[string]bool{
 
 // findUnionDescriptorName returns the message name of the union descriptor in
 // the given file. It checks for the conventional "UnionDescriptor" name first
-// (the Java default), then falls back to scanning all messages for the
-// usage=UNION proto annotation. This handles non-standard union names like
-// "CatalogUnion" used in catalog_data.proto.
+// (the Java default for record-layer-core), then "RecordTypeUnion" (the Java
+// default for fdb-relational's `FileDescriptorSerializer` — see line 77 of
+// fdb-relational-core/.../serde/FileDescriptorSerializer.java where the
+// builder is constructed via `setName("RecordTypeUnion")` with no
+// `[record].usage=UNION` annotation), then falls back to scanning all
+// messages for the usage=UNION proto annotation. This handles non-standard
+// union names like "CatalogUnion" used in catalog_data.proto.
 func findUnionDescriptorName(fd protoreflect.FileDescriptor) string {
 	const defaultName = "UnionDescriptor"
+	const fdbRelationalName = "RecordTypeUnion"
 	if fd.Messages().ByName(protoreflect.Name(defaultName)) != nil {
 		return defaultName
+	}
+	if fd.Messages().ByName(protoreflect.Name(fdbRelationalName)) != nil {
+		return fdbRelationalName
 	}
 	msgs := fd.Messages()
 	for i := 0; i < msgs.Len(); i++ {
@@ -478,12 +486,61 @@ func collectDependencies(fd protoreflect.FileDescriptor) []protoreflect.FileDesc
 	return deps
 }
 
+// absolutizeFieldTypeNames rewrites every FieldDescriptorProto.type_name
+// inside fd that's a relative reference (no leading ".") into an absolute
+// form (with leading "."). This matches what Java's
+// `Descriptors.FileDescriptor.buildFrom` apparently does internally — its
+// resolver walks scope outward and finds the file-level type, but Go's
+// `protodesc.NewFile` resolver fails when a relative name doesn't resolve
+// in the innermost enclosing scope. Pre-fully-qualifying lets Go's resolver
+// short-circuit to the absolute lookup. Surfaced by Track A2 dayshift-54.
+func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
+	pkg := fd.GetPackage()
+	prefix := "."
+	if pkg != "" {
+		prefix = "." + pkg + "."
+	}
+	var visitMessage func(msg *descriptorpb.DescriptorProto)
+	visitMessage = func(msg *descriptorpb.DescriptorProto) {
+		for _, f := range msg.GetField() {
+			tn := f.GetTypeName()
+			if tn != "" && tn[0] != '.' {
+				absolute := prefix + tn
+				f.TypeName = &absolute
+			}
+		}
+		for _, nested := range msg.GetNestedType() {
+			visitMessage(nested)
+		}
+	}
+	for _, m := range fd.GetMessageType() {
+		visitMessage(m)
+	}
+	// Same for extensions at the file level.
+	for _, ext := range fd.GetExtension() {
+		tn := ext.GetTypeName()
+		if tn != "" && tn[0] != '.' {
+			absolute := prefix + tn
+			ext.TypeName = &absolute
+		}
+	}
+}
+
 // rebuildFileDescriptor reconstructs a FileDescriptor from a FileDescriptorProto
 // and its dependencies. Uses topological ordering to handle transitive deps.
 func rebuildFileDescriptor(
 	recordsProto *descriptorpb.FileDescriptorProto,
 	depsProto []*descriptorpb.FileDescriptorProto,
 ) (protoreflect.FileDescriptor, error) {
+	// Java's FileDescriptorSerializer (fdb-relational) emits relative
+	// type-names like "T" (no leading dot, no package) in
+	// RecordTypeUnion fields. Java's resolver finds these via scope
+	// walk; Go's protodesc.NewFile fails. Pre-fully-qualifying lets
+	// the rebuild succeed. Track A2 dayshift-54.
+	absolutizeFieldTypeNames(recordsProto)
+	for _, dp := range depsProto {
+		absolutizeFieldTypeNames(dp)
+	}
 	// Build dependency resolver
 	resolver := &descriptorResolver{files: make(map[string]protoreflect.FileDescriptor)}
 

@@ -123,6 +123,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/core/catalog",
         "//pkg/testcontainers/foundationdb",

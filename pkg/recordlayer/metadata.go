@@ -197,36 +197,63 @@ func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDesc
 	}
 	b.unionDescriptor = unionDesc
 
-	// Auto-discover record types from UnionDescriptor fields
+	// Auto-discover record types from UnionDescriptor fields. Two
+	// naming conventions are supported:
+	//
+	//   1. RecordLayer-core convention: field name = `_TypeName`
+	//      (leading underscore). Typical of UnionDescriptor messages
+	//      Go and Java's record-layer-core produce. Strip the
+	//      leading "_" to get the record type name.
+	//   2. fdb-relational convention: field name = `TypeName_N`
+	//      (type name + underscore + counter). Typical of
+	//      RecordTypeUnion messages emitted by Java's
+	//      `FileDescriptorSerializer` (line 107). The field's TYPE
+	//      reference points at the actual record type message, so
+	//      we can extract the type name from there.
+	//
+	// Surfaced by Track A2 dayshift-54: Java's
+	// `CREATE SCHEMA TEMPLATE` writes catalog templates with the
+	// fdb-relational convention; Go's parser previously only
+	// handled the RecordLayer convention and dropped all record
+	// types from such templates ("no record types defined in
+	// meta-data" error).
 	unionFields := unionDesc.Fields()
 
 	for i := 0; i < unionFields.Len(); i++ {
 		field := unionFields.Get(i)
 		fieldName := string(field.Name())
 
-		// Skip non-record fields (field names like "_Order" map to "Order" record type)
-		if len(fieldName) > 1 && fieldName[0] == '_' {
-			recordTypeName := fieldName[1:] // "_Order" -> "Order"
-
-			// Find the actual message descriptor for this record type
-			recordMsgDesc := fd.Messages().ByName(protoreflect.Name(recordTypeName))
-			if recordMsgDesc == nil {
-				continue // Skip if message not found
+		var recordTypeName string
+		var recordMsgDesc protoreflect.MessageDescriptor
+		switch {
+		case len(fieldName) > 1 && fieldName[0] == '_':
+			// RecordLayer convention: `_TypeName`.
+			recordTypeName = fieldName[1:]
+			recordMsgDesc = fd.Messages().ByName(protoreflect.Name(recordTypeName))
+		case field.Kind() == protoreflect.MessageKind:
+			// fdb-relational convention: derive type name from the
+			// field's type reference rather than the field name.
+			recordMsgDesc = field.Message()
+			if recordMsgDesc != nil {
+				recordTypeName = string(recordMsgDesc.Name())
 			}
-
-			// Use the proto field number as the record type index.
-			// Matches Java: RecordType.getRecordTypeKey() returns the smallest
-			// union field number matching this message type.
-			recordType := &RecordType{
-				Name:                 recordTypeName,
-				Descriptor:           recordMsgDesc,
-				PrimaryKey:           nil, // Will be set explicitly
-				SinceVersion:         0,   // Matches Java's null default
-				RecordTypeIndex:      int(field.Number()),
-				UnionFieldDescriptor: field, // Store the union field for reflection
-			}
-			b.recordTypes[recordTypeName] = recordType
 		}
+		if recordMsgDesc == nil || recordTypeName == "" {
+			continue
+		}
+
+		// Use the proto field number as the record type index.
+		// Matches Java: RecordType.getRecordTypeKey() returns the smallest
+		// union field number matching this message type.
+		recordType := &RecordType{
+			Name:                 recordTypeName,
+			Descriptor:           recordMsgDesc,
+			PrimaryKey:           nil, // Will be set explicitly
+			SinceVersion:         0,   // Matches Java's null default
+			RecordTypeIndex:      int(field.Number()),
+			UnionFieldDescriptor: field, // Store the union field for reflection
+		}
+		b.recordTypes[recordTypeName] = recordType
 	}
 
 	return b
