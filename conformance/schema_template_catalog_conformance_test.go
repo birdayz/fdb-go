@@ -1,66 +1,10 @@
 package conformance_test
 
-// Track A2 — SchemaTemplateCatalog wire format Go↔Java cross-language
-// round-trip. Builds on the FDBMetaDataStore wire-format pins from
-// nightshift-53 (PR #119) by exercising the relational/SQL layer's
-// catalog instead of the raw record-layer-core metadata store.
-//
-// **dayshift-54 closes A2** — peeled the onion four layers, all fixed:
-//
-//   Layer 1 (FIXED): keyspace prerequisite. Java's
-//   `RecordLayerStoreCatalog` and Go's
-//   `catalog.OpenRecordLayerStoreCatalog()` both target the
-//   (NULL, NULL, int64(0)) FDB subspace prefix (3 bytes: 00 00 14).
-//   Confirmed via direct subspace byte inspection.
-//
-//   Layer 2 (FIXED): catalog metadata-version. Java's
-//   `RecordLayerSchemaTemplate.toRecordMetadata()` calls `setVersion(1)`
-//   then `addIndex×3` → v4. Go's `BuildCatalogMetaData()` was starting
-//   at 0 → v3 → `StaleMetaDataVersionError{Local:3, Stored:4}` on
-//   cross-engine read. Fix in `BuildCatalogMetaData()`: explicit
-//   `SetVersion(1)` before the addIndex calls.
-//
-//   Layer 3 (FIXED): proto FileDescriptor rebuild. Java's
-//   `FileDescriptorSerializer` emits relative type-name references
-//   like `setTypeName("T")` (no leading dot, no package) for a
-//   `RecordTypeUnion` field whose type is the user's top-level
-//   message `T`. Go's `protodesc.NewFile` resolves the reference
-//   relative to `RecordTypeUnion`'s scope first (looking for
-//   `RecordTypeUnion.T`) and doesn't fall back to file-scope; result:
-//   `descriptor not found: RecordTypeUnion.T`. The
-//   `protodesc.FileOptions{AllowUnresolvable:true}` option doesn't
-//   help. Fix: pre-process the FileDescriptorProto to rewrite each
-//   field's relative type-name to absolute (`"T"` → `".T"`) before
-//   passing to `protodesc.NewFile`. Implementation:
-//   `absolutizeFieldTypeNames` in `metadata_proto.go`.
-//
-//   Layer 4 (FIXED): union-descriptor field naming. Go's record-layer
-//   union-descriptor parser expected fields named with a leading
-//   underscore (`_TypeName`) per RecordLayer's UnionDescriptor
-//   convention; Java's fdb-relational `FileDescriptorSerializer`
-//   emits fields named `TypeName_N` (type name + counter) per its
-//   line 107 (`typeDescriptor + "_" + fieldCounter`). Go dropped all
-//   record types from such metadata, raising "no record types
-//   defined in meta-data". Fix: `setRecordsWithUnionName` now also
-//   accepts message-typed fields and derives the record type name
-//   from the field's TYPE reference rather than only the field
-//   name. AND `findUnionDescriptorName` recognises both
-//   `UnionDescriptor` (RecordLayer-core default) and
-//   `RecordTypeUnion` (fdb-relational default).
-//
-// **What this test pins**: end-to-end cross-language round-trip —
-// Java JDBC `CREATE SCHEMA TEMPLATE` writes a template at the shared
-// catalog subspace; Go's `OpenRecordLayerStoreCatalog` opens at the
-// same subspace, `DoesSchemaTemplateExist` finds the template, and
-// `LoadSchemaTemplate` decodes the embedded metadata to recover the
-// user's table definition.
-//
-// **What's NOT yet pinned** (next-shift work):
-//   - Reverse direction (Go writes via OpenRecordLayerStoreCatalog,
-//     Java's standard JDBC reads).
-//   - The Go sqldriver's three-string subspace remains divergent.
-//     This is a sqldriver-specific concern, not a catalog-package
-//     concern.
+// Track A2 — cross-language SchemaTemplateCatalog round-trip. Java JDBC
+// CREATE SCHEMA TEMPLATE writes; Go's OpenRecordLayerStoreCatalog reads.
+// Pins keyspace, metadata-version, FileDescriptor rebuild, and union-
+// descriptor naming compatibility. CLAUDE.md gotchas section + PR #120
+// have the layer-by-layer detail.
 
 import (
 	"context"

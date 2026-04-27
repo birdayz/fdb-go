@@ -197,26 +197,6 @@ func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDesc
 	}
 	b.unionDescriptor = unionDesc
 
-	// Auto-discover record types from UnionDescriptor fields. Two
-	// naming conventions are supported:
-	//
-	//   1. RecordLayer-core convention: field name = `_TypeName`
-	//      (leading underscore). Typical of UnionDescriptor messages
-	//      Go and Java's record-layer-core produce. Strip the
-	//      leading "_" to get the record type name.
-	//   2. fdb-relational convention: field name = `TypeName_N`
-	//      (type name + underscore + counter). Typical of
-	//      RecordTypeUnion messages emitted by Java's
-	//      `FileDescriptorSerializer` (line 107). The field's TYPE
-	//      reference points at the actual record type message, so
-	//      we can extract the type name from there.
-	//
-	// Surfaced by Track A2 dayshift-54: Java's
-	// `CREATE SCHEMA TEMPLATE` writes catalog templates with the
-	// fdb-relational convention; Go's parser previously only
-	// handled the RecordLayer convention and dropped all record
-	// types from such templates ("no record types defined in
-	// meta-data" error).
 	unionFields := unionDesc.Fields()
 
 	for i := 0; i < unionFields.Len(); i++ {
