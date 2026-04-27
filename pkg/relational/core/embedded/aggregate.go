@@ -178,6 +178,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		// `SUM(BIGINT)/COUNT(*)` integer-division semantic) and fall
 		// back to float64 the moment a non-integer value is seen.
 		// sumIntOnly[i] starts true and only ever flips to false.
+		//
+		// Overflow: `sumsI[i] += iv` wraps silently on int64 overflow
+		// — same as Java's `long` accumulator on SUM(BIGINT). Both
+		// engines therefore produce the same wrap-around result on
+		// overflow; promoting to float64 on overflow would diverge.
 		sums         []float64
 		sumsI        []int64
 		sumIntOnly   []bool

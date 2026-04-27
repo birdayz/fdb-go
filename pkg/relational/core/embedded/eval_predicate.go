@@ -157,7 +157,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 				return evalBetweenPredicateTri(ctx, conn, msg, e, p)
 			}
 		}
-		return evalComparisonPredicateTriCtx(ctx, conn, msg, e, allowBareField)
+		return evalComparisonPredicateTri(ctx, conn, msg, e, allowBareField)
 
 	default:
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
@@ -175,11 +175,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 // (allowBareField=true): evaluates the column as a value and uses
 // IsTruthy, since Java accepts `b AND TRUE` / `NOT b` / `SELECT b OR
 // FALSE` over a BOOLEAN column.
-func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (triBool, error) {
-	return evalComparisonPredicateTriCtx(ctx, conn, msg, pred, false /* allowBareField */)
-}
-
-func evalComparisonPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, allowBareField bool) (triBool, error) {
+func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, allowBareField bool) (triBool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
 		// Bare column reference as a top-level WHERE predicate (`WHERE

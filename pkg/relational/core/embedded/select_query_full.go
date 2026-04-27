@@ -509,6 +509,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// / COUNT(*)` integer-divides). sumIntOnly[i] starts
 				// true and only ever flips to false. See aggregate.go
 				// for the symmetric map-path implementation.
+				//
+				// Overflow: int64 accumulation wraps silently — same as
+				// Java's `long` accumulator. Promoting to float64 on
+				// overflow would diverge from Java; both engines
+				// produce the same wrap-around result.
 				sums         []float64
 				sumsI        []int64
 				sumIntOnly   []bool
