@@ -88,6 +88,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		compositePKScenario,
 		bytesScenario,
 		betweenScenario,
+		booleanScenario,
 	}
 }
 
@@ -257,6 +258,44 @@ func betweenScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE v BETWEEN 4 AND 6.2", Rows: [][]any{{2}}},
 			{Query: "SELECT COUNT(*) FROM t WHERE 4.5 BETWEEN 4 AND 6", Rows: [][]any{{5}}},
 			{Query: "SELECT COUNT(*) FROM t WHERE 2+2 BETWEEN 1+1 AND 3+3", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// booleanScenario mirrors testdata/boolean.yaml. Drops NOT NULL on PK.
+// Cross-engine omissions: IS TRUE / IS FALSE / IS NOT TRUE / IS NOT
+// FALSE forms (CLAUDE.md gotcha — fdb-relational planner rejects),
+// untyped-NULL operands (`b = null`, `b AND NULL`, `b OR NULL`),
+// `WHERE (b = true)` (parser interprets bare-paren as
+// RecordConstructorValue, not a predicate; `NOT (...)` works because it
+// forces predicate context), and CTE + outer ORDER BY (Java rejects
+// "order by is not supported in subquery" — fdb-relational treats the
+// outer ORDER BY as part of the subquery scope when a WITH clause is
+// present).
+func booleanScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "boolean",
+		SchemaTemplate: "CREATE TABLE lb (a BIGINT, b BOOLEAN, PRIMARY KEY (a))",
+		Setup: []string{
+			"INSERT INTO lb VALUES (1, true), (2, false), (3, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT lb.* FROM lb WHERE b = true", Rows: [][]any{{1, true}}},
+			{Query: "SELECT lb.* FROM lb WHERE b = false", Rows: [][]any{{2, false}}},
+			{Query: "SELECT lb.* FROM lb WHERE b <> TRUE", Rows: [][]any{{2, false}}},
+			{Query: "SELECT lb.* FROM lb WHERE b <> FALSE", Rows: [][]any{{1, true}}},
+			{Query: "SELECT lb.* FROM lb WHERE b IS NULL", Rows: [][]any{{3, nil}}},
+			{Query: "SELECT lb.* FROM lb WHERE b IS NOT NULL", Unordered: true, Rows: [][]any{{1, true}, {2, false}}},
+			{Query: "SELECT lb.* FROM lb WHERE NOT (b = false)", Unordered: true, Rows: [][]any{{1, true}}},
+			{Query: "SELECT b = true FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT b = false FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
+			{Query: "SELECT b <> TRUE FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
+			{Query: "SELECT b IS NULL FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {true}}},
+			{Query: "SELECT b AND TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT b AND FALSE FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {false}}},
+			{Query: "SELECT b OR TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {true}, {true}}},
+			{Query: "SELECT b OR FALSE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT NOT b FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 		},
 	}
 }
