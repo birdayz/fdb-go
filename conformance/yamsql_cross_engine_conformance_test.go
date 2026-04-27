@@ -168,6 +168,27 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		caseInsensitiveKeywordsScenario(),
 		unionStarScenario(),
 		qualifiedStarScenario(),
+		existsScenario(),
+	}
+}
+
+// existsScenario probes EXISTS / NOT EXISTS in fdb-relational. Only
+// the empty-flags variants — INSERT-then-re-check is mid-stream DML
+// that runWithSetup can't express.
+func existsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "exists",
+		SchemaTemplate: "CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE flags (k BIGINT, PRIMARY KEY (k))",
+		Setup: []string{
+			"INSERT INTO orders VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			// Empty flags → EXISTS=FALSE → WHERE filters everything.
+			{Query: "SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id", Rows: [][]any{}},
+			// Empty flags → NOT EXISTS=TRUE → all rows pass.
+			{Query: "SELECT id FROM orders WHERE NOT EXISTS (SELECT k FROM flags) ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+		},
 	}
 }
 
