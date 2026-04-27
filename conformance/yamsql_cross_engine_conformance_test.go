@@ -93,6 +93,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		caseWhenScenario,
 		aggregateEmptyTableScenario,
 		bitwiseScenario,
+		avgScenario,
 	}
 }
 
@@ -427,6 +428,23 @@ func bitwiseScenario() *yamsql.Scenario {
 			{Query: "SELECT a ^ b FROM t WHERE id = 1", Rows: [][]any{{12}}},
 			{Query: "SELECT a & b FROM t WHERE id = 4", Rows: [][]any{{nil}}},
 			{Query: "SELECT id FROM t WHERE a & 1 = 1 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+		},
+	}
+}
+
+// avgScenario mirrors testdata/avg.yaml. Drops NOT NULL on PK. Pins
+// AVG result type as DOUBLE regardless of input.
+func avgScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "avg",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 1), (2, 2), (3, 3)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT AVG(v) FROM t", Rows: [][]any{{2.0}}},
+			{Query: "SELECT AVG(v) FROM t WHERE v <= 2", Rows: [][]any{{1.5}}},
+			{Query: "SELECT AVG(v) FROM t WHERE v > 100", Rows: [][]any{{nil}}},
 		},
 	}
 }
