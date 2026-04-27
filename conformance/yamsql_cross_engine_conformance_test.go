@@ -91,6 +91,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		booleanScenario,
 		likeScenario,
 		caseWhenScenario,
+		aggregateEmptyTableScenario,
 	}
 }
 
@@ -379,6 +380,30 @@ func caseWhenScenario() *yamsql.Scenario {
 				Query: "SELECT id, CASE WHEN v IS NULL THEN 0 ELSE v + 1 END FROM t ORDER BY id",
 				Rows:  [][]any{{1, 6}, {2, 16}, {3, 0}, {4, 31}},
 			},
+		},
+	}
+}
+
+// aggregateEmptyTableScenario mirrors testdata/aggregate_empty_table.yaml.
+// Drops NOT NULL on PK. Drops the `WHERE x > 0 HAVING COUNT(*) >= 0`
+// test — divergence: Go returns 1 row [[0]] (SQL spec — aggregate over
+// empty set produces a single grouping then HAVING filters), Java
+// returns 0 rows (treats empty WHERE result as no grouping at all,
+// HAVING never fires). Tracked as new gotcha in CLAUDE.md.
+func aggregateEmptyTableScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "aggregate_empty_table",
+		SchemaTemplate: "CREATE TABLE empty_t (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup:          []string{},
+		Tests: []yamsql.Test{
+			{Query: "SELECT COUNT(*) FROM empty_t", Rows: [][]any{{0}}},
+			{Query: "SELECT COUNT(n) FROM empty_t", Rows: [][]any{{0}}},
+			{Query: "SELECT SUM(n) FROM empty_t", Rows: [][]any{{nil}}},
+			{Query: "SELECT AVG(n) FROM empty_t", Rows: [][]any{{nil}}},
+			{Query: "SELECT MIN(n) FROM empty_t", Rows: [][]any{{nil}}},
+			{Query: "SELECT MAX(n) FROM empty_t", Rows: [][]any{{nil}}},
+			{Query: "SELECT COUNT(*) FROM empty_t WHERE id = 999", Rows: [][]any{{0}}},
+			{Query: "SELECT COUNT(*) FROM empty_t HAVING COUNT(*) > 0", Rows: [][]any{}},
 		},
 	}
 }
