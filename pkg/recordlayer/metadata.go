@@ -197,36 +197,43 @@ func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDesc
 	}
 	b.unionDescriptor = unionDesc
 
-	// Auto-discover record types from UnionDescriptor fields
 	unionFields := unionDesc.Fields()
 
 	for i := 0; i < unionFields.Len(); i++ {
 		field := unionFields.Get(i)
 		fieldName := string(field.Name())
 
-		// Skip non-record fields (field names like "_Order" map to "Order" record type)
-		if len(fieldName) > 1 && fieldName[0] == '_' {
-			recordTypeName := fieldName[1:] // "_Order" -> "Order"
-
-			// Find the actual message descriptor for this record type
-			recordMsgDesc := fd.Messages().ByName(protoreflect.Name(recordTypeName))
-			if recordMsgDesc == nil {
-				continue // Skip if message not found
+		var recordTypeName string
+		var recordMsgDesc protoreflect.MessageDescriptor
+		switch {
+		case len(fieldName) > 1 && fieldName[0] == '_':
+			// RecordLayer convention: `_TypeName`.
+			recordTypeName = fieldName[1:]
+			recordMsgDesc = fd.Messages().ByName(protoreflect.Name(recordTypeName))
+		case field.Kind() == protoreflect.MessageKind:
+			// fdb-relational convention: derive type name from the
+			// field's type reference rather than the field name.
+			recordMsgDesc = field.Message()
+			if recordMsgDesc != nil {
+				recordTypeName = string(recordMsgDesc.Name())
 			}
-
-			// Use the proto field number as the record type index.
-			// Matches Java: RecordType.getRecordTypeKey() returns the smallest
-			// union field number matching this message type.
-			recordType := &RecordType{
-				Name:                 recordTypeName,
-				Descriptor:           recordMsgDesc,
-				PrimaryKey:           nil, // Will be set explicitly
-				SinceVersion:         0,   // Matches Java's null default
-				RecordTypeIndex:      int(field.Number()),
-				UnionFieldDescriptor: field, // Store the union field for reflection
-			}
-			b.recordTypes[recordTypeName] = recordType
 		}
+		if recordMsgDesc == nil || recordTypeName == "" {
+			continue
+		}
+
+		// Use the proto field number as the record type index.
+		// Matches Java: RecordType.getRecordTypeKey() returns the smallest
+		// union field number matching this message type.
+		recordType := &RecordType{
+			Name:                 recordTypeName,
+			Descriptor:           recordMsgDesc,
+			PrimaryKey:           nil, // Will be set explicitly
+			SinceVersion:         0,   // Matches Java's null default
+			RecordTypeIndex:      int(field.Number()),
+			UnionFieldDescriptor: field, // Store the union field for reflection
+		}
+		b.recordTypes[recordTypeName] = recordType
 	}
 
 	return b

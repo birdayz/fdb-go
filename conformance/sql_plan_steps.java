@@ -225,6 +225,62 @@ class SqlPlanSteps {
     }
 
     /**
+     * Persistently create a SchemaTemplate via JDBC's
+     * {@code CREATE SCHEMA TEMPLATE} (without auto-drop). The template lives
+     * in the system catalog at the standard subspace
+     * {@code (NULL, NULL, int64(0))}. Used by Track A2 cross-language
+     * SchemaTemplateCatalog round-trip: Go's
+     * {@code catalog.OpenRecordLayerStoreCatalog()} (also at the
+     * {@code (NULL, NULL, int64(0))} subspace via
+     * {@code DefaultCatalogSubspace}) can then read this template.
+     *
+     * Caller is responsible for cleanup via
+     * {@link #dropSchemaTemplatePersistentJava}.
+     */
+    @ConformanceStep("createSchemaTemplatePersistentJava")
+    public JsonObject createSchemaTemplatePersistentJava(String clusterFile,
+                                                         String templateName,
+                                                         String schemaTemplateBody) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        try (java.sql.Connection sysConn = DriverManager.getConnection(
+                "jdbc:embed:/__SYS?schema=CATALOG");
+             Statement st = sysConn.createStatement()) {
+            st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplateBody);
+        }
+        JsonObject result = new JsonObject();
+        result.addProperty("created", true);
+        result.addProperty("templateName", templateName);
+        return result;
+    }
+
+    /**
+     * Best-effort drop of a persistently-created SchemaTemplate. Used as
+     * cleanup after {@link #createSchemaTemplatePersistentJava}.
+     */
+    @ConformanceStep("dropSchemaTemplatePersistentJava")
+    public JsonObject dropSchemaTemplatePersistentJava(String clusterFile,
+                                                       String templateName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        boolean dropped = false;
+        try (java.sql.Connection sysConn = DriverManager.getConnection(
+                "jdbc:embed:/__SYS?schema=CATALOG");
+             Statement st = sysConn.createStatement()) {
+            st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\"");
+            dropped = true;
+        } catch (SQLException e) {
+            // fdb-relational 4.11.1.0 ignores `IF EXISTS` on DROP
+            // SCHEMA TEMPLATE — throws on absent template anyway.
+            // Tolerate the specific "not found" path for idempotency.
+            if (e.getMessage() == null || !e.getMessage().toLowerCase().contains("not found")) {
+                throw e;
+            }
+        }
+        JsonObject result = new JsonObject();
+        result.addProperty("dropped", dropped);
+        return result;
+    }
+
+    /**
      * Wraps a JDBC operation in the ephemeral schema-template / database /
      * schema lifecycle. Both {@link #planSql} and {@link #runSql} drive
      * fdb-relational the same way: create a uniquely-named template + db
