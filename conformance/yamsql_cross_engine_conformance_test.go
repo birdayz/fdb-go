@@ -164,6 +164,34 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		joinNullKeyScenario(),
 		overflowMixedScenario(),
 		greatestLeastScenario(),
+		recursiveCteCountScenario(),
+	}
+}
+
+// recursiveCteCountScenario lifts two outer-ORDER-BY-free tests from
+// testdata/recursive_cte.yaml — `WITH RECURSIVE` walks of a parent-
+// link tree. Drops NOT NULL on PK. Most other recursive_cte tests use
+// outer ORDER BY which the existing CTE+ORDER BY gotcha rejects.
+func recursiveCteCountScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "recursive_cte_count",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, -1), (10, 1), (20, 1), (40, 10), (50, 10), (70, 10), (100, 20), (210, 20), (250, 50)",
+		},
+		Tests: []yamsql.Test{
+			// Aggregate over recursive descendants — single-row, no
+			// outer ORDER BY needed.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT COUNT(*) FROM descendants", Rows: [][]any{{9}}},
+			// Empty-seed recursive CTE terminates cleanly.
+			{Query: "WITH RECURSIVE noseed AS (SELECT id, parent FROM t WHERE id = 99999 UNION ALL SELECT b.id, b.parent FROM noseed AS a, t AS b WHERE b.parent = a.id) SELECT id FROM noseed", Rows: [][]any{}},
+			// `WITH RECURSIVE nonrec AS (...)` without a UNION ALL
+			// self-reference is rejected by fdb-relational with
+			// "condition is not met!". SQL spec / Postgres permit it
+			// (RECURSIVE is a scope enabler), but fdb-relational
+			// requires an actual recursive body. Cross-engine corpus
+			// drops the form. (New gotcha-worthy if it recurs.)
+		},
 	}
 }
 
