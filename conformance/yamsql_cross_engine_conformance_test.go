@@ -136,6 +136,56 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		coveringIndexPushdownScenario(),
 		mixedTypeEqualityScenario(),
 		gr1JoinScenario(),
+		numericTypesScenario(),
+		isDistinctFromScenario(),
+	}
+}
+
+// numericTypesScenario mirrors testdata/numeric_types.yaml — the SELECT
+// arithmetic tests only. Drops NOT NULL on PK. The INSERT
+// out-of-range tests aren't expressible cross-engine via runWithSetup
+// (one query per test). The post-INSERT SELECT references id=3 which
+// never gets inserted, so it's dropped too.
+func numericTypesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "numeric_types",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, i INTEGER, l BIGINT, d DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 100, 1.5), (2, 20, 200, 2.5)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT i / 3 FROM t WHERE id = 1", Rows: [][]any{{3}}},
+			{Query: "SELECT l + l FROM t WHERE id = 1", Rows: [][]any{{200}}},
+			{Query: "SELECT d * 2 FROM t WHERE id = 1", Rows: [][]any{{3.0}}},
+			{Query: "SELECT i + d FROM t WHERE id = 1", Rows: [][]any{{11.5}}},
+		},
+	}
+}
+
+// isDistinctFromScenario mirrors testdata/is_distinct_from.yaml. Drops
+// NOT NULL on PK. Tests SQL:1999 NULL-safe equality (IS DISTINCT FROM /
+// IS NOT DISTINCT FROM) — never UNKNOWN, two-valued boolean.
+func isDistinctFromScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "is_distinct_from",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alpha'), (2, 'beta'), (3, null), (4, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE label = 'alpha' ORDER BY id", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE label IS DISTINCT FROM 'alpha' ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE label IS NOT DISTINCT FROM null ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id FROM t WHERE label IS NOT DISTINCT FROM 'beta'", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE label IS DISTINCT FROM null ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE null IS DISTINCT FROM label ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE null IS DISTINCT FROM null", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE 10 IS DISTINCT FROM 10", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE 10 IS NOT DISTINCT FROM 10 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}}},
+			{Query: "SELECT id, label IS DISTINCT FROM null FROM t WHERE id = 3", Rows: [][]any{{3, false}}},
+			{Query: "SELECT id, label IS NOT DISTINCT FROM null FROM t WHERE id = 3", Rows: [][]any{{3, true}}},
+			{Query: "SELECT id, label IS DISTINCT FROM 'alpha' FROM t ORDER BY id", Rows: [][]any{{1, false}, {2, true}, {3, true}, {4, true}}},
+		},
 	}
 }
 
