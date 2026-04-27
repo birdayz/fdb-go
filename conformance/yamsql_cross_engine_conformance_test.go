@@ -84,6 +84,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 	return []func() *yamsql.Scenario{
 		whereLiteralOnLeftScenario,
 		arithmeticScenario,
+		castScenario,
 	}
 }
 
@@ -141,6 +142,38 @@ func arithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT a - b FROM t WHERE id = 1", Rows: [][]any{{16}}},
 			{Query: "SELECT a * b FROM t WHERE id = 1", Rows: [][]any{{80}}},
 			{Query: "SELECT a / 0 FROM t WHERE id = 1", ErrorCode: "22012"},
+		},
+	}
+}
+
+// castScenario mirrors testdata/cast.yaml. Drops NOT NULL on the two
+// PK columns. Keeps error_code tests for visibility (per-test Skip).
+func castScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "cast",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE test_cast (id BIGINT, num_col BIGINT, str_col STRING, bool_col BOOLEAN, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1)",
+			"INSERT INTO test_cast VALUES (1, 123, 'hello', true), (2, 456, 'world', false), (3, 789, '123', null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT CAST(1.6 AS BIGINT) FROM t", Rows: [][]any{{2}}},
+			{Query: "SELECT CAST(-1.5 AS BIGINT) FROM t", Rows: [][]any{{-1}}},
+			{Query: "SELECT CAST(-2.6 AS BIGINT) FROM t", Rows: [][]any{{-3}}},
+			{Query: "SELECT CAST(' 42 ' AS BIGINT) FROM t", Rows: [][]any{{42}}},
+			{Query: "SELECT CAST(' 3.14 ' AS DOUBLE) FROM t", Rows: [][]any{{3.14}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) FROM t", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(1e20 AS BIGINT) FROM t", ErrorCode: "22F3H"},
+			{Query: "SELECT CAST(-1e20 AS BIGINT) FROM t", ErrorCode: "22F3H"},
+			{Query: "SELECT CAST('not a bool' AS BOOLEAN) FROM t", ErrorCode: "22F3H"},
+			{Query: "SELECT CAST(CAST('not a number' AS DOUBLE) AS BIGINT) FROM t", ErrorCode: "22F3H"},
+			{Query: "SELECT CAST(9223372036854775807 AS INTEGER) FROM t", ErrorCode: "22F3H"},
+			{Query: "SELECT CAST(num_col AS STRING) FROM test_cast WHERE id = 1", Rows: [][]any{{"123"}}},
+			{Query: "SELECT CAST(num_col AS DOUBLE) FROM test_cast WHERE id = 1", Rows: [][]any{{123.0}}},
+			{Query: "SELECT id FROM test_cast WHERE CAST(bool_col AS INTEGER) + 1 > 1", Rows: [][]any{{1}}},
+			{Query: "SELECT SUM(CAST(num_col AS DOUBLE)) FROM test_cast", Rows: [][]any{{1368.0}}},
+			{Query: "SELECT id FROM test_cast WHERE CAST(num_col AS STRING) = CAST(123 AS STRING)", Rows: [][]any{{1}}},
 		},
 	}
 }
