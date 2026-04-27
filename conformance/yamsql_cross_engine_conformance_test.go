@@ -143,6 +143,34 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		aggregateExpressionSelectScenario(),
 		derivedTableRenamedScenario(),
 		orderByEliminationScenario(),
+		bugHuntProbesScenario(),
+	}
+}
+
+// bugHuntProbesScenario mirrors testdata/bug_hunt_probes.yaml — the
+// SELECT-only NULL-semantic / aggregate / CTE probes. Drops NOT NULL on
+// PK. Skips DML, error_code, IN-with-NULL forms (Java rejects NULL in
+// IN list per existing CLAUDE.md gotcha).
+func bugHuntProbesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "bug_hunt_probes",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, null), (4, null, 'd')",
+		},
+		Tests: []yamsql.Test{
+			// COUNT/AVG/SUM NULL semantics.
+			{Query: "SELECT COUNT(*), COUNT(n), COUNT(s) FROM t", Rows: [][]any{{4, 3, 3}}},
+			{Query: "SELECT AVG(n) FROM t", Rows: [][]any{{20.0}}},
+			{Query: "SELECT SUM(n) FROM t WHERE n IS NULL", Rows: [][]any{{nil}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE id > 1000", Rows: [][]any{{0}}},
+			// Boolean three-valued logic.
+			{Query: "SELECT id FROM t WHERE (n > 5) AND (s IS NULL) ORDER BY id", Rows: [][]any{{3}}},
+			// Nested CTE — drop ORDER BY (CTE+ORDER BY gotcha).
+			{Query: "WITH a AS (SELECT id, n FROM t WHERE n IS NOT NULL), b AS (SELECT id, n * 2 AS doubled FROM a) SELECT id, doubled FROM b", Unordered: true, Rows: [][]any{{1, 20}, {2, 40}, {3, 60}}},
+			// Aggregate over CTE.
+			{Query: "WITH high AS (SELECT n FROM t WHERE n > 15) SELECT SUM(n), COUNT(*) FROM high", Rows: [][]any{{50, 2}}},
+		},
 	}
 }
 
