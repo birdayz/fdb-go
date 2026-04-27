@@ -236,7 +236,7 @@ Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope i
 
 ### SQL feature gaps (smaller)
 
-- [ ] **`SUM(BIGINT)` accumulator should preserve int64 precision** — Go's SUM accumulator is always float64, which makes `SUM(qty) / COUNT(*)` produce `3.333...` for `SUM=10 / COUNT=3` while Java does integer-divide and returns `3`. Surfaced swingshift-56 cross-engine harness on `SELECT SUM(qty) / COUNT(*) FROM t`. Fix in `pkg/relational/core/embedded/aggregate.go`: detect that all inputs are BIGINT (proto type tags) and accumulate as int64 with overflow-detection, promoting to float64 only on overflow. Re-enables the dropped cross-engine corpus entry.
+- [x] **`SUM(BIGINT)` accumulator now preserves int64 precision** — DONE nightshift-57. `mapGroupState` / `groupState` carry parallel `sumsI []int64` + `sumIntOnly []bool` accumulators alongside the float64 sum (`pkg/relational/core/embedded/aggregate.go`, `select_query_full.go`). Each `sumIntOnly[i]` starts true and only flips to false when a non-int64 runtime value is observed; on emit, integer-only groups return the int64 accumulator, mixed/float groups fall back to the float64 sum. `SELECT SUM(qty) / COUNT(*) FROM t` now integer-divides on both engines (10/3=3). Cross-engine corpus entry re-enabled in `aggregateExprScenario` (`conformance/yamsql_cross_engine_conformance_test.go`).
 - [x] **IN-list via subquery decomposition** — verified nightshift-50 the path is wired end-to-end. `preEvaluateInSubqueries` (in `in_subquery.go`) walks the outer WHERE's AND-chain leaves, executes each `col IN (SELECT ...)` once, and caches the value list keyed by the inner `QueryExpressionBody` in `EmbeddedConnection.inSubqueryCache`. `extractColInList` (in `in_list_pushdown.go:88-103`) consults that cache and treats the cached values as a literal IN-list, driving the existing PK / composite-PK / secondary-index point-scan chain. Remaining gap: subqueries nested under OR / NOT / LIKE / BETWEEN escape the AND-chain walk and stay on the runtime evalPredicate path; correlated subqueries deliberately bail too. Both are by design.
 - [ ] **GROUP BY (a+b) AS alias** — expression group keys can't be referenced via alias from the SELECT list because the rewrite path only handles bare-column group-by entries.
 - [~] **ORDER BY dedup edge cases** — verified nightshift-50: `ORDER BY b, B` IS case-insensitively deduped today (`select_parser.go:923,943` upper-folds the dedup key). The remaining gap is `ORDER BY t.x, x` qualified-vs-bare — those stay distinct because the dedup is string-keyed and alias resolution happens later. Per inline comment, matches Java's behavior today; rides on a future semantic-analyzer-aware identifier-folding pass.
@@ -399,6 +399,14 @@ Only used by Java's query planner / SQL layer, not by core CRUD. Defer until Cas
 ## Recently shipped (last ~5 shifts)
 
 Trimmed history list for context. Older completions trimmed; full history in git log.
+
+### nightshift-57 (2026-04-28)
+
+Two Go-vs-Java divergences from CLAUDE.md "Java↔Go conformance gotchas" closed; three new cross-engine A3 scenarios.
+
+- [x] **Bare-bool projection accepted (Java alignment)** — `SELECT b AND TRUE`, `SELECT NOT b`, `SELECT b OR FALSE` etc. over a BOOLEAN column now match Java. Threaded `allowBareField bool` through `evalExprPredicateTri` / `evalComparisonPredicateTri` (`pkg/relational/core/embedded/eval_predicate.go`): operands of AND/OR/NOT/XOR (any context) and projection-level `evalExpr` (`eval_proto.go`) pass `true` so a bare `FullColumnName` evaluates as a value via IsTruthy. Top-level WHERE / HAVING entry still passes `false`, preserving Java's `WHERE flag` rejection. Five corpus entries re-enabled in `booleanScenario`. CLAUDE.md gotcha entry marked RESOLVED.
+- [x] **`SUM(BIGINT)` int-preserving accumulator** — see HIGH-bucket entry above. `SELECT SUM(qty) / COUNT(*) FROM t` now integer-divides on both engines. CLAUDE.md gotcha entry marked RESOLVED.
+- [x] **3 new A3 scenarios** — `nested_derived_table` (3 specs: 3-level nesting + COUNT(*) + aliased aggregate), `ambiguous_column` (2 qualified-positives specs, comma-join), `correlated_subquery_probes` (2 specs: correlated EXISTS / NOT EXISTS where the inner references an outer-scope column). Net 7 new cross-engine specs; running total ~395.
 
 ### Pure Go FDB Client quality batch (2026-04-25, PR #114)
 
