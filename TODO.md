@@ -27,7 +27,24 @@ The fastest route to closing the "yamsql is the only oracle" hole. Each item bel
   - **Go runner lands swingshift-52** (`pkg/relational/conformance/plandiff/go_runner.go`): `goSQLRunner` drives the in-process embedded engine via the `fdbsql` driver — per-call ephemeral schema lifecycle (CREATE SCHEMA TEMPLATE / DATABASE / SCHEMA on `/__SYS`, query on `<dbPath>?schema=<schemaName>`). 30/31 entries pass `_Values` strict assertion; 1 entry (`uuid_round_trip`) hits the UUID-column-type DDL gap and is `t.Skipf`'d via `isGoFeatureGap`.
   - **Go-engine conformance gaps surfaced AND closed by the harness in the same shift** (swingshift-52): identifier-case (`id` → `ID`), qualifier stripping (`t.id` → `ID`), anonymous-projection naming (`COUNT(*)` → `_0`), JDBC type-name plumbing (BIGINT/STRING/DOUBLE/etc.), empty-result type inference, **full UUID end-to-end** (DDL + proto sub-message + CAST + INSERT + SELECT + JDBC `OTHER` type). The harness is strict end-to-end (column metadata + row values), **all 31 entries pass byte-equivalence with Java**.
   - **Remaining for full A1 close**: A2/A3/A4 — yamsql equivalence + catalog round-trip + INFORMATION_SCHEMA — all build on top of the wired-up runner.
-- [ ] **A2 — Catalog wire format Go↔Java round-trip**: extract a schema via Go, load with Java, run a SELECT; reverse direction too. Subset of A1's runSql infrastructure. Pinned separately because of the swingshift-35 catalog-subspace scar — same harness shape would have caught that bug.
+- [~] **A2 — Catalog wire format Go↔Java round-trip**: PARTIAL nightshift-53. The FDBMetaDataStore wire-format **functional** round-trip is DONE: cross-language metadata save/load that PROVES the loaded metadata is functionally usable to drive a record store. Eleven new specs in `metadata_store_conformance_test.go` under "Cross-language functional round-trip (A2)":
+  1. Java loads Go-written metadata + scans Go-written records
+  2. Java scans Go-built VALUE index (`Order$price`)
+  3. Go scans Java-built VALUE index (reverse direction)
+  4. Java reads Go-written split records (>100KB, `splitLongRecords=true`)
+  5. Java scans multi-record-type store (Orders + Customers) — pins union-descriptor type-tag dispatch
+  6. Java scans Go-built COUNT index (BY_GROUP) — atomic-mutation maintainer + atomic-counter wire format
+  7. Go loads Java-written metadata + scans Java-written records (reverse direction)
+  8. Java scans Go-built SUM index (BY_GROUP, ungrouped) — atomic-ADD payload encoding
+  9. Go scans Java-built COUNT index (reverse direction)
+  10. Go scans Java-built SUM index (reverse direction)
+  11. Java scans Go-built MAX_EVER_LONG index — third atomic op (BYTE_MAX vs ADD/+1)
+
+  Surfaced three new gotchas, all documented in CLAUDE.md: (a) `parseFrom` MUST use `EXTENSION_REGISTRY` (otherwise `[record].usage=UNION` extension is dropped, build raises "Union descriptor is required"); (b) Java-loaded RecordMetaData produces `DynamicMessage` so `Order.newBuilder().mergeFrom(rec.getRecord())` fails with "can only merge messages of the same type" — round-trip via raw bytes; (c) Java's `IndexTypes.COUNT` requires `GroupingKeyExpression(field, 0)` not `field.groupBy(empty())`.
+
+  Plus a fuzz-found bug fix: `RecordMetaDataBuilder.Build` panicked on `[]byte` subspace keys (slices unhashable as map keys); fix in `normalizeSubspaceKey` adds `case []byte: return string(k)` and `case tuple.Tuple: return fmt.Sprintf("%v", k)` for defensive coverage. Regression seed `6b2b0fc91474e6b9` checked in.
+
+  **Remaining (next shifts)**: SchemaTemplateCatalog wire format (the relational/SQL layer's catalog) — blocked by Go sqldriver keyspace divergence (Go writes to `__SYS/__SYS/CATALOG` three-string subspace, Java to `(NULL, NULL, int64(0))` — see `pkg/relational/core/catalog/fdb_store_catalog.go:62-67`). That's the fuller A2 scope and needs the keyspace-alignment refactor first. MIN_EVER_LONG / MAX_EVER_TUPLE / MIN_EVER_TUPLE index types follow the same atomic-mutation pattern as COUNT/SUM/MAX_EVER — adding cross-language tests is mechanical follow-on with the harness pattern documented inline at the head of the "Cross-language functional round-trip (A2)" Describe block.
 - [ ] **A3 — SQL semantic equivalence on yamsql corpus**: feed the 1587 yamsql statements through both engines via A1; require identical result sets for read queries. Today only parsing is verified.
 - [ ] **A4 — System-table contents byte-equivalence**: `SELECT * FROM INFORMATION_SCHEMA.TABLES` byte-identical from Go and Java against the same store. Subset / specific shape exercised by A3. **Blocker (found swingshift-52):** fdb-relational 4.11.1.0 has NO `INFORMATION_SCHEMA` support — its SQL parser rejects the schema-qualified reference. Our Go side already implements SCHEMATA / TABLES / COLUMNS (see `pkg/relational/core/embedded/system_tables.go`). A4 needs the upstream Java side to gain INFORMATION_SCHEMA before any cross-engine byte-equivalence is possible; Go-side enforcement unilaterally would create divergence the wrong direction.
 

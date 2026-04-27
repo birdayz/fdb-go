@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -1143,6 +1144,18 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 // works correctly after proto round-trip (FDB tuple unpack returns int64,
 // valueFromProto may return int32, and Go code may use int). Without this,
 // int64(42) != int(42) in Go's any comparison. Fixes bug 13.
+//
+// `[]byte` keys are normalized to `string` because byte slices are
+// unhashable in Go and would panic when used as a map key. Adversarial
+// proto inputs (e.g. via the FuzzRecordMetaDataFromProto fuzz target,
+// nightshift-53) can carry `[]byte` subspace keys; without this branch,
+// `RecordMetaDataBuilder.Build` would panic with "hash of unhashable
+// type: []uint8" rather than returning a typed error. The string-cast
+// preserves byte-equality semantics for keys with the same byte
+// content, but does collapse `[]byte("x")` and `"x"` into the same
+// equivalence class — that's a harmless conflation here because any
+// metadata that mixes the two for the same logical subspace is
+// already malformed.
 func normalizeSubspaceKey(key any) any {
 	switch k := key.(type) {
 	case int:
@@ -1151,6 +1164,19 @@ func normalizeSubspaceKey(key any) any {
 		return int64(k)
 	case int64:
 		return k
+	case []byte:
+		return string(k)
+	case tuple.Tuple:
+		// Nested tuples are produced by `fastDecodeTuple` when the
+		// proto-encoded subspace key carries an FDB nested-tuple type
+		// code. Like `[]byte`, a `tuple.Tuple` (= []any) is unhashable
+		// in Go and would panic on map insert. Java doesn't currently
+		// emit nested tuples as subspace keys, so this is preemptive
+		// hardening rather than a known-triggering case (the fuzz has
+		// run 16M+ iterations without finding one), but the cost is
+		// trivial and the alternative is a surprise panic if the input
+		// ever takes that shape.
+		return fmt.Sprintf("%v", k)
 	default:
 		return key
 	}
