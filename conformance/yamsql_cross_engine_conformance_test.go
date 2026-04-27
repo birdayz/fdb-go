@@ -169,6 +169,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		unionStarScenario(),
 		qualifiedStarScenario(),
 		existsScenario(),
+		nestedDerivedTableScenario(),
+		ambiguousColumnScenario(),
+		correlatedSubqueryProbesScenario(),
 	}
 }
 
@@ -1669,6 +1672,94 @@ func aggregateNullsScenario() *yamsql.Scenario {
 			{Query: "SELECT SUM(v) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{nil}}},
 			{Query: "SELECT MIN(v), MAX(v) FROM t WHERE grp = 'b'", Rows: [][]any{{nil, nil}}},
 			{Query: "SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{0}}},
+		},
+	}
+}
+
+// correlatedSubqueryProbesScenario mirrors testdata/correlated_subquery_probes.yaml's
+// EXISTS / NOT EXISTS subset. Skips the correlated-IN form (uncertain whether
+// fdb-relational's parser binds the outer reference inside an IN-subquery)
+// and the correlated-scalar-subquery (parser rejects scalar subqueries
+// per gotcha; also auto-skipped via error_code anyway). Drops NOT NULL on PK.
+func correlatedSubqueryProbesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "correlated_subquery_probes",
+		SchemaTemplate: "CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)",
+			"INSERT INTO project VALUES (100, 1), (101, 2)",
+		},
+		Tests: []yamsql.Test{
+			// Correlated EXISTS — inner references emp.id from outer.
+			{
+				Query: "SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id",
+				Rows:  [][]any{{"Alice"}, {"Bob"}},
+			},
+			// Correlated NOT EXISTS — inverse.
+			{
+				Query: "SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id",
+				Rows:  [][]any{{"Carol"}},
+			},
+		},
+	}
+}
+
+// ambiguousColumnScenario mirrors testdata/ambiguous_column.yaml's
+// qualified-positives subset. Drops NOT NULL on PK. Drops the SELECT *
+// expansion test (Go dedupes-by-first-source on overlapping schemas
+// while Java expands all columns — separate SELECT * expansion gap).
+// error_code entries auto-skip via the harness's per-test gate.
+func ambiguousColumnScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "ambiguous_column",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			"\nCREATE TABLE b (id BIGINT, name STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')",
+			"INSERT INTO b VALUES (1, 'x'), (2, 'y')",
+		},
+		Tests: []yamsql.Test{
+			// Qualified single-col reference — comma-join + ORDER BY PK.
+			{Query: "SELECT a.name FROM a, b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{"alpha"}, {"beta"}}},
+			// Multiple qualified projections.
+			{
+				Query: "SELECT a.id, a.name, b.name FROM a, b WHERE a.id = b.id ORDER BY a.id",
+				Rows:  [][]any{{1, "alpha", "x"}, {2, "beta", "y"}},
+			},
+		},
+	}
+}
+
+// nestedDerivedTableScenario mirrors testdata/nested_derived_table.yaml
+// — the SELECT-only subset that doesn't depend on DISTINCT (planner
+// gotcha) or ORDER BY <alias> (planner gotcha). Drops NOT NULL on PK.
+// Drops the DISTINCT-inside form, the alias-rename ORDER BY form, and
+// the quoted-canonical-name "COUNT(*)" form (anonymous projection name
+// diverges between Go's `_0` synthetic and Java's quoted-canonical).
+func nestedDerivedTableScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "nested_derived_table",
+		SchemaTemplate: "CREATE TABLE t1 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t1 VALUES (1, 10), (2, 20), (3, null), (4, 40)",
+		},
+		Tests: []yamsql.Test{
+			// 3-level derived-table nesting + outer ORDER BY on PK.
+			{
+				Query: "SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y ORDER BY id",
+				Rows:  [][]any{{1, 10}, {2, 20}, {3, nil}, {4, 40}},
+			},
+			// Aggregate over nested derived tables.
+			{
+				Query: "SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE n IS NOT NULL) AS y",
+				Rows:  [][]any{{3}},
+			},
+			// Derived table with aliased aggregate; outer references alias.
+			{
+				Query: "SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub",
+				Rows:  [][]any{{3}},
+			},
 		},
 	}
 }
