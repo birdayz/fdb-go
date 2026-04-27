@@ -150,6 +150,26 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		cteScenario(),
 		unionConstantLiteralScenario(),
 		joinNullKeyScenario(),
+		overflowMixedScenario(),
+	}
+}
+
+// overflowMixedScenario mirrors testdata/overflow_mixed.yaml — long+
+// double mixed-type arithmetic. Drops NOT NULL on PK. Skips error_code
+// (the pure-long-overflow test). Pins Java's `ADD_LD` semantics
+// (long promoted to double, IEEE-754 round-to-nearest, no throw on
+// overflow because the float result is finite).
+func overflowMixedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "overflow_mixed",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 9223372036854775807, 1.0), (2, 9223372036854775807, 1.0E200)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a + b FROM t WHERE id = 1", Rows: [][]any{{9.223372036854776e18}}},
+			{Query: "SELECT a + b FROM t WHERE id = 2", Rows: [][]any{{1e200}}},
+		},
 	}
 }
 
