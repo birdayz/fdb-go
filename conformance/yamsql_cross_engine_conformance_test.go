@@ -133,6 +133,108 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		likePrefixPushdownScenario(),
 		inListAdvancedScenario(),
 		compositeSecondaryIndexPrefixPushdownScenario(),
+		coveringIndexPushdownScenario(),
+		mixedTypeEqualityScenario(),
+		gr1JoinScenario(),
+	}
+}
+
+// coveringIndexPushdownScenario mirrors testdata/covering_index_pushdown.yaml
+// — the SELECT-only covered subset. Renames yamsql's `plan` to
+// `category` (per the swingshift-56 reserved-word gotcha) and `note` to
+// `notes` (defensive). Skips tests using DISTINCT (planner unsupported,
+// existing CLAUDE.md gotcha), LIMIT (unsupported), multi-col ORDER BY
+// (unsupported), and IN subquery (uncertain support; scalar-subquery
+// gotcha covers the bare form).
+func coveringIndexPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "covering_index_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_status ON t (status)" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE t2 (id BIGINT, region STRING, category STRING, amount BIGINT, extra STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_category ON t2 (region, category)" +
+			" CREATE TABLE tb (id BIGINT, payload BYTES, label STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_payload ON tb (payload)" +
+			" CREATE TABLE kvw (a BIGINT, b BIGINT, c BIGINT, extra STRING, PRIMARY KEY (a, b, c))" +
+			" CREATE INDEX kvw_b ON kvw (b)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'active', 'x', 10, 'n1'), (2, 'archived', 'y', 20, 'n2'), (3, 'active', 'z', 30, 'n3'), (4, 'deleted', 'q', 40, 'n4')",
+			"INSERT INTO t2 VALUES (10, 'us', 'pro', 100, 'e1'), (11, 'us', 'free', 50, 'e2'), (12, 'us', 'pro', 200, 'e3'), (13, 'eu', 'pro', 300, 'e4'), (14, 'eu', 'free', 75, 'e5')",
+			"INSERT INTO tb VALUES (1, X'deadbeef', 'a'), (2, X'cafe', 'b'), (3, X'feed', 'c')",
+			"INSERT INTO kvw VALUES (1, 10, 100, 'e1'), (1, 20, 100, 'e2'), (1, 30, 100, 'e3'), (2, 20, 200, 'e4')",
+		},
+		Tests: []yamsql.Test{
+			// Covered: SELECT of indexed col + PK.
+			{Query: "SELECT id FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1}, {3}}},
+			{Query: "SELECT id, status FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1, "active"}, {3, "active"}}},
+			{Query: "SELECT status FROM t WHERE status = 'archived'", Rows: [][]any{{"archived"}}},
+			// Covered range on indexed column.
+			{Query: "SELECT id, v FROM t WHERE v >= 20 AND v < 40 ORDER BY v", Rows: [][]any{{2, 20}, {3, 30}}},
+			{Query: "SELECT id, v FROM t WHERE v BETWEEN 20 AND 30 ORDER BY v", Rows: [][]any{{2, 20}, {3, 30}}},
+			{Query: "SELECT id FROM t WHERE v > 25 ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id, v FROM t WHERE v > 0 ORDER BY v", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}, {4, 40}}},
+			// Covered composite index.
+			{Query: "SELECT id, region, category FROM t2 WHERE region = 'us' AND category = 'pro' ORDER BY id", Rows: [][]any{{10, "us", "pro"}, {12, "us", "pro"}}},
+			{Query: "SELECT region, category FROM t2 WHERE region = 'us' AND category > 'f' ORDER BY category", Rows: [][]any{{"us", "free"}, {"us", "pro"}, {"us", "pro"}}},
+			// Covered BYTES-kind indexed col.
+			{Query: "SELECT id FROM tb WHERE payload = X'cafe'", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM tb WHERE payload >= X'cafe' AND payload < X'feed' ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// Composite-PK row synthesis from kvw entry's PK tuple.
+			{Query: "SELECT a FROM kvw WHERE b = 30", Rows: [][]any{{1}}},
+			{Query: "SELECT a, b FROM kvw WHERE a = 1 AND b BETWEEN 15 AND 25", Rows: [][]any{{1, 20}}},
+			// Bails (covering check fails) — non-covered SELECT still works.
+			{Query: "SELECT id, notes FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1, "n1"}, {3, "n3"}}},
+			{Query: "SELECT id FROM t WHERE status = 'active' AND v > 20", Rows: [][]any{{3}}},
+			// Constant-only residual + covering still applies.
+			{Query: "SELECT id FROM t WHERE status = 'active' AND 1 = 1 ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// Empty results.
+			{Query: "SELECT id FROM t WHERE v > 1000", Rows: [][]any{}},
+			{Query: "SELECT id, status FROM t WHERE status = 'nonexistent'", Rows: [][]any{}},
+		},
+	}
+}
+
+// mixedTypeEqualityScenario mirrors testdata/mixed_type_equality.yaml.
+// Drops NOT NULL on PK. Two error_code tests skipped per per-test Skip;
+// three positive tests pin same-type equality + IN-list. Java aligns
+// on `INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE` 22000 for cross-type,
+// which is also Go's behaviour as of nightshift-39.
+func mixedTypeEqualityScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "mixed_type_equality",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 5, '5'), (2, 10, 'ten'), (3, 5, 'five')",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE n = '5'", ErrorCode: "22000"},
+			{Query: "SELECT id FROM t WHERE n IN ('5', 'ten')", ErrorCode: "22000"},
+			{Query: "SELECT id FROM t WHERE n = 5", Unordered: true, Rows: [][]any{{1}, {3}}},
+			{Query: "SELECT id FROM t WHERE s = '5'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE n IN (5, 10)", Unordered: true, Rows: [][]any{{1}, {2}, {3}}},
+		},
+	}
+}
+
+// gr1JoinScenario mirrors testdata/gr1_join.yaml. Drops NOT NULL on PK.
+// Drops the explicit-INNER-JOIN test (CLAUDE.md gotcha — explicit JOIN
+// ON broken in fdb-relational); keeps the comma-join positives. Two
+// error_code tests stay (per-test Skip).
+func gr1JoinScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "gr1_join",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a.id, COUNT(*) FROM a, b", ErrorCode: "42803"},
+			{Query: "SELECT COUNT(*) FROM a, b", Rows: [][]any{{4}}},
+			{Query: "SELECT SUM(a.v) FROM a, b WHERE a.id = b.id", Rows: [][]any{{30}}},
+		},
 	}
 }
 
