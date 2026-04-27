@@ -90,6 +90,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		betweenScenario,
 		booleanScenario,
 		likeScenario,
+		caseWhenScenario,
 	}
 }
 
@@ -327,6 +328,57 @@ func likeScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE s LIKE '[h]ello'", Rows: [][]any{}},
 			{Query: "SELECT id FROM t WHERE s LIKE 'h*llo'", Rows: [][]any{}},
 			{Query: "SELECT id FROM t WHERE s LIKE '^hello'", Rows: [][]any{}},
+		},
+	}
+}
+
+// caseWhenScenario mirrors testdata/case_when.yaml. Drops NOT NULL on
+// PK. Drops the ORDER BY <alias> test (CLAUDE.md gotcha — fdb-relational
+// rejects ORDER BY on a SELECT-list alias).
+func caseWhenScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "case_when",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 5), (2, 15), (3, null), (4, 30)",
+		},
+		Tests: []yamsql.Test{
+			{
+				Query: "SELECT id, CASE WHEN v < 10 THEN 'low' WHEN v < 20 THEN 'mid' ELSE 'high' END FROM t ORDER BY id",
+				Rows:  [][]any{{1, "low"}, {2, "mid"}, {3, "high"}, {4, "high"}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN v IS NULL THEN 'missing' WHEN v < 10 THEN 'low' ELSE 'other' END FROM t ORDER BY id",
+				Rows:  [][]any{{1, "low"}, {2, "other"}, {3, "missing"}, {4, "other"}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN v < 10 THEN 'low' END FROM t ORDER BY id",
+				Rows:  [][]any{{1, "low"}, {2, nil}, {3, nil}, {4, nil}},
+			},
+			{
+				Query: "SELECT id FROM t WHERE CASE WHEN v IS NULL THEN 0 WHEN v < 10 THEN 0 ELSE 1 END = 1 ORDER BY id",
+				Rows:  [][]any{{2}, {4}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN v < 10 THEN 10 ELSE 3.14 END FROM t WHERE id = 1",
+				Rows:  [][]any{{1, 10.0}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN v < 10 THEN 10 ELSE 3.14 END FROM t WHERE id = 2",
+				Rows:  [][]any{{2, 3.14}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN v IS NULL THEN 'absent' ELSE 'present' END FROM t ORDER BY id",
+				Rows:  [][]any{{1, "present"}, {2, "present"}, {3, "absent"}, {4, "present"}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN CASE WHEN v = 5 THEN 10 ELSE 20 END > 15 THEN 'big' ELSE 'small' END FROM t ORDER BY id",
+				Rows:  [][]any{{1, "small"}, {2, "big"}, {3, "big"}, {4, "big"}},
+			},
+			{
+				Query: "SELECT id, CASE WHEN v IS NULL THEN 0 ELSE v + 1 END FROM t ORDER BY id",
+				Rows:  [][]any{{1, 6}, {2, 16}, {3, 0}, {4, 31}},
+			},
 		},
 	}
 }
