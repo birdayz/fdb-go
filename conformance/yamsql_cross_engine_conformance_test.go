@@ -167,6 +167,32 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		recursiveCteCountScenario(),
 		caseInsensitiveKeywordsScenario(),
 		unionStarScenario(),
+		qualifiedStarScenario(),
+	}
+}
+
+// qualifiedStarScenario mirrors testdata/qualified_star.yaml. Drops
+// NOT NULL on PK. Skips multi-col ORDER BY tests (gotcha) and explicit
+// INNER JOIN tests (gotcha).
+func qualifiedStarScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "qualified_star",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')",
+			"INSERT INTO b VALUES (10, 'one'), (20, 'two')",
+		},
+		Tests: []yamsql.Test{
+			// Single-source a.*.
+			{Query: "SELECT a.* FROM a ORDER BY id", Rows: [][]any{{1, "alpha"}, {2, "beta"}}},
+			// Comma-join + a.*: returns only a's columns, one copy per right row.
+			{Query: "SELECT a.* FROM a, b", Unordered: true, Rows: [][]any{{1, "alpha"}, {1, "alpha"}, {2, "beta"}, {2, "beta"}}},
+			// Comma-join + b.* (alias resolved separately).
+			{Query: "SELECT b.* FROM a, b", Unordered: true, Rows: [][]any{{10, "one"}, {20, "two"}, {10, "one"}, {20, "two"}}},
+			// Aliased qualifier.
+			{Query: "SELECT x.* FROM a AS x, b WHERE x.id = 1 ORDER BY b.id", Rows: [][]any{{1, "alpha"}, {1, "alpha"}}},
+		},
 	}
 }
 
