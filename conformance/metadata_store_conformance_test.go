@@ -708,12 +708,18 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 					return nil, scanErr
 				}
 				for _, e := range entries {
+					if len(e.Key) == 0 {
+						return nil, fmt.Errorf("expected non-empty COUNT-index key tuple")
+					}
 					price, ok := e.Key[0].(int64)
 					if !ok {
 						return nil, fmt.Errorf("expected int64 in COUNT-index key, got %T (%v)", e.Key[0], e.Key[0])
 					}
 					// COUNT-index value is the atomic counter, stored as
 					// the leading int64 in the value tuple.
+					if len(e.Value) == 0 {
+						return nil, fmt.Errorf("expected non-empty COUNT-index value tuple (atomic counter missing)")
+					}
 					count, ok := e.Value[0].(int64)
 					if !ok {
 						return nil, fmt.Errorf("expected int64 in COUNT-index value, got %T (%v)", e.Value[0], e.Value[0])
@@ -782,6 +788,9 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 				}
 				entryCount = len(entries)
 				if entryCount > 0 {
+					if len(entries[0].Value) == 0 {
+						return nil, fmt.Errorf("expected non-empty SUM-index value tuple (atomic counter missing)")
+					}
 					v, ok := entries[0].Value[0].(int64)
 					if !ok {
 						return nil, fmt.Errorf("expected int64 in SUM-index value, got %T (%v)", entries[0].Value[0], entries[0].Value[0])
