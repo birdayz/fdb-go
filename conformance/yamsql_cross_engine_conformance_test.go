@@ -172,6 +172,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		nestedDerivedTableScenario(),
 		ambiguousColumnScenario(),
 		correlatedSubqueryProbesScenario(),
+		unionColumnsRenamedScenario(),
 	}
 }
 
@@ -1672,6 +1673,31 @@ func aggregateNullsScenario() *yamsql.Scenario {
 			{Query: "SELECT SUM(v) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{nil}}},
 			{Query: "SELECT MIN(v), MAX(v) FROM t WHERE grp = 'b'", Rows: [][]any{{nil, nil}}},
 			{Query: "SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{0}}},
+		},
+	}
+}
+
+// unionColumnsRenamedScenario mirrors a portable subset of
+// testdata/union_columns.yaml — only the differently-named-columns
+// UNION ALL form. The remaining tests use multi-col ORDER BY (gotcha)
+// and LIMIT (gotcha). Drops NOT NULL on PK.
+func unionColumnsRenamedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union_columns",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			// UNION ALL on differently-named columns — positional matching;
+			// left's name wins in result schema.
+			{
+				Query:     "SELECT v FROM a UNION ALL SELECT w FROM b",
+				Unordered: true,
+				Rows:      [][]any{{10}, {20}, {100}, {200}},
+			},
 		},
 	}
 }
