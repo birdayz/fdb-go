@@ -138,6 +138,71 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		gr1JoinScenario(),
 		numericTypesScenario(),
 		isDistinctFromScenario(),
+		inListPushdownScenario(),
+	}
+}
+
+// inListPushdownScenario mirrors testdata/in_list_pushdown.yaml — the
+// SELECT-only subset that doesn't depend on mid-stream DML state. Drops
+// NOT NULL on PK. Renames the `plan` column to `category` (per the
+// reserved-word gotcha). Drops LIMIT and DISTINCT tests, the
+// `WHERE id IN (1, NULL, 3)` form (CLAUDE.md gotcha — fdb-relational
+// rejects NULL in IN list outright), and IN-with-subquery (scalar
+// subquery gotcha). Drops ORDER BY non-PK forms (planner natural-order
+// gotcha).
+func inListPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "in_list_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE ts (k STRING, w BIGINT, PRIMARY KEY (k))" +
+			" CREATE TABLE kvw (a BIGINT, b BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (a, b, c))" +
+			" CREATE TABLE t2 (id BIGINT, status STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_t2_status ON t2 (status)" +
+			" CREATE TABLE tp (id BIGINT, region STRING, category STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_category ON tp (region, category)" +
+			" CREATE TABLE tb (id BIGINT, payload BYTES, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_payload ON tb (payload)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'one', 10), (2, 'two', 20), (3, 'three', 30), (4, 'four', 40), (5, 'five', 50)",
+			"INSERT INTO ts VALUES ('alpha', 1), ('beta', 2), ('gamma', 3), ('delta', 4)",
+			"INSERT INTO kvw VALUES (1, 10, 100, 1000), (1, 20, 200, 2000), (2, 30, 300, 3000), (2, 40, 400, 4000)",
+			"INSERT INTO t2 VALUES (1, 'active', 5), (2, 'archived', 15), (3, 'active', 25), (4, 'archived', 5), (5, 'deleted', 50)",
+			"INSERT INTO tp VALUES (10, 'us', 'pro'), (11, 'us', 'free'), (12, 'us', 'pro'), (13, 'eu', 'pro'), (14, 'eu', 'free')",
+			"INSERT INTO tb VALUES (1, X'deadbeef'), (2, X'cafe'), (3, X'feed')",
+		},
+		Tests: []yamsql.Test{
+			// Single-col PK IN-list.
+			{Query: "SELECT id, name FROM t WHERE id IN (1, 3) ORDER BY id", Rows: [][]any{{1, "one"}, {3, "three"}}},
+			{Query: "SELECT id FROM t WHERE id IN (2)", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE id IN (1, 2, 3, 4, 5) ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE id IN (100, 200, 300)", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE id IN (2, 99, 4) ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// IN-list + AND residual.
+			{Query: "SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id", Rows: [][]any{{3}, {5}}},
+			{Query: "SELECT id FROM t WHERE id IN (1, 2, 3) AND name LIKE 'tw%'", Rows: [][]any{{2}}},
+			// NOT IN.
+			{Query: "SELECT id FROM t WHERE id NOT IN (1, 2, 3) ORDER BY id", Rows: [][]any{{4}, {5}}},
+			// String PK IN.
+			{Query: "SELECT k FROM ts WHERE k IN ('alpha', 'gamma') ORDER BY k", Rows: [][]any{{"alpha"}, {"gamma"}}},
+			{Query: "SELECT k, w FROM ts WHERE k IN ('beta', 'missing') ORDER BY k", Rows: [][]any{{"beta", 2}}},
+			// Composite PK IN-list — leading eq + trailing IN.
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) ORDER BY b", Rows: [][]any{{1, 10, 100}, {1, 20, 200}}},
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 30) AND c = 100", Rows: [][]any{{1, 10, 100}}},
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b = 20 AND c IN (100, 200) ORDER BY c", Rows: [][]any{{1, 20, 200}}},
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) AND c = 999", Rows: [][]any{}},
+			// Composite secondary-index IN-list.
+			{Query: "SELECT id, region, category FROM tp WHERE region = 'us' AND category IN ('pro', 'free') ORDER BY id", Rows: [][]any{{10, "us", "pro"}, {11, "us", "free"}, {12, "us", "pro"}}},
+			// Secondary-index IN-list.
+			{Query: "SELECT id, status FROM t2 WHERE status IN ('active', 'deleted') ORDER BY id", Rows: [][]any{{1, "active"}, {3, "active"}, {5, "deleted"}}},
+			{Query: "SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id", Rows: [][]any{{1, "active"}, {3, "active"}}},
+			{Query: "SELECT id FROM t2 WHERE status IN ('active', 'archived') AND v > 10 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t2 WHERE status IN ('nonexistent', 'alsonone')", Rows: [][]any{}},
+			{Query: "SELECT id FROM t2 WHERE status IN ('active', 'nope') ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// BYTES-indexed IN.
+			{Query: "SELECT id FROM tb WHERE payload IN (X'cafe', X'feed') ORDER BY id", Rows: [][]any{{2}, {3}}},
+			// Type-mismatch (Skip via per-test Skip).
+			{Query: "SELECT id FROM t WHERE id IN (1, 'two', 3)", ErrorCode: "22000"},
+		},
 	}
 }
 
