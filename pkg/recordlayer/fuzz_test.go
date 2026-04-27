@@ -584,6 +584,58 @@ func FuzzKeyExpressionFromProto(f *testing.F) {
 				{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
 			}},
 		},
+		// Grouping — used by COUNT / SUM / MAX_EVER index types. The
+		// full-grouping form (all columns grouped, none grouped-out)
+		// is what `Ungrouped(Field("price"))` produces.
+		{
+			Grouping: &gen.Grouping{
+				WholeKey: &gen.KeyExpression{
+					Field: &gen.Field{FieldName: proto.String("price"), FanType: gen.Field_SCALAR.Enum()},
+				},
+				GroupedCount: proto.Int32(0),
+			},
+		},
+		// Grouping with a non-default grouped_count.
+		{
+			Grouping: &gen.Grouping{
+				WholeKey: &gen.KeyExpression{
+					Then: &gen.Then{Child: []*gen.KeyExpression{
+						{Field: &gen.Field{FieldName: proto.String("k"), FanType: gen.Field_SCALAR.Enum()}},
+						{Field: &gen.Field{FieldName: proto.String("v"), FanType: gen.Field_SCALAR.Enum()}},
+					}},
+				},
+				GroupedCount: proto.Int32(1),
+			},
+		},
+		// Nesting — used by indexes on nested message fields.
+		{
+			Nesting: &gen.Nesting{
+				Parent: &gen.Field{FieldName: proto.String("flower"), FanType: gen.Field_SCALAR.Enum()},
+				Child: &gen.KeyExpression{
+					Field: &gen.Field{FieldName: proto.String("color"), FanType: gen.Field_SCALAR.Enum()},
+				},
+			},
+		},
+		// KeyWithValue — covering indexes (k=index key, v=stored value).
+		{
+			KeyWithValue: &gen.KeyWithValue{
+				InnerKey: &gen.KeyExpression{
+					Then: &gen.Then{Child: []*gen.KeyExpression{
+						{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}},
+						{Field: &gen.Field{FieldName: proto.String("b"), FanType: gen.Field_SCALAR.Enum()}},
+					}},
+				},
+				SplitPoint: proto.Int32(1),
+			},
+		},
+		// Function — version function key expression (records timestamp /
+		// versionstamp into the index entry).
+		{
+			Function: &gen.Function{
+				Name:      proto.String("version"),
+				Arguments: &gen.KeyExpression{Empty: &gen.Empty{}},
+			},
+		},
 	}
 	for _, s := range seeds {
 		if b, err := proto.Marshal(s); err == nil {
