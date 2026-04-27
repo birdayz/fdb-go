@@ -95,6 +95,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		bitwiseScenario,
 		avgScenario,
 		derivedTableScenario,
+		coalesceNullifScenario,
 	}
 }
 
@@ -464,6 +465,24 @@ func derivedTableScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM (SELECT id FROM t)", ErrorCode: "42601"},
 			{Query: "SELECT x.v AS val FROM (SELECT id, v FROM t WHERE id = 3) AS x", Rows: [][]any{{30}}},
 			{Query: "SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x", ErrorCode: "0A000"},
+		},
+	}
+}
+
+// coalesceNullifScenario mirrors testdata/coalesce_nullif.yaml. Drops
+// NOT NULL on PK. Drops NULLIF tests — fdb-relational rejects with
+// "Unsupported operator NULLIF" (function registry doesn't have it,
+// joining the list of unregistered scalars). Adds new gotcha to
+// CLAUDE.md.
+func coalesceNullifScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "coalesce_nullif",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'x', 'y'), (2, null, 'y'), (3, 'x', null), (4, null, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id, COALESCE(a, b, 'default') FROM t ORDER BY id", Rows: [][]any{{1, "x"}, {2, "y"}, {3, "x"}, {4, "default"}}},
 		},
 	}
 }
