@@ -38,7 +38,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
 )
 
-var _ = Describe("yamsql cross-engine equivalence (A3)", func() {
+var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 	var (
 		ctx             context.Context
 		java            *JavaInvoker
@@ -46,32 +46,36 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", func() {
 		clusterFilePath string
 	)
 
-	// BeforeAll-equivalent: write the cluster file once for the entire
-	// suite. Per-spec BeforeEach was previously creating 360 distinct
-	// temp paths, each becoming a separate cache key in the fdbsql
-	// driver's per-cluster-file cache (driver.go:fdbDBCache) →
-	// 360 live FDB connections by suite end. Sharing one path keeps
-	// the cache to one entry. Cluster-file CONTENTS don't change
-	// across specs (sharedContainer is a process-singleton), so
-	// reusing the path is safe.
-	BeforeEach(func() {
+	// BeforeAll: write the cluster file once for the entire Describe.
+	// Per-spec BeforeEach previously created 360+ distinct temp paths,
+	// each becoming a separate cache key in the fdbsql driver's
+	// per-cluster-file cache (driver.go:fdbDBCache) → 360 live FDB
+	// connections by suite end. Sharing one path keeps the cache to
+	// one entry. Cluster-file CONTENTS don't change across specs
+	// (sharedContainer is a process-singleton), so reusing the path
+	// is safe. Requires the `Ordered` decorator on the parent
+	// Describe — Ginkgo v2 only allows BeforeAll inside Ordered
+	// containers because non-deterministic spec order would otherwise
+	// run BeforeAll per shuffled batch.
+	BeforeAll(func() {
 		ctx = context.Background()
-		java = NewJavaInvoker()
-		if clusterFile == "" {
-			var err error
-			clusterFile, err = sharedContainer.ClusterFile(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			// The Go runner takes a cluster-file path on disk (the
-			// fdbsql driver opens it directly); the Java runner takes
-			// the contents (sent over HTTP, opened server-side).
-			clusterFilePath = writeClusterFileToTemp(clusterFile)
-		}
+		var err error
+		clusterFile, err = sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		// The Go runner takes a cluster-file path on disk (the fdbsql
+		// driver opens it directly); the Java runner takes the
+		// contents (sent over HTTP, opened server-side).
+		clusterFilePath = writeClusterFileToTemp(clusterFile)
 	})
 
-	// No AfterEach cleanup of clusterFilePath — see BeforeEach: the
-	// path is shared across all specs in this Describe and is removed
-	// when the process exits. (testcontainers-go cleans up the FDB
-	// container; the temp file is harmless if it survives.)
+	BeforeEach(func() {
+		java = NewJavaInvoker()
+	})
+
+	// No AfterEach / AfterAll cleanup of clusterFilePath — the file
+	// is harmless if it survives (testcontainers-go cleans up the FDB
+	// container; the cluster-file path becomes meaningless once the
+	// container's gone).
 
 	for _, s := range crossEngineScenarios() {
 		s := s
