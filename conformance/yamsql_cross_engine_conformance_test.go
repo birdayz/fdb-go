@@ -86,23 +86,15 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 				i, t := i, t
 				It(t.Query, func() {
 					if t.ErrorCode != "" {
-						// Java-side wiring landed nightshift-57
-						// (`*plandiff.JavaError.SQLState` carried over
-						// from the conformance server's structured error
-						// response) — the `assertCrossEngineErrorCode`
-						// helper below uses it. But surfacing > 25
-						// previously-skipped tests against fdb-relational
-						// 4.11.1.0 hits the planner's hang-on-error path
-						// (RecordAlreadyExistsException / type-mismatch
-						// IN-list / GREATEST-mixed-types) under load —
-						// once one query stalls inside Cascades planning,
-						// the next request from a sibling ginkgo spec
-						// queues behind the still-stuck planner and the
-						// 120s JavaInvoker timeout fires for all of them.
-						// Until upstream stabilises that path, keep these
-						// tests skipping cross-engine; the harness wiring
-						// stays so re-enabling is one Skip-removal away.
-						Skip("error_code tests skipped cross-engine — fdb-relational planner stalls on error paths under load (wiring is in place via assertCrossEngineErrorCode)")
+						// SQLState wiring is in place
+						// (`*plandiff.JavaError.SQLState` +
+						// `assertCrossEngineErrorCode`); the gate stays
+						// because lifting the skip surfaces fdb-relational
+						// planner hangs on certain error paths under load
+						// (e.g. type-mismatch IN-list, GREATEST mixed
+						// types, comma-join + bare-col-with-aggregate),
+						// dragging unrelated specs into 120s timeouts.
+						Skip("error_code tests skipped cross-engine — fdb-relational planner stalls on error paths under load")
 					}
 					if !yamsql.IsQuery(t.Query) {
 						Skip("non-query (DML) cross-engine tests need a different harness — runWithSetup expects exactly one query")
