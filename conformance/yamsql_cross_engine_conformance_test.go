@@ -1465,6 +1465,13 @@ func booleanScenario() *yamsql.Scenario {
 			{Query: "SELECT b OR TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {true}, {true}}},
 			{Query: "SELECT b OR FALSE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
 			{Query: "SELECT NOT b FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
+			// `WHERE b AND TRUE` / `WHERE b OR FALSE` / `WHERE NOT b`
+			// dropped from cross-engine: Java rejects bare-bool-operand in
+			// WHERE context (VerifyException), even though it accepts the
+			// same shape in projection. Go's fix correctly accepts both
+			// contexts (operands of AND/OR/NOT are value-context); the
+			// asymmetry is fdb-relational-side. CLAUDE.md gotcha
+			// `bare-bool-operand-in-WHERE-rejected-by-Java` documents.
 		},
 	}
 }
