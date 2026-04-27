@@ -85,6 +85,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		whereLiteralOnLeftScenario,
 		arithmeticScenario,
 		castScenario,
+		compositePKScenario,
 	}
 }
 
@@ -174,6 +175,26 @@ func castScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM test_cast WHERE CAST(bool_col AS INTEGER) + 1 > 1", Rows: [][]any{{1}}},
 			{Query: "SELECT SUM(CAST(num_col AS DOUBLE)) FROM test_cast", Rows: [][]any{{1368.0}}},
 			{Query: "SELECT id FROM test_cast WHERE CAST(num_col AS STRING) = CAST(123 AS STRING)", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// compositePKScenario mirrors testdata/composite_pk.yaml. Drops NOT NULL
+// from the two PK columns. Skips the duplicate-PK INSERT (DML; non-query
+// path) and its associated state-verification query — runWithSetup
+// rebuilds schema per test, so the post-INSERT state isn't observable.
+func compositePKScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "composite_pk",
+		SchemaTemplate: "CREATE TABLE t (a BIGINT, b BIGINT, label STRING, PRIMARY KEY (a, b))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'alpha'), (1, 20, 'beta'), (2, 10, 'gamma')",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT b, label FROM t WHERE a = 1 ORDER BY b", Rows: [][]any{{10, "alpha"}, {20, "beta"}}},
+			{Query: "SELECT label FROM t WHERE a = 2 AND b = 10", Rows: [][]any{{"gamma"}}},
+			{Query: "INSERT INTO t VALUES (1, 10, 'replacement')", ErrorCode: "23505"},
+			{Query: "SELECT label FROM t WHERE a = 1 AND b = 10", Rows: [][]any{{"alpha"}}},
 		},
 	}
 }
