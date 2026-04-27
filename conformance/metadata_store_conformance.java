@@ -310,6 +310,60 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     /**
+     * Load metadata, open store, scan a MAX_EVER_LONG index BY_GROUP,
+     * return the single ungrouped max entry. MAX_EVER tracks the
+     * maximum value EVER seen at the index — a one-way atomic
+     * (FDB BYTE_MAX), distinct from SUM (commutative ADD) and COUNT
+     * (+1 atomic). Pins MAX_EVER wire format independently.
+     */
+    @ConformanceStep("loadMetaDataAndScanMaxEverIndexJava")
+    public Map<String, Object> loadMetaDataAndScanMaxEverIndexJava(String clusterFile,
+                                                                   byte[] mdSubspace,
+                                                                   byte[] storeSubspace,
+                                                                   String indexName) {
+        return runInContext(clusterFile, null, context -> {
+            Subspace mdSS = new Subspace(mdSubspace);
+            byte[] unsplitKey = mdSS.pack(Tuple.from((Object) null, 0L));
+            byte[] data = context.ensureActive().get(unsplitKey).join();
+            Map<String, Object> result = new HashMap<>();
+            if (data == null || data.length == 0) {
+                result.put("found", false);
+                return result;
+            }
+            RecordMetaDataProto.MetaData proto;
+            try {
+                proto = RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY);
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse metadata proto", e);
+            }
+            RecordMetaData metaData = RecordMetaData.build(proto);
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metaData.getIndex(indexName);
+            List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null,
+                ScanProperties.FORWARD_SCAN
+            ).asList().join();
+
+            long maxEver = 0;
+            int entryCount = entries.size();
+            if (entryCount > 0) {
+                maxEver = entries.get(0).getValue().getLong(0);
+            }
+            result.put("found", true);
+            result.put("metadataVersion", proto.getVersion());
+            result.put("entryCount", entryCount);
+            result.put("maxEver", maxEver);
+            return result;
+        });
+    }
+
+    /**
      * Multi-record-type variant: load metadata, scan ALL records (no
      * type filter), classify each by record-type tag and return per-type
      * row counts + summaries. Used to verify that the union descriptor

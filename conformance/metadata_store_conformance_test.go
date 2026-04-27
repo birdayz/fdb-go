@@ -184,12 +184,13 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	//   - VALUE index (Go→Java, Java→Go)
 	//   - Multi-record-type type-tag dispatch (Go→Java)
 	//   - Split records (Go→Java)
-	//   - COUNT index BY_GROUP (Go→Java)
-	//   - SUM index BY_GROUP (Go→Java)
+	//   - COUNT index BY_GROUP (Go→Java, Java→Go)
+	//   - SUM index BY_GROUP (Go→Java, Java→Go)
+	//   - MAX_EVER_LONG index BY_GROUP (Go→Java)
 	//
 	// Mechanical follow-ons (same pattern, no new harness mechanism needed):
-	//   - MAX_EVER / MIN_EVER index BY_GROUP (atomic-mutation)
-	//   - Reverse direction for COUNT / SUM / multi-type / split records
+	//   - MIN_EVER_LONG / MAX_EVER_TUPLE / MIN_EVER_TUPLE index BY_GROUP
+	//   - Reverse direction for MAX_EVER / multi-type / split records
 	//
 	// What this harness does NOT yet cover (gated work):
 	//   - SchemaTemplateCatalog wire format (the relational/SQL catalog).
@@ -584,6 +585,78 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(result.Rows[1].Count).To(Equal(int64(3)))
 			Expect(result.Rows[2].Key[0]).To(BeNumerically("==", 150))
 			Expect(result.Rows[2].Count).To(Equal(int64(1)))
+		})
+
+		It("Java scans Go-built MAX_EVER_LONG index using cross-language metadata", func() {
+			// MAX_EVER_LONG tracks the maximum value EVER inserted —
+			// uses FDB's BYTE_MAX atomic (one-way), distinct from SUM
+			// (ADD) and COUNT (+1). Pins MAX_EVER wire format
+			// independently. Setup: 4 prices [100, 50, 150, 200] → max=200.
+			orders := []*gen.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(2), Price: proto.Int32(50)},
+				{OrderId: proto.Int64(3), Price: proto.Int32(150)},
+				{OrderId: proto.Int64(4), Price: proto.Int32(200)},
+			}
+
+			_, err := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				idx := recordlayer.NewMaxEverLongIndex("Order$max_price",
+					recordlayer.Ungrouped(recordlayer.Field("price")))
+				builder.AddIndex("Order", idx)
+				built, buildErr := builder.Build()
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				mdProto, protoErr := built.ToProto()
+				if protoErr != nil {
+					return nil, protoErr
+				}
+				mdProto.Version = proto.Int32(59)
+
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				if saveErr := mdStore.SaveRecordMetaData(rtx.Transaction(), mdProto); saveErr != nil {
+					return nil, saveErr
+				}
+				md, fromProtoErr := recordlayer.RecordMetaDataFromProto(mdProto)
+				if fromProtoErr != nil {
+					return nil, fromProtoErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).CreateOrOpen()
+				if openErr != nil {
+					return nil, openErr
+				}
+				for _, o := range orders {
+					if _, saveErr := store.SaveRecord(o); saveErr != nil {
+						return nil, saveErr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"indexName":     "Order$max_price",
+			}
+			var result struct {
+				Found           bool  `json:"found"`
+				MetadataVersion int   `json:"metadataVersion"`
+				EntryCount      int   `json:"entryCount"`
+				MaxEver         int64 `json:"maxEver"`
+			}
+			err = java.InvokeAs(ctx, "loadMetaDataAndScanMaxEverIndexJava", params, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Found).To(BeTrue())
+			Expect(result.MetadataVersion).To(Equal(59))
+			Expect(result.EntryCount).To(Equal(1), "ungrouped MAX_EVER has exactly one entry")
+			Expect(result.MaxEver).To(Equal(int64(200)))
 		})
 
 		It("Java scans multi-record-type store (Orders + Customers) using cross-language metadata", func() {
