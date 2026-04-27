@@ -140,6 +140,65 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		isDistinctFromScenario(),
 		inListPushdownScenario(),
 		aggregateExprScenario(),
+		aggregateExpressionSelectScenario(),
+		derivedTableRenamedScenario(),
+	}
+}
+
+// aggregateExpressionSelectScenario mirrors testdata/
+// aggregate_expression_select.yaml — SELECT-list expressions wrapping
+// aggregate function calls (post-aggregation evaluation). Drops NOT NULL
+// on PK. Skips GROUP BY tests (planner unsupported per CLAUDE.md
+// gotcha) and the COALESCE-wrapping-aggregate / CASE-wrapping-aggregate
+// forms — fdb-relational 4.11.1.0's planner raises
+// `IllegalStateException: unable to eval an aggregation function with
+// eval()` because the post-aggregation rewrite for scalar-function-of-
+// aggregate isn't implemented. Aggregate-of-expression
+// (`SUM(CASE WHEN ...)` covered by aggregate_expr) works; the inverse
+// direction does not. New CLAUDE.md gotcha.
+func aggregateExpressionSelectScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "aggregate_expression_select",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, grp STRING, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'x', 5, 10), (2, 'x', 20, 3), (3, 'y', 7, 2), (4, 'y', null, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT SUM(a) + SUM(b) FROM t", Rows: [][]any{{47}}},
+			{Query: "SELECT SUM(a) - SUM(b) FROM t", Rows: [][]any{{17}}},
+			// `COALESCE(SUM(a), 0)`, `CASE WHEN COUNT(*) > 3 THEN ...
+			// END` dropped — Java planner raises `unable to eval an
+			// aggregation function with eval()` (post-aggregation
+			// rewrite for scalar-function-of-aggregate not supported).
+			{Query: "SELECT AVG(a) + 1 FROM t", Rows: [][]any{{11.666666666666666}}},
+			{Query: "SELECT SUM(a), SUM(a) + 1 FROM t WHERE id < 3", Rows: [][]any{{25, 26}}},
+			{Query: "SELECT SUM(a) + 1 FROM t HAVING SUM(a) > 10", Rows: [][]any{{33}}},
+			{Query: "SELECT SUM(a), SUM(b) + 1 FROM t WHERE id < 3", Rows: [][]any{{25, 14}}},
+			{Query: "SELECT SUM(a), SUM(a) + SUM(b) FROM t WHERE id < 3", Rows: [][]any{{25, 38}}},
+			{Query: "SELECT 1, SUM(a) FROM t", Rows: [][]any{{1, 32}}},
+			{Query: "SELECT 'total', COUNT(*) FROM t", Rows: [][]any{{"total", 4}}},
+			{Query: "SELECT 1, 2, MAX(a) FROM t", Rows: [][]any{{1, 2, 20}}},
+		},
+	}
+}
+
+// derivedTableRenamedScenario mirrors testdata/derived_table_renamed.yaml.
+// Drops NOT NULL on PK. Drops the two-derived-tables comma-join (Go
+// unsupported by design — the extra-sources loop only accepts
+// AtomTableItem, error_code 0A000). Lifts the
+// derived-table-on-left + real-table-on-right form which works.
+func derivedTableRenamedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "derived_table_renamed",
+		SchemaTemplate: "CREATE TABLE a (ida BIGINT, PRIMARY KEY (ida))" +
+			" CREATE TABLE b (idb BIGINT, PRIMARY KEY (idb))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1)",
+			"INSERT INTO b VALUES (4)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT sq.x, b.idb FROM (SELECT ida AS x FROM a) AS sq, b", Rows: [][]any{{1, 4}}},
+		},
 	}
 }
 
