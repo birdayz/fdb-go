@@ -148,6 +148,27 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		unionScenario(),
 		qualifiedStarMoreScenario(),
 		cteScenario(),
+		unionConstantLiteralScenario(),
+	}
+}
+
+// unionConstantLiteralScenario lifts one test from
+// testdata/union_columns.yaml — UNION ALL with a constant literal on
+// one side. The rest of union_columns.yaml is mostly multi-col
+// ORDER BY, LIMIT/OFFSET, UNION (distinct), and arity-mismatch error
+// codes — all already-covered gotchas.
+func unionConstantLiteralScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union_constant_literal",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT v FROM a UNION ALL SELECT 99 FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {99}, {99}}},
+		},
 	}
 }
 
