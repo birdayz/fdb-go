@@ -165,6 +165,29 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		overflowMixedScenario(),
 		greatestLeastScenario(),
 		recursiveCteCountScenario(),
+		caseInsensitiveKeywordsScenario(),
+	}
+}
+
+// caseInsensitiveKeywordsScenario mirrors testdata/case_insensitive_keywords.yaml.
+// SQL standard: keywords are case-insensitive. Drops NOT NULL on PK.
+// Skips tests using LIMIT (unsupported), GROUP BY (unsupported), DESC
+// in ORDER BY (uncertain natural-order continuation), explicit INNER
+// JOIN (broken). Lifts the safe SELECT/WHERE/AND/OR/IS NOT NULL forms.
+func caseInsensitiveKeywordsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "case_insensitive_keywords",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SelECT id FROM t WHERE id = 1", Rows: [][]any{{1}}},
+			{Query: "select id from t where id = 1", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE id = 1 oR id = 3 OrDeR bY id", Rows: [][]any{{1}, {3}}},
+			{Query: "SELECT id FROM t WHERE id > 1 AnD n < 30", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE n iS nOt NUll ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+		},
 	}
 }
 
