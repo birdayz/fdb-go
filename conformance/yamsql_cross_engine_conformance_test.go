@@ -149,6 +149,31 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		qualifiedStarMoreScenario(),
 		cteScenario(),
 		unionConstantLiteralScenario(),
+		joinNullKeyScenario(),
+	}
+}
+
+// joinNullKeyScenario mirrors testdata/join_null_key.yaml. NULL = NULL
+// is UNKNOWN; rows with NULL in the join column do NOT join. NULL-safe
+// equality via IS NOT DISTINCT FROM treats NULL=NULL as TRUE. All
+// comma-join (no explicit JOIN ON). Drops NOT NULL on PK.
+func joinNullKeyScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_null_key",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, k BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, null), (3, 20)",
+			"INSERT INTO b VALUES (101, 10, 'alpha'), (102, null, 'beta'), (103, 20, 'gamma')",
+		},
+		Tests: []yamsql.Test{
+			// INNER comma-join on k=k excludes NULL-keyed rows.
+			{Query: "SELECT a.id, b.label FROM a, b WHERE a.k = b.k", Unordered: true, Rows: [][]any{{1, "alpha"}, {3, "gamma"}}},
+			// NOT (a.k = NULL) is UNKNOWN, filters everything.
+			{Query: "SELECT a.id FROM a, b WHERE NOT (a.k = null) AND a.id = 1", Rows: [][]any{}},
+			// NULL-safe equality via IS NOT DISTINCT FROM matches NULLs.
+			{Query: "SELECT a.id, b.label FROM a, b WHERE a.k IS NOT DISTINCT FROM b.k", Unordered: true, Rows: [][]any{{1, "alpha"}, {2, "beta"}, {3, "gamma"}}},
+		},
 	}
 }
 
