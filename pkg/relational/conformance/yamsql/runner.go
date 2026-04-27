@@ -125,7 +125,7 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 	// are sequenced steps that mutate state for a subsequent SELECT;
 	// the scenario declares them with rows: absent or [] and the runner
 	// asserts only that they succeed.
-	if !isQuery(t.Query) {
+	if !IsQuery(t.Query) {
 		if _, err := db.ExecContext(ctx, t.Query); err != nil {
 			return fmt.Sprintf("exec error: %v", err)
 		}
@@ -152,7 +152,7 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 
 func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 	var err error
-	if isQuery(t.Query) {
+	if IsQuery(t.Query) {
 		rows, qerr := db.QueryContext(ctx, t.Query)
 		if qerr == nil {
 			// SELECT errors may surface only during row iteration (e.g.
@@ -183,13 +183,12 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 	return ""
 }
 
-// isQuery reports whether stmt should be routed through database/sql's
+// IsQuery reports whether stmt should be routed through database/sql's
 // Query path. SELECT (and its lead keywords WITH / VALUES) return
 // result sets; everything else goes through Exec. Strips a leading
 // paren so `(SELECT ...)` counts as a query.
-func isQuery(stmt string) bool {
+func IsQuery(stmt string) bool {
 	s := strings.TrimLeft(stmt, " \t\r\n(")
-	// Extract just the first word so we don't upper-case the whole statement.
 	for i, r := range s {
 		if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '(' {
 			s = s[:i]
