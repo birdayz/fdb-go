@@ -89,6 +89,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		bytesScenario,
 		betweenScenario,
 		booleanScenario,
+		likeScenario,
 	}
 }
 
@@ -296,6 +297,36 @@ func booleanScenario() *yamsql.Scenario {
 			{Query: "SELECT b OR TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {true}, {true}}},
 			{Query: "SELECT b OR FALSE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
 			{Query: "SELECT NOT b FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
+		},
+	}
+}
+
+// likeScenario mirrors testdata/like.yaml. Drops NOT NULL on PK.
+// LIKE / NOT LIKE pattern matching with %, _, regex-metachar literals.
+func likeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "like",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'hello'), (2, 'help'), (3, 'world'), (4, null), (5, '')",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE s LIKE 'hel%'", Unordered: true, Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'hel_'", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'xyz'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'hello'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s LIKE ''", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM t WHERE s NOT LIKE 'hel%'", Unordered: true, Rows: [][]any{{3}, {5}}},
+			{Query: "SELECT id FROM t WHERE s LIKE '%lp' ORDER BY id", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE s LIKE '%el%' ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'h___o'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s LIKE '_o%'", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'x_y'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'HEL%'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE s LIKE '(hello)'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE s LIKE '[h]ello'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE s LIKE 'h*llo'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE s LIKE '^hello'", Rows: [][]any{}},
 		},
 	}
 }
