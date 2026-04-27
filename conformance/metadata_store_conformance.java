@@ -426,6 +426,120 @@ class MetaDataStoreSteps extends ConformanceBase {
     }
 
     /**
+     * Save metadata WITH a COUNT index ("Order$count_by_price" grouped by
+     * Order.price) at mdSubspace, plus Order records at storeSubspace.
+     * Symmetric counterpart to spec #6 (Go-writes side); Go-side test
+     * loads this metadata, scans the index, asserts per-group counts.
+     */
+    @ConformanceStep("saveMetaDataWithCountIndexAndOrdersJava")
+    public Map<String, Object> saveMetaDataWithCountIndexAndOrdersJava(
+            String clusterFile,
+            byte[] mdSubspace,
+            byte[] storeSubspace,
+            List<Long> orderIds,
+            List<Long> prices,
+            int version) {
+        return runInContext(clusterFile, null, context -> {
+            RecordMetaDataBuilder builder = RecordMetaData.newBuilder()
+                .setRecords(RecordLayerDemo.getDescriptor());
+            builder.getRecordType("Order").setPrimaryKey(Key.Expressions.field("order_id"));
+            builder.getRecordType("Customer").setPrimaryKey(Key.Expressions.field("customer_id"));
+            builder.getRecordType("TypedRecord").setPrimaryKey(Key.Expressions.field("id"));
+            // GroupingKeyExpression(field("price"), 0): whole key is
+            // field("price"), grouped_count=0 → all of `price` is the
+            // GROUPING part (none is the grouped/aggregated part).
+            // Java's IndexTypes.COUNT requires the grouped part be
+            // empty (count is implicitly +1 per row).
+            builder.addIndex("Order", new Index("Order$count_by_price",
+                new com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression(
+                    Key.Expressions.field("price"), 0),
+                "count"));
+            RecordMetaData metaData = builder.build();
+
+            Subspace mdSS = new Subspace(mdSubspace);
+            RecordMetaDataProto.MetaData.Builder protoBuilder = metaData.toProto().toBuilder();
+            protoBuilder.setVersion(version);
+            byte[] serialized = protoBuilder.build().toByteArray();
+            SplitHelper.saveWithSplit(context, mdSS, Tuple.from((Object) null), serialized, null);
+
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            for (int i = 0; i < orderIds.size(); i++) {
+                Order order = Order.newBuilder()
+                    .setOrderId(orderIds.get(i))
+                    .setPrice(Math.toIntExact(prices.get(i)))
+                    .build();
+                store.saveRecord(order);
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("metadataBytes", serialized.length);
+            result.put("recordsSaved", orderIds.size());
+            return result;
+        });
+    }
+
+    /**
+     * Save metadata WITH a SUM index ("Order$total_price", ungrouped, on
+     * Order.price) at mdSubspace, plus Order records at storeSubspace.
+     * Symmetric counterpart to spec #8 (Go-writes side); Go-side test
+     * loads this metadata, scans the index, asserts the total.
+     */
+    @ConformanceStep("saveMetaDataWithSumIndexAndOrdersJava")
+    public Map<String, Object> saveMetaDataWithSumIndexAndOrdersJava(
+            String clusterFile,
+            byte[] mdSubspace,
+            byte[] storeSubspace,
+            List<Long> orderIds,
+            List<Long> prices,
+            int version) {
+        return runInContext(clusterFile, null, context -> {
+            RecordMetaDataBuilder builder = RecordMetaData.newBuilder()
+                .setRecords(RecordLayerDemo.getDescriptor());
+            builder.getRecordType("Order").setPrimaryKey(Key.Expressions.field("order_id"));
+            builder.getRecordType("Customer").setPrimaryKey(Key.Expressions.field("customer_id"));
+            builder.getRecordType("TypedRecord").setPrimaryKey(Key.Expressions.field("id"));
+            // GroupingKeyExpression(field("price"), 1): whole key is
+            // field("price"), grouped_count=1 → all 1 column is the
+            // GROUPED/aggregated part, none is the grouping part. So
+            // every row contributes its price to a single ungrouped sum.
+            // Matches sum_index_conformance.java's idiom.
+            builder.addIndex("Order", new Index("Order$total_price",
+                new com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression(
+                    Key.Expressions.field("price"), 1),
+                "sum"));
+            RecordMetaData metaData = builder.build();
+
+            Subspace mdSS = new Subspace(mdSubspace);
+            RecordMetaDataProto.MetaData.Builder protoBuilder = metaData.toProto().toBuilder();
+            protoBuilder.setVersion(version);
+            byte[] serialized = protoBuilder.build().toByteArray();
+            SplitHelper.saveWithSplit(context, mdSS, Tuple.from((Object) null), serialized, null);
+
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(storeSubspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            for (int i = 0; i < orderIds.size(); i++) {
+                Order order = Order.newBuilder()
+                    .setOrderId(orderIds.get(i))
+                    .setPrice(Math.toIntExact(prices.get(i)))
+                    .build();
+                store.saveRecord(order);
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("metadataBytes", serialized.length);
+            result.put("recordsSaved", orderIds.size());
+            return result;
+        });
+    }
+
+    /**
      * Save metadata WITH a VALUE index ("Order$price" on Order.price)
      * at mdSubspace, plus Order records at storeSubspace. The index is
      * built as records are saved. Used by Track A2 reverse direction:

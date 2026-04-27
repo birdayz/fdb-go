@@ -657,6 +657,144 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(result.CustomerCount).To(Equal(3))
 		})
 
+		It("Go scans Java-built COUNT index using cross-language metadata", func() {
+			// Reverse direction of spec #6: Java writes metadata + records;
+			// Go LOADS the metadata, opens the store, scans BY_GROUP. Pins
+			// symmetry of the COUNT-index Java→Go path (the atomic-mutation
+			// maintainer wire format works in both directions).
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"orderIds":      []int64{1, 2, 3, 4, 5},
+				"prices":        []int64{100, 100, 50, 100, 150},
+				"version":       47,
+			}
+			var saveResult struct {
+				MetadataBytes int `json:"metadataBytes"`
+				RecordsSaved  int `json:"recordsSaved"`
+			}
+			err := java.InvokeAs(ctx, "saveMetaDataWithCountIndexAndOrdersJava", params, &saveResult)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(saveResult.RecordsSaved).To(Equal(5))
+
+			type entry struct {
+				priceKey int64
+				count    int64
+			}
+			var indexEntries []entry
+			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				loaded, loadErr := mdStore.LoadRecordMetaDataProto(rtx.Transaction())
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				if loaded == nil {
+					return nil, fmt.Errorf("Go: no metadata at subspace")
+				}
+				md, buildErr := recordlayer.RecordMetaDataFromProto(loaded)
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				idx := md.GetIndex("Order$count_by_price")
+				cursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
+				entries, scanErr := recordlayer.AsList(ctx, cursor)
+				if scanErr != nil {
+					return nil, scanErr
+				}
+				for _, e := range entries {
+					price, ok := e.Key[0].(int64)
+					if !ok {
+						return nil, fmt.Errorf("expected int64 in COUNT-index key, got %T (%v)", e.Key[0], e.Key[0])
+					}
+					// COUNT-index value is the atomic counter, stored as
+					// the leading int64 in the value tuple.
+					count, ok := e.Value[0].(int64)
+					if !ok {
+						return nil, fmt.Errorf("expected int64 in COUNT-index value, got %T (%v)", e.Value[0], e.Value[0])
+					}
+					indexEntries = append(indexEntries, entry{priceKey: price, count: count})
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(indexEntries).To(HaveLen(3), "three distinct prices → three groups")
+			// price=50 → 1, price=100 → 3, price=150 → 1.
+			Expect(indexEntries[0].priceKey).To(Equal(int64(50)))
+			Expect(indexEntries[0].count).To(Equal(int64(1)))
+			Expect(indexEntries[1].priceKey).To(Equal(int64(100)))
+			Expect(indexEntries[1].count).To(Equal(int64(3)))
+			Expect(indexEntries[2].priceKey).To(Equal(int64(150)))
+			Expect(indexEntries[2].count).To(Equal(int64(1)))
+		})
+
+		It("Go scans Java-built SUM index using cross-language metadata", func() {
+			// Reverse direction of spec #8: Java writes metadata + records;
+			// Go LOADS, scans the ungrouped SUM. Pins SUM-index Java→Go
+			// symmetry — atomic-ADD payload is decoded the same way going
+			// the other direction.
+			params := map[string]any{
+				"clusterFile":   clusterFile,
+				"mdSubspace":    BytesToIntArray(ss.Bytes()),
+				"storeSubspace": BytesToIntArray(storeSS.Bytes()),
+				"orderIds":      []int64{1, 2, 3, 4},
+				"prices":        []int64{100, 50, 150, 200},
+				"version":       53,
+			}
+			var saveResult struct {
+				MetadataBytes int `json:"metadataBytes"`
+				RecordsSaved  int `json:"recordsSaved"`
+			}
+			err := java.InvokeAs(ctx, "saveMetaDataWithSumIndexAndOrdersJava", params, &saveResult)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(saveResult.RecordsSaved).To(Equal(4))
+
+			var sum int64
+			var entryCount int
+			_, err = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				mdStore := recordlayer.NewFDBMetaDataStore(ss)
+				loaded, loadErr := mdStore.LoadRecordMetaDataProto(rtx.Transaction())
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				if loaded == nil {
+					return nil, fmt.Errorf("Go: no metadata at subspace")
+				}
+				md, buildErr := recordlayer.RecordMetaDataFromProto(loaded)
+				if buildErr != nil {
+					return nil, buildErr
+				}
+				store, openErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(storeSS).Open()
+				if openErr != nil {
+					return nil, openErr
+				}
+				idx := md.GetIndex("Order$total_price")
+				cursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
+				entries, scanErr := recordlayer.AsList(ctx, cursor)
+				if scanErr != nil {
+					return nil, scanErr
+				}
+				entryCount = len(entries)
+				if entryCount > 0 {
+					v, ok := entries[0].Value[0].(int64)
+					if !ok {
+						return nil, fmt.Errorf("expected int64 in SUM-index value, got %T (%v)", entries[0].Value[0], entries[0].Value[0])
+					}
+					sum = v
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entryCount).To(Equal(1), "ungrouped SUM has exactly one entry")
+			Expect(sum).To(Equal(int64(500)))
+		})
+
 		It("Java reads Go-written split records (>100KB) using cross-language metadata", func() {
 			// Stricter still: split-long-records is a wire-format feature
 			// — records >100KB are split across keys with suffixes 1, 2,
