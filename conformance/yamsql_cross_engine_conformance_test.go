@@ -151,6 +151,34 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		unionConstantLiteralScenario(),
 		joinNullKeyScenario(),
 		overflowMixedScenario(),
+		greatestLeastScenario(),
+	}
+}
+
+// greatestLeastScenario mirrors testdata/greatest_least.yaml. GREATEST/
+// LEAST propagate NULL (any-NULL → NULL). Drops NOT NULL on PK.
+// error_code test (cross-type 22000) skipped via per-test Skip.
+// Drops `GREATEST(NULL)` / `LEAST(NULL)` (single-NULL-arg) — Java
+// raises `VerifyException` (the variadic-of-NULL path needs at least
+// one typed argument to determine the result type). New gotcha.
+func greatestLeastScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "greatest_least",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT GREATEST(1, 5, 3) FROM t", Rows: [][]any{{5}}},
+			{Query: "SELECT LEAST(1, 5, 3) FROM t", Rows: [][]any{{1}}},
+			{Query: "SELECT GREATEST(1, NULL, 3) FROM t", Rows: [][]any{{nil}}},
+			{Query: "SELECT LEAST(1, NULL, 3) FROM t", Rows: [][]any{{nil}}},
+			{Query: "SELECT GREATEST(1, 2, 3.0, 4, 5) FROM t", Rows: [][]any{{5.0}}},
+			{Query: "SELECT LEAST(1, 2, 3.0, 4, 5) FROM t", Rows: [][]any{{1.0}}},
+			{Query: "SELECT GREATEST('apple', 'banana', 'cherry') FROM t", Rows: [][]any{{"cherry"}}},
+			{Query: "SELECT LEAST('apple', 'banana', 'cherry') FROM t", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT GREATEST(1, 'a') FROM t", ErrorCode: "22000"},
+		},
 	}
 }
 
