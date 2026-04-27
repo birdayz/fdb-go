@@ -94,6 +94,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		aggregateEmptyTableScenario,
 		bitwiseScenario,
 		avgScenario,
+		derivedTableScenario,
 	}
 }
 
@@ -445,6 +446,24 @@ func avgScenario() *yamsql.Scenario {
 			{Query: "SELECT AVG(v) FROM t", Rows: [][]any{{2.0}}},
 			{Query: "SELECT AVG(v) FROM t WHERE v <= 2", Rows: [][]any{{1.5}}},
 			{Query: "SELECT AVG(v) FROM t WHERE v > 100", Rows: [][]any{{nil}}},
+		},
+	}
+}
+
+// derivedTableScenario mirrors testdata/derived_table.yaml. Drops NOT
+// NULL on PK. Drops the GROUP BY-using test (CLAUDE.md gotcha).
+func derivedTableScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "derived_table",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM (SELECT id, v FROM t WHERE v >= 30) AS x ORDER BY id", Rows: [][]any{{3}, {4}, {5}}},
+			{Query: "SELECT id FROM (SELECT id FROM t)", ErrorCode: "42601"},
+			{Query: "SELECT x.v AS val FROM (SELECT id, v FROM t WHERE id = 3) AS x", Rows: [][]any{{30}}},
+			{Query: "SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x", ErrorCode: "0A000"},
 		},
 	}
 }
