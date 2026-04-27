@@ -129,6 +129,125 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		crossJoinScenario(),
 		compositePKPrefixPushdownScenario(),
 		pkPushdownScenario(),
+		secondaryIndexPushdownScenario(),
+		likePrefixPushdownScenario(),
+	}
+}
+
+// secondaryIndexPushdownScenario mirrors testdata/secondary_index_pushdown.yaml.
+// SELECT-only subset (DML mid-stream not expressible under runWithSetup's
+// per-test ephemeral schema). Drops NOT NULL on PK cols. Skips LIMIT
+// tests (CLAUDE.md gotcha — LIMIT not supported by fdb-relational).
+// Skip the range-over-secondary-index ORDER-BY-PK tests where the
+// planner can't reconcile index order with PK order (ORDER BY natural-
+// order continuation gotcha from earlier in this shift).
+func secondaryIndexPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "secondary_index_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, status STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_status ON t (status)" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE t2 (id BIGINT, region STRING, tier STRING, amount BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tier ON t2 (region, tier)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)",
+			"INSERT INTO t2 VALUES (10, 'us', 'pro', 100), (11, 'us', 'free', 50), (12, 'us', 'pro', 200), (13, 'eu', 'pro', 300), (14, 'eu', 'free', 75)",
+		},
+		Tests: []yamsql.Test{
+			// Single-col VALUE index equality.
+			{Query: "SELECT id, status, v FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1, "active", 10}, {3, "active", 30}}},
+			{Query: "SELECT id FROM t WHERE 'archived' = status", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE status = 'nonexistent'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE status = 'active' AND v > 20", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE v = 30", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id = 2", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE status = 'active' AND v = 30", Rows: [][]any{{3}}},
+			{Query: "SELECT id, status FROM t WHERE v = 20", Rows: [][]any{{2, "archived"}}},
+			// Composite VALUE index — full key equality.
+			{Query: "SELECT id, amount FROM t2 WHERE region = 'us' AND tier = 'pro' ORDER BY id", Rows: [][]any{{10, 100}, {12, 200}}},
+			{Query: "SELECT id FROM t2 WHERE tier = 'free' AND region = 'eu'", Rows: [][]any{{14}}},
+			{Query: "SELECT id FROM t2 WHERE region = 'us' ORDER BY id", Rows: [][]any{{10}, {11}, {12}}},
+			{Query: "SELECT id FROM t2 WHERE region = 'eu' AND tier = 'pro' AND amount > 100", Rows: [][]any{{13}}},
+			{Query: "SELECT id FROM t2 WHERE region = 'asia' AND tier = 'pro'", Rows: [][]any{}},
+			// NULL on indexed column → three-valued logic UNKNOWN, empty.
+			{Query: "SELECT id FROM t WHERE status = NULL", Rows: [][]any{}},
+			{Query: "SELECT id FROM t2 WHERE region = 'us' AND tier = NULL", Rows: [][]any{}},
+			// Range over single-col VALUE index, with all 4 rows in t.
+			{Query: "SELECT COUNT(*) FROM t WHERE v >= 30", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 30", Rows: [][]any{{1}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v <= 20", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v < 30", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 20 AND v < 40", Rows: [][]any{{1}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v >= 10 AND v <= 30", Rows: [][]any{{3}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 100 AND v < 200", Rows: [][]any{{0}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 9999", Rows: [][]any{{0}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE 50 > v", Rows: [][]any{{4}}},
+		},
+	}
+}
+
+// likePrefixPushdownScenario mirrors testdata/like_prefix_pushdown.yaml.
+// SELECT-only subset, no mid-stream DML state. Drops NOT NULL on PK.
+// Excludes tests that require rows added via mid-stream INSERT (the
+// ESCAPE-clause subset depends on a runtime INSERT of x_ray / y%lo).
+// Excludes ORDER BY non-PK / non-index-leading column forms (planner
+// natural-order gotcha from earlier in this shift).
+func likePrefixPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "like_prefix_pushdown",
+		SchemaTemplate: "CREATE TABLE t (name STRING, tag STRING, v BIGINT, PRIMARY KEY (name))" +
+			" CREATE TABLE t2 (id BIGINT, status STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_status ON t2 (status)" +
+			" CREATE TABLE cp (region STRING, name STRING, v BIGINT, PRIMARY KEY (region, name))" +
+			" CREATE TABLE ci (id BIGINT, region STRING, name STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_name ON ci (region, name)",
+		Setup: []string{
+			"INSERT INTO t VALUES ('apple', 'fruit', 10), ('apricot', 'fruit', 20), ('banana', 'fruit', 30), ('bean', 'veggie', 40), ('carrot', 'veggie', 50), ('cabbage', 'veggie', 60), ('date', 'fruit', 70)",
+			"INSERT INTO t2 VALUES (1, 'active'), (2, 'archived'), (3, 'awaiting'), (4, 'deleted'), (5, 'disabled')",
+			"INSERT INTO cp VALUES ('us', 'apple', 10), ('us', 'apricot', 20), ('us', 'banana', 30), ('eu', 'apple', 40), ('eu', 'bean', 50)",
+			"INSERT INTO ci VALUES (1, 'us', 'apple'), (2, 'us', 'apricot'), (3, 'us', 'banana'), (4, 'eu', 'apple'), (5, 'eu', 'bean')",
+		},
+		Tests: []yamsql.Test{
+			// PK LIKE prefix.
+			{Query: "SELECT name FROM t WHERE name LIKE 'a%' ORDER BY name", Rows: [][]any{{"apple"}, {"apricot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'ba%'", Rows: [][]any{{"banana"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'be%'", Rows: [][]any{{"bean"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'car%'", Rows: [][]any{{"carrot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'apple'", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'xyz%'", Rows: [][]any{}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'c%' ORDER BY name", Rows: [][]any{{"cabbage"}, {"carrot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'appleX%'", Rows: [][]any{}},
+			// PK LIKE + residual.
+			{Query: "SELECT name FROM t WHERE name LIKE 'a%' AND v > 10 ORDER BY name", Rows: [][]any{{"apricot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'b%' AND tag = 'fruit'", Rows: [][]any{{"banana"}}},
+			// NOT LIKE.
+			{Query: "SELECT name FROM t WHERE name NOT LIKE 'a%' ORDER BY name", Rows: [][]any{{"banana"}, {"bean"}, {"cabbage"}, {"carrot"}, {"date"}}},
+			// Interior wildcards (bail to scan, still correct).
+			{Query: "SELECT name FROM t WHERE name LIKE 'b_an'", Rows: [][]any{{"bean"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'b%an%' ORDER BY name", Rows: [][]any{{"banana"}, {"bean"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE '%ate'", Rows: [][]any{{"date"}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE name LIKE '%'", Rows: [][]any{{7}}},
+			// Secondary-index LIKE prefix.
+			{Query: "SELECT id, status FROM t2 WHERE status LIKE 'a%' ORDER BY id", Rows: [][]any{{1, "active"}, {2, "archived"}, {3, "awaiting"}}},
+			{Query: "SELECT id FROM t2 WHERE status LIKE 'd%' ORDER BY id", Rows: [][]any{{4}, {5}}},
+			{Query: "SELECT id FROM t2 WHERE status LIKE 'awa%'", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t2 WHERE status LIKE 'zzz%'", Rows: [][]any{}},
+			// Composite-PK LIKE prefix: leading eq + LIKE on second col.
+			{Query: "SELECT region, name FROM cp WHERE region = 'us' AND name LIKE 'a%' ORDER BY name", Rows: [][]any{{"us", "apple"}, {"us", "apricot"}}},
+			{Query: "SELECT region, name FROM cp WHERE region = 'eu' AND name LIKE 'b%'", Rows: [][]any{{"eu", "bean"}}},
+			{Query: "SELECT name FROM cp WHERE region = 'us' AND name LIKE 'a%' AND v > 10", Rows: [][]any{{"apricot"}}},
+			{Query: "SELECT region FROM cp WHERE region = 'us' AND name LIKE 'zzz%'", Rows: [][]any{}},
+			// Composite secondary-index LIKE prefix.
+			{Query: "SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id", Rows: [][]any{{1, "us", "apple"}, {2, "us", "apricot"}}},
+			{Query: "SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'", Rows: [][]any{}},
+			// Interior-wildcard prefix narrowing (post-filter via likeMatch).
+			{Query: "SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'bana%'", Rows: [][]any{{"banana"}}},
+			// Underscore at start (no literal prefix, bails to scan).
+			{Query: "SELECT name FROM t WHERE name LIKE '_anana'", Rows: [][]any{{"banana"}}},
+		},
 	}
 }
 
