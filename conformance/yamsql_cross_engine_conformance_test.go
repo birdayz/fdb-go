@@ -1,24 +1,30 @@
 package conformance_test
 
 // Track A3 — yamsql semantic equivalence on the cross-engine plandiff
-// harness. dayshift-55 starter wiring: drives a hand-picked yamsql
-// scenario through Java fdb-relational via plandiff's runWithSetup
-// step and asserts the result rows match what the scenario declares.
+// harness. dayshift-55: drives hand-picked yamsql scenarios through Java
+// fdb-relational via plandiff's runWithSetup step and asserts the result
+// rows match what each scenario declares.
 //
 // The Go side already validates each scenario via yamsql.Run (driver
 // + database/sql). This bridge proves that Java agrees too — the
-// scenario's expected rows aren't just Go-self-consistent but also
+// scenarios' expected rows aren't just Go-self-consistent but also
 // match upstream Java's behaviour.
 //
-// Scope (this shift, single scenario): one simple WHERE-literal-on-
-// left scenario as proof-of-concept. Many existing yamsql scenarios
-// trip Java limitations (GROUP BY, DISTINCT, LIMIT, multi-col ORDER
-// BY, IS TRUE/FALSE, error_code mismatches) — those need either Java-
-// side support or a per-scenario `cross_engine: false` opt-out.
-// Wider rollout to all simple scenarios is the next-shift follow-on.
+// Scenarios are inlined rather than loaded from yamsql/testdata/ — the
+// Bazel sandbox doesn't include that tree, and adding it as a data dep
+// would couple this conformance test to the yamsql package's data layout.
+// Inlining also makes the per-scenario adaptations explicit (e.g. dropping
+// NOT NULL on PK columns per the fdb-relational gotcha).
+//
+// Per-test skips cover Java limitations enumerated in CLAUDE.md (GROUP BY,
+// DISTINCT, LIMIT, multi-col ORDER BY, IS TRUE/FALSE) plus error_code
+// tests (Java's error structure differs from Go's api.Error) and DML
+// tests (runWithSetup expects exactly one query). Wider rollout to all
+// scenarios is mechanical follow-on.
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -42,61 +48,49 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("Java agrees with where_literal_on_left scenario", func() {
-		// Inline scenario — Bazel sandbox doesn't include the yamsql
-		// testdata/ tree, and adding it as a data dep would couple
-		// this conformance test to the yamsql package's data layout.
-		// Mirror the byte-for-byte content of
-		// pkg/relational/conformance/yamsql/testdata/where_literal_on_left.yaml
-		// (which is itself a regression test for the same scenario
-		// against the Go embedded engine — when this scenario evolves,
-		// update both files together).
-		scenario := whereLiteralOnLeftScenario()
-
-		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), clusterFile).(plandiff.SetupRunner)
-
-		for i, t := range scenario.Tests {
-			i, t := i, t
-			By(t.Query, func() {
-				if t.ErrorCode != "" {
-					Skip("error_code tests not yet wired cross-engine — Java's error structure differs from Go's api.Error")
-				}
-				if !isSelectLike(t.Query) {
-					Skip("non-query (DML) cross-engine tests need a different harness — runWithSetup expects exactly one query")
-				}
-				result := javaRunner.RunWithSetup(ctx, scenario.SchemaTemplate, scenario.Setup, t.Query)
-				Expect(result.Err).NotTo(HaveOccurred(),
-					"scenario %q test #%d query %q: Java executor errored", scenario.Name, i, t.Query)
-
-				// Compare row-by-row against the scenario's declared
-				// expected rows. Java's RowSet.Rows is [][]any —
-				// numeric values arrive as float64 (JSON-decoded);
-				// the scenario's t.Rows is [][]any from YAML where
-				// integers come through as int. Per-cell numeric
-				// equality is loose.
-				Expect(result.Rows.Rows).To(HaveLen(len(t.Rows)),
-					"row count: scenario %q test #%d", scenario.Name, i)
-				for r := range t.Rows {
-					Expect(result.Rows.Rows[r]).To(HaveLen(len(t.Rows[r])),
-						"col count: scenario %q test #%d row %d", scenario.Name, i, r)
-					for c := range t.Rows[r] {
-						expectScalarEqual(result.Rows.Rows[r][c], t.Rows[r][c],
-							"scenario %q test #%d row %d col %d", scenario.Name, i, r, c)
+	for _, sf := range crossEngineScenarios() {
+		s := sf()
+		Describe("scenario "+s.Name, func() {
+			s := s
+			for i, t := range s.Tests {
+				i, t := i, t
+				It(t.Query, func() {
+					if t.ErrorCode != "" {
+						Skip("error_code tests not yet wired cross-engine — Java's error structure differs from Go's api.Error")
 					}
-				}
-			})
-		}
-	})
+					if !isSelectLike(t.Query) {
+						Skip("non-query (DML) cross-engine tests need a different harness — runWithSetup expects exactly one query")
+					}
+					javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(java), clusterFile).(plandiff.SetupRunner)
+					result := javaRunner.RunWithSetup(ctx, s.SchemaTemplate, s.Setup, t.Query)
+					Expect(result.Err).NotTo(HaveOccurred(),
+						"scenario %q test #%d query %q: Java executor errored", s.Name, i, t.Query)
+
+					assertRowsMatch(result.Rows.Rows, t.Rows, t.Unordered,
+						fmt.Sprintf("scenario %q test #%d", s.Name, i))
+				})
+			}
+		})
+	}
 })
 
-// whereLiteralOnLeftScenario mirrors testdata/where_literal_on_left.yaml
-// with one cross-engine adaptation: the PK column drops `NOT NULL`. Per
-// CLAUDE.md gotcha (swingshift-52), fdb-relational rejects `NOT NULL`
-// outside ARRAY column types; primary-key columns are implicitly NOT
-// NULL so the constraint isn't lost. The Go-side yamsql YAML still
-// uses `NOT NULL` because Go's engine accepts it. Cross-engine yamsql
-// expansion will need a per-scenario override mechanism; for the
-// starter, hand-adapt.
+// crossEngineScenarios is the list of scenarios driven cross-engine. Each
+// is hand-adapted from its yamsql YAML twin: PK columns drop NOT NULL
+// (fdb-relational restriction; PK is implicitly NOT NULL), error_code
+// tests are kept (per-test Skip handles them), Java-unsupported features
+// (GROUP BY, DISTINCT, LIMIT, multi-col ORDER BY) trigger Java errors and
+// stay on the not-yet-wired list.
+func crossEngineScenarios() []func() *yamsql.Scenario {
+	return []func() *yamsql.Scenario{
+		whereLiteralOnLeftScenario,
+		arithmeticScenario,
+	}
+}
+
+// whereLiteralOnLeftScenario mirrors testdata/where_literal_on_left.yaml.
+// The PK column drops NOT NULL — fdb-relational rejects NOT NULL outside
+// ARRAY column types (CLAUDE.md gotcha, swingshift-52). PK is implicitly
+// NOT NULL so the constraint isn't lost.
 func whereLiteralOnLeftScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "where_literal_on_left",
@@ -119,6 +113,38 @@ func whereLiteralOnLeftScenario() *yamsql.Scenario {
 	}
 }
 
+// arithmeticScenario mirrors testdata/arithmetic.yaml. Two cross-engine
+// adaptations: drops NOT NULL on the PK column, and drops the bare-NULL
+// arithmetic + FROM-less SELECT cases. fdb-relational's planner rejects
+// `<op> NULL` literal arithmetic with "unable to encapsulate arithmetic
+// operation due to type mismatch(es)" — bare NULL has no inferred type,
+// so the planner can't pick an operator overload. Wrapping with
+// CAST(NULL AS BIGINT) would satisfy Java but the Go-side YAML uses bare
+// NULL for cleanliness. FROM-less SELECTs (`SELECT -10 / 3`) hit a
+// separate planner restriction. Both are tracked as Java gaps in
+// CLAUDE.md (cross-engine yamsql gotchas).
+func arithmeticScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "arithmetic",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 20, 4), (2, 7, 0), (3, 10, 3)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a / b FROM t WHERE id = 1", Rows: [][]any{{5}}},
+			{Query: "SELECT a / b FROM t WHERE id = 3", Rows: [][]any{{3}}},
+			{Query: "SELECT a % b FROM t WHERE id = 3", Rows: [][]any{{1}}},
+			{Query: "SELECT a % b FROM t WHERE id = 1", Rows: [][]any{{0}}},
+			{Query: "SELECT a / b FROM t WHERE id = 2", ErrorCode: "22012"},
+			{Query: "SELECT a % b FROM t WHERE id = 2", ErrorCode: "22012"},
+			{Query: "SELECT a + b FROM t WHERE id = 1", Rows: [][]any{{24}}},
+			{Query: "SELECT a - b FROM t WHERE id = 1", Rows: [][]any{{16}}},
+			{Query: "SELECT a * b FROM t WHERE id = 1", Rows: [][]any{{80}}},
+			{Query: "SELECT a / 0 FROM t WHERE id = 1", ErrorCode: "22012"},
+		},
+	}
+}
+
 // isSelectLike — duplicated from yamsql.runner's isQuery (small enough
 // to copy rather than export).
 func isSelectLike(q string) bool {
@@ -126,16 +152,104 @@ func isSelectLike(q string) bool {
 		if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '(' {
 			continue
 		}
-		// First non-space char.
 		switch r {
 		case 's', 'S', 'w', 'W', 'v', 'V':
-			// Heuristic: SELECT/WITH/VALUES start with these.
 			return true
 		default:
 			return false
 		}
 	}
 	return false
+}
+
+// assertRowsMatch checks actual vs expected, honouring multiset semantics
+// when unordered is set. Per-cell numeric equality is loose because Java
+// sends ints as float64 (JSON-decoded) while YAML loads ints as int.
+func assertRowsMatch(actual, expected [][]any, unordered bool, prefix string) {
+	Expect(actual).To(HaveLen(len(expected)), "%s row count", prefix)
+	if unordered {
+		// Match each expected row to some unmatched actual row. O(N²) but
+		// scenario row counts are small.
+		used := make([]bool, len(actual))
+		for ei, er := range expected {
+			matched := false
+			for ai, ar := range actual {
+				if used[ai] {
+					continue
+				}
+				if rowsLooselyEqual(ar, er) {
+					used[ai] = true
+					matched = true
+					break
+				}
+			}
+			Expect(matched).To(BeTrue(), "%s row %d: no match in actual %v for expected %v", prefix, ei, actual, er)
+		}
+		return
+	}
+	for r := range expected {
+		Expect(actual[r]).To(HaveLen(len(expected[r])), "%s row %d col count", prefix, r)
+		for c := range expected[r] {
+			expectScalarEqual(actual[r][c], expected[r][c],
+				"%s row %d col %d", prefix, r, c)
+		}
+	}
+}
+
+// rowsLooselyEqual compares two rows under the same loose-numeric
+// equality used by expectScalarEqual.
+func rowsLooselyEqual(a, e []any) bool {
+	if len(a) != len(e) {
+		return false
+	}
+	for i := range a {
+		if !scalarLooselyEqual(a[i], e[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func scalarLooselyEqual(actual, expected any) bool {
+	if expected == nil {
+		return actual == nil
+	}
+	if actual == nil {
+		return false
+	}
+	switch e := expected.(type) {
+	case int:
+		return numericEq(actual, float64(e))
+	case int64:
+		return numericEq(actual, float64(e))
+	case float64:
+		return numericEq(actual, e)
+	case bool:
+		ab, ok := actual.(bool)
+		return ok && ab == e
+	case string:
+		as, ok := actual.(string)
+		return ok && as == e
+	default:
+		return fmt.Sprintf("%v", actual) == fmt.Sprintf("%v", expected)
+	}
+}
+
+func numericEq(actual any, expected float64) bool {
+	switch n := actual.(type) {
+	case int:
+		return float64(n) == expected
+	case int32:
+		return float64(n) == expected
+	case int64:
+		return float64(n) == expected
+	case float32:
+		return float64(n) == expected
+	case float64:
+		return n == expected
+	default:
+		return false
+	}
 }
 
 // expectScalarEqual compares two scalar values for cross-engine
