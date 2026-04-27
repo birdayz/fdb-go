@@ -58,7 +58,6 @@ package conformance_test
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -175,10 +174,5 @@ var _ = Describe("SchemaTemplateCatalog cross-language round-trip (A2)", func() 
 			ContainSubstring("RecordTypeUnion.T"),
 			ContainSubstring("descriptor not found"),
 		), "Pin Layer 3 root-cause: nested type resolution in the union")
-
-		// strings unused warning suppress (kept for future use when
-		// LoadSchemaTemplate succeeds and we'll inspect the loaded
-		// template's table name).
-		_ = strings.TrimSpace
 	})
 })

@@ -268,7 +268,9 @@ class SqlPlanSteps {
             st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\"");
             dropped = true;
         } catch (SQLException e) {
-            // Best-effort cleanup — rethrow only if it wasn't a "doesn't exist" error.
+            // fdb-relational 4.11.1.0 ignores `IF EXISTS` on DROP
+            // SCHEMA TEMPLATE — throws on absent template anyway.
+            // Tolerate the specific "not found" path for idempotency.
             if (e.getMessage() == null || !e.getMessage().toLowerCase().contains("not found")) {
                 throw e;
             }

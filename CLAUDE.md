@@ -466,10 +466,8 @@ Surfaced by Track A2 (nightshift-53). Apply to any Java step that loads a serial
 
 ### Cross-language SchemaTemplateCatalog wire-format gotchas
 
-Surfaced by Track A2 dayshift-54.
-
 - **The keyspace prefix MATCHES across engines.** Both Java's `RecordLayerStoreCatalog` (via `RelationalKeyspaceProvider.instance().getKeySpace()`) and Go's `catalog.OpenRecordLayerStoreCatalog()` (via `DefaultCatalogSubspace`) target the FDB subspace `(NULL, NULL, int64(0))` — 3-byte prefix `0x000014`. Confirmed via direct subspace byte inspection. The Go sqldriver's `keyspace.RelationalKeyspace.CatalogSubspace()` writes elsewhere (three-string `__SYS/__SYS/CATALOG` = `0x05025f5f53595300...`), but that's the sqldriver's choice; the catalog package itself uses Java-compat.
-- **Catalog metadata version DIVERGES across engines.** Go's `catalog.BuildCatalogMetaData()` produces a `RecordMetaData` at version 3; Java's `RecordLayerStoreCatalog` writes at version 4. Both have 3 record types (SCHEMAS / DATABASES / TEMPLATES) and 3 indexes, but somewhere in Java's `RecordLayerSchemaTemplate.toRecordMetadata()` the version is bumped one extra time. Result: Java initializes the catalog → persists at v4. Go opens at the same subspace → `StaleMetaDataVersionError{Local:3, Stored:4}` BEFORE any TEMPLATE record can be loaded. The version mismatch prevents cross-engine read entirely. Pinned by `conformance/schema_template_catalog_conformance_test.go`. Fixing requires comparing Go's vs Java's catalog metadata builder paths and aligning the version bump (likely in `RecordLayerSchemaTemplate.toRecordMetadata()` or the `setVersion(...)` chain).
+- **Cross-language catalog read gap (Layer 3, OPEN)**: After Go opens the catalog past the metadata-version check, `LoadSchemaTemplate` reads the TEMPLATE record bytes successfully but `RecordMetaDataFromProto` fails to rebuild the FileDescriptor: `proto: message field "RecordTypeUnion.T_0" cannot resolve type: "RecordTypeUnion.T": descriptor not found`. Java emits a self-referential `FileDescriptorProto` where the union message has nested-type references that Go's proto rebuild path doesn't resolve. Pinned by `conformance/schema_template_catalog_conformance_test.go`. Substantial follow-on (compare Java's FileDescriptor emission vs Go's parse).
 
 ### Go embedded SQL engine — Java conformance status
 
