@@ -144,6 +144,36 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		derivedTableRenamedScenario(),
 		orderByEliminationScenario(),
 		bugHuntProbesScenario(),
+		wrongQualifierScenario(),
+	}
+}
+
+// wrongQualifierScenario mirrors testdata/wrong_qualifier.yaml — the
+// SELECT-only positive subset plus error_code tests (skipped via per-
+// test Skip). Drops NOT NULL on PK. Skips the explicit `INNER JOIN`
+// tests (existing CLAUDE.md gotcha). Pins comma-join + alias resolution
+// + WHERE qualifier resolution + single-source aliased projection.
+func wrongQualifierScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "wrong_qualifier",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')",
+			"INSERT INTO b VALUES (1, 'one'), (2, 'two')",
+		},
+		Tests: []yamsql.Test{
+			// Comma-join with valid qualifiers.
+			{Query: "SELECT a.name, b.label FROM a, b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{"alpha", "one"}, {"beta", "two"}}},
+			// Aliased qualifier in comma-join.
+			{Query: "SELECT x.id, x.name FROM a AS x, b WHERE x.id = b.id ORDER BY x.id", Rows: [][]any{{1, "alpha"}, {2, "beta"}}},
+			// Valid qualifier in WHERE.
+			{Query: "SELECT a.id FROM a, b WHERE a.id = b.id AND b.label = 'one'", Rows: [][]any{{1}}},
+			// Single-table aliased projection.
+			{Query: "SELECT d.id, d.name FROM a AS d WHERE d.id = 1", Rows: [][]any{{1, "alpha"}}},
+			// Single-table unaliased qualifier.
+			{Query: "SELECT a.id, a.name FROM a WHERE a.id = 2", Rows: [][]any{{2, "beta"}}},
+		},
 	}
 }
 
