@@ -166,6 +166,31 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		greatestLeastScenario(),
 		recursiveCteCountScenario(),
 		caseInsensitiveKeywordsScenario(),
+		unionStarScenario(),
+	}
+}
+
+// unionStarScenario mirrors testdata/union_star.yaml. UNION ALL with
+// SELECT * on either side. Drops NOT NULL on PK.
+func unionStarScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "union_star",
+		SchemaTemplate: "CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t1 VALUES (1, 10, 1), (2, 20, 2)",
+		},
+		Tests: []yamsql.Test{
+			// Both sides * — straight UNION ALL of full rows.
+			{Query: "SELECT * FROM t1 UNION ALL SELECT * FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Left explicit, right *.
+			{Query: "SELECT id, col1, col2 FROM t1 UNION ALL SELECT * FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Left *, right explicit.
+			{Query: "SELECT * FROM t1 UNION ALL SELECT id, col1, col2 FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Aliased columns on left.
+			{Query: "SELECT id AS W, col1 AS X, col2 AS Y FROM t1 UNION ALL SELECT * FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Aggregate over UNION ALL of aggregates (derived table).
+			{Query: "SELECT SUM(a) AS a, SUM(b) AS b FROM (SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1 UNION ALL SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1) AS x", Rows: [][]any{{60, 4}}},
+		},
 	}
 }
 
