@@ -53,7 +53,21 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 // propagates through AND/OR/NOT so `NOT (x = NULL)` correctly stays UNKNOWN
 // (filtered out) instead of flipping to TRUE. The bool wrapper above
 // collapses UNKNOWN→false at the WHERE/HAVING filter boundary.
+//
+// Top-level WHERE / HAVING entry: a bare FieldValue (`WHERE flag`) is
+// rejected to match fdb-relational's planner. Operands of AND/OR/NOT/XOR
+// inside any context, and any expression in projection context, MAY be
+// bare FieldValues — Java accepts those and converts via truthiness.
+// See evalExprPredicateTriCtx.
 func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (triBool, error) {
+	return evalExprPredicateTriCtx(ctx, conn, msg, expr, false /* allowBareField */)
+}
+
+// evalExprPredicateTriCtx is the param-threaded form. allowBareField=true
+// permits a bare FullColumnName atom to be evaluated as a value (with
+// IsTruthy → triBool); allowBareField=false rejects it the way Java's
+// planner rejects `WHERE flag`.
+func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext, allowBareField bool) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
 		if conn == nil {
@@ -71,7 +85,10 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		return triFromBool(len(subRows) > 0), nil
 
 	case *antlrgen.LogicalExpressionContext:
-		left, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(0))
+		// Operands of boolean operators are value-context — Java accepts
+		// `b AND TRUE` / `NOT b` / `b OR FALSE` over a BOOLEAN column.
+		// Pass allowBareField=true to the recursive operand evaluator.
+		left, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(0), true)
 		if err != nil {
 			return triFalse, err
 		}
@@ -88,7 +105,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 			if left == triFalse {
 				return triFalse, nil // short-circuit
 			}
-			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1))
+			right, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(1), true)
 			if err != nil {
 				return triFalse, err
 			}
@@ -97,7 +114,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 			if left == triTrue {
 				return triTrue, nil // short-circuit
 			}
-			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1))
+			right, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(1), true)
 			if err != nil {
 				return triFalse, err
 			}
@@ -105,7 +122,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		case isXor:
 			// SQL XOR: a XOR b = (a AND NOT b) OR (NOT a AND b). Any NULL
 			// operand → NULL (can't short-circuit without both concrete).
-			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1))
+			right, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(1), true)
 			if err != nil {
 				return triFalse, err
 			}
@@ -117,7 +134,9 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported logical operator %q", op.GetText())
 
 	case *antlrgen.NotExpressionContext:
-		v, err := evalExprPredicateTri(ctx, conn, msg, e.Expression())
+		// Operand of NOT is value-context — `NOT b` over a BOOLEAN column
+		// is accepted by Java. Pass allowBareField=true.
+		v, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(), true)
 		if err != nil {
 			return triFalse, err
 		}
@@ -138,7 +157,7 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 				return evalBetweenPredicateTri(ctx, conn, msg, e, p)
 			}
 		}
-		return evalComparisonPredicateTri(ctx, conn, msg, e)
+		return evalComparisonPredicateTriCtx(ctx, conn, msg, e, allowBareField)
 
 	default:
 		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported WHERE expression type %T", expr)
@@ -149,22 +168,37 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 // expressions. Returns triNull when either operand is NULL so that enclosing
 // NOT/AND/OR can apply proper Kleene logic (previously NULL collapsed to FALSE
 // and `NOT (x = NULL)` returned TRUE).
+//
+// Top-level WHERE / HAVING context (allowBareField=false): rejects bare
+// FullColumnName atoms to match fdb-relational ("expected BooleanValue
+// but got FieldValue"). Operand-of-boolean-op or projection context
+// (allowBareField=true): evaluates the column as a value and uses
+// IsTruthy, since Java accepts `b AND TRUE` / `NOT b` / `SELECT b OR
+// FALSE` over a BOOLEAN column.
 func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext) (triBool, error) {
+	return evalComparisonPredicateTriCtx(ctx, conn, msg, pred, false /* allowBareField */)
+}
+
+func evalComparisonPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, allowBareField bool) (triBool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
-		// Bare column reference as a predicate (`WHERE flag` for a
-		// BOOLEAN column) is rejected by fdb-relational with
-		// "expected BooleanValue but got FieldValue". The planner
+		// Bare column reference as a top-level WHERE predicate (`WHERE
+		// flag` for a BOOLEAN column) is rejected by fdb-relational
+		// with "expected BooleanValue but got FieldValue". The planner
 		// requires explicit comparisons (`WHERE flag = TRUE`) — a
 		// FieldValue can't be implicitly coerced into a boolean
-		// predicate. Match that strictness here so cross-engine
-		// behaviour stays in lockstep.
-		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue {
+		// predicate at top level. Match that strictness here.
+		//
+		// When allowBareField=true (operand of AND/OR/NOT/XOR, or any
+		// projection context), Java accepts the bare column and
+		// converts via truthiness. Fall through to value-eval below.
+		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue && !allowBareField {
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"expected BooleanValue but got FieldValue: bare column reference cannot be used as a predicate; use an explicit comparison (e.g. col = TRUE)")
 		}
-		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`)
-		// — evaluate as a value. NULL result is UNKNOWN; else use truthiness.
+		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`),
+		// or bare FieldValue in operand/projection context.
+		// Evaluate as a value. NULL result is UNKNOWN; else use truthiness.
 		v, err := evalExprAtom(ctx, conn, msg, pred.ExpressionAtom())
 		if err != nil {
 			return triFalse, err

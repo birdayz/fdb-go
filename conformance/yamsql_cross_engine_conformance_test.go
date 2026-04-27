@@ -1397,14 +1397,20 @@ func betweenScenario() *yamsql.Scenario {
 // untyped-NULL operands (`b = null`, `b AND NULL`, `b OR NULL`),
 // `WHERE (b = true)` (parser interprets bare-paren as
 // RecordConstructorValue, not a predicate; `NOT (...)` works because it
-// forces predicate context), CTE + outer ORDER BY (Java rejects
+// forces predicate context), and CTE + outer ORDER BY (Java rejects
 // "order by is not supported in subquery" — fdb-relational treats the
 // outer ORDER BY as part of the subquery scope when a WITH clause is
-// present), and bare-bool-column-as-operand-in-projection
-// (`SELECT b AND TRUE`, `SELECT NOT b`) — Go's embedded engine rejects
-// these with "expected BooleanValue but got FieldValue", asymmetric
-// with Java which accepts them. New gotcha — Go is stricter than Java
-// here, fix tracked separately.
+// present).
+//
+// Bare-bool-column-as-operand-in-projection (`SELECT b AND TRUE`,
+// `SELECT NOT b`, `SELECT b OR FALSE`) was deferred swingshift-55/56
+// because Go's embedded engine rejected with "expected BooleanValue
+// but got FieldValue". Re-enabled nightshift-57 after threading
+// allowBareField=true through evalExprPredicateTri's value-context
+// callers (eval_predicate.go) so operands of AND/OR/NOT/XOR and
+// projection-context expressions accept bare FieldValue and convert
+// via IsTruthy. WHERE-top-level `WHERE flag` still rejects to match
+// Java.
 func booleanScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "boolean",
@@ -1424,6 +1430,16 @@ func booleanScenario() *yamsql.Scenario {
 			{Query: "SELECT b = false FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 			{Query: "SELECT b <> TRUE FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 			{Query: "SELECT b IS NULL FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {true}}},
+			// Bare-bool projection (re-enabled nightshift-57). Kleene 3VL:
+			// b AND TRUE pinning UNKNOWN→NULL preservation, b AND FALSE
+			// short-circuits to FALSE for every row, b OR TRUE
+			// short-circuits to TRUE, b OR FALSE preserves UNKNOWN, NOT b
+			// flips with NULL→NULL.
+			{Query: "SELECT b AND TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT b AND FALSE FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {false}}},
+			{Query: "SELECT b OR TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {true}, {true}}},
+			{Query: "SELECT b OR FALSE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT NOT b FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 		},
 	}
 }

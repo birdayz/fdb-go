@@ -47,7 +47,14 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 		// projection of a boolean expression preserves UNKNOWN as NULL,
 		// not collapses to FALSE. Use the tri-state evaluator and map
 		// triNull → nil.
-		t, err := evalExprPredicateTri(ctx, conn, msg, expr)
+		//
+		// Projection context: bare bool column operands of boolean ops
+		// (`SELECT b AND TRUE`, `SELECT NOT b`) are accepted by Java
+		// and the planner converts via truthiness — pass
+		// allowBareField=true so the FullColumnName check inside
+		// nested PredicatedExpression operands falls through to
+		// value-eval instead of rejecting.
+		t, err := evalExprPredicateTriCtx(ctx, conn, msg, expr, true /* allowBareField */)
 		if err != nil {
 			return nil, err
 		}
