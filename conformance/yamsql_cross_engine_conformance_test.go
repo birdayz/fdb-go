@@ -126,6 +126,174 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		coalesceNullifScenario(),
 		bareColWithAggScenario(),
 		aggregateNullsScenario(),
+		crossJoinScenario(),
+		compositePKPrefixPushdownScenario(),
+		pkPushdownScenario(),
+	}
+}
+
+// crossJoinScenario mirrors testdata/cross_join.yaml. Drops NOT NULL on
+// PK columns. Cross-engine omissions:
+//   - Explicit `CROSS JOIN` syntax — fdb-relational 4.11.1.0's parser
+//     visitor unconditionally calls `InnerJoinContext.expression().accept(...)`
+//     and NPEs when the ON clause is null (CROSS JOIN has no ON). Tracked
+//     as new CLAUDE.md gotcha.
+//   - `INNER JOIN ... ON 1 = 1` — same JOIN-ON gotcha as in CLAUDE.md
+//     (column-resolution path rejects); constant ON likely rides the
+//     same code path.
+//   - `FROM a, b ORDER BY a.id, b.id` — multi-col ORDER BY across two
+//     table sources is unsupported by the Cascades planner (existing
+//     multi-col ORDER BY gotcha).
+//
+// Comma-join (cartesian) WITHOUT a multi-col ORDER BY works, and the
+// SQL-89 comma-join-with-WHERE is fully supported (the documented
+// workaround for explicit JOIN ON).
+func crossJoinScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "cross_join",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			// Comma-join cartesian — no ORDER BY, multiset compare.
+			{Query: "SELECT a.id, b.id FROM a, b", Unordered: true, Rows: [][]any{{1, 1}, {1, 2}, {2, 1}, {2, 2}}},
+			{Query: "SELECT COUNT(*) FROM a, b", Rows: [][]any{{4}}},
+			// SQL-89 comma-join with WHERE join-predicate.
+			{Query: "SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{10, 100}, {20, 200}}},
+		},
+	}
+}
+
+// compositePKPrefixPushdownScenario mirrors
+// testdata/composite_pk_prefix_pushdown.yaml. Drops NOT NULL on PK
+// cols. Skips the LIMIT test (CLAUDE.md gotcha — LIMIT not supported by
+// fdb-relational), error_code test (per-test Skip), and UPDATE/DELETE
+// tests (DML — runWithSetup expects exactly one query).
+func compositePKPrefixPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "composite_pk_prefix_pushdown",
+		SchemaTemplate: "CREATE TABLE kv (a BIGINT, b BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (a, b, c))" +
+			" CREATE TABLE kv2 (a BIGINT, b BIGINT, label STRING, PRIMARY KEY (a, b))",
+		Setup: []string{
+			"INSERT INTO kv VALUES (1, 10, 100, 1000), (1, 10, 200, 2000), (1, 20, 100, 3000), (1, 20, 300, 4000), (2, 10, 100, 5000), (2, 30, 100, 6000)",
+			"INSERT INTO kv2 VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 10, 'c'), (2, 20, 'd')",
+		},
+		Tests: []yamsql.Test{
+			// Single leading col equated on 3-col PK: prefix narrows by a.
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 ORDER BY b, c", Rows: [][]any{{1, 10, 100}, {1, 10, 200}, {1, 20, 100}, {1, 20, 300}}},
+			// Leading-col prefix + residual on a non-PK column.
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 AND v > 1500 ORDER BY b, c", Rows: [][]any{{1, 10, 200}, {1, 20, 100}, {1, 20, 300}}},
+			// Two leading cols equated on 3-col PK: prefix = [1, 10].
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 AND b = 10 ORDER BY c", Rows: [][]any{{1, 10, 100}, {1, 10, 200}}},
+			// Leading two equated + equality on non-PK column.
+			{Query: "SELECT c FROM kv WHERE a = 1 AND b = 10 AND v = 1000", Rows: [][]any{{100}}},
+			// Residual equality on a TRAILING PK col after a break.
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 AND c = 100 ORDER BY b", Rows: [][]any{{1, 10, 100}, {1, 20, 100}}},
+			// Bail: no leading equality. WHERE b = 10 on PK (a, b, c).
+			{Query: "SELECT a, b, c FROM kv WHERE b = 10 ORDER BY a, c", Rows: [][]any{{1, 10, 100}, {1, 10, 200}, {2, 10, 100}}},
+			// Bail: full equality picked up by equality-pushdown branch.
+			{Query: "SELECT v FROM kv WHERE a = 1 AND b = 10 AND c = 100", Rows: [][]any{{1000}}},
+			// 2-col PK pure-prefix.
+			{Query: "SELECT a, b, label FROM kv2 WHERE a = 2 ORDER BY b", Rows: [][]any{{2, 10, "c"}, {2, 20, "d"}}},
+			// No match.
+			{Query: "SELECT a, b FROM kv2 WHERE a = 99", Rows: [][]any{}},
+		},
+	}
+}
+
+// pkPushdownScenario mirrors testdata/pk_pushdown.yaml — but only the
+// SELECT-only subset. Drops NOT NULL on PK cols; skips the LIMIT test
+// (LIMIT not supported), error_code tests, DML tests. The full yamsql
+// file mixes UPDATE/DELETE/INSERT into the test list and re-seeds rows
+// mid-stream — those depend on per-test stateful execution that the
+// runWithSetup harness doesn't support (each test runs against a fresh
+// schema). The pure-SELECT block at the top is what we lift here.
+//
+// Cross-engine omissions surfaced by this scenario:
+//   - `WHERE id = 2 AND id > 5` (contradictory equality + range) — Java
+//     returns the row matching the equality; the planner doesn't apply
+//     the range as post-filter when the equality already pinpoints the
+//     record. Tracked as a Java planner bug; Go correctly returns empty.
+//     New CLAUDE.md gotcha. Drop until upstream fix.
+//   - `ORDER BY <col>` where <col> is not the leading-PK natural-order
+//     continuation: a range on a leading col + ORDER BY a later col,
+//     ORDER BY a non-PK col without a satisfying index, etc. Java's
+//     Cascades planner raises `UnableToPlanException`. Drop the
+//     affected tests until the planner ports a generic sort rule.
+func pkPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "pk_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE kv (k STRING, g BIGINT, v BIGINT, PRIMARY KEY (k, g))" +
+			" CREATE TABLE kvw (region STRING, bucket BIGINT, tag STRING, v BIGINT, PRIMARY KEY (region, bucket, tag))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30), (4, 'delta', 40)",
+			"INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('b', 1, 300), ('b', 2, 400)",
+			"INSERT INTO kvw VALUES ('us', 1, 'a', 10), ('us', 1, 'b', 20), ('us', 2, 'a', 30), ('us', 2, 'b', 40), ('eu', 1, 'a', 50), ('eu', 1, 'b', 60)",
+		},
+		Tests: []yamsql.Test{
+			// Single-col PK equality.
+			{Query: "SELECT id, name, v FROM t WHERE id = 3", Rows: [][]any{{3, "gamma", 30}}},
+			{Query: "SELECT id, name, v FROM t WHERE 3 = id", Rows: [][]any{{3, "gamma", 30}}},
+			{Query: "SELECT id, name FROM t WHERE id = 99", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE t.id = 4", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE name = 'beta'", Rows: [][]any{{2}}},
+			// Single-col PK range.
+			{Query: "SELECT id FROM t WHERE id > 2 ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id FROM t WHERE id >= 3 ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id FROM t WHERE id < 3 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE id <= 2 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE 3 < id ORDER BY id", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE id >= 2 AND id <= 3 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t WHERE id > 1 AND id < 4 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t WHERE id >= 2 AND name = 'gamma'", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id > 10 AND id < 5", Rows: [][]any{}},
+			// `id = 2 AND id > 5` dropped — Java planner-bug: returns
+			// [2] because the equality pushdown skips the range
+			// post-filter. Go correctly returns empty.
+			{Query: "SELECT id FROM t WHERE id = 3 AND v = 30", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id = 3 AND v = 999", Rows: [][]any{}},
+			{Query: "SELECT COUNT(*) FROM t WHERE id = 1", Rows: [][]any{{1}}},
+			{Query: "SELECT v * 2 FROM t WHERE id = 4", Rows: [][]any{{80}}},
+			{Query: "SELECT id, name FROM t WHERE name = 'alpha' ORDER BY id", Rows: [][]any{{1, "alpha"}}},
+			{Query: "SELECT id FROM t WHERE id <> 2 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			// Composite 2-col PK.
+			{Query: "SELECT v FROM kv WHERE k = 'a' AND g = 2", Rows: [][]any{{200}}},
+			{Query: "SELECT v FROM kv WHERE g = 1 AND k = 'b'", Rows: [][]any{{300}}},
+			{Query: "SELECT g, v FROM kv WHERE k = 'a' ORDER BY g", Rows: [][]any{{1, 100}, {2, 200}}},
+			{Query: "SELECT v FROM kv WHERE k = 'a' AND g >= 1 AND g <= 1", Rows: [][]any{{100}}},
+			{Query: "SELECT g, v FROM kv WHERE k = 'a' AND g > 1 ORDER BY g", Rows: [][]any{{2, 200}}},
+			{Query: "SELECT g, v FROM kv WHERE k = 'b' AND g < 2 ORDER BY g", Rows: [][]any{{1, 300}}},
+			// `WHERE k > 'a' ORDER BY g` dropped — range on leading PK
+			// col + ORDER BY trailing PK col fails Cascades planning
+			// (UnableToPlanException). The natural order across `k > 'a'`
+			// is k-then-g, not g, so Java needs a sort rule it doesn't
+			// have.
+			// `WHERE k='b' AND g BETWEEN 1 AND 2 ORDER BY v` dropped —
+			// ORDER BY non-PK col without an index also fails.
+			{Query: "SELECT v FROM kv WHERE k = 'b' AND g = 2 AND v = 400", Rows: [][]any{{400}}},
+			{Query: "SELECT v FROM kv WHERE k = 'b' AND g = 2 AND v = 999", Rows: [][]any{}},
+			{Query: "SELECT v FROM kv WHERE k = 'a' AND g = 2 AND v > 100", Rows: [][]any{{200}}},
+			// `OR (...) ORDER BY v` dropped — same UnableToPlan as
+			// the bare ORDER BY v above (non-PK ORDER target).
+			// 3-col composite PK.
+			{Query: "SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket > 1 AND tag = 'a'", Rows: [][]any{{"us", 2, "a"}}},
+			{Query: "SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket <= 1 AND tag = 'a'", Rows: [][]any{{"us", 1, "a"}}},
+			// `region < 'us' ORDER BY tag` dropped — range on leading
+			// col + ORDER BY trailing PK col, same UnableToPlan as kv
+			// above.
+			{Query: "SELECT COUNT(*) FROM kvw WHERE region < 'us'", Rows: [][]any{{2}}},
+			// BETWEEN pushdown.
+			{Query: "SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE id BETWEEN 3 AND 3", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id BETWEEN 10 AND 5", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE id BETWEEN 1 AND 5 AND name <> 'gamma' ORDER BY id", Rows: [][]any{{1}, {2}, {4}}},
+			{Query: "SELECT id FROM t WHERE id NOT BETWEEN 2 AND 4 ORDER BY id", Rows: [][]any{{1}}},
+			{Query: "SELECT k, g FROM kv WHERE k = 'a' AND g BETWEEN 1 AND 2 ORDER BY g", Rows: [][]any{{"a", 1}, {"a", 2}}},
+		},
 	}
 }
 
