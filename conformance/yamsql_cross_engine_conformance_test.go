@@ -142,6 +142,41 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		aggregateExprScenario(),
 		aggregateExpressionSelectScenario(),
 		derivedTableRenamedScenario(),
+		orderByEliminationScenario(),
+	}
+}
+
+// orderByEliminationScenario mirrors testdata/order_by_elimination.yaml
+// — the single-col ORDER BY subset that survives the planner's
+// natural-order continuation rule. Drops NOT NULL on PK. Skips DESC
+// (cursors are ASC-only and Java's planner often can't reverse), and
+// multi-col ORDER BY (existing CLAUDE.md gotcha). Renamed `plan` to
+// `tier` (reserved-word gotcha).
+func orderByEliminationScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "order_by_elimination",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE ab (a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (a, b))" +
+			" CREATE TABLE rp (id BIGINT, region STRING, tier STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tier ON rp (region, tier)",
+		Setup: []string{
+			"INSERT INTO t VALUES (3, 10, 'c'), (1, 30, 'a'), (2, 20, 'b'), (4, 40, 'd'), (5, 15, 'e')",
+			"INSERT INTO ab VALUES (1, 10, 100), (2, 20, 200), (1, 20, 150), (2, 10, 250), (1, 30, 130)",
+			"INSERT INTO rp VALUES (1, 'us', 'pro'), (2, 'us', 'free'), (3, 'us', 'pro'), (4, 'eu', 'pro'), (5, 'eu', 'free')",
+		},
+		Tests: []yamsql.Test{
+			// Full scan + ORDER BY PK ASC — natural order.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{{1, 30}, {2, 20}, {3, 10}, {4, 40}, {5, 15}}},
+			// PK range + ORDER BY PK ASC.
+			{Query: "SELECT id FROM t WHERE id > 1 ORDER BY id", Rows: [][]any{{2}, {3}, {4}, {5}}},
+			// Secondary equality + ORDER BY PK.
+			{Query: "SELECT id FROM t WHERE v = 10 ORDER BY id", Rows: [][]any{{3}}},
+			// Secondary range + ORDER BY indexed col.
+			{Query: "SELECT id, v FROM t WHERE v >= 20 ORDER BY v", Rows: [][]any{{2, 20}, {1, 30}, {4, 40}}},
+			// Composite PK ORDER BY first PK col.
+			{Query: "SELECT a, b FROM ab WHERE a = 1 ORDER BY b", Rows: [][]any{{1, 10}, {1, 20}, {1, 30}}},
+		},
 	}
 }
 
