@@ -49,6 +49,24 @@ const DriverName = "fdbsql"
 // defaultClusterFileEnv is the environment variable FDB checks for cluster file path.
 const defaultClusterFileEnv = "FDB_CLUSTER_FILE"
 
+// fdbDBCache caches FDB database handles by cluster-file path so repeated
+// sql.Open calls against the same cluster don't leak FDB connections.
+//
+// Why: database/sql creates a new driver.Connector per sql.Open, and each
+// Connector lazily opens its own FDB database (see initialize). database/sql
+// has no Connector-close hook, so once an *sql.DB is closed, the Connector
+// (and its FDB database handle) can only be released when GC eventually runs
+// — which doesn't release the underlying TCP connection to FDB. Workloads
+// that repeatedly open+close *sql.DB against the same cluster (e.g. plandiff's
+// per-corpus-entry ephemeral schemas) accumulate hundreds of leaked FDB
+// connections, eventually exhausting the testcontainer FDB's connection
+// table and causing i/o timeouts on subsequent opens.
+//
+// The cache is process-global, keyed by cluster-file path. Concurrent opens
+// against the same path race once and the loser drops its handle. Different
+// cluster files get distinct entries.
+var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
+
 // Driver is the database/sql/driver.Driver for fdbsql.
 //
 // Implements driver.Driver and driver.DriverContext.
@@ -128,18 +146,35 @@ func (c *Connector) initialize(_ context.Context) error {
 		// Unset → set to our default.
 		purefdb.MustAPIVersion(720)
 	}
-	var rawDB purefdb.Database
-	var err error
-	if clusterFile == "" {
-		rawDB, err = purefdb.OpenDefault()
-	} else {
-		rawDB, err = purefdb.OpenDatabase(clusterFile)
-	}
-	if err != nil {
-		return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
-	}
 
-	c.fdbDB = recordlayer.NewFDBDatabase(rawDB)
+	// Reuse a previously-opened FDB database for this cluster file.
+	// See fdbDBCache docstring above for why this is necessary.
+	cacheKey := clusterFile
+	if cached, ok := fdbDBCache.Load(cacheKey); ok {
+		c.fdbDB = cached.(*recordlayer.FDBDatabase)
+	} else {
+		var rawDB purefdb.Database
+		var err error
+		if clusterFile == "" {
+			rawDB, err = purefdb.OpenDefault()
+		} else {
+			rawDB, err = purefdb.OpenDatabase(clusterFile)
+		}
+		if err != nil {
+			return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
+		}
+		newDB := recordlayer.NewFDBDatabase(rawDB)
+		// LoadOrStore returns the previously-stored entry if a concurrent
+		// caller raced ahead. In that case, the FDB database we just
+		// opened becomes garbage; close it to release its TCP connection.
+		actual, loaded := fdbDBCache.LoadOrStore(cacheKey, newDB)
+		if loaded {
+			rawDB.Close()
+			c.fdbDB = actual.(*recordlayer.FDBDatabase)
+		} else {
+			c.fdbDB = newDB
+		}
+	}
 
 	// root subspace is the empty subspace — all catalog and schema data lives
 	// under well-known tuple prefixes via RelationalKeyspace.

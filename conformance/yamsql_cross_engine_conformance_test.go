@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -39,7 +38,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
 )
 
-var _ = Describe("yamsql cross-engine equivalence (A3)", func() {
+var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 	var (
 		ctx             context.Context
 		java            *JavaInvoker
@@ -47,23 +46,36 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", func() {
 		clusterFilePath string
 	)
 
-	BeforeEach(func() {
+	// BeforeAll: write the cluster file once for the entire Describe.
+	// Per-spec BeforeEach previously created 360+ distinct temp paths,
+	// each becoming a separate cache key in the fdbsql driver's
+	// per-cluster-file cache (driver.go:fdbDBCache) → 360 live FDB
+	// connections by suite end. Sharing one path keeps the cache to
+	// one entry. Cluster-file CONTENTS don't change across specs
+	// (sharedContainer is a process-singleton), so reusing the path
+	// is safe. Requires the `Ordered` decorator on the parent
+	// Describe — Ginkgo v2 only allows BeforeAll inside Ordered
+	// containers because non-deterministic spec order would otherwise
+	// run BeforeAll per shuffled batch.
+	BeforeAll(func() {
 		ctx = context.Background()
-		java = NewJavaInvoker()
 		var err error
 		clusterFile, err = sharedContainer.ClusterFile(ctx)
 		Expect(err).NotTo(HaveOccurred())
 		// The Go runner takes a cluster-file path on disk (the fdbsql
-		// driver opens it directly); the Java runner takes the contents
-		// (sent over HTTP and the Java side opens it server-side).
+		// driver opens it directly); the Java runner takes the
+		// contents (sent over HTTP, opened server-side).
 		clusterFilePath = writeClusterFileToTemp(clusterFile)
 	})
 
-	AfterEach(func() {
-		if clusterFilePath != "" {
-			_ = os.Remove(clusterFilePath)
-		}
+	BeforeEach(func() {
+		java = NewJavaInvoker()
 	})
+
+	// No AfterEach / AfterAll cleanup of clusterFilePath — the file
+	// is harmless if it survives (testcontainers-go cleans up the FDB
+	// container; the cluster-file path becomes meaningless once the
+	// container's gone).
 
 	for _, s := range crossEngineScenarios() {
 		s := s
@@ -126,6 +138,1086 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		coalesceNullifScenario(),
 		bareColWithAggScenario(),
 		aggregateNullsScenario(),
+		crossJoinScenario(),
+		compositePKPrefixPushdownScenario(),
+		pkPushdownScenario(),
+		secondaryIndexPushdownScenario(),
+		likePrefixPushdownScenario(),
+		inListAdvancedScenario(),
+		compositeSecondaryIndexPrefixPushdownScenario(),
+		coveringIndexPushdownScenario(),
+		mixedTypeEqualityScenario(),
+		gr1JoinScenario(),
+		numericTypesScenario(),
+		isDistinctFromScenario(),
+		inListPushdownScenario(),
+		aggregateExprScenario(),
+		aggregateExpressionSelectScenario(),
+		derivedTableRenamedScenario(),
+		orderByEliminationScenario(),
+		bugHuntProbesScenario(),
+		wrongQualifierScenario(),
+		unionScenario(),
+		qualifiedStarMoreScenario(),
+		cteScenario(),
+		unionConstantLiteralScenario(),
+		joinNullKeyScenario(),
+		overflowMixedScenario(),
+		greatestLeastScenario(),
+		recursiveCteCountScenario(),
+		caseInsensitiveKeywordsScenario(),
+		unionStarScenario(),
+		qualifiedStarScenario(),
+		existsScenario(),
+	}
+}
+
+// existsScenario probes EXISTS / NOT EXISTS in fdb-relational. Only
+// the empty-flags variants — INSERT-then-re-check is mid-stream DML
+// that runWithSetup can't express.
+func existsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "exists",
+		SchemaTemplate: "CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE flags (k BIGINT, PRIMARY KEY (k))",
+		Setup: []string{
+			"INSERT INTO orders VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			// Empty flags → EXISTS=FALSE → WHERE filters everything.
+			{Query: "SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id", Rows: [][]any{}},
+			// Empty flags → NOT EXISTS=TRUE → all rows pass.
+			{Query: "SELECT id FROM orders WHERE NOT EXISTS (SELECT k FROM flags) ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+		},
+	}
+}
+
+// qualifiedStarScenario mirrors testdata/qualified_star.yaml. Drops
+// NOT NULL on PK. Skips multi-col ORDER BY tests (gotcha) and explicit
+// INNER JOIN tests (gotcha).
+func qualifiedStarScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "qualified_star",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')",
+			"INSERT INTO b VALUES (10, 'one'), (20, 'two')",
+		},
+		Tests: []yamsql.Test{
+			// Single-source a.*.
+			{Query: "SELECT a.* FROM a ORDER BY id", Rows: [][]any{{1, "alpha"}, {2, "beta"}}},
+			// Comma-join + a.*: returns only a's columns, one copy per right row.
+			{Query: "SELECT a.* FROM a, b", Unordered: true, Rows: [][]any{{1, "alpha"}, {1, "alpha"}, {2, "beta"}, {2, "beta"}}},
+			// Comma-join + b.* (alias resolved separately).
+			{Query: "SELECT b.* FROM a, b", Unordered: true, Rows: [][]any{{10, "one"}, {20, "two"}, {10, "one"}, {20, "two"}}},
+			// Aliased qualifier.
+			{Query: "SELECT x.* FROM a AS x, b WHERE x.id = 1 ORDER BY b.id", Rows: [][]any{{1, "alpha"}, {1, "alpha"}}},
+		},
+	}
+}
+
+// unionStarScenario mirrors testdata/union_star.yaml. UNION ALL with
+// SELECT * on either side. Drops NOT NULL on PK.
+func unionStarScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "union_star",
+		SchemaTemplate: "CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t1 VALUES (1, 10, 1), (2, 20, 2)",
+		},
+		Tests: []yamsql.Test{
+			// Both sides * — straight UNION ALL of full rows.
+			{Query: "SELECT * FROM t1 UNION ALL SELECT * FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Left explicit, right *.
+			{Query: "SELECT id, col1, col2 FROM t1 UNION ALL SELECT * FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Left *, right explicit.
+			{Query: "SELECT * FROM t1 UNION ALL SELECT id, col1, col2 FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Aliased columns on left.
+			{Query: "SELECT id AS W, col1 AS X, col2 AS Y FROM t1 UNION ALL SELECT * FROM t1", Unordered: true, Rows: [][]any{{1, 10, 1}, {2, 20, 2}, {1, 10, 1}, {2, 20, 2}}},
+			// Aggregate over UNION ALL of aggregates (derived table).
+			{Query: "SELECT SUM(a) AS a, SUM(b) AS b FROM (SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1 UNION ALL SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1) AS x", Rows: [][]any{{60, 4}}},
+		},
+	}
+}
+
+// caseInsensitiveKeywordsScenario mirrors testdata/case_insensitive_keywords.yaml.
+// SQL standard: keywords are case-insensitive. Drops NOT NULL on PK.
+// Skips tests using LIMIT (unsupported), GROUP BY (unsupported), DESC
+// in ORDER BY (uncertain natural-order continuation), explicit INNER
+// JOIN (broken). Lifts the safe SELECT/WHERE/AND/OR/IS NOT NULL forms.
+func caseInsensitiveKeywordsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "case_insensitive_keywords",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SelECT id FROM t WHERE id = 1", Rows: [][]any{{1}}},
+			{Query: "select id from t where id = 1", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE id = 1 oR id = 3 OrDeR bY id", Rows: [][]any{{1}, {3}}},
+			{Query: "SELECT id FROM t WHERE id > 1 AnD n < 30", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE n iS nOt NUll ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+		},
+	}
+}
+
+// recursiveCteCountScenario lifts two outer-ORDER-BY-free tests from
+// testdata/recursive_cte.yaml — `WITH RECURSIVE` walks of a parent-
+// link tree. Drops NOT NULL on PK. Most other recursive_cte tests use
+// outer ORDER BY which the existing CTE+ORDER BY gotcha rejects.
+func recursiveCteCountScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "recursive_cte_count",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, -1), (10, 1), (20, 1), (40, 10), (50, 10), (70, 10), (100, 20), (210, 20), (250, 50)",
+		},
+		Tests: []yamsql.Test{
+			// Aggregate over recursive descendants — single-row, no
+			// outer ORDER BY needed.
+			{Query: "WITH RECURSIVE descendants AS (SELECT id, parent FROM t WHERE parent = -1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id) SELECT COUNT(*) FROM descendants", Rows: [][]any{{9}}},
+			// Empty-seed recursive CTE terminates cleanly.
+			{Query: "WITH RECURSIVE noseed AS (SELECT id, parent FROM t WHERE id = 99999 UNION ALL SELECT b.id, b.parent FROM noseed AS a, t AS b WHERE b.parent = a.id) SELECT id FROM noseed", Rows: [][]any{}},
+			// `WITH RECURSIVE nonrec AS (...)` without a UNION ALL
+			// self-reference is rejected by fdb-relational with
+			// "condition is not met!". SQL spec / Postgres permit it
+			// (RECURSIVE is a scope enabler), but fdb-relational
+			// requires an actual recursive body. Cross-engine corpus
+			// drops the form. (New gotcha-worthy if it recurs.)
+		},
+	}
+}
+
+// greatestLeastScenario mirrors testdata/greatest_least.yaml. GREATEST/
+// LEAST propagate NULL (any-NULL → NULL). Drops NOT NULL on PK.
+// error_code test (cross-type 22000) skipped via per-test Skip.
+// Drops `GREATEST(NULL)` / `LEAST(NULL)` (single-NULL-arg) — Java
+// raises `VerifyException` (the variadic-of-NULL path needs at least
+// one typed argument to determine the result type). New gotcha.
+func greatestLeastScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "greatest_least",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT GREATEST(1, 5, 3) FROM t", Rows: [][]any{{5}}},
+			{Query: "SELECT LEAST(1, 5, 3) FROM t", Rows: [][]any{{1}}},
+			{Query: "SELECT GREATEST(1, NULL, 3) FROM t", Rows: [][]any{{nil}}},
+			{Query: "SELECT LEAST(1, NULL, 3) FROM t", Rows: [][]any{{nil}}},
+			{Query: "SELECT GREATEST(1, 2, 3.0, 4, 5) FROM t", Rows: [][]any{{5.0}}},
+			{Query: "SELECT LEAST(1, 2, 3.0, 4, 5) FROM t", Rows: [][]any{{1.0}}},
+			{Query: "SELECT GREATEST('apple', 'banana', 'cherry') FROM t", Rows: [][]any{{"cherry"}}},
+			{Query: "SELECT LEAST('apple', 'banana', 'cherry') FROM t", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT GREATEST(1, 'a') FROM t", ErrorCode: "22000"},
+		},
+	}
+}
+
+// overflowMixedScenario mirrors testdata/overflow_mixed.yaml — long+
+// double mixed-type arithmetic. Drops NOT NULL on PK. Skips error_code
+// (the pure-long-overflow test). Pins Java's `ADD_LD` semantics
+// (long promoted to double, IEEE-754 round-to-nearest, no throw on
+// overflow because the float result is finite).
+func overflowMixedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "overflow_mixed",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 9223372036854775807, 1.0), (2, 9223372036854775807, 1.0E200)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a + b FROM t WHERE id = 1", Rows: [][]any{{9.223372036854776e18}}},
+			{Query: "SELECT a + b FROM t WHERE id = 2", Rows: [][]any{{1e200}}},
+		},
+	}
+}
+
+// joinNullKeyScenario mirrors testdata/join_null_key.yaml. NULL = NULL
+// is UNKNOWN; rows with NULL in the join column do NOT join. NULL-safe
+// equality via IS NOT DISTINCT FROM treats NULL=NULL as TRUE. All
+// comma-join (no explicit JOIN ON). Drops NOT NULL on PK.
+func joinNullKeyScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_null_key",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, k BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, null), (3, 20)",
+			"INSERT INTO b VALUES (101, 10, 'alpha'), (102, null, 'beta'), (103, 20, 'gamma')",
+		},
+		Tests: []yamsql.Test{
+			// INNER comma-join on k=k excludes NULL-keyed rows.
+			{Query: "SELECT a.id, b.label FROM a, b WHERE a.k = b.k", Unordered: true, Rows: [][]any{{1, "alpha"}, {3, "gamma"}}},
+			// NOT (a.k = NULL) is UNKNOWN, filters everything.
+			{Query: "SELECT a.id FROM a, b WHERE NOT (a.k = null) AND a.id = 1", Rows: [][]any{}},
+			// NULL-safe equality via IS NOT DISTINCT FROM matches NULLs.
+			{Query: "SELECT a.id, b.label FROM a, b WHERE a.k IS NOT DISTINCT FROM b.k", Unordered: true, Rows: [][]any{{1, "alpha"}, {2, "beta"}, {3, "gamma"}}},
+		},
+	}
+}
+
+// unionConstantLiteralScenario lifts one test from
+// testdata/union_columns.yaml — UNION ALL with a constant literal on
+// one side. The rest of union_columns.yaml is mostly multi-col
+// ORDER BY, LIMIT/OFFSET, UNION (distinct), and arity-mismatch error
+// codes — all already-covered gotchas.
+func unionConstantLiteralScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union_constant_literal",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT v FROM a UNION ALL SELECT 99 FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {99}, {99}}},
+		},
+	}
+}
+
+// cteScenario mirrors testdata/cte.yaml — the outer-ORDER-BY-free
+// subset (existing CLAUDE.md gotcha: `WITH ... ORDER BY` rejected).
+// Drops NOT NULL on PK. Uses Unordered comparison where the original
+// yamsql relied on ORDER BY.
+func cteScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "cte",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+		},
+		Tests: []yamsql.Test{
+			// Basic CTE projection.
+			{Query: "WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT id FROM hi", Unordered: true, Rows: [][]any{{2}, {3}, {4}}},
+			// Aggregate over CTE.
+			{Query: "WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT COUNT(*), SUM(v) FROM hi", Rows: [][]any{{3, 90}}},
+			// CTE filter + further filter.
+			{Query: "WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT id FROM hi WHERE v >= 30", Unordered: true, Rows: [][]any{{3}, {4}}},
+			// Multi-CTE cross-join.
+			{Query: "WITH lo AS (SELECT id FROM t WHERE v < 20), hi AS (SELECT id FROM t WHERE v >= 30) SELECT COUNT(*) FROM lo, hi", Rows: [][]any{{2}}},
+			// CTE with column rename.
+			{Query: "WITH c1(x, y) AS (SELECT id, v FROM t) SELECT x FROM c1 WHERE y >= 30", Unordered: true, Rows: [][]any{{3}, {4}}},
+			{Query: "WITH c1(my_id) AS (SELECT id FROM t) SELECT my_id FROM c1", Unordered: true, Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// Chained CTE renames.
+			{Query: "WITH base(d, val) AS (SELECT id, v FROM t), filtered(x, y) AS (SELECT d, val FROM base WHERE val > 15) SELECT x, y FROM filtered", Unordered: true, Rows: [][]any{{2, 20}, {3, 30}, {4, 40}}},
+			// Multi-CTE comma-join with renames.
+			{Query: "WITH lo(li) AS (SELECT id FROM t WHERE v < 20), hi(hi_id) AS (SELECT id FROM t WHERE v >= 30) SELECT li, hi_id FROM lo, hi", Unordered: true, Rows: [][]any{{1, 3}, {1, 4}}},
+			// Nested CTE references.
+			{Query: "WITH a AS (SELECT id FROM t WHERE v >= 20), b AS (SELECT id FROM a WHERE id >= 3) SELECT id FROM b", Unordered: true, Rows: [][]any{{3}, {4}}},
+			// 3-level CTE chain.
+			{Query: "WITH a AS (SELECT id, v FROM t), b AS (SELECT id FROM a WHERE v >= 20), c AS (SELECT id FROM b WHERE id >= 3) SELECT id FROM c", Unordered: true, Rows: [][]any{{3}, {4}}},
+			// CTE-defined-but-unused.
+			{Query: "WITH ignored AS (SELECT id FROM t WHERE id > 100) SELECT id FROM t", Unordered: true, Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// SELECT * on CTE.
+			{Query: "WITH c1 AS (SELECT * FROM t) SELECT * FROM c1", Unordered: true, Rows: [][]any{{1, 10}, {2, 20}, {3, 30}, {4, 40}}},
+			// SELECT * on renamed CTE.
+			{Query: "WITH c1(w, z) AS (SELECT id, v FROM t WHERE id <= 2) SELECT * FROM c1", Unordered: true, Rows: [][]any{{1, 10}, {2, 20}}},
+		},
+	}
+}
+
+// unionScenario mirrors testdata/union.yaml. Drops the UNION (distinct)
+// test — fdb-relational 4.11.1.0 raises `only UNION ALL is supported`
+// (new CLAUDE.md gotcha). UNION ALL works on both engines. Drops NOT
+// NULL on PK.
+func unionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)",
+			"INSERT INTO b VALUES (101, 20), (102, 30), (103, 40)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT v FROM a UNION ALL SELECT v FROM b", Unordered: true, Rows: [][]any{{10}, {20}, {30}, {20}, {30}, {40}}},
+		},
+	}
+}
+
+// qualifiedStarMoreScenario mirrors testdata/qualified_star_more.yaml.
+// Comma-join with qualified-star, both unaliased and aliased forms.
+// Drops NOT NULL on PK. Skips the GROUP BY error_code tests.
+func qualifiedStarMoreScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "qualified_star_more",
+		SchemaTemplate: "CREATE TABLE a (a1 BIGINT, a2 BIGINT, PRIMARY KEY (a1))" +
+			" CREATE TABLE b (b1 BIGINT, b2 BIGINT, PRIMARY KEY (b1))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)",
+			"INSERT INTO b VALUES (1, 100), (2, 200), (3, 300)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 ORDER BY a.a1", Rows: [][]any{{1, 10, 1, 100}, {2, 20, 2, 200}, {3, 30, 3, 300}}},
+			{Query: "SELECT x.*, y.* FROM a AS x, b AS y WHERE x.a1 = y.b1 ORDER BY x.a1", Rows: [][]any{{1, 10, 1, 100}, {2, 20, 2, 200}, {3, 30, 3, 300}}},
+		},
+	}
+}
+
+// wrongQualifierScenario mirrors testdata/wrong_qualifier.yaml — the
+// SELECT-only positive subset plus error_code tests (skipped via per-
+// test Skip). Drops NOT NULL on PK. Skips the explicit `INNER JOIN`
+// tests (existing CLAUDE.md gotcha). Pins comma-join + alias resolution
+// + WHERE qualifier resolution + single-source aliased projection.
+func wrongQualifierScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "wrong_qualifier",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')",
+			"INSERT INTO b VALUES (1, 'one'), (2, 'two')",
+		},
+		Tests: []yamsql.Test{
+			// Comma-join with valid qualifiers.
+			{Query: "SELECT a.name, b.label FROM a, b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{"alpha", "one"}, {"beta", "two"}}},
+			// Aliased qualifier in comma-join.
+			{Query: "SELECT x.id, x.name FROM a AS x, b WHERE x.id = b.id ORDER BY x.id", Rows: [][]any{{1, "alpha"}, {2, "beta"}}},
+			// Valid qualifier in WHERE.
+			{Query: "SELECT a.id FROM a, b WHERE a.id = b.id AND b.label = 'one'", Rows: [][]any{{1}}},
+			// Single-table aliased projection.
+			{Query: "SELECT d.id, d.name FROM a AS d WHERE d.id = 1", Rows: [][]any{{1, "alpha"}}},
+			// Single-table unaliased qualifier.
+			{Query: "SELECT a.id, a.name FROM a WHERE a.id = 2", Rows: [][]any{{2, "beta"}}},
+		},
+	}
+}
+
+// bugHuntProbesScenario mirrors testdata/bug_hunt_probes.yaml — the
+// SELECT-only NULL-semantic / aggregate / CTE probes. Drops NOT NULL on
+// PK. Skips DML, error_code, IN-with-NULL forms (Java rejects NULL in
+// IN list per existing CLAUDE.md gotcha).
+func bugHuntProbesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "bug_hunt_probes",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, null), (4, null, 'd')",
+		},
+		Tests: []yamsql.Test{
+			// COUNT/AVG/SUM NULL semantics.
+			{Query: "SELECT COUNT(*), COUNT(n), COUNT(s) FROM t", Rows: [][]any{{4, 3, 3}}},
+			{Query: "SELECT AVG(n) FROM t", Rows: [][]any{{20.0}}},
+			{Query: "SELECT SUM(n) FROM t WHERE n IS NULL", Rows: [][]any{{nil}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE id > 1000", Rows: [][]any{{0}}},
+			// Boolean three-valued logic.
+			{Query: "SELECT id FROM t WHERE (n > 5) AND (s IS NULL) ORDER BY id", Rows: [][]any{{3}}},
+			// Nested CTE — drop ORDER BY (CTE+ORDER BY gotcha).
+			{Query: "WITH a AS (SELECT id, n FROM t WHERE n IS NOT NULL), b AS (SELECT id, n * 2 AS doubled FROM a) SELECT id, doubled FROM b", Unordered: true, Rows: [][]any{{1, 20}, {2, 40}, {3, 60}}},
+			// Aggregate over CTE.
+			{Query: "WITH high AS (SELECT n FROM t WHERE n > 15) SELECT SUM(n), COUNT(*) FROM high", Rows: [][]any{{50, 2}}},
+		},
+	}
+}
+
+// orderByEliminationScenario mirrors testdata/order_by_elimination.yaml
+// — the single-col ORDER BY subset that survives the planner's
+// natural-order continuation rule. Drops NOT NULL on PK. Skips DESC
+// (cursors are ASC-only and Java's planner often can't reverse), and
+// multi-col ORDER BY (existing CLAUDE.md gotcha). Renamed `plan` to
+// `tier` (reserved-word gotcha).
+func orderByEliminationScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "order_by_elimination",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE ab (a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (a, b))" +
+			" CREATE TABLE rp (id BIGINT, region STRING, tier STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tier ON rp (region, tier)",
+		Setup: []string{
+			"INSERT INTO t VALUES (3, 10, 'c'), (1, 30, 'a'), (2, 20, 'b'), (4, 40, 'd'), (5, 15, 'e')",
+			"INSERT INTO ab VALUES (1, 10, 100), (2, 20, 200), (1, 20, 150), (2, 10, 250), (1, 30, 130)",
+			"INSERT INTO rp VALUES (1, 'us', 'pro'), (2, 'us', 'free'), (3, 'us', 'pro'), (4, 'eu', 'pro'), (5, 'eu', 'free')",
+		},
+		Tests: []yamsql.Test{
+			// Full scan + ORDER BY PK ASC — natural order.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{{1, 30}, {2, 20}, {3, 10}, {4, 40}, {5, 15}}},
+			// PK range + ORDER BY PK ASC.
+			{Query: "SELECT id FROM t WHERE id > 1 ORDER BY id", Rows: [][]any{{2}, {3}, {4}, {5}}},
+			// Secondary equality + ORDER BY PK.
+			{Query: "SELECT id FROM t WHERE v = 10 ORDER BY id", Rows: [][]any{{3}}},
+			// Secondary range + ORDER BY indexed col.
+			{Query: "SELECT id, v FROM t WHERE v >= 20 ORDER BY v", Rows: [][]any{{2, 20}, {1, 30}, {4, 40}}},
+			// Composite PK ORDER BY first PK col.
+			{Query: "SELECT a, b FROM ab WHERE a = 1 ORDER BY b", Rows: [][]any{{1, 10}, {1, 20}, {1, 30}}},
+		},
+	}
+}
+
+// aggregateExpressionSelectScenario mirrors testdata/
+// aggregate_expression_select.yaml — SELECT-list expressions wrapping
+// aggregate function calls (post-aggregation evaluation). Drops NOT NULL
+// on PK. Skips GROUP BY tests (planner unsupported per CLAUDE.md
+// gotcha) and the COALESCE-wrapping-aggregate / CASE-wrapping-aggregate
+// forms — fdb-relational 4.11.1.0's planner raises
+// `IllegalStateException: unable to eval an aggregation function with
+// eval()` because the post-aggregation rewrite for scalar-function-of-
+// aggregate isn't implemented. Aggregate-of-expression
+// (`SUM(CASE WHEN ...)` covered by aggregate_expr) works; the inverse
+// direction does not. New CLAUDE.md gotcha.
+func aggregateExpressionSelectScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "aggregate_expression_select",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, grp STRING, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'x', 5, 10), (2, 'x', 20, 3), (3, 'y', 7, 2), (4, 'y', null, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT SUM(a) + SUM(b) FROM t", Rows: [][]any{{47}}},
+			{Query: "SELECT SUM(a) - SUM(b) FROM t", Rows: [][]any{{17}}},
+			// `COALESCE(SUM(a), 0)`, `CASE WHEN COUNT(*) > 3 THEN ...
+			// END` dropped — Java planner raises `unable to eval an
+			// aggregation function with eval()` (post-aggregation
+			// rewrite for scalar-function-of-aggregate not supported).
+			{Query: "SELECT AVG(a) + 1 FROM t", Rows: [][]any{{11.666666666666666}}},
+			{Query: "SELECT SUM(a), SUM(a) + 1 FROM t WHERE id < 3", Rows: [][]any{{25, 26}}},
+			{Query: "SELECT SUM(a) + 1 FROM t HAVING SUM(a) > 10", Rows: [][]any{{33}}},
+			{Query: "SELECT SUM(a), SUM(b) + 1 FROM t WHERE id < 3", Rows: [][]any{{25, 14}}},
+			{Query: "SELECT SUM(a), SUM(a) + SUM(b) FROM t WHERE id < 3", Rows: [][]any{{25, 38}}},
+			{Query: "SELECT 1, SUM(a) FROM t", Rows: [][]any{{1, 32}}},
+			{Query: "SELECT 'total', COUNT(*) FROM t", Rows: [][]any{{"total", 4}}},
+			{Query: "SELECT 1, 2, MAX(a) FROM t", Rows: [][]any{{1, 2, 20}}},
+		},
+	}
+}
+
+// derivedTableRenamedScenario mirrors testdata/derived_table_renamed.yaml.
+// Drops NOT NULL on PK. Drops the two-derived-tables comma-join (Go
+// unsupported by design — the extra-sources loop only accepts
+// AtomTableItem, error_code 0A000). Lifts the
+// derived-table-on-left + real-table-on-right form which works.
+func derivedTableRenamedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "derived_table_renamed",
+		SchemaTemplate: "CREATE TABLE a (ida BIGINT, PRIMARY KEY (ida))" +
+			" CREATE TABLE b (idb BIGINT, PRIMARY KEY (idb))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1)",
+			"INSERT INTO b VALUES (4)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT sq.x, b.idb FROM (SELECT ida AS x FROM a) AS sq, b", Rows: [][]any{{1, 4}}},
+		},
+	}
+}
+
+// aggregateExprScenario mirrors testdata/aggregate_expr.yaml — the no-
+// GROUP-BY no-DISTINCT subset. Drops NOT NULL on PK. Drops the GROUP BY,
+// SUM(DISTINCT), error_code, and aggregate-of-aggregate-with-ORDER-BY
+// tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
+// ORDER BY <aggregate> requires the natural-order continuation).
+//
+// New gotcha (swingshift-56): `SUM(BIGINT) / COUNT(*)` diverges between
+// engines. Java does integer division on BIGINT/BIGINT (returns 3 for
+// SUM=10, COUNT=3); Go's SUM accumulator is float64 so the result is
+// 3.333... — the yamsql YAML comment flags this as a Go-side divergence
+// pending an int-preserving SUM for int-only inputs. Cross-engine drop.
+func aggregateExprScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "aggregate_expr",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 2, 100), (2, 3, 50), (3, 5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// Plain-column aggregates.
+			{Query: "SELECT SUM(qty) FROM t", Rows: [][]any{{10}}},
+			{Query: "SELECT MIN(price), MAX(price) FROM t", Rows: [][]any{{20, 100}}},
+			{Query: "SELECT AVG(price) FROM t", Rows: [][]any{{56.666666666666664}}},
+			// Aggregates over arithmetic expression.
+			{Query: "SELECT SUM(qty * price) FROM t", Rows: [][]any{{450}}},
+			{Query: "SELECT AVG(price / 2) FROM t", Rows: [][]any{{28.333333333333332}}},
+			{Query: "SELECT MIN(qty * price), MAX(qty * price) FROM t", Rows: [][]any{{100, 200}}},
+			// Alias.
+			{Query: "SELECT SUM(qty * price) AS revenue FROM t", Rows: [][]any{{450}}},
+			// Multi-aggregate.
+			{Query: "SELECT SUM(qty), SUM(qty * price) FROM t", Rows: [][]any{{10, 450}}},
+			// COUNT over expression.
+			{Query: "SELECT COUNT(qty * price) FROM t", Rows: [][]any{{3}}},
+			// Empty group / NULL.
+			{Query: "SELECT SUM(qty * price), COUNT(qty * price) FROM t WHERE id < 0", Rows: [][]any{{nil, 0}}},
+			// CASE-based aggregates.
+			{Query: "SELECT SUM(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{150}}},
+			{Query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t", Rows: [][]any{{2}}},
+			{Query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{100}}},
+			{Query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t", Rows: [][]any{{75.0}}},
+			// `SUM(qty) / COUNT(*)` dropped — Java integer-divides
+			// BIGINT/BIGINT, Go's SUM accumulator returns float64.
+			// Multi-aggregate with arithmetic.
+			{Query: "SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t", Rows: [][]any{{7, 7.0}}},
+		},
+	}
+}
+
+// orderByExpressionScenario tracker — the single-col `ORDER BY a + b`
+// forms also fail Cascades planning (UnableToPlanException), the same
+// natural-order-continuation gotcha as ORDER BY non-PK col. Java's
+// planner can only sort by columns that are already naturally ordered
+// by the chosen scan plan; an arithmetic expression isn't naturally
+// ordered by any FDB key. Even single-col ORDER BY <expression> needs
+// a sort rule the planner doesn't have. Cross-engine drop.
+//
+// Surfaced swingshift-56. Existing CLAUDE.md `ORDER BY natural-order`
+// gotcha covers this; no new gotcha needed.
+
+// inListPushdownScenario mirrors testdata/in_list_pushdown.yaml — the
+// SELECT-only subset that doesn't depend on mid-stream DML state. Drops
+// NOT NULL on PK. Renames the `plan` column to `category` (per the
+// reserved-word gotcha). Drops LIMIT and DISTINCT tests, the
+// `WHERE id IN (1, NULL, 3)` form (CLAUDE.md gotcha — fdb-relational
+// rejects NULL in IN list outright), and IN-with-subquery (scalar
+// subquery gotcha). Drops ORDER BY non-PK forms (planner natural-order
+// gotcha).
+func inListPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "in_list_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE ts (k STRING, w BIGINT, PRIMARY KEY (k))" +
+			" CREATE TABLE kvw (a BIGINT, b BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (a, b, c))" +
+			" CREATE TABLE t2 (id BIGINT, status STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_t2_status ON t2 (status)" +
+			" CREATE TABLE tp (id BIGINT, region STRING, category STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_category ON tp (region, category)" +
+			" CREATE TABLE tb (id BIGINT, payload BYTES, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_payload ON tb (payload)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'one', 10), (2, 'two', 20), (3, 'three', 30), (4, 'four', 40), (5, 'five', 50)",
+			"INSERT INTO ts VALUES ('alpha', 1), ('beta', 2), ('gamma', 3), ('delta', 4)",
+			"INSERT INTO kvw VALUES (1, 10, 100, 1000), (1, 20, 200, 2000), (2, 30, 300, 3000), (2, 40, 400, 4000)",
+			"INSERT INTO t2 VALUES (1, 'active', 5), (2, 'archived', 15), (3, 'active', 25), (4, 'archived', 5), (5, 'deleted', 50)",
+			"INSERT INTO tp VALUES (10, 'us', 'pro'), (11, 'us', 'free'), (12, 'us', 'pro'), (13, 'eu', 'pro'), (14, 'eu', 'free')",
+			"INSERT INTO tb VALUES (1, X'deadbeef'), (2, X'cafe'), (3, X'feed')",
+		},
+		Tests: []yamsql.Test{
+			// Single-col PK IN-list.
+			{Query: "SELECT id, name FROM t WHERE id IN (1, 3) ORDER BY id", Rows: [][]any{{1, "one"}, {3, "three"}}},
+			{Query: "SELECT id FROM t WHERE id IN (2)", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE id IN (1, 2, 3, 4, 5) ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE id IN (100, 200, 300)", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE id IN (2, 99, 4) ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// IN-list + AND residual.
+			{Query: "SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id", Rows: [][]any{{3}, {5}}},
+			{Query: "SELECT id FROM t WHERE id IN (1, 2, 3) AND name LIKE 'tw%'", Rows: [][]any{{2}}},
+			// NOT IN.
+			{Query: "SELECT id FROM t WHERE id NOT IN (1, 2, 3) ORDER BY id", Rows: [][]any{{4}, {5}}},
+			// String PK IN.
+			{Query: "SELECT k FROM ts WHERE k IN ('alpha', 'gamma') ORDER BY k", Rows: [][]any{{"alpha"}, {"gamma"}}},
+			{Query: "SELECT k, w FROM ts WHERE k IN ('beta', 'missing') ORDER BY k", Rows: [][]any{{"beta", 2}}},
+			// Composite PK IN-list — leading eq + trailing IN.
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) ORDER BY b", Rows: [][]any{{1, 10, 100}, {1, 20, 200}}},
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 30) AND c = 100", Rows: [][]any{{1, 10, 100}}},
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b = 20 AND c IN (100, 200) ORDER BY c", Rows: [][]any{{1, 20, 200}}},
+			{Query: "SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) AND c = 999", Rows: [][]any{}},
+			// Composite secondary-index IN-list.
+			{Query: "SELECT id, region, category FROM tp WHERE region = 'us' AND category IN ('pro', 'free') ORDER BY id", Rows: [][]any{{10, "us", "pro"}, {11, "us", "free"}, {12, "us", "pro"}}},
+			// Secondary-index IN-list.
+			{Query: "SELECT id, status FROM t2 WHERE status IN ('active', 'deleted') ORDER BY id", Rows: [][]any{{1, "active"}, {3, "active"}, {5, "deleted"}}},
+			{Query: "SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id", Rows: [][]any{{1, "active"}, {3, "active"}}},
+			{Query: "SELECT id FROM t2 WHERE status IN ('active', 'archived') AND v > 10 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t2 WHERE status IN ('nonexistent', 'alsonone')", Rows: [][]any{}},
+			{Query: "SELECT id FROM t2 WHERE status IN ('active', 'nope') ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// BYTES-indexed IN.
+			{Query: "SELECT id FROM tb WHERE payload IN (X'cafe', X'feed') ORDER BY id", Rows: [][]any{{2}, {3}}},
+			// Type-mismatch (Skip via per-test Skip).
+			{Query: "SELECT id FROM t WHERE id IN (1, 'two', 3)", ErrorCode: "22000"},
+		},
+	}
+}
+
+// numericTypesScenario mirrors testdata/numeric_types.yaml — the SELECT
+// arithmetic tests only. Drops NOT NULL on PK. The INSERT
+// out-of-range tests aren't expressible cross-engine via runWithSetup
+// (one query per test). The post-INSERT SELECT references id=3 which
+// never gets inserted, so it's dropped too.
+func numericTypesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "numeric_types",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, i INTEGER, l BIGINT, d DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 100, 1.5), (2, 20, 200, 2.5)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT i / 3 FROM t WHERE id = 1", Rows: [][]any{{3}}},
+			{Query: "SELECT l + l FROM t WHERE id = 1", Rows: [][]any{{200}}},
+			{Query: "SELECT d * 2 FROM t WHERE id = 1", Rows: [][]any{{3.0}}},
+			{Query: "SELECT i + d FROM t WHERE id = 1", Rows: [][]any{{11.5}}},
+		},
+	}
+}
+
+// isDistinctFromScenario mirrors testdata/is_distinct_from.yaml. Drops
+// NOT NULL on PK. Tests SQL:1999 NULL-safe equality (IS DISTINCT FROM /
+// IS NOT DISTINCT FROM) — never UNKNOWN, two-valued boolean.
+func isDistinctFromScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "is_distinct_from",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, label STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alpha'), (2, 'beta'), (3, null), (4, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE label = 'alpha' ORDER BY id", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE label IS DISTINCT FROM 'alpha' ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE label IS NOT DISTINCT FROM null ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id FROM t WHERE label IS NOT DISTINCT FROM 'beta'", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE label IS DISTINCT FROM null ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE null IS DISTINCT FROM label ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE null IS DISTINCT FROM null", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE 10 IS DISTINCT FROM 10", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE 10 IS NOT DISTINCT FROM 10 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}}},
+			{Query: "SELECT id, label IS DISTINCT FROM null FROM t WHERE id = 3", Rows: [][]any{{3, false}}},
+			{Query: "SELECT id, label IS NOT DISTINCT FROM null FROM t WHERE id = 3", Rows: [][]any{{3, true}}},
+			{Query: "SELECT id, label IS DISTINCT FROM 'alpha' FROM t ORDER BY id", Rows: [][]any{{1, false}, {2, true}, {3, true}, {4, true}}},
+		},
+	}
+}
+
+// coveringIndexPushdownScenario mirrors testdata/covering_index_pushdown.yaml
+// — the SELECT-only covered subset. Renames yamsql's `plan` to
+// `category` (per the swingshift-56 reserved-word gotcha) and `note` to
+// `notes` (defensive). Skips tests using DISTINCT (planner unsupported,
+// existing CLAUDE.md gotcha), LIMIT (unsupported), multi-col ORDER BY
+// (unsupported), and IN subquery (uncertain support; scalar-subquery
+// gotcha covers the bare form).
+func coveringIndexPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "covering_index_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_status ON t (status)" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE t2 (id BIGINT, region STRING, category STRING, amount BIGINT, extra STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_category ON t2 (region, category)" +
+			" CREATE TABLE tb (id BIGINT, payload BYTES, label STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_payload ON tb (payload)" +
+			" CREATE TABLE kvw (a BIGINT, b BIGINT, c BIGINT, extra STRING, PRIMARY KEY (a, b, c))" +
+			" CREATE INDEX kvw_b ON kvw (b)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'active', 'x', 10, 'n1'), (2, 'archived', 'y', 20, 'n2'), (3, 'active', 'z', 30, 'n3'), (4, 'deleted', 'q', 40, 'n4')",
+			"INSERT INTO t2 VALUES (10, 'us', 'pro', 100, 'e1'), (11, 'us', 'free', 50, 'e2'), (12, 'us', 'pro', 200, 'e3'), (13, 'eu', 'pro', 300, 'e4'), (14, 'eu', 'free', 75, 'e5')",
+			"INSERT INTO tb VALUES (1, X'deadbeef', 'a'), (2, X'cafe', 'b'), (3, X'feed', 'c')",
+			"INSERT INTO kvw VALUES (1, 10, 100, 'e1'), (1, 20, 100, 'e2'), (1, 30, 100, 'e3'), (2, 20, 200, 'e4')",
+		},
+		Tests: []yamsql.Test{
+			// Covered: SELECT of indexed col + PK.
+			{Query: "SELECT id FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1}, {3}}},
+			{Query: "SELECT id, status FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1, "active"}, {3, "active"}}},
+			{Query: "SELECT status FROM t WHERE status = 'archived'", Rows: [][]any{{"archived"}}},
+			// Covered range on indexed column.
+			{Query: "SELECT id, v FROM t WHERE v >= 20 AND v < 40 ORDER BY v", Rows: [][]any{{2, 20}, {3, 30}}},
+			{Query: "SELECT id, v FROM t WHERE v BETWEEN 20 AND 30 ORDER BY v", Rows: [][]any{{2, 20}, {3, 30}}},
+			{Query: "SELECT id FROM t WHERE v > 25 ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id, v FROM t WHERE v > 0 ORDER BY v", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}, {4, 40}}},
+			// Covered composite index.
+			{Query: "SELECT id, region, category FROM t2 WHERE region = 'us' AND category = 'pro' ORDER BY id", Rows: [][]any{{10, "us", "pro"}, {12, "us", "pro"}}},
+			{Query: "SELECT region, category FROM t2 WHERE region = 'us' AND category > 'f' ORDER BY category", Rows: [][]any{{"us", "free"}, {"us", "pro"}, {"us", "pro"}}},
+			// Covered BYTES-kind indexed col.
+			{Query: "SELECT id FROM tb WHERE payload = X'cafe'", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM tb WHERE payload >= X'cafe' AND payload < X'feed' ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// Composite-PK row synthesis from kvw entry's PK tuple.
+			{Query: "SELECT a FROM kvw WHERE b = 30", Rows: [][]any{{1}}},
+			{Query: "SELECT a, b FROM kvw WHERE a = 1 AND b BETWEEN 15 AND 25", Rows: [][]any{{1, 20}}},
+			// Bails (covering check fails) — non-covered SELECT still works.
+			{Query: "SELECT id, notes FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1, "n1"}, {3, "n3"}}},
+			{Query: "SELECT id FROM t WHERE status = 'active' AND v > 20", Rows: [][]any{{3}}},
+			// Constant-only residual + covering still applies.
+			{Query: "SELECT id FROM t WHERE status = 'active' AND 1 = 1 ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// Empty results.
+			{Query: "SELECT id FROM t WHERE v > 1000", Rows: [][]any{}},
+			{Query: "SELECT id, status FROM t WHERE status = 'nonexistent'", Rows: [][]any{}},
+		},
+	}
+}
+
+// mixedTypeEqualityScenario mirrors testdata/mixed_type_equality.yaml.
+// Drops NOT NULL on PK. Two error_code tests skipped per per-test Skip;
+// three positive tests pin same-type equality + IN-list. Java aligns
+// on `INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE` 22000 for cross-type,
+// which is also Go's behaviour as of nightshift-39.
+func mixedTypeEqualityScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "mixed_type_equality",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 5, '5'), (2, 10, 'ten'), (3, 5, 'five')",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE n = '5'", ErrorCode: "22000"},
+			{Query: "SELECT id FROM t WHERE n IN ('5', 'ten')", ErrorCode: "22000"},
+			{Query: "SELECT id FROM t WHERE n = 5", Unordered: true, Rows: [][]any{{1}, {3}}},
+			{Query: "SELECT id FROM t WHERE s = '5'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE n IN (5, 10)", Unordered: true, Rows: [][]any{{1}, {2}, {3}}},
+		},
+	}
+}
+
+// gr1JoinScenario mirrors testdata/gr1_join.yaml. Drops NOT NULL on PK.
+// Drops the explicit-INNER-JOIN test (CLAUDE.md gotcha — explicit JOIN
+// ON broken in fdb-relational); keeps the comma-join positives. Two
+// error_code tests stay (per-test Skip).
+func gr1JoinScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "gr1_join",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a.id, COUNT(*) FROM a, b", ErrorCode: "42803"},
+			{Query: "SELECT COUNT(*) FROM a, b", Rows: [][]any{{4}}},
+			{Query: "SELECT SUM(a.v) FROM a, b WHERE a.id = b.id", Rows: [][]any{{30}}},
+		},
+	}
+}
+
+// inListAdvancedScenario mirrors testdata/in_list_advanced.yaml. Drops
+// NOT NULL on PK. Tests IN-list pushdown edge cases: arithmetic in the
+// list, duplicates (post-dedup semantics), singleton, no-match. Skips
+// the empty-IN-list and mixed-type error_code tests via per-test Skip.
+func inListAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "in_list_advanced",
+		SchemaTemplate: "CREATE TABLE ta (a BIGINT, b BIGINT, PRIMARY KEY (a))",
+		Setup: []string{
+			"INSERT INTO ta VALUES (1, 8), (2, 7), (3, 6), (4, 5), (5, 4), (6, 3), (7, 2), (8, 1)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a, b FROM ta WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a", Rows: [][]any{{2, 7}, {4, 5}, {6, 3}, {8, 1}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (6)", Rows: [][]any{{3, 6}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (10, 33, 66)", Rows: [][]any{}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (1, 1, 1, 1)", Rows: [][]any{{8, 1}}},
+			{Query: "SELECT a, b FROM ta WHERE a IN (1, 1, 1) ORDER BY a", Rows: [][]any{{1, 8}}},
+			{Query: "SELECT a, b FROM ta WHERE a IN (2, 1, 2, 3, 1) ORDER BY a", Rows: [][]any{{1, 8}, {2, 7}, {3, 6}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (1 + 0, 0 + 1)", Rows: [][]any{{8, 1}}},
+			{Query: "SELECT a, b FROM ta WHERE b IN (1, 2, 1, 3) ORDER BY a", Rows: [][]any{{6, 3}, {7, 2}, {8, 1}}},
+			{Query: "SELECT a FROM ta WHERE b IN ()", ErrorCode: "42601"},
+			{Query: "SELECT a FROM ta WHERE b IN ('foo', 3)", ErrorCode: "22000"},
+		},
+	}
+}
+
+// compositeSecondaryIndexPrefixPushdownScenario mirrors
+// testdata/composite_secondary_index_prefix_pushdown.yaml. Drops NOT
+// NULL on PK. Renames the `plan` column to `tag` per the swingshift-56
+// gotcha (`plan` reserved by fdb-relational's lexer); this also frees
+// the original `tier` to stay as the third index col of the 3-col
+// composite index. Skips DML count-checking tests (DML — runWithSetup
+// expects exactly one query). The original yamsql file uses `count: N`
+// to assert affected-row counts; that's a separate harness shape.
+func compositeSecondaryIndexPrefixPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "composite_secondary_index_prefix_pushdown",
+		SchemaTemplate: "CREATE TABLE rp (id BIGINT, region STRING, tag STRING, score BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tag ON rp (region, tag)" +
+			" CREATE INDEX idx_region_tag_score ON rp (region, tag, score)",
+		Setup: []string{
+			"INSERT INTO rp VALUES (1, 'us', 'pro', 1), (2, 'us', 'pro', 2), (3, 'us', 'free', 1), (4, 'eu', 'pro', 1), (5, 'eu', 'free', 2), (6, 'us', 'pro', 3)",
+		},
+		Tests: []yamsql.Test{
+			// 2-col index, equality on leading col only — prefix narrow.
+			{Query: "SELECT id FROM rp WHERE region = 'us' ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {6}}},
+			// Prefix + residual on trailing col.
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND score = 1 ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// Leading col mismatch — full scan with post-filter.
+			{Query: "SELECT id FROM rp WHERE tag = 'pro' ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {6}}},
+			// 3-col index, equality on first col only.
+			{Query: "SELECT id FROM rp WHERE region = 'eu' ORDER BY id", Rows: [][]any{{4}, {5}}},
+			// 2-col equality on (region, tag).
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND tag = 'pro' ORDER BY id", Rows: [][]any{{1}, {2}, {6}}},
+			// Full equality on (region, tag, score).
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND tag = 'pro' AND score = 1 ORDER BY id", Rows: [][]any{{1}}},
+			// Equality gap — eq on first + third, second unequated. Prefix
+			// only narrows by region; score=2 stays post-filter.
+			{Query: "SELECT id FROM rp WHERE region = 'us' AND score = 2 ORDER BY id", Rows: [][]any{{2}}},
+		},
+	}
+}
+
+// secondaryIndexPushdownScenario mirrors testdata/secondary_index_pushdown.yaml.
+// SELECT-only subset (DML mid-stream not expressible under runWithSetup's
+// per-test ephemeral schema). Drops NOT NULL on PK cols. Skips LIMIT
+// tests (CLAUDE.md gotcha — LIMIT not supported by fdb-relational).
+// Skip the range-over-secondary-index ORDER-BY-PK tests where the
+// planner can't reconcile index order with PK order (ORDER BY natural-
+// order continuation gotcha from earlier in this shift).
+func secondaryIndexPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "secondary_index_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, status STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_status ON t (status)" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE TABLE t2 (id BIGINT, region STRING, tier STRING, amount BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tier ON t2 (region, tier)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)",
+			"INSERT INTO t2 VALUES (10, 'us', 'pro', 100), (11, 'us', 'free', 50), (12, 'us', 'pro', 200), (13, 'eu', 'pro', 300), (14, 'eu', 'free', 75)",
+		},
+		Tests: []yamsql.Test{
+			// Single-col VALUE index equality.
+			{Query: "SELECT id, status, v FROM t WHERE status = 'active' ORDER BY id", Rows: [][]any{{1, "active", 10}, {3, "active", 30}}},
+			{Query: "SELECT id FROM t WHERE 'archived' = status", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE status = 'nonexistent'", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE status = 'active' AND v > 20", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE v = 30", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id = 2", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE status = 'active' AND v = 30", Rows: [][]any{{3}}},
+			{Query: "SELECT id, status FROM t WHERE v = 20", Rows: [][]any{{2, "archived"}}},
+			// Composite VALUE index — full key equality.
+			{Query: "SELECT id, amount FROM t2 WHERE region = 'us' AND tier = 'pro' ORDER BY id", Rows: [][]any{{10, 100}, {12, 200}}},
+			{Query: "SELECT id FROM t2 WHERE tier = 'free' AND region = 'eu'", Rows: [][]any{{14}}},
+			{Query: "SELECT id FROM t2 WHERE region = 'us' ORDER BY id", Rows: [][]any{{10}, {11}, {12}}},
+			{Query: "SELECT id FROM t2 WHERE region = 'eu' AND tier = 'pro' AND amount > 100", Rows: [][]any{{13}}},
+			{Query: "SELECT id FROM t2 WHERE region = 'asia' AND tier = 'pro'", Rows: [][]any{}},
+			// NULL on indexed column → three-valued logic UNKNOWN, empty.
+			{Query: "SELECT id FROM t WHERE status = NULL", Rows: [][]any{}},
+			{Query: "SELECT id FROM t2 WHERE region = 'us' AND tier = NULL", Rows: [][]any{}},
+			// Range over single-col VALUE index, with all 4 rows in t.
+			{Query: "SELECT COUNT(*) FROM t WHERE v >= 30", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 30", Rows: [][]any{{1}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v <= 20", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v < 30", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 20 AND v < 40", Rows: [][]any{{1}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v >= 10 AND v <= 30", Rows: [][]any{{3}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 100 AND v < 200", Rows: [][]any{{0}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 9999", Rows: [][]any{{0}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE 50 > v", Rows: [][]any{{4}}},
+		},
+	}
+}
+
+// likePrefixPushdownScenario mirrors testdata/like_prefix_pushdown.yaml.
+// SELECT-only subset, no mid-stream DML state. Drops NOT NULL on PK.
+// Excludes tests that require rows added via mid-stream INSERT (the
+// ESCAPE-clause subset depends on a runtime INSERT of x_ray / y%lo).
+// Excludes ORDER BY non-PK / non-index-leading column forms (planner
+// natural-order gotcha from earlier in this shift).
+func likePrefixPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "like_prefix_pushdown",
+		SchemaTemplate: "CREATE TABLE t (name STRING, tag STRING, v BIGINT, PRIMARY KEY (name))" +
+			" CREATE TABLE t2 (id BIGINT, status STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_status ON t2 (status)" +
+			" CREATE TABLE cp (region STRING, name STRING, v BIGINT, PRIMARY KEY (region, name))" +
+			" CREATE TABLE ci (id BIGINT, region STRING, name STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_name ON ci (region, name)",
+		Setup: []string{
+			"INSERT INTO t VALUES ('apple', 'fruit', 10), ('apricot', 'fruit', 20), ('banana', 'fruit', 30), ('bean', 'veggie', 40), ('carrot', 'veggie', 50), ('cabbage', 'veggie', 60), ('date', 'fruit', 70)",
+			"INSERT INTO t2 VALUES (1, 'active'), (2, 'archived'), (3, 'awaiting'), (4, 'deleted'), (5, 'disabled')",
+			"INSERT INTO cp VALUES ('us', 'apple', 10), ('us', 'apricot', 20), ('us', 'banana', 30), ('eu', 'apple', 40), ('eu', 'bean', 50)",
+			"INSERT INTO ci VALUES (1, 'us', 'apple'), (2, 'us', 'apricot'), (3, 'us', 'banana'), (4, 'eu', 'apple'), (5, 'eu', 'bean')",
+		},
+		Tests: []yamsql.Test{
+			// PK LIKE prefix.
+			{Query: "SELECT name FROM t WHERE name LIKE 'a%' ORDER BY name", Rows: [][]any{{"apple"}, {"apricot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'ba%'", Rows: [][]any{{"banana"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'be%'", Rows: [][]any{{"bean"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'car%'", Rows: [][]any{{"carrot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'apple'", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'xyz%'", Rows: [][]any{}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'c%' ORDER BY name", Rows: [][]any{{"cabbage"}, {"carrot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'appleX%'", Rows: [][]any{}},
+			// PK LIKE + residual.
+			{Query: "SELECT name FROM t WHERE name LIKE 'a%' AND v > 10 ORDER BY name", Rows: [][]any{{"apricot"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'b%' AND tag = 'fruit'", Rows: [][]any{{"banana"}}},
+			// NOT LIKE.
+			{Query: "SELECT name FROM t WHERE name NOT LIKE 'a%' ORDER BY name", Rows: [][]any{{"banana"}, {"bean"}, {"cabbage"}, {"carrot"}, {"date"}}},
+			// Interior wildcards (bail to scan, still correct).
+			{Query: "SELECT name FROM t WHERE name LIKE 'b_an'", Rows: [][]any{{"bean"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'b%an%' ORDER BY name", Rows: [][]any{{"banana"}, {"bean"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE '%ate'", Rows: [][]any{{"date"}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE name LIKE '%'", Rows: [][]any{{7}}},
+			// Secondary-index LIKE prefix.
+			{Query: "SELECT id, status FROM t2 WHERE status LIKE 'a%' ORDER BY id", Rows: [][]any{{1, "active"}, {2, "archived"}, {3, "awaiting"}}},
+			{Query: "SELECT id FROM t2 WHERE status LIKE 'd%' ORDER BY id", Rows: [][]any{{4}, {5}}},
+			{Query: "SELECT id FROM t2 WHERE status LIKE 'awa%'", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t2 WHERE status LIKE 'zzz%'", Rows: [][]any{}},
+			// Composite-PK LIKE prefix: leading eq + LIKE on second col.
+			{Query: "SELECT region, name FROM cp WHERE region = 'us' AND name LIKE 'a%' ORDER BY name", Rows: [][]any{{"us", "apple"}, {"us", "apricot"}}},
+			{Query: "SELECT region, name FROM cp WHERE region = 'eu' AND name LIKE 'b%'", Rows: [][]any{{"eu", "bean"}}},
+			{Query: "SELECT name FROM cp WHERE region = 'us' AND name LIKE 'a%' AND v > 10", Rows: [][]any{{"apricot"}}},
+			{Query: "SELECT region FROM cp WHERE region = 'us' AND name LIKE 'zzz%'", Rows: [][]any{}},
+			// Composite secondary-index LIKE prefix.
+			{Query: "SELECT id, region, name FROM ci WHERE region = 'us' AND name LIKE 'a%' ORDER BY id", Rows: [][]any{{1, "us", "apple"}, {2, "us", "apricot"}}},
+			{Query: "SELECT id FROM ci WHERE region = 'eu' AND name LIKE 'b%'", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM ci WHERE region = 'asia' AND name LIKE 'a%'", Rows: [][]any{}},
+			// Interior-wildcard prefix narrowing (post-filter via likeMatch).
+			{Query: "SELECT name FROM t WHERE name LIKE 'a%le' ORDER BY name", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'a_ple' ORDER BY name", Rows: [][]any{{"apple"}}},
+			{Query: "SELECT name FROM t WHERE name LIKE 'bana%'", Rows: [][]any{{"banana"}}},
+			// Underscore at start (no literal prefix, bails to scan).
+			{Query: "SELECT name FROM t WHERE name LIKE '_anana'", Rows: [][]any{{"banana"}}},
+		},
+	}
+}
+
+// crossJoinScenario mirrors testdata/cross_join.yaml. Drops NOT NULL on
+// PK columns. Cross-engine omissions:
+//   - Explicit `CROSS JOIN` syntax — fdb-relational 4.11.1.0's parser
+//     visitor unconditionally calls `InnerJoinContext.expression().accept(...)`
+//     and NPEs when the ON clause is null (CROSS JOIN has no ON). Tracked
+//     as new CLAUDE.md gotcha.
+//   - `INNER JOIN ... ON 1 = 1` — same JOIN-ON gotcha as in CLAUDE.md
+//     (column-resolution path rejects); constant ON likely rides the
+//     same code path.
+//   - `FROM a, b ORDER BY a.id, b.id` — multi-col ORDER BY across two
+//     table sources is unsupported by the Cascades planner (existing
+//     multi-col ORDER BY gotcha).
+//
+// Comma-join (cartesian) WITHOUT a multi-col ORDER BY works, and the
+// SQL-89 comma-join-with-WHERE is fully supported (the documented
+// workaround for explicit JOIN ON).
+func crossJoinScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "cross_join",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			// Comma-join cartesian — no ORDER BY, multiset compare.
+			{Query: "SELECT a.id, b.id FROM a, b", Unordered: true, Rows: [][]any{{1, 1}, {1, 2}, {2, 1}, {2, 2}}},
+			{Query: "SELECT COUNT(*) FROM a, b", Rows: [][]any{{4}}},
+			// SQL-89 comma-join with WHERE join-predicate.
+			{Query: "SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{10, 100}, {20, 200}}},
+		},
+	}
+}
+
+// compositePKPrefixPushdownScenario mirrors
+// testdata/composite_pk_prefix_pushdown.yaml. Drops NOT NULL on PK
+// cols. Skips the LIMIT test (CLAUDE.md gotcha — LIMIT not supported by
+// fdb-relational), error_code test (per-test Skip), and UPDATE/DELETE
+// tests (DML — runWithSetup expects exactly one query).
+func compositePKPrefixPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "composite_pk_prefix_pushdown",
+		SchemaTemplate: "CREATE TABLE kv (a BIGINT, b BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (a, b, c))" +
+			" CREATE TABLE kv2 (a BIGINT, b BIGINT, label STRING, PRIMARY KEY (a, b))",
+		Setup: []string{
+			"INSERT INTO kv VALUES (1, 10, 100, 1000), (1, 10, 200, 2000), (1, 20, 100, 3000), (1, 20, 300, 4000), (2, 10, 100, 5000), (2, 30, 100, 6000)",
+			"INSERT INTO kv2 VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 10, 'c'), (2, 20, 'd')",
+		},
+		Tests: []yamsql.Test{
+			// Single leading col equated on 3-col PK: prefix narrows by a.
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 ORDER BY b, c", Rows: [][]any{{1, 10, 100}, {1, 10, 200}, {1, 20, 100}, {1, 20, 300}}},
+			// Leading-col prefix + residual on a non-PK column.
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 AND v > 1500 ORDER BY b, c", Rows: [][]any{{1, 10, 200}, {1, 20, 100}, {1, 20, 300}}},
+			// Two leading cols equated on 3-col PK: prefix = [1, 10].
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 AND b = 10 ORDER BY c", Rows: [][]any{{1, 10, 100}, {1, 10, 200}}},
+			// Leading two equated + equality on non-PK column.
+			{Query: "SELECT c FROM kv WHERE a = 1 AND b = 10 AND v = 1000", Rows: [][]any{{100}}},
+			// Residual equality on a TRAILING PK col after a break.
+			{Query: "SELECT a, b, c FROM kv WHERE a = 1 AND c = 100 ORDER BY b", Rows: [][]any{{1, 10, 100}, {1, 20, 100}}},
+			// Bail: no leading equality. WHERE b = 10 on PK (a, b, c).
+			{Query: "SELECT a, b, c FROM kv WHERE b = 10 ORDER BY a, c", Rows: [][]any{{1, 10, 100}, {1, 10, 200}, {2, 10, 100}}},
+			// Bail: full equality picked up by equality-pushdown branch.
+			{Query: "SELECT v FROM kv WHERE a = 1 AND b = 10 AND c = 100", Rows: [][]any{{1000}}},
+			// 2-col PK pure-prefix.
+			{Query: "SELECT a, b, label FROM kv2 WHERE a = 2 ORDER BY b", Rows: [][]any{{2, 10, "c"}, {2, 20, "d"}}},
+			// No match.
+			{Query: "SELECT a, b FROM kv2 WHERE a = 99", Rows: [][]any{}},
+		},
+	}
+}
+
+// pkPushdownScenario mirrors testdata/pk_pushdown.yaml — but only the
+// SELECT-only subset. Drops NOT NULL on PK cols; skips the LIMIT test
+// (LIMIT not supported), error_code tests, DML tests. The full yamsql
+// file mixes UPDATE/DELETE/INSERT into the test list and re-seeds rows
+// mid-stream — those depend on per-test stateful execution that the
+// runWithSetup harness doesn't support (each test runs against a fresh
+// schema). The pure-SELECT block at the top is what we lift here.
+//
+// Cross-engine omissions surfaced by this scenario:
+//   - `WHERE id = 2 AND id > 5` (contradictory equality + range) — Java
+//     returns the row matching the equality; the planner doesn't apply
+//     the range as post-filter when the equality already pinpoints the
+//     record. Tracked as a Java planner bug; Go correctly returns empty.
+//     New CLAUDE.md gotcha. Drop until upstream fix.
+//   - `ORDER BY <col>` where <col> is not the leading-PK natural-order
+//     continuation: a range on a leading col + ORDER BY a later col,
+//     ORDER BY a non-PK col without a satisfying index, etc. Java's
+//     Cascades planner raises `UnableToPlanException`. Drop the
+//     affected tests until the planner ports a generic sort rule.
+func pkPushdownScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "pk_pushdown",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE kv (k STRING, g BIGINT, v BIGINT, PRIMARY KEY (k, g))" +
+			" CREATE TABLE kvw (region STRING, bucket BIGINT, tag STRING, v BIGINT, PRIMARY KEY (region, bucket, tag))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30), (4, 'delta', 40)",
+			"INSERT INTO kv VALUES ('a', 1, 100), ('a', 2, 200), ('b', 1, 300), ('b', 2, 400)",
+			"INSERT INTO kvw VALUES ('us', 1, 'a', 10), ('us', 1, 'b', 20), ('us', 2, 'a', 30), ('us', 2, 'b', 40), ('eu', 1, 'a', 50), ('eu', 1, 'b', 60)",
+		},
+		Tests: []yamsql.Test{
+			// Single-col PK equality.
+			{Query: "SELECT id, name, v FROM t WHERE id = 3", Rows: [][]any{{3, "gamma", 30}}},
+			{Query: "SELECT id, name, v FROM t WHERE 3 = id", Rows: [][]any{{3, "gamma", 30}}},
+			{Query: "SELECT id, name FROM t WHERE id = 99", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE t.id = 4", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE name = 'beta'", Rows: [][]any{{2}}},
+			// Single-col PK range.
+			{Query: "SELECT id FROM t WHERE id > 2 ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id FROM t WHERE id >= 3 ORDER BY id", Rows: [][]any{{3}, {4}}},
+			{Query: "SELECT id FROM t WHERE id < 3 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE id <= 2 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE 3 < id ORDER BY id", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE id >= 2 AND id <= 3 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t WHERE id > 1 AND id < 4 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t WHERE id >= 2 AND name = 'gamma'", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id > 10 AND id < 5", Rows: [][]any{}},
+			// `id = 2 AND id > 5` dropped — Java planner-bug: returns
+			// [2] because the equality pushdown skips the range
+			// post-filter. Go correctly returns empty.
+			{Query: "SELECT id FROM t WHERE id = 3 AND v = 30", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id = 3 AND v = 999", Rows: [][]any{}},
+			{Query: "SELECT COUNT(*) FROM t WHERE id = 1", Rows: [][]any{{1}}},
+			{Query: "SELECT v * 2 FROM t WHERE id = 4", Rows: [][]any{{80}}},
+			{Query: "SELECT id, name FROM t WHERE name = 'alpha' ORDER BY id", Rows: [][]any{{1, "alpha"}}},
+			{Query: "SELECT id FROM t WHERE id <> 2 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			// Composite 2-col PK.
+			{Query: "SELECT v FROM kv WHERE k = 'a' AND g = 2", Rows: [][]any{{200}}},
+			{Query: "SELECT v FROM kv WHERE g = 1 AND k = 'b'", Rows: [][]any{{300}}},
+			{Query: "SELECT g, v FROM kv WHERE k = 'a' ORDER BY g", Rows: [][]any{{1, 100}, {2, 200}}},
+			{Query: "SELECT v FROM kv WHERE k = 'a' AND g >= 1 AND g <= 1", Rows: [][]any{{100}}},
+			{Query: "SELECT g, v FROM kv WHERE k = 'a' AND g > 1 ORDER BY g", Rows: [][]any{{2, 200}}},
+			{Query: "SELECT g, v FROM kv WHERE k = 'b' AND g < 2 ORDER BY g", Rows: [][]any{{1, 300}}},
+			// `WHERE k > 'a' ORDER BY g` dropped — range on leading PK
+			// col + ORDER BY trailing PK col fails Cascades planning
+			// (UnableToPlanException). The natural order across `k > 'a'`
+			// is k-then-g, not g, so Java needs a sort rule it doesn't
+			// have.
+			// `WHERE k='b' AND g BETWEEN 1 AND 2 ORDER BY v` dropped —
+			// ORDER BY non-PK col without an index also fails.
+			{Query: "SELECT v FROM kv WHERE k = 'b' AND g = 2 AND v = 400", Rows: [][]any{{400}}},
+			{Query: "SELECT v FROM kv WHERE k = 'b' AND g = 2 AND v = 999", Rows: [][]any{}},
+			{Query: "SELECT v FROM kv WHERE k = 'a' AND g = 2 AND v > 100", Rows: [][]any{{200}}},
+			// `OR (...) ORDER BY v` dropped — same UnableToPlan as
+			// the bare ORDER BY v above (non-PK ORDER target).
+			// 3-col composite PK.
+			{Query: "SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket > 1 AND tag = 'a'", Rows: [][]any{{"us", 2, "a"}}},
+			{Query: "SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket <= 1 AND tag = 'a'", Rows: [][]any{{"us", 1, "a"}}},
+			// `region < 'us' ORDER BY tag` dropped — range on leading
+			// col + ORDER BY trailing PK col, same UnableToPlan as kv
+			// above.
+			{Query: "SELECT COUNT(*) FROM kvw WHERE region < 'us'", Rows: [][]any{{2}}},
+			// BETWEEN pushdown.
+			{Query: "SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE id BETWEEN 3 AND 3", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE id BETWEEN 10 AND 5", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE id BETWEEN 1 AND 5 AND name <> 'gamma' ORDER BY id", Rows: [][]any{{1}, {2}, {4}}},
+			{Query: "SELECT id FROM t WHERE id NOT BETWEEN 2 AND 4 ORDER BY id", Rows: [][]any{{1}}},
+			{Query: "SELECT k, g FROM kv WHERE k = 'a' AND g BETWEEN 1 AND 2 ORDER BY g", Rows: [][]any{{"a", 1}, {"a", 2}}},
+		},
 	}
 }
 
