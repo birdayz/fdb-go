@@ -92,6 +92,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		likeScenario,
 		caseWhenScenario,
 		aggregateEmptyTableScenario,
+		bitwiseScenario,
 	}
 }
 
@@ -404,6 +405,28 @@ func aggregateEmptyTableScenario() *yamsql.Scenario {
 			{Query: "SELECT MAX(n) FROM empty_t", Rows: [][]any{{nil}}},
 			{Query: "SELECT COUNT(*) FROM empty_t WHERE id = 999", Rows: [][]any{{0}}},
 			{Query: "SELECT COUNT(*) FROM empty_t HAVING COUNT(*) > 0", Rows: [][]any{}},
+		},
+	}
+}
+
+// bitwiseScenario mirrors testdata/bitwise.yaml. Drops NOT NULL on PK.
+// Drops the bit-shift tests (`<< / >>`) — fdb-relational tokenizes the
+// operators but the function registry has no evaluator (CLAUDE.md
+// gotcha). Drops the FROM-less SELECT and error_code shift-out-of-range
+// tests for the same reason.
+func bitwiseScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "bitwise",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 15, 3), (2, 16, 32), (3, -1, 1), (4, 5, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a & b FROM t WHERE id = 1", Rows: [][]any{{3}}},
+			{Query: "SELECT a | b FROM t WHERE id = 2", Rows: [][]any{{48}}},
+			{Query: "SELECT a ^ b FROM t WHERE id = 1", Rows: [][]any{{12}}},
+			{Query: "SELECT a & b FROM t WHERE id = 4", Rows: [][]any{{nil}}},
+			{Query: "SELECT id FROM t WHERE a & 1 = 1 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
 		},
 	}
 }
