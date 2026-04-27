@@ -191,6 +191,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		ambiguousColumnScenario(),
 		correlatedSubqueryProbesScenario(),
 		unionColumnsRenamedScenario(),
+		joinChainedScenario(),
 	}
 }
 
@@ -1715,6 +1716,36 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 				Query:     "SELECT v FROM a UNION ALL SELECT w FROM b",
 				Unordered: true,
 				Rows:      [][]any{{10}, {20}, {100}, {200}},
+			},
+		},
+	}
+}
+
+// joinChainedScenario mirrors testdata/join_chained.yaml's comma-join
+// subset — drops the explicit INNER JOIN ON tests (CLAUDE.md gotcha:
+// fdb-relational rejects fully-qualified column names from the JOIN ON
+// clause). Drops NOT NULL on PK.
+func joinChainedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_chained",
+		SchemaTemplate: "CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			"\nCREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)",
+			"INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Sales')",
+			"INSERT INTO project VALUES (100, 1), (101, 2), (102, 3)",
+		},
+		Tests: []yamsql.Test{
+			// 2-way comma-join via WHERE.
+			{
+				Query: "SELECT emp.name FROM emp, project WHERE project.emp_id = emp.id ORDER BY emp.id",
+				Rows:  [][]any{{"Alice"}, {"Bob"}, {"Carol"}},
+			},
+			// 3-way comma-join with chained equi-joins in WHERE.
+			{
+				Query: "SELECT emp.name, dept.name FROM emp, dept, project WHERE emp.dept_id = dept.id AND project.emp_id = emp.id ORDER BY emp.id",
+				Rows:  [][]any{{"Alice", "Engineering"}, {"Bob", "Sales"}, {"Carol", "Engineering"}},
 			},
 		},
 	}
