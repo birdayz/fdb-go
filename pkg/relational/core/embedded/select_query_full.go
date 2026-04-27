@@ -502,8 +502,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			type groupState struct {
 				groupVals []driver.Value // values for the group-by columns
 				// accumulators parallel to sq.aggCols
-				counts       []int64
+				counts []int64
+				// SUM accumulators: maintain BOTH int64 and float64
+				// running totals so we can emit int64 when every
+				// observed value is integral (Java-aligned: `SUM(BIGINT)
+				// / COUNT(*)` integer-divides). sumIntOnly[i] starts
+				// true and only ever flips to false. See aggregate.go
+				// for the symmetric map-path implementation.
 				sums         []float64
+				sumsI        []int64
+				sumIntOnly   []bool
 				mins         []driver.Value
 				maxes        []driver.Value
 				avgs         []float64             // running sum for AVG
@@ -559,6 +567,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						groupVals:    gVals,
 						counts:       make([]int64, len(sq.aggCols)),
 						sums:         make([]float64, len(sq.aggCols)),
+						sumsI:        make([]int64, len(sq.aggCols)),
+						sumIntOnly:   newAllTrue(len(sq.aggCols)),
 						mins:         make([]driver.Value, len(sq.aggCols)),
 						maxes:        make([]driver.Value, len(sq.aggCols)),
 						avgs:         make([]float64, len(sq.aggCols)),
@@ -615,6 +625,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 								}
 								if ac.aggFunc == "SUM" {
 									gs.sums[i] += fv
+									if iv, isInt := v.(int64); isInt && gs.sumIntOnly[i] {
+										gs.sumsI[i] += iv
+									} else {
+										gs.sumIntOnly[i] = false
+									}
 								} else {
 									gs.avgs[i] += fv
 									gs.avgsN[i]++
@@ -650,6 +665,11 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						}
 						if ac.aggFunc == "SUM" {
 							gs.sums[i] += fv
+							if iv, isInt := v.(int64); isInt && gs.sumIntOnly[i] {
+								gs.sumsI[i] += iv
+							} else {
+								gs.sumIntOnly[i] = false
+							}
 						} else {
 							gs.avgs[i] += fv
 							gs.avgsN[i]++
@@ -679,6 +699,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					groupVals:    nil,
 					counts:       make([]int64, len(sq.aggCols)),
 					sums:         make([]float64, len(sq.aggCols)),
+					sumsI:        make([]int64, len(sq.aggCols)),
+					sumIntOnly:   newAllTrue(len(sq.aggCols)),
 					mins:         make([]driver.Value, len(sq.aggCols)),
 					maxes:        make([]driver.Value, len(sq.aggCols)),
 					avgs:         make([]float64, len(sq.aggCols)),
@@ -755,8 +777,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							// SUM of empty-or-all-NULL group is NULL, not 0.
 							// DISTINCT path accumulates on first-seen so this
 							// is correct for SUM(DISTINCT col) too.
+							//
+							// Java alignment (int-preserving): if every
+							// observed value was integral, emit int64 so
+							// `SUM(BIGINT) / COUNT(*)` integer-divides the
+							// way Java does.
 							if gs.counts[i] > 0 {
-								fullVals[i] = gs.sums[i]
+								if gs.sumIntOnly[i] {
+									fullVals[i] = gs.sumsI[i]
+								} else {
+									fullVals[i] = gs.sums[i]
+								}
 							}
 						case "MIN":
 							fullVals[i] = gs.mins[i]

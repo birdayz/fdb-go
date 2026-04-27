@@ -24,6 +24,18 @@ import (
 // operators, aggregateMapRows becomes the implementation of the
 // HashAggregate operator's Execute method with no semantic change.
 
+// newAllTrue allocates a `[]bool` of length n initialised to all
+// true. Used for SUM accumulators' sumIntOnly flag — every slot
+// starts "all observed values are integral" and only flips to false
+// once a non-int value is seen.
+func newAllTrue(n int) []bool {
+	out := make([]bool, n)
+	for i := range out {
+		out[i] = true
+	}
+	return out
+}
+
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
 		count := int64(len(filtered))
@@ -157,9 +169,18 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	}
 
 	type mapGroupState struct {
-		groupVals    []driver.Value
-		counts       []int64
+		groupVals []driver.Value
+		counts    []int64
+		// SUM accumulators: maintain BOTH an int64 and a float64
+		// running total per slot so we can emit int64 when every
+		// observed value is integral (matches Java's
+		// SUM(BIGINT)→BIGINT typing, important for the
+		// `SUM(BIGINT)/COUNT(*)` integer-division semantic) and fall
+		// back to float64 the moment a non-integer value is seen.
+		// sumIntOnly[i] starts true and only ever flips to false.
 		sums         []float64
+		sumsI        []int64
+		sumIntOnly   []bool
 		mins         []driver.Value
 		maxes        []driver.Value
 		avgs         []float64
@@ -216,6 +237,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				groupVals:    gVals,
 				counts:       make([]int64, len(sq.aggCols)),
 				sums:         make([]float64, len(sq.aggCols)),
+				sumsI:        make([]int64, len(sq.aggCols)),
+				sumIntOnly:   newAllTrue(len(sq.aggCols)),
 				mins:         make([]driver.Value, len(sq.aggCols)),
 				maxes:        make([]driver.Value, len(sq.aggCols)),
 				avgs:         make([]float64, len(sq.aggCols)),
@@ -284,6 +307,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 							}
 							if ac.aggFunc == "SUM" {
 								gs.sums[i] += fv
+								if iv, isInt := colVal.(int64); isInt && gs.sumIntOnly[i] {
+									gs.sumsI[i] += iv
+								} else {
+									gs.sumIntOnly[i] = false
+								}
 							} else {
 								gs.avgs[i] += fv
 								gs.avgsN[i]++
@@ -320,6 +348,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				if ac.aggFunc == "SUM" {
 					gs.sums[i] += fv
+					if iv, isInt := colVal.(int64); isInt && gs.sumIntOnly[i] {
+						gs.sumsI[i] += iv
+					} else {
+						gs.sumIntOnly[i] = false
+					}
 				} else {
 					gs.avgs[i] += fv
 					gs.avgsN[i]++
@@ -349,6 +382,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			groupVals:    nil,
 			counts:       make([]int64, len(sq.aggCols)),
 			sums:         make([]float64, len(sq.aggCols)),
+			sumsI:        make([]int64, len(sq.aggCols)),
+			sumIntOnly:   newAllTrue(len(sq.aggCols)),
 			mins:         make([]driver.Value, len(sq.aggCols)),
 			maxes:        make([]driver.Value, len(sq.aggCols)),
 			avgs:         make([]float64, len(sq.aggCols)),
@@ -430,8 +465,18 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					// DISTINCT SUM now accumulates into sums[i] on first-seen
 					// value in the DISTINCT branch, so this path is correct
 					// for both the DISTINCT and non-DISTINCT cases.
+					//
+					// Java alignment (int-preserving SUM): if every observed
+					// value was integral (sumIntOnly), emit int64 — important
+					// for `SUM(BIGINT) / COUNT(*)` to integer-divide rather
+					// than float-divide. Mixed or non-int inputs fall back
+					// to the float64 accumulator.
 					if gs.counts[i] > 0 {
-						fullVals[i] = gs.sums[i]
+						if gs.sumIntOnly[i] {
+							fullVals[i] = gs.sumsI[i]
+						} else {
+							fullVals[i] = gs.sums[i]
+						}
 					}
 				case "MIN":
 					fullVals[i] = gs.mins[i]

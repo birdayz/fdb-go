@@ -612,11 +612,11 @@ func derivedTableRenamedScenario() *yamsql.Scenario {
 // tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
 // ORDER BY <aggregate> requires the natural-order continuation).
 //
-// New gotcha (swingshift-56): `SUM(BIGINT) / COUNT(*)` diverges between
-// engines. Java does integer division on BIGINT/BIGINT (returns 3 for
-// SUM=10, COUNT=3); Go's SUM accumulator is float64 so the result is
-// 3.333... — the yamsql YAML comment flags this as a Go-side divergence
-// pending an int-preserving SUM for int-only inputs. Cross-engine drop.
+// `SUM(BIGINT) / COUNT(*)` integer-division parity (resolved
+// nightshift-57): Go's SUM now preserves int64 when every observed
+// value is integral (see `pkg/relational/core/embedded/aggregate.go`
+// `sumIntOnly`), so `SUM(qty) / COUNT(*)` integer-divides Java-style
+// rather than float-dividing.
 func aggregateExprScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expr",
@@ -646,10 +646,12 @@ func aggregateExprScenario() *yamsql.Scenario {
 			{Query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t", Rows: [][]any{{2}}},
 			{Query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{100}}},
 			{Query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t", Rows: [][]any{{75.0}}},
-			// `SUM(qty) / COUNT(*)` dropped — Java integer-divides
-			// BIGINT/BIGINT, Go's SUM accumulator returns float64.
-			// Multi-aggregate with arithmetic.
-			{Query: "SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t", Rows: [][]any{{7, 7.0}}},
+			// SUM/COUNT integer-division (re-enabled nightshift-57).
+			// SUM(qty)=10 (BIGINT), COUNT(*)=3 (BIGINT), 10/3=3 (integer division).
+			{Query: "SELECT SUM(qty) / COUNT(*) FROM t", Rows: [][]any{{3}}},
+			// Multi-aggregate with arithmetic. SUM-COUNT now preserves
+			// int64 (Java-aligned).
+			{Query: "SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t", Rows: [][]any{{7, 7}}},
 		},
 	}
 }
