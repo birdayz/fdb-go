@@ -125,6 +125,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		derivedTableScenario(),
 		coalesceNullifScenario(),
 		bareColWithAggScenario(),
+		aggregateNullsScenario(),
 	}
 }
 
@@ -534,6 +535,30 @@ func bareColWithAggScenario() *yamsql.Scenario {
 			{Query: "SELECT COUNT(*), SUM(v), MAX(v), MIN(v) FROM t", Rows: [][]any{{3, 60, 30, 10}}},
 			{Query: "SELECT SUM(v) * 2 FROM t", Rows: [][]any{{120}}},
 			{Query: "SELECT 'total' AS label, COUNT(*) FROM t", Rows: [][]any{{"total", 3}}},
+		},
+	}
+}
+
+// aggregateNullsScenario mirrors testdata/aggregate_nulls.yaml. Drops
+// NOT NULL on PK. Pins SQL-spec NULL aggregate semantics: COUNT(*)
+// counts all rows including NULLs; COUNT(col), SUM, MIN, MAX skip
+// NULLs; SUM/MIN/MAX over all-NULL or empty-input returns NULL; ungrouped
+// aggregate over empty WHERE result still produces one row with NULL.
+func aggregateNullsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "aggregate_nulls",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, grp STRING, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'a', null), (4, 'b', null), (5, null, 7), (6, null, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{6}}},
+			{Query: "SELECT COUNT(v) FROM t", Rows: [][]any{{3}}},
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{37}}},
+			{Query: "SELECT SUM(v) FROM t WHERE grp = 'b'", Rows: [][]any{{nil}}},
+			{Query: "SELECT SUM(v) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{nil}}},
+			{Query: "SELECT MIN(v), MAX(v) FROM t WHERE grp = 'b'", Rows: [][]any{{nil, nil}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{0}}},
 		},
 	}
 }
