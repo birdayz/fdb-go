@@ -506,17 +506,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// SUM accumulators: maintain BOTH int64 and float64
 				// running totals so we can emit int64 when every
 				// observed value is integral (Java-aligned: `SUM(BIGINT)
-				// / COUNT(*)` integer-divides). sumIntOnly[i] starts
-				// true and only ever flips to false. See aggregate.go
-				// for the symmetric map-path implementation.
-				//
-				// Overflow: int64 accumulation wraps silently — same as
-				// Java's `long` accumulator. Promoting to float64 on
-				// overflow would diverge from Java; both engines
-				// produce the same wrap-around result.
+				// / COUNT(*)` integer-divides). sumNonInt[i] starts as
+				// the zero value (false) — i.e. "still int-only" — and
+				// only ever flips to true. Overflow on the int64
+				// accumulator wraps silently, same as Java's `long`.
+				// See aggregate.go for the symmetric map-path
+				// implementation.
 				sums         []float64
 				sumsI        []int64
-				sumIntOnly   []bool
+				sumNonInt    []bool
 				mins         []driver.Value
 				maxes        []driver.Value
 				avgs         []float64             // running sum for AVG
@@ -573,7 +571,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						counts:       make([]int64, len(sq.aggCols)),
 						sums:         make([]float64, len(sq.aggCols)),
 						sumsI:        make([]int64, len(sq.aggCols)),
-						sumIntOnly:   newAllTrue(len(sq.aggCols)),
+						sumNonInt:    make([]bool, len(sq.aggCols)),
 						mins:         make([]driver.Value, len(sq.aggCols)),
 						maxes:        make([]driver.Value, len(sq.aggCols)),
 						avgs:         make([]float64, len(sq.aggCols)),
@@ -630,10 +628,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 								}
 								if ac.aggFunc == "SUM" {
 									gs.sums[i] += fv
-									if iv, isInt := v.(int64); isInt && gs.sumIntOnly[i] {
+									if iv, isInt := v.(int64); isInt && !gs.sumNonInt[i] {
 										gs.sumsI[i] += iv
 									} else {
-										gs.sumIntOnly[i] = false
+										gs.sumNonInt[i] = true
 									}
 								} else {
 									gs.avgs[i] += fv
@@ -670,10 +668,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						}
 						if ac.aggFunc == "SUM" {
 							gs.sums[i] += fv
-							if iv, isInt := v.(int64); isInt && gs.sumIntOnly[i] {
+							if iv, isInt := v.(int64); isInt && !gs.sumNonInt[i] {
 								gs.sumsI[i] += iv
 							} else {
-								gs.sumIntOnly[i] = false
+								gs.sumNonInt[i] = true
 							}
 						} else {
 							gs.avgs[i] += fv
@@ -705,7 +703,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					counts:       make([]int64, len(sq.aggCols)),
 					sums:         make([]float64, len(sq.aggCols)),
 					sumsI:        make([]int64, len(sq.aggCols)),
-					sumIntOnly:   newAllTrue(len(sq.aggCols)),
+					sumNonInt:    make([]bool, len(sq.aggCols)),
 					mins:         make([]driver.Value, len(sq.aggCols)),
 					maxes:        make([]driver.Value, len(sq.aggCols)),
 					avgs:         make([]float64, len(sq.aggCols)),
@@ -788,10 +786,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							// `SUM(BIGINT) / COUNT(*)` integer-divides the
 							// way Java does.
 							if gs.counts[i] > 0 {
-								if gs.sumIntOnly[i] {
-									fullVals[i] = gs.sumsI[i]
-								} else {
+								if gs.sumNonInt[i] {
 									fullVals[i] = gs.sums[i]
+								} else {
+									fullVals[i] = gs.sumsI[i]
 								}
 							}
 						case "MIN":

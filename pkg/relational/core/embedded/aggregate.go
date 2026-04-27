@@ -24,18 +24,6 @@ import (
 // operators, aggregateMapRows becomes the implementation of the
 // HashAggregate operator's Execute method with no semantic change.
 
-// newAllTrue allocates a `[]bool` of length n initialised to all
-// true. Used for SUM accumulators' sumIntOnly flag — every slot
-// starts "all observed values are integral" and only flips to false
-// once a non-int value is seen.
-func newAllTrue(n int) []bool {
-	out := make([]bool, n)
-	for i := range out {
-		out[i] = true
-	}
-	return out
-}
-
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
 		count := int64(len(filtered))
@@ -176,16 +164,13 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		// observed value is integral (matches Java's
 		// SUM(BIGINT)→BIGINT typing, important for the
 		// `SUM(BIGINT)/COUNT(*)` integer-division semantic) and fall
-		// back to float64 the moment a non-integer value is seen.
-		// sumIntOnly[i] starts true and only ever flips to false.
-		//
-		// Overflow: `sumsI[i] += iv` wraps silently on int64 overflow
-		// — same as Java's `long` accumulator on SUM(BIGINT). Both
-		// engines therefore produce the same wrap-around result on
-		// overflow; promoting to float64 on overflow would diverge.
+		// back to float64 once a non-int value is seen. sumNonInt
+		// starts as false (zero-value) — i.e. "still int-only" — and
+		// only flips to true. Overflow on `sumsI[i] += iv` wraps
+		// silently, same as Java's `long` accumulator on SUM(BIGINT).
 		sums         []float64
 		sumsI        []int64
-		sumIntOnly   []bool
+		sumNonInt    []bool
 		mins         []driver.Value
 		maxes        []driver.Value
 		avgs         []float64
@@ -243,7 +228,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				counts:       make([]int64, len(sq.aggCols)),
 				sums:         make([]float64, len(sq.aggCols)),
 				sumsI:        make([]int64, len(sq.aggCols)),
-				sumIntOnly:   newAllTrue(len(sq.aggCols)),
+				sumNonInt:    make([]bool, len(sq.aggCols)),
 				mins:         make([]driver.Value, len(sq.aggCols)),
 				maxes:        make([]driver.Value, len(sq.aggCols)),
 				avgs:         make([]float64, len(sq.aggCols)),
@@ -312,10 +297,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 							}
 							if ac.aggFunc == "SUM" {
 								gs.sums[i] += fv
-								if iv, isInt := colVal.(int64); isInt && gs.sumIntOnly[i] {
+								if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
 									gs.sumsI[i] += iv
 								} else {
-									gs.sumIntOnly[i] = false
+									gs.sumNonInt[i] = true
 								}
 							} else {
 								gs.avgs[i] += fv
@@ -353,10 +338,10 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				if ac.aggFunc == "SUM" {
 					gs.sums[i] += fv
-					if iv, isInt := colVal.(int64); isInt && gs.sumIntOnly[i] {
+					if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
 						gs.sumsI[i] += iv
 					} else {
-						gs.sumIntOnly[i] = false
+						gs.sumNonInt[i] = true
 					}
 				} else {
 					gs.avgs[i] += fv
@@ -388,7 +373,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			counts:       make([]int64, len(sq.aggCols)),
 			sums:         make([]float64, len(sq.aggCols)),
 			sumsI:        make([]int64, len(sq.aggCols)),
-			sumIntOnly:   newAllTrue(len(sq.aggCols)),
+			sumNonInt:    make([]bool, len(sq.aggCols)),
 			mins:         make([]driver.Value, len(sq.aggCols)),
 			maxes:        make([]driver.Value, len(sq.aggCols)),
 			avgs:         make([]float64, len(sq.aggCols)),
@@ -467,20 +452,20 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				case "SUM":
 					// SUM of empty-or-all-NULL input is NULL per SQL standard,
 					// not 0. counts[i]>0 means at least one non-null observed.
-					// DISTINCT SUM now accumulates into sums[i] on first-seen
-					// value in the DISTINCT branch, so this path is correct
-					// for both the DISTINCT and non-DISTINCT cases.
+					// DISTINCT SUM accumulates into sums[i] on first-seen value
+					// in the DISTINCT branch, so this path is correct for both
+					// the DISTINCT and non-DISTINCT cases.
 					//
 					// Java alignment (int-preserving SUM): if every observed
-					// value was integral (sumIntOnly), emit int64 — important
-					// for `SUM(BIGINT) / COUNT(*)` to integer-divide rather
-					// than float-divide. Mixed or non-int inputs fall back
-					// to the float64 accumulator.
+					// value was integral, emit int64 — important for
+					// `SUM(BIGINT) / COUNT(*)` to integer-divide rather than
+					// float-divide. Mixed or non-int inputs fall back to the
+					// float64 accumulator.
 					if gs.counts[i] > 0 {
-						if gs.sumIntOnly[i] {
-							fullVals[i] = gs.sumsI[i]
-						} else {
+						if gs.sumNonInt[i] {
 							fullVals[i] = gs.sums[i]
+						} else {
+							fullVals[i] = gs.sumsI[i]
 						}
 					}
 				case "MIN":
