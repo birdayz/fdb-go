@@ -96,6 +96,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		avgScenario,
 		derivedTableScenario,
 		coalesceNullifScenario,
+		bareColWithAggScenario,
 	}
 }
 
@@ -483,6 +484,29 @@ func coalesceNullifScenario() *yamsql.Scenario {
 		},
 		Tests: []yamsql.Test{
 			{Query: "SELECT id, COALESCE(a, b, 'default') FROM t ORDER BY id", Rows: [][]any{{1, "x"}, {2, "y"}, {3, "x"}, {4, "default"}}},
+		},
+	}
+}
+
+// bareColWithAggScenario mirrors testdata/bare_col_with_agg.yaml. Drops
+// NOT NULL on PK. Drops the DISTINCT test (CLAUDE.md gotcha — fdb-
+// relational's planner doesn't support SELECT DISTINCT).
+func bareColWithAggScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "bare_col_with_agg",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id, COUNT(*) FROM t", ErrorCode: "42803"},
+			{Query: "SELECT v, SUM(v) FROM t", ErrorCode: "42803"},
+			{Query: "SELECT v + 1, SUM(v) FROM t", ErrorCode: "42803"},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{60}}},
+			{Query: "SELECT COUNT(*), SUM(v), MAX(v), MIN(v) FROM t", Rows: [][]any{{3, 60, 30, 10}}},
+			{Query: "SELECT SUM(v) * 2 FROM t", Rows: [][]any{{120}}},
+			{Query: "SELECT 'total' AS label, COUNT(*) FROM t", Rows: [][]any{{"total", 3}}},
 		},
 	}
 }
