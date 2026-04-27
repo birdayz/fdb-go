@@ -41,7 +41,17 @@ const (
 // the proto descriptor; under normal conditions this cannot fail.
 func BuildCatalogMetaData() (*recordlayer.RecordMetaData, error) {
 	b := recordlayer.NewRecordMetaDataBuilder().
-		SetRecordsWithUnionName(gen.File_catalog_data_proto, "CatalogUnion")
+		SetRecordsWithUnionName(gen.File_catalog_data_proto, "CatalogUnion").
+		// Java's RecordMetadataSerializer.visit(SchemaTemplate) sets the
+		// builder version to the schema template's version
+		// (CATALOG_TEMPLATE_VERSION = 1 in RecordLayerStoreCatalog).
+		// Subsequent addIndex calls then bump the version to 4 (1 + 3
+		// indexes). Without this explicit start at 1, Go's builder
+		// starts at 0 and the same 3 addIndex bumps end at version 3 —
+		// causing `StaleMetaDataVersionError{Local:3, Stored:4}` when a
+		// Java-initialized catalog is read by Go. dayshift-54 surfaced
+		// this divergence; this aligns Go with Java's effective version.
+		SetVersion(1)
 
 	b.GetRecordType(SchemasRecordName).
 		SetRecordTypeKey(SchemaRecordTypeKey).

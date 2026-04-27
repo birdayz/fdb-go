@@ -5,41 +5,66 @@ package conformance_test
 // nightshift-53 (PR #119) by exercising the relational/SQL layer's
 // catalog instead of the raw record-layer-core metadata store.
 //
-// **The keyspace prerequisite**: Java's RecordLayerStoreCatalog and
-// Go's catalog.OpenRecordLayerStoreCatalog() both target the
-// (NULL, NULL, int64(0)) FDB subspace prefix (3 bytes: 00 00 14).
-// Confirmed by inspecting Go's `subspace.Sub(nil, nil, int64(0)).Bytes()`
-// which produces the same byte prefix as Java's
-// RelationalKeyspaceProvider three-level keyspace
-// (KeyType.NULL → KeyType.NULL → KeyType.LONG=0).
+// **dayshift-54 progress** — peeled the onion two layers:
+//
+//   Layer 1 (FIXED): The keyspace prerequisite. Java's
+//   RecordLayerStoreCatalog and Go's
+//   catalog.OpenRecordLayerStoreCatalog() both target the
+//   (NULL, NULL, int64(0)) FDB subspace prefix (3 bytes: 00 00 14).
+//   Confirmed via direct subspace byte inspection.
+//
+//   Layer 2 (FIXED): Catalog metadata-version divergence. Java's
+//   `RecordLayerSchemaTemplate.toRecordMetadata()` calls setVersion(1)
+//   then addIndex×3 → version=4. Go's `BuildCatalogMetaData()` was
+//   starting at 0 and ending at 3, raising
+//   `StaleMetaDataVersionError{Local:3, Stored:4}` on cross-engine
+//   read. Fix in `BuildCatalogMetaData()`: explicit `SetVersion(1)`
+//   before the addIndex calls.
+//
+//   Layer 3 (PINNED, NOT YET FIXED): SchemaTemplate proto-deserialize
+//   divergence. After Go can open the catalog, `LoadSchemaTemplate`
+//   reads the TEMPLATE record bytes (the embedded RecordMetaData
+//   proto for the user's template `T`), and Go's
+//   `RecordMetaDataFromProto` fails to rebuild the FileDescriptor:
+//
+//     proto: message field "RecordTypeUnion.T_0" cannot resolve type:
+//     "RecordTypeUnion.T": descriptor not found: RecordTypeUnion.T
+//
+//   This means Java's serialised schema-template metadata uses a
+//   nested-message reference to `RecordTypeUnion.T` that Go's
+//   FileDescriptor builder can't resolve from the proto-encoded
+//   FileDescriptorProto alone. Possible causes: Java emits a
+//   self-referential FileDescriptorProto where the union message
+//   `RecordTypeUnion` has a `T_0` field of type `RecordTypeUnion.T`
+//   (i.e. a nested message inside RecordTypeUnion that wraps the
+//   user's table type), and Go's proto rebuild path doesn't handle
+//   that shape. Substantial follow-on work for the next shift —
+//   likely 1-2 shifts of comparing Java's FileDescriptor emission
+//   path against Go's parse path.
 //
 // **What this test pins**:
 //   - Java JDBC `CREATE SCHEMA TEMPLATE` via fdb-relational writes a
 //     SchemaTemplate at the Java-compat subspace
-//   - Go's `RecordLayerStoreCatalog` (opened at the same subspace,
-//     bypassing the sqldriver which uses a different three-string
-//     subspace — see `pkg/relational/core/catalog/fdb_store_catalog.go:62-67`)
-//     can read the same template
-//   - Wire format compatibility for: TEMPLATE_NAME / TEMPLATE_VERSION
-//     fields, embedded RecordMetaData proto, table extraction
-//
-// **What's NOT yet pinned** (left for a future shift):
-//   - Reverse direction (Go writes via OpenRecordLayerStoreCatalog,
-//     Java's standard JDBC reads). Mechanical follow-on but requires
-//     wiring Java to look up a template by a Go-supplied name.
-//   - The Go sqldriver's use of the three-string subspace remains
-//     unchanged. Migration is a separate, larger refactor — see TODO.md.
+//   - Go's `OpenRecordLayerStoreCatalog()` opens at the same subspace
+//     past the metadata-version check (the dayshift-54 fix in
+//     `BuildCatalogMetaData`)
+//   - Go's `DoesSchemaTemplateExist` correctly identifies that the
+//     template Java wrote is present (record-layer-level lookup works)
+//   - The remaining gap is at the proto-descriptor-rebuild layer
+//     inside `LoadSchemaTemplate` — pinned via assertion on the
+//     specific error substring so Go's deserializer changes surface
+//     as test failure (caller updates the assertion)
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
 )
 
@@ -60,23 +85,14 @@ var _ = Describe("SchemaTemplateCatalog cross-language round-trip (A2)", func() 
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("pins the Go↔Java SchemaTemplateCatalog metadata-version divergence", func() {
-		// EXPECTED FAILURE PINNING — see the "Wire-format divergence
-		// finding" block at the bottom of this It block. The test
-		// asserts the SPECIFIC current-state error so a fix in the next
-		// shift will surface as test failure (caller updates the
-		// assertions). NEVER paper over bugs (CLAUDE.md design
-		// principle): the test must catch divergence drift.
-
+	It("Go reads SchemaTemplate persisted by Java JDBC at the shared catalog subspace", func() {
 		// Use a uuid-suffixed template name so concurrent / parallel
 		// runs don't collide on the shared (NULL, NULL, int64(0))
 		// catalog subspace.
 		templateName := "X2_" + uuid.New().String()[:8]
 		schemaBody := `CREATE TABLE T (id BIGINT, name STRING, PRIMARY KEY (id))`
 
-		// Java JDBC: persistently CREATE SCHEMA TEMPLATE. This path
-		// also (lazily) initialises Java's RecordLayerStoreCatalog
-		// metadata in FDB at the (NULL, NULL, int64(0)) subspace.
+		// Java JDBC: persistently CREATE SCHEMA TEMPLATE.
 		var createResult struct {
 			Created      bool   `json:"created"`
 			TemplateName string `json:"templateName"`
@@ -103,47 +119,66 @@ var _ = Describe("SchemaTemplateCatalog cross-language round-trip (A2)", func() 
 			_ = java.InvokeAs(context.Background(), "dropSchemaTemplatePersistentJava", dropParams, &dropResult)
 		}()
 
-		// Go: open RecordLayerStoreCatalog at the same subspace and
-		// attempt to read the template Java just wrote. We expect this
-		// to fail with StaleMetaDataVersionError because Go's
-		// `BuildCatalogMetaData()` produces a metadata at version 3
-		// (current as of dayshift-54), while Java's
-		// `RecordLayerStoreCatalog` writes its catalog metadata at
-		// version 4. The divergence prevents Go from opening the
-		// record store at all, before any actual TEMPLATE record is
-		// read. This test pins that specific failure so a future shift
-		// fixing the version alignment will surface here as a passing
-		// test (and the caller updates assertions).
+		// Go: open RecordLayerStoreCatalog at the shared subspace
+		// (DefaultCatalogSubspace = (NULL, NULL, int64(0))). Same place
+		// Java's CREATE SCHEMA TEMPLATE wrote to. With dayshift-54's
+		// version-alignment fix in BuildCatalogMetaData, the
+		// FDBRecordStore opens cleanly past the metadata-version
+		// check (Go=4, Java=4 — both ending at version 4 after
+		// SetVersion(1) + 3 addIndex bumps).
 		cat, openErr := catalog.OpenRecordLayerStoreCatalog()
 		Expect(openErr).NotTo(HaveOccurred(), "Go catalog struct constructs cleanly")
 
-		var doesExistErr error
-		_, _ = goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		// First verify Go can OPEN the catalog past the metadata-version
+		// check (Layer 2 fix from BuildCatalogMetaData SetVersion(1))
+		// AND that Go correctly identifies the template Java wrote
+		// exists at the record-layer level (Layer 1 + 2).
+		var (
+			doesExist bool
+			loadErr   error
+		)
+		_, runErr := goRecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			tx := catalog.NewFDBTransaction(rtx)
 			tc := cat.SchemaTemplateCatalog()
-			_, doesExistErr = tc.DoesSchemaTemplateExist(tx, templateName)
+			exists, doesErr := tc.DoesSchemaTemplateExist(tx, templateName)
+			if doesErr != nil {
+				return nil, fmt.Errorf("DoesSchemaTemplateExist: %w", doesErr)
+			}
+			doesExist = exists
+			if !exists {
+				return nil, nil
+			}
+			// Layer 3: this is the still-broken layer. Go's
+			// `RecordMetaDataFromProto` fails to rebuild the
+			// FileDescriptor for the user's table — see the doc block
+			// at the top of the file. Capture the error rather than
+			// fail the txn function so we can pin the SPECIFIC error
+			// shape.
+			_, loadErr = tc.LoadSchemaTemplate(tx, templateName)
 			return nil, nil
 		})
-		Expect(doesExistErr).To(HaveOccurred(),
-			"Wire-format divergence finding: Go's BuildCatalogMetaData() produces "+
-				"catalog metadata at version 3, but Java's RecordLayerStoreCatalog "+
-				"writes at version 4. Go opens the catalog store and rejects the "+
-				"version skew with StaleMetaDataVersionError. If this test starts "+
-				"passing, that's good news — update assertions to verify the loaded "+
-				"template instead of the divergence.")
+		Expect(runErr).NotTo(HaveOccurred())
+		Expect(doesExist).To(BeTrue(),
+			"Layer 1+2 fix verified: Go can open the catalog and see "+
+				"the Java-written template at the record-layer level")
 
-		// Pin the SPECIFIC versions so version drift on either side
-		// surfaces here. Unwrap the api.Error wrapper to get the
-		// underlying StaleMetaDataVersionError.
-		var apiErr *api.Error
-		Expect(errors.As(doesExistErr, &apiErr)).To(BeTrue(),
-			"expected api.Error wrapper, got %T: %v", doesExistErr, doesExistErr)
-		var staleErr *recordlayer.StaleMetaDataVersionError
-		Expect(errors.As(apiErr.Cause, &staleErr)).To(BeTrue(),
-			"expected StaleMetaDataVersionError as wrapped cause, got %T: %v", apiErr.Cause, apiErr.Cause)
-		Expect(staleErr.LocalVersion).To(Equal(3),
-			"Go's catalog metadata version (current pin)")
-		Expect(staleErr.StoredVersion).To(Equal(4),
-			"Java's catalog metadata version (current pin)")
+		// Layer 3 pin: LoadSchemaTemplate fails on the embedded
+		// FileDescriptor rebuild. Pin the SPECIFIC error substring so
+		// Go's deserializer changes surface as test failure (caller
+		// updates the assertion when Layer 3 is fixed).
+		Expect(loadErr).To(HaveOccurred(),
+			"Layer 3 (next-shift gap): expected LoadSchemaTemplate to "+
+				"fail on FileDescriptor rebuild — see doc at top of file")
+		Expect(loadErr.Error()).To(ContainSubstring("rebuild file descriptor"),
+			"Pin Layer 3 failure mode at the rebuild step")
+		Expect(loadErr.Error()).To(Or(
+			ContainSubstring("RecordTypeUnion.T"),
+			ContainSubstring("descriptor not found"),
+		), "Pin Layer 3 root-cause: nested type resolution in the union")
+
+		// strings unused warning suppress (kept for future use when
+		// LoadSchemaTemplate succeeds and we'll inspect the loaded
+		// template's table name).
+		_ = strings.TrimSpace
 	})
 })
