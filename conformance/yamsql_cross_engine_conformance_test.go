@@ -147,6 +147,48 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		wrongQualifierScenario(),
 		unionScenario(),
 		qualifiedStarMoreScenario(),
+		cteScenario(),
+	}
+}
+
+// cteScenario mirrors testdata/cte.yaml — the outer-ORDER-BY-free
+// subset (existing CLAUDE.md gotcha: `WITH ... ORDER BY` rejected).
+// Drops NOT NULL on PK. Uses Unordered comparison where the original
+// yamsql relied on ORDER BY.
+func cteScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "cte",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+		},
+		Tests: []yamsql.Test{
+			// Basic CTE projection.
+			{Query: "WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT id FROM hi", Unordered: true, Rows: [][]any{{2}, {3}, {4}}},
+			// Aggregate over CTE.
+			{Query: "WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT COUNT(*), SUM(v) FROM hi", Rows: [][]any{{3, 90}}},
+			// CTE filter + further filter.
+			{Query: "WITH hi AS (SELECT id, v FROM t WHERE v >= 20) SELECT id FROM hi WHERE v >= 30", Unordered: true, Rows: [][]any{{3}, {4}}},
+			// Multi-CTE cross-join.
+			{Query: "WITH lo AS (SELECT id FROM t WHERE v < 20), hi AS (SELECT id FROM t WHERE v >= 30) SELECT COUNT(*) FROM lo, hi", Rows: [][]any{{2}}},
+			// CTE with column rename.
+			{Query: "WITH c1(x, y) AS (SELECT id, v FROM t) SELECT x FROM c1 WHERE y >= 30", Unordered: true, Rows: [][]any{{3}, {4}}},
+			{Query: "WITH c1(my_id) AS (SELECT id FROM t) SELECT my_id FROM c1", Unordered: true, Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// Chained CTE renames.
+			{Query: "WITH base(d, val) AS (SELECT id, v FROM t), filtered(x, y) AS (SELECT d, val FROM base WHERE val > 15) SELECT x, y FROM filtered", Unordered: true, Rows: [][]any{{2, 20}, {3, 30}, {4, 40}}},
+			// Multi-CTE comma-join with renames.
+			{Query: "WITH lo(li) AS (SELECT id FROM t WHERE v < 20), hi(hi_id) AS (SELECT id FROM t WHERE v >= 30) SELECT li, hi_id FROM lo, hi", Unordered: true, Rows: [][]any{{1, 3}, {1, 4}}},
+			// Nested CTE references.
+			{Query: "WITH a AS (SELECT id FROM t WHERE v >= 20), b AS (SELECT id FROM a WHERE id >= 3) SELECT id FROM b", Unordered: true, Rows: [][]any{{3}, {4}}},
+			// 3-level CTE chain.
+			{Query: "WITH a AS (SELECT id, v FROM t), b AS (SELECT id FROM a WHERE v >= 20), c AS (SELECT id FROM b WHERE id >= 3) SELECT id FROM c", Unordered: true, Rows: [][]any{{3}, {4}}},
+			// CTE-defined-but-unused.
+			{Query: "WITH ignored AS (SELECT id FROM t WHERE id > 100) SELECT id FROM t", Unordered: true, Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// SELECT * on CTE.
+			{Query: "WITH c1 AS (SELECT * FROM t) SELECT * FROM c1", Unordered: true, Rows: [][]any{{1, 10}, {2, 20}, {3, 30}, {4, 40}}},
+			// SELECT * on renamed CTE.
+			{Query: "WITH c1(w, z) AS (SELECT id, v FROM t WHERE id <= 2) SELECT * FROM c1", Unordered: true, Rows: [][]any{{1, 10}, {2, 20}}},
+		},
 	}
 }
 
