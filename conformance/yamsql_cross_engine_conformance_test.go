@@ -86,6 +86,7 @@ func crossEngineScenarios() []func() *yamsql.Scenario {
 		arithmeticScenario,
 		castScenario,
 		compositePKScenario,
+		bytesScenario,
 	}
 }
 
@@ -195,6 +196,35 @@ func compositePKScenario() *yamsql.Scenario {
 			{Query: "SELECT label FROM t WHERE a = 2 AND b = 10", Rows: [][]any{{"gamma"}}},
 			{Query: "INSERT INTO t VALUES (1, 10, 'replacement')", ErrorCode: "23505"},
 			{Query: "SELECT label FROM t WHERE a = 1 AND b = 10", Rows: [][]any{{"alpha"}}},
+		},
+	}
+}
+
+// bytesScenario mirrors testdata/bytes.yaml. Cross-engine adaptations:
+// drop NOT NULL on PK column; uppercase BYTES literals X'...' and
+// B64'...' (CLAUDE.md gotcha — fdb-relational rejects lowercase x'...'
+// / b64'...').
+func bytesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "bytes",
+		SchemaTemplate: "CREATE TABLE lb (a BIGINT, b BYTES, PRIMARY KEY (a))",
+		Setup: []string{
+			"INSERT INTO lb VALUES (1, X'deadbeef'), (2, X'cafe'), (3, null)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT a FROM lb WHERE b = X'cafe'", Rows: [][]any{{2}}},
+			{Query: "SELECT a FROM lb WHERE b IN (X'cafe', X'deadbeef')", Unordered: true, Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT a FROM lb WHERE b <> X'cafe'", Rows: [][]any{{1}}},
+			{Query: "SELECT a FROM lb WHERE b IS NULL", Rows: [][]any{{3}}},
+			{Query: "SELECT a FROM lb WHERE b IS NOT NULL", Unordered: true, Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT a FROM lb WHERE b = B64'yv4='", Rows: [][]any{{2}}},
+			{Query: "SELECT a FROM lb WHERE b = X'0'", ErrorCode: "22F03"},
+			{Query: "SELECT a FROM lb WHERE b = X'ABCDMN'", ErrorCode: "22F03"},
+			{Query: "SELECT a FROM lb WHERE b = B64'***'", ErrorCode: "22F03"},
+			{Query: "SELECT a FROM lb WHERE b IS NOT DISTINCT FROM null", Rows: [][]any{{3}}},
+			{Query: "SELECT a FROM lb WHERE b IS DISTINCT FROM null ORDER BY a", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT a FROM lb WHERE b = null", Rows: [][]any{}},
+			{Query: "SELECT X'cafe' = b FROM lb WHERE a = 2", Rows: [][]any{{true}}},
 		},
 	}
 }
