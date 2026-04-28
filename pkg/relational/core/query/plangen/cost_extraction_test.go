@@ -125,6 +125,57 @@ func TestEndToEnd_CostExtractionEliminatesNoOpFilter(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_ExtractBestPlanProducesSingletonTree pins that
+// after Convert + FixpointApply + ExtractBestPlan, the returned
+// expression tree has exactly one member at every reachable
+// Reference. Without this, callers can't reason about "the plan" —
+// any Quantifier might range over a Reference with multiple
+// alternatives.
+func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+	src := logical.NewFilterWithPredicate(
+		logical.NewSort(
+			logical.NewScan("Order", ""),
+			[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
+		),
+		pred, "active",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(got)
+	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 32); !converged {
+		t.Fatal("FixpointApply did not converge")
+	}
+
+	extracted, err := properties.ExtractBestPlan(ref)
+	if err != nil {
+		t.Fatalf("ExtractBestPlan err=%v", err)
+	}
+	if extracted == nil {
+		t.Fatal("ExtractBestPlan returned nil")
+	}
+
+	// Walk the extracted tree, assert every reachable Reference has
+	// exactly one member.
+	var checkSingleton func(e expressions.RelationalExpression)
+	checkSingleton = func(e expressions.RelationalExpression) {
+		for _, q := range e.GetQuantifiers() {
+			r := q.GetRangesOver()
+			if r == nil {
+				continue
+			}
+			if got := len(r.Members()); got != 1 {
+				t.Fatalf("extracted tree has Reference with %d members (want 1)", got)
+			}
+			checkSingleton(r.Get())
+		}
+	}
+	checkSingleton(extracted)
+}
+
 // TestEndToEnd_CostMonotonicAcrossOptimisation pins that the cost of
 // the cheapest member is monotonic non-increasing across fixpoint
 // iterations. This is the integration-level mirror of

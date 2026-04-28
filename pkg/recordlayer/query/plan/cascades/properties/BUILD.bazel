@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "properties",
-    srcs = ["cost.go"],
+    srcs = [
+        "cost.go",
+        "extract.go",
+    ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties",
     visibility = ["//visibility:public"],
     deps = ["//pkg/recordlayer/query/plan/cascades/expressions"],
@@ -10,7 +13,11 @@ go_library(
 
 go_test(
     name = "properties_test",
-    srcs = ["cost_test.go"],
+    srcs = [
+        "cost_test.go",
+        "extract_fuzz_test.go",
+        "extract_test.go",
+    ],
     embed = [":properties"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
