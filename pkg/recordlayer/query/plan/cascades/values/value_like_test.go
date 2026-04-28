@@ -96,3 +96,28 @@ func TestLikeOperatorValue_TypeIsNullableBool(t *testing.T) {
 // re-routed through LikeMatch (shared with predicates.likeMatch).
 // The regex translation existed for the Value-layer-only path that
 // no longer exists. LikeMatch is the conformance-pinned matcher.
+
+// BenchmarkLikeMatch_Simple pins the perf of the canonical
+// SQL LIKE matcher. Both QueryPredicate-layer ComparisonLike and
+// Value-layer LikeOperatorValue route through this; perf
+// regression here regresses both layers.
+func BenchmarkLikeMatch_Simple(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = LikeMatch("hello%", "hello world", 0)
+	}
+}
+
+// BenchmarkLikeMatch_Wildcards exercises the % backtrack.
+func BenchmarkLikeMatch_Wildcards(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = LikeMatch("%abc%def%", "xxabcyydefzz", 0)
+	}
+}
+
+// BenchmarkLikeMatch_LiteralOnly — no wildcards, just literal
+// match. Should be the fastest path.
+func BenchmarkLikeMatch_LiteralOnly(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = LikeMatch("hello world", "hello world", 0)
+	}
+}
