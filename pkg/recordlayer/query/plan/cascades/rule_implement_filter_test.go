@@ -156,6 +156,52 @@ func TestImplementFilterRule_FiresOnFilterOverSort(t *testing.T) {
 	}
 }
 
+// TestImplementFilterRule_FiresOverPhysicalUnion pins that
+// ImplementFilterRule fires when the inner Reference contains a
+// physicalUnionWrapper — closes the 7-wrapper symmetry gap caught
+// by the reviewer's late-shift batch review.
+//
+// Filter(Union(Scan, Scan)) should physically implement to
+// FilterPlan(UnionPlan(ScanPlan, ScanPlan)) once both scans + the
+// union are physically implemented.
+func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
+	t.Parallel()
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	refA := expressions.InitialOf(scanA)
+	refB := expressions.InitialOf(scanB)
+	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ForEachQuantifier(refB),
+	})
+	unionRef := expressions.InitialOf(union)
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(unionRef),
+	)
+	topRef := expressions.InitialOf(filter)
+
+	// Step 1: Implement both scans.
+	FireExpressionRule(NewPrimaryScanRule(), refA)
+	FireExpressionRule(NewPrimaryScanRule(), refB)
+	// Step 2: Implement the union.
+	FireExpressionRule(NewImplementUnionRule(), unionRef)
+	// Step 3: Now Filter's inner Reference has a physicalUnionWrapper.
+	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Union)", len(yielded))
+	}
+	wrap, ok := yielded[0].(*physicalFilterWrapper)
+	if !ok {
+		t.Fatalf("yield = %T, want *physicalFilterWrapper", yielded[0])
+	}
+	innerPlan := wrap.GetPlan().GetInner()
+	if _, ok := innerPlan.(*plans.RecordQueryUnionPlan); !ok {
+		t.Fatalf("filter inner plan = %T, want *RecordQueryUnionPlan", innerPlan)
+	}
+}
+
 func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 	t.Parallel()
 	// End-to-end through the task-stack Planner: Filter(P, Scan) with
