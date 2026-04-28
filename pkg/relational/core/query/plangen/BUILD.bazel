@@ -16,6 +16,7 @@ go_library(
 go_test(
     name = "plangen_test",
     srcs = [
+        "benchmark_test.go",
         "optimize_test.go",
         "plangen_test.go",
     ],
