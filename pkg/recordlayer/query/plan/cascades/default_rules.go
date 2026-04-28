@@ -87,11 +87,11 @@ func DefaultExpressionRules() []ExpressionRule {
 //
 // Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
 //
-// Currently 5 of 6 Batch A rules ported (PrimaryScanRule,
+// Currently 6 read-side implement rules ported (PrimaryScanRule,
 // ImplementFilterRule, ImplementSortRule, ImplementDistinctRule,
-// ImplementTypeFilterRule); remaining 1 (covering-index +
-// MergeFetchIntoCoveringIndexRule, plus the index-equality / range
-// rules) is gated on MatchCandidate / IndexAccessHint
+// ImplementTypeFilterRule, ImplementUnionRule). Remaining: covering-
+// index + MergeFetchIntoCoveringIndexRule + index-equality / range
+// rules — all gated on MatchCandidate / IndexAccessHint
 // infrastructure (per RFC-022).
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
@@ -100,6 +100,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementSortRule(),
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
+		NewImplementUnionRule(),
 	}
 }
 

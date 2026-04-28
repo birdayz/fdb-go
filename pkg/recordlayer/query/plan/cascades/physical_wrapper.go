@@ -709,3 +709,88 @@ func (w *physicalUpdateWrapper) HintCost(child []properties.Cost) properties.Cos
 }
 
 var _ expressions.RelationalExpression = (*physicalUpdateWrapper)(nil)
+
+// physicalUnionWrapper adapts `*plans.RecordQueryUnionPlan` to the
+// RelationalExpression interface. Unlike the single-inner wrappers,
+// Union exposes N inner Quantifiers (one per child plan).
+type physicalUnionWrapper struct {
+	plan        *plans.RecordQueryUnionPlan
+	innerQuants []expressions.Quantifier
+}
+
+// NewPhysicalUnionWrapper constructs the wrapper.
+func NewPhysicalUnionWrapper(plan *plans.RecordQueryUnionPlan, innerQuants []expressions.Quantifier) *physicalUnionWrapper {
+	copied := make([]expressions.Quantifier, len(innerQuants))
+	copy(copied, innerQuants)
+	return &physicalUnionWrapper{plan: plan, innerQuants: copied}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalUnionWrapper) GetPlan() *plans.RecordQueryUnionPlan { return w.plan }
+
+// GetResultValue returns the first inner's flowed object value.
+// Java's RecordQueryUnionPlan emits rows compatible with all
+// children; the seed picks the first child's row shape.
+func (w *physicalUnionWrapper) GetResultValue() values.Value {
+	if len(w.innerQuants) == 0 {
+		return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	}
+	return w.innerQuants[0].GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifiers (children).
+func (w *physicalUnionWrapper) GetQuantifiers() []expressions.Quantifier { return w.innerQuants }
+
+// CanCorrelate is false.
+func (w *physicalUnionWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is true — UNION children are bag-equivalent.
+func (w *physicalUnionWrapper) ChildrenAsSet() bool { return true }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalUnionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares the wrapped plan.
+func (w *physicalUnionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalUnionWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalUnionWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physunionwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper with the new quantifiers.
+func (w *physicalUnionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	copied := make([]expressions.Quantifier, len(qs))
+	copy(copied, qs)
+	return &physicalUnionWrapper{plan: w.plan, innerQuants: copied}, nil
+}
+
+// HintCost: UNION cardinality is sum of children, CPU is cumulative
+// + per-output-row merge work. Mirrors LogicalUnion.
+func (w *physicalUnionWrapper) HintCost(child []properties.Cost) properties.Cost {
+	sumCard := 0.0
+	sumCPU := 0.0
+	for _, c := range child {
+		sumCard += c.Cardinality
+		sumCPU += c.CPU
+	}
+	return properties.Cost{
+		Cardinality: sumCard * physicalWrapperCostMultiplier,
+		CPU:         (sumCPU + sumCard*properties.UnionCPU) * physicalWrapperCostMultiplier,
+	}
+}
+
+var _ expressions.RelationalExpression = (*physicalUnionWrapper)(nil)

@@ -123,6 +123,16 @@ func wrapPhysicalPlan(p plans.RecordQueryPlan) expressions.RelationalExpression 
 		}
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerWrap))
 		return NewPhysicalTypeFilterWrapper(concrete, innerQ)
+	case *plans.RecordQueryUnionPlan:
+		childQs := make([]expressions.Quantifier, 0, len(concrete.GetInners()))
+		for _, ip := range concrete.GetInners() {
+			ipWrap := wrapPhysicalPlan(ip)
+			if ipWrap == nil {
+				return nil
+			}
+			childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(ipWrap)))
+		}
+		return NewPhysicalUnionWrapper(concrete, childQs)
 	}
 	return nil
 }
