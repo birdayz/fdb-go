@@ -108,6 +108,18 @@ func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalE
 	return p.bestMember[ref]
 }
 
+// HasBestMember reports whether OptimizeReferenceTask has stamped
+// a best for `ref`. Used by tests + the integration path that
+// distinguishes "Reference not yet optimized" from "Reference
+// optimized to nil (empty)".
+func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
+	if ref == nil {
+		return false
+	}
+	_, ok := p.bestMember[ref]
+	return ok
+}
+
 // SetEvents installs an event handler. Pass nil to disable events.
 // Returns p for chaining.
 func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {

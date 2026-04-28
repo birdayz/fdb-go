@@ -153,11 +153,16 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #     plan extractor — singleton-Reference
                                     #     fresh tree, switch-on-type for the
                                     #     12 constructor arms)
-    planner.go                      # B6 task-stack planner (EXPLORE phase
-                                    #   only; OPTIMIZE delegates to
-                                    #   properties.ExtractBestPlan).
-                                    #   Per-Reference saturation tracking +
-                                    #   PlannerEventHandler diagnostic hooks.
+    planner.go                      # B6 task-stack planner (EXPLORE +
+                                    #   OPTIMIZE phases). ApplyRulesTask
+                                    #   fires rules; on saturation pushes
+                                    #   OptimizeReferenceTask which picks
+                                    #   the cheapest member by cost and
+                                    #   stamps it in bestMember[ref].
+                                    #   Plan() runs both phases; BestMember
+                                    #   accessor exposes per-Ref winners.
+                                    #   PlannerEventHandler hooks include
+                                    #   OnOptimizeReference.
     physical_wrapper.go             # Bridges from plans.RecordQueryPlan to
                                     #   expressions.RelationalExpression
                                     #   (3 wrappers: scan / filter / sort).
