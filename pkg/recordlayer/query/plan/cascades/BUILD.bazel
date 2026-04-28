@@ -41,6 +41,7 @@ go_test(
         "benchmark_test.go",
         "comparison_simplify_test.go",
         "default_rules_test.go",
+        "expression_matcher_test.go",
         "expression_rule_call_test.go",
         "fixpoint_fuzz_test.go",
         "fixpoint_test.go",
