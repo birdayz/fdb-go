@@ -207,6 +207,78 @@ func TestConvert_Project_QualifiedUnsupported(t *testing.T) {
 	}
 }
 
+func TestConvert_Sort_BareColumns(t *testing.T) {
+	t.Parallel()
+	src := logical.NewSort(
+		logical.NewScan("Order", ""),
+		[]logical.SortKey{
+			{Expr: "id", Dir: logical.SortAsc},
+			{Expr: "name", Dir: logical.SortDesc},
+		},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	s, ok := got.(*expressions.LogicalSortExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalSortExpression", got)
+	}
+	if s.IsUnsorted() {
+		t.Fatal("sort reported unsorted with 2 keys")
+	}
+	keys := s.GetSortKeys()
+	if len(keys) != 2 {
+		t.Fatalf("sort keys len=%d, want 2", len(keys))
+	}
+	for i, want := range []struct {
+		field   string
+		reverse bool
+	}{
+		{"id", false},
+		{"name", true},
+	} {
+		fv, ok := keys[i].Value.(*values.FieldValue)
+		if !ok {
+			t.Fatalf("key[%d].Value = %T, want *values.FieldValue", i, keys[i].Value)
+		}
+		if fv.Field != want.field {
+			t.Fatalf("key[%d].Field = %q, want %q", i, fv.Field, want.field)
+		}
+		if keys[i].Reverse != want.reverse {
+			t.Fatalf("key[%d].Reverse = %v, want %v", i, keys[i].Reverse, want.reverse)
+		}
+	}
+}
+
+func TestConvert_Sort_Empty_Unsorted(t *testing.T) {
+	t.Parallel()
+	src := logical.NewSort(logical.NewScan("Order", ""), nil)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	s, ok := got.(*expressions.LogicalSortExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalSortExpression", got)
+	}
+	if !s.IsUnsorted() {
+		t.Fatal("sort with empty Keys should be Unsorted")
+	}
+}
+
+func TestConvert_Sort_ExpressionUnsupported(t *testing.T) {
+	t.Parallel()
+	src := logical.NewSort(
+		logical.NewScan("Order", ""),
+		[]logical.SortKey{{Expr: "id + 10", Dir: logical.SortAsc}},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (expression sort key not yet wired)", err)
+	}
+}
+
 // TestConvert_NestedFilterOverFilter — proves recursion through
 // the converter walks correctly.
 func TestConvert_NestedFilterOverFilter(t *testing.T) {

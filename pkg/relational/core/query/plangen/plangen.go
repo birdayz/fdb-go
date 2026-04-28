@@ -23,11 +23,12 @@
 //   - LogicalProject (bare-column projections only) →
 //     LogicalProjectionExpression; non-bare-column entries fall
 //     back to ErrUnsupported
+//   - LogicalSort (bare-column keys only) → LogicalSortExpression
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject with expression projections — needs text→Value
 //     parsing
-//   - LogicalSort — needs text→Value parsing
+//   - LogicalSort with expression keys — needs text→Value parsing
 //   - LogicalLimit — no RelationalExpression equivalent yet
 //   - LogicalAggregate — needs GroupByExpression port
 //   - LogicalJoin — maps to SelectExpression with multiple
@@ -78,6 +79,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertInsert(o)
 	case *logical.LogicalProject:
 		return convertProject(o)
+	case *logical.LogicalSort:
+		return convertSort(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -181,6 +184,37 @@ func convertProject(p *logical.LogicalProject) (expressions.RelationalExpression
 		projected[i] = &values.FieldValue{Field: pj, Typ: values.UnknownType}
 	}
 	return expressions.NewLogicalProjectionExpression(projected, q), nil
+}
+
+// convertSort builds a LogicalSortExpression for the recursively-
+// converted child, but ONLY if every sort-key Expr is a bare column
+// name. Anything else (`ORDER BY a + b`, `ORDER BY UPPER(name)`,
+// `ORDER BY t.c`) requires a text→Value parser we don't have yet.
+//
+// `LogicalSort{Keys: nil}` lowers to UnsortedLogicalSortExpression —
+// matches the no-op case in Java.
+func convertSort(s *logical.LogicalSort) (expressions.RelationalExpression, error) {
+	for i, k := range s.Keys {
+		if !isBareColumn(k.Expr) {
+			return nil, fmt.Errorf("%w: LogicalSort key %d (%q) is not a bare column", ErrUnsupported, i, k.Expr)
+		}
+	}
+	inner, err := Convert(s.Input)
+	if err != nil {
+		return nil, fmt.Errorf("sort input: %w", err)
+	}
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	if len(s.Keys) == 0 {
+		return expressions.UnsortedLogicalSortExpression(q), nil
+	}
+	keys := make([]expressions.SortKey, len(s.Keys))
+	for i, k := range s.Keys {
+		keys[i] = expressions.SortKey{
+			Value:   &values.FieldValue{Field: k.Expr, Typ: values.UnknownType},
+			Reverse: k.Dir == logical.SortDesc,
+		}
+	}
+	return expressions.NewLogicalSortExpression(keys, q), nil
 }
 
 // isBareColumn reports whether s is a SQL identifier with no
