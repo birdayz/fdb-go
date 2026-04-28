@@ -19,6 +19,7 @@ go_library(
         "reference.go",
         "select.go",
         "update.go",
+        "with_predicates.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions",
     visibility = ["//visibility:public"],
