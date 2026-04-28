@@ -175,6 +175,20 @@ func rebuildExpression(e expressions.RelationalExpression, stats StatisticsProvi
 		), nil
 
 	default:
-		return nil, fmt.Errorf("ExtractBestPlan: unsupported expression type %T (add an arm to rebuildExpression)", e)
+		// Unknown concrete type — treat as opaque. Returning `e`
+		// directly without rebuilding children means callers walking
+		// the extracted tree see the original Quantifiers' Refs
+		// (which may still be multi-member). Callers that need the
+		// strict singleton invariant on opaque types must extend the
+		// switch with the relevant arm.
+		//
+		// This trade-off lets opaque wrappers (e.g. cascades-internal
+		// physical-plan adapters introduced post-RFC) flow through
+		// extraction without forcing every Value-tree consumer to
+		// know about them. Once a uniform `WithChildren` method
+		// lands on the RelationalExpression interface, this default
+		// arm becomes "rebuild via WithChildren(freshChildren)" and
+		// the strict invariant returns.
+		return e, nil
 	}
 }
