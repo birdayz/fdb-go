@@ -118,6 +118,7 @@ type recordingEventHandler struct {
 	exploreExprs int
 	applyRules   int
 	growthEvents int
+	optimizeRefs int
 }
 
 func (h *recordingEventHandler) OnExploreReference(_ *expressions.Reference) { h.exploreRefs++ }
@@ -130,6 +131,10 @@ func (h *recordingEventHandler) OnApplyRules(_ *expressions.Reference, grew int)
 	if grew > 0 {
 		h.growthEvents++
 	}
+}
+
+func (h *recordingEventHandler) OnOptimizeReference(_ *expressions.Reference, _ expressions.RelationalExpression) {
+	h.optimizeRefs++
 }
 
 func TestPlanner_EventsFire(t *testing.T) {
@@ -215,6 +220,59 @@ func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 	}
 	if plan != nil {
 		t.Fatal("Plan should return nil on cap hit")
+	}
+}
+
+// TestPlanner_BestMember_StampedAfterOptimize pins that
+// OptimizeReferenceTask populates the bestMember map for every
+// reachable Reference, accessible via BestMember(ref).
+func TestPlanner_BestMember_StampedAfterOptimize(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	innerRef := expressions.InitialOf(scan)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(innerRef),
+	)
+	topRef := expressions.InitialOf(filter)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	if _, conv := p.Explore(topRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// Both top and inner Reference should have a stamped best.
+	topBest := p.BestMember(topRef)
+	if topBest == nil {
+		t.Fatal("top BestMember not stamped")
+	}
+	innerBest := p.BestMember(innerRef)
+	if innerBest == nil {
+		t.Fatal("inner BestMember not stamped")
+	}
+}
+
+// TestPlanner_OnOptimizeReference_FiresAfterSaturation pins that
+// the OnOptimizeReference event fires for every reachable Reference
+// after EXPLORE finishes.
+func TestPlanner_OnOptimizeReference_FiresAfterSaturation(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+	)
+	ref := expressions.InitialOf(filter)
+
+	h := &recordingEventHandler{}
+	p := NewPlanner(DefaultExpressionRules(), nil).SetEvents(h)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+	if h.optimizeRefs == 0 {
+		t.Fatal("OnOptimizeReference never fired")
 	}
 }
 

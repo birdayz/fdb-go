@@ -39,6 +39,12 @@ type Planner struct {
 	// `ref`. ApplyRulesTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
 
+	// bestMember[ref] = the cheapest member chosen by the OPTIMIZE
+	// phase. Populated by OptimizeReferenceTask after ApplyRules
+	// reports no growth (Reference is saturated). Available via
+	// BestMember(ref) after Explore returns.
+	bestMember map[*expressions.Reference]expressions.RelationalExpression
+
 	// MaxTasks caps the total tasks executed before the planner
 	// gives up (returns the partial result). Defaults to 100_000.
 	// Hitting the cap is a strong signal of a non-terminating rule —
@@ -65,6 +71,10 @@ type PlannerEventHandler interface {
 	// OnApplyRules fires when ApplyRulesTask runs; `grew` is the
 	// number of members added during this pass.
 	OnApplyRules(ref *expressions.Reference, grew int)
+	// OnOptimizeReference fires when OptimizeReferenceTask picks the
+	// best member for a Reference. `best` is the chosen member;
+	// nil if the Reference is empty.
+	OnOptimizeReference(ref *expressions.Reference, best expressions.RelationalExpression)
 }
 
 // NewPlanner builds a planner with the given rule set + context.
@@ -79,8 +89,23 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 		rules:        rules,
 		ctx:          ctx,
 		exploreCount: make(map[*expressions.Reference]int),
+		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
 		MaxTasks:     100_000,
 	}
+}
+
+// BestMember returns the OPTIMIZE-chosen best member for `ref`,
+// or nil if the Reference wasn't optimized (e.g. unreachable from
+// the Explore root, or Explore hit MaxTasks).
+//
+// Available after Explore (or Plan) returns. The map is populated
+// by OptimizeReferenceTask which fires after a Reference's
+// ApplyRulesTask reports no growth (saturation reached).
+func (p *Planner) BestMember(ref *expressions.Reference) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	return p.bestMember[ref]
 }
 
 // SetEvents installs an event handler. Pass nil to disable events.
@@ -303,4 +328,37 @@ func (t *ApplyRulesTask) Run(p *Planner) {
 	// No growth — Reference is saturated under the current rule set.
 	// Stamp the count so future ApplyRules passes short-circuit.
 	p.exploreCount[t.Ref] = afterCount
+	// Schedule OPTIMIZE for this Reference. The OptimizeReferenceTask
+	// picks the best member by cost.
+	p.push(&OptimizeReferenceTask{Ref: t.Ref})
+}
+
+// OptimizeReferenceTask is the OPTIMIZE phase: picks the cheapest
+// member of the Reference under the planner's cost comparator and
+// stamps it in the bestMember map. Mirrors Java's
+// OPTIMIZE phase in CascadesPlanner.
+//
+// Fires after ApplyRulesTask reports a Reference saturated. The
+// pre-condition is that all child Reference's ApplyRulesTask have
+// also fired (bottom-up traversal guarantees this) — but we don't
+// require children to be optimized first; the cost model walks
+// child References itself via firstMemberCost (the cost model's
+// recursion contract).
+//
+// The seed uses properties.CostLess as the comparator. A future
+// shift can plumb a configurable comparator via PlanContext.
+type OptimizeReferenceTask struct {
+	Ref *expressions.Reference
+}
+
+// Run picks the cheapest member, stamps it, fires the event.
+func (t *OptimizeReferenceTask) Run(p *Planner) {
+	if t.Ref == nil {
+		return
+	}
+	best := t.Ref.GetBest(properties.CostLess)
+	p.bestMember[t.Ref] = best
+	if p.events != nil {
+		p.events.OnOptimizeReference(t.Ref, best)
+	}
 }
