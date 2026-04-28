@@ -6,6 +6,7 @@ go_library(
         "coercion.go",
         "correlation.go",
         "folder.go",
+        "like_match.go",
         "simplifier_value.go",
         "type.go",
         "value_correlation.go",

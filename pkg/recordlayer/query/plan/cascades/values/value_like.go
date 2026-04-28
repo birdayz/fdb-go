@@ -1,7 +1,5 @@
 package values
 
-import "regexp"
-
 // LikeOperatorValue is the Value-layer SQL `LIKE` operator: tests
 // whether a string value matches a SQL LIKE pattern. Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.values.
@@ -19,10 +17,15 @@ import "regexp"
 //   - `_` matches exactly one character
 //   - other characters match literally
 //
-// The seed implementation translates the LIKE pattern to a regex
-// and runs Go's regexp.MatchString. ESCAPE clauses (e.g.
-// `LIKE 'abc!%' ESCAPE '!'`) are NOT in the seed surface — only
-// plain LIKE.
+// Delegates to the canonical LikeMatch helper (shared with the
+// QueryPredicate-layer ComparisonLike). The matcher is pinned by
+// FuzzLikeMatch / FuzzLikeMatchEscape against a regex oracle and
+// matches Java's `Comparisons.likeMatcher` semantics.
+//
+// Note: ESCAPE clauses are accepted via the seed's no-escape
+// default (escape rune = 0). Future LikeOperatorValue extension
+// can carry an Escape field; the underlying LikeMatch already
+// supports it.
 //
 // Evaluate semantics — Kleene 3VL:
 //   - non-NULL probe + non-NULL pattern: true if pattern matches,
@@ -77,32 +80,8 @@ func (v *LikeOperatorValue) Evaluate(evalCtx any) any {
 	if !ok {
 		return nil
 	}
-	regexStr := likePatternToRegex(patternStr)
-	matched, err := regexp.MatchString(regexStr, probeStr)
-	if err != nil {
-		return nil // malformed regex → UNKNOWN
-	}
-	return matched
-}
-
-// likePatternToRegex translates a SQL LIKE pattern to a Go regex.
-// `%` → `.*`, `_` → `.`, other regex meta-characters are escaped.
-func likePatternToRegex(p string) string {
-	out := make([]byte, 0, len(p)+8)
-	out = append(out, '^')
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		switch c {
-		case '%':
-			out = append(out, '.', '*')
-		case '_':
-			out = append(out, '.')
-		case '.', '*', '+', '?', '[', ']', '(', ')', '{', '}', '|', '^', '$', '\\':
-			out = append(out, '\\', c)
-		default:
-			out = append(out, c)
-		}
-	}
-	out = append(out, '$')
-	return string(out)
+	// Delegate to the conformance-pinned LikeMatch — same matcher
+	// the QueryPredicate-layer ComparisonLike uses, fuzz-tested
+	// against a regex oracle and Java's likeMatcher semantics.
+	return LikeMatch(patternStr, probeStr, 0)
 }

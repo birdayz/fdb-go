@@ -92,23 +92,7 @@ func TestLikeOperatorValue_TypeIsNullableBool(t *testing.T) {
 	}
 }
 
-func TestLikeOperatorValue_PatternToRegex(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		pattern, want string
-	}{
-		{"abc", `^abc$`},
-		{"abc%", `^abc.*$`},
-		{"%abc", `^.*abc$`},
-		{"a_b", `^a.b$`},
-		{"a.b", `^a\.b$`},
-		{"$test^", `^\$test\^$`},
-		{`a\b`, `^a\\b$`},
-	}
-	for _, c := range cases {
-		got := likePatternToRegex(c.pattern)
-		if got != c.want {
-			t.Errorf("likePatternToRegex(%q) = %q, want %q", c.pattern, got, c.want)
-		}
-	}
-}
+// likePatternToRegex was removed when LikeOperatorValue was
+// re-routed through LikeMatch (shared with predicates.likeMatch).
+// The regex translation existed for the Value-layer-only path that
+// no longer exists. LikeMatch is the conformance-pinned matcher.

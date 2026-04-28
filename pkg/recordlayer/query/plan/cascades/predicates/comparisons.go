@@ -347,66 +347,14 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 // Greedy backtrack; O(|pattern| * |s|) worst case. Returns true
 // iff the pattern matches the whole string (SQL LIKE is anchored
 // on both ends).
+//
+// Delegates to values.LikeMatch — the canonical LIKE matcher
+// shared between the QueryPredicate-layer ComparisonLike and the
+// Value-layer LikeOperatorValue. Conformance contract: this and
+// Java's `Comparisons.likeMatcher` must produce identical results.
+// Pinned by FuzzLikeMatch / FuzzLikeMatchEscape.
 func likeMatch(pattern, s string, escape rune) bool {
-	p := []rune(pattern)
-	str := []rune(s)
-	pi, si := 0, 0
-	starPi, starSi := -1, 0
-	for si < len(str) {
-		if pi < len(p) {
-			if escape != 0 && p[pi] == escape {
-				// Trailing escape (no following char) is malformed —
-				// no match per the documented contract. Otherwise the
-				// rune at pi+1 must match the input literally.
-				if pi+1 >= len(p) {
-					return false
-				}
-				if p[pi+1] == str[si] {
-					pi += 2
-					si++
-					continue
-				}
-			} else {
-				switch p[pi] {
-				case '%':
-					starPi = pi
-					starSi = si
-					pi++
-					continue
-				case '_':
-					pi++
-					si++
-					continue
-				default:
-					if p[pi] == str[si] {
-						pi++
-						si++
-						continue
-					}
-				}
-			}
-		}
-		if starPi >= 0 {
-			pi = starPi + 1
-			starSi++
-			si = starSi
-			continue
-		}
-		return false
-	}
-	// Trailing wildcards still match. With escape, anything other than
-	// `%` in the trailing position is a literal that requires
-	// unconsumed input — no match.
-	for pi < len(p) {
-		if escape != 0 && p[pi] == escape {
-			return false // trailing escape (or escape-sequence requiring more input)
-		}
-		if p[pi] != '%' {
-			return false
-		}
-		pi++
-	}
-	return pi == len(p)
+	return values.LikeMatch(pattern, s, escape)
 }
 
 // cmpAny is a total-order comparator over the primitive types the
