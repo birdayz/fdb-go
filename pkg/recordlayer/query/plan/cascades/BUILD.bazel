@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "expression_matcher.go",
         "expression_rule_call.go",
+        "fixpoint.go",
         "plan_context.go",
         "rule.go",
         "rule_demorgan.go",
@@ -33,6 +34,7 @@ go_test(
         "benchmark_test.go",
         "comparison_simplify_test.go",
         "expression_rule_call_test.go",
+        "fixpoint_test.go",
         "plan_context_test.go",
         "predicate_matchers_test.go",
         "predicate_simplify_fuzz_test.go",
