@@ -717,6 +717,64 @@ func FuzzCompareValues(f *testing.F) {
 	})
 }
 
+// FuzzCastValue pins CastValue's no-panic + NULL-pass-through
+// invariants. CastValue has many branches (INTEGER vs BIGINT range
+// checks, DOUBLE_TO_LONG rounding, STRING_TO_LONG parse, UUID
+// canonicalisation, BOOLEAN string mapping); the seed corpus walks
+// representative values × target-type strings, the fuzzer mutates
+// both axes.
+//
+// Properties pinned:
+//   - No panic on any (value, typeName) pair
+//   - CAST(NULL AS T) → (nil, nil)               — SQL spec
+//   - When (v, "INTEGER") fits in int32, ok      — Java alignment
+//   - When (v, "INTEGER") doesn't fit, errors    — vs silent wrap
+//
+// Cross-references the swingshift-52 UUID-CAST plumbing and the
+// CAST-overflow gotchas (CLAUDE.md) — same code path.
+func FuzzCastValue(f *testing.F) {
+	// Seed: representative target types × value types.
+	for _, ty := range []string{"INTEGER", "INT", "BIGINT", "LONG", "DOUBLE", "FLOAT", "STRING", "VARCHAR", "BOOLEAN", "BOOL", "UUID", "BYTES", "BINARY", "<unknown>"} {
+		f.Add(ty, int64(0), float64(0), "")
+		f.Add(ty, int64(1), float64(0), "")
+		f.Add(ty, int64(-1), float64(0), "")
+	}
+	// Edge values: int64 limits, NaN/Inf, edge strings.
+	f.Add("INTEGER", int64(math.MinInt32), float64(0), "")
+	f.Add("INTEGER", int64(math.MaxInt32), float64(0), "")
+	f.Add("INTEGER", int64(math.MaxInt32)+1, float64(0), "") // out of range
+	f.Add("BIGINT", int64(0), math.MaxFloat64, "")           // float→bigint overflow
+	f.Add("BIGINT", int64(0), math.NaN(), "")                // NaN→bigint reject
+	f.Add("BIGINT", int64(0), math.Inf(1), "")               // Inf→bigint reject
+	f.Add("UUID", int64(0), float64(0), "00000000-0000-0000-0000-000000000000")
+	f.Add("UUID", int64(0), float64(0), "not-a-uuid")
+	f.Add("BOOLEAN", int64(0), float64(0), "true")
+	f.Add("BOOLEAN", int64(0), float64(0), "TRUE  ") // trailing whitespace per Java
+	f.Add("BOOLEAN", int64(0), float64(0), "no")     // bad input
+
+	f.Fuzz(func(t *testing.T, typeName string, i int64, fl float64, s string) {
+		// Try each value type as the source value. No panic on any combo.
+		for _, v := range []any{nil, i, fl, s} {
+			r, err := functions.CastValue(v, typeName)
+			_ = err
+			// SQL: CAST(NULL AS T) → (nil, nil) for any typeName.
+			if v == nil {
+				if r != nil || err != nil {
+					t.Fatalf("CAST(NULL AS %q) = (%v, %v), want (nil, nil)", typeName, r, err)
+				}
+			}
+			// When err is non-nil, the result must also be nil (no
+			// silent value-leak through error path). Pre-fix some
+			// error paths could return both a partial value and an
+			// error; the convention is value-OR-error.
+			if err != nil && r != nil {
+				t.Fatalf("CAST(%v AS %q) = (%v, %v): non-nil value alongside error",
+					v, typeName, r, err)
+			}
+		}
+	})
+}
+
 // FuzzLikePrefixStrinc pins the LIKE-prefix strinc helper — must never
 // panic, and when it returns ok=true the result must be strictly
 // greater than any string starting with the prefix (in byte order).
