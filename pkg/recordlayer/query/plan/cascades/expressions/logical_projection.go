@@ -57,11 +57,15 @@ func (e *LogicalProjectionExpression) GetQuantifiers() []Quantifier {
 func (e *LogicalProjectionExpression) CanCorrelate() bool { return false }
 
 // GetCorrelatedToWithoutChildren is the union of correlation sets
-// across the projection list. Same caveat as LogicalFilter — the seed
-// returns the empty set; per-Value correlation walking lands when rules
-// need it.
+// across the projection list.
 func (e *LogicalProjectionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, v := range e.projectedValues {
+		for k := range values.GetCorrelatedToOfValue(v) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 // EqualsWithoutChildren compares two projections by projection-list

@@ -68,12 +68,21 @@ func (e *LogicalSortExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is always false for a sort — single child.
 func (e *LogicalSortExpression) CanCorrelate() bool { return false }
 
-// GetCorrelatedToWithoutChildren — Java returns the empty set. Sort
-// keys CAN reference correlated values but the planner treats the sort
-// itself as not contributing new correlations beyond what's already
-// reachable through the inner. Match Java's contract.
+// GetCorrelatedToWithoutChildren — Java returns the empty set, but
+// sort keys CAN reference correlated values. We surface them so the
+// planner can detect the case where a sort depends on an outer
+// quantifier (e.g. `ORDER BY outer.col` inside a correlated subquery).
+// This is a deliberate Go-side strengthening; if it ever causes a
+// rule-level mismatch, switch back to the Java-empty-set behaviour
+// and surface correlations via a separate accessor.
 func (e *LogicalSortExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, k := range e.sortKeys {
+		for cid := range values.GetCorrelatedToOfValue(k.Value) {
+			out[cid] = struct{}{}
+		}
+	}
+	return out
 }
 
 // EqualsWithoutChildren compares two sorts by their sort key lists,

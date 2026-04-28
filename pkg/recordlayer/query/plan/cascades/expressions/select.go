@@ -79,12 +79,19 @@ func (e *SelectExpression) GetQuantifiers() []Quantifier { return e.quantifiers 
 // must respect that when deciding whether to swap or split children.
 func (e *SelectExpression) CanCorrelate() bool { return true }
 
-// GetCorrelatedToWithoutChildren returns the empty set in the seed —
-// matches Java's behaviour for the structurally-identical case (the
-// expression-level correlation set comes purely from predicates +
-// projection list, and both those Value-walking helpers are deferred).
+// GetCorrelatedToWithoutChildren returns the union of correlation
+// sets across predicates + the resultValue. Java's behaviour matches.
 func (e *SelectExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := values.GetCorrelatedToOfValue(e.resultValue)
+	if out == nil {
+		out = map[values.CorrelationIdentifier]struct{}{}
+	}
+	for _, p := range e.queryPredicates {
+		for k := range predicates.GetCorrelatedToOfPredicate(p) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 // EqualsWithoutChildren compares predicate lists + result value. The

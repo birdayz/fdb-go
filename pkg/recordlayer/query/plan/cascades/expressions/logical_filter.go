@@ -66,16 +66,17 @@ func (e *LogicalFilterExpression) GetQuantifiers() []Quantifier {
 // inter-child correlation possible.
 func (e *LogicalFilterExpression) CanCorrelate() bool { return false }
 
-// GetCorrelatedToWithoutChildren returns the union of correlation sets
-// across all predicates. Predicates without a correlation set
-// contribute nothing.
-//
-// The seed walks predicate children textually (no rich Correlated
-// interface on QueryPredicate yet) — this is a B2 follow-on. Returns
-// the empty set today; rules that need it in the meantime can compute
-// per-predicate correlations directly via Value-level inspection.
+// GetCorrelatedToWithoutChildren returns the union of correlation
+// sets across all predicates (including the Value trees those
+// predicates carry — see predicates.GetCorrelatedToOfPredicate).
 func (e *LogicalFilterExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, p := range e.queryPredicates {
+		for k := range predicates.GetCorrelatedToOfPredicate(p) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 // EqualsWithoutChildren compares two LogicalFilterExpressions by

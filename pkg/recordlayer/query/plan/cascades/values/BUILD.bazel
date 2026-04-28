@@ -8,6 +8,7 @@ go_library(
         "folder.go",
         "simplifier_value.go",
         "type.go",
+        "value_correlation.go",
         "value_not.go",
         "values.go",
     ],

@@ -73,9 +73,16 @@ func (e *UpdateExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is false.
 func (e *UpdateExpression) CanCorrelate() bool { return false }
 
-// GetCorrelatedToWithoutChildren returns the empty set.
+// GetCorrelatedToWithoutChildren returns the union of correlation
+// sets across the SET-list NewValue trees.
 func (e *UpdateExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, tx := range e.transforms {
+		for k := range values.GetCorrelatedToOfValue(tx.NewValue) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 // EqualsWithoutChildren compares targetRecordType + canonical
