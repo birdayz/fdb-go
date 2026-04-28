@@ -45,7 +45,7 @@ func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Mess
 // Supports: col = constant, col != constant, col < constant, col > constant,
 // col <= constant, col >= constant, AND, OR, NOT.
 func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
-	t, err := evalExprPredicateTri(ctx, conn, msg, expr)
+	t, err := evalExprPredicateTri(ctx, conn, msg, expr, false /* allowBareField */)
 	return t.IsTrue(), err
 }
 
@@ -54,20 +54,14 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 // (filtered out) instead of flipping to TRUE. The bool wrapper above
 // collapses UNKNOWN→false at the WHERE/HAVING filter boundary.
 //
-// Top-level WHERE / HAVING entry: a bare FieldValue (`WHERE flag`) is
-// rejected to match fdb-relational's planner. Operands of AND/OR/NOT/XOR
-// inside any context, and any expression in projection context, MAY be
-// bare FieldValues — Java accepts those and converts via truthiness.
-// See evalExprPredicateTriCtx.
-func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (triBool, error) {
-	return evalExprPredicateTriCtx(ctx, conn, msg, expr, false /* allowBareField */)
-}
-
-// evalExprPredicateTriCtx is the param-threaded form. allowBareField=true
-// permits a bare FullColumnName atom to be evaluated as a value (with
-// IsTruthy → triBool); allowBareField=false rejects it the way Java's
-// planner rejects `WHERE flag`.
-func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext, allowBareField bool) (triBool, error) {
+// allowBareField=true permits a bare FullColumnName atom to be evaluated as
+// a value (with IsTruthy → triBool); allowBareField=false rejects it the way
+// Java's planner rejects `WHERE flag`. Top-level WHERE / HAVING callers
+// pass false; projection-level `evalExpr` passes true; recursive calls inside
+// LogicalExpression / NotExpression / XOR always pass true (operands of
+// boolean ops are value-context regardless of where the enclosing
+// expression sits).
+func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext, allowBareField bool) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
 		if conn == nil {
@@ -88,7 +82,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 		// Operands of boolean operators are value-context — Java accepts
 		// `b AND TRUE` / `NOT b` / `b OR FALSE` over a BOOLEAN column.
 		// Pass allowBareField=true to the recursive operand evaluator.
-		left, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(0), true)
+		left, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(0), true)
 		if err != nil {
 			return triFalse, err
 		}
@@ -105,7 +99,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 			if left == triFalse {
 				return triFalse, nil // short-circuit
 			}
-			right, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(1), true)
+			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1), true)
 			if err != nil {
 				return triFalse, err
 			}
@@ -114,7 +108,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 			if left == triTrue {
 				return triTrue, nil // short-circuit
 			}
-			right, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(1), true)
+			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1), true)
 			if err != nil {
 				return triFalse, err
 			}
@@ -122,7 +116,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 		case isXor:
 			// SQL XOR: a XOR b = (a AND NOT b) OR (NOT a AND b). Any NULL
 			// operand → NULL (can't short-circuit without both concrete).
-			right, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(1), true)
+			right, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(1), true)
 			if err != nil {
 				return triFalse, err
 			}
@@ -136,7 +130,7 @@ func evalExprPredicateTriCtx(ctx context.Context, conn *EmbeddedConnection, msg 
 	case *antlrgen.NotExpressionContext:
 		// Operand of NOT is value-context — `NOT b` over a BOOLEAN column
 		// is accepted by Java. Pass allowBareField=true.
-		v, err := evalExprPredicateTriCtx(ctx, conn, msg, e.Expression(), true)
+		v, err := evalExprPredicateTri(ctx, conn, msg, e.Expression(), true)
 		if err != nil {
 			return triFalse, err
 		}
