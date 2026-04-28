@@ -78,6 +78,41 @@ func FuzzPlanner_Idempotence(f *testing.F) {
 	})
 }
 
+// FuzzPlanner_PlanFullPipeline pins that the full Plan() entry
+// point (EXPLORE + OPTIMIZE) doesn't panic on random inputs and
+// returns either a valid plan or ErrPlannerCapHit. Catches
+// pathological inputs that break the OPTIMIZE phase or the
+// extract recursion.
+func FuzzPlanner_PlanFullPipeline(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3, 4, 5})
+	f.Add(make([]byte, 8))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) < 4 {
+			return
+		}
+		expr := buildFuzzExpression(b, 0, 0)
+		ref := expressions.InitialOf(expr)
+		rules := selectRules(b)
+		p := NewPlanner(rules, nil)
+		// MaxTasks low enough to surface non-termination but high
+		// enough for the seed expression shapes to converge.
+		p.MaxTasks = 5_000
+
+		plan, _, err := p.Plan(ref)
+		if err != nil && err != ErrPlannerCapHit {
+			t.Fatalf("Plan: unexpected err %v", err)
+		}
+		if err == nil && plan == nil {
+			t.Fatal("Plan returned nil plan + nil error — invariant break")
+		}
+		// Plan called BestMember internally; verify it's populated
+		// for the root.
+		if err == nil && !p.HasBestMember(ref) {
+			t.Fatal("Plan succeeded but root Reference has no BestMember stamp")
+		}
+	})
+}
+
 // FuzzPlanner_InitialMemberPreserved pins that the original input
 // expression is never removed from the Reference — rules can ADD
 // alternatives but not REPLACE the input.
