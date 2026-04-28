@@ -311,7 +311,7 @@ Per RFC-022, only attempt 4.0+ AFTER 4.-1 lands. Listed here so the work scope i
 
 ### Testing
 
-- [ ] **Zero fuzz targets in `pkg/relational/`** (record-layer has 24). Add `FuzzParse(sql)`, `FuzzEvalExpr(tree)`, `FuzzContinuationToken`, `FuzzSchemaTemplateProto`.
+- [x] **Fuzz targets in `pkg/relational/`** — DONE (item was stale at TODO restructure time). 11 fuzz targets exist today across `pkg/relational/`: `FuzzParse`, `FuzzParseFunction`, `FuzzParseView` (parser), `FuzzDeserializeTemplate` (catalog), `FuzzMessageTypeFromDescriptor` (metadata), `FuzzApplyMathOp`, `FuzzApplyBitOp`, `FuzzLikePrefixStrinc`, `FuzzLikePatternToPrefix` (embedded), `FuzzNormaliseTree`, `FuzzHashTree` (plandiff). Continuation token / record version fuzz lives at the recordlayer level (`FuzzUnwrapContinuation`, `FuzzCompleteVersionFromBytes`, `FuzzConcatContinuation`, etc.).
 - [ ] **Error-path coverage ~0.2% in `pkg/relational/`** (2 error assertions vs 862 success in `embedded_fdb_test.go`). Add tests for type mismatch on INSERT, NOT NULL violation, missing schema, invalid SQL at execute time, duplicate CREATE DATABASE, PK conflict.
 - [ ] **Parser tree-shape conformance tests** (stretch) — feed the same SQL corpus through both parsers and diff trees, or pick representative corners. Requires JSON serialiser on both sides. Not a blocker for Phase 2 — semantic analyzer tests catch tree-shape regressions indirectly.
 
