@@ -130,11 +130,26 @@ func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 	// ChildrenAsSet must agree on both sides (marker is per-class, so
 	// they must match if EqualsWithoutChildren passed — but explicit
 	// guard keeps the contract local).
-	if a.ChildrenAsSet() && b.ChildrenAsSet() {
+	//
+	// Permutation enumeration is O(N!). Beyond MaxPermutationChildren
+	// the cost gets prohibitive (8! = 40320, 12! = 479M); fall back to
+	// positional pairing in that case. The planner is free to
+	// canonicalise large commutative children before semantic-equals
+	// to recover dedup precision; the seed prefers cheap-and-imprecise
+	// to slow-and-correct on this rare case.
+	if a.ChildrenAsSet() && b.ChildrenAsSet() && len(aQs) <= MaxPermutationChildren {
 		return matchChildrenPermuted(aQs, bQs, aliases)
 	}
 	return matchChildrenPositional(aQs, bQs, aliases)
 }
+
+// MaxPermutationChildren caps the number of commutative children
+// SemanticEquals will permutation-enumerate. Tuning rationale:
+// 8! = 40,320 is the practical ceiling on per-call CPU cost
+// (assuming ~1µs per inner-recursion). Real query shapes very rarely
+// exceed 4-5 set-shaped children; the cap exists as a safeguard, not
+// a bottleneck in normal usage.
+const MaxPermutationChildren = 8
 
 // matchChildrenPositional pairs children index-by-index and recurses.
 func matchChildrenPositional(aQs, bQs []Quantifier, aliases *AliasMap) bool {
