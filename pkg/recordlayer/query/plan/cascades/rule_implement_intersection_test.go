@@ -91,6 +91,41 @@ func TestImplementIntersectionRule_NoFireOnEmptyIntersection(t *testing.T) {
 	}
 }
 
+// TestPlannerWithBatchA_ImplementsIntersectionOverScan pins
+// end-to-end Planner integration: Intersection(Scan, Scan) input
+// + Default + Batch A rules drives EXPLORE through saturation and
+// cost-extraction picks the physical IntersectionPlan over the
+// logical Intersection.
+func TestPlannerWithBatchA_ImplementsIntersectionOverScan(t *testing.T) {
+	t.Parallel()
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	intr := expressions.NewLogicalIntersectionExpression(
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
+			expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
+		},
+		nil,
+	)
+	ref := expressions.InitialOf(intr)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, nil)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// Cost-driven extraction should pick a physical IntersectionPlan
+	// wrapper over the original logical Intersection.
+	best := p.BestMember(ref)
+	if best == nil {
+		t.Fatal("BestMember returned nil")
+	}
+	if _, ok := best.(*physicalIntersectionWrapper); !ok {
+		t.Fatalf("BestMember = %T, want *physicalIntersectionWrapper (cost-driven extraction should pick physical)", best)
+	}
+}
+
 // TestImplementIntersectionRule_ThreeChildren pins scaling.
 func TestImplementIntersectionRule_ThreeChildren(t *testing.T) {
 	t.Parallel()
