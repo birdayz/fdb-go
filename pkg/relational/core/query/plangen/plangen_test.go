@@ -640,6 +640,12 @@ func FuzzConvert(f *testing.F) {
 	f.Add(uint64(2), "A", "B", uint8(2))
 	f.Add(uint64(3), "x", "y", uint8(3))
 	f.Add(uint64(0xff), "", "", uint8(255))
+	// Literal seeds — exercise lowerSimpleScalarText branches that
+	// were previously dead in Project / Sort / Update cases.
+	f.Add(uint64(4), "42", "true", uint8(4))
+	f.Add(uint64(5), "1.5", "NULL", uint8(5))
+	f.Add(uint64(6), "'hello'", "FALSE", uint8(8))
+	f.Add(uint64(7), "-7", "true", uint8(4))
 	f.Fuzz(func(t *testing.T, seed uint64, name1, name2 string, shape uint8) {
 		op := buildFuzzOp(seed, name1, name2, shape)
 		if op == nil {
