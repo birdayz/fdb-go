@@ -136,7 +136,7 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #   alias_map, quantifier, reference,
                                     #   logical_*.go (Filter / Projection /
                                     #     Sort / TypeFilter / Distinct /
-                                    #     Union / Intersection),
+                                    #     Union / Intersection / Unique),
                                     #   select.go (FROM-list + WHERE; the only
                                     #     CanCorrelate=true expression),
                                     #   {insert,update,delete}.go (DML),
