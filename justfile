@@ -143,7 +143,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -168,6 +168,28 @@ bench-ci:
         rc=$?
         if [ "$rc" -ne 0 ]; then
             echo "!!! wire/types bench binary exited with $rc (124 = timeout)"
+            fail_count=$((fail_count + 1))
+        fi
+        echo "=== Running benchmarks: //pkg/recordlayer/query/plan/cascades:cascades_test ==="
+        timeout 60 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/cascades_test_/cascades_test" \
+            -test.run='^$' \
+            -test.bench=. \
+            -test.benchmem \
+            -test.benchtime=1s 2>&1
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "!!! cascades_test bench binary exited with $rc (124 = timeout)"
+            fail_count=$((fail_count + 1))
+        fi
+        echo "=== Running benchmarks: //pkg/recordlayer/query/plan/cascades/expressions:expressions_test ==="
+        timeout 60 "$BAZEL_BIN/pkg/recordlayer/query/plan/cascades/expressions/expressions_test_/expressions_test" \
+            -test.run='^$' \
+            -test.bench=. \
+            -test.benchmem \
+            -test.benchtime=1s 2>&1
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "!!! expressions_test bench binary exited with $rc (124 = timeout)"
             fail_count=$((fail_count + 1))
         fi
         echo "=== bench-ci summary: $fail_count bench binary failure(s) ==="
