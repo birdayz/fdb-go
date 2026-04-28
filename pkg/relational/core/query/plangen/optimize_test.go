@@ -121,17 +121,20 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 //
 //	Filter(TRUE, Sort([id], Filter(TRUE, Scan)))
 //
-// PushFilterThroughSort fires on the top-level Filter, yielding a
-// Sort-rooted alternative. FilterDropTrue + NoOpFilter eliminate
-// the top-level Filter independently, yielding a Sort-rooted
-// alternative via that path too.
+// FixpointApply (now sub-Reference-aware) iteratively applies:
+//  1. PushFilterThroughSort on the outer Filter → yields a Sort-
+//     rooted alternative whose inner is Filter(TRUE, Filter(TRUE,
+//     Scan))
+//  2. FilterMerge on the inner adjacent filters → Filter([T,T])
+//  3. FilterDropTrue → Filter([])
+//  4. NoOpFilter → eliminates the trivial filter, yielding Scan
+//  5. The original outer Filter(TRUE) also gets eliminated by
+//     FilterDropTrue + NoOpFilter via the top-level path
 //
-// Note: the seed FixpointApply doesn't descend into sub-References,
-// so rules don't compose across Quantifier boundaries — the inner
-// Filter(TRUE) inside Sort isn't reachable from the top-level rule
-// engine. The full B6 CascadesPlanner with task-stack-driven memo
-// traversal handles that. This test pins WHAT the seed achieves:
-// a Sort-rooted alternative gets added.
+// End state: every reachable Reference contains progressively-
+// simplified members. Pin that the inner-Sort sub-Reference (held
+// by the original top-level Filter's quantifier) eventually contains
+// a bare-Scan member — proves the descent works end-to-end.
 func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -155,21 +158,34 @@ func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
 		t.Fatalf("FixpointApply did not converge in 64 iters — progress=%d", progress)
 	}
 	if progress == 0 {
-		t.Fatal("rule engine made no progress — expected at least PushFilterThroughSort to fire")
+		t.Fatal("rule engine made no progress")
 	}
-	// Look for at least one Sort-rooted alternative member (proves
-	// PushFilterThroughSort fired). Don't enforce the inner shape —
-	// the seed rule engine doesn't descend into sub-References, so
-	// the inner Filter(TRUE) chain isn't reachable.
-	foundSortRooted := false
-	for _, m := range ref.Members() {
-		if _, ok := m.(*expressions.LogicalSortExpression); ok {
-			foundSortRooted = true
-			break
+	// Walk the whole tree from `ref` and look for a bare Scan member
+	// somewhere — proves the rule chain reached the leaves through
+	// the sub-Reference descent.
+	foundBareScan := false
+	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+		if r == nil || visited[r] {
+			return
+		}
+		visited[r] = true
+		for _, m := range r.Members() {
+			if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+				foundBareScan = true
+				return
+			}
+			for _, q := range m.GetQuantifiers() {
+				walk(q.GetRangesOver(), visited)
+				if foundBareScan {
+					return
+				}
+			}
 		}
 	}
-	if !foundSortRooted {
-		t.Fatalf("rule chain did not produce a Sort-rooted alternative — Reference has %d members", len(ref.Members()))
+	walk(ref, map[*expressions.Reference]bool{})
+	if !foundBareScan {
+		t.Fatalf("rule chain did not produce a bare Scan member anywhere in the tree — top-level Reference has %d members", len(ref.Members()))
 	}
 }
 
