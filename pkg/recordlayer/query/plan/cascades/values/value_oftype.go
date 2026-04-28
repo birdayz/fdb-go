@@ -58,19 +58,18 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 // level structural comparison (e.g. RecordType field-set match) is
 // gated on a future extension.
 //
-// CONFORMANCE: matches Java's OfTypeValue.eval NULL branch
-// (returns ExpectedType.IsNullable()) and the primitive-TypeCode
-// match. Two Java branches NOT yet replicated:
-//  1. DynamicMessage probe → returns `expectedType.isRecord()`.
-//     Seed reports false for unknown shapes (no DynamicMessage
-//     type in Go).
-//  2. Cross-type promotion via PromoteValue.isPromotionNeeded —
-//     Java accepts a value if it can be coerced to ExpectedType
-//     via the promotion lattice. Seed compares only TypeCodes.
+// CONFORMANCE: matches Java's OfTypeValue.eval semantics:
+//  1. NULL probe → returns ExpectedType.IsNullable().
+//  2. Primitive TypeCode match (direct).
+//  3. Cross-type promotion via IsPromotable — Java accepts a
+//     value if it can be coerced to ExpectedType via the
+//     promotion lattice (e.g. INT → LONG, INT → DOUBLE).
 //
-// Today no planner rule rewrites to OfTypeValue, so the remaining
-// gap is theoretical. When such a rule lands, this Evaluate must
-// extend to the cross-type promotion check.
+// One Java branch NOT yet replicated:
+//   - DynamicMessage probe → returns `expectedType.isRecord()`.
+//     Seed reports false for unknown shapes (Go doesn't have a
+//     proto DynamicMessage equivalent in this layer; gated on
+//     proto-record-shape introspection).
 func (v *OfTypeValue) Evaluate(evalCtx any) any {
 	if v.Child == nil || v.ExpectedType == nil {
 		return nil
@@ -80,7 +79,23 @@ func (v *OfTypeValue) Evaluate(evalCtx any) any {
 		// Java conformance: NULL is "of type T" iff T is nullable.
 		return v.ExpectedType.IsNullable()
 	}
-	return runtimeMatchesTypeCode(val, v.ExpectedType.Code())
+	// Direct TypeCode match.
+	if got, ok := runtimeMatchesTypeCode(val, v.ExpectedType.Code()).(bool); ok && got {
+		return true
+	}
+	// Cross-type promotion: Java accepts the value if its runtime
+	// type can be promoted to ExpectedType. Walk the runtime type
+	// for each primitive TypeCode and check IsPromotable.
+	for code := TypeCodeBoolean; code <= TypeCodeBytes; code++ {
+		if got, ok := runtimeMatchesTypeCode(val, code).(bool); ok && got {
+			from := NewPrimitiveType(code, false)
+			if IsPromotable(from, v.ExpectedType) {
+				return true
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // runtimeMatchesTypeCode reports whether `val`'s Go runtime type
