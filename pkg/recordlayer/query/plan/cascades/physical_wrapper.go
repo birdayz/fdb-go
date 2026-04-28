@@ -153,3 +153,68 @@ func (w *physicalFilterWrapper) HashCodeWithoutChildren() uint64 {
 }
 
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
+
+// physicalSortWrapper adapts a `*plans.RecordQuerySortPlan` to the
+// RelationalExpression interface. Same structure as
+// physicalFilterWrapper — single inner Quantifier ranging over a
+// wrapped inner physical plan.
+type physicalSortWrapper struct {
+	plan       *plans.RecordQuerySortPlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalSortWrapper constructs the wrapper.
+func NewPhysicalSortWrapper(plan *plans.RecordQuerySortPlan, innerQuant expressions.Quantifier) *physicalSortWrapper {
+	return &physicalSortWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalSortWrapper) GetPlan() *plans.RecordQuerySortPlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value
+// — sort doesn't reshape rows.
+func (w *physicalSortWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalSortWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false — sort doesn't anchor correlation.
+func (w *physicalSortWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false.
+func (w *physicalSortWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalSortWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares the wrapped plan.
+func (w *physicalSortWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalSortWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalSortWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physsortwrap|"))
+	if w.plan != nil {
+		var b [8]byte
+		ph := w.plan.HashCodeWithoutChildren()
+		for i := 0; i < 8; i++ {
+			b[i] = byte(ph >> (8 * (7 - i)))
+		}
+		h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)
