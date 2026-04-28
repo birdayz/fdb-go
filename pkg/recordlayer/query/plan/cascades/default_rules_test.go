@@ -61,6 +61,28 @@ func reflectTypeName(r ExpressionRule) string {
 	return fmt.Sprintf("%T", r)
 }
 
+// TestDefaultRules_StableOrder pins that DefaultExpressionRules
+// returns the rules in the same order on every call. The fixpoint
+// driver iterates rules in this order, so a rule reordering would
+// change which equivalent expressions land first in the Reference's
+// member list — fine but worth pinning so nothing accidentally
+// shuffles them.
+func TestDefaultRules_StableOrder(t *testing.T) {
+	t.Parallel()
+	first := DefaultExpressionRules()
+	for trial := 0; trial < 5; trial++ {
+		next := DefaultExpressionRules()
+		if len(first) != len(next) {
+			t.Fatalf("trial %d: length differs (first=%d, next=%d)", trial, len(first), len(next))
+		}
+		for i := range first {
+			if typeName(first[i]) != typeName(next[i]) {
+				t.Fatalf("trial %d: index %d differs (first=%s, next=%s)", trial, i, typeName(first[i]), typeName(next[i]))
+			}
+		}
+	}
+}
+
 // TestDefaultRules_EndToEndOptimisation drives a multi-rule rewrite
 // chain through the default rule set:
 //
