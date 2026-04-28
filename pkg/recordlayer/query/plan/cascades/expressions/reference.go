@@ -77,7 +77,22 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		panic("Reference.Insert: nil expression")
 	}
 	for _, m := range r.members {
+		// Fast path: pointer-identity on child References + local
+		// EqualsWithoutChildren. Hits when a rule yields output that
+		// reuses the input's existing Quantifiers (the pattern most of
+		// the seed rules follow).
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
+			return false
+		}
+		// Fallback: full SemanticEquals walk. Catches the case where a
+		// rule yields output wrapping a fresh Reference whose held
+		// expression IS structurally equal to an existing member's
+		// child Reference. Without this fallback, rules like
+		// PushFilterThroughDistinctRule would non-terminate (each fire
+		// adds a fresh-Reference duplicate). SemanticEquals is O(tree
+		// size) but only walks when the pointer-identity fast path
+		// misses.
+		if SemanticEquals(m, e, EmptyAliasMap()) {
 			return false
 		}
 	}
