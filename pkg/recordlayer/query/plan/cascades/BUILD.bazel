@@ -68,6 +68,7 @@ go_test(
         "fixpoint_fuzz_test.go",
         "fixpoint_test.go",
         "plan_context_test.go",
+        "planner_fuzz_test.go",
         "planner_test.go",
         "predicate_matchers_test.go",
         "predicate_simplify_fuzz_test.go",

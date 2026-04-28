@@ -203,6 +203,26 @@ type ApplyRulesTask struct {
 
 // Run fires every rule on every member; on growth, re-pushes
 // ExploreReferenceTask.
+//
+// Saturation semantics: a Reference is saturated when ApplyRules
+// fired on its current member set and no new yields were produced.
+// We mark saturation by recording the post-fire count in
+// exploreCount[ref]. The next ApplyRules pass on `ref` short-circuits
+// only if the recorded count matches the current count (i.e. nothing
+// has been added since saturation).
+//
+// Critical correctness contract: when a fire GROWS the member set,
+// we MUST NOT mark the Reference saturated — rules need to fire
+// again on the new members. Setting exploreCount to the post-grow
+// count would cause the next pass to short-circuit, missing rules
+// that match the freshly-added shapes. The fuzzer caught this:
+// FuzzPlanner_Confluence reproduced an input where FixpointApply's
+// 4 members became Planner's 3 because a post-grow saturation
+// stamp prevented the fourth member from being yielded.
+//
+// Fix: only set exploreCount when grew == 0 (saturation reached).
+// On growth, leave exploreCount unchanged and re-push
+// ExploreReferenceTask so rules fire again on the larger set.
 func (t *ApplyRulesTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
@@ -210,7 +230,7 @@ func (t *ApplyRulesTask) Run(p *Planner) {
 	beforeCount := len(t.Ref.Members())
 
 	// Saturation: if the member count hasn't moved since the last
-	// ApplyRules pass, skip — no new shapes to match on.
+	// fully-saturated ApplyRules pass, skip — no new shapes to match on.
 	if last, seen := p.exploreCount[t.Ref]; seen && last == beforeCount {
 		if p.events != nil {
 			p.events.OnApplyRules(t.Ref, 0)
@@ -222,9 +242,8 @@ func (t *ApplyRulesTask) Run(p *Planner) {
 		FireExpressionRule(rule, t.Ref)
 	}
 	afterCount := len(t.Ref.Members())
-	p.exploreCount[t.Ref] = afterCount
-
 	grew := afterCount - beforeCount
+
 	if p.events != nil {
 		p.events.OnApplyRules(t.Ref, grew)
 	}
@@ -232,7 +251,13 @@ func (t *ApplyRulesTask) Run(p *Planner) {
 	if grew > 0 {
 		// New members may have new sub-References; re-explore so
 		// rules at THIS Reference get to see the freshly-yielded
-		// shapes' children too.
+		// shapes' children too. Do NOT mark saturated — the next
+		// ApplyRules pass must run rules on the now-larger set to
+		// catch any rules that match the freshly-added shapes.
 		p.push(&ExploreReferenceTask{Ref: t.Ref})
+		return
 	}
+	// No growth — Reference is saturated under the current rule set.
+	// Stamp the count so future ApplyRules passes short-circuit.
+	p.exploreCount[t.Ref] = afterCount
 }

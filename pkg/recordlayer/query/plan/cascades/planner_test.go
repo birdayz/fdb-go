@@ -173,6 +173,106 @@ func TestPlanner_MaxTasksCapHit(t *testing.T) {
 	}
 }
 
+// TestPlanner_ConfluenceWithFixpointApply pins that the task-stack
+// planner converges to the SAME final Reference member set that
+// FixpointApply produces. Both drivers must reach the same
+// equivalence class — anything else means the new driver is missing
+// or fabricating rule fires.
+//
+// Strategy: build identical input trees, run one through Planner.
+// Explore, the other through FixpointApply. Then compare the
+// top-level Reference's member-count and the structural equality
+// of every member's class.
+func TestPlanner_ConfluenceWithFixpointApply(t *testing.T) {
+	t.Parallel()
+
+	build := func() *expressions.Reference {
+		pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		dist := expressions.NewLogicalDistinctExpression(
+			expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+		)
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pred},
+			expressions.ForEachQuantifier(expressions.InitialOf(dist)),
+		)
+		return expressions.InitialOf(filter)
+	}
+
+	// Driver A: FixpointApply.
+	refA := build()
+	if _, conv := FixpointApply(DefaultExpressionRules(), refA, 64); !conv {
+		t.Fatal("FixpointApply did not converge")
+	}
+
+	// Driver B: task-stack Planner.
+	refB := build()
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	if _, conv := p.Explore(refB); !conv {
+		t.Fatal("Planner did not converge")
+	}
+
+	// Compare member counts: must match.
+	if got, want := len(refA.Members()), len(refB.Members()); got != want {
+		t.Fatalf("FixpointApply produced %d members; Planner produced %d — confluence violation", want, got)
+	}
+
+	// Compare member kinds (multi-set of Go concrete-type names): must
+	// match. Member ORDER may differ because the two drivers fire
+	// rules in different orders, so we tally types.
+	tally := func(ms []expressions.RelationalExpression) map[string]int {
+		m := map[string]int{}
+		for _, e := range ms {
+			m[exprKindName(e)]++
+		}
+		return m
+	}
+	a, b := tally(refA.Members()), tally(refB.Members())
+	for k, ac := range a {
+		if bc := b[k]; bc != ac {
+			t.Errorf("kind %q: FixpointApply has %d, Planner has %d", k, ac, bc)
+		}
+	}
+	for k := range b {
+		if _, ok := a[k]; !ok {
+			t.Errorf("kind %q only in Planner output", k)
+		}
+	}
+}
+
+// exprKindName returns a stable string identifying the Go concrete
+// type of e (used by the confluence test as a multi-set key).
+func exprKindName(e expressions.RelationalExpression) string {
+	switch e.(type) {
+	case *expressions.LogicalFilterExpression:
+		return "Filter"
+	case *expressions.LogicalDistinctExpression:
+		return "Distinct"
+	case *expressions.LogicalSortExpression:
+		return "Sort"
+	case *expressions.LogicalProjectionExpression:
+		return "Projection"
+	case *expressions.LogicalTypeFilterExpression:
+		return "TypeFilter"
+	case *expressions.LogicalUnionExpression:
+		return "Union"
+	case *expressions.LogicalIntersectionExpression:
+		return "Intersection"
+	case *expressions.SelectExpression:
+		return "Select"
+	case *expressions.FullUnorderedScanExpression:
+		return "Scan"
+	case *expressions.InsertExpression:
+		return "Insert"
+	case *expressions.UpdateExpression:
+		return "Update"
+	case *expressions.DeleteExpression:
+		return "Delete"
+	default:
+		return "unknown"
+	}
+}
+
 // TestPlanner_SaturationPrunesRedundantFiring pins that a saturated
 // Reference doesn't get its rules re-fired on the second-pass
 // re-exploration. Counting OnApplyRules with grew=0 vs grew>0 events
