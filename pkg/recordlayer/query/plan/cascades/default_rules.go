@@ -19,5 +19,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewIntersectionMergeRule(),
 		NewNoOpFilterRule(),
 		NewProjectionElimRule(),
+		NewUnsortedSortElimRule(),
 	}
 }
