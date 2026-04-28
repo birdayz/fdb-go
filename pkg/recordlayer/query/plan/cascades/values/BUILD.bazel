@@ -59,6 +59,7 @@ go_test(
         "coercion_test.go",
         "correlation_test.go",
         "folder_test.go",
+        "integration_test.go",
         "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
         "simplifier_value_test.go",
