@@ -376,6 +376,56 @@ func TestConvert_Update_BareColumnRHS(t *testing.T) {
 	}
 }
 
+func TestConvert_Update_MultipleSetsBareColumn(t *testing.T) {
+	t.Parallel()
+	// UPDATE Order SET name = altname, status = altstatus
+	// All RHSes are bare-column → all transform.
+	// The UpdateExpression canonicalises by sorting by FieldPath.
+	src := logical.NewUpdate(
+		"Order",
+		[]logical.Assignment{
+			{Column: "name", Expr: "altname"},
+			{Column: "status", Expr: "altstatus"},
+		},
+		logical.NewScan("Order", ""),
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	u, ok := got.(*expressions.UpdateExpression)
+	if !ok {
+		t.Fatalf("got %T, want *UpdateExpression", got)
+	}
+	tx := u.GetTransforms()
+	if len(tx) != 2 {
+		t.Fatalf("transforms len=%d, want 2", len(tx))
+	}
+	// Canonical (sorted-by-FieldPath) order: "name" before "status".
+	if tx[0].FieldPath != "name" || tx[1].FieldPath != "status" {
+		t.Fatalf("transforms not in canonical order: got [%q, %q], want [name, status]",
+			tx[0].FieldPath, tx[1].FieldPath)
+	}
+}
+
+func TestConvert_Update_OneRHSExpression_Unsupported(t *testing.T) {
+	t.Parallel()
+	// UPDATE Order SET name = altname, status = altstatus + 1 — second RHS
+	// has arithmetic → ErrUnsupported (no partial conversion).
+	src := logical.NewUpdate(
+		"Order",
+		[]logical.Assignment{
+			{Column: "name", Expr: "altname"},
+			{Column: "status", Expr: "altstatus + 1"},
+		},
+		logical.NewScan("Order", ""),
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (one RHS is non-bare)", err)
+	}
+}
+
 func TestConvert_Update_ExpressionRHS_Unsupported(t *testing.T) {
 	t.Parallel()
 	src := logical.NewUpdate(
