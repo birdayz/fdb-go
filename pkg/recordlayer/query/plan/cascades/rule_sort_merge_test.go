@@ -82,6 +82,51 @@ func TestSortMergeRule_DeclinesOnNonSortInner(t *testing.T) {
 	}
 }
 
+func TestSortMergeRule_TriplyNested_FlattensViaFixpoint(t *testing.T) {
+	t.Parallel()
+	// Sort([k1]) over Sort([k2]) over Sort([k3]) over Scan
+	// Two SortMerge fires should leave Sort([k1]) over Scan.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	deepSort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "k3", Typ: values.UnknownType}}},
+		scanQ,
+	)
+	deepSortQ := expressions.ForEachQuantifier(expressions.InitialOf(deepSort))
+	midSort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "k2", Typ: values.UnknownType}}},
+		deepSortQ,
+	)
+	midSortQ := expressions.ForEachQuantifier(expressions.InitialOf(midSort))
+	topSort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "k1", Typ: values.UnknownType}}},
+		midSortQ,
+	)
+	ref := expressions.InitialOf(topSort)
+	progress, converged := FixpointApply([]ExpressionRule{NewSortMergeRule()}, ref, 16)
+	if !converged {
+		t.Fatalf("FixpointApply did not converge — progress=%d", progress)
+	}
+	// Look for the flat Sort([k1]) over Scan.
+	flatFound := false
+	for _, m := range ref.Members() {
+		s, ok := m.(*expressions.LogicalSortExpression)
+		if !ok {
+			continue
+		}
+		if _, scanOK := s.GetInner().GetRangesOver().Get().(*expressions.FullUnorderedScanExpression); scanOK && len(s.GetSortKeys()) == 1 {
+			fv, ok := s.GetSortKeys()[0].Value.(*values.FieldValue)
+			if ok && fv.Field == "k1" {
+				flatFound = true
+				break
+			}
+		}
+	}
+	if !flatFound {
+		t.Fatalf("FixpointApply did not produce Sort([k1]) over Scan; members=%d", len(ref.Members()))
+	}
+}
+
 func TestSortMergeRule_InnerUnsortedStillFires(t *testing.T) {
 	t.Parallel()
 	// Inner is Sort([]) — unsorted. Outer's keys win, dropping the
