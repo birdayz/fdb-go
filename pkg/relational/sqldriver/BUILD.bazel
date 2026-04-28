@@ -24,6 +24,7 @@ go_test(
     name = "sqldriver_test",
     srcs = [
         "driver_test.go",
+        "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",
         "sql_integration_test.go",
     ],

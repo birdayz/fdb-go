@@ -388,6 +388,51 @@ func TestJitterBackoff_ZeroAndNegative(t *testing.T) {
 }
 
 // ============================================================================
+// isRetryable — error-code → retry decision (mirrors fdb_error_predicate).
+// ============================================================================
+
+func TestIsRetryable_RetryableSet(t *testing.T) {
+	t.Parallel()
+	// Every code in this list MUST return true. If a future commit
+	// silently drops one (typo in the switch case label), this test
+	// catches it.
+	retryable := []int{
+		ErrTransactionTooOld, ErrFutureVersion,
+		ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
+		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
+		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
+		ErrAllProxiesUnreachable, ErrCommitUnknownResult, ErrClusterVersionChanged,
+		ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
+	}
+	for _, code := range retryable {
+		if !isRetryable(code) {
+			t.Errorf("isRetryable(%d) = false, want true", code)
+		}
+	}
+}
+
+func TestIsRetryable_NotRetryableSet(t *testing.T) {
+	t.Parallel()
+	// A representative set of non-retryable codes. The function's
+	// default case returns false, so we sanity-check that codes NOT
+	// in the explicit retryable set are not silently retried.
+	notRetryable := []int{
+		0,                      // success
+		ErrTransactionTimedOut, // user gave up — explicit "NEVER retryable" comment in transaction.go
+		ErrInvertedRange,       // begin > end is structural
+		ErrOperationFailed,     // endpoint not supported
+		ErrWrongShardServer,    // location-cache invalidation, retried elsewhere (NOT here)
+		1234567,                // arbitrary unknown code
+		-1,                     // negative
+	}
+	for _, code := range notRetryable {
+		if isRetryable(code) {
+			t.Errorf("isRetryable(%d) = true, want false", code)
+		}
+	}
+}
+
+// ============================================================================
 // Helpers.
 // ============================================================================
 

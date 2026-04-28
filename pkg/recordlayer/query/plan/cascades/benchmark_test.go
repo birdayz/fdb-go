@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -246,5 +247,124 @@ func BenchmarkSimplify_NoOp(b *testing.B) {
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {
 		_ = Simplify(pred, rules)
+	}
+}
+
+// --- B5 / B1 expression-rule benchmarks --------------------------------
+
+// BenchmarkFireExpressionRule_FilterMerge exercises the per-rule hot
+// path: matcher binds, OnMatch yields, Reference dedups.
+func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ)
+	rule := NewFilterMergeRule()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := expressions.InitialOf(outerF) // fresh ref each iter
+		_ = FireExpressionRule(rule, ref)
+	}
+}
+
+// BenchmarkFixpointApply_DefaultRules drives the full default rule
+// set via FixpointApply on a small test tree.
+func BenchmarkFixpointApply_DefaultRules(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	innerD := expressions.NewLogicalDistinctExpression(scanQ)
+	innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+	outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := expressions.InitialOf(outerD)
+		_, _ = FixpointApply(rules, ref, 50)
+	}
+}
+
+// BenchmarkExpressionMatcher_BindMatch — the per-call match cost.
+func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	matcher := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
+	outer := matching.NewBindings()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BindMatches(outer, f)
+	}
+}
+
+// BenchmarkOptimise_RealisticTree drives the full default rule set
+// (FixpointApply with all 31 logical-rewrite rules + sub-Reference
+// descent) on a ~6-node query tree representative of a small SELECT:
+//
+//	Distinct
+//	  → Filter([T])
+//	    → Filter([T])
+//	      → Distinct
+//	        → Distinct
+//	          → Scan(Order)
+//
+// Pins the end-to-end cost of one optimisation pass — useful as a
+// macro-benchmark when future tuning changes rule order or adds
+// per-rule short-circuits.
+func BenchmarkOptimise_RealisticTree(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
+		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		return expressions.InitialOf(topD)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		_, _ = FixpointApply(rules, ref, 50)
+	}
+}
+
+// BenchmarkOptimise_StackedSorts exercises SortMergeRule +
+// DistinctOverSortElim cooperation on:
+//
+//	Distinct → Sort(k1) → Sort(k2) → Sort(k3) → Scan(Order)
+//
+// Optimal output is Distinct(Scan) (DistinctOverSortElim absorbs
+// the entire Sort stack iteratively). Pins the cooperation cost
+// for that rewrite chain.
+func BenchmarkOptimise_StackedSorts(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		k3 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k3", Typ: values.UnknownType}}}
+		s3 := expressions.NewLogicalSortExpression(k3, scanQ)
+		s3Q := expressions.ForEachQuantifier(expressions.InitialOf(s3))
+		k2 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k2", Typ: values.UnknownType}}}
+		s2 := expressions.NewLogicalSortExpression(k2, s3Q)
+		s2Q := expressions.ForEachQuantifier(expressions.InitialOf(s2))
+		k1 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k1", Typ: values.UnknownType}}}
+		s1 := expressions.NewLogicalSortExpression(k1, s2Q)
+		s1Q := expressions.ForEachQuantifier(expressions.InitialOf(s1))
+		d := expressions.NewLogicalDistinctExpression(s1Q)
+		return expressions.InitialOf(d)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		_, _ = FixpointApply(rules, ref, 50)
 	}
 }

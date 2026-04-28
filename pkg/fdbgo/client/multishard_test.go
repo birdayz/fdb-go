@@ -24,7 +24,25 @@ type multiShardEnv struct {
 	numShards int
 }
 
+// shardSizeConfig parameterises FDB shard knobs so the multi-shard
+// suite can run against multiple shard-count regimes from the same
+// helper. Default (50KB max) yields ~20 shards from 1MB of data;
+// LargerShards (200KB max) yields ~5 shards.
+type shardSizeConfig struct {
+	minShardBytes string
+	maxShardBytes string
+}
+
+var (
+	defaultShardSize = shardSizeConfig{minShardBytes: "10000", maxShardBytes: "50000"}
+	largerShardSize  = shardSizeConfig{minShardBytes: "40000", maxShardBytes: "200000"}
+)
+
 func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
+	return setupMultiShardEnvWithConfig(t, ctx, defaultShardSize)
+}
+
+func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSizeConfig) *multiShardEnv {
 	t.Helper()
 	g := gomega.NewWithT(t)
 
@@ -33,8 +51,8 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 		tcfdb.WithDirectIP(),
 		tcfdb.WithProcessCount(3),
 		tcfdb.WithRedundancyMode("double"),
-		tcfdb.WithKnob("min_shard_bytes", "10000"),
-		tcfdb.WithKnob("max_shard_bytes", "50000"),
+		tcfdb.WithKnob("min_shard_bytes", cfg.minShardBytes),
+		tcfdb.WithKnob("max_shard_bytes", cfg.maxShardBytes),
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),
 		tcfdb.WithKnob("storage_metrics_polling_delay", "1"),
 	)
@@ -1324,4 +1342,54 @@ func testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t *testing.T, c
 
 	t.Logf("continuation correctness: %d keys / %d pages / %d cache invalidations across %d shards",
 		len(collected), iterations+1, cacheInvalidations, env.numShards)
+}
+
+// TestMultiShard_LargerShards exercises a SUBSET of the multi-shard
+// suite against a SECOND shard-count config — max_shard_bytes=200KB
+// yields ~5 shards from 1MB of data instead of the ~20 shards the
+// default config produces.
+//
+// Why a subset: each setup pays a ~30s container-startup cost;
+// running the full 24-subtest matrix at every shard config would
+// triple `just test` time. The subset picks the topology-sensitive
+// tests where shard count matters most:
+//
+//   - GetRange: full scan correctness across shard boundaries
+//   - GetRangeWithLimit: paged scan with continuation across boundaries
+//     (this is the surface where the nightshift-9 bug + similar bugs
+//     hide)
+//   - GetKey: selector resolution across shard boundaries (also
+//     nightshift-9-prone)
+//   - ClearRange: range mutation that crosses shard boundaries
+//   - ContinuationCorrectnessWithCacheInvalidation: the most thorough
+//     boundary-correctness test
+//
+// Closes part of TODO HIGH 'Multi-shard test matrix' — adds varied
+// shard-count coverage without exploding container time.
+func TestMultiShard_LargerShards(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	env := setupMultiShardEnvWithConfig(t, ctx, largerShardSize)
+	if env.numShards <= 1 {
+		t.Skip("shard splits did not occur with larger-shards config")
+	}
+	t.Logf("running cross-shard tests across %d shards (large-shards config)", env.numShards)
+
+	t.Run("GetRange", func(t *testing.T) {
+		testMultiShard_GetRange(t, ctx, env)
+	})
+	t.Run("GetRangeWithLimit", func(t *testing.T) {
+		testMultiShard_GetRangeWithLimit(t, ctx, env)
+	})
+	t.Run("GetKey", func(t *testing.T) {
+		testMultiShard_GetKey(t, ctx, env)
+	})
+	t.Run("ClearRange", func(t *testing.T) {
+		testMultiShard_ClearRange(t, ctx, env)
+	})
+	t.Run("ContinuationCorrectnessWithCacheInvalidation", func(t *testing.T) {
+		testMultiShard_ContinuationCorrectnessWithCacheInvalidation(t, ctx, env)
+	})
 }

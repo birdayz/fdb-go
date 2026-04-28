@@ -4,6 +4,7 @@ go_library(
     name = "predicates",
     srcs = [
         "comparisons.go",
+        "predicate_correlation.go",
         "predicates.go",
         "simplifier_predicate_values.go",
     ],
@@ -17,6 +18,7 @@ go_test(
     srcs = [
         "comparisons_null_table_test.go",
         "comparisons_test.go",
+        "fuzz_test.go",
         "predicates_equivalence_test.go",
         "predicates_test.go",
         "simplifier_predicate_values_test.go",
