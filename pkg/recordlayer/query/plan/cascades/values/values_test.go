@@ -1215,3 +1215,39 @@ func TestExplainValue_ParameterValue(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregateValue_GetIndexTypeName(t *testing.T) {
+	t.Parallel()
+	cases := map[AggregateOp]string{
+		AggCount:     "COUNT_NOT_NULL",
+		AggCountStar: "COUNT",
+		AggSum:       "SUM",
+		AggMin:       "MIN_EVER_LONG",
+		AggMax:       "MAX_EVER_LONG",
+		AggAvg:       "",
+		AggInvalid:   "",
+	}
+	for op, want := range cases {
+		var operand Value
+		if op != AggCountStar && op != AggInvalid {
+			operand = &ConstantValue{Value: int64(1), Typ: NotNullLong}
+		}
+		v := &AggregateValue{Op: op, Operand: operand}
+		if got := v.GetIndexTypeName(); got != want {
+			t.Errorf("AggregateValue{Op=%v}.GetIndexTypeName() = %q, want %q", op, got, want)
+		}
+	}
+}
+
+func TestAggregateValue_ImplementsIndexableAggregate(t *testing.T) {
+	t.Parallel()
+	v := &AggregateValue{Op: AggSum, Operand: &ConstantValue{Value: int64(1), Typ: NotNullLong}}
+	var _ IndexableAggregate = v
+	iav, ok := Value(v).(IndexableAggregate)
+	if !ok {
+		t.Fatalf("AggregateValue should implement IndexableAggregate")
+	}
+	if iav.GetIndexTypeName() != "SUM" {
+		t.Fatalf("via interface: GetIndexTypeName = %q, want SUM", iav.GetIndexTypeName())
+	}
+}

@@ -1914,3 +1914,59 @@ func (*AggregateValue) Name() string { return "agg" }
 func (a *AggregateValue) Evaluate(any) any {
 	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
 }
+
+// GetIndexTypeName returns the FDB index-type name that backs this
+// aggregate when an aggregate index is available. Mirrors Java's
+// `IndexableAggregateValue.getIndexTypeName()` (Java's interface
+// marker; Go uses an accessor on AggregateValue itself).
+//
+// The mapping:
+//
+//	AggCount     → COUNT_NOT_NULL  (counts non-null values)
+//	AggCountStar → COUNT           (counts all rows incl. NULL)
+//	AggSum       → SUM
+//	AggMin       → MIN_EVER_LONG   (or MIN_EVER_TUPLE for non-numeric)
+//	AggMax       → MAX_EVER_LONG   (or MAX_EVER_TUPLE)
+//	AggAvg       → ""              (no direct index — computed from
+//	                                 SUM/COUNT pair instead)
+//	AggInvalid   → ""
+//
+// Returns the empty string when no FDB index type backs this
+// aggregate. The planner consults this to decide whether to lower
+// to an index-aggregate scan (constant-cost lookup) or fall back
+// to a streaming aggregator (linear-time row scan).
+func (a *AggregateValue) GetIndexTypeName() string {
+	switch a.Op {
+	case AggCount:
+		return "COUNT_NOT_NULL"
+	case AggCountStar:
+		return "COUNT"
+	case AggSum:
+		return "SUM"
+	case AggMin:
+		return "MIN_EVER_LONG"
+	case AggMax:
+		return "MAX_EVER_LONG"
+	case AggAvg, AggInvalid:
+		return ""
+	}
+	return ""
+}
+
+// IndexableAggregate is the Go-side counterpart to Java's
+// IndexableAggregateValue interface. Any Value that has an index-
+// backed aggregate form can implement this — currently only
+// AggregateValue (when its Op has a non-empty index-type name).
+//
+// Planner / matcher code can type-assert against this interface to
+// pick aggregates eligible for index-scan lowering:
+//
+//	if iav, ok := v.(IndexableAggregate); ok && iav.GetIndexTypeName() != "" {
+//	    // can lower to index-aggregate scan
+//	}
+type IndexableAggregate interface {
+	Value
+	GetIndexTypeName() string
+}
+
+var _ IndexableAggregate = (*AggregateValue)(nil)
