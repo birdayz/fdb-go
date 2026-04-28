@@ -174,3 +174,45 @@ func TestAndOrValue_WithChildren(t *testing.T) {
 		t.Fatalf("rebuilt.Evaluate = %v, want false", got)
 	}
 }
+
+// TestAndOrValue_SimplifyConstantFold verifies that SimplifyValue
+// folds an all-constant AndOrValue into a literal. With the
+// simplifier dispatch added in this same shift, a constant
+// AND/OR expression should reduce to a single ConstantValue.
+func TestAndOrValue_SimplifyConstantFold(t *testing.T) {
+	t.Parallel()
+	// AND(true, false) = false → should fold to a ConstantValue(false).
+	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), NewBooleanValue(false))
+	folded := SimplifyValue(v)
+	if folded == v {
+		t.Fatalf("SimplifyValue did NOT fold all-constant AndOrValue (returned same pointer)")
+	}
+	if got := folded.Evaluate(nil); got != false {
+		t.Fatalf("folded.Evaluate = %v, want false", got)
+	}
+}
+
+func TestAndOrValue_SimplifyChildFold(t *testing.T) {
+	t.Parallel()
+	// AND(NOT(false), true). The NOT(false) → ConstantValue(true) fold
+	// rebuilds the AndOrValue with the folded child; the rebuilt tree
+	// is itself all-constant so it then folds to the final result.
+	innerNot := NewNotValue(NewBooleanValue(false))
+	outer := NewAndOrValue(AndOrAnd, innerNot, NewBooleanValue(true))
+	folded := SimplifyValue(outer)
+	if got := folded.Evaluate(nil); got != true {
+		t.Fatalf("folded(NOT(false) AND true).Evaluate = %v, want true", got)
+	}
+}
+
+func TestAndOrValue_SimplifyNoConstFoldKeepsTree(t *testing.T) {
+	t.Parallel()
+	// AND(field, true) — field is non-constant → tree shape preserved.
+	field := &FieldValue{Field: "active", Typ: TypeBool}
+	v := NewAndOrValue(AndOrAnd, field, NewBooleanValue(true))
+	folded := SimplifyValue(v)
+	// Returns same pointer (no children changed).
+	if folded != v {
+		t.Fatalf("SimplifyValue rewrote unchanged tree")
+	}
+}
