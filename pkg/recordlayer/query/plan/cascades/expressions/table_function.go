@@ -82,18 +82,21 @@ func (e *TableFunctionExpression) GetCorrelatedToWithoutChildren() map[values.Co
 }
 
 // EqualsWithoutChildren is true iff `other` is a
-// TableFunctionExpression AND its streamValue matches structurally
-// (pointer-equality fast path + Name() fallback).
+// TableFunctionExpression AND its streamValue is pointer-equal to
+// ours.
+//
+// The seed conservatively requires pointer equality. A previous
+// version used a Name() fallback which produces false positives
+// for Values whose Name() returns a class-discriminating constant
+// (e.g. *FieldValue returns "field" for all instances). Same fix
+// as ExplodeExpression — when SemanticEquals over Values is
+// ported as a free function, this can broaden.
 func (e *TableFunctionExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*TableFunctionExpression)
 	if !ok {
 		return false
 	}
-	if e.streamValue == nil || o.streamValue == nil {
-		return e.streamValue == o.streamValue
-	}
-	return e.streamValue == o.streamValue ||
-		e.streamValue.Name() == o.streamValue.Name()
+	return e.streamValue == o.streamValue
 }
 
 // HashCodeWithoutChildren mixes class discriminator + the streaming

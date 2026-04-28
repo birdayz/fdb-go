@@ -85,25 +85,26 @@ func (e *ExplodeExpression) GetCorrelatedToWithoutChildren() map[values.Correlat
 }
 
 // EqualsWithoutChildren is true iff `other` is an ExplodeExpression
-// AND its CollectionValue evaluates structurally-equal to ours.
+// AND its CollectionValue is pointer-equal to ours.
 //
-// The seed approximates Java's
-// `collectionValue.semanticEquals(otherExplode.getCollectionValue(),
-// equivalencesMap)` via Value-pointer equality + same Name (the
-// SemanticEquals walker over Values isn't ported as a separate
-// function; a future shift can deepen this).
+// The seed conservatively requires pointer equality on the
+// CollectionValue. Java's `collectionValue.semanticEquals(...)`
+// would dispatch through a structural-equality walker, but that's
+// gated on porting `values.SemanticEquals` as a free function.
+//
+// A previous version used a `Name()`-fallback which produced false
+// positives — `*FieldValue` (and several other concrete Values)
+// returns a constant `Name()` for all instances, so two
+// `Explode(FieldValue{"tags"})` and `Explode(FieldValue{"categories"})`
+// would compare equal and `Reference.Insert` would silently drop
+// one. Reverted to pointer equality only — strictly conservative,
+// produces no false positives.
 func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*ExplodeExpression)
 	if !ok {
 		return false
 	}
-	if e.collectionValue == nil || o.collectionValue == nil {
-		return e.collectionValue == o.collectionValue
-	}
-	// Pointer-equality fast path; structural equality fallback is
-	// gated on porting Value.SemanticEquals as a free function.
-	return e.collectionValue == o.collectionValue ||
-		e.collectionValue.Name() == o.collectionValue.Name()
+	return e.collectionValue == o.collectionValue
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + the

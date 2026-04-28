@@ -2002,6 +2002,8 @@ func IsNonEvaluable(v Value) bool {
 // Evaluate path. Implements NonEvaluable.
 func (*AggregateValue) IsNonEvaluable() bool { return true }
 
+var _ NonEvaluable = (*AggregateValue)(nil)
+
 // IndexOnly is the Go-side counterpart to Java's
 // `Value.IndexOnlyValue` interface marker. Any Value whose result
 // can ONLY be produced by an index scan (vs a streaming

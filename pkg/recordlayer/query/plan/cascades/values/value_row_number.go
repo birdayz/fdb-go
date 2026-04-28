@@ -98,3 +98,5 @@ func (r *RowNumberValue) WithChildren(newChildren []Value) *RowNumberValue {
 	partition, argument := r.SplitNewChildren(newChildren)
 	return NewRowNumberValue(partition, argument, r.EfSearch, r.IsReturningVectors)
 }
+
+var _ IndexOnly = (*RowNumberValue)(nil)

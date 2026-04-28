@@ -132,3 +132,5 @@ func NewCosineDistanceRowNumberValue(partition, args []Value, efSearch *int, isR
 func NewDotProductDistanceRowNumberValue(partition, args []Value, efSearch *int, isReturningVectors *bool) *DistanceRowNumberValue {
 	return NewDistanceRowNumberValue(DistanceDotProduct, partition, args, efSearch, isReturningVectors)
 }
+
+var _ IndexOnly = (*DistanceRowNumberValue)(nil)
