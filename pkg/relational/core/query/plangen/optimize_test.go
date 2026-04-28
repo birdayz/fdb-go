@@ -115,3 +115,46 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 		t.Fatal("ProjectionMergeRule did not collapse stacked projections to 1-deep over Scan")
 	}
 }
+
+// FuzzConvertAndOptimise drives the C1 → B5 pipeline end-to-end on
+// random LogicalOperator trees. Pins three properties:
+//
+//  1. Convert may return ErrUnsupported but MUST NOT panic.
+//  2. When Convert succeeds, the resulting RelationalExpression is
+//     a valid FixpointApply input — the rule engine must terminate
+//     within 50 iters, no panic.
+//  3. After convergence, the input member is preserved as
+//     ref.Members()[0] (the rule engine ADDS, never REMOVES).
+//
+// Catches the class of bug where a converter shape produces an
+// expression the rule engine non-terminates on. (Caught the
+// DistinctOverUnionDedupRule termination bug post-revert; would have
+// caught it at-introduction if FuzzConvert seed had Union shapes.)
+func FuzzConvertAndOptimise(f *testing.F) {
+	f.Add(uint64(0), "Order", "", uint8(0))
+	f.Add(uint64(1), "T", "x", uint8(1))
+	f.Add(uint64(2), "A", "B", uint8(2))
+	f.Add(uint64(3), "x", "y", uint8(3))
+	f.Add(uint64(0xff), "", "", uint8(255))
+	rules := cascades.DefaultExpressionRules()
+	f.Fuzz(func(t *testing.T, seed uint64, name1, name2 string, shape uint8) {
+		op := buildFuzzOp(seed, name1, name2, shape)
+		if op == nil {
+			return
+		}
+		got, err := plangen.Convert(op)
+		if err != nil {
+			return
+		}
+		ref := expressions.InitialOf(got)
+		initialMember := ref.Get()
+		_, converged := cascades.FixpointApply(rules, ref, 50)
+		if !converged {
+			t.Fatalf("FixpointApply did not converge on Convert output of seed=%d shape=%d (op=%T)", seed, shape, op)
+		}
+		members := ref.Members()
+		if len(members) == 0 || members[0] != initialMember {
+			t.Fatalf("initial member not preserved at index 0 (seed=%d shape=%d)", seed, shape)
+		}
+	})
+}
