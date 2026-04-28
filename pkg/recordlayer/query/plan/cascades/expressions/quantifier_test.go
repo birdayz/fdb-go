@@ -90,3 +90,22 @@ func TestNamedExistentialQuantifier_PreservesAlias(t *testing.T) {
 		t.Fatalf("alias=%v, want %v", q.GetAlias(), alias)
 	}
 }
+
+// TestQuantifierKind_DoesNotAffectFlowedObjectValue pins that
+// GetFlowedObjectValue returns a QuantifiedObjectValue regardless of
+// kind. The seed treats ForEach and Existential identically here —
+// future MaxMatchMap work will introduce kind-aware semantics, but
+// the seed contract is clear: the alias is what matters.
+func TestQuantifierKind_DoesNotAffectFlowedObjectValue(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("q1")
+	ref := InitialOf(&stubExpr{name: "T"})
+	forEach := NamedForEachQuantifier(alias, ref)
+	existential := NamedExistentialQuantifier(alias, ref)
+	if forEach.GetFlowedObjectValue().(*values.QuantifiedObjectValue).Correlation != alias {
+		t.Fatal("ForEach flowed-object alias mismatch")
+	}
+	if existential.GetFlowedObjectValue().(*values.QuantifiedObjectValue).Correlation != alias {
+		t.Fatal("Existential flowed-object alias mismatch")
+	}
+}
