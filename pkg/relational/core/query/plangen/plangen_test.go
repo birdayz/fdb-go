@@ -84,6 +84,25 @@ func TestConvert_Union(t *testing.T) {
 	}
 }
 
+func TestConvert_UnionDistinct(t *testing.T) {
+	t.Parallel()
+	a := logical.NewScan("A", "")
+	b := logical.NewScan("B", "")
+	src := logical.NewUnion([]logical.LogicalOperator{a, b}, true) // distinct = true
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	d, ok := got.(*expressions.LogicalDistinctExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalDistinctExpression (Distinct wrapper)", got)
+	}
+	innerExpr := d.GetInner().GetRangesOver().Get()
+	if _, ok := innerExpr.(*expressions.LogicalUnionExpression); !ok {
+		t.Fatalf("distinct inner = %T, want *LogicalUnionExpression", innerExpr)
+	}
+}
+
 func TestConvert_Delete(t *testing.T) {
 	t.Parallel()
 	src := logical.NewDelete("Order", logical.NewScan("Order", ""))

@@ -101,7 +101,9 @@ func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, 
 }
 
 // convertUnion builds a LogicalUnionExpression over each recursively-
-// converted child wrapped in a fresh Quantifier.
+// converted child wrapped in a fresh Quantifier. UNION DISTINCT
+// (Distinct=true) wraps the union in a LogicalDistinctExpression —
+// matches Java's planner shape (Union → Distinct over Union).
 func convertUnion(u *logical.LogicalUnion) (expressions.RelationalExpression, error) {
 	qs := make([]expressions.Quantifier, 0, len(u.Inputs))
 	for i, child := range u.Inputs {
@@ -111,7 +113,12 @@ func convertUnion(u *logical.LogicalUnion) (expressions.RelationalExpression, er
 		}
 		qs = append(qs, expressions.ForEachQuantifier(expressions.InitialOf(conv)))
 	}
-	return expressions.NewLogicalUnionExpression(qs), nil
+	union := expressions.NewLogicalUnionExpression(qs)
+	if !u.Distinct {
+		return union, nil
+	}
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(union))
+	return expressions.NewLogicalDistinctExpression(innerQ), nil
 }
 
 // convertDelete builds a DeleteExpression over the recursively-
