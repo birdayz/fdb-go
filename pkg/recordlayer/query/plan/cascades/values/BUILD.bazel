@@ -71,6 +71,7 @@ go_test(
         "value_constant_object_test.go",
         "value_correlation_fuzz_test.go",
         "value_derived_test.go",
+        "value_distance_fuzz_test.go",
         "value_distance_row_number_test.go",
         "value_distance_test.go",
         "value_empty_test.go",
