@@ -20,6 +20,7 @@ go_library(
         "rule_filter_merge.go",
         "rule_implement_distinct.go",
         "rule_implement_filter.go",
+        "rule_implement_insert.go",
         "rule_implement_sort.go",
         "rule_implement_typefilter.go",
         "rule_intersection_merge.go",

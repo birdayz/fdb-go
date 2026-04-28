@@ -475,3 +475,83 @@ func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost) properties
 }
 
 var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)
+
+// physicalInsertWrapper adapts a `*plans.RecordQueryInsertPlan` to
+// the RelationalExpression interface — same shape as the other
+// single-inner physical wrappers.
+type physicalInsertWrapper struct {
+	plan       *plans.RecordQueryInsertPlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalInsertWrapper constructs the wrapper.
+func NewPhysicalInsertWrapper(plan *plans.RecordQueryInsertPlan, innerQuant expressions.Quantifier) *physicalInsertWrapper {
+	return &physicalInsertWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalInsertWrapper) GetPlan() *plans.RecordQueryInsertPlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value.
+func (w *physicalInsertWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalInsertWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false.
+func (w *physicalInsertWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false.
+func (w *physicalInsertWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalInsertWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares wrapped plans.
+func (w *physicalInsertWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalInsertWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalInsertWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physinsertwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper.
+func (w *physicalInsertWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalInsertWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalInsertWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+// HintCost: INSERT cost is dominated by the per-row write cost
+// (Java's CascadesCostModel weights writes heavily). Mirrors the
+// LogicalDML write cost — sumCPU + cardinality * WriteCPU.
+func (w *physicalInsertWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	return properties.Cost{
+		Cardinality: in * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
+	}
+}
+
+var _ expressions.RelationalExpression = (*physicalInsertWrapper)(nil)

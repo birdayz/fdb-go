@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "distinct.go",
         "filter.go",
+        "insert.go",
         "plan.go",
         "scan.go",
         "sort.go",
