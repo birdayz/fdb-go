@@ -143,7 +143,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test //pkg/relational/core/query/plangen:plangen_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -223,6 +223,17 @@ bench-ci:
         rc=$?
         if [ "$rc" -ne 0 ]; then
             echo "!!! api_test bench binary exited with $rc (124 = timeout)"
+            fail_count=$((fail_count + 1))
+        fi
+        echo "=== Running benchmarks: //pkg/relational/core/query/plangen:plangen_test ==="
+        timeout 60 "$BAZEL_BIN/pkg/relational/core/query/plangen/plangen_test_/plangen_test" \
+            -test.run='^$' \
+            -test.bench=. \
+            -test.benchmem \
+            -test.benchtime=1s 2>&1
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "!!! plangen_test bench binary exited with $rc (124 = timeout)"
             fail_count=$((fail_count + 1))
         fi
         echo "=== bench-ci summary: $fail_count bench binary failure(s) ==="
