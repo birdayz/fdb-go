@@ -18,6 +18,7 @@ func DefaultExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewFilterMergeRule(),
 		NewFilterDropTruePredicatesRule(),
+		NewFilterDedupPredicatesRule(),
 		NewPushFilterThroughDistinctRule(),
 		NewPushFilterThroughTypeFilterRule(),
 		NewPushFilterThroughSortRule(),
