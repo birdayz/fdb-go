@@ -14,6 +14,7 @@ go_library(
         "logical_union.go",
         "quantifier.go",
         "reference.go",
+        "select.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions",
     visibility = ["//visibility:public"],
@@ -37,6 +38,7 @@ go_test(
         "logical_union_test.go",
         "quantifier_test.go",
         "reference_test.go",
+        "select_test.go",
     ],
     embed = [":expressions"],
     deps = [
