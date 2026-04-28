@@ -29,6 +29,19 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7})
 	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})
 	f.Add(make([]byte, 16))
+	// Specific seeds exercising shapes the 7-wrapper symmetry fix
+	// enabled — the buildFuzzExpression case selectors map to the
+	// shapes documented in fixpoint_fuzz_test.go.
+	//   0 → Filter
+	//   5 → Union(2 children)
+	//   7 → Intersection(2 children)
+	// This corpus pre-loads Filter-over-Union, Filter-over-Intersection,
+	// Union-over-Intersection, etc., so the first iteration exercises
+	// the wrapper-symmetry paths.
+	f.Add([]byte{0, 5, 0, 0, 0, 0, 0, 0}) // Filter over Union
+	f.Add([]byte{0, 7, 0, 0, 0, 0, 0, 0}) // Filter over Intersection
+	f.Add([]byte{5, 7, 0, 0, 0, 0, 0, 0}) // Union over Intersection
+	f.Add([]byte{7, 5, 0, 0, 0, 0, 0, 0}) // Intersection over Union
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {
