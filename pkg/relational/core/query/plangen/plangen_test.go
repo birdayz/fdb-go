@@ -419,6 +419,77 @@ func TestConvert_Sort_Empty_Unsorted(t *testing.T) {
 	}
 }
 
+func TestConvert_Sort_LiteralKey(t *testing.T) {
+	t.Parallel()
+	// `ORDER BY 1` (sort-by-constant — every row equal, preserves
+	// natural order). Lowers to LogicalSortExpression with a
+	// ConstantValue key. SQL standard treats `ORDER BY 1` as
+	// "ordinal column reference" (first projection column), but the
+	// lowering layer doesn't know about that — it just records the
+	// literal.
+	src := logical.NewSort(
+		logical.NewScan("Order", ""),
+		[]logical.SortKey{{Expr: "1", Dir: logical.SortAsc}},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	s, ok := got.(*expressions.LogicalSortExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalSortExpression", got)
+	}
+	keys := s.GetSortKeys()
+	if len(keys) != 1 {
+		t.Fatalf("keys len=%d, want 1", len(keys))
+	}
+	cv, ok := keys[0].Value.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("key[0].Value = %T, want *ConstantValue", keys[0].Value)
+	}
+	if cv.Value != int64(1) {
+		t.Fatalf("key[0].Value.Value = %v, want int64(1)", cv.Value)
+	}
+}
+
+func TestConvert_Update_LiteralRHS(t *testing.T) {
+	t.Parallel()
+	// UPDATE Order SET active = TRUE, count = 0 — both RHSes are
+	// simple literals → lowers cleanly.
+	src := logical.NewUpdate(
+		"Order",
+		[]logical.Assignment{
+			{Column: "active", Expr: "TRUE"},
+			{Column: "count", Expr: "0"},
+		},
+		logical.NewScan("Order", ""),
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	u, ok := got.(*expressions.UpdateExpression)
+	if !ok {
+		t.Fatalf("got %T, want *UpdateExpression", got)
+	}
+	tx := u.GetTransforms()
+	if len(tx) != 2 {
+		t.Fatalf("transforms len=%d, want 2", len(tx))
+	}
+	// Canonical sort: "active" before "count".
+	if tx[0].FieldPath != "active" {
+		t.Fatalf("tx[0].FieldPath = %q, want active", tx[0].FieldPath)
+	}
+	cv, ok := tx[0].NewValue.(*values.ConstantValue)
+	if !ok || cv.Value != true {
+		t.Fatalf("tx[0].NewValue = %v, want ConstantValue(true)", tx[0].NewValue)
+	}
+	cv2, ok := tx[1].NewValue.(*values.ConstantValue)
+	if !ok || cv2.Value != int64(0) {
+		t.Fatalf("tx[1].NewValue = %v, want ConstantValue(int64(0))", tx[1].NewValue)
+	}
+}
+
 func TestConvert_Sort_ExpressionUnsupported(t *testing.T) {
 	t.Parallel()
 	src := logical.NewSort(
