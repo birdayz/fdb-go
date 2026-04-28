@@ -28,6 +28,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewDistinctMergeRule(),
 		NewDistinctOverSortElimRule(),
 		NewDistinctOverUnionDedupRule(),
+		NewPullFilterAboveDistinctRule(),
 		NewTypeFilterMergeRule(),
 		NewTypeFilterRedundantOverScanRule(),
 		NewPushTypeFilterBelowFilterRule(),
