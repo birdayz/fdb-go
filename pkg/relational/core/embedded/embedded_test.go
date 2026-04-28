@@ -645,6 +645,78 @@ func FuzzApplyBitOp(f *testing.F) {
 	})
 }
 
+// FuzzCompareValues pins core algebraic invariants of the SQL
+// three-valued compare function — antisymmetry, reflexivity,
+// no-panic — across every value-type combination that flows through
+// ORDER BY, JOIN, IN-list dedup, and HAVING. The seed corpus walks
+// the type matrix (NULL × int64 × float64 × string × bool × []byte);
+// the fuzzer mutates the integer indices to permute pair selection.
+//
+// Invariants checked:
+//   - Compare(a, b) ∈ {-1, 0, 1}           — bounded result
+//   - Compare(a, b) == -Compare(b, a)      — antisymmetry
+//   - Compare(a, a) == 0                   — reflexivity
+//
+// CompareValues' branching (NULL ordering, int64-fast-path, numeric
+// promotion, type-name fallback) makes property-based fuzz a strong
+// fit: ~1B mutations exhaust the type-pair × value-magnitude space
+// faster than a hand-written matrix could.
+func FuzzCompareValues(f *testing.F) {
+	// Seed: walk every combination of representative values × types.
+	for _, ai := range []int{0, 1, 2, 3, 4, 5} {
+		for _, bi := range []int{0, 1, 2, 3, 4, 5} {
+			f.Add(ai, bi, int64(0), float64(0), "", false, []byte(nil))
+		}
+	}
+	f.Add(0, 1, int64(7), float64(3.14), "hello", true, []byte("bytes"))
+	f.Add(2, 3, int64(-1), float64(0), "", false, []byte{})
+	f.Add(4, 5, int64(1<<53), float64(1<<53)+1, "z", true, []byte{0xff})
+
+	// fuzzCompareValuesPick maps a small int index to a driver.Value of
+	// the corresponding type, drawing from the fuzz-supplied scalars.
+	pick := func(idx int, i int64, fl float64, s string, b bool, by []byte) driver.Value {
+		switch idx % 6 {
+		case 0:
+			return nil
+		case 1:
+			return i
+		case 2:
+			return fl
+		case 3:
+			return s
+		case 4:
+			return b
+		case 5:
+			return by
+		}
+		return nil
+	}
+
+	f.Fuzz(func(t *testing.T, ai, bi int, i int64, fl float64, s string, b bool, by []byte) {
+		a := pick(ai, i, fl, s, b, by)
+		bv := pick(bi, i, fl, s, b, by)
+		// No panic on any input.
+		got := functions.CompareValues(a, bv)
+		// Result must be in {-1, 0, 1}.
+		if got < -1 || got > 1 {
+			t.Fatalf("CompareValues(%v, %v) = %d, must be in {-1, 0, 1}", a, bv, got)
+		}
+		// Antisymmetry: swapping operands negates the result.
+		swap := functions.CompareValues(bv, a)
+		if swap != -got {
+			t.Fatalf("antisymmetry: CompareValues(%v, %v)=%d but CompareValues(%v, %v)=%d (want %d)",
+				a, bv, got, bv, a, swap, -got)
+		}
+		// Reflexivity: Compare(a, a) == 0. NaN floats violate this in
+		// strict IEEE754; skip the float NaN case explicitly.
+		if af, ok := a.(float64); !ok || af == af { // af == af false iff NaN
+			if r := functions.CompareValues(a, a); r != 0 {
+				t.Fatalf("reflexivity: CompareValues(%v, %v) = %d, want 0", a, a, r)
+			}
+		}
+	})
+}
+
 // FuzzLikePrefixStrinc pins the LIKE-prefix strinc helper — must never
 // panic, and when it returns ok=true the result must be strictly
 // greater than any string starting with the prefix (in byte order).
