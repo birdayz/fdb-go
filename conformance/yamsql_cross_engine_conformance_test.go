@@ -185,6 +185,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		unionColumnsRenamedScenario(),
 		joinChainedScenario(),
 		multiFeatureSelectScenario(),
+		countDistinctJoinPositiveScenario(),
 	}
 }
 
@@ -1716,6 +1717,30 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 				Query:     "SELECT v FROM a UNION ALL SELECT w FROM b",
 				Unordered: true,
 				Rows:      [][]any{{10}, {20}, {100}, {200}},
+			},
+		},
+	}
+}
+
+// countDistinctJoinPositiveScenario lifts the one COUNT(*) test from
+// testdata/count_distinct_join.yaml that doesn't use COUNT(DISTINCT)
+// (which NPEs in fdb-relational 4.11.1.0 per CLAUDE.md gotcha).
+// Drops NOT NULL on PK + composite PK on the join-side table.
+func countDistinctJoinPositiveScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "count_distinct_join_positive",
+		SchemaTemplate: "CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE tags (cust_id BIGINT, tag STRING, PRIMARY KEY (cust_id, tag))",
+		Setup: []string{
+			"INSERT INTO orders VALUES (1, 10), (2, 10), (3, 20), (4, 20)",
+			"INSERT INTO tags VALUES (10, 'gold'), (10, 'pref'), (20, 'gold')",
+		},
+		Tests: []yamsql.Test{
+			// COUNT(*) on comma-join (cust 10 → 2 orders × 2 tags = 4;
+			// cust 20 → 2 × 1 = 2; total 6).
+			{
+				Query: "SELECT COUNT(*) FROM orders AS o, tags AS t WHERE o.cust_id = t.cust_id",
+				Rows:  [][]any{{6}},
 			},
 		},
 	}
