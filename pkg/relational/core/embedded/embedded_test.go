@@ -746,6 +746,24 @@ func FuzzCompareValues(f *testing.F) {
 		if r := functions.CompareValues(false, true); r != -1 {
 			t.Fatalf("CompareValues(false, true) = %d, want -1", r)
 		}
+		// Cross-helper consistency: ORDER BY (CompareValues) and `=`
+		// (valuesEqual) MUST agree on equality. If they diverged a
+		// query like `SELECT * FROM t WHERE x = y ORDER BY x` could
+		// surface rows where `x = y` is true but the sort treats them
+		// as ordered relative to each other (or vice versa). Skip when
+		// either operand is NaN, since IEEE754 NaN ≠ NaN by definition
+		// (CompareValues falls back to type-name order = 0; valuesEqual
+		// returns false). This isn't a divergence — it's the IEEE754
+		// boundary, which both helpers handle consistently with their
+		// design.
+		if !hasNaN(a) && !hasNaN(bv) {
+			cmp0 := functions.CompareValues(a, bv) == 0
+			eq := valuesEqual(a, bv)
+			if cmp0 != eq {
+				t.Fatalf("CompareValues == 0 vs valuesEqual disagree:\n  a=%v, b=%v\n  CompareValues=%d (==0 ? %v)\n  valuesEqual=%v",
+					a, bv, functions.CompareValues(a, bv), cmp0, eq)
+			}
+		}
 	})
 }
 
