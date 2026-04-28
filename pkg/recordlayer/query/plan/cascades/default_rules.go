@@ -35,6 +35,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewUnionMergeRule(),
 		NewPullCommonFilterAboveUnionRule(),
 		NewIntersectionMergeRule(),
+		NewPullCommonFilterAboveIntersectionRule(),
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
