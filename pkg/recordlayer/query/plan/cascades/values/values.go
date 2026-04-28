@@ -1420,6 +1420,14 @@ func mulInt64Checked(a, b int64) (int64, bool) {
 
 // BooleanValue is a literal true / false (and NULL when Value is
 // nil — SQL UNKNOWN at the Value layer).
+//
+// NAMING CAVEAT: Java has a `BooleanValue` of the same name but
+// it's an INTERFACE (Value→QueryPredicate translation shim), not a
+// concrete type. The Go-side concrete is closer to Java's
+// `LiteralValue<Boolean>`. The name collision is regrettable but
+// the Go code references this concrete type explicitly; rule code
+// should not pattern-match on `*BooleanValue` thinking it has
+// Java's interface semantics.
 type BooleanValue struct {
 	Value *bool // nil = UNKNOWN
 }
