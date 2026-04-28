@@ -93,3 +93,34 @@ func TestUnionMergeRule_PreservesOrderAcrossFlatten(t *testing.T) {
 		}
 	}
 }
+
+// TestUnionMergeRule_FlattensSingleChildInnerUnion pins the
+// regression that the pre-fix length-only check missed: an inner
+// Union with EXACTLY ONE child preserves the outer slice length but
+// changes content. The sawNested-flag fix detects the structural
+// change directly. Surfaced by reviewer @claude on PR #124.
+func TestUnionMergeRule_FlattensSingleChildInnerUnion(t *testing.T) {
+	t.Parallel()
+	// Outer = Union(Union(Scan(A)), Scan(B))
+	innerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		scanQuant("A"),
+	})
+	innerUQ := expressions.ForEachQuantifier(expressions.InitialOf(innerU))
+	outerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		innerUQ, scanQuant("B"),
+	})
+	ref := expressions.InitialOf(outerU)
+	yielded := FireExpressionRule(NewUnionMergeRule(), ref)
+	if len(yielded) != 1 {
+		t.Fatalf("yielded %d, want 1 (length-only check would have declined here)", len(yielded))
+	}
+	merged := yielded[0].(*expressions.LogicalUnionExpression)
+	got := merged.GetQuantifiers()
+	if len(got) != 2 {
+		t.Fatalf("merged children len=%d, want 2", len(got))
+	}
+	// Position 0 should now be Scan(A) directly, not Union(Scan(A)).
+	if _, ok := got[0].GetRangesOver().Get().(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("merged[0] = %T, want bare *FullUnorderedScanExpression", got[0].GetRangesOver().Get())
+	}
+}

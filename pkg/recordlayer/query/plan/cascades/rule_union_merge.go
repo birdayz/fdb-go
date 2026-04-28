@@ -42,9 +42,12 @@ func (r *UnionMergeRule) Matcher() matching.BindingMatcher { return r.matcher }
 // children promoted in place. Yields nothing if no child is a Union.
 func (r *UnionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	outer := matching.Get[*expressions.LogicalUnionExpression](call.Bindings, r.matcher)
-	flat := flattenUnionChildren(outer.GetQuantifiers())
-	// If flatten didn't change the child list, the rule declines.
-	if len(flat) == len(outer.GetQuantifiers()) {
+	flat, sawNested := flattenUnionChildren(outer.GetQuantifiers())
+	// If no inner-Union was found, the rule declines. A length-only
+	// check would miss the case where an inner Union has exactly one
+	// child — same length, different content (would silently fail to
+	// fire). The sawNested flag detects the structural change directly.
+	if !sawNested {
 		return
 	}
 	call.Yield(expressions.NewLogicalUnionExpression(flat))
@@ -52,17 +55,24 @@ func (r *UnionMergeRule) OnMatch(call *ExpressionRuleCall) {
 
 // flattenUnionChildren walks `qs`, replacing any Quantifier ranging
 // over a LogicalUnionExpression with that inner Union's children.
-func flattenUnionChildren(qs []expressions.Quantifier) []expressions.Quantifier {
+// Returns the flattened slice + a bool indicating whether any inner
+// Union was found and unwrapped. The bool is the authoritative
+// "did flattening happen" signal — length comparison alone misses
+// the single-child-inner-Union case (length stays equal, content
+// changes).
+func flattenUnionChildren(qs []expressions.Quantifier) ([]expressions.Quantifier, bool) {
 	out := make([]expressions.Quantifier, 0, len(qs))
+	sawNested := false
 	for _, q := range qs {
 		inner := q.GetRangesOver().Get()
 		if u, ok := inner.(*expressions.LogicalUnionExpression); ok {
 			out = append(out, u.GetQuantifiers()...)
+			sawNested = true
 		} else {
 			out = append(out, q)
 		}
 	}
-	return out
+	return out, sawNested
 }
 
 var _ ExpressionRule = (*UnionMergeRule)(nil)
