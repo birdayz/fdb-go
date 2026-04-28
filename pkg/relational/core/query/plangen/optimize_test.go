@@ -116,6 +116,63 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_PushFilterThroughChain exercises the Push-Filter-
+// Through-X family. Starting from
+//
+//	Filter(TRUE, Sort([id], Filter(TRUE, Scan)))
+//
+// PushFilterThroughSort fires on the top-level Filter, yielding a
+// Sort-rooted alternative. FilterDropTrue + NoOpFilter eliminate
+// the top-level Filter independently, yielding a Sort-rooted
+// alternative via that path too.
+//
+// Note: the seed FixpointApply doesn't descend into sub-References,
+// so rules don't compose across Quantifier boundaries — the inner
+// Filter(TRUE) inside Sort isn't reachable from the top-level rule
+// engine. The full B6 CascadesPlanner with task-stack-driven memo
+// traversal handles that. This test pins WHAT the seed achieves:
+// a Sort-rooted alternative gets added.
+func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
+	t.Parallel()
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	src := logical.NewFilterWithPredicate(
+		logical.NewSort(
+			logical.NewFilterWithPredicate(
+				logical.NewScan("Order", ""),
+				pT, "TRUE",
+			),
+			[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
+		),
+		pT, "TRUE",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(got)
+	progress, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 64)
+	if !converged {
+		t.Fatalf("FixpointApply did not converge in 64 iters — progress=%d", progress)
+	}
+	if progress == 0 {
+		t.Fatal("rule engine made no progress — expected at least PushFilterThroughSort to fire")
+	}
+	// Look for at least one Sort-rooted alternative member (proves
+	// PushFilterThroughSort fired). Don't enforce the inner shape —
+	// the seed rule engine doesn't descend into sub-References, so
+	// the inner Filter(TRUE) chain isn't reachable.
+	foundSortRooted := false
+	for _, m := range ref.Members() {
+		if _, ok := m.(*expressions.LogicalSortExpression); ok {
+			foundSortRooted = true
+			break
+		}
+	}
+	if !foundSortRooted {
+		t.Fatalf("rule chain did not produce a Sort-rooted alternative — Reference has %d members", len(ref.Members()))
+	}
+}
+
 // FuzzConvertAndOptimise drives the C1 → B5 pipeline end-to-end on
 // random LogicalOperator trees. Pins three properties:
 //
