@@ -475,6 +475,47 @@ func TestConvert_Sort_LiteralKey(t *testing.T) {
 	}
 }
 
+func TestConvert_Sort_MixedKeys(t *testing.T) {
+	t.Parallel()
+	// Sort with mixed key shapes: bare column, literal, NULL.
+	// Each is lowered independently via lowerSimpleScalarText.
+	src := logical.NewSort(
+		logical.NewScan("Order", ""),
+		[]logical.SortKey{
+			{Expr: "id", Dir: logical.SortAsc},
+			{Expr: "1", Dir: logical.SortDesc},
+			{Expr: "NULL", Dir: logical.SortAsc},
+		},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	s := got.(*expressions.LogicalSortExpression)
+	keys := s.GetSortKeys()
+	if len(keys) != 3 {
+		t.Fatalf("keys len=%d, want 3", len(keys))
+	}
+	// 0: FieldValue("id") ASC
+	if _, ok := keys[0].Value.(*values.FieldValue); !ok {
+		t.Errorf("keys[0].Value = %T, want *FieldValue", keys[0].Value)
+	}
+	if keys[0].Reverse {
+		t.Errorf("keys[0].Reverse = true, want false")
+	}
+	// 1: ConstantValue(int64(1)) DESC
+	if cv, ok := keys[1].Value.(*values.ConstantValue); !ok || cv.Value != int64(1) {
+		t.Errorf("keys[1].Value = %v, want ConstantValue(int64(1))", keys[1].Value)
+	}
+	if !keys[1].Reverse {
+		t.Errorf("keys[1].Reverse = false, want true")
+	}
+	// 2: NullValue ASC
+	if _, ok := keys[2].Value.(*values.NullValue); !ok {
+		t.Errorf("keys[2].Value = %T, want *NullValue", keys[2].Value)
+	}
+}
+
 func TestConvert_Update_LiteralRHS(t *testing.T) {
 	t.Parallel()
 	// UPDATE Order SET active = TRUE, count = 0 — both RHSes are
