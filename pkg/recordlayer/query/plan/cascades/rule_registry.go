@@ -6,6 +6,14 @@ import (
 	"sync"
 )
 
+// typeNameForRegistry returns the Go-formatted type name for a rule
+// (e.g. "*cascades.FilterMergeRule"). Used by default_rules.go's init
+// to derive registry keys; kept here so the helper lives next to the
+// registry it serves.
+func typeNameForRegistry(r ExpressionRule) string {
+	return fmt.Sprintf("%T", r)
+}
+
 // ruleRegistry is a name→ExpressionRule lookup for diagnostic and
 // debugging use. Tests + the planner driver iterate the registry to
 // produce names ('FilterMergeRule', 'NoOpFilterRule', etc.) without
