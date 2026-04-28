@@ -2,7 +2,6 @@ package expressions
 
 import (
 	"hash/fnv"
-	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -108,8 +107,3 @@ func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {
 }
 
 var _ RelationalExpression = (*FullUnorderedScanExpression)(nil)
-
-// Compile-time assertion: ensure dedupSortedStrings (defined in
-// logical_type_filter.go) is shared correctly. This guards against
-// future refactors that might split the helper.
-var _ = sort.Strings // keep the import edge documented
