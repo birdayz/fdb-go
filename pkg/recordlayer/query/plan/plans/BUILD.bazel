@@ -12,6 +12,7 @@ go_library(
         "sort.go",
         "typefilter.go",
         "union.go",
+        "update.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans",
     visibility = ["//visibility:public"],
