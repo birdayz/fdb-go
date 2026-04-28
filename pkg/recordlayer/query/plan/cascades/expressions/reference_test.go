@@ -50,6 +50,35 @@ func TestReference_Get_EmptyReturnsNil(t *testing.T) {
 	}
 }
 
+func TestReference_Insert_SemanticEqualsFallback(t *testing.T) {
+	t.Parallel()
+	// Build two LogicalDistinct expressions with DIFFERENT inner
+	// References pointing at structurally-equivalent Scans:
+	//   d1 = Distinct(R1 → Scan(T))
+	//   d2 = Distinct(R2 → Scan(T))   // different Reference pointer
+	// sameChildReferences(d1, d2) returns false (R1 != R2), but
+	// SemanticEquals(d1, d2, EmptyAliasMap) returns true (both Distinct
+	// over structurally-equivalent Scans).
+	//
+	// Reference.Insert should treat them as duplicates via the
+	// SemanticEquals fallback. The previous pointer-only contract
+	// would have inserted both — this test pins the post-680e664a
+	// behavior that the SemanticEquals fallback dedupes them.
+	r1 := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, nil))
+	r2 := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, nil))
+	q1 := ForEachQuantifier(r1)
+	q2 := ForEachQuantifier(r2)
+	d1 := NewLogicalDistinctExpression(q1)
+	d2 := NewLogicalDistinctExpression(q2)
+	ref := InitialOf(d1)
+	if inserted := ref.Insert(d2); inserted {
+		t.Fatalf("Insert(d2) returned true — SemanticEquals fallback should have dedupd against d1")
+	}
+	if got := len(ref.Members()); got != 1 {
+		t.Fatalf("Reference grew to %d members despite SemanticEquals dedup", got)
+	}
+}
+
 func TestReference_Insert_PanicsOnNil(t *testing.T) {
 	t.Parallel()
 	r := InitialOf(&stubExpr{name: "X"})
