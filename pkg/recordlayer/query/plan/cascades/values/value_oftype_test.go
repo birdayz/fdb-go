@@ -95,3 +95,12 @@ func TestOfTypeValue_Children(t *testing.T) {
 		t.Fatalf("Children = %v, want [child]", cs)
 	}
 }
+
+// BenchmarkOfTypeValue_Evaluate pins the perf of the conformance-
+// pinned strict primitive match. Hot path for type-guard rules.
+func BenchmarkOfTypeValue_Evaluate(b *testing.B) {
+	v := NewOfTypeValue(LiteralValue(int64(42)), NullableLong)
+	for i := 0; i < b.N; i++ {
+		_ = v.Evaluate(nil)
+	}
+}
