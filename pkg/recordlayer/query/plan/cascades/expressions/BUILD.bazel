@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "alias_map.go",
         "delete.go",
+        "explode.go",
         "expression.go",
         "full_unordered_scan.go",
         "insert.go",
@@ -38,6 +39,7 @@ go_test(
         "benchmark_test.go",
         "correlation_test.go",
         "dml_test.go",
+        "explode_test.go",
         "expression_test.go",
         "full_unordered_scan_test.go",
         "fuzz_test.go",
