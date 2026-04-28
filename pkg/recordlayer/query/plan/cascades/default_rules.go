@@ -40,6 +40,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
+		NewPullFilterAboveSortRule(),
 		NewUnsortedSortElimRule(),
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
