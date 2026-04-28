@@ -17,5 +17,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewTypeFilterMergeRule(),
 		NewUnionMergeRule(),
 		NewNoOpFilterRule(),
+		NewProjectionElimRule(),
 	}
 }
