@@ -527,9 +527,9 @@ var fdbErrorDescriptions = map[int]string{
 	1037: "process_behind",
 	1038: "database_locked",
 	1039: "cluster_version_changed",
-	1042: "proxy_memory_limit_exceeded",
+	1042: "commit_proxy_memory_limit_exceeded",
 	1051: "batch_transaction_throttled",
-	1062: "wrong_shard_server",
+	1062: "change_feed_cancelled",
 	1078: "grv_proxy_memory_limit_exceeded",
 	// 1200 is the Go-internal ErrAllProxiesUnreachable (NOT C++'s
 	// 1200=recruitment_failed; see pkg/fdbgo/client/transaction.go).
@@ -583,7 +583,7 @@ func (e *FDBError) Retryable() bool {
 		1020, // not_committed (conflict)
 		1037, // process_behind
 		1038, // database_locked
-		1042, // proxy_memory_limit_exceeded
+		1042, // commit_proxy_memory_limit_exceeded
 		1051, // batch_transaction_throttled
 		1078, // grv_proxy_memory_limit_exceeded
 		1213, // tag_throttled
