@@ -300,7 +300,7 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 }
 
 // BenchmarkOptimise_RealisticTree drives the full default rule set
-// (FixpointApply with all 21 logical-rewrite rules + sub-Reference
+// (FixpointApply with all 31 logical-rewrite rules + sub-Reference
 // descent) on a ~6-node query tree representative of a small SELECT:
 //
 //	Distinct
