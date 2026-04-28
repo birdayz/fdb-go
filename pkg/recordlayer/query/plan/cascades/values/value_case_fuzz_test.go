@@ -68,6 +68,65 @@ func FuzzCaseExpression_FirstMatchWins(f *testing.F) {
 	})
 }
 
+// FuzzAndOrValue_Kleene3VL fuzzes AndOrValue's eval against the
+// Kleene 3VL truth table on random (left, right) operand triples
+// drawn from {TRUE, FALSE, NULL}. Pins:
+//
+//  1. No panic on any byte input.
+//  2. Result is always one of {true, false, nil}.
+//  3. AND is COMMUTATIVE (a AND b == b AND a) under Kleene 3VL.
+//  4. OR is COMMUTATIVE.
+//  5. AND/OR are idempotent on identical operands (a AND a = a,
+//     a OR a = a) — modulo NULL where NULL AND NULL = NULL.
+func FuzzAndOrValue_Kleene3VL(f *testing.F) {
+	f.Add(uint8(0), uint8(0))     // (TRUE, TRUE)
+	f.Add(uint8(0), uint8(1))     // (TRUE, FALSE)
+	f.Add(uint8(0), uint8(2))     // (TRUE, NULL)
+	f.Add(uint8(1), uint8(2))     // (FALSE, NULL)
+	f.Add(uint8(2), uint8(2))     // (NULL, NULL)
+	f.Add(uint8(255), uint8(255)) // out-of-range byte
+
+	f.Fuzz(func(t *testing.T, leftRaw, rightRaw uint8) {
+		mkOperand := func(v uint8) Value {
+			switch v % 3 {
+			case 0:
+				return NewBooleanValue(true)
+			case 1:
+				return NewBooleanValue(false)
+			}
+			return LiteralValue(nil)
+		}
+		left := mkOperand(leftRaw)
+		right := mkOperand(rightRaw)
+
+		for _, op := range []AndOrOp{AndOrAnd, AndOrOr} {
+			lr := NewAndOrValue(op, left, right).Evaluate(nil)
+			rl := NewAndOrValue(op, right, left).Evaluate(nil)
+
+			// Property 2: result must be one of {true, false, nil}.
+			switch lr {
+			case true, false, nil:
+			default:
+				t.Fatalf("op=%v: result %v (%T) not in {true, false, nil}", op, lr, lr)
+			}
+
+			// Property 3+4: commutativity.
+			if lr != rl {
+				t.Fatalf("op=%v not commutative: lr=%v rl=%v leftRaw=%d rightRaw=%d", op, lr, rl, leftRaw, rightRaw)
+			}
+		}
+
+		// Property 5: idempotence (a OP a == a, with NULL exception).
+		for _, op := range []AndOrOp{AndOrAnd, AndOrOr} {
+			selfEval := NewAndOrValue(op, left, left).Evaluate(nil)
+			leftEval := left.Evaluate(nil)
+			if selfEval != leftEval {
+				t.Fatalf("op=%v not idempotent: a OP a=%v, a=%v leftRaw=%d", op, selfEval, leftEval, leftRaw)
+			}
+		}
+	})
+}
+
 // FuzzArrayConstructorValue_LengthInvariant fuzzes ArrayConstructor's
 // eval with random child counts + child-NULL patterns. Pins:
 //
