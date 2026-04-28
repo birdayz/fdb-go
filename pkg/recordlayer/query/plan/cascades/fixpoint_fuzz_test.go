@@ -59,7 +59,7 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 	if depth >= 3 || len(b) == 0 {
 		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	}
-	op := b[start%len(b)] % 8
+	op := b[start%len(b)] % 9
 	switch op {
 	case 0:
 		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -99,6 +99,16 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 		return expressions.NewLogicalUnionExpression([]expressions.Quantifier{q})
+	case 7:
+		// Intersection over two random children with a single
+		// FieldValue comparison key — exercises IntersectionMerge,
+		// IntersectionSingletonElim, PushFilterThroughIntersection.
+		left := buildFuzzExpression(b, (start+1)%len(b), depth+1)
+		right := buildFuzzExpression(b, (start+2)%len(b), depth+1)
+		ql := expressions.ForEachQuantifier(expressions.InitialOf(left))
+		qr := expressions.ForEachQuantifier(expressions.InitialOf(right))
+		keys := []values.Value{&values.FieldValue{Field: "k", Typ: values.UnknownType}}
+		return expressions.NewLogicalIntersectionExpression([]expressions.Quantifier{ql, qr}, keys)
 	default:
 		// UnsortedSort over a random child.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
