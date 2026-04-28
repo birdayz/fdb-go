@@ -19,6 +19,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewFilterMergeRule(),
 		NewFilterDropTruePredicatesRule(),
 		NewDistinctMergeRule(),
+		NewDistinctOverUnionDedupRule(),
 		NewTypeFilterMergeRule(),
 		NewTypeFilterRedundantOverScanRule(),
 		NewUnionMergeRule(),
