@@ -76,6 +76,44 @@ func TestImplementFilterRule_NoFireWithoutPhysicalInner(t *testing.T) {
 	}
 }
 
+// TestBatchA_CostExtraction_PicksPhysicalOverLogical pins that
+// after Batch A rules fire and the OPTIMIZE phase runs, the
+// planner's BestMember is the physical wrapper (not the logical
+// expression). This validates the CostHinter wiring: physical
+// wrappers' HintCost returns a discounted cost via
+// physicalWrapperCostMultiplier=0.9, so cost extraction prefers
+// them over the logical equivalent.
+func TestBatchA_CostExtraction_PicksPhysicalOverLogical(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+	)
+	ref := expressions.InitialOf(filter)
+
+	rules := []ExpressionRule{
+		NewPrimaryScanRule(),
+		NewImplementFilterRule(),
+	}
+	p := NewPlanner(rules, nil)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// After Explore, OPTIMIZE picks the cheapest. With CostHinter
+	// applying the physical-wrapper discount, the physical filter
+	// wrapper should win over the logical filter.
+	best := p.BestMember(ref)
+	if best == nil {
+		t.Fatal("BestMember returned nil")
+	}
+	if _, ok := best.(*physicalFilterWrapper); !ok {
+		t.Fatalf("BestMember = %T, want *physicalFilterWrapper (cost-driven extraction should pick physical)", best)
+	}
+}
+
 func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 	t.Parallel()
 	// End-to-end through the task-stack Planner: Filter(P, Scan) with
