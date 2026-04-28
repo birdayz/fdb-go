@@ -29,18 +29,3 @@ func GetCorrelatedToOfValue(v Value) map[CorrelationIdentifier]struct{} {
 	})
 	return out
 }
-
-// MergeCorrelationSets unions two correlation sets into a fresh map.
-// Either argument may be nil. Used by aggregators that merge
-// per-input correlation sets (e.g. expressions with multiple
-// predicates / projection-list Values).
-func MergeCorrelationSets(a, b map[CorrelationIdentifier]struct{}) map[CorrelationIdentifier]struct{} {
-	out := map[CorrelationIdentifier]struct{}{}
-	for k := range a {
-		out[k] = struct{}{}
-	}
-	for k := range b {
-		out[k] = struct{}{}
-	}
-	return out
-}
