@@ -100,6 +100,31 @@ func TestConvert_Delete(t *testing.T) {
 	}
 }
 
+func TestConvert_Insert(t *testing.T) {
+	t.Parallel()
+	src := logical.NewInsert("Order", []string{"id"}, logical.NewScan("OrderSource", ""))
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ins, ok := got.(*expressions.InsertExpression)
+	if !ok {
+		t.Fatalf("got %T, want *InsertExpression", got)
+	}
+	if ins.GetTargetRecordType() != "Order" {
+		t.Fatalf("target = %q, want Order", ins.GetTargetRecordType())
+	}
+}
+
+func TestConvert_Insert_NoSource_Unsupported(t *testing.T) {
+	t.Parallel()
+	src := logical.NewInsert("Order", []string{"id"}, nil)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (no Source)", err)
+	}
+}
+
 func TestConvert_Project_Unsupported(t *testing.T) {
 	t.Parallel()
 	src := logical.NewProject(

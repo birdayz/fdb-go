@@ -18,6 +18,7 @@
 //   - LogicalFilter (Predicate non-nil) → LogicalFilterExpression
 //   - LogicalUnion → LogicalUnionExpression (recursive)
 //   - LogicalDelete → DeleteExpression (keyed by target table)
+//   - LogicalInsert (Source non-nil) → InsertExpression
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject / LogicalSort — need text→Value parsing
@@ -25,7 +26,9 @@
 //   - LogicalAggregate — needs GroupByExpression port
 //   - LogicalJoin — maps to SelectExpression with multiple
 //     Quantifiers; needs predicate placement work
-//   - LogicalInsert / LogicalUpdate — need targetType inference
+//   - LogicalUpdate — needs targetType inference
+//   - LogicalInsert without Source (VALUES literal) — needs a
+//     synthetic LogicalValues source operator
 //   - LogicalValues / LogicalCTE / LogicalDDL — no equivalent
 //   - LogicalFilter with PredicateText only (no QueryPredicate)
 package plangen
@@ -65,6 +68,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertUnion(o)
 	case *logical.LogicalDelete:
 		return convertDelete(o)
+	case *logical.LogicalInsert:
+		return convertInsert(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -118,4 +123,20 @@ func convertDelete(d *logical.LogicalDelete) (expressions.RelationalExpression, 
 	}
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 	return expressions.NewDeleteExpression(q, d.Target), nil
+}
+
+// convertInsert builds an InsertExpression over the recursively-
+// converted Source. INSERT-VALUES (Source nil) is unsupported until
+// we have a LogicalValues operator to feed in. Target type is left
+// Unknown — the cascades typing pass fills it from the catalog later.
+func convertInsert(i *logical.LogicalInsert) (expressions.RelationalExpression, error) {
+	if i.Source == nil {
+		return nil, fmt.Errorf("%w: LogicalInsert without Source (VALUES literal)", ErrUnsupported)
+	}
+	inner, err := Convert(i.Source)
+	if err != nil {
+		return nil, fmt.Errorf("insert input: %w", err)
+	}
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	return expressions.NewInsertExpression(q, i.Table, values.UnknownType), nil
 }
