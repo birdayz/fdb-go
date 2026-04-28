@@ -87,13 +87,16 @@ func DefaultExpressionRules() []ExpressionRule {
 //
 // Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
 //
-// Currently 3 of 6 Batch A rules ported; remaining 3 are gated on
-// MatchCandidate / IndexAccessHint infrastructure (per RFC-022).
+// Currently 4 of 6 Batch A rules ported (PrimaryScanRule,
+// ImplementFilterRule, ImplementSortRule, ImplementDistinctRule);
+// remaining 2 are gated on MatchCandidate / IndexAccessHint
+// infrastructure (per RFC-022).
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
 		NewImplementFilterRule(),
 		NewImplementSortRule(),
+		NewImplementDistinctRule(),
 	}
 }
 

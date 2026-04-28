@@ -248,3 +248,74 @@ func (w *physicalSortWrapper) WithChildren(qs []expressions.Quantifier) (express
 }
 
 var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)
+
+// physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
+// the RelationalExpression interface.
+type physicalDistinctWrapper struct {
+	plan       *plans.RecordQueryDistinctPlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalDistinctWrapper constructs the wrapper.
+func NewPhysicalDistinctWrapper(plan *plans.RecordQueryDistinctPlan, innerQuant expressions.Quantifier) *physicalDistinctWrapper {
+	return &physicalDistinctWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalDistinctWrapper) GetPlan() *plans.RecordQueryDistinctPlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value.
+func (w *physicalDistinctWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalDistinctWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false.
+func (w *physicalDistinctWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false.
+func (w *physicalDistinctWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalDistinctWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares the wrapped plan.
+func (w *physicalDistinctWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalDistinctWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalDistinctWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physdistwrap|"))
+	if w.plan != nil {
+		var b [8]byte
+		ph := w.plan.HashCodeWithoutChildren()
+		for i := 0; i < 8; i++ {
+			b[i] = byte(ph >> (8 * (7 - i)))
+		}
+		h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper using qs[0] as the new
+// inner Quantifier.
+func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalDistinctWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalDistinctWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)

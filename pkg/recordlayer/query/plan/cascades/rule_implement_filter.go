@@ -105,6 +105,13 @@ func wrapPhysicalPlan(p plans.RecordQueryPlan) expressions.RelationalExpression 
 		}
 		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerWrap))
 		return NewPhysicalSortWrapper(concrete, innerQ)
+	case *plans.RecordQueryDistinctPlan:
+		innerWrap := wrapPhysicalPlan(concrete.GetInner())
+		if innerWrap == nil {
+			return nil
+		}
+		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerWrap))
+		return NewPhysicalDistinctWrapper(concrete, innerQ)
 	}
 	return nil
 }
