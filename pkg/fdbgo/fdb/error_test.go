@@ -67,6 +67,16 @@ func TestIsRetryable_UnknownCode(t *testing.T) {
 	g.Expect(fdb.IsRetryable(-1)).To(BeFalse(), "negative codes are not retryable")
 }
 
+// TestError_Retryable verifies the convenience method matches the
+// package-level IsRetryable for representative codes.
+func TestError_Retryable(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	g.Expect((fdb.Error{Code: 1021}).Retryable()).To(BeTrue(), "1021 commit_unknown_result")
+	g.Expect((fdb.Error{Code: 1031}).Retryable()).To(BeFalse(), "1031 transaction_timed_out NEVER retryable")
+	g.Expect((fdb.Error{Code: 99999}).Retryable()).To(BeFalse(), "unknown code")
+}
+
 // TestErrorString_KnownCode verifies the Error() formatting of a couple of
 // representative codes.
 func TestErrorString_KnownCode(t *testing.T) {

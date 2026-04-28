@@ -14,10 +14,14 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascad
 // for end-to-end rule tests that need (FilterMerge → NoOpFilter)
 // composition or (UnionMerge → DistinctMerge) collapses.
 //
-// Termination is guaranteed because Reference.Insert dedupes on
-// EqualsWithoutChildren; a rule that yields a structurally-equivalent
-// duplicate doesn't grow the set, and the loop exits when no rule
-// grows the set in a full pass.
+// Termination is guaranteed by Reference.Insert's children-aware
+// dedup contract: a rule that yields an expression matching an
+// existing member's EqualsWithoutChildren AND sharing the same
+// child Reference pointers gets absorbed without growing the set.
+// The seed rules are deterministic and have a finite output for
+// any given input expression shape, so after some bounded number
+// of iterations every rule yields only duplicates and the loop
+// exits.
 //
 // `maxIters` caps the loop — defaults to 100 if zero. Hard cap at
 // 10_000 (sanity). Returning the cap-hit case as `(progress, false)`

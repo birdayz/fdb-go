@@ -18,6 +18,14 @@ func (e Error) Error() string {
 	return fmt.Sprintf("FoundationDB error: %d", e.Code)
 }
 
+// Retryable reports whether this error is retryable per the canonical
+// FDB_ERROR_PREDICATE_RETRYABLE classification. Convenience method for
+// the package-level IsRetryable function — symmetrical with the
+// wire-side FDBError.Retryable in pkg/fdbgo/wire.
+func (e Error) Retryable() bool {
+	return IsRetryable(e.Code)
+}
+
 // errNotSupported is returned by stubs for operations not yet implemented
 // in the pure Go client.
 var (
