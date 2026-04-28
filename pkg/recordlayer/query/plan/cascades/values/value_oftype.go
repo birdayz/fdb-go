@@ -58,24 +58,27 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 // level structural comparison (e.g. RecordType field-set match) is
 // gated on a future extension.
 //
-// CONFORMANCE NOTE: Java's OfTypeValue.eval has three branches the
-// seed doesn't yet replicate:
-//  1. NULL probe → returns `expectedType.isNullable()` (not UNKNOWN).
-//  2. DynamicMessage probe → returns `expectedType.isRecord()`.
-//  3. Cross-type promotion → returns true if PromoteValue can
-//     coerce the runtime value's type to ExpectedType.
+// CONFORMANCE: matches Java's OfTypeValue.eval NULL branch
+// (returns ExpectedType.IsNullable()) and the primitive-TypeCode
+// match. Two Java branches NOT yet replicated:
+//  1. DynamicMessage probe → returns `expectedType.isRecord()`.
+//     Seed reports false for unknown shapes (no DynamicMessage
+//     type in Go).
+//  2. Cross-type promotion via PromoteValue.isPromotionNeeded —
+//     Java accepts a value if it can be coerced to ExpectedType
+//     via the promotion lattice. Seed compares only TypeCodes.
 //
-// Today no planner rule rewrites to OfTypeValue, so the gap is
-// theoretical. When such a rule lands, this Evaluate must match
-// the Java surface — particularly the nullable-aware NULL branch
-// and the cross-type promotion check.
+// Today no planner rule rewrites to OfTypeValue, so the remaining
+// gap is theoretical. When such a rule lands, this Evaluate must
+// extend to the cross-type promotion check.
 func (v *OfTypeValue) Evaluate(evalCtx any) any {
 	if v.Child == nil || v.ExpectedType == nil {
 		return nil
 	}
 	val := v.Child.Evaluate(evalCtx)
 	if val == nil {
-		return nil
+		// Java conformance: NULL is "of type T" iff T is nullable.
+		return v.ExpectedType.IsNullable()
 	}
 	return runtimeMatchesTypeCode(val, v.ExpectedType.Code())
 }

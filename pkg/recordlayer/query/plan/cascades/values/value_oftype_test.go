@@ -26,11 +26,23 @@ func TestOfTypeValue_StringNotMatchesInt(t *testing.T) {
 	}
 }
 
-func TestOfTypeValue_NullChildIsNil(t *testing.T) {
+func TestOfTypeValue_NullChildAgainstNullableType(t *testing.T) {
 	t.Parallel()
+	// Java conformance: NULL IS OF TYPE T returns T.isNullable().
+	// NullableBoolean is nullable → expect true.
 	v := NewOfTypeValue(LiteralValue(nil), NullableBoolean)
-	if got := v.Evaluate(nil); got != nil {
-		t.Fatalf("OfType(NULL, BOOL) = %v, want nil (UNKNOWN)", got)
+	if got := v.Evaluate(nil); got != true {
+		t.Fatalf("OfType(NULL, NullableBoolean) = %v, want true (Java conformance: NULL of nullable type is OK)", got)
+	}
+}
+
+func TestOfTypeValue_NullChildAgainstNotNullType(t *testing.T) {
+	t.Parallel()
+	// Java conformance: NULL IS OF TYPE T returns T.isNullable().
+	// NotNullBoolean is non-nullable → expect false.
+	v := NewOfTypeValue(LiteralValue(nil), NotNullBoolean)
+	if got := v.Evaluate(nil); got != false {
+		t.Fatalf("OfType(NULL, NotNullBoolean) = %v, want false (Java: NULL of non-nullable type rejected)", got)
 	}
 }
 
