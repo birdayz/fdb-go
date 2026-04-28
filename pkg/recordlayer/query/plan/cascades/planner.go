@@ -372,6 +372,14 @@ func (t *ApplyRulesTask) Run(p *Planner) {
 //
 // The seed uses properties.CostLess as the comparator. A future
 // shift can plumb a configurable comparator via PlanContext.
+//
+// PERF NOTE: properties.CostLess is the un-memoised cost-comparator
+// — every GetBest comparison re-walks the full sub-tree. For a
+// Reference with K members over an N-deep tree this is O(K·N)
+// per OptimizeReferenceTask. Acceptable for the seed (small trees,
+// low K). When N or K grow, switch to a memoised comparator
+// (properties.BestRefCostWith populates a per-call cache; expose
+// it via the PlanContext as a follow-up).
 type OptimizeReferenceTask struct {
 	Ref *expressions.Reference
 }

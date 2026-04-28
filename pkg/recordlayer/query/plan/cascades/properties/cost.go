@@ -161,16 +161,24 @@ func (s FixedStatistics) RecordTypeCardinality(_ string) float64 {
 
 // MapStatistics returns per-record-type cardinalities from a map,
 // falling back to a default for unknown names.
+//
+// Fallback semantics: zero or negative means "use LeafScanCardinality
+// (the package default)"; any positive value is used as-is. A
+// caller who wants 0 as the actual fallback should use FixedStatistics{0}
+// instead — MapStatistics treats 0 as "no fallback configured" to
+// avoid silent zero-cardinality bugs (a zero scan cardinality would
+// make every plan score zero and break cost-driven extraction).
 type MapStatistics struct {
 	// PerType maps record-type name → estimated cardinality.
 	PerType map[string]float64
-	// Fallback returned for names not present in PerType. Defaults
-	// to LeafScanCardinality if zero.
+	// Fallback returned for names not present in PerType. ≤ 0
+	// means "no fallback configured" — the package default
+	// (LeafScanCardinality) is substituted.
 	Fallback float64
 }
 
 // RecordTypeCardinality returns PerType[name] if present, otherwise
-// Fallback (or LeafScanCardinality if Fallback is 0).
+// Fallback when > 0, otherwise LeafScanCardinality.
 func (s MapStatistics) RecordTypeCardinality(name string) float64 {
 	if c, ok := s.PerType[name]; ok {
 		return c

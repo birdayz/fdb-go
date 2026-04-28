@@ -168,6 +168,18 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 // comparisonsEqualValue compares two equality Comparisons via their
 // Operand's structural rendering (values.ExplainValue). Returns true
 // if the values match. Used by Merge's equality-vs-equality check.
+//
+// Conformance trade-off: ExplainValue rendering is fragile for non-
+// literal Operands (float formatting, alias names in sub-expressions
+// can cause text drift between structurally-equal Values). The
+// rendering-based comparison degrades to FALSE on uncertain
+// equality — never to TRUE. That means Merge() rejects ambiguous
+// equality merges (planner falls back to keeping both predicates as
+// residual filters); it does NOT silently accept a wrong merge
+// (which would drop a predicate). Sound for SQL semantics; only
+// cost (extra residual filter) is at risk on non-literal Operand
+// rendering drift. The seed's Merge callers pass literal Operands
+// only, so the renderable-string contract is reliable in practice.
 func comparisonsEqualValue(a, b *Comparison) bool {
 	if a == nil || b == nil {
 		return false
