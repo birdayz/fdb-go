@@ -74,6 +74,7 @@ go_library(
 go_test(
     name = "embedded_test",
     srcs = [
+        "ast_util_test.go",
         "embedded_test.go",
         "logical_builder_test.go",
         "logical_predicate_test.go",
