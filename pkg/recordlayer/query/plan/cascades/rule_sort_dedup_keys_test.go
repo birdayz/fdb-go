@@ -73,6 +73,42 @@ func TestSortDedupKeysRule_SameValueDifferentDirection_NotDuplicate(t *testing.T
 	}
 }
 
+func TestSortDedupKeysRule_CooperatesWithConstantKeysElim(t *testing.T) {
+	t.Parallel()
+	// Sort([1, 1, 2, 2], X) — duplicate constant keys.
+	// SortDedupKeys collapses to Sort([1, 2], X).
+	// SortConstantKeysElim then eliminates → X.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	keys := []expressions.SortKey{
+		{Value: &values.ConstantValue{Value: int64(1), Typ: values.TypeUnknown}},
+		{Value: &values.ConstantValue{Value: int64(1), Typ: values.TypeUnknown}},
+		{Value: &values.ConstantValue{Value: int64(2), Typ: values.TypeUnknown}},
+		{Value: &values.ConstantValue{Value: int64(2), Typ: values.TypeUnknown}},
+	}
+	src := expressions.NewLogicalSortExpression(keys, q)
+	ref := expressions.InitialOf(src)
+	rules := []ExpressionRule{
+		NewSortDedupKeysRule(),
+		NewSortConstantKeysElimRule(),
+	}
+	progress, converged := FixpointApply(rules, ref, 50)
+	if !converged {
+		t.Fatalf("FixpointApply did not converge — progress=%d", progress)
+	}
+	// Look for a bare Scan in the Reference.
+	foundBareScan := false
+	for _, m := range ref.Members() {
+		if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+			foundBareScan = true
+			break
+		}
+	}
+	if !foundBareScan {
+		t.Fatalf("two-rule cooperation didn't reach bare Scan — Reference has %d members", len(ref.Members()))
+	}
+}
+
 func TestSortDedupKeysRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
