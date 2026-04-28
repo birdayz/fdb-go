@@ -9,6 +9,24 @@ import (
 	"net/http"
 )
 
+// JavaError carries a Java conformance-server error with structured
+// fields so cross-engine harnesses can match on SQLSTATE without
+// parsing the message text. Returned by invokeStep when the Java
+// side reported `success: false`.
+type JavaError struct {
+	Message            string // server-side root-cause message
+	ExceptionClass     string // simple Java class name (e.g. "RelationalException")
+	ExceptionFullClass string // FQN
+	SQLState           string // SQLSTATE if Java extracted one (SQLException / RelationalException), else ""
+}
+
+func (e *JavaError) Error() string {
+	if e.ExceptionClass != "" {
+		return "plandiff: java " + e.ExceptionClass + ": " + e.Message
+	}
+	return "plandiff: java error: " + e.Message
+}
+
 // invokeStep POSTs {step, params} to baseURL/invoke (the conformance
 // server's RPC endpoint), unmarshals the success-result body into out,
 // and returns a typed error on transport / serialization / Java-side
@@ -21,13 +39,15 @@ import (
 //	  "result":             <raw JSON, type-specific>,
 //	  "error":              string,            // when !success
 //	  "exceptionClass":     string,            // simple Java class name
-//	  "exceptionFullClass": string             // FQN
+//	  "exceptionFullClass": string,            // FQN
+//	  "sqlState":           string             // SQLSTATE when extractable
 //	}
 //
-// On !success, the returned error embeds exceptionClass when present so
-// callers (and the diff harness's classify functions) can distinguish
-// planner errors (RelationalException, UnableToPlanException, etc.)
-// from infrastructure errors (HTTP non-200, dial tcp).
+// On !success, the returned error is a *JavaError carrying the
+// structured fields. Callers can `errors.As(err, &je)` to inspect the
+// SQLState (used by the cross-engine error_code harness) or the
+// exception class (used by the diff harness's classify functions to
+// distinguish planner errors from infrastructure errors).
 //
 // Pass nil for `out` if the caller doesn't need the result body parsed.
 func invokeStep(ctx context.Context, hc *http.Client, baseURL, step string, params map[string]any, out any) error {
@@ -41,6 +61,7 @@ func invokeStep(ctx context.Context, hc *http.Client, baseURL, step string, para
 		Error              string          `json:"error"`
 		ExceptionClass     string          `json:"exceptionClass"`
 		ExceptionFullClass string          `json:"exceptionFullClass"`
+		SQLState           string          `json:"sqlState"`
 	}
 
 	reqBody, err := json.Marshal(request{Step: step, Params: params})
@@ -72,10 +93,12 @@ func invokeStep(ctx context.Context, hc *http.Client, baseURL, step string, para
 		return fmt.Errorf("plandiff: unmarshal response: %w (body=%q)", err, string(body))
 	}
 	if !r.Success {
-		if r.ExceptionClass != "" {
-			return fmt.Errorf("plandiff: java %s: %s", r.ExceptionClass, r.Error)
+		return &JavaError{
+			Message:            r.Error,
+			ExceptionClass:     r.ExceptionClass,
+			ExceptionFullClass: r.ExceptionFullClass,
+			SQLState:           r.SQLState,
 		}
-		return fmt.Errorf("plandiff: java error: %s", r.Error)
 	}
 	if out != nil {
 		if err := json.Unmarshal(r.Result, out); err != nil {

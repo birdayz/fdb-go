@@ -151,8 +151,8 @@ func TestIsQuery(t *testing.T) {
 		"VALUES (1)",
 	}
 	for _, q := range queries {
-		if !isQuery(q) {
-			t.Errorf("isQuery(%q) = false, want true", q)
+		if !IsQuery(q) {
+			t.Errorf("IsQuery(%q) = false, want true", q)
 		}
 	}
 	nonQueries := []string{
@@ -163,8 +163,8 @@ func TestIsQuery(t *testing.T) {
 		"DROP DATABASE foo",
 	}
 	for _, q := range nonQueries {
-		if isQuery(q) {
-			t.Errorf("isQuery(%q) = true, want false", q)
+		if IsQuery(q) {
+			t.Errorf("IsQuery(%q) = true, want false", q)
 		}
 	}
 }

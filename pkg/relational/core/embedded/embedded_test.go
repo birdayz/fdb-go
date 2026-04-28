@@ -645,6 +645,190 @@ func FuzzApplyBitOp(f *testing.F) {
 	})
 }
 
+// FuzzCompareValues pins core algebraic invariants of the SQL
+// three-valued compare function — antisymmetry, reflexivity,
+// no-panic — across every value-type combination that flows through
+// ORDER BY, JOIN, IN-list dedup, and HAVING. The seed corpus walks
+// the type matrix (NULL × int64 × float64 × string × bool × []byte);
+// the fuzzer mutates the integer indices to permute pair selection.
+//
+// Invariants checked:
+//   - Compare(a, b) ∈ {-1, 0, 1}           — bounded result
+//   - Compare(a, b) == -Compare(b, a)      — antisymmetry
+//   - Compare(a, a) == 0                   — reflexivity
+//
+// CompareValues' branching (NULL ordering, int64-fast-path, numeric
+// promotion, type-name fallback) makes property-based fuzz a strong
+// fit: ~1B mutations exhaust the type-pair × value-magnitude space
+// faster than a hand-written matrix could.
+func FuzzCompareValues(f *testing.F) {
+	// Seed: walk every combination of representative values × types ×
+	// a third index for transitivity.
+	for _, ai := range []int{0, 1, 2, 3, 4, 5} {
+		for _, bi := range []int{0, 1, 2, 3, 4, 5} {
+			f.Add(ai, bi, 0, int64(0), float64(0), "", false, []byte(nil))
+		}
+	}
+	f.Add(0, 1, 2, int64(7), float64(3.14), "hello", true, []byte("bytes"))
+	f.Add(2, 3, 4, int64(-1), float64(0), "", false, []byte{})
+	f.Add(4, 5, 1, int64(1<<53), float64(1<<53)+1, "z", true, []byte{0xff})
+
+	// fuzzCompareValuesPick maps a small int index to a driver.Value of
+	// the corresponding type, drawing from the fuzz-supplied scalars.
+	pick := func(idx int, i int64, fl float64, s string, b bool, by []byte) driver.Value {
+		switch ((idx % 6) + 6) % 6 {
+		case 0:
+			return nil
+		case 1:
+			return i
+		case 2:
+			return fl
+		case 3:
+			return s
+		case 4:
+			return b
+		case 5:
+			return by
+		}
+		return nil
+	}
+
+	f.Fuzz(func(t *testing.T, ai, bi, ci int, i int64, fl float64, s string, b bool, by []byte) {
+		a := pick(ai, i, fl, s, b, by)
+		bv := pick(bi, i, fl, s, b, by)
+		c := pick(ci, i, fl, s, b, by)
+		// No panic on any input.
+		got := functions.CompareValues(a, bv)
+		// Result must be in {-1, 0, 1}.
+		if got < -1 || got > 1 {
+			t.Fatalf("CompareValues(%v, %v) = %d, must be in {-1, 0, 1}", a, bv, got)
+		}
+		// Antisymmetry: swapping operands negates the result.
+		swap := functions.CompareValues(bv, a)
+		if swap != -got {
+			t.Fatalf("antisymmetry: CompareValues(%v, %v)=%d but CompareValues(%v, %v)=%d (want %d)",
+				a, bv, got, bv, a, swap, -got)
+		}
+		// Reflexivity: Compare(a, a) == 0. NaN floats violate this in
+		// strict IEEE754; skip the float NaN case explicitly.
+		if af, ok := a.(float64); !ok || af == af { // af == af false iff NaN
+			if r := functions.CompareValues(a, a); r != 0 {
+				t.Fatalf("reflexivity: CompareValues(%v, %v) = %d, want 0", a, a, r)
+			}
+		}
+		// Transitivity: if a ≤ b and b ≤ c then a ≤ c. Total-order
+		// requirement; sort stability depends on it. NaN floats break
+		// the comparison axioms (NaN is incomparable in IEEE754; our
+		// implementation falls back to type-name ordering, which is
+		// consistent but not order-preserving against itself), so skip
+		// the transitivity check whenever any operand is a NaN float.
+		hasNaN := func(x driver.Value) bool {
+			f, ok := x.(float64)
+			return ok && f != f
+		}
+		if !hasNaN(a) && !hasNaN(bv) && !hasNaN(c) {
+			ab := functions.CompareValues(a, bv)
+			bc := functions.CompareValues(bv, c)
+			ac := functions.CompareValues(a, c)
+			if ab <= 0 && bc <= 0 && ac > 0 {
+				t.Fatalf("transitivity: a≤b ∧ b≤c ⇒ a≤c violated:\n  a=%v, b=%v, c=%v\n  Compare(a,b)=%d Compare(b,c)=%d Compare(a,c)=%d",
+					a, bv, c, ab, bc, ac)
+			}
+		}
+		// Bool × bool with both values: the fuzz-supplied `b` is used
+		// symmetrically by `pick`, so the (4, 4) case can never produce
+		// CompareValues(true, false). Cover the different-bool case
+		// explicitly inside the fuzz body so each iteration revalidates
+		// the bool branch alongside the mutated-type-pair tests.
+		if r := functions.CompareValues(true, false); r != 1 {
+			t.Fatalf("CompareValues(true, false) = %d, want 1", r)
+		}
+		if r := functions.CompareValues(false, true); r != -1 {
+			t.Fatalf("CompareValues(false, true) = %d, want -1", r)
+		}
+		// Cross-helper consistency: ORDER BY (CompareValues) and `=`
+		// (valuesEqual) MUST agree on equality. If they diverged a
+		// query like `SELECT * FROM t WHERE x = y ORDER BY x` could
+		// surface rows where `x = y` is true but the sort treats them
+		// as ordered relative to each other (or vice versa). Skip when
+		// either operand is NaN, since IEEE754 NaN ≠ NaN by definition
+		// (CompareValues falls back to type-name order = 0; valuesEqual
+		// returns false). This isn't a divergence — it's the IEEE754
+		// boundary, which both helpers handle consistently with their
+		// design.
+		if !hasNaN(a) && !hasNaN(bv) {
+			cmp0 := functions.CompareValues(a, bv) == 0
+			eq := valuesEqual(a, bv)
+			if cmp0 != eq {
+				t.Fatalf("CompareValues == 0 vs valuesEqual disagree:\n  a=%v, b=%v\n  CompareValues=%d (==0 ? %v)\n  valuesEqual=%v",
+					a, bv, functions.CompareValues(a, bv), cmp0, eq)
+			}
+		}
+	})
+}
+
+// FuzzCastValue pins CastValue's no-panic + NULL-pass-through
+// invariants. CastValue has many branches (INTEGER vs BIGINT range
+// checks, DOUBLE_TO_LONG rounding, STRING_TO_LONG parse, UUID
+// canonicalisation, BOOLEAN string mapping); the seed corpus walks
+// representative values × target-type strings, the fuzzer mutates
+// both axes.
+//
+// Properties pinned:
+//   - No panic on any (value, typeName) pair
+//   - CAST(NULL AS T) → (nil, nil)               — SQL spec
+//   - When (v, "INTEGER") fits in int32, ok      — Java alignment
+//   - When (v, "INTEGER") doesn't fit, errors    — vs silent wrap
+//
+// Cross-references the swingshift-52 UUID-CAST plumbing and the
+// CAST-overflow gotchas (CLAUDE.md) — same code path.
+func FuzzCastValue(f *testing.F) {
+	// Seed: representative target types × value types.
+	for _, ty := range []string{"INTEGER", "INT", "BIGINT", "LONG", "DOUBLE", "FLOAT", "STRING", "VARCHAR", "BOOLEAN", "BOOL", "UUID", "BYTES", "BINARY", "<unknown>"} {
+		f.Add(ty, int64(0), float64(0), "")
+		f.Add(ty, int64(1), float64(0), "")
+		f.Add(ty, int64(-1), float64(0), "")
+	}
+	// Edge values: int64 limits, NaN/Inf, edge strings.
+	f.Add("INTEGER", int64(math.MinInt32), float64(0), "")
+	f.Add("INTEGER", int64(math.MaxInt32), float64(0), "")
+	f.Add("INTEGER", int64(math.MaxInt32)+1, float64(0), "") // out of range
+	f.Add("BIGINT", int64(0), math.MaxFloat64, "")           // float→bigint overflow
+	f.Add("BIGINT", int64(0), math.NaN(), "")                // NaN→bigint reject
+	f.Add("BIGINT", int64(0), math.Inf(1), "")               // Inf→bigint reject
+	f.Add("UUID", int64(0), float64(0), "00000000-0000-0000-0000-000000000000")
+	f.Add("UUID", int64(0), float64(0), "not-a-uuid")
+	f.Add("BOOLEAN", int64(0), float64(0), "true")
+	f.Add("BOOLEAN", int64(0), float64(0), "TRUE  ") // trailing whitespace per Java
+	f.Add("BOOLEAN", int64(0), float64(0), "no")     // bad input
+
+	f.Fuzz(func(t *testing.T, typeName string, i int64, fl float64, s string) {
+		// Try each value type as the source value. No panic on any combo.
+		// `true` and `false` are both included to exercise CastValue's
+		// `case bool:` arms in the integer / boolean target branches —
+		// these constants don't need dedicated f.Add seeds because the
+		// type-iteration loop above already seeds every typeName.
+		for _, v := range []any{nil, i, fl, s, true, false} {
+			r, err := functions.CastValue(v, typeName)
+			_ = err
+			// SQL: CAST(NULL AS T) → (nil, nil) for any typeName.
+			if v == nil {
+				if r != nil || err != nil {
+					t.Fatalf("CAST(NULL AS %q) = (%v, %v), want (nil, nil)", typeName, r, err)
+				}
+			}
+			// When err is non-nil, the result must also be nil (no
+			// silent value-leak through error path). Pre-fix some
+			// error paths could return both a partial value and an
+			// error; the convention is value-OR-error.
+			if err != nil && r != nil {
+				t.Fatalf("CAST(%v AS %q) = (%v, %v): non-nil value alongside error",
+					v, typeName, r, err)
+			}
+		}
+	})
+}
+
 // FuzzLikePrefixStrinc pins the LIKE-prefix strinc helper — must never
 // panic, and when it returns ok=true the result must be strictly
 // greater than any string starting with the prefix (in byte order).

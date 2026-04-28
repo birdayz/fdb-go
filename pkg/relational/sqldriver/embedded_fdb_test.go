@@ -2457,6 +2457,157 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
+// TestFDB_SumIntegerDivision pins Java-aligned integer-preserving SUM
+// semantics: `SUM(BIGINT) / COUNT(*)` integer-divides instead of
+// float-dividing. Pre-fix Go's SUM accumulator was always float64, so
+// SUM(qty)=10 / COUNT(*)=3 emerged as 3.333... while Java returned 3.
+// The dual-accumulator path (sumsI int64 + sumNonInt bool flag) emits
+// int64 when every observed value is integral; subsequent int64 / int64
+// arithmetic in `ApplyMathOp` yields the integer-divided result.
+func TestFDB_SumIntegerDivision(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sumdiv")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sumdiv")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sumdiv_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sumdiv/items WITH TEMPLATE sumdiv_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sumdiv?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i, q := range []int{2, 3, 5} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO T (id, qty) VALUES (%d, %d)", i+1, q))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// SUM(qty) = 10, COUNT(*) = 3, integer division → 3 (NOT 3.333...).
+	var ratio int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty) / COUNT(*) FROM T").Scan(&ratio)).To(gomega.Succeed())
+	g.Expect(ratio).To(gomega.Equal(int64(3)),
+		"SUM(BIGINT) / COUNT(*) must integer-divide (Java alignment)")
+
+	// SUM(qty) - COUNT(*) = 10 - 3 = 7, both int64 → int64 result (was float64
+	// pre-fix because SUM was always float64 → 7.0).
+	var diff int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty) - COUNT(*) FROM T").Scan(&diff)).To(gomega.Succeed())
+	g.Expect(diff).To(gomega.Equal(int64(7)))
+
+	// SUM(qty) * 2 = 20, int64 * int64 = int64.
+	var doubled int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty) * 2 FROM T").Scan(&doubled)).To(gomega.Succeed())
+	g.Expect(doubled).To(gomega.Equal(int64(20)))
+
+	// SUM over a mixed-type expression (qty + 1.0) promotes to float64.
+	// Each row produces a float64 (qty is int64, +1.0 promotes); the
+	// SUM accumulator's sumNonInt flag flips on the first value.
+	var promoted float64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty + 1.0) FROM T").Scan(&promoted)).To(gomega.Succeed())
+	g.Expect(promoted).To(gomega.Equal(float64(13)))
+}
+
+// TestFDB_BareBoolProjection pins Java-aligned bare-boolean operand
+// behaviour in SELECT projection. `SELECT b AND TRUE`, `SELECT NOT b`,
+// `SELECT b OR FALSE` over a BOOLEAN column evaluate the column as a
+// value (via IsTruthy) rather than rejecting with "expected
+// BooleanValue but got FieldValue". Top-level WHERE `WHERE flag` still
+// rejects to match Java's planner — Java's WHERE-bare-bool rejection
+// is a separate, intentional gap.
+func TestFDB_BareBoolProjection(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_barebool")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_barebool")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE barebool_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, b BOOLEAN, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_barebool/items WITH TEMPLATE barebool_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_barebool?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Three rows: TRUE, FALSE, NULL — the canonical Kleene 3VL surface.
+	_, err = db.ExecContext(ctx, "INSERT INTO T VALUES (1, true), (2, false), (3, null)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// `b AND TRUE`: t/f/NULL preserved.
+	rows, err := db.QueryContext(ctx, "SELECT b AND TRUE FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got := []sql.NullBool{}
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	g.Expect(got[0]).To(gomega.Equal(sql.NullBool{Bool: true, Valid: true}))
+	g.Expect(got[1]).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}))
+	g.Expect(got[2].Valid).To(gomega.BeFalse(), "NULL preserved through AND TRUE")
+
+	// `NOT b`: f/t/NULL.
+	rows, err = db.QueryContext(ctx, "SELECT NOT b FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got = got[:0]
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	g.Expect(got[0]).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}))
+	g.Expect(got[1]).To(gomega.Equal(sql.NullBool{Bool: true, Valid: true}))
+	g.Expect(got[2].Valid).To(gomega.BeFalse(), "NULL preserved through NOT")
+
+	// `b OR FALSE`: t/f/NULL (same as b for non-NULL rows; UNKNOWN preserved).
+	rows, err = db.QueryContext(ctx, "SELECT b OR FALSE FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got = got[:0]
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	g.Expect(got[0]).To(gomega.Equal(sql.NullBool{Bool: true, Valid: true}))
+	g.Expect(got[1]).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}))
+	g.Expect(got[2].Valid).To(gomega.BeFalse(), "NULL preserved through OR FALSE")
+
+	// `b AND FALSE`: short-circuits to FALSE for every row (UNKNOWN absorbed).
+	rows, err = db.QueryContext(ctx, "SELECT b AND FALSE FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got = got[:0]
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	for i, v := range got {
+		g.Expect(v).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}),
+			"row %d: AND FALSE always FALSE", i)
+	}
+
+	// Top-level WHERE bare bool still rejects (matches Java strictness).
+	_, err = db.QueryContext(ctx, "SELECT id FROM T WHERE b")
+	g.Expect(err).To(gomega.HaveOccurred(), "WHERE flag still rejects per Java planner alignment")
+}
+
 func TestFDB_SelectScalarExpression(t *testing.T) {
 	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
 	t.Parallel()

@@ -47,7 +47,14 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 		// projection of a boolean expression preserves UNKNOWN as NULL,
 		// not collapses to FALSE. Use the tri-state evaluator and map
 		// triNull → nil.
-		t, err := evalExprPredicateTri(ctx, conn, msg, expr)
+		//
+		// Projection context: bare bool column operands of boolean ops
+		// (`SELECT b AND TRUE`, `SELECT NOT b`) are accepted by Java
+		// and the planner converts via truthiness — pass
+		// allowBareField=true so the FullColumnName check inside
+		// nested PredicatedExpression operands falls through to
+		// value-eval instead of rejecting.
+		t, err := evalExprPredicateTri(ctx, conn, msg, expr, true /* allowBareField */)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +73,7 @@ func evalExpr(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, 
 	// definition — the tri-state evaluator already returns triFromBool for
 	// them, so their projection collapses cleanly to true/false.
 	if pred.Predicate() != nil {
-		t, err := evalExprPredicateTri(ctx, conn, msg, expr)
+		t, err := evalExprPredicateTri(ctx, conn, msg, expr, false /* allowBareField */)
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +223,7 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 			// IS, LIKE, IN, BETWEEN, logical op), evaluate as tri-state.
 			// Value-returning atoms fall through to evalExpr below.
 			if pred.Predicate() != nil || looksBoolean(pred.ExpressionAtom()) {
-				t, err := evalExprPredicateTri(ctx, conn, msg, inner)
+				t, err := evalExprPredicateTri(ctx, conn, msg, inner, false /* allowBareField */)
 				if err != nil {
 					return nil, err
 				}

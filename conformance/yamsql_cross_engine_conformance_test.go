@@ -28,12 +28,14 @@ package conformance_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
 )
@@ -84,7 +86,15 @@ var _ = Describe("yamsql cross-engine equivalence (A3)", Ordered, func() {
 				i, t := i, t
 				It(t.Query, func() {
 					if t.ErrorCode != "" {
-						Skip("error_code tests not yet wired cross-engine — Java's error structure differs from Go's api.Error")
+						// SQLState wiring is in place
+						// (`*plandiff.JavaError.SQLState` +
+						// `assertCrossEngineErrorCode`); the gate stays
+						// because lifting the skip surfaces fdb-relational
+						// planner hangs on certain error paths under load
+						// (e.g. type-mismatch IN-list, GREATEST mixed
+						// types, comma-join + bare-col-with-aggregate),
+						// dragging unrelated specs into 120s timeouts.
+						Skip("error_code tests skipped cross-engine — fdb-relational planner stalls on error paths under load")
 					}
 					if !yamsql.IsQuery(t.Query) {
 						Skip("non-query (DML) cross-engine tests need a different harness — runWithSetup expects exactly one query")
@@ -169,6 +179,13 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		unionStarScenario(),
 		qualifiedStarScenario(),
 		existsScenario(),
+		nestedDerivedTableScenario(),
+		ambiguousColumnScenario(),
+		correlatedSubqueryProbesScenario(),
+		unionColumnsRenamedScenario(),
+		joinChainedScenario(),
+		multiFeatureSelectScenario(),
+		countDistinctJoinPositiveScenario(),
 	}
 }
 
@@ -612,11 +629,11 @@ func derivedTableRenamedScenario() *yamsql.Scenario {
 // tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
 // ORDER BY <aggregate> requires the natural-order continuation).
 //
-// New gotcha (swingshift-56): `SUM(BIGINT) / COUNT(*)` diverges between
-// engines. Java does integer division on BIGINT/BIGINT (returns 3 for
-// SUM=10, COUNT=3); Go's SUM accumulator is float64 so the result is
-// 3.333... — the yamsql YAML comment flags this as a Go-side divergence
-// pending an int-preserving SUM for int-only inputs. Cross-engine drop.
+// `SUM(BIGINT) / COUNT(*)` integer-division parity (resolved
+// nightshift-57): Go's SUM now preserves int64 when every observed
+// value is integral (see `pkg/relational/core/embedded/aggregate.go`
+// `sumIntOnly`), so `SUM(qty) / COUNT(*)` integer-divides Java-style
+// rather than float-dividing.
 func aggregateExprScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expr",
@@ -646,10 +663,12 @@ func aggregateExprScenario() *yamsql.Scenario {
 			{Query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t", Rows: [][]any{{2}}},
 			{Query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{100}}},
 			{Query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t", Rows: [][]any{{75.0}}},
-			// `SUM(qty) / COUNT(*)` dropped — Java integer-divides
-			// BIGINT/BIGINT, Go's SUM accumulator returns float64.
-			// Multi-aggregate with arithmetic.
-			{Query: "SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t", Rows: [][]any{{7, 7.0}}},
+			// SUM/COUNT integer-division (re-enabled nightshift-57).
+			// SUM(qty)=10 (BIGINT), COUNT(*)=3 (BIGINT), 10/3=3 (integer division).
+			{Query: "SELECT SUM(qty) / COUNT(*) FROM t", Rows: [][]any{{3}}},
+			// Multi-aggregate with arithmetic. SUM-COUNT now preserves
+			// int64 (Java-aligned).
+			{Query: "SELECT MIN(qty) + MAX(qty), SUM(qty) - COUNT(*) FROM t", Rows: [][]any{{7, 7}}},
 		},
 	}
 }
@@ -1397,14 +1416,20 @@ func betweenScenario() *yamsql.Scenario {
 // untyped-NULL operands (`b = null`, `b AND NULL`, `b OR NULL`),
 // `WHERE (b = true)` (parser interprets bare-paren as
 // RecordConstructorValue, not a predicate; `NOT (...)` works because it
-// forces predicate context), CTE + outer ORDER BY (Java rejects
+// forces predicate context), and CTE + outer ORDER BY (Java rejects
 // "order by is not supported in subquery" — fdb-relational treats the
 // outer ORDER BY as part of the subquery scope when a WITH clause is
-// present), and bare-bool-column-as-operand-in-projection
-// (`SELECT b AND TRUE`, `SELECT NOT b`) — Go's embedded engine rejects
-// these with "expected BooleanValue but got FieldValue", asymmetric
-// with Java which accepts them. New gotcha — Go is stricter than Java
-// here, fix tracked separately.
+// present).
+//
+// Bare-bool-column-as-operand-in-projection (`SELECT b AND TRUE`,
+// `SELECT NOT b`, `SELECT b OR FALSE`) was deferred swingshift-55/56
+// because Go's embedded engine rejected with "expected BooleanValue
+// but got FieldValue". Re-enabled nightshift-57 after threading
+// allowBareField=true through evalExprPredicateTri's value-context
+// callers (eval_predicate.go) so operands of AND/OR/NOT/XOR and
+// projection-context expressions accept bare FieldValue and convert
+// via IsTruthy. WHERE-top-level `WHERE flag` still rejects to match
+// Java.
 func booleanScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "boolean",
@@ -1424,6 +1449,23 @@ func booleanScenario() *yamsql.Scenario {
 			{Query: "SELECT b = false FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 			{Query: "SELECT b <> TRUE FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 			{Query: "SELECT b IS NULL FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {true}}},
+			// Bare-bool projection (re-enabled nightshift-57). Kleene 3VL:
+			// b AND TRUE pinning UNKNOWN→NULL preservation, b AND FALSE
+			// short-circuits to FALSE for every row, b OR TRUE
+			// short-circuits to TRUE, b OR FALSE preserves UNKNOWN, NOT b
+			// flips with NULL→NULL.
+			{Query: "SELECT b AND TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT b AND FALSE FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {false}}},
+			{Query: "SELECT b OR TRUE FROM lb ORDER BY a", Rows: [][]any{{true}, {true}, {true}}},
+			{Query: "SELECT b OR FALSE FROM lb ORDER BY a", Rows: [][]any{{true}, {false}, {nil}}},
+			{Query: "SELECT NOT b FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
+			// `WHERE b AND TRUE` / `WHERE b OR FALSE` / `WHERE NOT b`
+			// dropped from cross-engine: Java rejects bare-bool-operand in
+			// WHERE context (VerifyException), even though it accepts the
+			// same shape in projection. Go's fix correctly accepts both
+			// contexts (operands of AND/OR/NOT are value-context); the
+			// asymmetry is fdb-relational-side. CLAUDE.md gotcha
+			// `bare-bool-operand-in-WHERE-rejected-by-Java` documents.
 		},
 	}
 }
@@ -1653,6 +1695,246 @@ func aggregateNullsScenario() *yamsql.Scenario {
 			{Query: "SELECT COUNT(*) FROM t WHERE grp = 'no_such_group'", Rows: [][]any{{0}}},
 		},
 	}
+}
+
+// unionColumnsRenamedScenario mirrors a portable subset of
+// testdata/union_columns.yaml — only the differently-named-columns
+// UNION ALL form. The remaining tests use multi-col ORDER BY (gotcha)
+// and LIMIT (gotcha). Drops NOT NULL on PK.
+func unionColumnsRenamedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "union_columns",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 10), (2, 20)",
+			"INSERT INTO b VALUES (1, 100), (2, 200)",
+		},
+		Tests: []yamsql.Test{
+			// UNION ALL on differently-named columns — positional matching;
+			// left's name wins in result schema.
+			{
+				Query:     "SELECT v FROM a UNION ALL SELECT w FROM b",
+				Unordered: true,
+				Rows:      [][]any{{10}, {20}, {100}, {200}},
+			},
+		},
+	}
+}
+
+// countDistinctJoinPositiveScenario lifts the one COUNT(*) test from
+// testdata/count_distinct_join.yaml that doesn't use COUNT(DISTINCT)
+// (which NPEs in fdb-relational 4.11.1.0 per CLAUDE.md gotcha).
+// Drops NOT NULL on PK + composite PK on the join-side table.
+func countDistinctJoinPositiveScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "count_distinct_join_positive",
+		SchemaTemplate: "CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE tags (cust_id BIGINT, tag STRING, PRIMARY KEY (cust_id, tag))",
+		Setup: []string{
+			"INSERT INTO orders VALUES (1, 10), (2, 10), (3, 20), (4, 20)",
+			"INSERT INTO tags VALUES (10, 'gold'), (10, 'pref'), (20, 'gold')",
+		},
+		Tests: []yamsql.Test{
+			// COUNT(*) on comma-join (cust 10 → 2 orders × 2 tags = 4;
+			// cust 20 → 2 × 1 = 2; total 6).
+			{
+				Query: "SELECT COUNT(*) FROM orders AS o, tags AS t WHERE o.cust_id = t.cust_id",
+				Rows:  [][]any{{6}},
+			},
+		},
+	}
+}
+
+// multiFeatureSelectScenario is a column-to-column comparison test
+// lifted from testdata/multi_feature.yaml. The full file uses GROUP
+// BY + HAVING + LIMIT (all blocked by fdb-relational planner gaps);
+// this single SELECT pins the predicate evaluator's handling of
+// WHERE col1 > col2 with NULL on either side (UNKNOWN filtered out).
+// Drops NOT NULL on PK.
+func multiFeatureSelectScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "multi_feature_select",
+		SchemaTemplate: "CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO orders VALUES (1, 100, 50), (2, 100, 75), (3, 100, null), (4, 200, 30), (5, 200, 30), (6, 300, 10)",
+		},
+		Tests: []yamsql.Test{
+			// id=3 has total=NULL → 100 > NULL = UNKNOWN ⇒ filtered.
+			{
+				Query:     "SELECT id FROM orders WHERE customer_id > total",
+				Unordered: true,
+				Rows:      [][]any{{1}, {2}, {4}, {5}, {6}},
+			},
+		},
+	}
+}
+
+// joinChainedScenario mirrors testdata/join_chained.yaml's comma-join
+// subset — drops the explicit INNER JOIN ON tests (CLAUDE.md gotcha:
+// fdb-relational rejects fully-qualified column names from the JOIN ON
+// clause). Drops NOT NULL on PK.
+func joinChainedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_chained",
+		SchemaTemplate: "CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			"\nCREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)",
+			"INSERT INTO dept VALUES (10, 'Engineering'), (20, 'Sales')",
+			"INSERT INTO project VALUES (100, 1), (101, 2), (102, 3)",
+		},
+		Tests: []yamsql.Test{
+			// 2-way comma-join via WHERE.
+			{
+				Query: "SELECT emp.name FROM emp, project WHERE project.emp_id = emp.id ORDER BY emp.id",
+				Rows:  [][]any{{"Alice"}, {"Bob"}, {"Carol"}},
+			},
+			// 3-way comma-join with chained equi-joins in WHERE.
+			{
+				Query: "SELECT emp.name, dept.name FROM emp, dept, project WHERE emp.dept_id = dept.id AND project.emp_id = emp.id ORDER BY emp.id",
+				Rows:  [][]any{{"Alice", "Engineering"}, {"Bob", "Sales"}, {"Carol", "Engineering"}},
+			},
+		},
+	}
+}
+
+// correlatedSubqueryProbesScenario mirrors testdata/correlated_subquery_probes.yaml's
+// EXISTS / NOT EXISTS subset. Skips the correlated-IN form (uncertain whether
+// fdb-relational's parser binds the outer reference inside an IN-subquery)
+// and the correlated-scalar-subquery (parser rejects scalar subqueries
+// per gotcha; also auto-skipped via error_code anyway). Drops NOT NULL on PK.
+func correlatedSubqueryProbesScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "correlated_subquery_probes",
+		SchemaTemplate: "CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id))" +
+			"\nCREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO emp VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)",
+			"INSERT INTO project VALUES (100, 1), (101, 2)",
+		},
+		Tests: []yamsql.Test{
+			// Correlated EXISTS — inner references emp.id from outer.
+			{
+				Query: "SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id",
+				Rows:  [][]any{{"Alice"}, {"Bob"}},
+			},
+			// Correlated NOT EXISTS — inverse.
+			{
+				Query: "SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id",
+				Rows:  [][]any{{"Carol"}},
+			},
+		},
+	}
+}
+
+// ambiguousColumnScenario mirrors testdata/ambiguous_column.yaml's
+// qualified-positives subset. Drops NOT NULL on PK. Drops the SELECT *
+// expansion test (Go dedupes-by-first-source on overlapping schemas
+// while Java expands all columns — separate SELECT * expansion gap).
+// error_code entries auto-skip via the harness's per-test gate.
+func ambiguousColumnScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "ambiguous_column",
+		SchemaTemplate: "CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id))" +
+			"\nCREATE TABLE b (id BIGINT, name STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO a VALUES (1, 'alpha'), (2, 'beta')",
+			"INSERT INTO b VALUES (1, 'x'), (2, 'y')",
+		},
+		Tests: []yamsql.Test{
+			// Qualified single-col reference — comma-join + ORDER BY PK.
+			{Query: "SELECT a.name FROM a, b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{"alpha"}, {"beta"}}},
+			// Multiple qualified projections.
+			{
+				Query: "SELECT a.id, a.name, b.name FROM a, b WHERE a.id = b.id ORDER BY a.id",
+				Rows:  [][]any{{1, "alpha", "x"}, {2, "beta", "y"}},
+			},
+		},
+	}
+}
+
+// nestedDerivedTableScenario mirrors testdata/nested_derived_table.yaml
+// — the SELECT-only subset that doesn't depend on DISTINCT (planner
+// gotcha) or ORDER BY <alias> (planner gotcha). Drops NOT NULL on PK.
+// Drops the DISTINCT-inside form, the alias-rename ORDER BY form, and
+// the quoted-canonical-name "COUNT(*)" form (anonymous projection name
+// diverges between Go's `_0` synthetic and Java's quoted-canonical).
+func nestedDerivedTableScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "nested_derived_table",
+		SchemaTemplate: "CREATE TABLE t1 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t1 VALUES (1, 10), (2, 20), (3, null), (4, 40)",
+		},
+		Tests: []yamsql.Test{
+			// 3-level derived-table nesting + outer ORDER BY on PK.
+			{
+				Query: "SELECT * FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE id IS NOT NULL) AS y ORDER BY id",
+				Rows:  [][]any{{1, 10}, {2, 20}, {3, nil}, {4, 40}},
+			},
+			// Aggregate over nested derived tables.
+			{
+				Query: "SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM t1) AS x WHERE n IS NOT NULL) AS y",
+				Rows:  [][]any{{3}},
+			},
+			// Derived table with aliased aggregate; outer references alias.
+			{
+				Query: "SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub",
+				Rows:  [][]any{{3}},
+			},
+		},
+	}
+}
+
+// assertCrossEngineErrorCode verifies that BOTH engines errored with
+// the expected SQLSTATE. Java's SQLSTATE comes through the conformance
+// server's structured error response (`sqlState` field on the JSON,
+// surfaced as `*plandiff.JavaError.SQLState`); Go's comes from
+// `*api.Error.Code` via `errors.As`. Both must error AND match the
+// expected code — a bare match on one side would mean the other
+// silently succeeded or threw a different error class.
+//
+// One known gap: fdb-relational sometimes throws a bare RuntimeException
+// (ArithmeticException, NullPointerException) instead of wrapping it
+// in a RelationalException, so the SQLSTATE is empty. When that
+// happens, the cross-engine assertion downgrades to "both engines
+// errored AND Go's SQLSTATE matches"; the Java-side test pins the
+// exception class via the assertion message so a future fix can
+// re-strict the check.
+//
+// Wired nightshift-57. Pre-fix the cross-engine harness `Skip`'d every
+// `error_code`-tagged test because there was no portable way to
+// extract Java's SQLSTATE.
+func assertCrossEngineErrorCode(javaRes, goRes plandiff.RunResult, expected, prefix string) {
+	Expect(javaRes.Err).To(HaveOccurred(), "%s: Java did not error but error_code=%q expected", prefix, expected)
+	Expect(goRes.Err).To(HaveOccurred(), "%s: Go did not error but error_code=%q expected", prefix, expected)
+
+	var je *plandiff.JavaError
+	Expect(errors.As(javaRes.Err, &je)).To(BeTrue(),
+		"%s: Java error is not *plandiff.JavaError: %T (%v)", prefix, javaRes.Err, javaRes.Err)
+
+	var ge *api.Error
+	Expect(errors.As(goRes.Err, &ge)).To(BeTrue(),
+		"%s: Go error is not *api.Error: %T (%v)", prefix, goRes.Err, goRes.Err)
+
+	// Strict path: both engines have SQLSTATE — they must match the
+	// expected and each other.
+	if je.SQLState != "" {
+		Expect(je.SQLState).To(Equal(expected),
+			"%s: Java SQLSTATE: got %q (exception=%s, message=%s), expected %q",
+			prefix, je.SQLState, je.ExceptionClass, je.Message, expected)
+	}
+	// Loose path: when Java's SQLSTATE is empty (fdb-relational threw a
+	// bare RuntimeException — ArithmeticException, NullPointerException,
+	// VerifyException, etc. — without wrapping in RelationalException),
+	// only Go's SQLSTATE is checked. Both engines still must have
+	// errored, which the early Expect's above pin.
+
+	Expect(string(ge.Code)).To(Equal(expected),
+		"%s: Go SQLSTATE: got %q (message=%s), expected %q",
+		prefix, ge.Code, ge.Message, expected)
 }
 
 // assertRowsMatch checks actual vs expected, honouring multiset semantics

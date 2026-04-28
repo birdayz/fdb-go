@@ -74,6 +74,7 @@ go_library(
 go_test(
     name = "embedded_test",
     srcs = [
+        "ast_util_test.go",
         "embedded_test.go",
         "logical_builder_test.go",
         "logical_predicate_test.go",
@@ -84,6 +85,7 @@ go_test(
         "scope_test.go",
         "select_helpers_test.go",
         "utilities_test.go",
+        "value_compare_test.go",
         "where_extractors_test.go",
     ],
     embed = [":embedded"],

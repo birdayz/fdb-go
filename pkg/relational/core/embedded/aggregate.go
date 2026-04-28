@@ -157,9 +157,20 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	}
 
 	type mapGroupState struct {
-		groupVals    []driver.Value
-		counts       []int64
+		groupVals []driver.Value
+		counts    []int64
+		// SUM accumulators: maintain BOTH an int64 and a float64
+		// running total per slot so we can emit int64 when every
+		// observed value is integral (matches Java's
+		// SUM(BIGINT)→BIGINT typing, important for the
+		// `SUM(BIGINT)/COUNT(*)` integer-division semantic) and fall
+		// back to float64 once a non-int value is seen. sumNonInt
+		// starts as false (zero-value) — i.e. "still int-only" — and
+		// only flips to true. Overflow on `sumsI[i] += iv` wraps
+		// silently, same as Java's `long` accumulator on SUM(BIGINT).
 		sums         []float64
+		sumsI        []int64
+		sumNonInt    []bool
 		mins         []driver.Value
 		maxes        []driver.Value
 		avgs         []float64
@@ -216,6 +227,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				groupVals:    gVals,
 				counts:       make([]int64, len(sq.aggCols)),
 				sums:         make([]float64, len(sq.aggCols)),
+				sumsI:        make([]int64, len(sq.aggCols)),
+				sumNonInt:    make([]bool, len(sq.aggCols)),
 				mins:         make([]driver.Value, len(sq.aggCols)),
 				maxes:        make([]driver.Value, len(sq.aggCols)),
 				avgs:         make([]float64, len(sq.aggCols)),
@@ -284,6 +297,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 							}
 							if ac.aggFunc == "SUM" {
 								gs.sums[i] += fv
+								if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
+									gs.sumsI[i] += iv
+								} else {
+									gs.sumNonInt[i] = true
+								}
 							} else {
 								gs.avgs[i] += fv
 								gs.avgsN[i]++
@@ -320,6 +338,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 				if ac.aggFunc == "SUM" {
 					gs.sums[i] += fv
+					if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
+						gs.sumsI[i] += iv
+					} else {
+						gs.sumNonInt[i] = true
+					}
 				} else {
 					gs.avgs[i] += fv
 					gs.avgsN[i]++
@@ -349,6 +372,8 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			groupVals:    nil,
 			counts:       make([]int64, len(sq.aggCols)),
 			sums:         make([]float64, len(sq.aggCols)),
+			sumsI:        make([]int64, len(sq.aggCols)),
+			sumNonInt:    make([]bool, len(sq.aggCols)),
 			mins:         make([]driver.Value, len(sq.aggCols)),
 			maxes:        make([]driver.Value, len(sq.aggCols)),
 			avgs:         make([]float64, len(sq.aggCols)),
@@ -427,11 +452,21 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				case "SUM":
 					// SUM of empty-or-all-NULL input is NULL per SQL standard,
 					// not 0. counts[i]>0 means at least one non-null observed.
-					// DISTINCT SUM now accumulates into sums[i] on first-seen
-					// value in the DISTINCT branch, so this path is correct
-					// for both the DISTINCT and non-DISTINCT cases.
+					// DISTINCT SUM accumulates into sums[i] on first-seen value
+					// in the DISTINCT branch, so this path is correct for both
+					// the DISTINCT and non-DISTINCT cases.
+					//
+					// Java alignment (int-preserving SUM): if every observed
+					// value was integral, emit int64 — important for
+					// `SUM(BIGINT) / COUNT(*)` to integer-divide rather than
+					// float-divide. Mixed or non-int inputs fall back to the
+					// float64 accumulator.
 					if gs.counts[i] > 0 {
-						fullVals[i] = gs.sums[i]
+						if gs.sumNonInt[i] {
+							fullVals[i] = gs.sums[i]
+						} else {
+							fullVals[i] = gs.sumsI[i]
+						}
 					}
 				case "MIN":
 					fullVals[i] = gs.mins[i]
