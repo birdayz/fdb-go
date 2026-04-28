@@ -80,7 +80,7 @@ The path from today's seeded `cascades/values/` + matchers to a real Cascades pl
 
 Once the planner produces a `RecordQueryPlan`, the engine needs to run it against an `FDBRecordStore`. Strictly serialised within Track C; parallel to Track B5+ (don't need rules to start).
 
-- [ ] **C1 — `PlanGenerator`**: `LogicalOperator → RelationalExpression` adapter. Bridges today's text-based logical builder to the new RelationalExpression hierarchy. Gated on B1.
+- [~] **C1 — `PlanGenerator`**: `LogicalOperator → RelationalExpression` adapter. Bridges today's text-based logical builder to the new RelationalExpression hierarchy. **Seed shipped dayshift-58**: `pkg/relational/core/query/plangen/Convert(op)` covers 4 operator types directly (LogicalScan / LogicalFilter-with-QueryPredicate / LogicalUnion / LogicalDelete), returns `ErrUnsupported` for the others. **Remaining**: LogicalProject / LogicalSort need text→Value parsing (gated on catalog-aware walker), LogicalLimit needs a RelationalExpression equivalent, LogicalAggregate needs GroupByExpression port, LogicalJoin needs SelectExpression-with-multi-Quantifiers + predicate placement, LogicalInsert/Update need targetType inference, LogicalValues/CTE/DDL have no equivalent. Sized 1-2 shifts remaining.
 - [ ] **C2 — `QueryExecutor`**: executes a `RecordQueryPlan` against a `FDBRecordStore`, returns `RecordCursor`. Sized 2 shifts. Gated on C1 + B6.
 - [ ] **C3 — `RecordLayerResultSet`**: wraps the cursor, implements `api.ResultSet`. Sized 1 shift. Gated on C2.
 - [ ] **C4 — Continuation support**: cursor continuation → SQL-level cursor state; match Java encoding. Sized 1 shift. Gated on C3.
