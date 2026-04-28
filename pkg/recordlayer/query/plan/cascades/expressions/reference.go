@@ -18,10 +18,12 @@ package expressions
 //   - Members: read the full member list (always size 1 in the seed)
 //   - Insert: append a member (no-op if EqualsWithoutChildren matches)
 //
-// Insert's semantic-equality check uses EqualsWithoutChildren only —
-// children's equivalence is established by their own References sharing
-// identity, so the recursive comparison reduces to local checks at each
-// level. This matches Java's ExpressionPartition behaviour.
+// Insert's dedup uses a two-tier check: pointer-identity on child
+// References (fast path) plus SemanticEquals fallback (catches
+// fresh-Reference wrapping). See Insert's doc comment for the full
+// contract. This matches Java's ExpressionPartition behaviour with
+// the addition of structural-equivalence dedup needed by rules that
+// introduce wrapping operators around fresh sub-trees.
 type Reference struct {
 	members []RelationalExpression
 }
@@ -50,24 +52,36 @@ func (r *Reference) Members() []RelationalExpression {
 }
 
 // Insert adds e to the equivalence class if no existing member already
-// matches under (EqualsWithoutChildren ∧ same-child-References).
-// Returns true if the member was inserted, false if a duplicate was
-// found.
+// matches. Returns true if the member was inserted, false if a duplicate
+// was found.
 //
-// Dedup contract:
-//   - EqualsWithoutChildren on the node-information itself (predicate
-//     list, projection list, sort keys, etc.).
-//   - PLUS every Quantifier's GetRangesOver() must point at the SAME
-//     Reference instance on both sides — pointer identity, not
-//     structural Reference equivalence.
+// Dedup contract — two-tier:
 //
-// The second clause prevents false-equivalence between two filters
-// with the same predicate list but different inner row streams: a
-// LogicalFilter over Reference(LogicalDistinct(scanA)) is NOT
-// equivalent to a LogicalFilter over Reference(LogicalDistinct(scanB))
-// even when their predicate lists agree. The full Memo (B3 follow-on)
-// generalises this from pointer-identity to "same equivalence-class"
-// when Memo groups merge.
+//  1. Fast path: EqualsWithoutChildren on the local node + pointer-
+//     identity on every Quantifier's child Reference. Hits when a
+//     rule yields output that reuses the input's existing Quantifiers
+//     (the pattern most seed rules follow). O(1) check.
+//  2. Fallback: full SemanticEquals walk (recursive structural match
+//     with alias-aware child comparison). Catches the case where a
+//     rule yields output wrapping a FRESH Reference whose held
+//     expression is structurally equivalent to an existing member's
+//     child Reference. Without this, rules like
+//     PushFilterThroughDistinctRule would non-terminate. Gated on
+//     hash equality (HashCodeWithoutChildren) for early-exit on
+//     non-matching shapes — the HashConsistency invariant
+//     (FuzzSemanticEquals_Properties) guarantees SemanticEquals can
+//     only return true when local hashes agree.
+//
+// Soundness of the fallback: SemanticEquals's recursion compares
+// child-Reference contents structurally with alias-aware AliasMap
+// composition. Two Filters over scanA-References with structurally-
+// equal scans ARE equivalent — they hold the same row stream,
+// even if the Reference pointers differ. The doc comment's earlier
+// "different inner row streams" warning was about cross-scan
+// false-equivalence (different record types) — SemanticEquals
+// correctly distinguishes those via EqualsWithoutChildren on the
+// scan node info. The full Memo (B3 follow-on) generalises this
+// further to merge equivalence classes across the whole memo.
 func (r *Reference) Insert(e RelationalExpression) bool {
 	if e == nil {
 		// Defensive: callers should never insert nil. Panic loudly so a
