@@ -71,6 +71,17 @@ func (*InOpValue) Type() Type { return NullableBoolean }
 //     NULL element AND the list contains a NULL (NULL propagation).
 //   - nil if probe or list is nil-Value, or list doesn't evaluate
 //     to a slice.
+//
+// CONFORMANCE NOTE: matching uses Go's `==` on `any`, which is
+// dynamic-type-AND-value equality. Java's InOpValue uses
+// `Comparisons.evalComparison(EQUALS, ...)` which performs
+// numeric coercion (int64 == float64 if values are equal). This
+// is a divergence on mixed-numeric IN lists like
+// `WHERE x IN (1, 2.0, 3L)` where probe is int64. Today no
+// planner rule rewrites IN-list comparisons to InOpValue, so the
+// gap is theoretical. When such a rule lands, this Evaluate must
+// route through the SQL-equality comparator (currently
+// predicates.cmpAny — needs promotion to a values-level helper).
 func (v *InOpValue) Evaluate(evalCtx any) any {
 	if v.Probe == nil || v.List == nil {
 		return nil
