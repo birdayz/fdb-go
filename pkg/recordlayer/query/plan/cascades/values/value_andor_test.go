@@ -16,11 +16,29 @@ func TestAndOrOp_String(t *testing.T) {
 	}
 }
 
-func TestAndOrValue_Type(t *testing.T) {
+func TestAndOrValue_TypeBothNotNull(t *testing.T) {
 	t.Parallel()
+	// Both operands are NotNull booleans → result is NotNullBoolean.
 	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), NewBooleanValue(false))
+	if !v.Type().Equals(NotNullBoolean) {
+		t.Fatalf("Type = %v, want NotNullBoolean (both NOT NULL operands)", v.Type())
+	}
+}
+
+func TestAndOrValue_TypeNullableOperand(t *testing.T) {
+	t.Parallel()
+	// LiteralValue(nil) has nullable type → result is NullableBoolean.
+	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), LiteralValue(nil))
 	if !v.Type().Equals(NullableBoolean) {
-		t.Fatalf("Type = %v, want NullableBoolean", v.Type())
+		t.Fatalf("Type = %v, want NullableBoolean (one nullable operand)", v.Type())
+	}
+}
+
+func TestAndOrValue_TypeNilOperandFallsBackToNullable(t *testing.T) {
+	t.Parallel()
+	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), nil)
+	if !v.Type().Equals(NullableBoolean) {
+		t.Fatalf("Type = %v, want NullableBoolean (nil operand fallback)", v.Type())
 	}
 }
 

@@ -76,13 +76,33 @@ func (v *AndOrValue) Children() []Value {
 // Name returns the SQL keyword.
 func (v *AndOrValue) Name() string { return v.Op.String() }
 
-// Type returns NullableBoolean — Kleene 3VL admits NULL even when
-// both operand types are NOT NULL (e.g. for short-circuit cases
-// where the result is determined). The cleaner Java-equivalent
-// behaviour computes nullability from the operand types, but the
-// safer seed default is NullableBoolean — UNKNOWN is always a
-// possible eval-time outcome.
-func (*AndOrValue) Type() Type { return NullableBoolean }
+// Type returns NotNullBoolean iff BOTH operands have NOT NULL
+// boolean types, else NullableBoolean. Mirrors Java's
+// AndOrValue.getResultType which OR-reduces operand nullabilities.
+//
+// Rationale: when both operands are non-nullable booleans, the
+// result is always TRUE or FALSE — never NULL. (NULL only enters
+// the eval through a NULL operand, which can't happen with NOT NULL
+// operand types.) The dispatch matches the conventional SQL
+// type-inference for boolean connectors.
+//
+// Falls back to NullableBoolean if either operand is missing /
+// non-boolean / nullable.
+func (v *AndOrValue) Type() Type {
+	if v.Left == nil || v.Right == nil {
+		return NullableBoolean
+	}
+	lt := v.Left.Type()
+	rt := v.Right.Type()
+	if lt == nil || rt == nil {
+		return NullableBoolean
+	}
+	if lt.Code() == TypeCodeBoolean && rt.Code() == TypeCodeBoolean &&
+		!lt.IsNullable() && !rt.IsNullable() {
+		return NotNullBoolean
+	}
+	return NullableBoolean
+}
 
 // Evaluate computes the Kleene 3VL result with short-circuit.
 func (v *AndOrValue) Evaluate(evalCtx any) any {
