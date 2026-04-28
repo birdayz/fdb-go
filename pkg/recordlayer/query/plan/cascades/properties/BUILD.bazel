@@ -6,10 +6,14 @@ go_library(
         "cardinality.go",
         "cost.go",
         "extract.go",
+        "ordering.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/recordlayer/query/plan/cascades/expressions"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
 )
 
 go_test(
@@ -19,6 +23,7 @@ go_test(
         "cost_test.go",
         "extract_fuzz_test.go",
         "extract_test.go",
+        "ordering_test.go",
     ],
     embed = [":properties"],
     deps = [
