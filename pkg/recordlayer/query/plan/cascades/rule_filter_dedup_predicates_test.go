@@ -48,6 +48,53 @@ func TestFilterDedupPredicatesRule_AllUnique_NoFire(t *testing.T) {
 	}
 }
 
+func TestFilterDedupPredicatesRule_CooperatesWithFilterMerge(t *testing.T) {
+	t.Parallel()
+	// Filter([P], Filter([P, Q], X)) — two filters share predicate P.
+	// FilterMergeRule yields Filter([P, P, Q], X), then
+	// FilterDedupPredicatesRule yields Filter([P, Q], X). Pin the
+	// two-rule chain through FixpointApply.
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	pF := predicates.NewConstantPredicate(predicates.TriFalse)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	innerF := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pT, pF}, scanQ,
+	)
+	innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+	outerF := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pT}, innerFQ,
+	)
+	ref := expressions.InitialOf(outerF)
+	rules := []ExpressionRule{
+		NewFilterMergeRule(),
+		NewFilterDedupPredicatesRule(),
+	}
+	progress, converged := FixpointApply(rules, ref, 50)
+	if !converged {
+		t.Fatalf("FixpointApply did not converge — progress=%d", progress)
+	}
+	// Look for a Filter([P, F], Scan) member — the deduped form.
+	foundDeduped := false
+	for _, m := range ref.Members() {
+		f, ok := m.(*expressions.LogicalFilterExpression)
+		if !ok {
+			continue
+		}
+		ps := f.GetPredicates()
+		if len(ps) != 2 {
+			continue
+		}
+		if _, scanOK := f.GetInner().GetRangesOver().Get().(*expressions.FullUnorderedScanExpression); scanOK {
+			foundDeduped = true
+			break
+		}
+	}
+	if !foundDeduped {
+		t.Fatalf("FilterMerge + FilterDedupPredicates didn't reach Filter([P, F], Scan); members=%d", len(ref.Members()))
+	}
+}
+
 func TestFilterDedupPredicatesRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
