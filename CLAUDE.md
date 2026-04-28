@@ -142,6 +142,16 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #   {insert,update,delete}.go (DML),
                                     #   full_unordered_scan.go (leaf),
                                     #   walk.go, with_predicates.go (helpers)
+    properties/                     # Cost model + plan extraction (B4 seed)
+                                    #   cost.go (Cost{Cardinality, CPU},
+                                    #     EstimateCost over the 11 seed
+                                    #     RelationalExpression types,
+                                    #     BestRefCost with Reference-keyed
+                                    #     memoisation, CostLess comparator),
+                                    #   extract.go (ExtractBestPlan recursive
+                                    #     plan extractor — singleton-Reference
+                                    #     fresh tree, switch-on-type for the
+                                    #     12 constructor arms)
     rule_*.go                       # 31 logical-rewrite rules (FilterMerge,
                                     #   FilterDropTrue, FilterDedupPredicates,
                                     #   PushFilterThroughDistinct,
@@ -315,8 +325,10 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzGetCorrelatedToOfValue` | Cascades B1 value-side correlation walker — nil-safety / empty-on-constant-leaves / soundness across random Constant/QOV/Arithmetic/NotValue trees | Clean (16M execs/10s, dayshift-58) |
 | `FuzzConvert` | plangen.Convert no-panic invariant — random LogicalOperator trees (Scan / Filter / FilterWithPred / Union / Project / Sort / Delete / Insert / Update / Limit) up to depth 4 through the converter | Clean (88M execs/60s, dayshift-58) |
 | `FuzzConvertAndOptimise` | C1 → B5 pipeline — Convert + FixpointApply termination + initial-member preservation across random LogicalOperator trees | Clean (96M execs/120s with 25-rule default set + sub-Reference descent, dayshift-58) |
+| `FuzzCostMonotonicity` | Cascades B4 cost model — best-cost is non-increasing across fixpoint iterations + finite + non-negative across random expression trees + random rule subsets | Clean (8.8M execs/20s, swingshift-59) |
+| `FuzzExtractBestPlan_SingletonInvariant` | Cascades B4 plan extraction — ExtractBestPlan termination + non-panic + every reachable Reference in extracted tree has exactly 1 member | Clean (12.6M execs/15s, swingshift-59) |
 
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` / `FuzzCompareValues` / `FuzzCastValue` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`, `FuzzSimplifyValue_ArithmeticTree` / `FuzzSimplifyValue_CastChain` are in `pkg/recordlayer/query/plan/cascades/values/values_fuzz_test.go`, `FuzzMaximumType_Properties` is in `pkg/recordlayer/query/plan/cascades/values/type_test.go`, `FuzzSimplify_PredicateTree` is in `pkg/recordlayer/query/plan/cascades/predicate_simplify_fuzz_test.go`, `FuzzSemanticEquals_Properties` / `FuzzAliasMap_BijectionInvariant` are in `pkg/recordlayer/query/plan/cascades/expressions/fuzz_test.go`, `FuzzConvert` is in `pkg/relational/core/query/plangen/plangen_test.go`, `FuzzConvertAndOptimise` is in `pkg/relational/core/query/plangen/optimize_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` / `FuzzCompareValues` / `FuzzCastValue` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`, `FuzzSimplifyValue_ArithmeticTree` / `FuzzSimplifyValue_CastChain` are in `pkg/recordlayer/query/plan/cascades/values/values_fuzz_test.go`, `FuzzMaximumType_Properties` is in `pkg/recordlayer/query/plan/cascades/values/type_test.go`, `FuzzSimplify_PredicateTree` is in `pkg/recordlayer/query/plan/cascades/predicate_simplify_fuzz_test.go`, `FuzzSemanticEquals_Properties` / `FuzzAliasMap_BijectionInvariant` are in `pkg/recordlayer/query/plan/cascades/expressions/fuzz_test.go`, `FuzzConvert` is in `pkg/relational/core/query/plangen/plangen_test.go`, `FuzzConvertAndOptimise` is in `pkg/relational/core/query/plangen/optimize_test.go`, `FuzzCostMonotonicity` is in `pkg/recordlayer/query/plan/cascades/cost_fuzz_test.go`, `FuzzExtractBestPlan_SingletonInvariant` is in `pkg/recordlayer/query/plan/cascades/properties/extract_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
