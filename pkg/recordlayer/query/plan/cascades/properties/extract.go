@@ -8,8 +8,8 @@ import (
 
 // ExtractBestPlan walks the Reference DAG rooted at `ref` and returns
 // a fresh RelationalExpression tree where every reachable Reference
-// is a singleton holding the cost-cheapest member chosen by
-// CostLess. Children are extracted recursively.
+// is a singleton holding the cost-cheapest member chosen under
+// DefaultStatistics. Children are extracted recursively.
 //
 // Use case: callers that have just run FixpointApply on a Reference
 // and want to materialise a single best plan for execution / display
@@ -32,22 +32,38 @@ import (
 // Returns an error if any reachable expression is of a type
 // unknown to this extractor — surfacing the missing arm rather
 // than silently dropping or panicking.
+//
+// See ExtractBestPlanWith for the stats-bound variant.
 func ExtractBestPlan(ref *expressions.Reference) (expressions.RelationalExpression, error) {
+	return ExtractBestPlanWith(ref, DefaultStatistics{})
+}
+
+// ExtractBestPlanWith is ExtractBestPlan driven by a specific
+// StatisticsProvider. Stats flow into per-Reference best-member
+// selection so different table cardinalities can flip which
+// alternative wins.
+//
+// Pass nil for stats to use DefaultStatistics (equivalent to
+// ExtractBestPlan).
+func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (expressions.RelationalExpression, error) {
 	if ref == nil || len(ref.Members()) == 0 {
 		return nil, nil
 	}
-	best := ref.GetBest(CostLess)
+	if stats == nil {
+		stats = DefaultStatistics{}
+	}
+	best := ref.GetBest(CostLessWith(stats))
 	if best == nil {
 		return nil, nil
 	}
-	return rebuildExpression(best)
+	return rebuildExpression(best, stats)
 }
 
 // rebuildExpression returns a fresh RelationalExpression of the same
 // concrete type as `e`, with each Quantifier's Reference replaced by
 // a singleton Reference holding the recursively-extracted best plan
-// of the original Reference.
-func rebuildExpression(e expressions.RelationalExpression) (expressions.RelationalExpression, error) {
+// of the original Reference under `stats`.
+func rebuildExpression(e expressions.RelationalExpression, stats StatisticsProvider) (expressions.RelationalExpression, error) {
 	if e == nil {
 		return nil, nil
 	}
@@ -55,7 +71,7 @@ func rebuildExpression(e expressions.RelationalExpression) (expressions.Relation
 	// Quantifiers for the new expression's children.
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
 	for _, q := range e.GetQuantifiers() {
-		inner, err := ExtractBestPlan(q.GetRangesOver())
+		inner, err := ExtractBestPlanWith(q.GetRangesOver(), stats)
 		if err != nil {
 			return nil, err
 		}

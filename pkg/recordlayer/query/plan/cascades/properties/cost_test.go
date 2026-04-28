@@ -361,6 +361,115 @@ func TestReferenceGetBest_SingleMember(t *testing.T) {
 // edit. Keeping the import is cheaper than re-deriving constructors.
 var _ = values.UnknownType
 
+// TestEstimateCostWith_FixedStatistics pins that a non-default
+// StatisticsProvider drives leaf-scan cardinality. With a 1000-row
+// FixedStatistics, a single Filter over a scan emits 500 rows
+// (FilterSelectivity * 1000), not LeafScanCardinality * 0.5.
+func TestEstimateCostWith_FixedStatistics(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	stats := FixedStatistics{Cardinality: 1000}
+	c := EstimateCostWith(filter, stats)
+	want := 1000.0 * FilterSelectivity
+	if c.Cardinality != want {
+		t.Fatalf("filter cardinality=%v, want %v", c.Cardinality, want)
+	}
+}
+
+// TestEstimateCostWith_MapStatisticsPerTypeFlipsCheapest demonstrates
+// the high-leverage stats use case: when a Reference holds two
+// scan-shaped alternatives (Filter(scan(big_table)) vs Filter(scan(
+// small_table))), the cheapest extracted plan should depend on which
+// table is actually smaller — driven by stats.
+func TestEstimateCostWith_MapStatisticsPerTypeFlipsCheapest(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	bigScan := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("BigTable"),
+	)
+	smallScan := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("SmallTable"),
+	)
+
+	statsBigSmaller := MapStatistics{
+		PerType: map[string]float64{
+			"BigTable":   100,
+			"SmallTable": 10000,
+		},
+	}
+	if !EstimateCostWith(bigScan, statsBigSmaller).Less(EstimateCostWith(smallScan, statsBigSmaller)) {
+		t.Fatal("with BigTable=100 SmallTable=10000, BigTable filter should win")
+	}
+
+	statsSmallSmaller := MapStatistics{
+		PerType: map[string]float64{
+			"BigTable":   10000,
+			"SmallTable": 100,
+		},
+	}
+	if !EstimateCostWith(smallScan, statsSmallSmaller).Less(EstimateCostWith(bigScan, statsSmallSmaller)) {
+		t.Fatal("with BigTable=10000 SmallTable=100, SmallTable filter should win")
+	}
+}
+
+// TestCostLessWith_BindsStats ensures CostLessWith captures the
+// stats provider in its closure — the returned comparator routes
+// scan cost through the bound stats.
+func TestCostLessWith_BindsStats(t *testing.T) {
+	t.Parallel()
+	scanT := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scanU := expressions.NewFullUnorderedScanExpression([]string{"U"}, nil)
+	stats := MapStatistics{
+		PerType: map[string]float64{"T": 10, "U": 1000000},
+	}
+	less := CostLessWith(stats)
+	if !less(scanT, scanU) {
+		t.Fatal("CostLessWith(stats): T(10) should beat U(1M)")
+	}
+	if less(scanU, scanT) {
+		t.Fatal("CostLessWith(stats): U(1M) should not beat T(10)")
+	}
+}
+
+// TestStatistics_FallbackToLeafScan covers the unknown-name case in
+// MapStatistics: PerType lookup misses → Fallback. Empty Fallback →
+// LeafScanCardinality.
+func TestStatistics_FallbackToLeafScan(t *testing.T) {
+	t.Parallel()
+	s := MapStatistics{PerType: map[string]float64{"T": 10}}
+	if got := s.RecordTypeCardinality("Unknown"); got != LeafScanCardinality {
+		t.Fatalf("Unknown name fell through to %v, want LeafScanCardinality (%v)", got, LeafScanCardinality)
+	}
+	s2 := MapStatistics{
+		PerType:  map[string]float64{"T": 10},
+		Fallback: 50000,
+	}
+	if got := s2.RecordTypeCardinality("Unknown"); got != 50000 {
+		t.Fatalf("Unknown name + Fallback=50000 returned %v", got)
+	}
+}
+
+// TestEstimateCost_ScanOverMultipleRecordTypesSums pins the Union-
+// across-record-types semantics of FullUnorderedScan: scan over
+// {A, B} emits stats(A) + stats(B) rows.
+func TestEstimateCost_ScanOverMultipleRecordTypesSums(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"A", "B"}, nil)
+	stats := MapStatistics{
+		PerType: map[string]float64{"A": 100, "B": 200},
+	}
+	c := EstimateCostWith(scan, stats)
+	if c.Cardinality != 300 {
+		t.Fatalf("scan(A,B) with A=100 B=200 cardinality=%v, want 300", c.Cardinality)
+	}
+}
+
 // TestBestRefCost_MemoisationConsistency pins that BestRefCost
 // returns the same answer as the un-memoised path. Builds a wide
 // Reference (10 distinct members all sharing the same inner scan

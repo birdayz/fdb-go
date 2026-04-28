@@ -118,9 +118,75 @@ func (c Cost) Less(other Cost) bool {
 	return c.Cardinality < other.Cardinality
 }
 
+// StatisticsProvider is the planner's hook for table-level cardinality
+// statistics. Returns the estimated row count for a given record type
+// name. Implementations:
+//
+//   - DefaultStatistics — every record type returns LeafScanCardinality.
+//     Used when no real stats are available.
+//   - Catalog-backed (future) — reads `COUNT` index counters from the
+//     RecordMetaData for the queried record store.
+//   - Test stubs — return programmable per-name values to drive
+//     calibration tests.
+//
+// Implementations must be safe for concurrent calls (the planner may
+// query the same provider from multiple goroutines).
+type StatisticsProvider interface {
+	// RecordTypeCardinality returns the estimated row count for
+	// `recordTypeName`. Returns LeafScanCardinality if the record
+	// type is unknown — implementations should NOT return zero or
+	// negative values.
+	RecordTypeCardinality(recordTypeName string) float64
+}
+
+// DefaultStatistics returns LeafScanCardinality for every record type.
+// Use this as a baseline when no real statistics are available.
+type DefaultStatistics struct{}
+
+// RecordTypeCardinality always returns LeafScanCardinality.
+func (DefaultStatistics) RecordTypeCardinality(_ string) float64 {
+	return LeafScanCardinality
+}
+
+// FixedStatistics returns a fixed cardinality for every record type.
+// Useful in tests that want a non-default scan cost.
+type FixedStatistics struct {
+	Cardinality float64
+}
+
+// RecordTypeCardinality returns the configured fixed value.
+func (s FixedStatistics) RecordTypeCardinality(_ string) float64 {
+	return s.Cardinality
+}
+
+// MapStatistics returns per-record-type cardinalities from a map,
+// falling back to a default for unknown names.
+type MapStatistics struct {
+	// PerType maps record-type name → estimated cardinality.
+	PerType map[string]float64
+	// Fallback returned for names not present in PerType. Defaults
+	// to LeafScanCardinality if zero.
+	Fallback float64
+}
+
+// RecordTypeCardinality returns PerType[name] if present, otherwise
+// Fallback (or LeafScanCardinality if Fallback is 0).
+func (s MapStatistics) RecordTypeCardinality(name string) float64 {
+	if c, ok := s.PerType[name]; ok {
+		return c
+	}
+	if s.Fallback > 0 {
+		return s.Fallback
+	}
+	return LeafScanCardinality
+}
+
 // EstimateCost walks the expression tree rooted at e and returns the
-// aggregated Cost estimate. Sub-Reference recursion picks the first
-// member's cost (see package doc for rationale).
+// aggregated Cost estimate using DefaultStatistics. Equivalent to
+// EstimateCostWith(e, DefaultStatistics{}).
+//
+// Sub-Reference recursion picks the first member's cost (see package
+// doc for rationale).
 //
 // Returns the zero Cost on nil input.
 //
@@ -129,7 +195,20 @@ func (c Cost) Less(other Cost) bool {
 // operator's own emit count (NOT a sum of children unless the operator
 // produces a union of child rows).
 func EstimateCost(e expressions.RelationalExpression) Cost {
-	return estimateCostMemoised(e, nil)
+	return EstimateCostWith(e, DefaultStatistics{})
+}
+
+// EstimateCostWith is EstimateCost driven by the provided
+// StatisticsProvider. Scan operators query the provider for
+// per-record-type cardinality; all other operators use the default
+// per-operator constants.
+//
+// Pass nil to use DefaultStatistics.
+func EstimateCostWith(e expressions.RelationalExpression, stats StatisticsProvider) Cost {
+	if stats == nil {
+		stats = DefaultStatistics{}
+	}
+	return estimateCostMemoised(e, nil, stats)
 }
 
 // estimateCostMemoised is the workhorse: with `memo == nil` it
@@ -137,16 +216,22 @@ func EstimateCost(e expressions.RelationalExpression) Cost {
 // memo it caches Reference-keyed costs to avoid re-walking shared
 // sub-trees. BestRefCost passes a memo so multiple members sharing
 // inner Reference children pay the recursion once.
-func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressions.Reference]Cost) Cost {
+//
+// `stats` drives leaf-scan cardinality lookup; nil falls back to
+// DefaultStatistics.
+func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressions.Reference]Cost, stats StatisticsProvider) Cost {
 	if e == nil {
 		return Cost{}
+	}
+	if stats == nil {
+		stats = DefaultStatistics{}
 	}
 	qs := e.GetQuantifiers()
 	childCosts := make([]Cost, len(qs))
 	for i, q := range qs {
-		childCosts[i] = firstMemberCostMemoised(q.GetRangesOver(), memo)
+		childCosts[i] = firstMemberCostMemoised(q.GetRangesOver(), memo, stats)
 	}
-	return localCost(e, childCosts)
+	return localCost(e, childCosts, stats)
 }
 
 // firstMemberCost returns the cost of the first member of `ref`.
@@ -156,10 +241,10 @@ func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressi
 //
 // Exposed for use by callers that need the unmemoised path.
 func firstMemberCost(ref *expressions.Reference) Cost {
-	return firstMemberCostMemoised(ref, nil)
+	return firstMemberCostMemoised(ref, nil, DefaultStatistics{})
 }
 
-func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.Reference]Cost) Cost {
+func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.Reference]Cost, stats StatisticsProvider) Cost {
 	if ref == nil {
 		return Cost{Cardinality: LeafScanCardinality}
 	}
@@ -176,24 +261,31 @@ func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.R
 		}
 		return c
 	}
-	c := estimateCostMemoised(members[0], memo)
+	c := estimateCostMemoised(members[0], memo, stats)
 	if memo != nil {
 		memo[ref] = c
 	}
 	return c
 }
 
-// BestRefCost returns the cheapest member's cost in `ref`. Used by
-// Reference.GetBest extraction. Equivalent to walking every member
-// and picking the minimum by Cost.Less.
+// BestRefCost returns the cheapest member's cost in `ref` using
+// DefaultStatistics. See BestRefCostWith for the stats-bound variant.
+//
+// Returns the zero Cost if `ref` is nil or empty.
+func BestRefCost(ref *expressions.Reference) Cost {
+	return BestRefCostWith(ref, DefaultStatistics{})
+}
+
+// BestRefCostWith returns the cheapest member's cost in `ref` under
+// the given StatisticsProvider. Used by Reference.GetBest extraction.
 //
 // Memoisation: builds a per-call `map[*Reference]Cost` so child
 // References shared across multiple members are walked only once.
 // For a Reference with N members each over a shared K-deep tree,
 // memoised cost is O(N+K) vs the un-memoised O(N*K).
 //
-// Returns the zero Cost if `ref` is nil or empty.
-func BestRefCost(ref *expressions.Reference) Cost {
+// Pass nil for stats to use DefaultStatistics.
+func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost {
 	if ref == nil {
 		return Cost{}
 	}
@@ -201,10 +293,13 @@ func BestRefCost(ref *expressions.Reference) Cost {
 	if len(members) == 0 {
 		return Cost{}
 	}
+	if stats == nil {
+		stats = DefaultStatistics{}
+	}
 	memo := make(map[*expressions.Reference]Cost)
-	best := estimateCostMemoised(members[0], memo)
+	best := estimateCostMemoised(members[0], memo, stats)
 	for _, m := range members[1:] {
-		c := estimateCostMemoised(m, memo)
+		c := estimateCostMemoised(m, memo, stats)
 		if c.Less(best) {
 			best = c
 		}
@@ -218,7 +313,13 @@ func BestRefCost(ref *expressions.Reference) Cost {
 // together. Adding a new RelationalExpression concrete type requires
 // adding a switch arm here; the default branch falls back to a
 // pessimistic estimate so unknown operators don't crash the planner.
-func localCost(e expressions.RelationalExpression, child []Cost) Cost {
+//
+// `stats` drives the leaf-scan cardinality. For unioned record types
+// the cardinality is summed (Union semantics); single-type scans
+// query directly. Empty record-type list (a "scan everything") falls
+// back to LeafScanCardinality — caller's responsibility to attach
+// metadata for that case.
+func localCost(e expressions.RelationalExpression, child []Cost, stats StatisticsProvider) Cost {
 	sumCPU := 0.0
 	for _, c := range child {
 		sumCPU += c.CPU
@@ -227,8 +328,17 @@ func localCost(e expressions.RelationalExpression, child []Cost) Cost {
 	switch ex := e.(type) {
 
 	case *expressions.FullUnorderedScanExpression:
-		_ = ex
-		return Cost{Cardinality: LeafScanCardinality, CPU: 0}
+		// A scan over multiple record types emits the SUM of their
+		// per-type cardinalities. Empty list → LeafScanCardinality.
+		types := ex.GetRecordTypes()
+		if len(types) == 0 {
+			return Cost{Cardinality: LeafScanCardinality, CPU: 0}
+		}
+		total := 0.0
+		for _, name := range types {
+			total += stats.RecordTypeCardinality(name)
+		}
+		return Cost{Cardinality: total, CPU: 0}
 
 	case *expressions.LogicalFilterExpression:
 		if len(child) == 0 {
@@ -357,11 +467,28 @@ func localCost(e expressions.RelationalExpression, child []Cost) Cost {
 }
 
 // CostLess returns a comparator function `less(a, b RelationalExpression) bool`
-// driven by EstimateCost. Suitable as the Reference.GetBest argument.
+// driven by EstimateCost with DefaultStatistics. Suitable as the
+// Reference.GetBest argument.
 //
 // Stable across calls (no internal state). The closure captures
 // nothing — exposed as a function so future callers can swap in a
 // different cost model without changing the GetBest signature.
 func CostLess(a, b expressions.RelationalExpression) bool {
 	return EstimateCost(a).Less(EstimateCost(b))
+}
+
+// CostLessWith returns a comparator function bound to the given
+// StatisticsProvider. Use this when extracting plans against a
+// known table-stats environment — Reference.GetBest receives a
+// pure function, so the stats are baked into the closure.
+//
+// Pass nil for stats to use DefaultStatistics (equivalent to
+// CostLess).
+func CostLessWith(stats StatisticsProvider) func(a, b expressions.RelationalExpression) bool {
+	if stats == nil {
+		stats = DefaultStatistics{}
+	}
+	return func(a, b expressions.RelationalExpression) bool {
+		return EstimateCostWith(a, stats).Less(EstimateCostWith(b, stats))
+	}
 }
