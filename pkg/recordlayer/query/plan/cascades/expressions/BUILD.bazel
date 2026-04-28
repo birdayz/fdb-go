@@ -53,6 +53,7 @@ go_test(
         "reference_test.go",
         "select_test.go",
         "walk_test.go",
+        "with_predicates_test.go",
     ],
     embed = [":expressions"],
     deps = [
