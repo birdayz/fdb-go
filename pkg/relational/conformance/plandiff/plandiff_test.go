@@ -343,6 +343,83 @@ func TestJavaEngine_JavaError(t *testing.T) {
 	}
 }
 
+// TestJavaError_SQLStateExtraction pins that the JavaError struct
+// carries the SQLSTATE field through from the conformance server's
+// structured error response. Wired nightshift-57 so the cross-engine
+// yamsql harness's `assertCrossEngineErrorCode` can match SQLSTATEs
+// without parsing the message text.
+func TestJavaError_SQLStateExtraction(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":            false,
+			"error":              "Type mismatch in IN list",
+			"exceptionClass":     "RelationalException",
+			"exceptionFullClass": "com.apple.foundationdb.relational.api.exceptions.RelationalException",
+			"sqlState":           "42804",
+		})
+	}))
+	defer srv.Close()
+
+	eng := NewJavaEngineHTTP(srv.URL, "")
+	got := eng.Plan(context.Background(), Query{Name: "x", SQL: "SELECT id FROM t WHERE v IN (1, 'a')"})
+	if got.Err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	var je *JavaError
+	if !errors.As(got.Err, &je) {
+		t.Fatalf("expected *JavaError, got %T: %v", got.Err, got.Err)
+	}
+	if je.SQLState != "42804" {
+		t.Fatalf("SQLState: got %q, want %q", je.SQLState, "42804")
+	}
+	if je.ExceptionClass != "RelationalException" {
+		t.Fatalf("ExceptionClass: got %q", je.ExceptionClass)
+	}
+	if je.Message != "Type mismatch in IN list" {
+		t.Fatalf("Message: got %q", je.Message)
+	}
+}
+
+// TestJavaError_NoSQLState pins that JavaError handles the case where
+// Java's exception didn't expose a SQLSTATE — bare RuntimeException
+// (NullPointerException, ArithmeticException) without
+// RelationalException wrapping. SQLState is left empty; the Error()
+// format still includes the exception class.
+func TestJavaError_NoSQLState(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success":            false,
+			"error":              "/ by zero",
+			"exceptionClass":     "ArithmeticException",
+			"exceptionFullClass": "java.lang.ArithmeticException",
+			// no sqlState field — Java's bare RuntimeException
+		})
+	}))
+	defer srv.Close()
+
+	eng := NewJavaEngineHTTP(srv.URL, "")
+	got := eng.Plan(context.Background(), Query{Name: "x", SQL: "SELECT 1/0"})
+	if got.Err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	var je *JavaError
+	if !errors.As(got.Err, &je) {
+		t.Fatalf("expected *JavaError, got %T: %v", got.Err, got.Err)
+	}
+	if je.SQLState != "" {
+		t.Fatalf("SQLState should be empty for bare RuntimeException, got %q", je.SQLState)
+	}
+	if je.ExceptionClass != "ArithmeticException" {
+		t.Fatalf("ExceptionClass: got %q", je.ExceptionClass)
+	}
+}
+
 // TestJavaEngine_HTTPNon200 pins that a non-200 response from the
 // server (e.g. step not registered, JSON parse error on Java side)
 // surfaces as a plandiff: HTTP <code> error.
