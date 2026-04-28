@@ -76,6 +76,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		// entry that crashes the next walk.
 		panic("Reference.Insert: nil expression")
 	}
+	eHash := e.HashCodeWithoutChildren()
 	for _, m := range r.members {
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
@@ -91,8 +92,11 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 		// PushFilterThroughDistinctRule would non-terminate (each fire
 		// adds a fresh-Reference duplicate). SemanticEquals is O(tree
 		// size) but only walks when the pointer-identity fast path
-		// misses.
-		if SemanticEquals(m, e, EmptyAliasMap()) {
+		// misses AND the local hash matches — non-matching hashes prove
+		// inequality without the deep walk (HashCodeWithoutChildren
+		// must agree when SemanticEquals returns true at the top
+		// level, by HashConsistency invariant pinned in fuzz).
+		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
 			return false
 		}
 	}
