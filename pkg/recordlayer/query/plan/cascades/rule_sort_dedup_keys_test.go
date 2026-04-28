@@ -109,6 +109,29 @@ func TestSortDedupKeysRule_CooperatesWithConstantKeysElim(t *testing.T) {
 	}
 }
 
+func TestSortDedupKeysRule_DedupsConstantKeys(t *testing.T) {
+	t.Parallel()
+	// Sort([42, 42, 'x']) — duplicate ConstantValue(42) keys.
+	// SortDedupKeys should catch them via Explain-text equality.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	keys := []expressions.SortKey{
+		{Value: &values.ConstantValue{Value: int64(42), Typ: values.TypeUnknown}},
+		{Value: &values.ConstantValue{Value: int64(42), Typ: values.TypeUnknown}},
+		{Value: &values.ConstantValue{Value: "x", Typ: values.TypeUnknown}},
+	}
+	src := expressions.NewLogicalSortExpression(keys, q)
+	ref := expressions.InitialOf(src)
+	yielded := FireExpressionRule(NewSortDedupKeysRule(), ref)
+	if len(yielded) != 1 {
+		t.Fatalf("yielded %d, want 1", len(yielded))
+	}
+	flat := yielded[0].(*expressions.LogicalSortExpression)
+	if len(flat.GetSortKeys()) != 2 {
+		t.Fatalf("deduped keys len=%d, want 2", len(flat.GetSortKeys()))
+	}
+}
+
 func TestSortDedupKeysRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
