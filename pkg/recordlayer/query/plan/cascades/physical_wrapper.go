@@ -794,3 +794,102 @@ func (w *physicalUnionWrapper) HintCost(child []properties.Cost) properties.Cost
 }
 
 var _ expressions.RelationalExpression = (*physicalUnionWrapper)(nil)
+
+// physicalIntersectionWrapper adapts `*plans.RecordQueryIntersectionPlan`
+// to the RelationalExpression interface. Same N-child shape as the
+// Union wrapper; cost differs (Intersection bounded by min child
+// cardinality, while Union sums).
+type physicalIntersectionWrapper struct {
+	plan        *plans.RecordQueryIntersectionPlan
+	innerQuants []expressions.Quantifier
+}
+
+// NewPhysicalIntersectionWrapper constructs the wrapper.
+func NewPhysicalIntersectionWrapper(plan *plans.RecordQueryIntersectionPlan, innerQuants []expressions.Quantifier) *physicalIntersectionWrapper {
+	copied := make([]expressions.Quantifier, len(innerQuants))
+	copy(copied, innerQuants)
+	return &physicalIntersectionWrapper{plan: plan, innerQuants: copied}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalIntersectionWrapper) GetPlan() *plans.RecordQueryIntersectionPlan {
+	return w.plan
+}
+
+// GetResultValue returns the first inner's flowed object value —
+// intersection emits rows compatible with all children.
+func (w *physicalIntersectionWrapper) GetResultValue() values.Value {
+	if len(w.innerQuants) == 0 {
+		return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	}
+	return w.innerQuants[0].GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifiers (children).
+func (w *physicalIntersectionWrapper) GetQuantifiers() []expressions.Quantifier {
+	return w.innerQuants
+}
+
+// CanCorrelate is false.
+func (w *physicalIntersectionWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is true — INTERSECTION children are bag-equivalent.
+func (w *physicalIntersectionWrapper) ChildrenAsSet() bool { return true }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalIntersectionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares the wrapped plan.
+func (w *physicalIntersectionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalIntersectionWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalIntersectionWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physintersectionwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper with the new quantifiers.
+func (w *physicalIntersectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	copied := make([]expressions.Quantifier, len(qs))
+	copy(copied, qs)
+	return &physicalIntersectionWrapper{plan: w.plan, innerQuants: copied}, nil
+}
+
+// HintCost: Intersection cardinality is bounded by the SMALLEST
+// child (the intersection can't be larger than its smallest
+// participant). CPU sums children + per-output-row merge work
+// (more expensive than Union — comparison-key-driven matching).
+// Mirrors LogicalIntersection.
+func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	minCard := child[0].Cardinality
+	sumCard := 0.0
+	sumCPU := 0.0
+	for _, c := range child {
+		if c.Cardinality < minCard {
+			minCard = c.Cardinality
+		}
+		sumCard += c.Cardinality
+		sumCPU += c.CPU
+	}
+	return properties.Cost{
+		Cardinality: minCard * physicalWrapperCostMultiplier,
+		CPU:         (sumCPU + sumCard*properties.IntersectionCPU) * physicalWrapperCostMultiplier,
+	}
+}
+
+var _ expressions.RelationalExpression = (*physicalIntersectionWrapper)(nil)

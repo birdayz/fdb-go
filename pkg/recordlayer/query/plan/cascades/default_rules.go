@@ -87,12 +87,13 @@ func DefaultExpressionRules() []ExpressionRule {
 //
 // Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
 //
-// Currently 6 read-side implement rules ported (PrimaryScanRule,
+// Currently 7 read-side implement rules ported (PrimaryScanRule,
 // ImplementFilterRule, ImplementSortRule, ImplementDistinctRule,
-// ImplementTypeFilterRule, ImplementUnionRule). Remaining: covering-
-// index + MergeFetchIntoCoveringIndexRule + index-equality / range
-// rules — all gated on MatchCandidate / IndexAccessHint
-// infrastructure (per RFC-022).
+// ImplementTypeFilterRule, ImplementUnionRule,
+// ImplementIntersectionRule). Remaining: covering-index +
+// MergeFetchIntoCoveringIndexRule + index-equality / range rules —
+// all gated on MatchCandidate / IndexAccessHint infrastructure
+// (per RFC-022).
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
@@ -101,6 +102,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
+		NewImplementIntersectionRule(),
 	}
 }
 
