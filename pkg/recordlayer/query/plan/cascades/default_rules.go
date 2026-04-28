@@ -33,6 +33,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewTypeFilterRedundantOverScanRule(),
 		NewPushTypeFilterBelowFilterRule(),
 		NewUnionMergeRule(),
+		NewPullCommonFilterAboveUnionRule(),
 		NewIntersectionMergeRule(),
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
