@@ -134,18 +134,25 @@ pkg/recordlayer/                    # Main Record Layer implementation
     matching/                       # BindingMatcher DSL + matchers
     expressions/                    # RelationalExpression hierarchy (B1)
                                     #   alias_map, quantifier, reference,
-                                    #   logical_*.go (8 logical operators),
+                                    #   logical_*.go (Filter / Projection /
+                                    #     Sort / TypeFilter / Distinct /
+                                    #     Union / Intersection),
+                                    #   select.go (FROM-list + WHERE; the only
+                                    #     CanCorrelate=true expression),
                                     #   {insert,update,delete}.go (DML),
-                                    #   full_unordered_scan.go (leaf)
-    rule_*.go                       # Logical-rewrite rules (FilterMerge,
-                                    #   DistinctMerge, TypeFilterMerge,
-                                    #   UnionMerge, IntersectionMerge,
-                                    #   NoOpFilter, ProjectionElim,
-                                    #   UnsortedSortElim)
+                                    #   full_unordered_scan.go (leaf),
+                                    #   walk.go, with_predicates.go (helpers)
+    rule_*.go                       # 11 logical-rewrite rules (FilterMerge,
+                                    #   FilterDropTrue, DistinctMerge,
+                                    #   TypeFilterMerge, UnionMerge,
+                                    #   IntersectionMerge, NoOpFilter,
+                                    #   ProjectionElim, UnsortedSortElim,
+                                    #   UnionSingletonElim, IntersectionSingletonElim)
     expression_matcher.go           # ExpressionMatcher[T] generic matcher
     expression_rule_call.go         # ExpressionRuleCall (rule context)
     fixpoint.go                     # FixpointApply — multi-rule driver (seed)
     default_rules.go                # DefaultExpressionRules() curated list
+    rule_registry.go                # name → ExpressionRule lookup
     plan_context.go                 # PlanContext + PlannerConfiguration
 pkg/relational/core/embedded/       # SQL engine (driver.Conn impl + executors)
   connection.go                     # EmbeddedConnection struct + driver-layer methods
