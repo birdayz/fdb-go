@@ -131,3 +131,31 @@ func BenchmarkPatternForLikeValue_NoEscape(b *testing.B) {
 		_ = v.Evaluate(nil)
 	}
 }
+
+func BenchmarkDistanceValue_Euclidean_64Dim(b *testing.B) {
+	a := make([]float64, 64)
+	c := make([]float64, 64)
+	for i := range a {
+		a[i] = float64(i) * 0.1
+		c[i] = float64(64-i) * 0.1
+	}
+	v := NewDistanceValue(DistanceEuclidean, LiteralValue(a), LiteralValue(c))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = v.Evaluate(nil)
+	}
+}
+
+func BenchmarkDistanceValue_Cosine_64Dim(b *testing.B) {
+	a := make([]float64, 64)
+	c := make([]float64, 64)
+	for i := range a {
+		a[i] = float64(i) * 0.1
+		c[i] = float64(64-i) * 0.1
+	}
+	v := NewDistanceValue(DistanceCosine, LiteralValue(a), LiteralValue(c))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = v.Evaluate(nil)
+	}
+}
