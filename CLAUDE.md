@@ -152,7 +152,16 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #   extract.go (ExtractBestPlan recursive
                                     #     plan extractor — singleton-Reference
                                     #     fresh tree, switch-on-type for the
-                                    #     12 constructor arms)
+                                    #     12 constructor arms),
+                                    #   cardinality.go (CardinalityProperty —
+                                    #     EstimateCardinality / BestRefCardinality
+                                    #     / CardinalityLess; thin wrapper that
+                                    #     projects out the CPU axis from Cost),
+                                    #   ordering.go (OrderingProperty —
+                                    #     EstimateOrdering / IsOrdered;
+                                    #     yes/no + ordering-keys analysis;
+                                    #     Sort known, Filter inherits, Union
+                                    #     Intersection unknown).
     planner.go                      # B6 task-stack planner (EXPLORE +
                                     #   OPTIMIZE phases). ApplyRulesTask
                                     #   fires rules; on saturation pushes
