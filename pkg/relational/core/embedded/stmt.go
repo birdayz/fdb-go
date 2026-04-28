@@ -38,7 +38,33 @@ func (s *embeddedStmt) Query(args []driver.Value) (driver.Rows, error) {
 	for i, v := range args {
 		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
 	}
-	// TODO: driver.Stmt.Query has no context parameter; use context.Background() until
-	// database/sql upgrades all call sites to QueryContext.
+	// driver.Stmt.Query has no context parameter — Go's database/sql
+	// only calls this fallback path when StmtQueryContext (below) is
+	// unimplemented, so this branch never fires in practice. Kept for
+	// the legacy driver.Stmt contract.
 	return s.conn.QueryContext(context.Background(), s.query, named)
 }
+
+// ExecContext implements driver.StmtExecContext — the context-aware
+// execution path. Go's database/sql prefers this over Exec when the
+// statement implements the interface, propagating the user's ctx
+// (cancellation + timeout) into the executor.
+func (s *embeddedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	return s.conn.ExecContext(ctx, s.query, args)
+}
+
+// QueryContext implements driver.StmtQueryContext — same rationale as
+// ExecContext.
+func (s *embeddedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	return s.conn.QueryContext(ctx, s.query, args)
+}
+
+// Compile-time assertions: embeddedStmt satisfies the modern
+// context-aware interfaces in addition to driver.Stmt. database/sql
+// type-asserts these at runtime; pinning them at compile time
+// catches accidental signature drift on the methods above.
+var (
+	_ driver.Stmt             = (*embeddedStmt)(nil)
+	_ driver.StmtExecContext  = (*embeddedStmt)(nil)
+	_ driver.StmtQueryContext = (*embeddedStmt)(nil)
+)
