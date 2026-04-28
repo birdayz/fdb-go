@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cascades",
     srcs = [
+        "expression_rule_call.go",
         "plan_context.go",
         "rule.go",
         "rule_demorgan.go",
@@ -13,6 +14,7 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
@@ -24,6 +26,7 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "comparison_simplify_test.go",
+        "expression_rule_call_test.go",
         "plan_context_test.go",
         "predicate_matchers_test.go",
         "predicate_simplify_fuzz_test.go",
@@ -35,6 +38,7 @@ go_test(
     ],
     embed = [":cascades"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
