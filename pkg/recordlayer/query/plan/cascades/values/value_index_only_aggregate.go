@@ -110,4 +110,11 @@ func (v *IndexOnlyAggregateValue) WithChildren(newChildren []Value) *IndexOnlyAg
 	return NewIndexOnlyAggregateValue(v.Op, newChildren[0])
 }
 
-var _ IndexableAggregate = (*IndexOnlyAggregateValue)(nil)
+// IsNonEvaluable returns true — IndexOnlyAggregateValue is
+// compile-time-only by definition. Implements NonEvaluable.
+func (*IndexOnlyAggregateValue) IsNonEvaluable() bool { return true }
+
+var (
+	_ IndexableAggregate = (*IndexOnlyAggregateValue)(nil)
+	_ NonEvaluable       = (*IndexOnlyAggregateValue)(nil)
+)

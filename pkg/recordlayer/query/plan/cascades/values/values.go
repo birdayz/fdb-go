@@ -1970,3 +1970,34 @@ type IndexableAggregate interface {
 }
 
 var _ IndexableAggregate = (*AggregateValue)(nil)
+
+// NonEvaluable is the Go-side counterpart to Java's
+// `Value.NonEvaluableValue` interface marker. Any Value that
+// can't be evaluated at runtime (plan-time-only placeholders like
+// AggregateValue, IndexOnlyAggregateValue) implements this marker.
+//
+// Planner / matcher code can type-assert against this to refuse to
+// pass non-evaluable Values to runtime evaluators.
+//
+// Java's NonEvaluableValue is a true marker interface (no methods);
+// the Go equivalent uses one method whose presence (and the implied
+// `true` return) IS the marker.
+type NonEvaluable interface {
+	Value
+	IsNonEvaluable() bool
+}
+
+// IsNonEvaluable is a helper that any Value can call to check
+// whether v is plan-time-only. Avoids type-assertion boilerplate
+// in callers.
+func IsNonEvaluable(v Value) bool {
+	if ne, ok := v.(NonEvaluable); ok {
+		return ne.IsNonEvaluable()
+	}
+	return false
+}
+
+// IsNonEvaluable on AggregateValue returns true — aggregates are
+// multi-row and can't be evaluated per-row by the standard
+// Evaluate path. Implements NonEvaluable.
+func (*AggregateValue) IsNonEvaluable() bool { return true }

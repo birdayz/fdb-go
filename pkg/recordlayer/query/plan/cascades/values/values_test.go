@@ -1251,3 +1251,34 @@ func TestAggregateValue_ImplementsIndexableAggregate(t *testing.T) {
 		t.Fatalf("via interface: GetIndexTypeName = %q, want SUM", iav.GetIndexTypeName())
 	}
 }
+
+func TestIsNonEvaluable_AggregateValue(t *testing.T) {
+	t.Parallel()
+	v := &AggregateValue{Op: AggSum, Operand: &ConstantValue{Value: int64(1), Typ: NotNullLong}}
+	if !IsNonEvaluable(v) {
+		t.Fatal("AggregateValue should be NonEvaluable")
+	}
+}
+
+func TestIsNonEvaluable_PlainValue(t *testing.T) {
+	t.Parallel()
+	v := &ConstantValue{Value: int64(7), Typ: NotNullLong}
+	if IsNonEvaluable(v) {
+		t.Fatal("ConstantValue should NOT be NonEvaluable")
+	}
+}
+
+func TestIsNonEvaluable_NilValue(t *testing.T) {
+	t.Parallel()
+	if IsNonEvaluable(nil) {
+		t.Fatal("nil should NOT be NonEvaluable")
+	}
+}
+
+func TestIsNonEvaluable_IndexOnlyAggregate(t *testing.T) {
+	t.Parallel()
+	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, nil)
+	if !IsNonEvaluable(v) {
+		t.Fatal("IndexOnlyAggregateValue should be NonEvaluable")
+	}
+}
