@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "predicates",
     srcs = [
+        "comparison_range.go",
         "comparisons.go",
         "predicate_correlation.go",
         "predicates.go",
@@ -16,6 +17,7 @@ go_library(
 go_test(
     name = "predicates_test",
     srcs = [
+        "comparison_range_test.go",
         "comparisons_null_table_test.go",
         "comparisons_test.go",
         "fuzz_test.go",
