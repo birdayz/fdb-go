@@ -18,6 +18,7 @@ go_library(
 go_test(
     name = "values_test",
     srcs = [
+        "coercion_test.go",
         "correlation_test.go",
         "folder_test.go",
         "scalar_functions_extra2_test.go",
