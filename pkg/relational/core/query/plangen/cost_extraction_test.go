@@ -248,6 +248,40 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_InsertFromScan_DMLPipeline exercises INSERT through
+// the DML implement chain:
+//
+//	INSERT INTO Order SELECT * FROM Source
+//	  → Convert
+//	  → Planner.Plan(Default + Batch A + DML)
+//	  → physical Insert(Scan)
+func TestEndToEnd_InsertFromScan_DMLPipeline(t *testing.T) {
+	t.Parallel()
+	src := logical.NewInsert(
+		"Order",
+		nil,
+		logical.NewScan("Source", ""),
+	)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, nil)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	t.Logf("INSERT pipeline: extracted %T (%d tasks, %d members)",
+		plan, tasks, len(ref.Members()))
+}
+
 // TestEndToEnd_DeleteWithFilter_DMLPipeline exercises the DML
 // implement chain end-to-end:
 //
