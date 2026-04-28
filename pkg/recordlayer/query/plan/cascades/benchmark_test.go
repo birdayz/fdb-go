@@ -297,3 +297,41 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 		_ = matcher.BindMatches(nil, f)
 	}
 }
+
+// BenchmarkOptimise_RealisticTree drives the full default rule set
+// (FixpointApply with all 11 logical-rewrite rules) on a ~6-node
+// query tree representative of a small SELECT:
+//
+//	Distinct
+//	  → Filter([T])
+//	    → Filter([T])
+//	      → Distinct
+//	        → Distinct
+//	          → Scan(Order)
+//
+// Pins the end-to-end cost of one optimisation pass — useful as a
+// macro-benchmark when future tuning changes rule order or adds
+// per-rule short-circuits.
+func BenchmarkOptimise_RealisticTree(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
+		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		return expressions.InitialOf(topD)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		_, _ = FixpointApply(rules, ref, 50)
+	}
+}
