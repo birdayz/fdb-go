@@ -79,3 +79,53 @@ func TestEvaluatesToValue_Children(t *testing.T) {
 		t.Fatalf("Children = %v, want [child]", cs)
 	}
 }
+
+// TestEvaluatesToValue_SimplifyConstantFold verifies that
+// SimplifyValue folds an all-constant EvaluatesToValue at plan time.
+//   - true IS TRUE → ConstantValue(true)
+//   - NULL IS NULL → ConstantValue(true)
+//   - false IS NOT NULL → ConstantValue(true)
+func TestEvaluatesToValue_SimplifyConstantFold(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		child any
+		eval  EvaluatesTo
+		want  any
+	}{
+		{true, EvaluatesToTrue, true},
+		{false, EvaluatesToTrue, false},
+		{nil, EvaluatesToTrue, false},
+		{true, EvaluatesToFalse, false},
+		{false, EvaluatesToFalse, true},
+		{nil, EvaluatesToFalse, false},
+		{true, EvaluatesToNull, false},
+		{nil, EvaluatesToNull, true},
+		{false, EvaluatesToNotNull, true},
+		{nil, EvaluatesToNotNull, false},
+	}
+	for _, c := range cases {
+		v := NewEvaluatesToValue(LiteralValue(c.child), c.eval)
+		folded := SimplifyValue(v)
+		got := folded.Evaluate(nil)
+		if got != c.want {
+			t.Errorf("EvaluatesTo(%v, %v): folded.Evaluate = %v, want %v",
+				c.child, c.eval, got, c.want)
+		}
+	}
+}
+
+func TestEvaluatesToValue_SimplifyChildFold(t *testing.T) {
+	t.Parallel()
+	// EvaluatesTo over an arithmetic expression that folds to nil
+	// (div by zero) → IS NULL becomes TRUE.
+	div := &ArithmeticValue{
+		Op:    OpDiv,
+		Left:  &ConstantValue{Value: int64(1), Typ: NotNullLong},
+		Right: &ConstantValue{Value: int64(0), Typ: NotNullLong},
+	}
+	v := NewEvaluatesToValue(div, EvaluatesToNull)
+	folded := SimplifyValue(v)
+	if got := folded.Evaluate(nil); got != true {
+		t.Fatalf("(1/0) IS NULL = %v, want true", got)
+	}
+}
