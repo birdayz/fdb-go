@@ -171,13 +171,17 @@ pkg/recordlayer/                    # Main Record Layer implementation
     rule_primary_scan.go            # B5 Batch A: FullUnorderedScan → ScanPlan
     rule_implement_filter.go        # B5 Batch A: LogicalFilter → FilterPlan
     rule_implement_sort.go          # B5 Batch A: LogicalSort → SortPlan
+    rule_implement_distinct.go      # B5 Batch A: LogicalDistinct → DistinctPlan
+    rule_implement_typefilter.go    # B5 Batch A: LogicalTypeFilter → TypeFilterPlan
 pkg/recordlayer/query/plan/plans/   # RecordQueryPlan (physical) hierarchy
                                     #   plan.go (RecordQueryPlan interface
                                     #     + Equals / Walk / Size helpers),
                                     #   scan.go (RecordQueryScanPlan),
                                     #   filter.go (RecordQueryFilterPlan),
-                                    #   sort.go (RecordQuerySortPlan).
-                                    #   3 of Java's 74 concrete plan classes.
+                                    #   sort.go (RecordQuerySortPlan),
+                                    #   distinct.go (RecordQueryDistinctPlan),
+                                    #   typefilter.go (RecordQueryTypeFilterPlan).
+                                    #   5 of Java's 74 concrete plan classes.
     rule_*.go                       # 31 logical-rewrite rules (FilterMerge,
                                     #   FilterDropTrue, FilterDedupPredicates,
                                     #   PushFilterThroughDistinct,
