@@ -259,6 +259,92 @@ func TestConvert_Project_SpaceEntry_Unsupported(t *testing.T) {
 	}
 }
 
+func TestConvert_Project_LiteralProjections(t *testing.T) {
+	t.Parallel()
+	// Mix of bare-column + literals exercises lowerSimpleScalarText
+	// across all simple forms.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"id", "42", "-7", "1.5", "TRUE", "false", "NULL", "'hello'"},
+		[]string{"", "", "", "", "", "", "", ""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	p, ok := got.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalProjectionExpression", got)
+	}
+	pv := p.GetProjectedValues()
+	if len(pv) != 8 {
+		t.Fatalf("projected values len=%d, want 8", len(pv))
+	}
+	// 0: id → FieldValue
+	if fv, ok := pv[0].(*values.FieldValue); !ok || fv.Field != "id" {
+		t.Errorf("pv[0] = %v, want FieldValue(id)", pv[0])
+	}
+	// 1: 42 → ConstantValue(int64(42))
+	if cv, ok := pv[1].(*values.ConstantValue); !ok || cv.Value != int64(42) {
+		t.Errorf("pv[1] = %v, want ConstantValue(int64(42))", pv[1])
+	}
+	// 2: -7 → ConstantValue(int64(-7))
+	if cv, ok := pv[2].(*values.ConstantValue); !ok || cv.Value != int64(-7) {
+		t.Errorf("pv[2] = %v, want ConstantValue(int64(-7))", pv[2])
+	}
+	// 3: 1.5 → ConstantValue(float64(1.5))
+	if cv, ok := pv[3].(*values.ConstantValue); !ok || cv.Value != float64(1.5) {
+		t.Errorf("pv[3] = %v, want ConstantValue(float64(1.5))", pv[3])
+	}
+	// 4: TRUE → ConstantValue(true)
+	if cv, ok := pv[4].(*values.ConstantValue); !ok || cv.Value != true {
+		t.Errorf("pv[4] = %v, want ConstantValue(true)", pv[4])
+	}
+	// 5: false → ConstantValue(false)
+	if cv, ok := pv[5].(*values.ConstantValue); !ok || cv.Value != false {
+		t.Errorf("pv[5] = %v, want ConstantValue(false)", pv[5])
+	}
+	// 6: NULL → NullValue
+	if _, ok := pv[6].(*values.NullValue); !ok {
+		t.Errorf("pv[6] = %T, want *NullValue", pv[6])
+	}
+	// 7: 'hello' → ConstantValue("hello")
+	if cv, ok := pv[7].(*values.ConstantValue); !ok || cv.Value != "hello" {
+		t.Errorf("pv[7] = %v, want ConstantValue(\"hello\")", pv[7])
+	}
+}
+
+func TestConvert_Project_StringLiteralWithApostropheUnsupported(t *testing.T) {
+	t.Parallel()
+	// 'it''s' has an apostrophe inside the body — we don't handle ''
+	// escapes. ErrUnsupported.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"'it''s'"},
+		[]string{""},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (escape in string literal)", err)
+	}
+}
+
+func TestConvert_Project_FloatExponentUnsupported(t *testing.T) {
+	t.Parallel()
+	// 1e10 / 1.5E10 not handled by the simple lowering (cross-engine
+	// alignment with fdb-relational's strict-uppercase-E rule needs
+	// dedicated handling).
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"1.5E10"},
+		[]string{""},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (exponent literal)", err)
+	}
+}
+
 func TestConvert_Project_QualifiedUnsupported(t *testing.T) {
 	t.Parallel()
 	// "Order.id" has a dot → unsupported (qualified-column needs scope).
