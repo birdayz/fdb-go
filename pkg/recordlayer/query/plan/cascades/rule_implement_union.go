@@ -1,0 +1,99 @@
+package cascades
+
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+)
+
+// ImplementUnionRule implements a logical LogicalUnionExpression as
+// a physical RecordQueryUnionPlan, gated on EVERY child Reference
+// having at least one physical-plan member.
+//
+//	Union(child0-with-physical, child1-with-physical, ...)
+//	  →  UnionPlan(child0-physical, child1-physical, ...)
+//
+// Per-child gating: unlike single-inner Implement rules, Union
+// requires ALL children to be physical-implemented before yielding
+// — partial physical-implementation produces an invalid mixed-
+// hierarchy plan tree.
+//
+// Java has multiple Union variants (key-expression vs values, dedup
+// vs no-dedup); the seed always emits RecordQueryUnionPlan
+// (UNION ALL, no dedup). Rules that need different variants
+// extend this pattern.
+type ImplementUnionRule struct {
+	matcher matching.BindingMatcher
+}
+
+// NewImplementUnionRule constructs the rule.
+func NewImplementUnionRule() *ImplementUnionRule {
+	return &ImplementUnionRule{
+		matcher: NewExpressionMatcher[*expressions.LogicalUnionExpression]("logical_union"),
+	}
+}
+
+// Matcher returns the pattern.
+func (r *ImplementUnionRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// OnMatch fires when EVERY child Quantifier ranges over a Reference
+// with at least one physical-plan member.
+func (r *ImplementUnionRule) OnMatch(call *ExpressionRuleCall) {
+	u := matching.Get[*expressions.LogicalUnionExpression](call.Bindings, r.matcher)
+	children := u.GetQuantifiers()
+	if len(children) == 0 {
+		return
+	}
+
+	innerPlans := make([]plans.RecordQueryPlan, 0, len(children))
+	for _, q := range children {
+		innerRef := q.GetRangesOver()
+		if innerRef == nil {
+			return
+		}
+		var innerPlan plans.RecordQueryPlan
+		for _, m := range innerRef.Members() {
+			switch w := m.(type) {
+			case *physicalScanWrapper:
+				innerPlan = w.GetPlan()
+			case *physicalFilterWrapper:
+				innerPlan = w.GetPlan()
+			case *physicalSortWrapper:
+				innerPlan = w.GetPlan()
+			case *physicalDistinctWrapper:
+				innerPlan = w.GetPlan()
+			case *physicalTypeFilterWrapper:
+				innerPlan = w.GetPlan()
+			case *physicalUnionWrapper:
+				innerPlan = w.GetPlan()
+			case *physicalIntersectionWrapper:
+				innerPlan = w.GetPlan()
+			}
+			if innerPlan != nil {
+				break
+			}
+		}
+		if innerPlan == nil {
+			return // any child not physical → skip the whole rule fire
+		}
+		innerPlans = append(innerPlans, innerPlan)
+	}
+
+	unionPlan := plans.NewRecordQueryUnionPlan(innerPlans)
+
+	// Build wrapped child quantifiers — one per physical inner.
+	childQs := make([]expressions.Quantifier, 0, len(innerPlans))
+	for _, ip := range innerPlans {
+		wrap := wrapPhysicalPlan(ip)
+		if wrap == nil {
+			return
+		}
+		childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(wrap)))
+	}
+
+	// We need a wrapper for the union plan too. Since UnionPlan has
+	// N children (not 1), we use a generic UnionWrapper.
+	call.Yield(NewPhysicalUnionWrapper(unionPlan, childQs))
+}
+
+var _ ExpressionRule = (*ImplementUnionRule)(nil)

@@ -6,6 +6,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -366,5 +367,108 @@ func BenchmarkOptimise_StackedSorts(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ref := build()
 		_, _ = FixpointApply(rules, ref, 50)
+	}
+}
+
+// BenchmarkOptimise_GetBest pins the Track B4 cost-driven extraction
+// step: optimise a tree to convergence, then call Reference.GetBest
+// with the cost-based comparator to pull out the cheapest member.
+//
+// The build is the same RealisticTree shape as
+// BenchmarkOptimise_RealisticTree — five operators with a Filter +
+// Distinct + Sort cascade — so the per-iteration delta vs that
+// benchmark is exactly the GetBest call, not the optimiser run.
+func BenchmarkOptimise_GetBest(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
+		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		return expressions.InitialOf(topD)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		_, _ = FixpointApply(rules, ref, 50)
+		_ = ref.GetBest(properties.CostLess)
+	}
+}
+
+// BenchmarkPlanner_RealisticTree exercises the new B6 task-stack
+// Planner on the same RealisticTree shape as
+// BenchmarkOptimise_RealisticTree (FixpointApply baseline). Direct
+// comparison reveals the saturation-tracking perf savings.
+func BenchmarkPlanner_RealisticTree(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
+		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		return expressions.InitialOf(topD)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		p := NewPlanner(rules, nil)
+		_, _ = p.Explore(ref)
+	}
+}
+
+// BenchmarkPlanner_FullPlan exercises Plan() on the same shape —
+// EXPLORE + ExtractBestPlan. Captures the OPTIMIZE-phase overhead
+// on top of EXPLORE.
+func BenchmarkPlanner_FullPlan(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerDQ)
+		return expressions.InitialOf(f)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		p := NewPlanner(rules, nil)
+		_, _, _ = p.Plan(ref)
+	}
+}
+
+// BenchmarkBestRefCost pins the cost-only extraction call in
+// isolation (no optimiser). Useful baseline for B6's task-stack
+// planner perf budget.
+func BenchmarkBestRefCost(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	d := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(f)))
+	ref := expressions.InitialOf(d)
+	// Insert a few alternatives so GetBest does real work.
+	ref.Insert(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(expressions.InitialOf(f))))
+	ref.Insert(expressions.NewLogicalDistinctExpression(scanQ))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ref.GetBest(properties.CostLess)
 	}
 }

@@ -1215,3 +1215,109 @@ func TestExplainValue_ParameterValue(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregateValue_GetIndexTypeName(t *testing.T) {
+	t.Parallel()
+	cases := map[AggregateOp]string{
+		AggCount:     "COUNT_NOT_NULL",
+		AggCountStar: "COUNT",
+		AggSum:       "SUM",
+		AggMin:       "MIN_EVER_LONG",
+		AggMax:       "MAX_EVER_LONG",
+		AggAvg:       "",
+		AggInvalid:   "",
+	}
+	for op, want := range cases {
+		var operand Value
+		if op != AggCountStar && op != AggInvalid {
+			operand = &ConstantValue{Value: int64(1), Typ: NotNullLong}
+		}
+		v := &AggregateValue{Op: op, Operand: operand}
+		if got := v.GetIndexTypeName(); got != want {
+			t.Errorf("AggregateValue{Op=%v}.GetIndexTypeName() = %q, want %q", op, got, want)
+		}
+	}
+}
+
+func TestAggregateValue_ImplementsIndexableAggregate(t *testing.T) {
+	t.Parallel()
+	v := &AggregateValue{Op: AggSum, Operand: &ConstantValue{Value: int64(1), Typ: NotNullLong}}
+	var _ IndexableAggregate = v
+	iav, ok := Value(v).(IndexableAggregate)
+	if !ok {
+		t.Fatalf("AggregateValue should implement IndexableAggregate")
+	}
+	if iav.GetIndexTypeName() != "SUM" {
+		t.Fatalf("via interface: GetIndexTypeName = %q, want SUM", iav.GetIndexTypeName())
+	}
+}
+
+func TestIsNonEvaluable_AggregateValue(t *testing.T) {
+	t.Parallel()
+	v := &AggregateValue{Op: AggSum, Operand: &ConstantValue{Value: int64(1), Typ: NotNullLong}}
+	if !IsNonEvaluable(v) {
+		t.Fatal("AggregateValue should be NonEvaluable")
+	}
+}
+
+func TestIsNonEvaluable_PlainValue(t *testing.T) {
+	t.Parallel()
+	v := &ConstantValue{Value: int64(7), Typ: NotNullLong}
+	if IsNonEvaluable(v) {
+		t.Fatal("ConstantValue should NOT be NonEvaluable")
+	}
+}
+
+func TestIsNonEvaluable_NilValue(t *testing.T) {
+	t.Parallel()
+	if IsNonEvaluable(nil) {
+		t.Fatal("nil should NOT be NonEvaluable")
+	}
+}
+
+func TestIsNonEvaluable_IndexOnlyAggregate(t *testing.T) {
+	t.Parallel()
+	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, nil)
+	if !IsNonEvaluable(v) {
+		t.Fatal("IndexOnlyAggregateValue should be NonEvaluable")
+	}
+}
+
+func TestIsIndexOnly_RowNumberValue(t *testing.T) {
+	t.Parallel()
+	v := NewRowNumberValue(nil, nil, nil, nil)
+	if !IsIndexOnly(v) {
+		t.Fatal("RowNumberValue should be IndexOnly")
+	}
+}
+
+func TestIsIndexOnly_DistanceRowNumberValue(t *testing.T) {
+	t.Parallel()
+	v := NewEuclideanDistanceRowNumberValue(nil, nil, nil, nil)
+	if !IsIndexOnly(v) {
+		t.Fatal("DistanceRowNumberValue should be IndexOnly")
+	}
+}
+
+func TestIsIndexOnly_IndexOnlyAggregateValue(t *testing.T) {
+	t.Parallel()
+	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, nil)
+	if !IsIndexOnly(v) {
+		t.Fatal("IndexOnlyAggregateValue should be IndexOnly")
+	}
+}
+
+func TestIsIndexOnly_PlainValue(t *testing.T) {
+	t.Parallel()
+	v := &ConstantValue{Value: int64(7), Typ: NotNullLong}
+	if IsIndexOnly(v) {
+		t.Fatal("ConstantValue should NOT be IndexOnly")
+	}
+}
+
+func TestIsIndexOnly_NilValue(t *testing.T) {
+	t.Parallel()
+	if IsIndexOnly(nil) {
+		t.Fatal("nil should NOT be IndexOnly")
+	}
+}

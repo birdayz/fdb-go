@@ -136,12 +136,73 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #   alias_map, quantifier, reference,
                                     #   logical_*.go (Filter / Projection /
                                     #     Sort / TypeFilter / Distinct /
-                                    #     Union / Intersection),
+                                    #     Union / Intersection / Unique),
                                     #   select.go (FROM-list + WHERE; the only
                                     #     CanCorrelate=true expression),
                                     #   {insert,update,delete}.go (DML),
                                     #   full_unordered_scan.go (leaf),
+                                    #   explode.go (UNNEST array → stream,
+                                    #     leaf-shaped, correlation-bearing),
                                     #   walk.go, with_predicates.go (helpers)
+    properties/                     # Cost model + plan extraction (B4 seed)
+                                    #   cost.go (Cost{Cardinality, CPU},
+                                    #     EstimateCost over the 11 seed
+                                    #     RelationalExpression types,
+                                    #     BestRefCost with Reference-keyed
+                                    #     memoisation, CostLess comparator,
+                                    #     StatisticsProvider plumbing),
+                                    #   extract.go (ExtractBestPlan recursive
+                                    #     plan extractor — singleton-Reference
+                                    #     fresh tree, switch-on-type for the
+                                    #     12 constructor arms),
+                                    #   cardinality.go (CardinalityProperty —
+                                    #     EstimateCardinality / BestRefCardinality
+                                    #     / CardinalityLess; thin wrapper that
+                                    #     projects out the CPU axis from Cost),
+                                    #   ordering.go (OrderingProperty —
+                                    #     EstimateOrdering / IsOrdered;
+                                    #     yes/no + ordering-keys analysis;
+                                    #     Sort known, Filter inherits, Union
+                                    #     Intersection unknown).
+    planner.go                      # B6 task-stack planner (EXPLORE +
+                                    #   OPTIMIZE phases). ApplyRulesTask
+                                    #   fires rules; on saturation pushes
+                                    #   OptimizeReferenceTask which picks
+                                    #   the cheapest member by cost and
+                                    #   stamps it in bestMember[ref].
+                                    #   Plan() runs both phases; BestMember
+                                    #   accessor exposes per-Ref winners.
+                                    #   PlannerEventHandler hooks include
+                                    #   OnOptimizeReference.
+    physical_wrapper.go             # Bridges from plans.RecordQueryPlan to
+                                    #   expressions.RelationalExpression
+                                    #   (3 wrappers: scan / filter / sort).
+                                    #   Seed workaround for the lack of a
+                                    #   plan-aware Memo.
+    rule_primary_scan.go            # B5 Batch A: FullUnorderedScan → ScanPlan
+    rule_implement_filter.go        # B5 Batch A: LogicalFilter → FilterPlan
+    rule_implement_sort.go          # B5 Batch A: LogicalSort → SortPlan
+    rule_implement_distinct.go      # B5 Batch A: LogicalDistinct → DistinctPlan
+    rule_implement_typefilter.go    # B5 Batch A: LogicalTypeFilter → TypeFilterPlan
+    rule_implement_union.go         # B5 Batch A: LogicalUnion → UnionPlan (N-children)
+    rule_implement_intersection.go  # B5 Batch A: LogicalIntersection → IntersectionPlan
+    rule_implement_insert.go        # B5 DML: InsertExpression → InsertPlan
+    rule_implement_delete.go        # B5 DML: DeleteExpression → DeletePlan
+    rule_implement_update.go        # B5 DML: UpdateExpression → UpdatePlan
+pkg/recordlayer/query/plan/plans/   # RecordQueryPlan (physical) hierarchy
+                                    #   plan.go (RecordQueryPlan interface
+                                    #     + Equals / Walk / Size helpers),
+                                    #   scan.go (RecordQueryScanPlan),
+                                    #   filter.go (RecordQueryFilterPlan),
+                                    #   sort.go (RecordQuerySortPlan),
+                                    #   distinct.go (RecordQueryDistinctPlan),
+                                    #   typefilter.go (RecordQueryTypeFilterPlan),
+                                    #   union.go (RecordQueryUnionPlan),
+                                    #   intersection.go (RecordQueryIntersectionPlan),
+                                    #   insert.go (RecordQueryInsertPlan),
+                                    #   delete.go (RecordQueryDeletePlan),
+                                    #   update.go (RecordQueryUpdatePlan).
+                                    #   10 of Java's 74 concrete plan classes.
     rule_*.go                       # 31 logical-rewrite rules (FilterMerge,
                                     #   FilterDropTrue, FilterDedupPredicates,
                                     #   PushFilterThroughDistinct,
@@ -315,8 +376,14 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzGetCorrelatedToOfValue` | Cascades B1 value-side correlation walker — nil-safety / empty-on-constant-leaves / soundness across random Constant/QOV/Arithmetic/NotValue trees | Clean (16M execs/10s, dayshift-58) |
 | `FuzzConvert` | plangen.Convert no-panic invariant — random LogicalOperator trees (Scan / Filter / FilterWithPred / Union / Project / Sort / Delete / Insert / Update / Limit) up to depth 4 through the converter | Clean (88M execs/60s, dayshift-58) |
 | `FuzzConvertAndOptimise` | C1 → B5 pipeline — Convert + FixpointApply termination + initial-member preservation across random LogicalOperator trees | Clean (96M execs/120s with 25-rule default set + sub-Reference descent, dayshift-58) |
+| `FuzzCostMonotonicity` | Cascades B4 cost model — best-cost is non-increasing across fixpoint iterations + finite + non-negative across random expression trees + random rule subsets | Clean (8.8M execs/20s, swingshift-59) |
+| `FuzzExtractBestPlan_SingletonInvariant` | Cascades B4 plan extraction — ExtractBestPlan termination + non-panic + every reachable Reference in extracted tree has exactly 1 member | Clean (12.6M execs/15s, swingshift-59) |
+| `FuzzPlanner_Confluence` | Cascades B6 task-stack Planner — converges to the same final Reference state as FixpointApply across random expression trees + random rule subsets. **Caught a real saturation bug at introduction** (premature exploreCount stamp incorrectly skipped re-fires after growth) | Clean post-fix (4.2M execs/20s, swingshift-59) |
+| `FuzzPlanner_Idempotence` | Cascades B6 — second Explore call doesn't grow Reference (saturation contract) | Clean (4.7M execs/10s, swingshift-59) |
+| `FuzzPlanner_InitialMemberPreserved` | Cascades B6 — original input expression always preserved at members[0]; rules can ADD but not REPLACE | Clean (swingshift-59) |
+| `FuzzPlanner_PlanFullPipeline` | Cascades B6 — Plan() entry point (EXPLORE + OPTIMIZE + ExtractBestPlan) returns (plan, _, nil) or (nil, _, ErrPlannerCapHit); on success, plan != nil AND root Reference has a stamped BestMember | Clean (7.3M execs/15s, swingshift-59) |
 
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` / `FuzzCompareValues` / `FuzzCastValue` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`, `FuzzSimplifyValue_ArithmeticTree` / `FuzzSimplifyValue_CastChain` are in `pkg/recordlayer/query/plan/cascades/values/values_fuzz_test.go`, `FuzzMaximumType_Properties` is in `pkg/recordlayer/query/plan/cascades/values/type_test.go`, `FuzzSimplify_PredicateTree` is in `pkg/recordlayer/query/plan/cascades/predicate_simplify_fuzz_test.go`, `FuzzSemanticEquals_Properties` / `FuzzAliasMap_BijectionInvariant` are in `pkg/recordlayer/query/plan/cascades/expressions/fuzz_test.go`, `FuzzConvert` is in `pkg/relational/core/query/plangen/plangen_test.go`, `FuzzConvertAndOptimise` is in `pkg/relational/core/query/plangen/optimize_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go`, `FuzzLikePrefixStrinc` / `FuzzLikePatternToPrefix` / `FuzzApplyMathOp` / `FuzzApplyBitOp` / `FuzzCompareValues` / `FuzzCastValue` are in `pkg/relational/core/embedded/embedded_test.go`, `FuzzLikeMatch` / `FuzzLikeMatchEscape` are in `pkg/recordlayer/query/plan/cascades/predicates/comparisons_test.go`, `FuzzSimplifyValue_ArithmeticTree` / `FuzzSimplifyValue_CastChain` are in `pkg/recordlayer/query/plan/cascades/values/values_fuzz_test.go`, `FuzzMaximumType_Properties` is in `pkg/recordlayer/query/plan/cascades/values/type_test.go`, `FuzzSimplify_PredicateTree` is in `pkg/recordlayer/query/plan/cascades/predicate_simplify_fuzz_test.go`, `FuzzSemanticEquals_Properties` / `FuzzAliasMap_BijectionInvariant` are in `pkg/recordlayer/query/plan/cascades/expressions/fuzz_test.go`, `FuzzConvert` is in `pkg/relational/core/query/plangen/plangen_test.go`, `FuzzConvertAndOptimise` is in `pkg/relational/core/query/plangen/optimize_test.go`, `FuzzCostMonotonicity` is in `pkg/recordlayer/query/plan/cascades/cost_fuzz_test.go`, `FuzzExtractBestPlan_SingletonInvariant` is in `pkg/recordlayer/query/plan/cascades/properties/extract_fuzz_test.go`, `FuzzPlanner_Confluence` / `FuzzPlanner_Idempotence` / `FuzzPlanner_InitialMemberPreserved` are in `pkg/recordlayer/query/plan/cascades/planner_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
@@ -793,5 +860,5 @@ See `TODO.md` for full gap analysis. Summary:
 - **Test counts**: 2817 Ginkgo specs + 438 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 81.0% overall. `just coverage` generates HTML report.
 - **Race detector**: CI runs race detector on all 5 FDB test targets. Locally: `just race-all`.
-- **Fuzz targets**: 57 (`grep -rE "^func Fuzz" pkg/` to enumerate). Coverage is layered: 13 record-layer parsers (continuations, tuples, version, key expressions, metadata), 9 wire reply parsers (`pkg/fdbgo/client/parse_fuzz_test.go`), 7 wire-type round-trip / panic-fuzz targets (`pkg/fdbgo/wire/types/marshal_fuzz_test.go`: SplitRangeRequest/Reply, WaitMetricsRequest, WatchValueRequest from swingshift-50; KeyRangeRef_SingleKeyOptimization, GetKeyRequest, GetKeyServerLocationsReply from dayshift-51), 2 wire Reader constructor/ErrorOr fuzzers, FuzzRYWCache (read-your-writes cache vs map model), tuple PackIntoEquivalence, LIKE pattern (prefix + match no-escape + match escape) plus arithmetic/bit-op math, SQL parser (3 targets) + plandiff (2 targets) + catalog template + cascades simplify (3 targets — Value arithmetic / cast / predicate tree) + cascades type lattice (FuzzMaximumType_Properties — symmetry / idempotence / closure invariants, swingshift-52).
+- **Fuzz targets**: 67 (`grep -rE "^func Fuzz" pkg/` to enumerate). Coverage is layered: 13 record-layer parsers (continuations, tuples, version, key expressions, metadata), 9 wire reply parsers (`pkg/fdbgo/client/parse_fuzz_test.go`), 7 wire-type round-trip / panic-fuzz targets (`pkg/fdbgo/wire/types/marshal_fuzz_test.go`: SplitRangeRequest/Reply, WaitMetricsRequest, WatchValueRequest from swingshift-50; KeyRangeRef_SingleKeyOptimization, GetKeyRequest, GetKeyServerLocationsReply from dayshift-51), 2 wire Reader constructor/ErrorOr fuzzers, FuzzRYWCache (read-your-writes cache vs map model), tuple PackIntoEquivalence, LIKE pattern (prefix + match no-escape + match escape) plus arithmetic/bit-op math, SQL parser (3 targets) + plandiff (2 targets) + catalog template + cascades simplify (3 targets — Value arithmetic / cast / predicate tree) + cascades type lattice (FuzzMaximumType_Properties — symmetry / idempotence / closure invariants, swingshift-52).
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.

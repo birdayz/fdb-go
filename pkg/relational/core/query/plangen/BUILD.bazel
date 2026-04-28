@@ -17,6 +17,7 @@ go_test(
     name = "plangen_test",
     srcs = [
         "benchmark_test.go",
+        "cost_extraction_test.go",
         "optimize_test.go",
         "plangen_test.go",
     ],
@@ -25,6 +26,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/query/logical",
     ],

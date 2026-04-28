@@ -1420,6 +1420,14 @@ func mulInt64Checked(a, b int64) (int64, bool) {
 
 // BooleanValue is a literal true / false (and NULL when Value is
 // nil — SQL UNKNOWN at the Value layer).
+//
+// NAMING CAVEAT: Java has a `BooleanValue` of the same name but
+// it's an INTERFACE (Value→QueryPredicate translation shim), not a
+// concrete type. The Go-side concrete is closer to Java's
+// `LiteralValue<Boolean>`. The name collision is regrettable but
+// the Go code references this concrete type explicitly; rule code
+// should not pattern-match on `*BooleanValue` thinking it has
+// Java's interface semantics.
 type BooleanValue struct {
 	Value *bool // nil = UNKNOWN
 }
@@ -1905,4 +1913,118 @@ func (*AggregateValue) Name() string { return "agg" }
 // and debugs for an hour.
 func (a *AggregateValue) Evaluate(any) any {
 	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
+}
+
+// GetIndexTypeName returns the FDB index-type name that backs this
+// aggregate when an aggregate index is available. Mirrors Java's
+// `IndexableAggregateValue.getIndexTypeName()` (Java's interface
+// marker; Go uses an accessor on AggregateValue itself).
+//
+// The mapping:
+//
+//	AggCount     → COUNT_NOT_NULL  (counts non-null values)
+//	AggCountStar → COUNT           (counts all rows incl. NULL)
+//	AggSum       → SUM
+//	AggMin       → MIN_EVER_LONG   (or MIN_EVER_TUPLE for non-numeric)
+//	AggMax       → MAX_EVER_LONG   (or MAX_EVER_TUPLE)
+//	AggAvg       → ""              (no direct index — computed from
+//	                                 SUM/COUNT pair instead)
+//	AggInvalid   → ""
+//
+// Returns the empty string when no FDB index type backs this
+// aggregate. The planner consults this to decide whether to lower
+// to an index-aggregate scan (constant-cost lookup) or fall back
+// to a streaming aggregator (linear-time row scan).
+func (a *AggregateValue) GetIndexTypeName() string {
+	switch a.Op {
+	case AggCount:
+		return "COUNT_NOT_NULL"
+	case AggCountStar:
+		return "COUNT"
+	case AggSum:
+		return "SUM"
+	case AggMin:
+		return "MIN_EVER_LONG"
+	case AggMax:
+		return "MAX_EVER_LONG"
+	case AggAvg, AggInvalid:
+		return ""
+	}
+	return ""
+}
+
+// IndexableAggregate is the Go-side counterpart to Java's
+// IndexableAggregateValue interface. Any Value that has an index-
+// backed aggregate form can implement this — currently only
+// AggregateValue (when its Op has a non-empty index-type name).
+//
+// Planner / matcher code can type-assert against this interface to
+// pick aggregates eligible for index-scan lowering:
+//
+//	if iav, ok := v.(IndexableAggregate); ok && iav.GetIndexTypeName() != "" {
+//	    // can lower to index-aggregate scan
+//	}
+type IndexableAggregate interface {
+	Value
+	GetIndexTypeName() string
+}
+
+var _ IndexableAggregate = (*AggregateValue)(nil)
+
+// NonEvaluable is the Go-side counterpart to Java's
+// `Value.NonEvaluableValue` interface marker. Any Value that
+// can't be evaluated at runtime (plan-time-only placeholders like
+// AggregateValue, IndexOnlyAggregateValue) implements this marker.
+//
+// Planner / matcher code can type-assert against this to refuse to
+// pass non-evaluable Values to runtime evaluators.
+//
+// Java's NonEvaluableValue is a true marker interface (no methods);
+// the Go equivalent uses one method whose presence (and the implied
+// `true` return) IS the marker.
+type NonEvaluable interface {
+	Value
+	IsNonEvaluable() bool
+}
+
+// IsNonEvaluable is a helper that any Value can call to check
+// whether v is plan-time-only. Avoids type-assertion boilerplate
+// in callers.
+func IsNonEvaluable(v Value) bool {
+	if ne, ok := v.(NonEvaluable); ok {
+		return ne.IsNonEvaluable()
+	}
+	return false
+}
+
+// IsNonEvaluable on AggregateValue returns true — aggregates are
+// multi-row and can't be evaluated per-row by the standard
+// Evaluate path. Implements NonEvaluable.
+func (*AggregateValue) IsNonEvaluable() bool { return true }
+
+var _ NonEvaluable = (*AggregateValue)(nil)
+
+// IndexOnly is the Go-side counterpart to Java's
+// `Value.IndexOnlyValue` interface marker. Any Value whose result
+// can ONLY be produced by an index scan (vs a streaming
+// aggregator over the base records) implements this marker.
+//
+// Used by: RowNumberValue, DistanceRowNumberValue, IndexOnlyAggregateValue.
+//
+// Planner / matcher code can type-assert against this to refuse to
+// optimise paths that would require running the value over a base-
+// record scan — they MUST be matched against an index, otherwise
+// the plan fails to compile.
+type IndexOnly interface {
+	Value
+	IsIndexOnly() bool
+}
+
+// IsIndexOnly is a helper that any Value can call to check whether
+// v requires an index scan to produce its result.
+func IsIndexOnly(v Value) bool {
+	if io, ok := v.(IndexOnly); ok {
+		return io.IsIndexOnly()
+	}
+	return false
 }
