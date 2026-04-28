@@ -79,3 +79,77 @@ func (w *physicalScanWrapper) HashCodeWithoutChildren() uint64 {
 }
 
 var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
+
+// physicalFilterWrapper adapts a `*plans.RecordQueryFilterPlan` to
+// the RelationalExpression interface. The wrapped plan has a single
+// inner — exposed as a single Quantifier ranging over a fresh
+// Reference holding a wrapped version of the inner physical plan.
+//
+// The wrapped-inner indirection is intentional: it keeps the Memo's
+// Reference invariant intact (every Quantifier's Reference holds at
+// least one RelationalExpression-typed member). Once a proper
+// physical-plan-aware Memo lands, this wrapping goes away — plans
+// will be Memo members directly, no adapter needed.
+type physicalFilterWrapper struct {
+	plan       *plans.RecordQueryFilterPlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalFilterWrapper constructs the wrapper. innerQuant must
+// range over a Reference holding the wrapped inner physical plan.
+func NewPhysicalFilterWrapper(plan *plans.RecordQueryFilterPlan, innerQuant expressions.Quantifier) *physicalFilterWrapper {
+	return &physicalFilterWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalFilterWrapper) GetPlan() *plans.RecordQueryFilterPlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value
+// — filter doesn't reshape rows.
+func (w *physicalFilterWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalFilterWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false — filter doesn't anchor correlation.
+func (w *physicalFilterWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false — filter has one child.
+func (w *physicalFilterWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set — the seed
+// doesn't surface predicate-side correlation through the wrapper.
+func (w *physicalFilterWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares the wrapped plan's predicate list.
+// Children equality is the caller's job (typically via SemanticEquals).
+func (w *physicalFilterWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalFilterWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalFilterWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physfilterwrap|"))
+	if w.plan != nil {
+		var b [8]byte
+		ph := w.plan.HashCodeWithoutChildren()
+		for i := 0; i < 8; i++ {
+			b[i] = byte(ph >> (8 * (7 - i)))
+		}
+		h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
