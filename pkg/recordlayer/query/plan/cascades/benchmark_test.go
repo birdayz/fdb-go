@@ -3,6 +3,7 @@ package cascades
 import (
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -246,5 +247,53 @@ func BenchmarkSimplify_NoOp(b *testing.B) {
 	rules := DefaultSimplifyRules()
 	for i := 0; i < b.N; i++ {
 		_ = Simplify(pred, rules)
+	}
+}
+
+// --- B5 / B1 expression-rule benchmarks --------------------------------
+
+// BenchmarkFireExpressionRule_FilterMerge exercises the per-rule hot
+// path: matcher binds, OnMatch yields, Reference dedups.
+func BenchmarkFireExpressionRule_FilterMerge(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ)
+	rule := NewFilterMergeRule()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := expressions.InitialOf(outerF) // fresh ref each iter
+		_ = FireExpressionRule(rule, ref)
+	}
+}
+
+// BenchmarkFixpointApply_DefaultRules drives the full default rule
+// set via FixpointApply on a small test tree.
+func BenchmarkFixpointApply_DefaultRules(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	innerD := expressions.NewLogicalDistinctExpression(scanQ)
+	innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+	outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := expressions.InitialOf(outerD)
+		_, _ = FixpointApply(rules, ref, 50)
+	}
+}
+
+// BenchmarkExpressionMatcher_BindMatch — the per-call match cost.
+func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	matcher := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BindMatches(nil, f)
 	}
 }
