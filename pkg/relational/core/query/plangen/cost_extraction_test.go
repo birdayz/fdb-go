@@ -248,6 +248,62 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_RealisticSQLShape_DistinctSortFilterScan exercises
+// a 4-deep operator chain through the full pipeline:
+//
+//	SELECT DISTINCT * FROM Order WHERE active ORDER BY id
+//	  ↓
+//	Distinct(Sort(Filter(Scan)))  (logical)
+//	  ↓ Convert
+//	LogicalDistinct(LogicalSort(LogicalFilter(FullUnorderedScan)))
+//	  ↓ Planner.Plan with default rewrites + Batch A
+//	A physical wrapper of some shape — the rule chain may
+//	  reorder via PushFilterThroughSort / PullFilterAboveDistinct,
+//	  pick which logical → physical pairs to implement, and
+//	  cost-extraction picks the cheapest.
+//
+// Pins that the 4-deep shape doesn't blow MaxTasks, doesn't panic,
+// and produces a non-nil extracted plan.
+func TestEndToEnd_RealisticSQLShape_DistinctSortFilterScan(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+
+	// SELECT DISTINCT * FROM Order WHERE active ORDER BY id
+	src := logical.NewUnion(
+		[]logical.LogicalOperator{
+			logical.NewSort(
+				logical.NewFilterWithPredicate(
+					logical.NewScan("Order", ""),
+					pred, "active",
+				),
+				[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
+			),
+		},
+		true, // distinct
+	)
+
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(
+		cascades.DefaultExpressionRules(),
+		cascades.BatchAExpressionRules()...,
+	)
+	p := cascades.NewPlanner(rules, nil)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	t.Logf("4-deep shape: extracted %T (%d tasks, %d Reference members)",
+		plan, tasks, len(ref.Members()))
+}
+
 // TestEndToEnd_FullPipelineToPhysicalPlan demonstrates the full
 // shipped pipeline: SQL-shape input → Convert → Planner.Plan()
 // (EXPLORE + OPTIMIZE) → physical RecordQueryPlan tree.
