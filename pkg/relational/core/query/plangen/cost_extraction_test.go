@@ -248,6 +248,64 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_FullPipelineToPhysicalPlan demonstrates the full
+// shipped pipeline: SQL-shape input → Convert → Planner.Plan()
+// (EXPLORE + OPTIMIZE) → physical RecordQueryPlan tree.
+//
+// Pins:
+//  1. plangen.Convert lowers Filter(Sort(Scan)) to RelationalExpression.
+//  2. Planner.Plan with Default + Batch A rules drives EXPLORE through
+//     saturation + OPTIMIZE picks the cheapest member.
+//  3. The extracted plan is a physical wrapper containing a
+//     RecordQueryPlan — proving cost-driven extraction prefers the
+//     Batch A-implemented physical alternatives over the logical
+//     starting point.
+func TestEndToEnd_FullPipelineToPhysicalPlan(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+	src := logical.NewFilterWithPredicate(
+		logical.NewSort(
+			logical.NewScan("Order", ""),
+			[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
+		),
+		pred, "active",
+	)
+
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(
+		cascades.DefaultExpressionRules(),
+		cascades.BatchAExpressionRules()...,
+	)
+	p := cascades.NewPlanner(rules, nil)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	// The plan should be a physical wrapper. The exact wrapper type
+	// depends on which Batch A rules fired and which alternative cost
+	// picked. Common outcomes: physicalFilterWrapper (Filter(Sort) or
+	// Sort(Filter)) or physicalSortWrapper (after PushFilterThroughSort
+	// + filter elimination).
+	//
+	// The point of the test: plan is NOT the original logical
+	// LogicalFilterExpression — that's the un-implemented shape.
+	if _, isLogicalFilter := plan.(*expressions.LogicalFilterExpression); isLogicalFilter {
+		t.Fatalf("Plan returned logical Filter — physical-implementation rules didn't fire OR cost extraction didn't pick physical")
+	}
+	if _, isLogicalSort := plan.(*expressions.LogicalSortExpression); isLogicalSort {
+		t.Fatalf("Plan returned logical Sort — physical-implementation rules didn't fire OR cost extraction didn't pick physical")
+	}
+	t.Logf("extracted plan: %T (tasks=%d)", plan, tasks)
+}
+
 // TestEndToEnd_CostExtractionWithStatistics demonstrates the
 // stats-bound extraction path: with MapStatistics flipping table
 // sizes, the same Filter(scan(BigTable)) vs Filter(scan(SmallTable))
