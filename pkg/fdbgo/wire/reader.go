@@ -502,9 +502,21 @@ func (e *FDBError) Error() string {
 	return fmt.Sprintf("fdb error %d", e.Code)
 }
 
-// fdbErrorDescriptions maps common FDB error codes to human-readable names.
-// Source: flow/error_definitions.h
+// fdbErrorDescriptions maps common FDB error codes to human-readable
+// names. Source: flow/error_definitions.h plus Go-side internal codes.
+//
+// This is a SUBSET of pkg/fdbgo/fdb/error.go's full 343-code map.
+// Wire can't import fdb (would create a cycle), so the descriptions
+// are duplicated here for the codes the wire layer actually surfaces.
+//
+// Two non-canonical entries:
+//   - 1006 all_alternatives_failed (canonical FDB) is in the map.
+//   - 1200 is intentionally remapped to "all_proxies_unreachable"
+//     (Go-internal — the Go client uses code 1200 as
+//     ErrAllProxiesUnreachable, distinct from C++'s 1200=recruitment_failed
+//     which never surfaces over the wire to a Go client).
 var fdbErrorDescriptions = map[int]string{
+	1006: "all_alternatives_failed",
 	1007: "transaction_too_old",
 	1009: "future_version",
 	1020: "not_committed",
@@ -519,7 +531,9 @@ var fdbErrorDescriptions = map[int]string{
 	1051: "batch_transaction_throttled",
 	1062: "wrong_shard_server",
 	1078: "grv_proxy_memory_limit_exceeded",
-	1200: "all_alternatives_failed",
+	// 1200 is the Go-internal ErrAllProxiesUnreachable (NOT C++'s
+	// 1200=recruitment_failed; see pkg/fdbgo/client/transaction.go).
+	1200: "all_proxies_unreachable",
 	1213: "tag_throttled",
 	1223: "proxy_tag_throttled",
 	1235: "transaction_throttled_hot_shard",
@@ -528,7 +542,8 @@ var fdbErrorDescriptions = map[int]string{
 	2004: "key_outside_legal_range",
 	2005: "inverted_range",
 	2006: "invalid_option_value",
-	2015: "used_during_commit",
+	2015: "future_not_set",
+	2017: "used_during_commit",
 	2101: "transaction_too_large",
 }
 
