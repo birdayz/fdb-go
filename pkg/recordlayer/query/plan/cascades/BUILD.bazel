@@ -129,6 +129,7 @@ go_test(
         "rule_unsorted_sort_elim_test.go",
         "rule_value_predicate_fold_test.go",
         "simplifier_test.go",
+        "wrap_physical_plan_test.go",
     ],
     embed = [":cascades"],
     deps = [
