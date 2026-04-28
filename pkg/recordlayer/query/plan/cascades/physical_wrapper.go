@@ -319,3 +319,73 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 }
 
 var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
+
+// physicalTypeFilterWrapper adapts a `*plans.RecordQueryTypeFilterPlan`
+// to the RelationalExpression interface.
+type physicalTypeFilterWrapper struct {
+	plan       *plans.RecordQueryTypeFilterPlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalTypeFilterWrapper constructs the wrapper.
+func NewPhysicalTypeFilterWrapper(plan *plans.RecordQueryTypeFilterPlan, innerQuant expressions.Quantifier) *physicalTypeFilterWrapper {
+	return &physicalTypeFilterWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalTypeFilterWrapper) GetPlan() *plans.RecordQueryTypeFilterPlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value.
+func (w *physicalTypeFilterWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalTypeFilterWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false.
+func (w *physicalTypeFilterWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false.
+func (w *physicalTypeFilterWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalTypeFilterWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares the wrapped plan.
+func (w *physicalTypeFilterWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalTypeFilterWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalTypeFilterWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("phystypefiltwrap|"))
+	if w.plan != nil {
+		var b [8]byte
+		ph := w.plan.HashCodeWithoutChildren()
+		for i := 0; i < 8; i++ {
+			b[i] = byte(ph >> (8 * (7 - i)))
+		}
+		h.Write(b[:])
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper.
+func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalTypeFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalTypeFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)
