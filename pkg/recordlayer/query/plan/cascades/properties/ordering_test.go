@@ -83,6 +83,45 @@ func TestIsOrdered_Convenience(t *testing.T) {
 	}
 }
 
+// TestEstimateOrdering_DMLInheritsInner pins that DML operations
+// (Insert / Update / Delete) inherit ordering from their inner.
+// Important because DML is row-pass-through — if the inner is a
+// sorted scan, the DML output can be assumed sorted too.
+func TestEstimateOrdering_InsertInheritsInner(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Source"}, values.UnknownType)
+	keys := []expressions.SortKey{
+		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+	}
+	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	ins := expressions.NewInsertExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(sort)),
+		"Target",
+		values.UnknownType,
+	)
+	o := properties.EstimateOrdering(ins)
+	if !o.IsKnown {
+		t.Fatal("Insert(Sort(...)) ordering = unknown, want known (DML pass-through)")
+	}
+}
+
+func TestEstimateOrdering_DeleteInheritsInner(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	keys := []expressions.SortKey{
+		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+	}
+	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	del := expressions.NewDeleteExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(sort)),
+		"Order",
+	)
+	o := properties.EstimateOrdering(del)
+	if !o.IsKnown {
+		t.Fatal("Delete(Sort(...)) ordering = unknown, want known (DML pass-through)")
+	}
+}
+
 func TestEstimateOrdering_Union_NotKnown(t *testing.T) {
 	t.Parallel()
 	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
