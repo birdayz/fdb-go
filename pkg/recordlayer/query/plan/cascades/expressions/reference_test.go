@@ -49,3 +49,14 @@ func TestReference_Get_EmptyReturnsNil(t *testing.T) {
 		t.Fatal("empty reference Get should return nil")
 	}
 }
+
+func TestReference_Insert_PanicsOnNil(t *testing.T) {
+	t.Parallel()
+	r := InitialOf(&stubExpr{name: "X"})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic on Insert(nil)")
+		}
+	}()
+	r.Insert(nil)
+}
