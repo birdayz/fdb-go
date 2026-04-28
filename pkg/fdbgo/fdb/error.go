@@ -3,8 +3,10 @@ package fdb
 import "fmt"
 
 // Error represents a low-level error returned by FoundationDB.
-// Compare the Code field against FDB error codes, or pass to
-// Transaction.OnError to determine if the error is retryable.
+// Compare the Code field against FDB error codes, pass to
+// Transaction.OnError to determine if the error is retryable, or
+// call IsRetryable(code) directly for the canonical
+// FDB_ERROR_PREDICATE_RETRYABLE classification.
 type Error struct {
 	Code int
 }
