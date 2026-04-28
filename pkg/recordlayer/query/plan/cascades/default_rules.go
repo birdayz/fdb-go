@@ -111,13 +111,14 @@ func BatchAExpressionRules() []ExpressionRule {
 // the planner needs to physical-implement DML expressions
 // (INSERT / DELETE / UPDATE).
 //
-// Currently 2 of 3 DML implement rules ported. UpdateExpression
-// → UpdatePlan rule is gated on per-row UpdateTransform plumbing
-// which is out of scope for the seed.
+// All 3 DML implement rules now ported (Insert / Delete / Update).
+// Per-row transform application for Update happens at execution
+// time, not rule-fire time — transforms pass through unchanged.
 func DMLImplementationRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewImplementInsertRule(),
 		NewImplementDeleteRule(),
+		NewImplementUpdateRule(),
 	}
 }
 

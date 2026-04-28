@@ -632,3 +632,80 @@ func (w *physicalDeleteWrapper) HintCost(child []properties.Cost) properties.Cos
 }
 
 var _ expressions.RelationalExpression = (*physicalDeleteWrapper)(nil)
+
+// physicalUpdateWrapper adapts `*plans.RecordQueryUpdatePlan` to
+// the RelationalExpression interface.
+type physicalUpdateWrapper struct {
+	plan       *plans.RecordQueryUpdatePlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalUpdateWrapper constructs the wrapper.
+func NewPhysicalUpdateWrapper(plan *plans.RecordQueryUpdatePlan, innerQuant expressions.Quantifier) *physicalUpdateWrapper {
+	return &physicalUpdateWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalUpdateWrapper) GetPlan() *plans.RecordQueryUpdatePlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value.
+func (w *physicalUpdateWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalUpdateWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false.
+func (w *physicalUpdateWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false.
+func (w *physicalUpdateWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalUpdateWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares wrapped plans.
+func (w *physicalUpdateWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalUpdateWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalUpdateWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physupdatewrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper.
+func (w *physicalUpdateWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalUpdateWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalUpdateWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+// HintCost: UPDATE write-heavy cost like INSERT/DELETE.
+func (w *physicalUpdateWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	return properties.Cost{
+		Cardinality: in * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
+	}
+}
+
+var _ expressions.RelationalExpression = (*physicalUpdateWrapper)(nil)
