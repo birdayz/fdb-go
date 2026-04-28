@@ -15,9 +15,13 @@ go_library(
 
 go_test(
     name = "plangen_test",
-    srcs = ["plangen_test.go"],
+    srcs = [
+        "optimize_test.go",
+        "plangen_test.go",
+    ],
     deps = [
         ":plangen",
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
