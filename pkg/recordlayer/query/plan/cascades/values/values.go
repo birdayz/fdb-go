@@ -2001,3 +2001,28 @@ func IsNonEvaluable(v Value) bool {
 // multi-row and can't be evaluated per-row by the standard
 // Evaluate path. Implements NonEvaluable.
 func (*AggregateValue) IsNonEvaluable() bool { return true }
+
+// IndexOnly is the Go-side counterpart to Java's
+// `Value.IndexOnlyValue` interface marker. Any Value whose result
+// can ONLY be produced by an index scan (vs a streaming
+// aggregator over the base records) implements this marker.
+//
+// Used by: RowNumberValue, DistanceRowNumberValue, IndexOnlyAggregateValue.
+//
+// Planner / matcher code can type-assert against this to refuse to
+// optimise paths that would require running the value over a base-
+// record scan — they MUST be matched against an index, otherwise
+// the plan fails to compile.
+type IndexOnly interface {
+	Value
+	IsIndexOnly() bool
+}
+
+// IsIndexOnly is a helper that any Value can call to check whether
+// v requires an index scan to produce its result.
+func IsIndexOnly(v Value) bool {
+	if io, ok := v.(IndexOnly); ok {
+		return io.IsIndexOnly()
+	}
+	return false
+}
