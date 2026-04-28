@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "expressions",
+    srcs = [
+        "alias_map.go",
+        "expression.go",
+        "logical_filter.go",
+        "quantifier.go",
+        "reference.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
+)
+
+go_test(
+    name = "expressions_test",
+    srcs = [
+        "alias_map_test.go",
+        "expression_test.go",
+        "logical_filter_test.go",
+        "quantifier_test.go",
+        "reference_test.go",
+    ],
+    embed = [":expressions"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
+)
