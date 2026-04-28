@@ -248,6 +248,50 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_DeleteWithFilter_DMLPipeline exercises the DML
+// implement chain end-to-end:
+//
+//	DELETE FROM Order WHERE active
+//	  ↓ Convert
+//	LogicalDelete(LogicalFilter(LogicalScan))
+//	  ↓ Planner.Plan with Default + Batch A + DML rules
+//	  ↓ extracted plan: physical Delete(Filter(Scan))
+//
+// Pins that the DML implement rule chain works end-to-end through
+// the full pipeline.
+func TestEndToEnd_DeleteWithFilter_DMLPipeline(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+
+	// DELETE FROM Order WHERE active
+	src := logical.NewDelete(
+		"Order",
+		logical.NewFilterWithPredicate(
+			logical.NewScan("Order", ""),
+			pred, "active",
+		),
+	)
+
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, nil)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	t.Logf("DELETE pipeline: extracted %T (%d tasks, %d Reference members)",
+		plan, tasks, len(ref.Members()))
+}
+
 // TestEndToEnd_RealisticSQLShape_DistinctSortFilterScan exercises
 // a 4-deep operator chain through the full pipeline:
 //
