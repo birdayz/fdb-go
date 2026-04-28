@@ -61,6 +61,33 @@ func reflectTypeName(r ExpressionRule) string {
 	return fmt.Sprintf("%T", r)
 }
 
+// TestDefaultRules_AutoRegistered pins that the package init
+// hook (registerDefaultRules) registers every default rule's short
+// type name in the registry. Diagnostic / explain output relies on
+// LookupRule(name) → rule, so a regression here breaks rule-trace
+// logs without a clear failure.
+func TestDefaultRules_AutoRegistered(t *testing.T) {
+	t.Parallel()
+	wantNames := []string{
+		"FilterMergeRule",
+		"FilterDropTruePredicatesRule",
+		"DistinctMergeRule",
+		"TypeFilterMergeRule",
+		"UnionMergeRule",
+		"IntersectionMergeRule",
+		"NoOpFilterRule",
+		"ProjectionElimRule",
+		"UnsortedSortElimRule",
+		"UnionSingletonElimRule",
+		"IntersectionSingletonElimRule",
+	}
+	for _, n := range wantNames {
+		if got := LookupRule(n); got == nil {
+			t.Errorf("LookupRule(%q) = nil after package init — registerDefaultRules didn't include it", n)
+		}
+	}
+}
+
 // TestDefaultRules_StableOrder pins that DefaultExpressionRules
 // returns the rules in the same order on every call. The fixpoint
 // driver iterates rules in this order, so a rule reordering would
