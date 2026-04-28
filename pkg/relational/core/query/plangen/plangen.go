@@ -16,12 +16,18 @@
 // Currently supported:
 //   - LogicalScan → FullUnorderedScanExpression
 //   - LogicalFilter (Predicate non-nil) → LogicalFilterExpression
-//   - LogicalUnion → LogicalUnionExpression (recursive)
+//   - LogicalUnion → LogicalUnionExpression (recursive); UNION
+//     DISTINCT wraps with LogicalDistinctExpression
 //   - LogicalDelete → DeleteExpression (keyed by target table)
 //   - LogicalInsert (Source non-nil) → InsertExpression
+//   - LogicalProject (bare-column projections only) →
+//     LogicalProjectionExpression; non-bare-column entries fall
+//     back to ErrUnsupported
 //
 // Currently unsupported (returns ErrUnsupported):
-//   - LogicalProject / LogicalSort — need text→Value parsing
+//   - LogicalProject with expression projections — needs text→Value
+//     parsing
+//   - LogicalSort — needs text→Value parsing
 //   - LogicalLimit — no RelationalExpression equivalent yet
 //   - LogicalAggregate — needs GroupByExpression port
 //   - LogicalJoin — maps to SelectExpression with multiple
@@ -70,6 +76,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertDelete(o)
 	case *logical.LogicalInsert:
 		return convertInsert(o)
+	case *logical.LogicalProject:
+		return convertProject(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -146,4 +154,52 @@ func convertInsert(i *logical.LogicalInsert) (expressions.RelationalExpression, 
 	}
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 	return expressions.NewInsertExpression(q, i.Table, values.UnknownType), nil
+}
+
+// convertProject builds a LogicalProjectionExpression for the
+// recursively-converted child, but ONLY if every projection is a
+// bare column name. Anything more (arithmetic, function call,
+// scalar subquery, dotted reference) requires a text→Value parser
+// that we don't have here yet.
+//
+// Aliases are dropped — the projection's column-naming is decided
+// by the upstream catalog walker; the projection list captures
+// only the value flow.
+func convertProject(p *logical.LogicalProject) (expressions.RelationalExpression, error) {
+	for i, pj := range p.Projections {
+		if !isBareColumn(pj) {
+			return nil, fmt.Errorf("%w: LogicalProject entry %d (%q) is not a bare column", ErrUnsupported, i, pj)
+		}
+	}
+	inner, err := Convert(p.Input)
+	if err != nil {
+		return nil, fmt.Errorf("project input: %w", err)
+	}
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	projected := make([]values.Value, len(p.Projections))
+	for i, pj := range p.Projections {
+		projected[i] = &values.FieldValue{Field: pj, Typ: values.UnknownType}
+	}
+	return expressions.NewLogicalProjectionExpression(projected, q), nil
+}
+
+// isBareColumn reports whether s is a SQL identifier with no
+// punctuation — letters/digits/underscore only, starting with a
+// letter or underscore. The sql parser preserves casing, so we
+// don't normalise here. Empty string is rejected.
+func isBareColumn(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_'
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 && !isLetter {
+			return false
+		}
+		if !isLetter && !isDigit {
+			return false
+		}
+	}
+	return true
 }

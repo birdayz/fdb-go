@@ -6,6 +6,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/plangen"
 )
@@ -144,16 +145,65 @@ func TestConvert_Insert_NoSource_Unsupported(t *testing.T) {
 	}
 }
 
-func TestConvert_Project_Unsupported(t *testing.T) {
+func TestConvert_Project_BareColumns(t *testing.T) {
 	t.Parallel()
 	src := logical.NewProject(
 		logical.NewScan("Order", ""),
 		[]string{"id", "name"},
 		[]string{"", ""},
 	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	p, ok := got.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalProjectionExpression", got)
+	}
+	pv := p.GetProjectedValues()
+	if len(pv) != 2 {
+		t.Fatalf("projected values len=%d, want 2", len(pv))
+	}
+	for i, want := range []string{"id", "name"} {
+		fv, ok := pv[i].(*values.FieldValue)
+		if !ok {
+			t.Fatalf("projected[%d] = %T, want *values.FieldValue", i, pv[i])
+		}
+		if fv.Field != want {
+			t.Fatalf("projected[%d].Field = %q, want %q", i, fv.Field, want)
+		}
+	}
+	innerExpr := p.GetInner().GetRangesOver().Get()
+	if _, ok := innerExpr.(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("project inner = %T, want *FullUnorderedScanExpression", innerExpr)
+	}
+}
+
+func TestConvert_Project_ExpressionUnsupported(t *testing.T) {
+	t.Parallel()
+	// "id + 10" is not a bare column → unsupported.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"id", "id + 10"},
+		[]string{"", ""},
+	)
 	_, err := plangen.Convert(src)
 	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (Project text→Value parsing not yet wired)", err)
+		t.Fatalf("got %v, want ErrUnsupported (expression projection not yet wired)", err)
+	}
+}
+
+func TestConvert_Project_QualifiedUnsupported(t *testing.T) {
+	t.Parallel()
+	// "Order.id" has a dot → unsupported (qualified-column needs scope).
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"Order.id"},
+		[]string{""},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (qualified-column not yet wired)", err)
 	}
 }
 

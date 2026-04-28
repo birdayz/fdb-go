@@ -20,6 +20,7 @@ go_test(
         ":plangen",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/query/logical",
     ],
 )
