@@ -362,3 +362,76 @@ func TestConvert_NestedFilterOverFilter(t *testing.T) {
 		t.Fatalf("scan = %T, want *FullUnorderedScanExpression", scanExpr)
 	}
 }
+
+// FuzzConvert pins the no-panic invariant: Convert may return any
+// (RelationalExpression, error) shape but MUST NOT panic, including
+// on adversarial input shapes the SQL parser would never produce
+// (deeply nested operators, empty columns/aliases, unicode quirks
+// in identifiers, etc.). We don't assert on the result tree shape —
+// only that the call returns cleanly.
+func FuzzConvert(f *testing.F) {
+	// Seed with shapes that exercise each top-level case.
+	f.Add(uint64(0), "Order", "", uint8(0))
+	f.Add(uint64(1), "T", "x", uint8(1))
+	f.Add(uint64(2), "A", "B", uint8(2))
+	f.Add(uint64(3), "x", "y", uint8(3))
+	f.Add(uint64(0xff), "", "", uint8(255))
+	f.Fuzz(func(t *testing.T, seed uint64, name1, name2 string, shape uint8) {
+		op := buildFuzzOp(seed, name1, name2, shape)
+		if op == nil {
+			return
+		}
+		// Fail loudly on any panic.
+		_, _ = plangen.Convert(op)
+	})
+}
+
+// buildFuzzOp builds a small LogicalOperator tree based on the fuzz
+// inputs. Keeps depth bounded (stops recursing past 4 levels) so
+// fuzz iterations stay fast.
+func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalOperator {
+	const maxDepth = 4
+	var build func(depth int, s uint64) logical.LogicalOperator
+	build = func(depth int, s uint64) logical.LogicalOperator {
+		if depth >= maxDepth {
+			return logical.NewScan(name1, name2)
+		}
+		switch s % 8 {
+		case 0:
+			return logical.NewScan(name1, name2)
+		case 1:
+			return logical.NewFilter(build(depth+1, s>>3), name1)
+		case 2:
+			return logical.NewFilterWithPredicate(
+				build(depth+1, s>>3),
+				predicates.NewConstantPredicate(predicates.TriTrue),
+				"TRUE",
+			)
+		case 3:
+			return logical.NewUnion(
+				[]logical.LogicalOperator{build(depth+1, s>>3), build(depth+1, s>>4)},
+				(s&1) == 1,
+			)
+		case 4:
+			return logical.NewProject(
+				build(depth+1, s>>3),
+				[]string{name1, name2},
+				[]string{"", ""},
+			)
+		case 5:
+			return logical.NewSort(
+				build(depth+1, s>>3),
+				[]logical.SortKey{{Expr: name1, Dir: logical.SortAsc}},
+			)
+		case 6:
+			return logical.NewDelete(name1, build(depth+1, s>>3))
+		case 7:
+			return logical.NewInsert(name1, []string{name2}, build(depth+1, s>>3))
+		}
+		return nil
+	}
+	if shape&1 == 1 {
+		return nil // exercise the nil-input path occasionally
+	}
+	return build(0, seed)
+}
