@@ -50,20 +50,48 @@ func (r *Reference) Members() []RelationalExpression {
 }
 
 // Insert adds e to the equivalence class if no existing member already
-// matches under EqualsWithoutChildren with the empty alias map. Returns
-// true if the member was inserted, false if a duplicate was found.
+// matches under (EqualsWithoutChildren ∧ same-child-References).
+// Returns true if the member was inserted, false if a duplicate was
+// found.
 //
-// This is the seed of memo deduplication — it covers the common case
-// (rule fires, produces an expression that's structurally identical to
-// an existing one). Full memo-group dedup (where two children are
-// distinct objects but share a Reference) needs the Memo machinery and
-// lands in B3.
+// Dedup contract:
+//   - EqualsWithoutChildren on the node-information itself (predicate
+//     list, projection list, sort keys, etc.).
+//   - PLUS every Quantifier's GetRangesOver() must point at the SAME
+//     Reference instance on both sides — pointer identity, not
+//     structural Reference equivalence.
+//
+// The second clause prevents false-equivalence between two filters
+// with the same predicate list but different inner row streams: a
+// LogicalFilter over Reference(LogicalDistinct(scanA)) is NOT
+// equivalent to a LogicalFilter over Reference(LogicalDistinct(scanB))
+// even when their predicate lists agree. The full Memo (B3 follow-on)
+// generalises this from pointer-identity to "same equivalence-class"
+// when Memo groups merge.
 func (r *Reference) Insert(e RelationalExpression) bool {
 	for _, m := range r.members {
-		if m.EqualsWithoutChildren(e, EmptyAliasMap()) {
+		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
 		}
 	}
 	r.members = append(r.members, e)
+	return true
+}
+
+// sameChildReferences returns true if a and b have the same
+// Quantifier count AND every Quantifier's Reference is the same
+// pointer on both sides. Used by Reference.Insert as the second
+// clause of the dedup contract.
+func sameChildReferences(a, b RelationalExpression) bool {
+	aQs := a.GetQuantifiers()
+	bQs := b.GetQuantifiers()
+	if len(aQs) != len(bQs) {
+		return false
+	}
+	for i := range aQs {
+		if aQs[i].GetRangesOver() != bQs[i].GetRangesOver() {
+			return false
+		}
+	}
 	return true
 }

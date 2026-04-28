@@ -16,57 +16,59 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 }
 
 // TestDefaultRules_EndToEndOptimisation drives a multi-rule rewrite
-// through the default rule set on a Filter(TRUE) over Filter(FALSE)
-// over Scan. Two distinct predicates so seed Reference dedup
-// (EqualsWithoutChildren on predicate-list equality) doesn't merge
-// them.
+// chain through the default rule set:
 //
-// FilterMerge fires once: → Filter([TRUE, FALSE]) over Scan added to
-// Reference. (NoOpFilterRule does NOT fire on this merged shape since
-// FALSE is not TRUE.)
+//	Filter(TRUE) over Filter(TRUE) over Distinct over Distinct over Scan
 //
-// Pins that the default rule set (a) wires up correctly, (b) at least
-// FilterMerge fires through FixpointApply.
+// Each rule fires in turn and each yield grows the Reference because
+// Reference.Insert's children-aware dedup distinguishes shapes that
+// share EqualsWithoutChildren but range over different inner
+// References (the dedup contract documented on Reference.Insert).
 //
-// NOTE: This test deliberately does NOT chain past the merge — the
-// seed Reference dedup is per-Java-class structural-only and doesn't
-// distinguish "Filter([T]) over X" from "Filter([T]) over Y" by their
-// inner X/Y. Full multi-step optimisation chains need the proper
-// Memo (B3 follow-on) where Reference dedup considers child
-// references too. Pin only the legitimate seed-level behaviour.
+// Expected fires (over 2-3 iterations):
+//   - FilterMerge on outer Filter — yields Filter([T,T]) over outerD's Q.
+//   - NoOpFilter on outer Filter — yields innerF.
+//   - NoOpFilter on the merged Filter([T,T]) — yields outerD.
+//   - DistinctMerge on outerD — yields Distinct over scanQ.
+//
+// Test pins that the optimisation chain produces a Distinct(Scan)
+// member somewhere in the resulting Reference.
 func TestDefaultRules_EndToEndOptimisation(t *testing.T) {
 	t.Parallel()
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	pInner := predicates.NewConstantPredicate(predicates.TriFalse) // distinct
-	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pInner}, scanQ)
+	innerD := expressions.NewLogicalDistinctExpression(scanQ)
+	innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+	outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+	outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
 	innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
-	pOuter := predicates.NewConstantPredicate(predicates.TriTrue)
-	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pOuter}, innerFQ)
+	outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
 	ref := expressions.InitialOf(outerF)
 
 	progress, converged := FixpointApply(DefaultExpressionRules(), ref, 50)
 	if !converged {
 		t.Fatalf("did not converge — progress=%d", progress)
 	}
-	if progress < 1 {
-		t.Fatalf("progress=%d, want at least 1 (FilterMergeRule fires)", progress)
+	if progress < 4 {
+		t.Fatalf("progress=%d, want at least 4 (FilterMerge + 2× NoOpFilter + DistinctMerge)", progress)
 	}
 
-	// Find the merged Filter(TRUE, FALSE) member — proves
-	// FilterMergeRule went through the default rule set + fixpoint.
-	foundMerged := false
+	// Find the most-optimised member: Distinct directly over Scan.
+	foundShape := false
 	for _, m := range ref.Members() {
-		f, ok := m.(*expressions.LogicalFilterExpression)
+		d, ok := m.(*expressions.LogicalDistinctExpression)
 		if !ok {
 			continue
 		}
-		if len(f.GetPredicates()) == 2 {
-			foundMerged = true
+		inner := d.GetInner().GetRangesOver().Get()
+		if _, ok := inner.(*expressions.FullUnorderedScanExpression); ok {
+			foundShape = true
 			break
 		}
 	}
-	if !foundMerged {
-		t.Fatalf("after fixpoint, no merged-2-predicate Filter member — Reference has %d members", len(ref.Members()))
+	if !foundShape {
+		t.Fatalf("after fixpoint, Reference has no Distinct(Scan) member — members=%d", len(ref.Members()))
 	}
 }
