@@ -9,13 +9,32 @@
 // describing the row shape it emits, and a small bundle of
 // node-information fields specific to the operator.
 //
-// This is the seed of Track B1 (RFC-022 §4.1). The minimal viable scope
-// — interface + Quantifier + Reference + AliasMap + LogicalFilterExpression
-// — gates B3 (Memo & references), B4 (Cost), B5 (Rules). Subsequent
-// shifts will land the rest of the 8 logical operator subclasses
-// (LogicalProjection, LogicalSort, LogicalUnion, LogicalDistinct,
-// LogicalIntersection, LogicalTypeFilter, Select) and the 4 DML
-// expressions (Insert, Update, Delete, TableFunction).
+// Track B1 (RFC-022 §4.1) seed shipped dayshift-58. Concrete operators:
+//
+//   - Logical (8): LogicalFilterExpression, LogicalProjectionExpression,
+//     LogicalSortExpression, LogicalTypeFilterExpression,
+//     LogicalDistinctExpression, LogicalUnionExpression,
+//     LogicalIntersectionExpression, SelectExpression.
+//   - DML (3): InsertExpression, UpdateExpression, DeleteExpression.
+//   - Leaf (1): FullUnorderedScanExpression.
+//
+// Foundation types: Quantifier (ForEach kind), Reference (single-member
+// equivalence class with EqualsWithoutChildren-and-children-aware
+// dedup), AliasMap (CorrelationIdentifier bijection).
+//
+// Walk infrastructure: SemanticEquals (positional + permutation-aware
+// for ChildrenAsSet operators with cap at MaxPermutationChildren=8).
+//
+// Optional interface: RelationalExpressionWithPredicates — implemented
+// by LogicalFilterExpression and SelectExpression for generic predicate-
+// walker rules.
+//
+// Remaining for full B1: TableFunctionExpression (gated on
+// StreamingValue port), Java's TempTableInsert / TempTableScan /
+// RecursiveUnion / Explode / GroupBy expressions (not in TODO.md's
+// listed scope), TranslationMap-based rebasing for push-down rules
+// (B5 follow-on), MaxMatchMap / partial-match infrastructure (B3
+// follow-on).
 package expressions
 
 import (
