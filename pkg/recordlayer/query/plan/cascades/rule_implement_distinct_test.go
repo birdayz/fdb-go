@@ -66,6 +66,78 @@ func TestImplementDistinctRule_FiresAfterTypeFilterImplemented(t *testing.T) {
 	}
 }
 
+// TestImplementDistinctRule_FiresOverPhysicalUnion pins the 7-wrapper
+// symmetry fix: Distinct over a physically-implemented Union now
+// fires correctly. This is the UNION DISTINCT pattern's lowering —
+// LogicalDistinct(LogicalUnion(...)) → Distinct(Union(...)).
+//
+// Pre-fix, Distinct's inner-type switch lacked physicalUnionWrapper,
+// so this shape silently couldn't physically implement.
+func TestImplementDistinctRule_FiresOverPhysicalUnion(t *testing.T) {
+	t.Parallel()
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	refA := expressions.InitialOf(scanA)
+	refB := expressions.InitialOf(scanB)
+	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ForEachQuantifier(refB),
+	})
+	unionRef := expressions.InitialOf(union)
+	dist := expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(unionRef),
+	)
+	topRef := expressions.InitialOf(dist)
+
+	FireExpressionRule(NewPrimaryScanRule(), refA)
+	FireExpressionRule(NewPrimaryScanRule(), refB)
+	FireExpressionRule(NewImplementUnionRule(), unionRef)
+
+	yielded := FireExpressionRule(NewImplementDistinctRule(), topRef)
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementDistinctRule yielded %d, want 1 (Distinct over physical Union)", len(yielded))
+	}
+	wrap := yielded[0].(*physicalDistinctWrapper)
+	if _, ok := wrap.GetPlan().GetInner().(*plans.RecordQueryUnionPlan); !ok {
+		t.Fatalf("inner = %T, want *RecordQueryUnionPlan", wrap.GetPlan().GetInner())
+	}
+}
+
+// TestImplementSortRule_FiresOverPhysicalIntersection pins the 7-
+// wrapper symmetry fix for Sort over Intersection. ORDER BY over
+// INTERSECT is a common SQL pattern; the symmetry fix is what
+// allows it to physically implement.
+func TestImplementSortRule_FiresOverPhysicalIntersection(t *testing.T) {
+	t.Parallel()
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	refA := expressions.InitialOf(scanA)
+	refB := expressions.InitialOf(scanB)
+	intr := expressions.NewLogicalIntersectionExpression(
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(refA),
+			expressions.ForEachQuantifier(refB),
+		},
+		nil,
+	)
+	intrRef := expressions.InitialOf(intr)
+	sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(intrRef))
+	topRef := expressions.InitialOf(sort)
+
+	FireExpressionRule(NewPrimaryScanRule(), refA)
+	FireExpressionRule(NewPrimaryScanRule(), refB)
+	FireExpressionRule(NewImplementIntersectionRule(), intrRef)
+
+	yielded := FireExpressionRule(NewImplementSortRule(), topRef)
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementSortRule yielded %d, want 1 (Sort over physical Intersection)", len(yielded))
+	}
+	wrap := yielded[0].(*physicalSortWrapper)
+	if _, ok := wrap.GetPlan().GetInner().(*plans.RecordQueryIntersectionPlan); !ok {
+		t.Fatalf("inner = %T, want *RecordQueryIntersectionPlan", wrap.GetPlan().GetInner())
+	}
+}
+
 // TestImplementDistinctRule_NoFireWithoutPhysicalInner pins the
 // gate.
 func TestImplementDistinctRule_NoFireWithoutPhysicalInner(t *testing.T) {
