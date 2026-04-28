@@ -34,6 +34,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewProjectionMergeRule(),
 		NewProjectionElimRule(),
 		NewSortMergeRule(),
+		NewSortDedupKeysRule(),
 		NewUnsortedSortElimRule(),
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
