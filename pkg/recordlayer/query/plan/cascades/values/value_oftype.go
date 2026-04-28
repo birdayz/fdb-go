@@ -57,6 +57,18 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 // runtime bool, TypeCodeLong matches a runtime int64, etc. Field-
 // level structural comparison (e.g. RecordType field-set match) is
 // gated on a future extension.
+//
+// CONFORMANCE NOTE: Java's OfTypeValue.eval has three branches the
+// seed doesn't yet replicate:
+//  1. NULL probe → returns `expectedType.isNullable()` (not UNKNOWN).
+//  2. DynamicMessage probe → returns `expectedType.isRecord()`.
+//  3. Cross-type promotion → returns true if PromoteValue can
+//     coerce the runtime value's type to ExpectedType.
+//
+// Today no planner rule rewrites to OfTypeValue, so the gap is
+// theoretical. When such a rule lands, this Evaluate must match
+// the Java surface — particularly the nullable-aware NULL branch
+// and the cross-type promotion check.
 func (v *OfTypeValue) Evaluate(evalCtx any) any {
 	if v.Child == nil || v.ExpectedType == nil {
 		return nil
