@@ -662,20 +662,21 @@ func FuzzApplyBitOp(f *testing.F) {
 // fit: ~1B mutations exhaust the type-pair × value-magnitude space
 // faster than a hand-written matrix could.
 func FuzzCompareValues(f *testing.F) {
-	// Seed: walk every combination of representative values × types.
+	// Seed: walk every combination of representative values × types ×
+	// a third index for transitivity.
 	for _, ai := range []int{0, 1, 2, 3, 4, 5} {
 		for _, bi := range []int{0, 1, 2, 3, 4, 5} {
-			f.Add(ai, bi, int64(0), float64(0), "", false, []byte(nil))
+			f.Add(ai, bi, 0, int64(0), float64(0), "", false, []byte(nil))
 		}
 	}
-	f.Add(0, 1, int64(7), float64(3.14), "hello", true, []byte("bytes"))
-	f.Add(2, 3, int64(-1), float64(0), "", false, []byte{})
-	f.Add(4, 5, int64(1<<53), float64(1<<53)+1, "z", true, []byte{0xff})
+	f.Add(0, 1, 2, int64(7), float64(3.14), "hello", true, []byte("bytes"))
+	f.Add(2, 3, 4, int64(-1), float64(0), "", false, []byte{})
+	f.Add(4, 5, 1, int64(1<<53), float64(1<<53)+1, "z", true, []byte{0xff})
 
 	// fuzzCompareValuesPick maps a small int index to a driver.Value of
 	// the corresponding type, drawing from the fuzz-supplied scalars.
 	pick := func(idx int, i int64, fl float64, s string, b bool, by []byte) driver.Value {
-		switch idx % 6 {
+		switch ((idx % 6) + 6) % 6 {
 		case 0:
 			return nil
 		case 1:
@@ -692,9 +693,10 @@ func FuzzCompareValues(f *testing.F) {
 		return nil
 	}
 
-	f.Fuzz(func(t *testing.T, ai, bi int, i int64, fl float64, s string, b bool, by []byte) {
+	f.Fuzz(func(t *testing.T, ai, bi, ci int, i int64, fl float64, s string, b bool, by []byte) {
 		a := pick(ai, i, fl, s, b, by)
 		bv := pick(bi, i, fl, s, b, by)
+		c := pick(ci, i, fl, s, b, by)
 		// No panic on any input.
 		got := functions.CompareValues(a, bv)
 		// Result must be in {-1, 0, 1}.
@@ -712,6 +714,25 @@ func FuzzCompareValues(f *testing.F) {
 		if af, ok := a.(float64); !ok || af == af { // af == af false iff NaN
 			if r := functions.CompareValues(a, a); r != 0 {
 				t.Fatalf("reflexivity: CompareValues(%v, %v) = %d, want 0", a, a, r)
+			}
+		}
+		// Transitivity: if a ≤ b and b ≤ c then a ≤ c. Total-order
+		// requirement; sort stability depends on it. NaN floats break
+		// the comparison axioms (NaN is incomparable in IEEE754; our
+		// implementation falls back to type-name ordering, which is
+		// consistent but not order-preserving against itself), so skip
+		// the transitivity check whenever any operand is a NaN float.
+		hasNaN := func(x driver.Value) bool {
+			f, ok := x.(float64)
+			return ok && f != f
+		}
+		if !hasNaN(a) && !hasNaN(bv) && !hasNaN(c) {
+			ab := functions.CompareValues(a, bv)
+			bc := functions.CompareValues(bv, c)
+			ac := functions.CompareValues(a, c)
+			if ab <= 0 && bc <= 0 && ac > 0 {
+				t.Fatalf("transitivity: a≤b ∧ b≤c ⇒ a≤c violated:\n  a=%v, b=%v, c=%v\n  Compare(a,b)=%d Compare(b,c)=%d Compare(a,c)=%d",
+					a, bv, c, ab, bc, ac)
 			}
 		}
 		// Bool × bool with both values: the fuzz-supplied `b` is used
