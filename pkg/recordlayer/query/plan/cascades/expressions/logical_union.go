@@ -51,6 +51,10 @@ func (e *LogicalUnionExpression) GetQuantifiers() []Quantifier { return e.quanti
 // expressions.
 func (e *LogicalUnionExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is true — Java marks LogicalUnion as
+// ChildrenAsSet, since UNION is commutative.
+func (e *LogicalUnionExpression) ChildrenAsSet() bool { return true }
+
 // GetCorrelatedToWithoutChildren returns the empty set (Java behaviour).
 func (e *LogicalUnionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}

@@ -66,6 +66,9 @@ func (e *FullUnorderedScanExpression) GetQuantifiers() []Quantifier { return nil
 // correlation possible.
 func (e *FullUnorderedScanExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false — leaf has no children.
+func (e *FullUnorderedScanExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren returns the empty set — scans are
 // closed over no upstream Quantifiers.
 func (e *FullUnorderedScanExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {

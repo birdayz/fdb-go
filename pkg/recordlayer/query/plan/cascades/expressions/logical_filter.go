@@ -66,6 +66,9 @@ func (e *LogicalFilterExpression) GetQuantifiers() []Quantifier {
 // inter-child correlation possible.
 func (e *LogicalFilterExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false — single child, ordering is trivially unique.
+func (e *LogicalFilterExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren returns the union of correlation
 // sets across all predicates (including the Value trees those
 // predicates carry — see predicates.GetCorrelatedToOfPredicate).

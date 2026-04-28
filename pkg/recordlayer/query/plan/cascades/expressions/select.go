@@ -79,6 +79,12 @@ func (e *SelectExpression) GetQuantifiers() []Quantifier { return e.quantifiers 
 // must respect that when deciding whether to swap or split children.
 func (e *SelectExpression) CanCorrelate() bool { return true }
 
+// ChildrenAsSet is true — Java marks SelectExpression's
+// quantifier list as ChildrenAsSet (the FROM-list is order-
+// independent under SQL semantics, modulo correlation order which
+// the planner enforces separately).
+func (e *SelectExpression) ChildrenAsSet() bool { return true }
+
 // GetCorrelatedToWithoutChildren returns the union of correlation
 // sets across predicates + the resultValue. Java's behaviour matches.
 func (e *SelectExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {

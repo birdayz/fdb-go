@@ -61,6 +61,9 @@ func (e *InsertExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is false — INSERT has one input.
 func (e *InsertExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false.
+func (e *InsertExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren returns the empty set.
 func (e *InsertExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}

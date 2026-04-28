@@ -87,24 +87,31 @@ type RelationalExpression interface {
 	// EqualsWithoutChildren under the empty alias map: x.Equals(y, ∅)
 	// implies x.HashCode() == y.HashCode().
 	HashCodeWithoutChildren() uint64
+
+	// ChildrenAsSet reports whether this expression's children are
+	// commutative — semantically equal regardless of order. Mirrors
+	// Java's RelationalExpressionWithChildren.ChildrenAsSet marker
+	// interface. When true, SemanticEquals enumerates child
+	// permutations; when false, children are paired positionally.
+	//
+	// Default false. Overridden by LogicalUnion / LogicalIntersection
+	// / SelectExpression — the operators whose children are SQL
+	// set-bag-shaped or whose Java code marks them as ChildrenAsSet.
+	ChildrenAsSet() bool
 }
 
 // SemanticEquals walks two expression trees and reports whether they
 // are semantically equal under `aliases`. The walk:
 //   - early-outs on identity, type mismatch, or
 //     EqualsWithoutChildren disagreement;
-//   - pairs the children positionally (the seed does NOT enumerate
-//     alias permutations — that's a B2 enhancement); for each child
-//     pair, recurses with `aliases` extended by binding the two
-//     Quantifiers' aliases.
+//   - if both sides report ChildrenAsSet, enumerates permutations of
+//     `b`'s children against `a`'s; otherwise pairs positionally;
+//   - for each candidate pairing, extends `aliases` by binding the
+//     two Quantifiers' aliases and recurses into each pair.
 //
-// Positional pairing is correct for operators where children have a
-// canonical order (LogicalFilter has 1 child, LogicalSort has 1 child,
-// LogicalUnion's children are positionally ordered). For commutative
-// operators (LogicalIntersection) the planner is responsible for
-// canonicalising child order before semantic-equals. The full
-// alias-permutation matcher will land alongside MatchableSortExpression
-// when B2/B3 need it.
+// Permutation enumeration is O(N!), which is fine for N up to ~6
+// (queries don't typically have more set-shaped children than that).
+// The first matching permutation wins; if none match, returns false.
 func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -120,7 +127,17 @@ func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 	if len(aQs) == 0 {
 		return true
 	}
-	// Bind each child pair's aliases for the recursive call.
+	// ChildrenAsSet must agree on both sides (marker is per-class, so
+	// they must match if EqualsWithoutChildren passed — but explicit
+	// guard keeps the contract local).
+	if a.ChildrenAsSet() && b.ChildrenAsSet() {
+		return matchChildrenPermuted(aQs, bQs, aliases)
+	}
+	return matchChildrenPositional(aQs, bQs, aliases)
+}
+
+// matchChildrenPositional pairs children index-by-index and recurses.
+func matchChildrenPositional(aQs, bQs []Quantifier, aliases *AliasMap) bool {
 	pairs := make([]values.CorrelationIdentifier, 0, 2*len(aQs))
 	for i := range aQs {
 		pairs = append(pairs, aQs[i].GetAlias(), bQs[i].GetAlias())
@@ -132,4 +149,57 @@ func SemanticEquals(a, b RelationalExpression, aliases *AliasMap) bool {
 		}
 	}
 	return true
+}
+
+// matchChildrenPermuted enumerates permutations of bQs against aQs;
+// returns true if any permutation yields a successful match. O(N!).
+func matchChildrenPermuted(aQs, bQs []Quantifier, aliases *AliasMap) bool {
+	n := len(aQs)
+	indices := make([]int, n)
+	for i := range indices {
+		indices[i] = i
+	}
+	return permute(indices, 0, func(perm []int) bool {
+		// Try this perm: aQs[i] pairs with bQs[perm[i]].
+		pairs := make([]values.CorrelationIdentifier, 0, 2*n)
+		for i := 0; i < n; i++ {
+			pairs = append(pairs, aQs[i].GetAlias(), bQs[perm[i]].GetAlias())
+		}
+		// AliasMapOf panics on duplicate sources/targets. With a real
+		// permutation each alias appears exactly once on each side, so
+		// the bijection invariant holds — but defensively recover here
+		// to skip over any pathological self-permuting tree.
+		var composed *AliasMap
+		func() {
+			defer func() { _ = recover() }()
+			composed = aliases.Compose(AliasMapOf(pairs...))
+		}()
+		if composed == nil {
+			return false
+		}
+		for i := 0; i < n; i++ {
+			if !SemanticEquals(aQs[i].GetRangesOver().Get(), bQs[perm[i]].GetRangesOver().Get(), composed) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// permute enumerates permutations of `arr` in place, calling `accept`
+// on each. Stops at the first true return. Returns true iff any call
+// returned true. Standard recursive Heap-style enumeration.
+func permute(arr []int, k int, accept func(perm []int) bool) bool {
+	if k == len(arr) {
+		return accept(arr)
+	}
+	for i := k; i < len(arr); i++ {
+		arr[k], arr[i] = arr[i], arr[k]
+		if permute(arr, k+1, accept) {
+			arr[k], arr[i] = arr[i], arr[k]
+			return true
+		}
+		arr[k], arr[i] = arr[i], arr[k]
+	}
+	return false
 }

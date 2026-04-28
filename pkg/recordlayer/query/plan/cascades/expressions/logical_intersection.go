@@ -54,6 +54,9 @@ func (e *LogicalIntersectionExpression) GetQuantifiers() []Quantifier { return e
 // CanCorrelate is false — same reasoning as Union.
 func (e *LogicalIntersectionExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is true — INTERSECTION is commutative.
+func (e *LogicalIntersectionExpression) ChildrenAsSet() bool { return true }
+
 // GetCorrelatedToWithoutChildren returns the empty set.
 func (e *LogicalIntersectionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}

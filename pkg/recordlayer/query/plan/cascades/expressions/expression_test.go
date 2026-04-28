@@ -23,6 +23,7 @@ type leafScan struct {
 func (l *leafScan) GetResultValue() values.Value    { return values.NewNullValue(values.UnknownType) }
 func (l *leafScan) GetQuantifiers() []Quantifier    { return nil }
 func (l *leafScan) CanCorrelate() bool              { return false }
+func (l *leafScan) ChildrenAsSet() bool             { return false }
 func (l *leafScan) HashCodeWithoutChildren() uint64 { return uint64(len(l.name)) }
 func (l *leafScan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return nil

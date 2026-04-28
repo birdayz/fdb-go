@@ -47,6 +47,9 @@ func (e *DeleteExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is false.
 func (e *DeleteExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false.
+func (e *DeleteExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren returns the empty set.
 func (e *DeleteExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}

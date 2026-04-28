@@ -11,6 +11,7 @@ type stubExpr struct{ name string }
 func (s *stubExpr) GetResultValue() values.Value    { return values.NewNullValue(values.UnknownType) }
 func (s *stubExpr) GetQuantifiers() []Quantifier    { return nil }
 func (s *stubExpr) CanCorrelate() bool              { return false }
+func (s *stubExpr) ChildrenAsSet() bool             { return false }
 func (s *stubExpr) HashCodeWithoutChildren() uint64 { return 0 }
 func (s *stubExpr) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return nil

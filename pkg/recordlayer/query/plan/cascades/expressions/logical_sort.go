@@ -68,6 +68,9 @@ func (e *LogicalSortExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is always false for a sort — single child.
 func (e *LogicalSortExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false — single child.
+func (e *LogicalSortExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren — Java returns the empty set, but
 // sort keys CAN reference correlated values. We surface them so the
 // planner can detect the case where a sort depends on an outer

@@ -73,6 +73,9 @@ func (e *UpdateExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is false.
 func (e *UpdateExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false.
+func (e *UpdateExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren returns the union of correlation
 // sets across the SET-list NewValue trees.
 func (e *UpdateExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {

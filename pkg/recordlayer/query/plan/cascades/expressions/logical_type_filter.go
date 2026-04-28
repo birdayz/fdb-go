@@ -69,6 +69,9 @@ func (e *LogicalTypeFilterExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is always false — single child.
 func (e *LogicalTypeFilterExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false — single child.
+func (e *LogicalTypeFilterExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren — Java returns the empty set; record
 // types are static metadata.
 func (e *LogicalTypeFilterExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {

@@ -37,6 +37,9 @@ func (e *LogicalDistinctExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is false — single child.
 func (e *LogicalDistinctExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false — single child.
+func (e *LogicalDistinctExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren returns the empty set (Java behaviour).
 func (e *LogicalDistinctExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}

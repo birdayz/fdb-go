@@ -43,6 +43,7 @@ go_test(
         "logical_sort_test.go",
         "logical_type_filter_test.go",
         "logical_union_test.go",
+        "permutation_test.go",
         "quantifier_test.go",
         "reference_test.go",
         "select_test.go",

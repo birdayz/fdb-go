@@ -56,6 +56,9 @@ func (e *LogicalProjectionExpression) GetQuantifiers() []Quantifier {
 // CanCorrelate is always false for a projection — single child.
 func (e *LogicalProjectionExpression) CanCorrelate() bool { return false }
 
+// ChildrenAsSet is false — single child.
+func (e *LogicalProjectionExpression) ChildrenAsSet() bool { return false }
+
 // GetCorrelatedToWithoutChildren is the union of correlation sets
 // across the projection list.
 func (e *LogicalProjectionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
