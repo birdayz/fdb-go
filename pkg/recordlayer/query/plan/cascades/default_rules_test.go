@@ -16,6 +16,18 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 	}
 }
 
+// TestDefaultRules_ExpectedCount pins the rule count as a regression
+// guard — accidental removal during a refactor would silently shrink
+// the optimiser's reach. CLAUDE.md / TODO.md document the count;
+// keep this test in sync with both.
+func TestDefaultRules_ExpectedCount(t *testing.T) {
+	t.Parallel()
+	const expected = 15
+	if got := len(DefaultExpressionRules()); got != expected {
+		t.Fatalf("DefaultExpressionRules count = %d, want %d (update CLAUDE.md / TODO.md if intentional)", got, expected)
+	}
+}
+
 // TestDefaultRules_NoNil verifies every rule in the default set is
 // non-nil and has a non-nil Matcher. Caught a bug class where a rule
 // constructor accidentally returns nil under some conditions.
