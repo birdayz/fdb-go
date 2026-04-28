@@ -75,6 +75,28 @@ func DefaultExpressionRules() []ExpressionRule {
 	}
 }
 
+// BatchAExpressionRules returns the B5 Batch A physical-implementation
+// rules: rules that lower a logical RelationalExpression to a physical
+// RecordQueryPlan via the per-shape physical wrapper bridges.
+//
+// These rules are NOT part of DefaultExpressionRules — keeping the two
+// sets separate mirrors Java's logical/physical rule split. The
+// planner driver decides whether to fire physical-implementation rules
+// (when an executable plan is the goal) or only logical rewrites
+// (when the goal is plan-rewrite analysis).
+//
+// Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
+//
+// Currently 3 of 6 Batch A rules ported; remaining 3 are gated on
+// MatchCandidate / IndexAccessHint infrastructure (per RFC-022).
+func BatchAExpressionRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewPrimaryScanRule(),
+		NewImplementFilterRule(),
+		NewImplementSortRule(),
+	}
+}
+
 // init registers the default rules in the rule registry under their
 // concrete-type names ("FilterMergeRule", etc.) — discoverable via
 // LookupRule / RegisteredRuleNames for diagnostic output.
@@ -83,6 +105,7 @@ func DefaultExpressionRules() []ExpressionRule {
 // DefaultExpressionRules() are fresh per-call (rules are stateless).
 func init() {
 	registerDefaultRules()
+	registerBatchARules()
 }
 
 func registerDefaultRules() {
@@ -92,6 +115,16 @@ func registerDefaultRules() {
 		// init can be called twice in tests; idempotency keeps the
 		// concurrent test suite from panicking on the duplicate-name
 		// check.
+		name := shortTypeName(r)
+		if LookupRule(name) != nil {
+			continue
+		}
+		RegisterRule(name, r)
+	}
+}
+
+func registerBatchARules() {
+	for _, r := range BatchAExpressionRules() {
 		name := shortTypeName(r)
 		if LookupRule(name) != nil {
 			continue

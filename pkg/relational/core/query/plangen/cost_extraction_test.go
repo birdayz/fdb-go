@@ -221,9 +221,7 @@ func TestEndToEnd_FullCascadesPipeline(t *testing.T) {
 	// implementations.
 	rules := append(
 		cascades.DefaultExpressionRules(),
-		cascades.NewPrimaryScanRule(),
-		cascades.NewImplementFilterRule(),
-		cascades.NewImplementSortRule(),
+		cascades.BatchAExpressionRules()...,
 	)
 	p := cascades.NewPlanner(rules, nil)
 	if _, conv := p.Explore(ref); !conv {
