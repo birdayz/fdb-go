@@ -2457,6 +2457,62 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
+// TestFDB_SumIntegerDivision pins Java-aligned integer-preserving SUM
+// semantics: `SUM(BIGINT) / COUNT(*)` integer-divides instead of
+// float-dividing. Pre-fix Go's SUM accumulator was always float64, so
+// SUM(qty)=10 / COUNT(*)=3 emerged as 3.333... while Java returned 3.
+// The dual-accumulator path (sumsI int64 + sumNonInt bool flag) emits
+// int64 when every observed value is integral; subsequent int64 / int64
+// arithmetic in `ApplyMathOp` yields the integer-divided result.
+func TestFDB_SumIntegerDivision(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_sumdiv")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sumdiv")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE sumdiv_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, qty BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_sumdiv/items WITH TEMPLATE sumdiv_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_sumdiv?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	for i, q := range []int{2, 3, 5} {
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO T (id, qty) VALUES (%d, %d)", i+1, q))
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	}
+
+	// SUM(qty) = 10, COUNT(*) = 3, integer division → 3 (NOT 3.333...).
+	var ratio int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty) / COUNT(*) FROM T").Scan(&ratio)).To(gomega.Succeed())
+	g.Expect(ratio).To(gomega.Equal(int64(3)),
+		"SUM(BIGINT) / COUNT(*) must integer-divide (Java alignment)")
+
+	// SUM(qty) - COUNT(*) = 10 - 3 = 7, both int64 → int64 result (was float64
+	// pre-fix because SUM was always float64 → 7.0).
+	var diff int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty) - COUNT(*) FROM T").Scan(&diff)).To(gomega.Succeed())
+	g.Expect(diff).To(gomega.Equal(int64(7)))
+
+	// SUM(qty) * 2 = 20, int64 * int64 = int64.
+	var doubled int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty) * 2 FROM T").Scan(&doubled)).To(gomega.Succeed())
+	g.Expect(doubled).To(gomega.Equal(int64(20)))
+
+	// SUM over a mixed-type expression (qty + 1.0) promotes to float64.
+	// Each row produces a float64 (qty is int64, +1.0 promotes); the
+	// SUM accumulator's sumNonInt flag flips on the first value.
+	var promoted float64
+	g.Expect(db.QueryRowContext(ctx, "SELECT SUM(qty + 1.0) FROM T").Scan(&promoted)).To(gomega.Succeed())
+	g.Expect(promoted).To(gomega.Equal(float64(13)))
+}
+
 func TestFDB_SelectScalarExpression(t *testing.T) {
 	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
 	t.Parallel()
