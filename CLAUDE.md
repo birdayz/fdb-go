@@ -147,11 +147,32 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #     EstimateCost over the 11 seed
                                     #     RelationalExpression types,
                                     #     BestRefCost with Reference-keyed
-                                    #     memoisation, CostLess comparator),
+                                    #     memoisation, CostLess comparator,
+                                    #     StatisticsProvider plumbing),
                                     #   extract.go (ExtractBestPlan recursive
                                     #     plan extractor — singleton-Reference
                                     #     fresh tree, switch-on-type for the
                                     #     12 constructor arms)
+    planner.go                      # B6 task-stack planner (EXPLORE phase
+                                    #   only; OPTIMIZE delegates to
+                                    #   properties.ExtractBestPlan).
+                                    #   Per-Reference saturation tracking +
+                                    #   PlannerEventHandler diagnostic hooks.
+    physical_wrapper.go             # Bridges from plans.RecordQueryPlan to
+                                    #   expressions.RelationalExpression
+                                    #   (3 wrappers: scan / filter / sort).
+                                    #   Seed workaround for the lack of a
+                                    #   plan-aware Memo.
+    rule_primary_scan.go            # B5 Batch A: FullUnorderedScan → ScanPlan
+    rule_implement_filter.go        # B5 Batch A: LogicalFilter → FilterPlan
+    rule_implement_sort.go          # B5 Batch A: LogicalSort → SortPlan
+pkg/recordlayer/query/plan/plans/   # RecordQueryPlan (physical) hierarchy
+                                    #   plan.go (RecordQueryPlan interface
+                                    #     + Equals / Walk / Size helpers),
+                                    #   scan.go (RecordQueryScanPlan),
+                                    #   filter.go (RecordQueryFilterPlan),
+                                    #   sort.go (RecordQuerySortPlan).
+                                    #   3 of Java's 74 concrete plan classes.
     rule_*.go                       # 31 logical-rewrite rules (FilterMerge,
                                     #   FilterDropTrue, FilterDedupPredicates,
                                     #   PushFilterThroughDistinct,
