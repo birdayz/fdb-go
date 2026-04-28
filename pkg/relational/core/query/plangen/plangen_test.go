@@ -363,6 +363,68 @@ func TestConvert_NestedFilterOverFilter(t *testing.T) {
 	}
 }
 
+// TestConvert_DeeplyNested_ProjectSortFilterScan exercises the
+// recursive walk through every kind of supported operator, top-down:
+//
+//	Project([id], Sort([id], Filter(TRUE, Scan)))
+//
+// Lowers to:
+//
+//	Projection({FieldValue(id)}, Sort({SortKey(FieldValue(id))},
+//	    Filter([TRUE], FullUnorderedScan)))
+//
+// The scan reachable through three GetInner().GetRangesOver().Get()
+// hops proves the recursion is not silently truncated.
+func TestConvert_DeeplyNested_ProjectSortFilterScan(t *testing.T) {
+	t.Parallel()
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	src := logical.NewProject(
+		logical.NewSort(
+			logical.NewFilterWithPredicate(
+				logical.NewScan("Order", ""),
+				pT, "TRUE",
+			),
+			[]logical.SortKey{{Expr: "id", Dir: logical.SortAsc}},
+		),
+		[]string{"id"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj, ok := got.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("top = %T, want *LogicalProjectionExpression", got)
+	}
+	sort, ok := proj.GetInner().GetRangesOver().Get().(*expressions.LogicalSortExpression)
+	if !ok {
+		t.Fatalf("under projection = %T, want *LogicalSortExpression", proj.GetInner().GetRangesOver().Get())
+	}
+	filter, ok := sort.GetInner().GetRangesOver().Get().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("under sort = %T, want *LogicalFilterExpression", sort.GetInner().GetRangesOver().Get())
+	}
+	if _, ok := filter.GetInner().GetRangesOver().Get().(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("under filter = %T, want *FullUnorderedScanExpression", filter.GetInner().GetRangesOver().Get())
+	}
+}
+
+// TestConvert_RecursionPropagatesErrUnsupported — when a deeply
+// nested unsupported operator appears, the error wraps ErrUnsupported
+// at every level so callers using errors.Is can detect it.
+func TestConvert_RecursionPropagatesErrUnsupported(t *testing.T) {
+	t.Parallel()
+	// LogicalLimit is currently unsupported.
+	inner := logical.NewLimit(logical.NewScan("Order", ""), 10, 0)
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+	outer := logical.NewFilterWithPredicate(inner, pT, "TRUE")
+	_, err := plangen.Convert(outer)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want errors.Is(err, ErrUnsupported)", err)
+	}
+}
+
 // FuzzConvert pins the no-panic invariant: Convert may return any
 // (RelationalExpression, error) shape but MUST NOT panic, including
 // on adversarial input shapes the SQL parser would never produce
