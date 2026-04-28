@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -78,6 +79,16 @@ func (w *physicalScanWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+// WithChildren satisfies properties.WithChildren — scan is a leaf,
+// so qs must be empty. Returns the wrapper itself unchanged on
+// empty input.
+func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 0 {
+		return nil, fmt.Errorf("physicalScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
+	}
+	return w, nil
+}
+
 var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 
 // physicalFilterWrapper adapts a `*plans.RecordQueryFilterPlan` to
@@ -152,6 +163,16 @@ func (w *physicalFilterWrapper) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+// WithChildren constructs a fresh wrapper using qs[0] as the new
+// inner Quantifier. Returns an error if qs doesn't have exactly
+// one entry.
+func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
 
 // physicalSortWrapper adapts a `*plans.RecordQuerySortPlan` to the
@@ -215,6 +236,15 @@ func (w *physicalSortWrapper) HashCodeWithoutChildren() uint64 {
 		h.Write(b[:])
 	}
 	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper using qs[0] as the new
+// inner Quantifier.
+func (w *physicalSortWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalSortWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalSortWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
 var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)

@@ -175,20 +175,39 @@ func rebuildExpression(e expressions.RelationalExpression, stats StatisticsProvi
 		), nil
 
 	default:
-		// Unknown concrete type — treat as opaque. Returning `e`
-		// directly without rebuilding children means callers walking
-		// the extracted tree see the original Quantifiers' Refs
-		// (which may still be multi-member). Callers that need the
-		// strict singleton invariant on opaque types must extend the
-		// switch with the relevant arm.
-		//
-		// This trade-off lets opaque wrappers (e.g. cascades-internal
-		// physical-plan adapters introduced post-RFC) flow through
-		// extraction without forcing every Value-tree consumer to
-		// know about them. Once a uniform `WithChildren` method
-		// lands on the RelationalExpression interface, this default
-		// arm becomes "rebuild via WithChildren(freshChildren)" and
-		// the strict invariant returns.
+		// Unknown concrete type — try the optional WithChildren
+		// interface; if implemented, use it to rebuild with fresh
+		// child Quantifiers (preserves the strict singleton
+		// invariant). Otherwise fall back to opaque-passthrough,
+		// which keeps the pipeline running but loses the singleton
+		// guarantee for that subtree.
+		if rebuilder, ok := e.(WithChildren); ok {
+			return rebuilder.WithChildren(freshChildren)
+		}
 		return e, nil
 	}
+}
+
+// WithChildren is the optional interface a RelationalExpression
+// implements to support generic plan extraction. ExtractBestPlan's
+// default arm calls WithChildren(freshChildren) to construct a
+// fresh expression of the same concrete type with the supplied
+// quantifiers.
+//
+// Concrete RelationalExpression types in the seed do NOT implement
+// WithChildren — their constructors take operator-specific args
+// (predicates, sort keys, etc.) that the generic rebuilder doesn't
+// have. Instead, ExtractBestPlan has explicit switch arms for those
+// types. The interface exists for OPAQUE wrappers (e.g. cascades-
+// internal physical-plan adapters) that want to participate in
+// extraction without forcing a switch-arm extension.
+//
+// Mirrors Java's `RelationalExpressionWithChildren.withNewChildren`
+// for the seed-relevant subset.
+type WithChildren interface {
+	// WithChildren returns a fresh expression of the same concrete
+	// type, using the supplied quantifiers in place of the originals.
+	// Returns an error if the quantifier count or shape doesn't match
+	// what the type expects.
+	WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error)
 }
