@@ -162,15 +162,19 @@ pkg/relational/core/query/plangen/  # LogicalOperator → RelationalExpression
                                     #   adapter (Track C1). Currently lowers
                                     #   Scan / Filter (with QueryPredicate) /
                                     #   Union (with Distinct wrapper) /
-                                    #   Project (bare-column) / Sort
-                                    #   (bare-column keys) / Insert / Update
-                                    #   (bare-column SET RHS) / Delete.
-                                    #   Returns ErrUnsupported for the rest
-                                    #   (LogicalLimit, LogicalAggregate,
-                                    #   LogicalJoin, LogicalCTE, LogicalDDL,
-                                    #   non-bare-column projection / sort /
-                                    #   SET RHS — all gated on text→Value
-                                    #   parsing or specific Expression ports).
+                                    #   Project / Sort / Insert / Update /
+                                    #   Delete. Project / Sort / Update each
+                                    #   accept simple scalar forms via
+                                    #   lowerSimpleScalarText: bare column,
+                                    #   int / float / bool / NULL / single-
+                                    #   quoted string. Returns ErrUnsupported
+                                    #   for arithmetic / function calls /
+                                    #   qualified refs / exponent-form
+                                    #   numerics / apostrophe-escape strings,
+                                    #   and for LogicalLimit / Aggregate /
+                                    #   Join / CTE / DDL — all gated on
+                                    #   text→Value parsing or specific
+                                    #   Expression ports.
 pkg/relational/core/embedded/       # SQL engine (driver.Conn impl + executors)
   connection.go                     # EmbeddedConnection struct + driver-layer methods
   select_dispatch.go                # execSelect / execSelectQuery entry points
