@@ -92,6 +92,7 @@ go_test(
         "rule_filter_drop_true_test.go",
         "rule_filter_merge_test.go",
         "rule_implement_filter_test.go",
+        "rule_implement_insert_test.go",
         "rule_implement_sort_test.go",
         "rule_implement_union_test.go",
         "rule_intersection_merge_test.go",
