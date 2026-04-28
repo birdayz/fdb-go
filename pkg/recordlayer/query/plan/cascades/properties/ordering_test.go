@@ -164,3 +164,20 @@ func TestEstimateOrdering_DistinctOverScanNotKnown(t *testing.T) {
 		t.Fatal("Distinct(Scan) ordering = known, want unknown (scan is unordered)")
 	}
 }
+
+// TestEstimateOrdering_UniqueOverSortPreserves pins that Unique
+// (PK-based dedup) preserves inner ordering — same rationale as
+// Distinct.
+func TestEstimateOrdering_UniqueOverSortPreserves(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	keys := []expressions.SortKey{
+		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+	}
+	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	uq := expressions.NewLogicalUniqueExpression(expressions.ForEachQuantifier(expressions.InitialOf(sort)))
+	o := properties.EstimateOrdering(uq)
+	if !o.IsKnown {
+		t.Fatal("Unique(Sort(...)) ordering = unknown, want known (Unique preserves)")
+	}
+}

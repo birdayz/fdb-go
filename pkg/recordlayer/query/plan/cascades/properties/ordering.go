@@ -92,6 +92,11 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		// when the inner ordering aligns with the distinct grouping
 		// keys) but for the seed-level use case this is sufficient.
 		return inheritFromInner(v.GetInner())
+	case *expressions.LogicalUniqueExpression:
+		// Unique (PK-based dedup) preserves inner ordering — same
+		// rationale as Distinct. The PK comparison drops duplicates
+		// without reordering surviving rows.
+		return inheritFromInner(v.GetInner())
 	}
 	// Default: no known ordering (FullUnorderedScan / Union /
 	// Intersection).
