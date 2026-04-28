@@ -17,6 +17,7 @@ go_test(
     name = "wire_test",
     srcs = [
         "conformance_test.go",
+        "fdberror_test.go",
         "reader_bug_test.go",
         "reader_fuzz_test.go",
         "serializer_test.go",
