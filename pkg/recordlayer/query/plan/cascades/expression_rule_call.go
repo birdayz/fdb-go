@@ -56,8 +56,15 @@ func NewExpressionRuleCall(ref *expressions.Reference, bindings *matching.Planne
 // alias map). yieldedExps records the call regardless — the rule's
 // intent was to yield, even if dedup absorbed the result.
 func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
+	if expr == nil {
+		panic("ExpressionRuleCall.Yield: nil expression")
+	}
+	// Validate first, then update state. Reference.Insert panics on
+	// nil, so the order matters — without the early check, yieldedExps
+	// would have a nil entry leaked before the panic propagated.
+	inserted := c.Reference.Insert(expr)
 	c.yieldedExps = append(c.yieldedExps, expr)
-	return c.Reference.Insert(expr)
+	return inserted
 }
 
 // Yielded returns the expressions the rule has yielded so far,

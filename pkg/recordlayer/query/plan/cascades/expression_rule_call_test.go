@@ -60,6 +60,23 @@ func TestExpressionRuleCall_YieldDedupes(t *testing.T) {
 	}
 }
 
+func TestExpressionRuleCall_Yield_PanicsOnNil(t *testing.T) {
+	t.Parallel()
+	ref := expressions.InitialOf(fixtureScan("T"))
+	rc := NewExpressionRuleCall(ref, matching.NewBindings(), EmptyPlanContext())
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic on Yield(nil)")
+		}
+		// Sanity: the yielded list should NOT have grown — validate-
+		// first ordering means state isn't corrupted on the panic path.
+		if got := rc.Yielded(); len(got) != 0 {
+			t.Fatalf("Yielded() leaked nil entry: %v", got)
+		}
+	}()
+	rc.Yield(nil)
+}
+
 func TestExpressionRuleCall_BindingsAccessible(t *testing.T) {
 	t.Parallel()
 	ref := expressions.InitialOf(fixtureScan("T"))
