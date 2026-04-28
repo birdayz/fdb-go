@@ -96,6 +96,38 @@ func buildFuzzTree(b []byte, start int) RelationalExpression {
 	}
 }
 
+// FuzzWalk_Termination pins that Walk(e, visit) terminates on any
+// random expression tree built from a byte stream — no infinite loop
+// even on shapes that share References across multiple Quantifiers.
+//
+// The key invariant: visit is called at most O(N) times where N is
+// the static node count of the constructed tree. Since the seed
+// constructs trees with bounded depth (<=3) and bounded fan-out, the
+// expected node count is small.
+func FuzzWalk_Termination(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3})
+	f.Add(make([]byte, 8))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) < 2 {
+			return
+		}
+		expr := buildFuzzTree(b, 0)
+		visited := 0
+		const cap = 1024
+		Walk(expr, func(_ RelationalExpression) bool {
+			visited++
+			if visited > cap {
+				t.Fatalf("Walk exceeded %d visits — possible infinite loop on tree shape", cap)
+			}
+			return true
+		})
+		// Sanity: Size returns the same count.
+		if got := Size(expr); got != visited {
+			t.Fatalf("Walk visited %d but Size=%d — disagreement on node count", visited, got)
+		}
+	})
+}
+
 // FuzzAliasMap_BijectionInvariant pins that AliasMap maintains its
 // bijection invariant under arbitrary Compose chains: for every
 // (s,t) binding, GetTarget(s) == t AND GetSource(t) == s.
