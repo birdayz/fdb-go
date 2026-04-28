@@ -51,9 +51,7 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	// Find a physical inner. The seed only knows about
-	// physicalScanWrapper today; future wrappers extend the type
-	// switch.
+	// Find a physical inner across all known wrapper types.
 	var innerPlan plans.RecordQueryPlan
 	for _, m := range innerRef.Members() {
 		switch w := m.(type) {

@@ -51,6 +51,8 @@ func (r *ImplementDistinctRule) OnMatch(call *ExpressionRuleCall) {
 			innerPlan = w.GetPlan()
 		case *physicalDistinctWrapper:
 			innerPlan = w.GetPlan()
+		case *physicalTypeFilterWrapper:
+			innerPlan = w.GetPlan()
 		}
 		if innerPlan != nil {
 			break
