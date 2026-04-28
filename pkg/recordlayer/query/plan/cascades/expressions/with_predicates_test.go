@@ -49,3 +49,46 @@ func getPredicatesGeneric(e RelationalExpression) []predicates.QueryPredicate {
 	}
 	return nil
 }
+
+func TestCountPredicates(t *testing.T) {
+	t.Parallel()
+	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := ForEachQuantifier(InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	// 0 for non-predicate-bearing.
+	if got := CountPredicates(scan); got != 0 {
+		t.Errorf("Scan CountPredicates=%d, want 0", got)
+	}
+
+	// Match predicate count for filter.
+	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pT, pT, pT}, scanQ)
+	if got := CountPredicates(f); got != 3 {
+		t.Errorf("Filter(3 predicates) CountPredicates=%d, want 3", got)
+	}
+
+	// Empty predicate list.
+	f0 := NewLogicalFilterExpression(nil, scanQ)
+	if got := CountPredicates(f0); got != 0 {
+		t.Errorf("Filter([]) CountPredicates=%d, want 0", got)
+	}
+}
+
+func TestHasPredicates(t *testing.T) {
+	t.Parallel()
+	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanQ := ForEachQuantifier(InitialOf(scan))
+	pT := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	if HasPredicates(scan) {
+		t.Error("Scan HasPredicates=true, want false")
+	}
+	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	if !HasPredicates(f) {
+		t.Error("Filter([T]) HasPredicates=false, want true")
+	}
+	f0 := NewLogicalFilterExpression(nil, scanQ)
+	if HasPredicates(f0) {
+		t.Error("Filter([]) HasPredicates=true, want false (empty list)")
+	}
+}
