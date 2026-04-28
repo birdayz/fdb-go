@@ -141,6 +141,8 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #     CanCorrelate=true expression),
                                     #   {insert,update,delete}.go (DML),
                                     #   full_unordered_scan.go (leaf),
+                                    #   explode.go (UNNEST array → stream,
+                                    #     leaf-shaped, correlation-bearing),
                                     #   walk.go, with_predicates.go (helpers)
     properties/                     # Cost model + plan extraction (B4 seed)
                                     #   cost.go (Cost{Cardinality, CPU},
