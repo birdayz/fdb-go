@@ -35,6 +35,29 @@ func TestConvert_Scan(t *testing.T) {
 	}
 }
 
+func TestConvert_Scan_AliasIgnoredInSeed(t *testing.T) {
+	t.Parallel()
+	// LogicalScan.Alias is dropped in the seed converter — the
+	// Quantifier wrapping the scan in the parent operator gets a
+	// freshly-generated alias. This test pins the current behaviour
+	// (no errors on non-empty alias). When proper alias propagation
+	// lands (gated on parent-context-aware Convert), update this
+	// test to assert the alias is preserved.
+	src := logical.NewScan("Order", "o")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	scan, ok := got.(*expressions.FullUnorderedScanExpression)
+	if !ok {
+		t.Fatalf("got %T, want *FullUnorderedScanExpression", got)
+	}
+	// Record types preserved — only the alias is dropped.
+	if names := scan.GetRecordTypes(); len(names) != 1 || names[0] != "Order" {
+		t.Fatalf("record types = %v, want [Order]", names)
+	}
+}
+
 func TestConvert_FilterOverScan(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
