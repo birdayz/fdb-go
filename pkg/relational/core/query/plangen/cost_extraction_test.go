@@ -512,6 +512,61 @@ func TestEndToEnd_CostExtractionWithStatistics(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_UnionAll_TwoScans pins that a UNION ALL of two scans
+// drives through Convert + Plan() and produces a non-nil physical
+// plan whose root is a physical-Union wrapper.
+//
+// Setup:
+//
+//	SELECT * FROM A
+//	UNION ALL
+//	SELECT * FROM B
+//
+//	  ↓ Convert
+//	LogicalUnion(LogicalScan(A), LogicalScan(B))
+//	  ↓ Plan with Default + Batch A rules
+//	  ↓ extracted plan: physicalUnionWrapper(physicalScan(A), physicalScan(B))
+//
+// Distinct=false (UNION ALL) — without the Distinct wrapper Java's
+// planner shape simplifies to bare Union, exercising the
+// PrimaryScanRule + ImplementUnionRule chain end-to-end. The pre-
+// existing TestEndToEnd_RealisticSQLShape_DistinctSortFilterScan
+// covers UNION DISTINCT (Distinct over Union); this complements that
+// with the bare-Union path.
+func TestEndToEnd_UnionAll_TwoScans(t *testing.T) {
+	t.Parallel()
+	src := logical.NewUnion(
+		[]logical.LogicalOperator{
+			logical.NewScan("A", ""),
+			logical.NewScan("B", ""),
+		},
+		false, // UNION ALL — no distinct wrapper
+	)
+
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, nil)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	// Plan must NOT be the original LogicalUnionExpression — that's
+	// the un-implemented shape; ImplementUnionRule should have fired.
+	if _, isLogical := plan.(*expressions.LogicalUnionExpression); isLogical {
+		t.Fatalf("Plan returned LogicalUnion — ImplementUnionRule didn't fire OR cost extraction picked the logical alternative")
+	}
+	t.Logf("UNION ALL pipeline: extracted %T (tasks=%d, members=%d)",
+		plan, tasks, len(ref.Members()))
+}
+
 // TestEndToEnd_CostMonotonicAcrossOptimisation pins that the cost of
 // the cheapest member is monotonic non-increasing across fixpoint
 // iterations. This is the integration-level mirror of
