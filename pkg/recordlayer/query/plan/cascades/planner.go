@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // Planner is the task-stack driven cascades planner — Track B6 seed.
@@ -88,6 +89,48 @@ func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
 	p.events = h
 	return p
 }
+
+// Plan runs the full EXPLORE → OPTIMIZE pipeline on `rootRef` and
+// returns the cost-cheapest extracted plan tree.
+//
+// EXPLORE: drives the task-stack to convergence (Explore method).
+// OPTIMIZE: extracts the cheapest member at every reachable Reference
+//
+//	via the cost-aware comparator + WithChildren-or-switch
+//	rebuild path (delegates to properties.ExtractBestPlan).
+//
+// Equivalent to:
+//
+//	tasks, conv := p.Explore(rootRef)
+//	if !conv { return nil, tasks, ErrPlannerCapHit }
+//	plan, err := properties.ExtractBestPlan(rootRef)
+//	return plan, tasks, err
+//
+// Returns:
+//   - plan: the extracted RelationalExpression (singleton-Reference
+//     tree); nil if rootRef is empty.
+//   - tasks: total tasks executed during EXPLORE.
+//   - err: nil on success; ErrPlannerCapHit if EXPLORE hit MaxTasks
+//     (no OPTIMIZE attempted); extraction error otherwise.
+func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
+	tasks, conv := p.Explore(rootRef)
+	if !conv {
+		return nil, tasks, ErrPlannerCapHit
+	}
+	plan, err := properties.ExtractBestPlan(rootRef)
+	return plan, tasks, err
+}
+
+// ErrPlannerCapHit signals that Explore exited via the MaxTasks
+// cap rather than convergence. Callers should treat this as a
+// non-termination indicator and report.
+var ErrPlannerCapHit = plannerErr("planner: MaxTasks cap hit before convergence")
+
+// plannerErr is a string-error type local to the planner.
+type plannerErr string
+
+// Error returns the message.
+func (e plannerErr) Error() string { return string(e) }
 
 // Explore drives the task-stack until convergence (no rule yields a
 // new member anywhere in the DAG) or the MaxTasks cap is hit.

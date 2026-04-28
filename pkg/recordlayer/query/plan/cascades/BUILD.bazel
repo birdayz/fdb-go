@@ -56,6 +56,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
     ],

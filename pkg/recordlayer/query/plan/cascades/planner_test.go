@@ -173,6 +173,51 @@ func TestPlanner_MaxTasksCapHit(t *testing.T) {
 	}
 }
 
+// TestPlanner_Plan_FullPipeline pins the convenience Plan method:
+// EXPLORE + OPTIMIZE in one call. Returns the extracted best plan.
+func TestPlanner_Plan_FullPipeline(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	dist := expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(expressions.InitialOf(dist)),
+	)
+	ref := expressions.InitialOf(filter)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan err=%v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil expression")
+	}
+	if tasks == 0 {
+		t.Fatal("Plan ran 0 tasks")
+	}
+}
+
+// TestPlanner_Plan_MaxTasksHit pins the Plan method's error when
+// EXPLORE hits MaxTasks.
+func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	ref := expressions.InitialOf(scan)
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	p.MaxTasks = 1
+	plan, _, err := p.Plan(ref)
+	if err != ErrPlannerCapHit {
+		t.Fatalf("Plan with MaxTasks=1 err=%v, want ErrPlannerCapHit", err)
+	}
+	if plan != nil {
+		t.Fatal("Plan should return nil on cap hit")
+	}
+}
+
 // TestPlanner_ConfluenceWithFixpointApply pins that the task-stack
 // planner converges to the SAME final Reference member set that
 // FixpointApply produces. Both drivers must reach the same
