@@ -156,6 +156,46 @@ func TestImplementFilterRule_FiresOnFilterOverSort(t *testing.T) {
 	}
 }
 
+// TestImplementFilterRule_FiresOverPhysicalIntersection is the
+// symmetric companion to the Filter-over-Union case below.
+// SQL pattern: SELECT ... FROM (A INTERSECT B) WHERE pred. The
+// 7-wrapper symmetry fix lets Filter recognise physicalIntersection
+// wrappers as physical inners.
+func TestImplementFilterRule_FiresOverPhysicalIntersection(t *testing.T) {
+	t.Parallel()
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	refA := expressions.InitialOf(scanA)
+	refB := expressions.InitialOf(scanB)
+	intr := expressions.NewLogicalIntersectionExpression(
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(refA),
+			expressions.ForEachQuantifier(refB),
+		},
+		nil,
+	)
+	intrRef := expressions.InitialOf(intr)
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(intrRef),
+	)
+	topRef := expressions.InitialOf(filter)
+
+	FireExpressionRule(NewPrimaryScanRule(), refA)
+	FireExpressionRule(NewPrimaryScanRule(), refB)
+	FireExpressionRule(NewImplementIntersectionRule(), intrRef)
+
+	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Intersection)", len(yielded))
+	}
+	wrap := yielded[0].(*physicalFilterWrapper)
+	if _, ok := wrap.GetPlan().GetInner().(*plans.RecordQueryIntersectionPlan); !ok {
+		t.Fatalf("inner = %T, want *RecordQueryIntersectionPlan", wrap.GetPlan().GetInner())
+	}
+}
+
 // TestImplementFilterRule_FiresOverPhysicalUnion pins that
 // ImplementFilterRule fires when the inner Reference contains a
 // physicalUnionWrapper — closes the 7-wrapper symmetry gap caught
