@@ -30,6 +30,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewDistinctOverUnionDedupRule(),
 		NewTypeFilterMergeRule(),
 		NewTypeFilterRedundantOverScanRule(),
+		NewPushTypeFilterBelowFilterRule(),
 		NewUnionMergeRule(),
 		NewIntersectionMergeRule(),
 		NewNoOpFilterRule(),
