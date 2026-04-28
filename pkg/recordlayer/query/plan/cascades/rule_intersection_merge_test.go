@@ -69,6 +69,24 @@ func TestIntersectionMergeRule_DeclinesOnDifferentKeys(t *testing.T) {
 	}
 }
 
+func TestIntersectionMergeRule_DeclinesOnEmptyInner(t *testing.T) {
+	t.Parallel()
+	// Outer with one child whose inner is an empty Intersection — rule
+	// should NOT flatten (the empty inner has degenerate semantics).
+	emptyInner := expressions.NewLogicalIntersectionExpression(nil, []values.Value{values.NewBooleanValue(true)})
+	emptyQ := expressions.ForEachQuantifier(expressions.InitialOf(emptyInner))
+	outerX := expressions.NewLogicalIntersectionExpression(
+		[]expressions.Quantifier{scanQuant("A"), emptyQ},
+		[]values.Value{values.NewBooleanValue(true)},
+	)
+	ref := expressions.InitialOf(outerX)
+	rule := NewIntersectionMergeRule()
+	yielded := FireExpressionRule(rule, ref)
+	if len(yielded) != 0 {
+		t.Fatalf("rule fired despite empty inner intersection — yielded %d, want 0", len(yielded))
+	}
+}
+
 func TestIntersectionMergeRule_PreservesOuterKeys(t *testing.T) {
 	t.Parallel()
 	keys := []values.Value{values.NewBooleanValue(true), values.NewBooleanValue(false)}

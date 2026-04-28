@@ -53,9 +53,14 @@ func (r *IntersectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 }
 
 // flattenIntersectionChildren walks `qs` once. For each Quantifier
-// whose Reference holds an Intersection with matching keys, promote
-// the inner's children. Returns the new slice + a boolean indicating
-// whether any flattening occurred.
+// whose Reference holds an Intersection with matching keys AND with
+// at least one child, promote the inner's children. Returns the new
+// slice + a boolean indicating whether any flattening occurred.
+//
+// An empty inner intersection (zero children) is left in place — its
+// row-stream semantics are degenerate (no defined output, NOT
+// "universe"), so absorbing it into the outer would silently change
+// the outer's child count without adding equivalent rows.
 func flattenIntersectionChildren(qs []expressions.Quantifier, outerKeys []values.Value) ([]expressions.Quantifier, bool) {
 	out := make([]expressions.Quantifier, 0, len(qs))
 	sawNested := false
@@ -70,7 +75,12 @@ func flattenIntersectionChildren(qs []expressions.Quantifier, outerKeys []values
 			out = append(out, q) // keys differ — leave the Quantifier as-is
 			continue
 		}
-		out = append(out, x.GetQuantifiers()...)
+		innerQs := x.GetQuantifiers()
+		if len(innerQs) == 0 {
+			out = append(out, q) // empty inner — see doc comment above
+			continue
+		}
+		out = append(out, innerQs...)
 		sawNested = true
 	}
 	return out, sawNested
