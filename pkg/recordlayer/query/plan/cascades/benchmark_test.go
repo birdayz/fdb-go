@@ -403,6 +403,57 @@ func BenchmarkOptimise_GetBest(b *testing.B) {
 	}
 }
 
+// BenchmarkPlanner_RealisticTree exercises the new B6 task-stack
+// Planner on the same RealisticTree shape as
+// BenchmarkOptimise_RealisticTree (FixpointApply baseline). Direct
+// comparison reveals the saturation-tracking perf savings.
+func BenchmarkPlanner_RealisticTree(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		outerD := expressions.NewLogicalDistinctExpression(innerDQ)
+		outerDQ := expressions.ForEachQuantifier(expressions.InitialOf(outerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		innerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, outerDQ)
+		innerFQ := expressions.ForEachQuantifier(expressions.InitialOf(innerF))
+		outerF := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerFQ)
+		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
+		topD := expressions.NewLogicalDistinctExpression(outerFQ)
+		return expressions.InitialOf(topD)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		p := NewPlanner(rules, nil)
+		_, _ = p.Explore(ref)
+	}
+}
+
+// BenchmarkPlanner_FullPlan exercises Plan() on the same shape —
+// EXPLORE + ExtractBestPlan. Captures the OPTIMIZE-phase overhead
+// on top of EXPLORE.
+func BenchmarkPlanner_FullPlan(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		innerD := expressions.NewLogicalDistinctExpression(scanQ)
+		innerDQ := expressions.ForEachQuantifier(expressions.InitialOf(innerD))
+		pT := predicates.NewConstantPredicate(predicates.TriTrue)
+		f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerDQ)
+		return expressions.InitialOf(f)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		p := NewPlanner(rules, nil)
+		_, _, _ = p.Plan(ref)
+	}
+}
+
 // BenchmarkBestRefCost pins the cost-only extraction call in
 // isolation (no optimiser). Useful baseline for B6's task-stack
 // planner perf budget.
