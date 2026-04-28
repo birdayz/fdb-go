@@ -802,20 +802,12 @@ func FuzzCastValue(f *testing.F) {
 	f.Add("BOOLEAN", int64(0), float64(0), "TRUE  ") // trailing whitespace per Java
 	f.Add("BOOLEAN", int64(0), float64(0), "no")     // bad input
 
-	// Bool source seeds — CastValue has explicit `case bool:` handling
-	// in INTEGER/BIGINT (`true → 1`, `false → 0`) and BOOLEAN (identity);
-	// other targets must error cleanly without panicking. Iterating bool
-	// inside the Fuzz body alongside the other source types closes the
-	// coverage gap flagged in the nightshift-57 review.
-	f.Add("INTEGER", int64(0), float64(0), "")
-	f.Add("BIGINT", int64(0), float64(0), "")
-	f.Add("BOOLEAN", int64(0), float64(0), "")
-	f.Add("FLOAT", int64(0), float64(0), "") // bool → FLOAT is unsupported; pins clean error
-
 	f.Fuzz(func(t *testing.T, typeName string, i int64, fl float64, s string) {
 		// Try each value type as the source value. No panic on any combo.
 		// `true` and `false` are both included to exercise CastValue's
-		// `case bool:` arms in the integer / boolean target branches.
+		// `case bool:` arms in the integer / boolean target branches —
+		// these constants don't need dedicated f.Add seeds because the
+		// type-iteration loop above already seeds every typeName.
 		for _, v := range []any{nil, i, fl, s, true, false} {
 			r, err := functions.CastValue(v, typeName)
 			_ = err
