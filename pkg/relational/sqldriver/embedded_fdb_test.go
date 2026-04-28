@@ -2513,6 +2513,101 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 	g.Expect(promoted).To(gomega.Equal(float64(13)))
 }
 
+// TestFDB_BareBoolProjection pins Java-aligned bare-boolean operand
+// behaviour in SELECT projection. `SELECT b AND TRUE`, `SELECT NOT b`,
+// `SELECT b OR FALSE` over a BOOLEAN column evaluate the column as a
+// value (via IsTruthy) rather than rejecting with "expected
+// BooleanValue but got FieldValue". Top-level WHERE `WHERE flag` still
+// rejects to match Java's planner — Java's WHERE-bare-bool rejection
+// is a separate, intentional gap.
+func TestFDB_BareBoolProjection(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_barebool")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_barebool")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE barebool_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, b BOOLEAN, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_barebool/items WITH TEMPLATE barebool_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_barebool?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Three rows: TRUE, FALSE, NULL — the canonical Kleene 3VL surface.
+	_, err = db.ExecContext(ctx, "INSERT INTO T VALUES (1, true), (2, false), (3, null)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// `b AND TRUE`: t/f/NULL preserved.
+	rows, err := db.QueryContext(ctx, "SELECT b AND TRUE FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got := []sql.NullBool{}
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	g.Expect(got[0]).To(gomega.Equal(sql.NullBool{Bool: true, Valid: true}))
+	g.Expect(got[1]).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}))
+	g.Expect(got[2].Valid).To(gomega.BeFalse(), "NULL preserved through AND TRUE")
+
+	// `NOT b`: f/t/NULL.
+	rows, err = db.QueryContext(ctx, "SELECT NOT b FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got = got[:0]
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	g.Expect(got[0]).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}))
+	g.Expect(got[1]).To(gomega.Equal(sql.NullBool{Bool: true, Valid: true}))
+	g.Expect(got[2].Valid).To(gomega.BeFalse(), "NULL preserved through NOT")
+
+	// `b OR FALSE`: t/f/NULL (same as b for non-NULL rows; UNKNOWN preserved).
+	rows, err = db.QueryContext(ctx, "SELECT b OR FALSE FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got = got[:0]
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	g.Expect(got[0]).To(gomega.Equal(sql.NullBool{Bool: true, Valid: true}))
+	g.Expect(got[1]).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}))
+	g.Expect(got[2].Valid).To(gomega.BeFalse(), "NULL preserved through OR FALSE")
+
+	// `b AND FALSE`: short-circuits to FALSE for every row (UNKNOWN absorbed).
+	rows, err = db.QueryContext(ctx, "SELECT b AND FALSE FROM T ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	got = got[:0]
+	for rows.Next() {
+		var v sql.NullBool
+		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
+		got = append(got, v)
+	}
+	rows.Close()
+	g.Expect(got).To(gomega.HaveLen(3))
+	for i, v := range got {
+		g.Expect(v).To(gomega.Equal(sql.NullBool{Bool: false, Valid: true}),
+			"row %d: AND FALSE always FALSE", i)
+	}
+
+	// Top-level WHERE bare bool still rejects (matches Java strictness).
+	_, err = db.QueryContext(ctx, "SELECT id FROM T WHERE b")
+	g.Expect(err).To(gomega.HaveOccurred(), "WHERE flag still rejects per Java planner alignment")
+}
+
 func TestFDB_SelectScalarExpression(t *testing.T) {
 	// SELECT id, amount * 2 AS doubled FROM t — arithmetic in SELECT list.
 	t.Parallel()
