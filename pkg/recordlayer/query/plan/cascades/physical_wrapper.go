@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 
@@ -9,6 +10,20 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
+
+// writeHash64 writes a uint64 to the FNV hasher in big-endian
+// byte order. Shared by all four wrapper types' HashCodeWithoutChildren
+// implementations.
+func writeHash64(h hashWriter, v uint64) {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], v)
+	_, _ = h.Write(b[:])
+}
+
+// hashWriter is the minimal io.Writer surface fnv.New64a() returns.
+type hashWriter interface {
+	Write(p []byte) (n int, err error)
+}
 
 // physicalWrapperCostMultiplier is applied to each physical wrapper's
 // inherited cost so cost-driven extraction prefers physical plans
@@ -78,12 +93,7 @@ func (w *physicalScanWrapper) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("physcanwrap|"))
 	if w.plan != nil {
-		var b [8]byte
-		ph := w.plan.HashCodeWithoutChildren()
-		for i := 0; i < 8; i++ {
-			b[i] = byte(ph >> (8 * (7 - i)))
-		}
-		h.Write(b[:])
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
 	}
 	return h.Sum64()
 }
@@ -181,12 +191,7 @@ func (w *physicalFilterWrapper) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("physfilterwrap|"))
 	if w.plan != nil {
-		var b [8]byte
-		ph := w.plan.HashCodeWithoutChildren()
-		for i := 0; i < 8; i++ {
-			b[i] = byte(ph >> (8 * (7 - i)))
-		}
-		h.Write(b[:])
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
 	}
 	return h.Sum64()
 }
@@ -278,12 +283,7 @@ func (w *physicalSortWrapper) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("physsortwrap|"))
 	if w.plan != nil {
-		var b [8]byte
-		ph := w.plan.HashCodeWithoutChildren()
-		for i := 0; i < 8; i++ {
-			b[i] = byte(ph >> (8 * (7 - i)))
-		}
-		h.Write(b[:])
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
 	}
 	return h.Sum64()
 }
@@ -370,12 +370,7 @@ func (w *physicalDistinctWrapper) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("physdistwrap|"))
 	if w.plan != nil {
-		var b [8]byte
-		ph := w.plan.HashCodeWithoutChildren()
-		for i := 0; i < 8; i++ {
-			b[i] = byte(ph >> (8 * (7 - i)))
-		}
-		h.Write(b[:])
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
 	}
 	return h.Sum64()
 }
@@ -453,12 +448,7 @@ func (w *physicalTypeFilterWrapper) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("phystypefiltwrap|"))
 	if w.plan != nil {
-		var b [8]byte
-		ph := w.plan.HashCodeWithoutChildren()
-		for i := 0; i < 8; i++ {
-			b[i] = byte(ph >> (8 * (7 - i)))
-		}
-		h.Write(b[:])
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
 	}
 	return h.Sum64()
 }

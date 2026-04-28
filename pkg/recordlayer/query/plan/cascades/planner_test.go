@@ -105,11 +105,15 @@ func TestPlanner_IdempotentOnReExplore(t *testing.T) {
 	if got := len(ref.Members()); got != membersAfter1 {
 		t.Fatalf("second Explore grew Reference from %d to %d", membersAfter1, got)
 	}
-	// Second call should run FAR fewer tasks because saturation kicks
-	// in on every Reference encountered.
-	if tasks2 >= tasks1 {
-		t.Logf("first run: %d tasks; second run: %d tasks (saturation may not be pruning)", tasks1, tasks2)
-	}
+	// Note on tasks2 vs tasks1: cannot be a strict-less assertion
+	// because the first call may grow the Reference's member set
+	// (rule yields), and the second call's ExploreReferenceTask
+	// then iterates all members including the new ones. Saturation
+	// only short-circuits ApplyRulesTask, not ExploreExpressionTask
+	// over members. The member-count assertion above is the strict
+	// idempotence check that catches saturation-clear regressions.
+	_ = tasks2
+	_ = tasks1
 }
 
 // recordingEventHandler captures planner events for assertions.

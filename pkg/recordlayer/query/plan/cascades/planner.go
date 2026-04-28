@@ -31,6 +31,16 @@ import (
 // The seed planner is single-threaded. Multi-threaded exploration
 // (Java's planner is also single-threaded) is a future concern.
 type Planner struct {
+	// stack MUST be LIFO. The bottom-up exploration invariant —
+	// children-before-parent — depends on stack-pop returning the
+	// most-recently-pushed Task. ExploreReferenceTask pushes
+	// ApplyRulesTask BEFORE per-member ExploreExpressionTask; LIFO
+	// pop order means ExploreExpressionTask (and the children it
+	// pushes) runs FIRST, descending to leaves; ApplyRulesTask
+	// fires last on already-explored children. Switching to FIFO
+	// (queue) would reverse this and the guard-retry pattern in
+	// the Implement* rules ("inner not yet physical → skip") would
+	// stop working.
 	stack []Task
 	rules []ExpressionRule
 	ctx   PlanContext

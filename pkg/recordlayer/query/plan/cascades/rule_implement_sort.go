@@ -50,6 +50,10 @@ func (r *ImplementSortRule) OnMatch(call *ExpressionRuleCall) {
 			innerPlan = w.GetPlan()
 		case *physicalSortWrapper:
 			innerPlan = w.GetPlan()
+		case *physicalDistinctWrapper:
+			innerPlan = w.GetPlan()
+		case *physicalTypeFilterWrapper:
+			innerPlan = w.GetPlan()
 		}
 		if innerPlan != nil {
 			break

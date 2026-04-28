@@ -61,6 +61,12 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 			innerPlan = w.GetPlan()
 		case *physicalFilterWrapper:
 			innerPlan = w.GetPlan()
+		case *physicalSortWrapper:
+			innerPlan = w.GetPlan()
+		case *physicalDistinctWrapper:
+			innerPlan = w.GetPlan()
+		case *physicalTypeFilterWrapper:
+			innerPlan = w.GetPlan()
 		}
 		if innerPlan != nil {
 			break

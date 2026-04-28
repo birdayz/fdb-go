@@ -1,5 +1,7 @@
 package values
 
+import "bytes"
+
 // InOpValue is the Value-layer SQL `IN` operator: tests whether a
 // probe value matches any element of a list of candidate values.
 // Mirrors Java's `com.apple.foundationdb.record.query.plan.cascades.
@@ -30,6 +32,25 @@ package values
 type InOpValue struct {
 	Probe Value
 	List  Value // expected to evaluate to []any at runtime
+}
+
+// equalsAny compares two `any` values without panicking on
+// non-comparable types. Go's `==` on `any` would panic if both
+// sides were []byte (slices aren't comparable). bytes.Equal
+// handles the byte-slice case; everything else falls through to
+// `==`.
+func equalsAny(a, b any) bool {
+	if ab, ok := a.([]byte); ok {
+		if bb, ok := b.([]byte); ok {
+			return bytes.Equal(ab, bb)
+		}
+		return false
+	}
+	if _, ok := b.([]byte); ok {
+		// a is not []byte but b is — different types.
+		return false
+	}
+	return a == b
 }
 
 // NewInOpValue constructs an InOpValue.
@@ -101,10 +122,7 @@ func (v *InOpValue) Evaluate(evalCtx any) any {
 			sawNull = true
 			continue
 		}
-		// Match via Go ==. Numeric promotion / comparator
-		// semantics happen INSIDE evalCompare in higher layers; the
-		// seed accepts == against the runtime-typed comparison.
-		if probe == elem {
+		if equalsAny(probe, elem) {
 			return true
 		}
 	}
