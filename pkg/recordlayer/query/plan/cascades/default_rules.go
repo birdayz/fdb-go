@@ -13,6 +13,7 @@ package cascades
 func DefaultExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewFilterMergeRule(),
+		NewFilterDropTruePredicatesRule(),
 		NewDistinctMergeRule(),
 		NewTypeFilterMergeRule(),
 		NewUnionMergeRule(),
