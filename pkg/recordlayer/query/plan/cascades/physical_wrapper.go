@@ -5,9 +5,18 @@ import (
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
+
+// physicalWrapperCostMultiplier is applied to each physical wrapper's
+// inherited cost so cost-driven extraction prefers physical plans
+// over their logical counterparts. 0.9 = "physical is 10% cheaper
+// than logical" — enough to flip ordering on equally-shaped
+// alternatives, small enough not to dominate the cost comparison
+// with structurally-different alternatives.
+const physicalWrapperCostMultiplier = 0.9
 
 // physicalScanWrapper adapts a `*plans.RecordQueryScanPlan` to the
 // `expressions.RelationalExpression` interface so Batch A rules can
@@ -87,6 +96,25 @@ func (w *physicalScanWrapper) WithChildren(qs []expressions.Quantifier) (express
 		return nil, fmt.Errorf("physicalScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
 	}
 	return w, nil
+}
+
+// HintCost matches the LogicalScan equivalent (see properties/cost.go's
+// FullUnorderedScanExpression arm) and applies the physical-wrapper
+// discount so cost-driven extraction prefers the physical scan over
+// the logical one.
+func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
+	if w.plan == nil {
+		return properties.Cost{Cardinality: properties.LeafScanCardinality, CPU: 0}
+	}
+	types := w.plan.GetRecordTypes()
+	if len(types) == 0 {
+		return properties.Cost{Cardinality: properties.LeafScanCardinality * physicalWrapperCostMultiplier, CPU: 0}
+	}
+	total := 0.0
+	for range types {
+		total += properties.LeafScanCardinality
+	}
+	return properties.Cost{Cardinality: total * physicalWrapperCostMultiplier, CPU: 0}
 }
 
 var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
@@ -173,6 +201,28 @@ func (w *physicalFilterWrapper) WithChildren(qs []expressions.Quantifier) (expre
 	return &physicalFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
+// HintCost mirrors the LogicalFilter cost formula and applies the
+// physical-wrapper discount so cost-driven extraction prefers the
+// physical filter over the logical one.
+func (w *physicalFilterWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 || w.plan == nil {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	numPreds := len(w.plan.GetPredicates())
+	if numPreds == 0 {
+		numPreds = 1
+	}
+	sel := properties.FilterSelectivity
+	for i := 1; i < numPreds; i++ {
+		sel *= properties.FilterSelectivity
+	}
+	return properties.Cost{
+		Cardinality: in * sel * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.FilterCPU*float64(numPreds)) * physicalWrapperCostMultiplier,
+	}
+}
+
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
 
 // physicalSortWrapper adapts a `*plans.RecordQuerySortPlan` to the
@@ -247,6 +297,27 @@ func (w *physicalSortWrapper) WithChildren(qs []expressions.Quantifier) (express
 	return &physicalSortWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
+// HintCost mirrors LogicalSort with the physical-wrapper discount.
+func (w *physicalSortWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	logN := 1.0
+	if in > 2 {
+		// log2(in)
+		l := in
+		for l > 2 {
+			l /= 2
+			logN++
+		}
+	}
+	return properties.Cost{
+		Cardinality: in * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.SortCPU*logN) * physicalWrapperCostMultiplier,
+	}
+}
+
 var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)
 
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
@@ -318,6 +389,18 @@ func (w *physicalDistinctWrapper) WithChildren(qs []expressions.Quantifier) (exp
 	return &physicalDistinctWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
+// HintCost mirrors LogicalDistinct with the physical-wrapper discount.
+func (w *physicalDistinctWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	return properties.Cost{
+		Cardinality: in * properties.DistinctSelectivity * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.DistinctCPU) * physicalWrapperCostMultiplier,
+	}
+}
+
 var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
 
 // physicalTypeFilterWrapper adapts a `*plans.RecordQueryTypeFilterPlan`
@@ -386,6 +469,19 @@ func (w *physicalTypeFilterWrapper) WithChildren(qs []expressions.Quantifier) (e
 		return nil, fmt.Errorf("physicalTypeFilterWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
 	return &physicalTypeFilterWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+// HintCost mirrors LogicalTypeFilter with the physical-wrapper
+// discount.
+func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	return properties.Cost{
+		Cardinality: in * properties.TypeFilterSelectivity * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.TypeFilterCPU) * physicalWrapperCostMultiplier,
+	}
 }
 
 var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)

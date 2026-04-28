@@ -455,6 +455,16 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 		return Cost{Cardinality: in, CPU: sumCPU + in*WriteCPU}
 
 	default:
+		// Optional CostHinter override — opaque wrappers (e.g.
+		// physical-plan adapters) can supply their own cost via
+		// HintCost(child) without forcing properties.localCost to
+		// know about every concrete type. Wrappers around physical
+		// plans should hint a cost equivalent to or lower than the
+		// corresponding logical operator so cost-driven extraction
+		// prefers the physical plan.
+		if hinter, ok := e.(CostHinter); ok {
+			return hinter.HintCost(child)
+		}
 		// Unknown operator — pessimistic. Drives the planner toward
 		// known-cost shapes when alternatives exist. Safe because the
 		// default doesn't underestimate any concrete operator.
@@ -464,6 +474,21 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 		}
 		return Cost{Cardinality: in, CPU: sumCPU + in}
 	}
+}
+
+// CostHinter is the optional interface a RelationalExpression
+// implements to override the cost model's default-arm
+// pessimistic estimate. Used by opaque wrappers (e.g. cascades-
+// internal physical-plan adapters) to declare a more accurate cost
+// — typically equal to or lower than the corresponding logical
+// operator's cost so cost-driven extraction prefers the physical
+// plan.
+type CostHinter interface {
+	// HintCost returns this expression's cost given its children's
+	// rolled-up costs. Implementations should aggregate sumCPU =
+	// sum(child.CPU) + own-CPU and compute cardinality based on
+	// the operator's selectivity / row-shape contract.
+	HintCost(childCosts []Cost) Cost
 }
 
 // CostLess returns a comparator function `less(a, b RelationalExpression) bool`
