@@ -57,6 +57,7 @@ go_test(
         "reference_dedup_test.go",
         "reference_test.go",
         "select_test.go",
+        "table_function_fuzz_test.go",
         "table_function_test.go",
         "walk_test.go",
         "with_predicates_test.go",
