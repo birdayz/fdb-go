@@ -193,6 +193,72 @@ func TestConvert_Project_ExpressionUnsupported(t *testing.T) {
 	}
 }
 
+func TestConvert_Project_EmptyList_Succeeds(t *testing.T) {
+	t.Parallel()
+	// LogicalProject with no projections is structurally weird but
+	// should not crash. The converter produces an empty
+	// LogicalProjectionExpression — the optimiser's ProjectionElim
+	// rule won't fire (it needs a single QOV; empty has zero), but
+	// downstream callers can still walk the tree.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{}, []string{},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	p, ok := got.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalProjectionExpression", got)
+	}
+	if len(p.GetProjectedValues()) != 0 {
+		t.Fatalf("projected values len=%d, want 0 (empty list)", len(p.GetProjectedValues()))
+	}
+}
+
+func TestConvert_Project_EmptyStringEntry_Unsupported(t *testing.T) {
+	t.Parallel()
+	// Empty-string projection entry isn't a valid bare column.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{""},
+		[]string{""},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (empty projection name)", err)
+	}
+}
+
+func TestConvert_Project_DigitFirstEntry_Unsupported(t *testing.T) {
+	t.Parallel()
+	// Identifiers can't start with digits.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"1col"},
+		[]string{""},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (digit-first identifier)", err)
+	}
+}
+
+func TestConvert_Project_SpaceEntry_Unsupported(t *testing.T) {
+	t.Parallel()
+	// Whitespace makes it not a bare identifier.
+	src := logical.NewProject(
+		logical.NewScan("Order", ""),
+		[]string{"col 1"},
+		[]string{""},
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (whitespace in identifier)", err)
+	}
+}
+
 func TestConvert_Project_QualifiedUnsupported(t *testing.T) {
 	t.Parallel()
 	// "Order.id" has a dot → unsupported (qualified-column needs scope).
