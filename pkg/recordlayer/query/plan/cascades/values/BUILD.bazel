@@ -26,6 +26,7 @@ go_test(
         "scalar_functions_extra_test.go",
         "simplifier_value_test.go",
         "type_test.go",
+        "value_correlation_fuzz_test.go",
         "value_literal_string_test.go",
         "value_not_test.go",
         "values_fuzz_test.go",
