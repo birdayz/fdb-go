@@ -714,6 +714,17 @@ func FuzzCompareValues(f *testing.F) {
 				t.Fatalf("reflexivity: CompareValues(%v, %v) = %d, want 0", a, a, r)
 			}
 		}
+		// Bool × bool with both values: the fuzz-supplied `b` is used
+		// symmetrically by `pick`, so the (4, 4) case can never produce
+		// CompareValues(true, false). Cover the different-bool case
+		// explicitly inside the fuzz body so each iteration revalidates
+		// the bool branch alongside the mutated-type-pair tests.
+		if r := functions.CompareValues(true, false); r != 1 {
+			t.Fatalf("CompareValues(true, false) = %d, want 1", r)
+		}
+		if r := functions.CompareValues(false, true); r != -1 {
+			t.Fatalf("CompareValues(false, true) = %d, want -1", r)
+		}
 	})
 }
 
@@ -752,9 +763,21 @@ func FuzzCastValue(f *testing.F) {
 	f.Add("BOOLEAN", int64(0), float64(0), "TRUE  ") // trailing whitespace per Java
 	f.Add("BOOLEAN", int64(0), float64(0), "no")     // bad input
 
+	// Bool source seeds — CastValue has explicit `case bool:` handling
+	// in INTEGER/BIGINT (`true → 1`, `false → 0`) and BOOLEAN (identity);
+	// other targets must error cleanly without panicking. Iterating bool
+	// inside the Fuzz body alongside the other source types closes the
+	// coverage gap flagged in the nightshift-57 review.
+	f.Add("INTEGER", int64(0), float64(0), "")
+	f.Add("BIGINT", int64(0), float64(0), "")
+	f.Add("BOOLEAN", int64(0), float64(0), "")
+	f.Add("FLOAT", int64(0), float64(0), "") // bool → FLOAT is unsupported; pins clean error
+
 	f.Fuzz(func(t *testing.T, typeName string, i int64, fl float64, s string) {
 		// Try each value type as the source value. No panic on any combo.
-		for _, v := range []any{nil, i, fl, s} {
+		// `true` and `false` are both included to exercise CastValue's
+		// `case bool:` arms in the integer / boolean target branches.
+		for _, v := range []any{nil, i, fl, s, true, false} {
 			r, err := functions.CastValue(v, typeName)
 			_ = err
 			// SQL: CAST(NULL AS T) → (nil, nil) for any typeName.
