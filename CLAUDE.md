@@ -128,6 +128,25 @@ pkg/recordlayer/                    # Main Record Layer implementation
     scenario.go                     # Scenario (ties chaosDB + model + verification)
     verify.go                       # Verify() — model vs store comparison
     chaos_test.go                   # Chaos tests (16 tests, targeted + random)
+  query/plan/cascades/              # Cascades planner port (RFC-022 Phase 4.x)
+    values/                         # Type hierarchy + Value tree (B0)
+    predicates/                     # QueryPredicate hierarchy
+    matching/                       # BindingMatcher DSL + matchers
+    expressions/                    # RelationalExpression hierarchy (B1)
+                                    #   alias_map, quantifier, reference,
+                                    #   logical_*.go (8 logical operators),
+                                    #   {insert,update,delete}.go (DML),
+                                    #   full_unordered_scan.go (leaf)
+    rule_*.go                       # Logical-rewrite rules (FilterMerge,
+                                    #   DistinctMerge, TypeFilterMerge,
+                                    #   UnionMerge, IntersectionMerge,
+                                    #   NoOpFilter, ProjectionElim,
+                                    #   UnsortedSortElim)
+    expression_matcher.go           # ExpressionMatcher[T] generic matcher
+    expression_rule_call.go         # ExpressionRuleCall (rule context)
+    fixpoint.go                     # FixpointApply — multi-rule driver (seed)
+    default_rules.go                # DefaultExpressionRules() curated list
+    plan_context.go                 # PlanContext + PlannerConfiguration
 pkg/relational/core/embedded/       # SQL engine (driver.Conn impl + executors)
   connection.go                     # EmbeddedConnection struct + driver-layer methods
   select_dispatch.go                # execSelect / execSelectQuery entry points
