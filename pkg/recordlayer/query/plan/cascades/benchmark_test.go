@@ -292,9 +292,10 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
 	matcher := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
+	outer := matching.NewBindings()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = matcher.BindMatches(nil, f)
+		_ = matcher.BindMatches(outer, f)
 	}
 }
 
