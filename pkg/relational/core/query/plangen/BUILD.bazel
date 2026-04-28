@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "plangen",
+    srcs = ["plangen.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/plangen",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/core/query/logical",
+    ],
+)
+
+go_test(
+    name = "plangen_test",
+    srcs = ["plangen_test.go"],
+    deps = [
+        ":plangen",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/relational/core/query/logical",
+    ],
+)
