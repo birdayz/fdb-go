@@ -23,7 +23,9 @@ go_test(
         "cost_test.go",
         "extract_fuzz_test.go",
         "extract_test.go",
+        "ordering_fuzz_test.go",
         "ordering_test.go",
+        "properties_bench_test.go",
     ],
     embed = [":properties"],
     deps = [
