@@ -84,9 +84,17 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		return inheritFromInner(v.GetInner())
 	case *expressions.DeleteExpression:
 		return inheritFromInner(v.GetInner())
+	case *expressions.LogicalDistinctExpression:
+		// Distinct preserves the inner's ordering when the inner is
+		// sorted — duplicate elimination doesn't reorder rows; it just
+		// drops repeats. The seed conservatively returns the inner's
+		// ordering directly. Java's analysis is sharper (only preserves
+		// when the inner ordering aligns with the distinct grouping
+		// keys) but for the seed-level use case this is sufficient.
+		return inheritFromInner(v.GetInner())
 	}
 	// Default: no known ordering (FullUnorderedScan / Union /
-	// Intersection / Distinct).
+	// Intersection).
 	return Ordering{IsKnown: false}
 }
 

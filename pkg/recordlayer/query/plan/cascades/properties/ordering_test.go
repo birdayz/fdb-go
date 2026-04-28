@@ -135,3 +135,32 @@ func TestEstimateOrdering_Union_NotKnown(t *testing.T) {
 		t.Fatal("Union ordering = known, want unknown (concat loses ordering)")
 	}
 }
+
+// TestEstimateOrdering_DistinctOverSortPreserves pins that Distinct
+// over Sort inherits the Sort's ordering — Distinct doesn't reorder
+// rows, just drops duplicates.
+func TestEstimateOrdering_DistinctOverSortPreserves(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	keys := []expressions.SortKey{
+		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+	}
+	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	dist := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(sort)))
+	o := properties.EstimateOrdering(dist)
+	if !o.IsKnown {
+		t.Fatal("Distinct(Sort(...)) ordering = unknown, want known (Distinct preserves)")
+	}
+}
+
+// TestEstimateOrdering_DistinctOverScanNotKnown verifies that
+// Distinct over an unsorted scan still produces unknown.
+func TestEstimateOrdering_DistinctOverScanNotKnown(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	dist := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	o := properties.EstimateOrdering(dist)
+	if o.IsKnown {
+		t.Fatal("Distinct(Scan) ordering = known, want unknown (scan is unordered)")
+	}
+}
