@@ -458,7 +458,7 @@ func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalO
 		if depth >= maxDepth {
 			return logical.NewScan(name1, name2)
 		}
-		switch s % 8 {
+		switch s % 10 {
 		case 0:
 			return logical.NewScan(name1, name2)
 		case 1:
@@ -489,6 +489,16 @@ func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalO
 			return logical.NewDelete(name1, build(depth+1, s>>3))
 		case 7:
 			return logical.NewInsert(name1, []string{name2}, build(depth+1, s>>3))
+		case 8:
+			return logical.NewUpdate(
+				name1,
+				[]logical.Assignment{{Column: name1, Expr: name2}},
+				build(depth+1, s>>3),
+			)
+		case 9:
+			// LogicalLimit is unsupported — exercises the default
+			// ErrUnsupported branch + propagation through ancestors.
+			return logical.NewLimit(build(depth+1, s>>3), int64(s%100), int64((s>>5)%50))
 		}
 		return nil
 	}
