@@ -7,6 +7,7 @@ go_library(
         "expression_matcher.go",
         "expression_rule_call.go",
         "fixpoint.go",
+        "physical_wrapper.go",
         "plan_context.go",
         "planner.go",
         "rule.go",
@@ -19,6 +20,7 @@ go_library(
         "rule_filter_merge.go",
         "rule_intersection_merge.go",
         "rule_noop_filter.go",
+        "rule_primary_scan.go",
         "rule_projection_elim.go",
         "rule_projection_merge.go",
         "rule_pull_common_filter_above_intersection.go",
@@ -53,6 +55,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
     ],
 )
 
@@ -81,6 +84,7 @@ go_test(
         "rule_filter_merge_test.go",
         "rule_intersection_merge_test.go",
         "rule_noop_filter_test.go",
+        "rule_primary_scan_test.go",
         "rule_projection_elim_test.go",
         "rule_projection_merge_test.go",
         "rule_pull_common_filter_above_intersection_test.go",
@@ -116,5 +120,6 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
     ],
 )
