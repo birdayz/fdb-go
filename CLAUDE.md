@@ -142,9 +142,10 @@ pkg/recordlayer/                    # Main Record Layer implementation
                                     #   {insert,update,delete}.go (DML),
                                     #   full_unordered_scan.go (leaf),
                                     #   walk.go, with_predicates.go (helpers)
-    rule_*.go                       # 12 logical-rewrite rules (FilterMerge,
+    rule_*.go                       # 13 logical-rewrite rules (FilterMerge,
                                     #   FilterDropTrue, DistinctMerge,
-                                    #   TypeFilterMerge, UnionMerge,
+                                    #   TypeFilterMerge, TypeFilterRedundant
+                                    #   OverScan, UnionMerge,
                                     #   IntersectionMerge, NoOpFilter,
                                     #   ProjectionMerge, ProjectionElim,
                                     #   UnsortedSortElim, UnionSingletonElim,
