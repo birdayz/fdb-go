@@ -59,6 +59,77 @@ func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (
 	return rebuildExpression(best, stats)
 }
 
+// BestMemberSelector is the optional interface a planner implements
+// to expose its OPTIMIZE-chosen best member per Reference.
+// ExtractBestPlanFromSelector consults the selector first; falls
+// back to cost-comparator selection when the selector reports no
+// stored choice.
+//
+// Used by the cascades.Planner via ExtractBestPlanFromSelector to
+// avoid recomputing CostLess for every Reference (planner's
+// OPTIMIZE phase already did the work).
+type BestMemberSelector interface {
+	// BestMember returns the chosen best member for `ref`, or nil
+	// if the selector has no stored choice.
+	BestMember(ref *expressions.Reference) expressions.RelationalExpression
+	// HasBestMember reports whether the selector has a stored
+	// choice for `ref` (distinguishes "no choice" from "chose nil").
+	HasBestMember(ref *expressions.Reference) bool
+}
+
+// ExtractBestPlanFromSelector returns a fresh tree where every
+// Reference's best member comes from `sel` if available; falls
+// back to CostLess+stats otherwise.
+//
+// Use this when the caller has a pre-populated selector (e.g. the
+// cascades.Planner after Explore). It avoids repeating the OPTIMIZE
+// work that already happened during Explore.
+//
+// Pass nil sel to fall back to ExtractBestPlanWith(ref, stats)
+// (no selector path).
+func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelector, stats StatisticsProvider) (expressions.RelationalExpression, error) {
+	if ref == nil || len(ref.Members()) == 0 {
+		return nil, nil
+	}
+	if stats == nil {
+		stats = DefaultStatistics{}
+	}
+	var best expressions.RelationalExpression
+	if sel != nil && sel.HasBestMember(ref) {
+		best = sel.BestMember(ref)
+	} else {
+		best = ref.GetBest(CostLessWith(stats))
+	}
+	if best == nil {
+		return nil, nil
+	}
+	return rebuildExpressionFromSelector(best, sel, stats)
+}
+
+// rebuildExpressionFromSelector is the same switch-based rebuilder
+// as rebuildExpression but recurses through ExtractBestPlanFromSelector
+// to consult the selector at every Reference.
+func rebuildExpressionFromSelector(e expressions.RelationalExpression, sel BestMemberSelector, stats StatisticsProvider) (expressions.RelationalExpression, error) {
+	if e == nil {
+		return nil, nil
+	}
+	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
+	for _, q := range e.GetQuantifiers() {
+		inner, err := ExtractBestPlanFromSelector(q.GetRangesOver(), sel, stats)
+		if err != nil {
+			return nil, err
+		}
+		var freshRef *expressions.Reference
+		if inner == nil {
+			freshRef = &expressions.Reference{}
+		} else {
+			freshRef = expressions.InitialOf(inner)
+		}
+		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
+	}
+	return rebuildWithFreshChildren(e, freshChildren)
+}
+
 // rebuildExpression returns a fresh RelationalExpression of the same
 // concrete type as `e`, with each Quantifier's Reference replaced by
 // a singleton Reference holding the recursively-extracted best plan
@@ -87,9 +158,12 @@ func rebuildExpression(e expressions.RelationalExpression, stats StatisticsProvi
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
-	// Switch on concrete type — each arm reconstructs the expression
-	// using its public constructor, threading the fresh quantifiers
-	// in place of the originals.
+	return rebuildWithFreshChildren(e, freshChildren)
+}
+
+// rebuildWithFreshChildren is the switch-on-type rebuilder shared
+// by rebuildExpression and rebuildExpressionFromSelector.
+func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren []expressions.Quantifier) (expressions.RelationalExpression, error) {
 	switch ex := e.(type) {
 
 	case *expressions.FullUnorderedScanExpression:

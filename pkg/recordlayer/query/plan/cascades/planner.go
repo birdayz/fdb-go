@@ -154,7 +154,10 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	if !conv {
 		return nil, tasks, ErrPlannerCapHit
 	}
-	plan, err := properties.ExtractBestPlan(rootRef)
+	// Use the selector path so extraction reuses the OPTIMIZE-stamped
+	// best member per Reference (avoids re-computing CostLess that
+	// the OPTIMIZE phase already did).
+	plan, err := properties.ExtractBestPlanFromSelector(rootRef, p, properties.DefaultStatistics{})
 	return plan, tasks, err
 }
 
