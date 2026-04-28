@@ -65,6 +65,10 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 			innerPlan = w.GetPlan()
 		case *physicalTypeFilterWrapper:
 			innerPlan = w.GetPlan()
+		case *physicalUnionWrapper:
+			innerPlan = w.GetPlan()
+		case *physicalIntersectionWrapper:
+			innerPlan = w.GetPlan()
 		}
 		if innerPlan != nil {
 			break
@@ -133,6 +137,16 @@ func wrapPhysicalPlan(p plans.RecordQueryPlan) expressions.RelationalExpression 
 			childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(ipWrap)))
 		}
 		return NewPhysicalUnionWrapper(concrete, childQs)
+	case *plans.RecordQueryIntersectionPlan:
+		childQs := make([]expressions.Quantifier, 0, len(concrete.GetInners()))
+		for _, ip := range concrete.GetInners() {
+			ipWrap := wrapPhysicalPlan(ip)
+			if ipWrap == nil {
+				return nil
+			}
+			childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(ipWrap)))
+		}
+		return NewPhysicalIntersectionWrapper(concrete, childQs)
 	}
 	return nil
 }

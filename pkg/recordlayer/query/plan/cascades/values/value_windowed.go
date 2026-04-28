@@ -65,10 +65,25 @@ func (*WindowedValue) Evaluate(any) any { return nil }
 // `splitNewChildren` helper that subclass `withChildren`
 // implementations call to reconstruct the partition/arg split.
 //
-// The split point is len(PartitioningValues) — first N are
-// partition values, rest are argument values. Caller is responsible
-// for length validation; this helper is permissive (over-long
-// arguments and zero-partition-cases are allowed).
+// Length contract:
+//   - Expected: len(newChildren) == len(PartitioningValues) +
+//     len(ArgumentValues). When the simplification driver passes
+//     newChildren = w.Children() this holds by construction.
+//   - SHORT input (len(newChildren) < len(PartitioningValues)):
+//     n is clipped to len(newChildren), partition gets all of
+//     newChildren, argument is empty. Permissive — silently
+//     drops trailing partitioning slots.
+//   - LONG input (len(newChildren) > len(PartitioningValues) +
+//     len(ArgumentValues)): the surplus goes into argument
+//     without bounds check. Permissive — caller's invariant
+//     to enforce.
+//
+// Today's only callers are the per-subclass `WithChildren`
+// implementations (RankValue, RowNumberValue, DistanceRowNumberValue),
+// which receive exactly len(Children()) values from the planner,
+// so the permissive-on-mismatch behaviour never bites in practice.
+// New callers must pass an exactly-sized slice; otherwise either
+// partition or argument silently truncates.
 func (w *WindowedValue) SplitNewChildren(newChildren []Value) (partition, argument []Value) {
 	n := len(w.PartitioningValues)
 	if n > len(newChildren) {

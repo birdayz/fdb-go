@@ -43,16 +43,27 @@ func NewPickValue(selector Value, alternatives []Value, resultType Type) *PickVa
 }
 
 // Children returns [Selector, alt0, alt1, ...].
+//
+// Position-stable: nil entries are PRESERVED in the output (not
+// filtered) so that the index returned by Selector.Evaluate stays
+// aligned with the index into the children list. Filtering nils
+// would silently shift later alternatives toward earlier positions
+// — Evaluate would then index into a wrong slot. The caller's
+// nil-handling lives in Evaluate (a nil-resolved alternative
+// returns nil rather than dereferencing).
+//
+// PickValue intentionally does NOT have a WithChildren method —
+// the simplification driver doesn't rebuild PickValues. If a
+// future caller needs to rewrite PickValue's children, the
+// rebuild must use indexed assignment (NOT a fresh constructor
+// over Children()) since Selector + Alternatives are
+// position-coupled.
 func (v *PickValue) Children() []Value {
 	out := make([]Value, 0, 1+len(v.Alternatives))
 	if v.Selector != nil {
 		out = append(out, v.Selector)
 	}
-	for _, a := range v.Alternatives {
-		if a != nil {
-			out = append(out, a)
-		}
-	}
+	out = append(out, v.Alternatives...)
 	return out
 }
 

@@ -52,6 +52,10 @@ func (r *ImplementInsertRule) OnMatch(call *ExpressionRuleCall) {
 			innerPlan = w.GetPlan()
 		case *physicalTypeFilterWrapper:
 			innerPlan = w.GetPlan()
+		case *physicalUnionWrapper:
+			innerPlan = w.GetPlan()
+		case *physicalIntersectionWrapper:
+			innerPlan = w.GetPlan()
 		}
 		if innerPlan != nil {
 			break

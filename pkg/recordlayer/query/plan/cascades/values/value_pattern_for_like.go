@@ -37,6 +37,21 @@ import "strings"
 //   - other length → returns nil (Java throws SemanticException;
 //     Go's seed defers to evaluator-side reporting). Documented as
 //     a planner-checked precondition.
+//
+// **DOTALL mismatch warning**: Java's
+// `LikeOperatorValue.eval` calls `Pattern.compile(regex, Pattern.DOTALL)`,
+// so Java's `.` (the wildcard equivalent of SQL `_`) matches ANY
+// character including `\n`. Go's standard `regexp` package treats
+// `.` as "any character EXCEPT newline" by default. The regex
+// string this Value produces does NOT include `(?s)` (the Go
+// inline-flag for DOTALL), so if a Go consumer were to drive the
+// produced regex via `regexp.Compile`, multiline strings with `_`
+// wildcards would NOT match across newlines — divergent from
+// Java. Today Go's LikeOperatorValue does NOT consume this regex
+// (it routes through `values.LikeMatch` directly), so the gap is
+// only theoretical: any future Go consumer of the regex output
+// MUST prepend `(?s)` to match Java's DOTALL semantics. The Java-
+// side runtime, which is the canonical consumer, is unaffected.
 type PatternForLikeValue struct {
 	PatternChild Value
 	EscapeChild  Value
