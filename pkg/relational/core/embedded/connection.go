@@ -490,4 +490,5 @@ var (
 	_ driver.SessionResetter    = (*EmbeddedConnection)(nil)
 	_ driver.Validator          = (*EmbeddedConnection)(nil)
 	_ driver.ConnPrepareContext = (*EmbeddedConnection)(nil)
+	_ driver.Tx                 = (*embeddedTx)(nil)
 )
