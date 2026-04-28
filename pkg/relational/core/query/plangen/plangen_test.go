@@ -279,6 +279,63 @@ func TestConvert_Sort_ExpressionUnsupported(t *testing.T) {
 	}
 }
 
+func TestConvert_Update_BareColumnRHS(t *testing.T) {
+	t.Parallel()
+	src := logical.NewUpdate(
+		"Order",
+		[]logical.Assignment{{Column: "name", Expr: "altname"}},
+		logical.NewScan("Order", ""),
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	u, ok := got.(*expressions.UpdateExpression)
+	if !ok {
+		t.Fatalf("got %T, want *UpdateExpression", got)
+	}
+	if u.GetTargetRecordType() != "Order" {
+		t.Fatalf("target = %q, want Order", u.GetTargetRecordType())
+	}
+	tx := u.GetTransforms()
+	if len(tx) != 1 {
+		t.Fatalf("transforms len=%d, want 1", len(tx))
+	}
+	if tx[0].FieldPath != "name" {
+		t.Fatalf("transform[0].FieldPath = %q, want name", tx[0].FieldPath)
+	}
+	fv, ok := tx[0].NewValue.(*values.FieldValue)
+	if !ok || fv.Field != "altname" {
+		t.Fatalf("transform[0].NewValue = %v, want FieldValue{altname}", tx[0].NewValue)
+	}
+}
+
+func TestConvert_Update_ExpressionRHS_Unsupported(t *testing.T) {
+	t.Parallel()
+	src := logical.NewUpdate(
+		"Order",
+		[]logical.Assignment{{Column: "n", Expr: "n + 1"}},
+		logical.NewScan("Order", ""),
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported", err)
+	}
+}
+
+func TestConvert_Update_NoInput_Unsupported(t *testing.T) {
+	t.Parallel()
+	src := logical.NewUpdate(
+		"Order",
+		[]logical.Assignment{{Column: "n", Expr: "altn"}},
+		nil,
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported (no Input)", err)
+	}
+}
+
 // TestConvert_NestedFilterOverFilter — proves recursion through
 // the converter walks correctly.
 func TestConvert_NestedFilterOverFilter(t *testing.T) {

@@ -24,16 +24,19 @@
 //     LogicalProjectionExpression; non-bare-column entries fall
 //     back to ErrUnsupported
 //   - LogicalSort (bare-column keys only) → LogicalSortExpression
+//   - LogicalUpdate (bare-column SET right-hand sides only) →
+//     UpdateExpression; SET <col> = <expr> still ErrUnsupported
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject with expression projections — needs text→Value
 //     parsing
 //   - LogicalSort with expression keys — needs text→Value parsing
+//   - LogicalUpdate with non-bare-column RHS — needs text→Value
+//     parsing
 //   - LogicalLimit — no RelationalExpression equivalent yet
 //   - LogicalAggregate — needs GroupByExpression port
 //   - LogicalJoin — maps to SelectExpression with multiple
 //     Quantifiers; needs predicate placement work
-//   - LogicalUpdate — needs targetType inference
 //   - LogicalInsert without Source (VALUES literal) — needs a
 //     synthetic LogicalValues source operator
 //   - LogicalValues / LogicalCTE / LogicalDDL — no equivalent
@@ -81,6 +84,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertProject(o)
 	case *logical.LogicalSort:
 		return convertSort(o)
+	case *logical.LogicalUpdate:
+		return convertUpdate(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -215,6 +220,36 @@ func convertSort(s *logical.LogicalSort) (expressions.RelationalExpression, erro
 		}
 	}
 	return expressions.NewLogicalSortExpression(keys, q), nil
+}
+
+// convertUpdate builds an UpdateExpression for the recursively-
+// converted child. Each SET assignment's RHS must be a bare column
+// name (the rename-like case `UPDATE t SET a = b`); literals,
+// arithmetic, and function calls all need text→Value parsing.
+//
+// The Input is required (no SET-from-nothing).
+func convertUpdate(u *logical.LogicalUpdate) (expressions.RelationalExpression, error) {
+	if u.Input == nil {
+		return nil, fmt.Errorf("%w: LogicalUpdate without Input", ErrUnsupported)
+	}
+	for i, a := range u.Sets {
+		if !isBareColumn(a.Expr) {
+			return nil, fmt.Errorf("%w: LogicalUpdate SET %d (%s = %q) is not a bare-column RHS", ErrUnsupported, i, a.Column, a.Expr)
+		}
+	}
+	inner, err := Convert(u.Input)
+	if err != nil {
+		return nil, fmt.Errorf("update input: %w", err)
+	}
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	transforms := make([]expressions.UpdateTransform, len(u.Sets))
+	for i, a := range u.Sets {
+		transforms[i] = expressions.UpdateTransform{
+			FieldPath: a.Column,
+			NewValue:  &values.FieldValue{Field: a.Expr, Typ: values.UnknownType},
+		}
+	}
+	return expressions.NewUpdateExpression(q, u.Target, transforms), nil
 }
 
 // isBareColumn reports whether s is a SQL identifier with no
