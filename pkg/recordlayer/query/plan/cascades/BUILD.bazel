@@ -18,6 +18,7 @@ go_library(
         "rule_filter_dedup_predicates.go",
         "rule_filter_drop_true.go",
         "rule_filter_merge.go",
+        "rule_implement_delete.go",
         "rule_implement_distinct.go",
         "rule_implement_filter.go",
         "rule_implement_insert.go",

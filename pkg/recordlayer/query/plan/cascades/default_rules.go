@@ -103,6 +103,24 @@ func BatchAExpressionRules() []ExpressionRule {
 	}
 }
 
+// DMLImplementationRules returns the DML-side implementation rules
+// (ImplementInsertRule, ImplementDeleteRule). Mirrors Java's
+// per-DML implementation rule set.
+//
+// Compose with: append(rules, DMLImplementationRules()...) when
+// the planner needs to physical-implement DML expressions
+// (INSERT / DELETE / UPDATE).
+//
+// Currently 2 of 3 DML implement rules ported. UpdateExpression
+// → UpdatePlan rule is gated on per-row UpdateTransform plumbing
+// which is out of scope for the seed.
+func DMLImplementationRules() []ExpressionRule {
+	return []ExpressionRule{
+		NewImplementInsertRule(),
+		NewImplementDeleteRule(),
+	}
+}
+
 // init registers the default rules in the rule registry under their
 // concrete-type names ("FilterMergeRule", etc.) — discoverable via
 // LookupRule / RegisteredRuleNames for diagnostic output.

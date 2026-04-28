@@ -555,3 +555,80 @@ func (w *physicalInsertWrapper) HintCost(child []properties.Cost) properties.Cos
 }
 
 var _ expressions.RelationalExpression = (*physicalInsertWrapper)(nil)
+
+// physicalDeleteWrapper adapts `*plans.RecordQueryDeletePlan` to
+// the RelationalExpression interface.
+type physicalDeleteWrapper struct {
+	plan       *plans.RecordQueryDeletePlan
+	innerQuant expressions.Quantifier
+}
+
+// NewPhysicalDeleteWrapper constructs the wrapper.
+func NewPhysicalDeleteWrapper(plan *plans.RecordQueryDeletePlan, innerQuant expressions.Quantifier) *physicalDeleteWrapper {
+	return &physicalDeleteWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+// GetPlan exposes the wrapped physical plan.
+func (w *physicalDeleteWrapper) GetPlan() *plans.RecordQueryDeletePlan { return w.plan }
+
+// GetResultValue returns the inner Quantifier's flowed object value.
+func (w *physicalDeleteWrapper) GetResultValue() values.Value {
+	return w.innerQuant.GetFlowedObjectValue()
+}
+
+// GetQuantifiers returns the inner Quantifier as the only child.
+func (w *physicalDeleteWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+// CanCorrelate is false.
+func (w *physicalDeleteWrapper) CanCorrelate() bool { return false }
+
+// ChildrenAsSet is false.
+func (w *physicalDeleteWrapper) ChildrenAsSet() bool { return false }
+
+// GetCorrelatedToWithoutChildren returns the empty set.
+func (w *physicalDeleteWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+// EqualsWithoutChildren compares wrapped plans.
+func (w *physicalDeleteWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalDeleteWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+// HashCodeWithoutChildren mixes class + plan's hash.
+func (w *physicalDeleteWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physdeletewrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+// WithChildren constructs a fresh wrapper.
+func (w *physicalDeleteWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalDeleteWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalDeleteWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+// HintCost: DELETE write-heavy cost like INSERT.
+func (w *physicalDeleteWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	in := child[0].Cardinality
+	return properties.Cost{
+		Cardinality: in * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
+	}
+}
+
+var _ expressions.RelationalExpression = (*physicalDeleteWrapper)(nil)
