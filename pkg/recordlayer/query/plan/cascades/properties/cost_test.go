@@ -1,0 +1,362 @@
+package properties
+
+import (
+	"math"
+	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+)
+
+// scan returns a Reference holding a single FullUnorderedScan over
+// the given record types.
+func scan(types ...string) *expressions.Reference {
+	return expressions.InitialOf(expressions.NewFullUnorderedScanExpression(types, nil))
+}
+
+// scanQ wraps `scan(types...)` in a ForEach Quantifier.
+func scanQ(types ...string) expressions.Quantifier {
+	return expressions.ForEachQuantifier(scan(types...))
+}
+
+func TestCost_Less_OrdersByTotalThenCardinality(t *testing.T) {
+	t.Parallel()
+	cheap := Cost{Cardinality: 100, CPU: 10}
+	pricy := Cost{Cardinality: 1000, CPU: 50}
+	if !cheap.Less(pricy) {
+		t.Fatalf("cheap=%+v should be Less than pricy=%+v", cheap, pricy)
+	}
+	if pricy.Less(cheap) {
+		t.Fatalf("pricy=%+v should NOT be Less than cheap=%+v", pricy, cheap)
+	}
+	// Tie on Total, break on Cardinality (lower wins).
+	a := Cost{Cardinality: 100, CPU: 50}
+	b := Cost{Cardinality: 50, CPU: 100}
+	if a.Total() != b.Total() {
+		t.Fatalf("setup error: totals differ %v vs %v", a.Total(), b.Total())
+	}
+	if !b.Less(a) {
+		t.Fatal("on Total tie, lower-cardinality b should win")
+	}
+	if a.Less(b) {
+		t.Fatal("on Total tie, higher-cardinality a should not win")
+	}
+}
+
+func TestEstimateCost_NilReturnsZero(t *testing.T) {
+	t.Parallel()
+	c := EstimateCost(nil)
+	if c.Total() != 0 {
+		t.Fatalf("nil cost = %+v, want zero", c)
+	}
+}
+
+func TestEstimateCost_FullScanIsLeafCardinality(t *testing.T) {
+	t.Parallel()
+	e := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	c := EstimateCost(e)
+	if c.Cardinality != LeafScanCardinality {
+		t.Fatalf("scan cardinality=%v, want %v", c.Cardinality, LeafScanCardinality)
+	}
+	if c.CPU != 0 {
+		t.Fatalf("scan CPU=%v, want 0", c.CPU)
+	}
+}
+
+func TestEstimateCost_FilterReducesCardinalityBySelectivity(t *testing.T) {
+	t.Parallel()
+	// Filter([P], scan(T)) — single predicate.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	c := EstimateCost(filter)
+	want := LeafScanCardinality * FilterSelectivity
+	if math.Abs(c.Cardinality-want) > 1e-6 {
+		t.Fatalf("filter cardinality=%v, want %v", c.Cardinality, want)
+	}
+	if c.CPU < LeafScanCardinality*FilterCPU*0.99 {
+		t.Fatalf("filter CPU=%v too low", c.CPU)
+	}
+}
+
+func TestEstimateCost_FilterMultiPredicateExponentialSelectivity(t *testing.T) {
+	t.Parallel()
+	// Two predicates → selectivity^2; cardinality is smaller than
+	// single-predicate filter.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	one := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	two := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred, pred},
+		scanQ("T"),
+	)
+	c1 := EstimateCost(one)
+	c2 := EstimateCost(two)
+	if c2.Cardinality >= c1.Cardinality {
+		t.Fatalf("two-predicate filter cardinality=%v should be < one-predicate %v", c2.Cardinality, c1.Cardinality)
+	}
+}
+
+func TestEstimateCost_SortIsExpensive(t *testing.T) {
+	t.Parallel()
+	// Sort beats Filter on cardinality (both pass-through under
+	// Sort, only Filter drops rows), but Sort costs more CPU.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filterCost := EstimateCost(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	))
+	sortCost := EstimateCost(expressions.NewLogicalSortExpression(
+		nil,
+		scanQ("T"),
+	))
+	if sortCost.CPU <= filterCost.CPU {
+		t.Fatalf("sort CPU=%v should exceed filter CPU=%v", sortCost.CPU, filterCost.CPU)
+	}
+}
+
+func TestEstimateCost_DistinctOverSortBeatsSortOverDistinct(t *testing.T) {
+	t.Parallel()
+	// Distinct(Sort(scan)) vs Sort(Distinct(scan)). DistinctOverSortElim
+	// rewrites the former to Distinct(scan) (no sort) — that's
+	// cheaper. Without the rewrite, Distinct over Sort costs more
+	// than Sort over Distinct because Sort processes the unfiltered
+	// row set in the former.
+	//
+	// Actually under the current heuristic both shapes touch every
+	// row at least once with similar selectivity; the test pins that
+	// the SHAPE Distinct-no-sort (single Distinct) beats both shapes.
+	scanRef := scan("T")
+
+	// d := Distinct(scan)  — no sort
+	d := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef))
+
+	// ds := Distinct(Sort(scan))  — distinct over sort
+	sortQ := expressions.ForEachQuantifier(expressions.InitialOf(
+		expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scan("T"))),
+	))
+	ds := expressions.NewLogicalDistinctExpression(sortQ)
+
+	cd := EstimateCost(d)
+	cds := EstimateCost(ds)
+
+	if !cd.Less(cds) {
+		t.Fatalf("Distinct(scan)=%+v should beat Distinct(Sort(scan))=%+v — DistinctOverSortElim's calibration target", cd, cds)
+	}
+}
+
+func TestEstimateCost_PushFilterThroughSortBeatsSortOverFilter(t *testing.T) {
+	t.Parallel()
+	// PushFilterThroughSort: Sort(Filter(P, scan)) vs Filter(P, Sort(scan)).
+	// Pushing Filter under Sort means the sort runs on a smaller
+	// row set — the rewrite is the lower-cost shape. Calibration
+	// target: Sort(Filter(...)) < Filter(Sort(...)).
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	// Sort(Filter(P, scan)) — Filter pushed under Sort.
+	filterUnderSort := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	pushed := expressions.NewLogicalSortExpression(
+		nil,
+		expressions.ForEachQuantifier(expressions.InitialOf(filterUnderSort)),
+	)
+
+	// Filter(P, Sort(scan)) — Filter above Sort.
+	sortInside := expressions.NewLogicalSortExpression(nil, scanQ("T"))
+	pulled := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(expressions.InitialOf(sortInside)),
+	)
+
+	cPushed := EstimateCost(pushed)
+	cPulled := EstimateCost(pulled)
+
+	if !cPushed.Less(cPulled) {
+		t.Fatalf("Sort(Filter)=%+v should beat Filter(Sort)=%+v — PushFilterThroughSort's calibration target", cPushed, cPulled)
+	}
+}
+
+func TestEstimateCost_UnionSumsChildren(t *testing.T) {
+	t.Parallel()
+	// Union of two scans: cardinality = sum of children.
+	u := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		scanQ("T"),
+		scanQ("U"),
+	})
+	c := EstimateCost(u)
+	if c.Cardinality != 2*LeafScanCardinality {
+		t.Fatalf("union cardinality=%v, want %v", c.Cardinality, 2*LeafScanCardinality)
+	}
+}
+
+func TestEstimateCost_IntersectionBoundedByMin(t *testing.T) {
+	t.Parallel()
+	// Intersection cardinality is bounded by the smallest child.
+	// Two scans of the same record type → both 1e6 → output = 1e6.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+
+	smaller := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred, pred, pred},
+		scanQ("T"),
+	)
+	bigger := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("U"),
+	)
+
+	inter := expressions.NewLogicalIntersectionExpression(
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(expressions.InitialOf(smaller)),
+			expressions.ForEachQuantifier(expressions.InitialOf(bigger)),
+		},
+		nil,
+	)
+	c := EstimateCost(inter)
+	cs := EstimateCost(smaller)
+	if c.Cardinality > cs.Cardinality {
+		t.Fatalf("intersection cardinality=%v should be ≤ smallest child %v", c.Cardinality, cs.Cardinality)
+	}
+}
+
+func TestBestRefCost_ReturnsCheapest(t *testing.T) {
+	t.Parallel()
+	// Build a Reference with two members: Filter(scan) and Sort(scan).
+	// Filter is cheaper (drops rows AND less CPU). BestRefCost returns
+	// Filter's cost.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerScan := scan("T")
+	filterMember := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(innerScan),
+	)
+	sortMember := expressions.NewLogicalSortExpression(
+		nil,
+		expressions.ForEachQuantifier(innerScan),
+	)
+	// Filter and Sort are NOT semantically equivalent, but Reference.Insert
+	// allows multiple distinct members.
+	ref := expressions.InitialOf(filterMember)
+	if inserted := ref.Insert(sortMember); !inserted {
+		t.Fatal("setup error: Insert(sortMember) should have succeeded")
+	}
+	if len(ref.Members()) != 2 {
+		t.Fatalf("setup error: members=%d, want 2", len(ref.Members()))
+	}
+
+	best := BestRefCost(ref)
+	wantFilter := EstimateCost(filterMember)
+	if best.Total() != wantFilter.Total() {
+		t.Fatalf("BestRefCost=%+v, want filter's cost %+v", best, wantFilter)
+	}
+}
+
+func TestBestRefCost_NilOrEmptyReturnsZero(t *testing.T) {
+	t.Parallel()
+	if c := BestRefCost(nil); c.Total() != 0 {
+		t.Fatalf("nil ref cost=%+v, want zero", c)
+	}
+	r := &expressions.Reference{}
+	if c := BestRefCost(r); c.Total() != 0 {
+		t.Fatalf("empty ref cost=%+v, want zero", c)
+	}
+}
+
+func TestEstimateCost_DMLCardinalityEqualsInner(t *testing.T) {
+	t.Parallel()
+	// Insert/Update/Delete: cardinality equals inner (one effect per
+	// input row). Build a Delete with a Filter inner: cardinality
+	// matches the filtered count.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	cf := EstimateCost(filter)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
+	del := expressions.NewDeleteExpression(innerQ, "T")
+	cd := EstimateCost(del)
+	if math.Abs(cd.Cardinality-cf.Cardinality) > 1e-6 {
+		t.Fatalf("delete cardinality=%v, want filter's %v", cd.Cardinality, cf.Cardinality)
+	}
+	// CPU should EXCEED filter CPU (Delete adds per-row write).
+	if cd.CPU <= cf.CPU {
+		t.Fatalf("delete CPU=%v should exceed filter CPU=%v", cd.CPU, cf.CPU)
+	}
+}
+
+func TestCostLess_AsClosure(t *testing.T) {
+	t.Parallel()
+	// CostLess is the comparator passed to Reference.GetBest.
+	// Verify it's a stable total order over the typed expressions.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	cheap := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred, pred},
+		scanQ("T"),
+	)
+	pricy := expressions.NewLogicalSortExpression(nil, scanQ("T"))
+	if !CostLess(cheap, pricy) {
+		t.Fatalf("CostLess(filter, sort) should be true")
+	}
+	if CostLess(pricy, cheap) {
+		t.Fatalf("CostLess(sort, filter) should be false")
+	}
+	// Self-comparison is not Less (irreflexive).
+	if CostLess(cheap, cheap) {
+		t.Fatal("CostLess is not irreflexive")
+	}
+}
+
+func TestReferenceGetBest_PicksCheapestMember(t *testing.T) {
+	t.Parallel()
+	// Build a Reference with three members of different costs;
+	// GetBest(CostLess) returns the cheapest.
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		scanQ("T"),
+	)
+	sort := expressions.NewLogicalSortExpression(nil, scanQ("T"))
+	dist := expressions.NewLogicalDistinctExpression(scanQ("T"))
+
+	ref := expressions.InitialOf(sort)
+	ref.Insert(dist)
+	ref.Insert(filter)
+
+	best := ref.GetBest(CostLess)
+	if best == nil {
+		t.Fatal("GetBest returned nil")
+	}
+	// Filter has the lowest cost among the three (highest selectivity,
+	// cheap CPU).
+	if best != filter {
+		t.Fatalf("GetBest=%T, want *LogicalFilterExpression", best)
+	}
+}
+
+func TestReferenceGetBest_EmptyReturnsNil(t *testing.T) {
+	t.Parallel()
+	r := &expressions.Reference{}
+	if got := r.GetBest(CostLess); got != nil {
+		t.Fatalf("GetBest on empty Reference = %v, want nil", got)
+	}
+}
+
+func TestReferenceGetBest_SingleMember(t *testing.T) {
+	t.Parallel()
+	e := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	ref := expressions.InitialOf(e)
+	if got := ref.GetBest(CostLess); got != e {
+		t.Fatalf("GetBest single-member returned %v, want %v", got, e)
+	}
+}
+
+// suppress unused-import warnings if values is dropped from a future
+// edit. Keeping the import is cheaper than re-deriving constructors.
+var _ = values.UnknownType

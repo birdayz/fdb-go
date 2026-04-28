@@ -60,6 +60,7 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "comparison_simplify_test.go",
+        "cost_fuzz_test.go",
         "default_rules_test.go",
         "expression_matcher_test.go",
         "expression_rule_call_test.go",
@@ -110,6 +111,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
     ],
 )

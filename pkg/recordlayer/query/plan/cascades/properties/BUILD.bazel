@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "properties",
+    srcs = ["cost.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/expressions"],
+)
+
+go_test(
+    name = "properties_test",
+    srcs = ["cost_test.go"],
+    embed = [":properties"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
+)

@@ -51,6 +51,30 @@ func (r *Reference) Members() []RelationalExpression {
 	return r.members
 }
 
+// GetBest returns the cheapest member of this Reference under the
+// `less` comparator. Equivalent to Java's `Reference.get(comparator)`
+// — the cost-driven extraction step.
+//
+// Returns nil if the Reference is empty. If multiple members are
+// tied at the comparator's minimum, returns the FIRST such member
+// (determinism — the comparator must be a total order on Cost; ties
+// at Cost.Total + Cost.Cardinality break by insertion order). Single-
+// member References return that member without invoking `less`.
+//
+// `less` must NOT be nil.
+func (r *Reference) GetBest(less func(a, b RelationalExpression) bool) RelationalExpression {
+	if len(r.members) == 0 {
+		return nil
+	}
+	best := r.members[0]
+	for _, m := range r.members[1:] {
+		if less(m, best) {
+			best = m
+		}
+	}
+	return best
+}
+
 // Insert adds e to the equivalence class if no existing member already
 // matches. Returns true if the member was inserted, false if a duplicate
 // was found.
