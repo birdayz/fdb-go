@@ -60,16 +60,23 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 //
 // CONFORMANCE: matches Java's OfTypeValue.eval semantics:
 //  1. NULL probe → returns ExpectedType.IsNullable().
-//  2. Primitive TypeCode match (direct).
-//  3. Cross-type promotion via IsPromotable — Java accepts a
-//     value if it can be coerced to ExpectedType via the
-//     promotion lattice (e.g. INT → LONG, INT → DOUBLE).
+//  2. Primitive-to-primitive: STRICT TypeCode match (Java's
+//     `type.nullable().equals(expectedType.nullable())` reduces
+//     to a TypeCode comparison since nullability is normalised
+//     on both sides).
 //
-// One Java branch NOT yet replicated:
+// Verified against Java's OfTypeValueTest: `OfType(42 (int), LONG)`
+// returns FALSE in Java even though INT is promotable to LONG in
+// other contexts. The seed matches this strict primitive behavior.
+//
+// Two Java branches NOT yet replicated:
 //   - DynamicMessage probe → returns `expectedType.isRecord()`.
-//     Seed reports false for unknown shapes (Go doesn't have a
-//     proto DynamicMessage equivalent in this layer; gated on
-//     proto-record-shape introspection).
+//   - Non-primitive cross-type promotion via PromoteValue.
+//     resolvePhysicalOperator (only triggers for non-primitive
+//     sources — records, arrays).
+//
+// Both gated on proto-record-shape introspection / cross-type
+// promotion machinery — wired-when-execution-lands.
 func (v *OfTypeValue) Evaluate(evalCtx any) any {
 	if v.Child == nil || v.ExpectedType == nil {
 		return nil
@@ -79,21 +86,11 @@ func (v *OfTypeValue) Evaluate(evalCtx any) any {
 		// Java conformance: NULL is "of type T" iff T is nullable.
 		return v.ExpectedType.IsNullable()
 	}
-	// Direct TypeCode match.
-	if got, ok := runtimeMatchesTypeCode(val, v.ExpectedType.Code()).(bool); ok && got {
-		return true
-	}
-	// Cross-type promotion: Java accepts the value if its runtime
-	// type can be promoted to ExpectedType. Walk the runtime type
-	// for each primitive TypeCode and check IsPromotable.
-	for code := TypeCodeBoolean; code <= TypeCodeBytes; code++ {
-		if got, ok := runtimeMatchesTypeCode(val, code).(bool); ok && got {
-			from := NewPrimitiveType(code, false)
-			if IsPromotable(from, v.ExpectedType) {
-				return true
-			}
-			return false
-		}
+	// Strict TypeCode match — matches Java's primitive-to-primitive
+	// behavior. OfType(42 (int), LONG) returns false (NOT promoted)
+	// per OfTypeValueTest.
+	if got, ok := runtimeMatchesTypeCode(val, v.ExpectedType.Code()).(bool); ok {
+		return got
 	}
 	return false
 }
@@ -101,16 +98,23 @@ func (v *OfTypeValue) Evaluate(evalCtx any) any {
 // runtimeMatchesTypeCode reports whether `val`'s Go runtime type
 // matches the given TypeCode. Returns nil for unrecognised codes —
 // callers typically interpret nil as UNKNOWN.
+//
+// Conformance: TypeCodeInt accepts int32 (Java int = 32-bit);
+// TypeCodeLong accepts int64 (Java long = 64-bit). Go's
+// platform-dependent `int` is treated as int64 on 64-bit builds
+// (the FDB target). Strict Java conformance demands these
+// distinctions: `OfType(42 (int), LONG)` returns false in Java.
 func runtimeMatchesTypeCode(val any, code TypeCode) any {
 	switch code {
 	case TypeCodeBoolean:
 		_, ok := val.(bool)
 		return ok
+	case TypeCodeInt:
+		_, ok := val.(int32)
+		return ok
 	case TypeCodeLong:
-		// Accept all int kinds at runtime — Go's untyped int
-		// constants lower to int64 in most paths.
 		switch val.(type) {
-		case int, int32, int64:
+		case int, int64:
 			return true
 		default:
 			return false
