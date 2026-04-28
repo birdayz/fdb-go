@@ -76,6 +76,35 @@ func NamedForEachQuantifier(alias values.CorrelationIdentifier, rangesOver *Refe
 	}
 }
 
+// ExistentialQuantifier builds an Existential quantifier — the inner
+// expression is consulted only to determine whether at least one row
+// exists. Used by EXISTS / NOT EXISTS subqueries.
+//
+// The flowed-object semantics differ from ForEach: an Existential
+// quantifier doesn't make rows of the inner available to the outer's
+// predicates / projection — only the boolean "any row exists" signal.
+// Most planner rules that operate on Quantifiers care about this
+// distinction; today the seed has no such rule, so the kind is
+// available for the SQL parser to construct EXISTS shapes that future
+// rules will recognise.
+func ExistentialQuantifier(rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:       QuantifierExistential,
+		alias:      values.UniqueCorrelationIdentifier(),
+		rangesOver: rangesOver,
+	}
+}
+
+// NamedExistentialQuantifier builds an Existential quantifier with an
+// explicit alias. Used when the alias is already pinned by the parser.
+func NamedExistentialQuantifier(alias values.CorrelationIdentifier, rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:       QuantifierExistential,
+		alias:      alias,
+		rangesOver: rangesOver,
+	}
+}
+
 // Kind returns the Quantifier's flavour.
 func (q Quantifier) Kind() QuantifierKind { return q.kind }
 

@@ -61,3 +61,32 @@ func TestQuantifier_FlowedObjectValue_CarriesAlias(t *testing.T) {
 		t.Fatalf("flowed object doesn't carry the quantifier's alias %v in its correlation set %v", alias, corrSet)
 	}
 }
+
+func TestExistentialQuantifier_KindAndAlias(t *testing.T) {
+	t.Parallel()
+	ref := InitialOf(&stubExpr{name: "X"})
+	q1 := ExistentialQuantifier(ref)
+	if q1.Kind() != QuantifierExistential {
+		t.Fatalf("kind=%v, want Existential", q1.Kind())
+	}
+	q2 := ExistentialQuantifier(ref)
+	if q1.GetAlias() == q2.GetAlias() {
+		t.Fatal("two ExistentialQuantifier calls returned the same alias — should be unique")
+	}
+	if q1.GetRangesOver() != ref {
+		t.Fatal("RangesOver pointer changed")
+	}
+}
+
+func TestNamedExistentialQuantifier_PreservesAlias(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("exists_subquery")
+	ref := InitialOf(&stubExpr{name: "Sub"})
+	q := NamedExistentialQuantifier(alias, ref)
+	if q.Kind() != QuantifierExistential {
+		t.Fatalf("kind=%v, want Existential", q.Kind())
+	}
+	if q.GetAlias() != alias {
+		t.Fatalf("alias=%v, want %v", q.GetAlias(), alias)
+	}
+}
