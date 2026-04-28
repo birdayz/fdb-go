@@ -147,3 +147,45 @@ func TestConditionSelectorValue_WithChildren(t *testing.T) {
 		t.Fatalf("rebuilt.Evaluate = %v, want 0", got)
 	}
 }
+
+// TestConditionSelectorValue_SimplifyConstantFold verifies that
+// SimplifyValue folds an all-constant ConditionSelector into a
+// literal int64 (the index of the first TRUE implication).
+func TestConditionSelectorValue_SimplifyConstantFold(t *testing.T) {
+	t.Parallel()
+	v := NewConditionSelectorValue([]Value{
+		NewBooleanValue(false),
+		NewBooleanValue(true), // first TRUE — index 1
+		NewBooleanValue(false),
+	})
+	folded := SimplifyValue(v)
+	if folded == v {
+		t.Fatalf("SimplifyValue did NOT fold all-constant ConditionSelector")
+	}
+	if got := folded.Evaluate(nil); got != int64(1) {
+		t.Fatalf("folded.Evaluate = %v, want 1", got)
+	}
+}
+
+// TestPickValue_SimplifyConstantFold verifies the full SQL-CASE
+// constant-fold via PickValue + ConditionSelectorValue + ALL-
+// CONSTANT alternatives.
+func TestPickValue_SimplifyConstantFold(t *testing.T) {
+	t.Parallel()
+	// CASE WHEN false THEN 'a' WHEN true THEN 'b' ELSE 'c' END = 'b'
+	selector := NewConditionSelectorValue([]Value{
+		NewBooleanValue(false),
+		NewBooleanValue(true),
+		NewBooleanValue(true),
+	})
+	pick := NewPickValue(selector,
+		[]Value{LiteralValue("a"), LiteralValue("b"), LiteralValue("c")},
+		NotNullString)
+	folded := SimplifyValue(pick)
+	if folded == pick {
+		t.Fatalf("SimplifyValue did NOT fold all-constant CASE")
+	}
+	if got := folded.Evaluate(nil); got != "b" {
+		t.Fatalf("folded.Evaluate = %v, want 'b'", got)
+	}
+}

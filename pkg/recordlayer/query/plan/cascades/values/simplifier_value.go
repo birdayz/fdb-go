@@ -74,7 +74,8 @@ func SimplifyValue(v Value) Value {
 // rewrap.
 func isFoldableComposite(v Value) bool {
 	switch v.(type) {
-	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue, *NotValue, *AndOrValue:
+	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue, *NotValue,
+		*AndOrValue, *ConditionSelectorValue, *PickValue:
 		return true
 	}
 	return false
@@ -131,6 +132,42 @@ func simplifyChildren(v Value) Value {
 			return v
 		}
 		return NewAndOrValue(x.Op, l, r)
+	case *ConditionSelectorValue:
+		anyChanged := false
+		newImpl := make([]Value, len(x.Implications))
+		for i, impl := range x.Implications {
+			n := SimplifyValue(impl)
+			if n != impl {
+				anyChanged = true
+			}
+			newImpl[i] = n
+		}
+		if !anyChanged {
+			return v
+		}
+		return NewConditionSelectorValue(newImpl)
+	case *PickValue:
+		anyChanged := false
+		newSel := SimplifyValue(x.Selector)
+		if newSel != x.Selector {
+			anyChanged = true
+		}
+		newAlts := make([]Value, len(x.Alternatives))
+		for i, a := range x.Alternatives {
+			if a == nil {
+				newAlts[i] = nil
+				continue
+			}
+			n := SimplifyValue(a)
+			if n != a {
+				anyChanged = true
+			}
+			newAlts[i] = n
+		}
+		if !anyChanged {
+			return v
+		}
+		return NewPickValue(newSel, newAlts, x.Typ)
 	}
 	return v
 }
