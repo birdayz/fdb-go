@@ -61,6 +61,7 @@ go_test(
         "value_array_constructor_test.go",
         "value_array_distinct_test.go",
         "value_cardinality_test.go",
+        "value_case_fuzz_test.go",
         "value_condition_selector_test.go",
         "value_constant_object_test.go",
         "value_correlation_fuzz_test.go",
