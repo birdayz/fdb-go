@@ -300,7 +300,7 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 }
 
 // BenchmarkOptimise_RealisticTree drives the full default rule set
-// (FixpointApply with all 11 logical-rewrite rules) on a ~6-node
+// (FixpointApply with all 15 logical-rewrite rules) on a ~6-node
 // query tree representative of a small SELECT:
 //
 //	Distinct
@@ -328,6 +328,38 @@ func BenchmarkOptimise_RealisticTree(b *testing.B) {
 		outerFQ := expressions.ForEachQuantifier(expressions.InitialOf(outerF))
 		topD := expressions.NewLogicalDistinctExpression(outerFQ)
 		return expressions.InitialOf(topD)
+	}
+	rules := DefaultExpressionRules()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := build()
+		_, _ = FixpointApply(rules, ref, 50)
+	}
+}
+
+// BenchmarkOptimise_StackedSorts exercises SortMergeRule +
+// DistinctOverSortElim cooperation on:
+//
+//	Distinct → Sort(k1) → Sort(k2) → Sort(k3) → Scan(Order)
+//
+// Optimal output is Distinct(Scan) (DistinctOverSortElim absorbs
+// the entire Sort stack iteratively). Pins the cooperation cost
+// for that rewrite chain.
+func BenchmarkOptimise_StackedSorts(b *testing.B) {
+	build := func() *expressions.Reference {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		k3 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k3", Typ: values.UnknownType}}}
+		s3 := expressions.NewLogicalSortExpression(k3, scanQ)
+		s3Q := expressions.ForEachQuantifier(expressions.InitialOf(s3))
+		k2 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k2", Typ: values.UnknownType}}}
+		s2 := expressions.NewLogicalSortExpression(k2, s3Q)
+		s2Q := expressions.ForEachQuantifier(expressions.InitialOf(s2))
+		k1 := []expressions.SortKey{{Value: &values.FieldValue{Field: "k1", Typ: values.UnknownType}}}
+		s1 := expressions.NewLogicalSortExpression(k1, s2Q)
+		s1Q := expressions.ForEachQuantifier(expressions.InitialOf(s1))
+		d := expressions.NewLogicalDistinctExpression(s1Q)
+		return expressions.InitialOf(d)
 	}
 	rules := DefaultExpressionRules()
 	b.ResetTimer()
