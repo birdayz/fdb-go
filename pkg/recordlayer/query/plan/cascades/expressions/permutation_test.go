@@ -119,3 +119,43 @@ func TestPermute_StopsOnFirstAccept(t *testing.T) {
 		t.Fatalf("permute visited %d permutations after accept on first, want 1", visited)
 	}
 }
+
+// TestSemanticEquals_PermutationCap_FallsBackToPositional pins that
+// when the child count exceeds MaxPermutationChildren, the walker
+// falls back to positional pairing rather than burning O(N!) cycles
+// on a query shape that effectively never appears in real workloads.
+//
+// Construction: build two LogicalUnion expressions over (N+1)
+// distinct scans, where N=MaxPermutationChildren. Pair them in
+// reverse order. Under permutation enumeration they'd be equal;
+// under positional pairing they're NOT equal (because the leaves
+// at each position differ).
+func TestSemanticEquals_PermutationCap_FallsBackToPositional(t *testing.T) {
+	t.Parallel()
+	n := MaxPermutationChildren + 1
+	mkUnion := func(reverse bool) *LogicalUnionExpression {
+		qs := make([]Quantifier, n)
+		for i := 0; i < n; i++ {
+			idx := i
+			if reverse {
+				idx = n - 1 - i
+			}
+			scan := NewFullUnorderedScanExpression([]string{string(rune('A' + idx))}, nil)
+			qs[i] = ForEachQuantifier(InitialOf(scan))
+		}
+		return NewLogicalUnionExpression(qs)
+	}
+	u1 := mkUnion(false)
+	u2 := mkUnion(true)
+	// With permutation enumeration these would be equal (UNION is
+	// commutative). With positional fallback they are NOT — the
+	// leaves at position 0 differ ("A" vs the last letter).
+	if SemanticEquals(u1, u2, EmptyAliasMap()) {
+		t.Fatalf("unions over %d-child reverse-paired set reported equal — cap fallback didn't trigger", n)
+	}
+	// Sanity: same-order pairing IS equal.
+	u1Twin := mkUnion(false)
+	if !SemanticEquals(u1, u1Twin, EmptyAliasMap()) {
+		t.Fatalf("unions over %d identical-children sets reported unequal under positional fallback", n)
+	}
+}
