@@ -26,7 +26,10 @@ go_library(
 
 go_test(
     name = "plans_test",
-    srcs = ["plan_test.go"],
+    srcs = [
+        "coverage_test.go",
+        "plan_test.go",
+    ],
     embed = [":plans"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",
