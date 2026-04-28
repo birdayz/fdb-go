@@ -1,0 +1,238 @@
+package cascades
+
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+)
+
+// Planner is the task-stack driven cascades planner — Track B6 seed.
+//
+// Replaces FixpointApply's "fire every rule on every Reference each
+// pass" approach with a task-stack driver that:
+//
+//   - Explores the expression DAG bottom-up: leaves fire rules first,
+//     ancestors after.
+//   - Tracks per-Reference saturation: a Reference whose member count
+//     hasn't changed since last ApplyRules pass is NOT re-fired.
+//     This avoids the O(N*passes) wasted work in FixpointApply.
+//   - Exposes event hooks for diagnostic output without changing the
+//     core driver.
+//
+// The Java equivalent is `CascadesPlanner` — task-stack with EXPLORE
+// and OPTIMIZE phases. The seed implements EXPLORE only; OPTIMIZE is
+// `properties.ExtractBestPlan` (already shipped) which the planner
+// invokes after exploration converges.
+//
+// Convergence: same contract as FixpointApply. A saturated Reference
+// has stable member count; the stack drains; planner returns. Hard
+// cap (MaxTasks) prevents pathological non-termination from
+// rule-yielding-fresh-members loops; default 100_000.
+//
+// The seed planner is single-threaded. Multi-threaded exploration
+// (Java's planner is also single-threaded) is a future concern.
+type Planner struct {
+	stack []Task
+	rules []ExpressionRule
+	ctx   PlanContext
+
+	// exploreCount[ref] = member count at last ApplyRules pass on
+	// `ref`. ApplyRulesTask short-circuits when count hasn't grown.
+	exploreCount map[*expressions.Reference]int
+
+	// MaxTasks caps the total tasks executed before the planner
+	// gives up (returns the partial result). Defaults to 100_000.
+	// Hitting the cap is a strong signal of a non-terminating rule —
+	// callers should report.
+	MaxTasks int
+
+	tasksRun int
+
+	// events is the (optional) event handler. Nil = no events.
+	events PlannerEventHandler
+}
+
+// PlannerEventHandler receives callbacks for diagnostic output.
+// All methods are optional; nil-implementation passes through.
+//
+// Implementations must be safe for re-entry (the planner doesn't
+// invoke events recursively but doesn't lock either).
+type PlannerEventHandler interface {
+	// OnExploreReference fires before a Reference is explored.
+	OnExploreReference(ref *expressions.Reference)
+	// OnExploreExpression fires before an expression's children are
+	// pushed onto the task stack.
+	OnExploreExpression(e expressions.RelationalExpression)
+	// OnApplyRules fires when ApplyRulesTask runs; `grew` is the
+	// number of members added during this pass.
+	OnApplyRules(ref *expressions.Reference, grew int)
+}
+
+// NewPlanner builds a planner with the given rule set + context.
+// Pass DefaultExpressionRules() for the standard rule set.
+//
+// Pass nil ctx to use the empty PlanContext.
+func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
+	if ctx == nil {
+		ctx = EmptyPlanContext()
+	}
+	return &Planner{
+		rules:        rules,
+		ctx:          ctx,
+		exploreCount: make(map[*expressions.Reference]int),
+		MaxTasks:     100_000,
+	}
+}
+
+// SetEvents installs an event handler. Pass nil to disable events.
+// Returns p for chaining.
+func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
+	p.events = h
+	return p
+}
+
+// Explore drives the task-stack until convergence (no rule yields a
+// new member anywhere in the DAG) or the MaxTasks cap is hit.
+//
+// Returns:
+//   - tasksRun: total tasks executed.
+//   - converged: true if the stack drained cleanly; false if MaxTasks
+//     hit. Hitting the cap is a non-termination signal.
+//
+// Idempotent at convergence: a second Explore call on the same
+// rooted Reference makes no progress (every Reference's saturation
+// state is preserved across calls).
+func (p *Planner) Explore(rootRef *expressions.Reference) (tasksRun int, converged bool) {
+	if rootRef == nil {
+		return 0, true
+	}
+	p.push(&ExploreReferenceTask{Ref: rootRef})
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return p.tasksRun, false
+		}
+		task := p.pop()
+		task.Run(p)
+		p.tasksRun++
+	}
+	return p.tasksRun, true
+}
+
+// push appends a task to the stack (LIFO).
+func (p *Planner) push(t Task) {
+	p.stack = append(p.stack, t)
+}
+
+// pop removes and returns the top of stack. Caller must check
+// len(stack) > 0.
+func (p *Planner) pop() Task {
+	n := len(p.stack)
+	t := p.stack[n-1]
+	p.stack = p.stack[:n-1]
+	return t
+}
+
+// Task is the task-stack driver's unit of work. Tasks are Run
+// against the planner; they may push more tasks.
+type Task interface {
+	Run(p *Planner)
+}
+
+// ExploreReferenceTask explores a Reference: schedules ApplyRules on
+// the Reference (to fire after children) and ExploreExpression on
+// each member (which descend into children first).
+//
+// Bottom-up ordering invariant: ApplyRulesTask is pushed BEFORE
+// per-member ExploreExpressionTask. LIFO stack means ExploreExpression
+// runs first, descending to the leaves; ApplyRules fires last, on
+// already-explored children.
+type ExploreReferenceTask struct {
+	Ref *expressions.Reference
+}
+
+// Run pushes ApplyRulesTask + per-member ExploreExpressionTask.
+func (t *ExploreReferenceTask) Run(p *Planner) {
+	if t.Ref == nil {
+		return
+	}
+	if p.events != nil {
+		p.events.OnExploreReference(t.Ref)
+	}
+	// Push ApplyRules first → fires AFTER children (LIFO).
+	p.push(&ApplyRulesTask{Ref: t.Ref})
+	// Push per-member ExploreExpressionTask → fire BEFORE ApplyRules.
+	// Snapshot members at task-spawn time so subsequently-yielded
+	// members get re-explored via the post-ApplyRules ExploreReference
+	// re-push (not via this snapshot).
+	for _, m := range t.Ref.Members() {
+		p.push(&ExploreExpressionTask{Expr: m})
+	}
+}
+
+// ExploreExpressionTask descends into an expression's children:
+// pushes ExploreReferenceTask for each Quantifier's Reference.
+type ExploreExpressionTask struct {
+	Expr expressions.RelationalExpression
+}
+
+// Run pushes ExploreReferenceTask for each child Reference.
+func (t *ExploreExpressionTask) Run(p *Planner) {
+	if t.Expr == nil {
+		return
+	}
+	if p.events != nil {
+		p.events.OnExploreExpression(t.Expr)
+	}
+	for _, q := range t.Expr.GetQuantifiers() {
+		if r := q.GetRangesOver(); r != nil {
+			p.push(&ExploreReferenceTask{Ref: r})
+		}
+	}
+}
+
+// ApplyRulesTask fires every rule in the planner's rule set against
+// the given Reference. New yields go into the Reference via
+// Reference.Insert (dedup'd). If any rule grew the member set,
+// re-pushes ExploreReferenceTask for re-exploration of the new
+// shapes.
+//
+// Saturation: if the Reference's member count is the same as the
+// last ApplyRules pass on it, this task is a no-op. Avoids re-firing
+// rules on saturated References.
+type ApplyRulesTask struct {
+	Ref *expressions.Reference
+}
+
+// Run fires every rule on every member; on growth, re-pushes
+// ExploreReferenceTask.
+func (t *ApplyRulesTask) Run(p *Planner) {
+	if t.Ref == nil {
+		return
+	}
+	beforeCount := len(t.Ref.Members())
+
+	// Saturation: if the member count hasn't moved since the last
+	// ApplyRules pass, skip — no new shapes to match on.
+	if last, seen := p.exploreCount[t.Ref]; seen && last == beforeCount {
+		if p.events != nil {
+			p.events.OnApplyRules(t.Ref, 0)
+		}
+		return
+	}
+
+	for _, rule := range p.rules {
+		FireExpressionRule(rule, t.Ref)
+	}
+	afterCount := len(t.Ref.Members())
+	p.exploreCount[t.Ref] = afterCount
+
+	grew := afterCount - beforeCount
+	if p.events != nil {
+		p.events.OnApplyRules(t.Ref, grew)
+	}
+
+	if grew > 0 {
+		// New members may have new sub-References; re-explore so
+		// rules at THIS Reference get to see the freshly-yielded
+		// shapes' children too.
+		p.push(&ExploreReferenceTask{Ref: t.Ref})
+	}
+}
