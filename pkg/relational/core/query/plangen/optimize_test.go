@@ -156,5 +156,16 @@ func FuzzConvertAndOptimise(f *testing.F) {
 		if len(members) == 0 || members[0] != initialMember {
 			t.Fatalf("initial member not preserved at index 0 (seed=%d shape=%d)", seed, shape)
 		}
+		// Idempotence at convergence: a second FixpointApply should
+		// not grow the Reference. If it does, some rule is yielding
+		// non-deterministic output that escapes Reference.Insert
+		// dedup.
+		progress2, converged2 := cascades.FixpointApply(rules, ref, 5)
+		if !converged2 {
+			t.Fatalf("second FixpointApply did not converge — non-deterministic rule fire (seed=%d shape=%d)", seed, shape)
+		}
+		if progress2 != 0 {
+			t.Fatalf("second FixpointApply grew Reference by %d — rule isn't idempotent at convergence (seed=%d shape=%d)", progress2, seed, shape)
+		}
 	})
 }
