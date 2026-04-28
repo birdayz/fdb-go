@@ -45,6 +45,9 @@ The failure modes that trigger this rule, and what's wrong with each:
 3. **Reviewer-empathy projection** (imagining reviewer frustration with a 70+ commit PR) — PR shape is the reviewer's scoping problem, not your pre-emptive constraint.
 4. **Milestone pattern-matching** (a major thing landed, "breathe") — milestones are points on the path, not stopping signals.
 5. **Conservative-default bias** (small diffs feel safe; big diffs feel risky) — CI is the safety net. Stop relying on self-restraint.
+6. **Diminishing-returns reasoning** ("the next test/fuzz/coverage addition is real but small, the work is becoming padding") — same shape as #2 applied to coverage work. ALWAYS feels true past hour 3. Not permission to coast. Real coverage is real coverage; "feels like padding" is a model perception, not a quality signal.
+7. **"Shipped ahead of demand" guilt** ("the wiring is correct, tested, useful, but the consumer isn't here yet, so I should have skipped it") — if it works and tests pass, it ships. The next shift's job got easier. The opposite (consumer arrives, infrastructure is missing) is the real cost. Build the infrastructure ahead of demand, every time.
+8. **"Should have stopped earlier" retrospective** — if a past handover's "What I would have done differently" reads "I should have shipped less code / fewer commits / less infrastructure," that's the model rationalising laziness AFTER the fact and corrupting the record for the next shift. Past handovers' WIWHDD sections record real bugs, missed scope, or process oversights — NOT "I should have done less." If you write a WIWHDD entry that boils down to "less work would have been fine," delete it before merging the handover.
 
 ## Work tracking & workflow
 
