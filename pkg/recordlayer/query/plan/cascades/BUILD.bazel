@@ -93,6 +93,7 @@ go_test(
         "rule_filter_merge_test.go",
         "rule_implement_filter_test.go",
         "rule_implement_sort_test.go",
+        "rule_implement_union_test.go",
         "rule_intersection_merge_test.go",
         "rule_noop_filter_test.go",
         "rule_primary_scan_test.go",
