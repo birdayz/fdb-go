@@ -173,6 +173,10 @@ pkg/recordlayer/                    # Main Record Layer implementation
     rule_implement_sort.go          # B5 Batch A: LogicalSort → SortPlan
     rule_implement_distinct.go      # B5 Batch A: LogicalDistinct → DistinctPlan
     rule_implement_typefilter.go    # B5 Batch A: LogicalTypeFilter → TypeFilterPlan
+    rule_implement_union.go         # B5 Batch A: LogicalUnion → UnionPlan (N-children)
+    rule_implement_insert.go        # B5 DML: InsertExpression → InsertPlan
+    rule_implement_delete.go        # B5 DML: DeleteExpression → DeletePlan
+    rule_implement_update.go        # B5 DML: UpdateExpression → UpdatePlan
 pkg/recordlayer/query/plan/plans/   # RecordQueryPlan (physical) hierarchy
                                     #   plan.go (RecordQueryPlan interface
                                     #     + Equals / Walk / Size helpers),
@@ -180,8 +184,12 @@ pkg/recordlayer/query/plan/plans/   # RecordQueryPlan (physical) hierarchy
                                     #   filter.go (RecordQueryFilterPlan),
                                     #   sort.go (RecordQuerySortPlan),
                                     #   distinct.go (RecordQueryDistinctPlan),
-                                    #   typefilter.go (RecordQueryTypeFilterPlan).
-                                    #   5 of Java's 74 concrete plan classes.
+                                    #   typefilter.go (RecordQueryTypeFilterPlan),
+                                    #   union.go (RecordQueryUnionPlan),
+                                    #   insert.go (RecordQueryInsertPlan),
+                                    #   delete.go (RecordQueryDeletePlan),
+                                    #   update.go (RecordQueryUpdatePlan).
+                                    #   9 of Java's 74 concrete plan classes.
     rule_*.go                       # 31 logical-rewrite rules (FilterMerge,
                                     #   FilterDropTrue, FilterDedupPredicates,
                                     #   PushFilterThroughDistinct,
