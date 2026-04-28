@@ -129,13 +129,22 @@ func (c Cost) Less(other Cost) bool {
 // operator's own emit count (NOT a sum of children unless the operator
 // produces a union of child rows).
 func EstimateCost(e expressions.RelationalExpression) Cost {
+	return estimateCostMemoised(e, nil)
+}
+
+// estimateCostMemoised is the workhorse: with `memo == nil` it
+// behaves exactly like EstimateCost (no caching); with a non-nil
+// memo it caches Reference-keyed costs to avoid re-walking shared
+// sub-trees. BestRefCost passes a memo so multiple members sharing
+// inner Reference children pay the recursion once.
+func estimateCostMemoised(e expressions.RelationalExpression, memo map[*expressions.Reference]Cost) Cost {
 	if e == nil {
 		return Cost{}
 	}
 	qs := e.GetQuantifiers()
 	childCosts := make([]Cost, len(qs))
 	for i, q := range qs {
-		childCosts[i] = firstMemberCost(q.GetRangesOver())
+		childCosts[i] = firstMemberCostMemoised(q.GetRangesOver(), memo)
 	}
 	return localCost(e, childCosts)
 }
@@ -144,20 +153,44 @@ func EstimateCost(e expressions.RelationalExpression) Cost {
 // Returns Cost{Cardinality: LeafScanCardinality} if `ref` is nil or
 // empty (defensive — represents "unknown sub-tree"). See package doc
 // for why we use first-member rather than best-member here.
+//
+// Exposed for use by callers that need the unmemoised path.
 func firstMemberCost(ref *expressions.Reference) Cost {
+	return firstMemberCostMemoised(ref, nil)
+}
+
+func firstMemberCostMemoised(ref *expressions.Reference, memo map[*expressions.Reference]Cost) Cost {
 	if ref == nil {
 		return Cost{Cardinality: LeafScanCardinality}
 	}
+	if memo != nil {
+		if c, ok := memo[ref]; ok {
+			return c
+		}
+	}
 	members := ref.Members()
 	if len(members) == 0 {
-		return Cost{Cardinality: LeafScanCardinality}
+		c := Cost{Cardinality: LeafScanCardinality}
+		if memo != nil {
+			memo[ref] = c
+		}
+		return c
 	}
-	return EstimateCost(members[0])
+	c := estimateCostMemoised(members[0], memo)
+	if memo != nil {
+		memo[ref] = c
+	}
+	return c
 }
 
 // BestRefCost returns the cheapest member's cost in `ref`. Used by
 // Reference.GetBest extraction. Equivalent to walking every member
 // and picking the minimum by Cost.Less.
+//
+// Memoisation: builds a per-call `map[*Reference]Cost` so child
+// References shared across multiple members are walked only once.
+// For a Reference with N members each over a shared K-deep tree,
+// memoised cost is O(N+K) vs the un-memoised O(N*K).
 //
 // Returns the zero Cost if `ref` is nil or empty.
 func BestRefCost(ref *expressions.Reference) Cost {
@@ -168,9 +201,10 @@ func BestRefCost(ref *expressions.Reference) Cost {
 	if len(members) == 0 {
 		return Cost{}
 	}
-	best := EstimateCost(members[0])
+	memo := make(map[*expressions.Reference]Cost)
+	best := estimateCostMemoised(members[0], memo)
 	for _, m := range members[1:] {
-		c := EstimateCost(m)
+		c := estimateCostMemoised(m, memo)
 		if c.Less(best) {
 			best = c
 		}

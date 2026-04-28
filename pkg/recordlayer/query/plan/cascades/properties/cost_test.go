@@ -360,3 +360,76 @@ func TestReferenceGetBest_SingleMember(t *testing.T) {
 // suppress unused-import warnings if values is dropped from a future
 // edit. Keeping the import is cheaper than re-deriving constructors.
 var _ = values.UnknownType
+
+// TestBestRefCost_MemoisationConsistency pins that BestRefCost
+// returns the same answer as the un-memoised path. Builds a wide
+// Reference (10 distinct members all sharing the same inner scan
+// Reference) and asserts BestRefCost picks the same minimum the
+// for-loop would.
+func TestBestRefCost_MemoisationConsistency(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerScan := scan("T")
+	innerQ := func() expressions.Quantifier { return expressions.ForEachQuantifier(innerScan) }
+
+	// 10 distinct Filter members with 1, 2, ..., 10 predicates so
+	// each has a different cost.
+	r := expressions.InitialOf(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		innerQ(),
+	))
+	for i := 2; i <= 10; i++ {
+		preds := make([]predicates.QueryPredicate, i)
+		for j := range preds {
+			preds[j] = pred
+		}
+		r.Insert(expressions.NewLogicalFilterExpression(preds, innerQ()))
+	}
+
+	// Memoised path.
+	memoised := BestRefCost(r)
+
+	// Un-memoised path: walk every member and EstimateCost (no memo).
+	unmemoised := EstimateCost(r.Members()[0])
+	for _, m := range r.Members()[1:] {
+		c := EstimateCost(m)
+		if c.Less(unmemoised) {
+			unmemoised = c
+		}
+	}
+
+	if memoised.Total() != unmemoised.Total() {
+		t.Fatalf("memoised %+v != un-memoised %+v", memoised, unmemoised)
+	}
+}
+
+// BenchmarkBestRefCost_WideRef pins the memoisation win on a
+// Reference with many members all sharing the same deep inner
+// sub-Reference. Without memoisation the inner walk is repeated N
+// times (once per member); with memoisation it's walked once.
+func BenchmarkBestRefCost_WideRef(b *testing.B) {
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	// Deep inner: Filter over Filter over Filter over Scan.
+	d := scanQ("T")
+	for i := 0; i < 8; i++ {
+		f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, d)
+		d = expressions.ForEachQuantifier(expressions.InitialOf(f))
+	}
+
+	// 20 distinct members all over the same deep inner Reference.
+	r := expressions.InitialOf(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		d,
+	))
+	for i := 2; i <= 20; i++ {
+		preds := make([]predicates.QueryPredicate, i)
+		for j := range preds {
+			preds[j] = pred
+		}
+		r.Insert(expressions.NewLogicalFilterExpression(preds, d))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = BestRefCost(r)
+	}
+}
