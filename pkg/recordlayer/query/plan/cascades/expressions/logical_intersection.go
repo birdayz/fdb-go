@@ -57,9 +57,18 @@ func (e *LogicalIntersectionExpression) CanCorrelate() bool { return false }
 // ChildrenAsSet is true — INTERSECTION is commutative.
 func (e *LogicalIntersectionExpression) ChildrenAsSet() bool { return true }
 
-// GetCorrelatedToWithoutChildren returns the empty set.
+// GetCorrelatedToWithoutChildren returns the union of correlation
+// sets across the comparison-key Values. The keys are typically
+// FieldValue references that carry the alias of the operator their
+// row stream comes from.
 func (e *LogicalIntersectionExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, v := range e.comparisonKeyValues {
+		for k := range values.GetCorrelatedToOfValue(v) {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 // EqualsWithoutChildren compares classes AND comparison-key lists.

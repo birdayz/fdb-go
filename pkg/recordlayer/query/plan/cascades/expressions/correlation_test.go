@@ -93,6 +93,21 @@ func TestUpdate_GetCorrelatedToWithoutChildren(t *testing.T) {
 	}
 }
 
+func TestLogicalIntersection_GetCorrelatedToWithoutChildren(t *testing.T) {
+	t.Parallel()
+	leaf := &leafScan{name: "T"}
+	q := ForEachQuantifier(InitialOf(leaf))
+	keys := []values.Value{q.GetFlowedObjectValue()} // references q's alias
+	x := NewLogicalIntersectionExpression(
+		[]Quantifier{q},
+		keys,
+	)
+	got := x.GetCorrelatedToWithoutChildren()
+	if _, ok := got[q.GetAlias()]; !ok {
+		t.Fatalf("intersection correlation set %v doesn't contain comparison-key alias %v", got, q.GetAlias())
+	}
+}
+
 func TestLeafExpressions_NoCorrelations(t *testing.T) {
 	t.Parallel()
 	scan := NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
