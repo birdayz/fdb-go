@@ -176,6 +176,78 @@ func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
 	checkSingleton(extracted)
 }
 
+// TestEndToEnd_CostExtractionWithStatistics demonstrates the
+// stats-bound extraction path: with MapStatistics flipping table
+// sizes, the same Filter(scan(BigTable)) vs Filter(scan(SmallTable))
+// alternatives produce different best plans.
+//
+// This is the "value moment" of B4: the cost model isn't just
+// picking by tree shape — it's picking by table size. Two queries
+// over different stats produce different "best" plans.
+func TestEndToEnd_CostExtractionWithStatistics(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
+
+	// Manually build a top-level Reference holding two Filter
+	// alternatives: one over BigTable, one over SmallTable. The
+	// cost-cheapest depends on which table is bigger per stats.
+	bigFilter, err := plangen.Convert(logical.NewFilterWithPredicate(
+		logical.NewScan("BigTable", ""),
+		pred, "active",
+	))
+	if err != nil {
+		t.Fatalf("Convert big: %v", err)
+	}
+	smallFilter, err := plangen.Convert(logical.NewFilterWithPredicate(
+		logical.NewScan("SmallTable", ""),
+		pred, "active",
+	))
+	if err != nil {
+		t.Fatalf("Convert small: %v", err)
+	}
+	ref := expressions.InitialOf(bigFilter)
+	if !ref.Insert(smallFilter) {
+		t.Fatal("Insert(smallFilter) failed — duplicate?")
+	}
+	if got := len(ref.Members()); got != 2 {
+		t.Fatalf("Reference has %d members, want 2", got)
+	}
+
+	// With BigTable=10, SmallTable=1M, BigTable is cheaper.
+	statsBigSmaller := properties.MapStatistics{
+		PerType: map[string]float64{"BigTable": 10, "SmallTable": 1_000_000},
+	}
+	bestBig, err := properties.ExtractBestPlanWith(ref, statsBigSmaller)
+	if err != nil {
+		t.Fatalf("ExtractBestPlanWith big: %v", err)
+	}
+	bigF, _ := bestBig.(*expressions.LogicalFilterExpression)
+	if bigF == nil {
+		t.Fatalf("best with BigTable smaller = %T, want LogicalFilterExpression", bestBig)
+	}
+	bigInner, _ := bigF.GetInner().GetRangesOver().Get().(*expressions.FullUnorderedScanExpression)
+	if bigInner == nil || bigInner.GetRecordTypes()[0] != "BigTable" {
+		t.Fatalf("best inner = %v, want BIGTABLE", bigInner)
+	}
+
+	// Reversed: BigTable=1M, SmallTable=10 → SmallTable is cheaper.
+	statsSmallSmaller := properties.MapStatistics{
+		PerType: map[string]float64{"BigTable": 1_000_000, "SmallTable": 10},
+	}
+	bestSmall, err := properties.ExtractBestPlanWith(ref, statsSmallSmaller)
+	if err != nil {
+		t.Fatalf("ExtractBestPlanWith small: %v", err)
+	}
+	smallF, _ := bestSmall.(*expressions.LogicalFilterExpression)
+	if smallF == nil {
+		t.Fatalf("best with SmallTable smaller = %T", bestSmall)
+	}
+	smallInner, _ := smallF.GetInner().GetRangesOver().Get().(*expressions.FullUnorderedScanExpression)
+	if smallInner == nil || smallInner.GetRecordTypes()[0] != "SmallTable" {
+		t.Fatalf("best inner = %v, want SMALLTABLE", smallInner)
+	}
+}
+
 // TestEndToEnd_CostMonotonicAcrossOptimisation pins that the cost of
 // the cheapest member is monotonic non-increasing across fixpoint
 // iterations. This is the integration-level mirror of

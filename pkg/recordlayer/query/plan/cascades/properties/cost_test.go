@@ -512,6 +512,50 @@ func TestBestRefCost_MemoisationConsistency(t *testing.T) {
 	}
 }
 
+// BenchmarkExtractBestPlan_DeepTree pins ExtractBestPlan perf on a
+// 5-deep Filter chain. Each Reference has a single member; the
+// extractor walks every Quantifier and rebuilds the tree.
+func BenchmarkExtractBestPlan_DeepTree(b *testing.B) {
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerQ := scanQ("Order")
+	for i := 0; i < 5; i++ {
+		f := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pred}, innerQ,
+		)
+		innerQ = expressions.ForEachQuantifier(expressions.InitialOf(f))
+	}
+	r := innerQ.GetRangesOver()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ExtractBestPlan(r)
+	}
+}
+
+// BenchmarkExtractBestPlan_WideAlternatives pins ExtractBestPlan
+// perf when the top-level Reference has 5 distinct Filter members
+// over a shared inner. Memoisation kicks in for the cost computation.
+func BenchmarkExtractBestPlan_WideAlternatives(b *testing.B) {
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	innerScan := scan("Order")
+	r := expressions.InitialOf(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(innerScan),
+	))
+	for i := 2; i <= 5; i++ {
+		preds := make([]predicates.QueryPredicate, i)
+		for j := range preds {
+			preds[j] = pred
+		}
+		r.Insert(expressions.NewLogicalFilterExpression(
+			preds, expressions.ForEachQuantifier(innerScan),
+		))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = ExtractBestPlan(r)
+	}
+}
+
 // BenchmarkBestRefCost_WideRef pins the memoisation win on a
 // Reference with many members all sharing the same deep inner
 // sub-Reference. Without memoisation the inner walk is repeated N
