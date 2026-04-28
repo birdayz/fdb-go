@@ -21,5 +21,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewNoOpFilterRule(),
 		NewProjectionElimRule(),
 		NewUnsortedSortElimRule(),
+		NewUnionSingletonElimRule(),
+		NewIntersectionSingletonElimRule(),
 	}
 }
