@@ -19,6 +19,7 @@ go_library(
         "reference.go",
         "select.go",
         "update.go",
+        "walk.go",
         "with_predicates.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions",
@@ -51,6 +52,7 @@ go_test(
         "reference_dedup_test.go",
         "reference_test.go",
         "select_test.go",
+        "walk_test.go",
     ],
     embed = [":expressions"],
     deps = [
