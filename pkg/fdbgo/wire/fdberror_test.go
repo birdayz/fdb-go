@@ -1,6 +1,9 @@
 package wire
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestFDBError_Retryable_Canonical pins the 12 canonical retryable
 // codes — same set as fdb.IsRetryable; this is the lower bound.
@@ -75,6 +78,35 @@ func TestFDBError_Retryable_Unknown(t *testing.T) {
 		e := &FDBError{Code: code}
 		if e.Retryable() {
 			t.Errorf("unknown code %d expected retryable=false, got true", code)
+		}
+	}
+}
+
+// TestFDBError_Description_LatentBugFixes pins the three description
+// fixes from the wire-side fdbErrorDescriptions cleanup:
+//
+//   - 1006 = "all_alternatives_failed" (added; previously missing).
+//   - 1200 = "all_proxies_unreachable" (Go-internal override; was
+//     incorrectly "all_alternatives_failed").
+//   - 2015 = "future_not_set" (was incorrectly "used_during_commit").
+//   - 2017 = "used_during_commit" (added; the real used_during_commit
+//     code).
+func TestFDBError_Description_LatentBugFixes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		code     int
+		wantDesc string
+	}{
+		{1006, "all_alternatives_failed"},
+		{1200, "all_proxies_unreachable"},
+		{2015, "future_not_set"},
+		{2017, "used_during_commit"},
+	}
+	for _, tc := range cases {
+		e := &FDBError{Code: tc.code}
+		got := e.Error()
+		if !strings.Contains(got, tc.wantDesc) {
+			t.Errorf("FDBError{Code:%d}.Error() = %q; want substring %q", tc.code, got, tc.wantDesc)
 		}
 	}
 }
