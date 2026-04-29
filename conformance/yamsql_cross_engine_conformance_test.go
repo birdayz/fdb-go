@@ -194,6 +194,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		orderByIndexedColScenario(),
 		arithmeticCompoundScenario(),
 		dmlSetupScenario(),
+		whereComplexScenario(),
 	}
 }
 
@@ -2090,6 +2091,44 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// whereComplexScenario probes complex WHERE shapes that combine
+// BETWEEN, IN, IS NULL, IS NOT NULL, NOT, LIKE, AND, OR. Existing
+// scenarios cover each individual primitive; this exercises the
+// combinations to surface any short-circuit / 3VL drift between the
+// engines under multi-leaf WHERE trees. Drops NOT NULL on PK.
+// Net-new nightshift-60.
+func whereComplexScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "where_complex",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c'), (4, 40, null), (5, 50, 'd')",
+		},
+		Tests: []yamsql.Test{
+			// BETWEEN + OR.
+			{Query: "SELECT id FROM t WHERE (v BETWEEN 10 AND 20) OR (s = 'd') ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// BETWEEN + IS NOT NULL combined.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 10 AND 50 AND s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// NOT BETWEEN — NULL operand → UNKNOWN → filtered.
+			{Query: "SELECT id FROM t WHERE v NOT BETWEEN 30 AND 50 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// Two-col IS NOT NULL.
+			{Query: "SELECT id FROM t WHERE v IS NOT NULL AND s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// OR of IS NULL (each row is NULL on at least one col → match).
+			{Query: "SELECT id FROM t WHERE v IS NULL OR s IS NULL ORDER BY id", Rows: [][]any{{3}, {4}}},
+			// NOT (BETWEEN). NULL → NOT NULL = NULL → filtered.
+			{Query: "SELECT id FROM t WHERE NOT (v BETWEEN 30 AND 50) ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// IN-list combined with IS NOT NULL on a different col.
+			{Query: "SELECT id FROM t WHERE v IN (10, 30, 50) AND s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// BETWEEN + LIKE. id=1 v=10 in [10,30] AND s='a' LIKE 'a%' → match.
+			{Query: "SELECT id FROM t WHERE (v BETWEEN 10 AND 30) AND s LIKE 'a%' ORDER BY id", Rows: [][]any{{1}}},
+			// Triple-AND: v non-NULL AND s non-NULL AND v >= 20.
+			{Query: "SELECT id FROM t WHERE v IS NOT NULL AND s IS NOT NULL AND v >= 20 ORDER BY id", Rows: [][]any{{2}, {5}}},
+			// OR + IS NULL — short-circuit on either side.
+			{Query: "SELECT id FROM t WHERE v IS NULL OR (v >= 30 AND s IS NOT NULL) ORDER BY id", Rows: [][]any{{3}, {5}}},
 		},
 	}
 }
