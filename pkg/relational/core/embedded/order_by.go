@@ -182,6 +182,12 @@ func allOrderByEquated(orderBy []orderByClause, equatedCols map[string]bool, ali
 		if underlying, isAlias := aliasToUnderlying[strings.ToUpper(c)]; isAlias {
 			c = underlying
 		}
+		// Strip table-qualifier prefix to match the bare-keyed
+		// equatedCols. Same convention as naturalOrderSatisfiesDir.
+		// nightshift-60.
+		if dot := strings.LastIndex(c, "."); dot >= 0 {
+			c = c[dot+1:]
+		}
 		if !equatedCols[strings.ToUpper(c)] {
 			return false
 		}
