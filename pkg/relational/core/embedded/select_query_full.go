@@ -267,7 +267,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					cursor = pkPushdownInListScanCursor(store, rt, pkVals)
 				}
 			}
-		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
+		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds, pkScanProps)
 			// Single-col PK range → ASC on the PK col, then nothing.
 			naturalOrder = pkCols
@@ -299,12 +299,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// is empty / equated, which the post-scan rejection check
 				// catches if it isn't.
 			}
-		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
+		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr, pkScanProps)
 			// Composite PK range emits rows in ASC PK order.
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
-		} else if cp, ok := c.tryPKCompositePrefixPushdown(ctx, sq, rt); ok {
+		} else if cp, ok := c.tryPKCompositePrefixPushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			// Pure-prefix composite PK: `WHERE a = 1 AND b = 5` on PK
 			// (a, b, c) narrows to the tuple-prefix scan [rtk, 1, 5]
 			// without any range/IN-list on trailing cols. Last PK
@@ -313,7 +313,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownScanCursor(store, rt, cp.prefixVals, pkScanProps)
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
-		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			// The helper itself filters out WRITE_ONLY / DISABLED
 			// indexes while iterating, so any returned index is
 			// guaranteed scannable. Falls through to the next branch

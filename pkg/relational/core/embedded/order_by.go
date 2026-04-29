@@ -199,6 +199,24 @@ func buildOrderByAliases(sq *selectQuery) map[string]string {
 	return aliases
 }
 
+// pkOrderingSatisfiesOrderBy reports whether a pushdown branch whose
+// natural emission order is the table's PK columns can satisfy the
+// user's ORDER BY clause (forward or reverse). Empty ORDER BY and
+// all-equated ORDER BY are trivially satisfied. Used to gate the PK
+// range / composite-range / composite-prefix / secondary-index-equality
+// branches so they decline when their PK emission order doesn't match
+// the requested ORDER BY — letting the chain fall through to a strategy
+// (eventually `tryIndexScanForOrdering`) that does. nightshift-60.
+func pkOrderingSatisfiesOrderBy(orderBy []orderByClause, pkCols []string, equatedCols map[string]bool, aliasToUnderlying map[string]string) bool {
+	if len(orderBy) == 0 {
+		return true
+	}
+	if len(equatedCols) > 0 && allOrderByEquated(orderBy, equatedCols, aliasToUnderlying) {
+		return true
+	}
+	return scanSatisfiesOrderBy(orderBy, pkCols, equatedCols, aliasToUnderlying)
+}
+
 // indexBranchSatisfiesOrderBy is the secondary-index-branch flavour of
 // scanSatisfiesOrderBy. Computes the candidate (idxCols + pkCols)
 // emission order for the supplied secondary index, then asks whether

@@ -191,6 +191,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		selfJoinScenario(),
 		stringCompareScenario(),
 		nullArithmeticScenario(),
+		orderByIndexedColScenario(),
 	}
 }
 
@@ -2087,6 +2088,42 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// orderByIndexedColScenario pins the "ORDER BY a column with a
+// satisfying secondary index" path. Net-new nightshift-60: with the
+// in-memory sort fallback removed, Go relies on the new
+// `tryIndexScanForOrdering` branch (full secondary-index scan as the
+// last branch before the full-PK fallback) to satisfy this shape.
+// Cross-engine agreement here pins that the Go branch picks the right
+// index in the same cases Java's RemoveSortRule does. Drops NOT NULL
+// on PK; values chosen so that PK order ≠ indexed-col order.
+func orderByIndexedColScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "order_by_indexed_col",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE INDEX idx_s ON t (s)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 30, 'c'), (2, 10, 'aa'), (3, 20, 'b'), (4, 5, 'a')",
+		},
+		Tests: []yamsql.Test{
+			// ORDER BY indexed BIGINT col — full idx_v scan in natural order.
+			{Query: "SELECT id FROM t ORDER BY v", Rows: [][]any{{4}, {2}, {3}, {1}}},
+			{Query: "SELECT id, v FROM t ORDER BY v", Rows: [][]any{{4, 5}, {2, 10}, {3, 20}, {1, 30}}},
+			// ORDER BY indexed STRING col — full idx_s scan. ASCII order:
+			// 'a' < 'aa' < 'b' < 'c'.
+			{Query: "SELECT id, s FROM t ORDER BY s", Rows: [][]any{{4, "a"}, {2, "aa"}, {3, "b"}, {1, "c"}}},
+			// ORDER BY indexed col DESC — reverse-scan satisfies.
+			{Query: "SELECT id FROM t ORDER BY v DESC", Rows: [][]any{{1}, {3}, {2}, {4}}},
+			// ORDER BY indexed col + WHERE on PK (post-filter via the index
+			// scan loop's evalPredicate).
+			{Query: "SELECT id, v FROM t WHERE id > 1 ORDER BY v", Rows: [][]any{{4, 5}, {2, 10}, {3, 20}}},
+			// ORDER BY indexed col + WHERE on the same col (range pushdown
+			// fires, distinct from the new full-index branch).
+			{Query: "SELECT id FROM t WHERE v >= 10 ORDER BY v", Rows: [][]any{{2}, {3}, {1}}},
 		},
 	}
 }
