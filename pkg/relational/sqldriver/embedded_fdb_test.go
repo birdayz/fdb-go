@@ -1228,6 +1228,48 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3}))
 }
 
+// TestFDB_SelectOrderByRejectionNoIndex pins the nightshift-60 fix that
+// removed the in-memory sort fallback for ORDER BY non-natural cols
+// when no satisfying index exists. Java's Cascades planner has only
+// `RemoveSortRule` (no `ImplementSortRule`); when no scan strategy
+// emits rows in the requested order, it throws `UnableToPlanException`.
+// Go's embedded engine now rejects structurally with `ErrCodeUnsupportedSort`
+// (0AF01). The error message includes the ORDER BY column name and a
+// remediation hint. nightshift-60.
+func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_orderby_reject")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject")).Error().NotTo(gomega.HaveOccurred())
+	// NO index on val — ORDER BY val should reject.
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_reject_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_orderby_reject/items WITH TEMPLATE ob_reject_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_orderby_reject?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (3, 300), (1, 100), (2, 200)")).Error().NotTo(gomega.HaveOccurred())
+
+	// ORDER BY val (no index on val) — must reject with 0AF01.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY val ASC")
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected error; got success")
+	}
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("val"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+}
+
 func TestFDB_SelectOrderByDesc(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
