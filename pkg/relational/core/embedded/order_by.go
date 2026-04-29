@@ -199,6 +199,38 @@ func buildOrderByAliases(sq *selectQuery) map[string]string {
 	return aliases
 }
 
+// indexBranchSatisfiesOrderBy is the secondary-index-branch flavour of
+// scanSatisfiesOrderBy. Computes the candidate (idxCols + pkCols)
+// emission order for the supplied secondary index, then asks whether
+// the user's ORDER BY is satisfied by it forward or reverse. Returns
+// false (declining the branch) when idx is nil — that case was always
+// inert in the existing code paths anyway. nightshift-60.
+func indexBranchSatisfiesOrderBy(idx *recordlayer.Index, pkCols []string, orderBy []orderByClause, equatedCols map[string]bool, aliasToUnderlying map[string]string) bool {
+	if idx == nil {
+		return false
+	}
+	idxNaturalOrder := append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+	return scanSatisfiesOrderBy(orderBy, idxNaturalOrder, equatedCols, aliasToUnderlying)
+}
+
+// scanSatisfiesOrderBy reports whether a pushdown branch's natural
+// emission order (forward or reverse) satisfies the user's ORDER BY
+// clause. Used as a gating predicate on each secondary-index branch in
+// the scan-strategy chain — when the candidate index's emission order
+// doesn't match what ORDER BY needs, the branch declines and the chain
+// falls through to the next strategy (eventually the full-PK fallback,
+// which always emits in pkCols order). This is the Go equivalent of
+// fdb-relational's Cascades planner picking a scan whose Ordering
+// property satisfies the requested ordering — the rejection of an
+// "ORDER BY non-natural col" query emerges from no branch satisfying,
+// not from an explicit "throw if no match" check. nightshift-60.
+func scanSatisfiesOrderBy(orderBy []orderByClause, naturalOrder []string, equatedCols map[string]bool, aliasToUnderlying map[string]string) bool {
+	if naturalOrderSatisfies(orderBy, naturalOrder, equatedCols, aliasToUnderlying) {
+		return true
+	}
+	return naturalOrderSatisfiesReverse(orderBy, naturalOrder, equatedCols, aliasToUnderlying)
+}
+
 // scanPropsForOrder picks the ScanProperties a pushdown branch should
 // feed into its cursor builder based on sq.orderBy + the branch's
 // natural emission order. Returns ReverseScan when the ORDER BY is a

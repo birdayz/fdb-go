@@ -189,6 +189,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		nullCompareScenario(),
 		booleanPrecedenceScenario(),
 		selfJoinScenario(),
+		stringCompareScenario(),
+		nullArithmeticScenario(),
 	}
 }
 
@@ -1996,6 +1998,95 @@ func selfJoinScenario() *yamsql.Scenario {
 			{Query: "SELECT a.x, b.x FROM t a, t b WHERE a.id = 1 AND b.id = 3", Rows: [][]any{{10, 30}}},
 			// Cartesian product cardinality (no predicate).
 			{Query: "SELECT COUNT(*) FROM t a, t b", Rows: [][]any{{9}}},
+		},
+	}
+}
+
+// stringCompareScenario probes basic string-column comparison
+// semantics: equality (case-sensitive), inequality, lexicographic
+// ordering, IN / NOT IN, empty-string handling, NULL handling.
+// Existing `like` covers LIKE pattern matching; existing `bytes` does
+// the same for BYTES; no scenario today exercises plain string
+// comparison + sort. Drops NOT NULL on PK. Avoids ORDER BY on a
+// NULL-containing column (NULL ordering is dialect-specific and not
+// pinned by either engine's spec). Net-new nightshift-60.
+func stringCompareScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "string_compare",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry'), (4, ''), (5, null), (6, 'Apple')",
+		},
+		Tests: []yamsql.Test{
+			// Case-sensitive equality.
+			{Query: "SELECT id FROM t WHERE s = 'apple'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s = 'Apple'", Rows: [][]any{{6}}},
+			// Inequality filters NULL via 3VL.
+			{Query: "SELECT id FROM t WHERE s <> 'apple' ORDER BY id", Rows: [][]any{{2}, {3}, {4}, {6}}},
+			// Lexicographic ASCII ordering: '' < 'A' < 'B' < 'a' < 'b'.
+			// '' (4) < 'Apple' (6) < 'apple' (1) < 'banana' (2) < 'cherry' (3).
+			{Query: "SELECT id FROM t WHERE s < 'cherry' ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {6}}},
+			{Query: "SELECT id FROM t WHERE s > 'banana' ORDER BY id", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE s >= 'apple' ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE s <= 'banana' ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {6}}},
+			// Empty-string equality.
+			{Query: "SELECT id FROM t WHERE s = ''", Rows: [][]any{{4}}},
+			// NULL handling.
+			{Query: "SELECT id FROM t WHERE s IS NULL", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM t WHERE s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}, {6}}},
+			// IN / NOT IN — NOT IN against non-NULL list filters NULL via 3VL.
+			{Query: "SELECT id FROM t WHERE s IN ('apple', 'banana') ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE s NOT IN ('apple', 'banana') ORDER BY id", Rows: [][]any{{3}, {4}, {6}}},
+			// (ORDER BY s requires an index on s — fdb-relational
+			// rejects with UnableToPlan otherwise; existing CLAUDE.md
+			// gotcha. Skipped to keep the schema simple; ORDER BY id
+			// pins natural-order across all the WHERE forms above.)
+			//
+			// String comparison projection.
+			{Query: "SELECT id, s = 'apple' FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, false}, {3, false}, {4, false}, {5, nil}, {6, false}}},
+		},
+	}
+}
+
+// nullArithmeticScenario pins NULL propagation through arithmetic
+// expressions. fdb-relational rejects bare NULL operands ("unable to
+// encapsulate arithmetic operation due to type mismatch"; CLAUDE.md
+// gotcha) so all literal-NULL forms use CAST(NULL AS BIGINT). Column-
+// NULL forms (where column is BIGINT NULL) need no cast. Verifies:
+// (a) NULL absorbs in +, -, *, %, / regardless of operand position;
+// (b) WHERE NULL-arithmetic = X filters everything (UNKNOWN); (c)
+// WHERE NULL-arithmetic IS NULL matches every row.  Drops NOT NULL on
+// PK. Net-new nightshift-60.
+func nullArithmeticScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "null_arithmetic",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, m BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 3), (2, null, 5), (3, 7, null), (4, null, null)",
+		},
+		Tests: []yamsql.Test{
+			// Column-NULL absorbs in +, -, *, /, %.
+			{Query: "SELECT n + 1 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n - 1 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n * 2 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n / 2 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n % 2 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			// Both column-NULLs absorbed simultaneously.
+			{Query: "SELECT n + m FROM t WHERE id = 4", Rows: [][]any{{nil}}},
+			{Query: "SELECT n + m FROM t WHERE id = 3", Rows: [][]any{{nil}}},
+			{Query: "SELECT n + m FROM t WHERE id = 1", Rows: [][]any{{13}}},
+			// CAST(NULL AS BIGINT) literal absorbs in either position.
+			{Query: "SELECT n + CAST(NULL AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) + n FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) * 5 FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) - CAST(NULL AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			// WHERE on NULL arithmetic — UNKNOWN filtered.
+			{Query: "SELECT id FROM t WHERE n + 1 = 11", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE n + m > 0 ORDER BY id", Rows: [][]any{{1}}},
+			// WHERE n + m IS NULL ⇒ matches every row where the result is NULL.
+			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
+			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
 		},
 	}
 }
