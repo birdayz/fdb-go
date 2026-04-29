@@ -197,6 +197,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		whereComplexScenario(),
 		pkEqualityOrderByScenario(),
 		projectionAliasScenario(),
+		joinOrderByRightPKScenario(),
 	}
 }
 
@@ -2093,6 +2094,40 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// joinOrderByRightPKScenario probes JOIN + ORDER BY on the joined-side
+// PK col. Java's Cascades planner picks the JOIN-side outer based on
+// cost — so `FROM A, B WHERE A.fk = B.pk ORDER BY B.pk` succeeds in
+// Java by running B as the outer scan. Go's nested-loop is fixed
+// (left source = outer) and sorts the result in-memory; the JOIN sort
+// site preserves the in-memory fallback (TODO.md tracks the proper fix
+// gated on C2 QueryExecutor). Both engines produce the same final
+// row set when sorted, so cross-engine equivalence holds. Net-new
+// nightshift-60 to document Java's cost-model JOIN-side reordering.
+func joinOrderByRightPKScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_order_by_right_pk",
+		SchemaTemplate: "CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid))" +
+			" CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))",
+		Setup: []string{
+			"INSERT INTO Users VALUES (1, 'alice'), (2, 'bob')",
+			"INSERT INTO Orders VALUES (10, 1, 100), (11, 1, 200), (12, 2, 300)",
+		},
+		Tests: []yamsql.Test{
+			// ORDER BY left source PK — both engines satisfy directly
+			// (left is outer in Go's nested loop; Java picks Users-as-outer
+			// since u.uid is its PK).
+			{Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY u.uid", Unordered: true, Rows: [][]any{{"alice", 100}, {"alice", 200}, {"bob", 300}}},
+			// ORDER BY right source PK — Java picks Orders-as-outer for
+			// natural ordering; Go sorts in-memory post-JOIN. Same result
+			// row set under multiset comparison.
+			{Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid", Rows: [][]any{{"alice", 100}, {"alice", 200}, {"bob", 300}}},
+			// COUNT over the JOIN — aggregate path, exempt from any
+			// ORDER BY rejection.
+			{Query: "SELECT COUNT(*) FROM Users u, Orders o WHERE u.uid = o.uid", Rows: [][]any{{3}}},
 		},
 	}
 }
