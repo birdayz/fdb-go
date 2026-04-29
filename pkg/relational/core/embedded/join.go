@@ -558,6 +558,18 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 						"ORDER BY column %q not found", ob.colName)
 				}
 			}
+			// (No Java-conformance rejection here. Initial nightshift-60
+			// attempt added a "left.PK natural order" gate, but Java's
+			// Cascades planner can pick which JOIN side runs as outer
+			// based on cost — so `FROM Users u, Orders o WHERE u.uid =
+			// o.uid ORDER BY o.oid` succeeds in Java by picking Orders
+			// as the outer scan (emits in o.oid order) with per-row
+			// Users PK lookups. Go's nested-loop is fixed: left source
+			// is always outer. A static "left.PK only" gate rejects too
+			// many queries Java accepts. Proper fix needs JOIN-side
+			// reordering or routing through Cascades — tracked in
+			// TODO.md as JOIN sort-site Java-conformance, gated on C2
+			// QueryExecutor.)
 			sort.SliceStable(indexes, func(ii, jj int) bool {
 				i, j := indexes[ii], indexes[jj]
 				for oi, ob := range sq.orderBy {
