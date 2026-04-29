@@ -91,6 +91,28 @@ func TestNaturalOrderSatisfies(t *testing.T) {
 			equated:      map[string]bool{"A": true}, // upper key in equated
 			want:         true,
 		},
+		// Qualifier-strip on table-aliased ORDER BY column refs.
+		// nightshift-60: `ORDER BY a.id` on `FROM t AS a` should match
+		// naturalOrder=["id"]. The qualifier is stripped before
+		// comparison.
+		{
+			name:         "qualified ORDER BY col strips alias prefix",
+			orderBy:      []orderByClause{asc("a.id")},
+			naturalOrder: []string{"id"},
+			want:         true,
+		},
+		{
+			name:         "qualified ORDER BY col with case-insensitive col match",
+			orderBy:      []orderByClause{asc("A.ID")},
+			naturalOrder: []string{"id"},
+			want:         true,
+		},
+		{
+			name:         "qualified ORDER BY col bails when col mismatches",
+			orderBy:      []orderByClause{asc("a.name")},
+			naturalOrder: []string{"id"},
+			want:         false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
