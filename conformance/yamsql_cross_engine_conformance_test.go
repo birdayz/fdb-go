@@ -192,6 +192,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		stringCompareScenario(),
 		nullArithmeticScenario(),
 		orderByIndexedColScenario(),
+		arithmeticCompoundScenario(),
 	}
 }
 
@@ -2088,6 +2089,51 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// arithmeticCompoundScenario probes compound arithmetic in the SELECT
+// list using only fully-parenthesised forms. Implicit-precedence forms
+// like `a + b * 2` are NOT tested — fdb-relational 4.11.1.0 parses
+// arithmetic operators left-to-right with same precedence, so
+// `a + b * 2` evaluates as `(a + b) * 2`, not the SQL-standard
+// `a + (b * 2)`. New CLAUDE.md gotcha added nightshift-60. The Go
+// embedded engine follows standard precedence. The explicit-parens
+// forms below pin operator semantics independently of the precedence
+// divergence. Drops NOT NULL on PK.
+func arithmeticCompoundScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "arithmetic_compound",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 3, 1.5), (2, 20, 4, 2.5)",
+		},
+		Tests: []yamsql.Test{
+			// Parens-explicit compound expressions.
+			{Query: "SELECT a + (b * 2) FROM t WHERE id = 1", Rows: [][]any{{16}}},
+			{Query: "SELECT (a + b) * 2 FROM t WHERE id = 1", Rows: [][]any{{26}}},
+			{Query: "SELECT a - (b - 1) FROM t WHERE id = 1", Rows: [][]any{{8}}},
+			// Mixed integer and double promote to DOUBLE.
+			{Query: "SELECT a + c FROM t WHERE id = 1", Rows: [][]any{{11.5}}},
+			{Query: "SELECT a * c FROM t WHERE id = 1", Rows: [][]any{{15.0}}},
+			// Integer division on BIGINT operands stays integer.
+			{Query: "SELECT a / b FROM t WHERE id = 1", Rows: [][]any{{3}}},
+			// Float division on DOUBLE operands.
+			{Query: "SELECT c / 2 FROM t WHERE id = 1", Rows: [][]any{{0.75}}},
+			// (Unary minus on a column reference is rejected by
+			// fdb-relational 4.11.1.0's parser with `syntax error`.
+			// Bare-paren `(expr)` around a single expression is parsed
+			// as a single-element record/tuple constructor, not a
+			// parenthesised scalar — `SELECT (0 - a) FROM ...` returns
+			// an ImmutableRowStruct. Both rejected for cross-engine
+			// portability; tested in `negation_via_subtraction` below.)
+			{Query: "SELECT 0 - a FROM t WHERE id = 1", Rows: [][]any{{-10}}},
+			// Modulo with explicit parens.
+			{Query: "SELECT (a % b) + 1 FROM t WHERE id = 1", Rows: [][]any{{2}}},
+			// Compound predicate — arithmetic in WHERE.
+			{Query: "SELECT id FROM t WHERE (a + b) > 20 ORDER BY id", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE (a * 2) = 40 ORDER BY id", Rows: [][]any{{2}}},
 		},
 	}
 }
