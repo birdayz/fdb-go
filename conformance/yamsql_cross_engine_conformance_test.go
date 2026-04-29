@@ -196,6 +196,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		dmlSetupScenario(),
 		whereComplexScenario(),
 		pkEqualityOrderByScenario(),
+		projectionAliasScenario(),
 	}
 }
 
@@ -2092,6 +2093,37 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// projectionAliasScenario probes column- and table-alias forms in
+// projection. Existing scenarios use aliases incidentally; this pins
+// the cross-engine alignment of `SELECT col AS alias`, `SELECT
+// table.col`, `FROM t AS alias`, and bare-column projection. Drops
+// NOT NULL on PK. Net-new nightshift-60.
+func projectionAliasScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "projection_alias",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')",
+		},
+		Tests: []yamsql.Test{
+			// Single-column rename via AS.
+			{Query: "SELECT id AS pk FROM t ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			// Multi-column with selective rename.
+			{Query: "SELECT id, v AS amount FROM t ORDER BY id", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}}},
+			// Table alias via AS, qualified ORDER BY.
+			{Query: "SELECT a.id, a.v FROM t AS a ORDER BY a.id", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}}},
+			// Table alias without AS keyword.
+			{Query: "SELECT a.id FROM t a ORDER BY a.id", Rows: [][]any{{1}, {2}, {3}}},
+			// Both column and table aliased.
+			{Query: "SELECT a.s AS letter FROM t AS a ORDER BY a.id", Rows: [][]any{{"a"}, {"b"}, {"c"}}},
+			// Aliased column in WHERE — uses underlying col name.
+			{Query: "SELECT id AS pk FROM t WHERE id = 2", Rows: [][]any{{2}}},
+			// Computed projection with alias.
+			{Query: "SELECT id, v + 1 AS plus_one FROM t WHERE id = 1", Rows: [][]any{{1, 11}}},
 		},
 	}
 }

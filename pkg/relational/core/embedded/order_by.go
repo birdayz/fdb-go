@@ -153,6 +153,14 @@ func naturalOrderSatisfiesDir(orderBy []orderByClause, naturalOrder []string, eq
 		if underlying, isAlias := aliasToUnderlying[strings.ToUpper(obCol)]; isAlias {
 			obCol = underlying
 		}
+		// Strip the table-qualifier prefix (`<alias>.<col>` → `<col>`)
+		// for comparison with the bare natural-order col list. The
+		// scan loop populates the row map with both qualified and bare
+		// forms; the natural-order check is bare-col-keyed so we
+		// follow that convention. nightshift-60.
+		if dot := strings.LastIndex(obCol, "."); dot >= 0 {
+			obCol = obCol[dot+1:]
+		}
 		if !strings.EqualFold(obCol, na[i]) {
 			return false
 		}

@@ -1058,22 +1058,34 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 			for _, ob := range sq.orderBy {
-				if projByCol[ob.colName] {
+				obName := ob.colName
+				if projByCol[obName] {
 					continue
 				}
-				if _, isAlias := aliasToCol[ob.colName]; isAlias {
+				if _, isAlias := aliasToCol[obName]; isAlias {
 					// Alias refers to an already-projected column; no extra
 					// sort field. The sort path looks up cols[] which stores
 					// the alias, so no further remapping is needed.
 					continue
 				}
-				fd := allFields.ByName(protoreflect.Name(ob.colName))
+				// Strip table-qualifier from `<alias>.<col>` for single-
+				// source SELECT — the qualifier resolves to either the
+				// table name or its alias; both refer to the same source.
+				// nightshift-60.
+				if dot := strings.Index(obName, "."); dot >= 0 {
+					prefix := obName[:dot]
+					if strings.EqualFold(prefix, sq.tableName) ||
+						(sq.tableAlias != "" && strings.EqualFold(prefix, sq.tableAlias)) {
+						obName = obName[dot+1:]
+					}
+				}
+				fd := allFields.ByName(protoreflect.Name(obName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
 				}
-				extraSortFields = append(extraSortFields, outField{name: ob.colName, fd: fd})
-				projByCol[ob.colName] = true // avoid duplicates
+				extraSortFields = append(extraSortFields, outField{name: obName, fd: fd})
+				projByCol[obName] = true // avoid duplicates
 			}
 		}
 		// fullFields = projected + extra sort columns; output strips extra at end.
