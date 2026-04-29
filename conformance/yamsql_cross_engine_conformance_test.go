@@ -198,6 +198,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		pkEqualityOrderByScenario(),
 		projectionAliasScenario(),
 		joinOrderByRightPKScenario(),
+		pkDescScenario(),
 	}
 }
 
@@ -2094,6 +2095,36 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// pkDescScenario probes ORDER BY DESC on PK columns. The natural
+// emission order of an FDB scan is ASC; DESC is satisfied via a
+// reverse scan when the ORDER BY is an all-DESC prefix of the
+// natural order. Existing scenarios mostly skip DESC variants ("Skips
+// DESC (cursors are ASC-only and Java's planner often can't
+// reverse)"); this scenario re-enables DESC where both engines
+// support it cross-engine. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func pkDescScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "pk_desc",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+		},
+		Tests: []yamsql.Test{
+			// Full PK scan ORDER BY DESC — reverse scan emits in DESC order.
+			{Query: "SELECT id FROM t ORDER BY id DESC", Rows: [][]any{{5}, {4}, {3}, {2}, {1}}},
+			// PK range + ORDER BY id DESC.
+			{Query: "SELECT id FROM t WHERE id >= 3 ORDER BY id DESC", Rows: [][]any{{5}, {4}, {3}}},
+			// PK BETWEEN + ORDER BY id DESC.
+			{Query: "SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id DESC", Rows: [][]any{{4}, {3}, {2}}},
+			// PK equality (at-most-1-row) + ORDER BY id DESC.
+			{Query: "SELECT id, name FROM t WHERE id = 3 ORDER BY id DESC", Rows: [][]any{{3, "c"}}},
+			// PK IN-list + ORDER BY id DESC — my fix sorts IN-list values DESC.
+			{Query: "SELECT id FROM t WHERE id IN (1, 5, 3) ORDER BY id DESC", Rows: [][]any{{5}, {3}, {1}}},
 		},
 	}
 }
