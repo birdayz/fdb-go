@@ -186,6 +186,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		joinChainedScenario(),
 		multiFeatureSelectScenario(),
 		countDistinctJoinPositiveScenario(),
+		nullCompareScenario(),
+		booleanPrecedenceScenario(),
+		selfJoinScenario(),
 	}
 }
 
@@ -1884,6 +1887,115 @@ func nestedDerivedTableScenario() *yamsql.Scenario {
 				Query: "SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub",
 				Rows:  [][]any{{3}},
 			},
+		},
+	}
+}
+
+// nullCompareScenario probes 3VL comparison semantics: comparison
+// operators applied to NULL operands evaluate to UNKNOWN, which is
+// filtered from WHERE and projected as NULL in the SELECT-list. AND/OR
+// Kleene short-circuit (FALSE absorbs UNKNOWN under AND; TRUE absorbs
+// UNKNOWN under OR) is also pinned. Drops NOT NULL on PK. Net-new
+// nightshift-60: existing scenarios cover boolean-column 3VL
+// (`boolean`), NULL-safe equality (`is_distinct_from`), and a single
+// Kleene case (`bug_hunt_probes`); none drive the comparison-of-non-
+// boolean-column-against-NULL path through both projection AND WHERE
+// across the full operator set. Filling that gap surfaces any future
+// drift in either engine's three-valued evaluator.
+func nullCompareScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "null_compare",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 100), (2, 20, null), (3, null, 300), (4, null, null), (5, 50, 500)",
+		},
+		Tests: []yamsql.Test{
+			// Comparison between two cols with NULL on either side ⇒
+			// UNKNOWN ⇒ filtered. v=w never matches (rows 2/3/4 carry a
+			// NULL in at least one operand; rows 1/5 have distinct values).
+			{Query: "SELECT id FROM t WHERE v = w ORDER BY id", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE v <> w ORDER BY id", Rows: [][]any{{1}, {5}}},
+			{Query: "SELECT id FROM t WHERE v < w ORDER BY id", Rows: [][]any{{1}, {5}}},
+			{Query: "SELECT id FROM t WHERE v > w ORDER BY id", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE v <= w ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// Comparison projection with NULL operand ⇒ NULL in result.
+			{Query: "SELECT id, v = 10 FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, false}, {3, nil}, {4, nil}, {5, false}}},
+			{Query: "SELECT id, v < 30 FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, true}, {3, nil}, {4, nil}, {5, false}}},
+			{Query: "SELECT id, v IS NULL FROM t ORDER BY id", Rows: [][]any{{1, false}, {2, false}, {3, true}, {4, true}, {5, false}}},
+			{Query: "SELECT id, v IS NOT NULL FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, true}, {3, false}, {4, false}, {5, true}}},
+			// NOT through 3VL: NOT NULL = NULL ⇒ filtered.
+			{Query: "SELECT id FROM t WHERE NOT (v = 10) ORDER BY id", Rows: [][]any{{2}, {5}}},
+			// Kleene AND: T AND U = U; F AND U = F; U AND U = U.
+			{Query: "SELECT id FROM t WHERE v IS NULL AND w = 300 ORDER BY id", Rows: [][]any{{3}}},
+			// Kleene OR: T OR U = T; F OR U = U; U OR U = U.
+			{Query: "SELECT id FROM t WHERE v IS NULL OR w = 100 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE v = 10 OR w IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {3}, {5}}},
+		},
+	}
+}
+
+// booleanPrecedenceScenario pins SQL operator-precedence behaviour
+// using only fully-parenthesised forms. Implicit-precedence forms
+// (`WHERE a OR b AND c`) are NOT tested cross-engine: fdb-relational
+// 4.11.1.0 parses `a OR b AND c` as `(a OR b) AND c` — diverging from
+// SQL standard where AND binds tighter than OR (`a OR (b AND c)`). The
+// Go embedded engine follows the SQL standard. New CLAUDE.md gotcha
+// added nightshift-60. The explicit-parens forms below remain valid
+// across both engines and pin AND/OR/NOT semantics independently of
+// the divergent precedence question. Drops NOT NULL on PK.
+func booleanPrecedenceScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "boolean_precedence",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 1, 1, 0), (2, 1, 0, 1), (3, 0, 1, 0), (4, 0, 0, 1)",
+		},
+		Tests: []yamsql.Test{
+			// Two equivalent groupings of the same boolean expression —
+			// pin that explicit parens behave identically across engines.
+			{Query: "SELECT id FROM t WHERE a = 1 OR (b = 0 AND c = 1) ORDER BY id", Rows: [][]any{{1}, {2}, {4}}},
+			{Query: "SELECT id FROM t WHERE (a = 1 OR b = 0) AND c = 1 ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// NOT-AND grouping: NOT outside vs NOT inside.
+			{Query: "SELECT id FROM t WHERE (NOT (a = 1)) AND b = 0 ORDER BY id", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE NOT (a = 1 AND b = 0) ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			// NOT-OR grouping: De Morgan's law cross-engine pin.
+			{Query: "SELECT id FROM t WHERE (NOT (a = 1)) OR b = 1 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE NOT (a = 1 OR b = 1) ORDER BY id", Rows: [][]any{{4}}},
+			// Triple-mix with parens: ((NOT a) AND b) OR c.
+			{Query: "SELECT id FROM t WHERE ((NOT (a = 1)) AND b = 0) OR c = 1 ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// And the alternate grouping: (NOT a) AND (b OR c).
+			{Query: "SELECT id FROM t WHERE (NOT (a = 1)) AND (b = 0 OR c = 1) ORDER BY id", Rows: [][]any{{4}}},
+		},
+	}
+}
+
+// selfJoinScenario probes self-join via comma-join (explicit JOIN ON
+// is broken in fdb-relational 4.11.1.0 per CLAUDE.md). Exercises:
+// equi-self (recovers each row), strict-less self-join (counts ordered
+// pairs), aliased PK comparison. Drops NOT NULL on PK. Net-new
+// nightshift-60: existing JOIN scenarios all use distinct tables; a
+// table joined with itself surfaces aliasing bugs (the Go-side scope
+// resolver and Java's quantifier renaming) that two-table joins miss.
+func selfJoinScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "self_join",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, x BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			// Equi-self-join on PK ⇒ each row pairs with itself.
+			{Query: "SELECT a.id, b.id FROM t a, t b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{1, 1}, {2, 2}, {3, 3}}},
+			// Strict-less self-join ⇒ 3 ordered pairs (1,2), (1,3), (2,3).
+			{Query: "SELECT a.id, b.id FROM t a, t b WHERE a.id < b.id", Unordered: true, Rows: [][]any{{1, 2}, {1, 3}, {2, 3}}},
+			// COUNT(*) over the same relation — verifies cardinality.
+			{Query: "SELECT COUNT(*) FROM t a, t b WHERE a.id < b.id", Rows: [][]any{{3}}},
+			// Self-join on non-PK column.
+			{Query: "SELECT a.id, b.id FROM t a, t b WHERE a.x < b.x", Unordered: true, Rows: [][]any{{1, 2}, {1, 3}, {2, 3}}},
+			// Self-join projecting both sides' non-key columns.
+			{Query: "SELECT a.x, b.x FROM t a, t b WHERE a.id = 1 AND b.id = 3", Rows: [][]any{{10, 30}}},
+			// Cartesian product cardinality (no predicate).
+			{Query: "SELECT COUNT(*) FROM t a, t b", Rows: [][]any{{9}}},
 		},
 	}
 }
