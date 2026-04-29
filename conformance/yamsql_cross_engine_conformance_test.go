@@ -195,6 +195,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		arithmeticCompoundScenario(),
 		dmlSetupScenario(),
 		whereComplexScenario(),
+		pkEqualityOrderByScenario(),
 	}
 }
 
@@ -2091,6 +2092,41 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// pkEqualityOrderByScenario pins PK-equality scan ORDER BY behaviour.
+// With NO satisfying index on the ORDER BY col, Java rejects with
+// UnableToPlan even though the result is at-most-1-row. With an
+// index on the ORDER BY col, Java picks that index and succeeds.
+// Cross-engine alignment requires Go to match: drop the Go-permissive
+// at-most-1-row exemption when no satisfying scan exists. ORDER BY
+// PK col always works (PK natural order satisfies). Drops NOT NULL on
+// PK. Net-new nightshift-60.
+func pkEqualityOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "pk_equality_order_by",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE INDEX idx_s ON t (s)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 100, 'a'), (2, 200, 'b'), (3, 300, 'c')",
+		},
+		Tests: []yamsql.Test{
+			// PK equality + ORDER BY a non-PK col with a satisfying
+			// index. The planner picks the index for ordering and
+			// post-filters by PK equality. 1 row matches.
+			{Query: "SELECT v, s FROM t WHERE id = 2 ORDER BY s", Rows: [][]any{{200, "b"}}},
+			{Query: "SELECT v, s FROM t WHERE id = 2 ORDER BY v", Rows: [][]any{{200, "b"}}},
+			// Single-value PK IN-list — same path.
+			{Query: "SELECT v, s FROM t WHERE id IN (2) ORDER BY s", Rows: [][]any{{200, "b"}}},
+			// PK-equality on a missing key → 0 rows.
+			{Query: "SELECT v, s FROM t WHERE id = 999 ORDER BY s", Rows: [][]any{}},
+			{Query: "SELECT v FROM t WHERE id IN (999) ORDER BY v", Rows: [][]any{}},
+			// PK equality + ORDER BY PK col — PK natural order satisfies
+			// directly without needing an index.
+			{Query: "SELECT v FROM t WHERE id = 1 ORDER BY id", Rows: [][]any{{100}}},
 		},
 	}
 }

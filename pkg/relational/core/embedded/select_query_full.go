@@ -77,13 +77,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	// LIMIT early-termination logic treats the reverse-DESC match the
 	// same as a forward-ASC match.
 	var reverseScanApplied bool
-	// atMostOneRow tracks whether the chosen scan strategy provably
-	// produces 0 or 1 row (PK equality, single-value PK IN-list). Java's
-	// Cascades RemoveSortRule treats any 1-row result as satisfying any
-	// requested ordering trivially (Ordering property = "any"); the Go
-	// rejection check at the end of the SELECT path follows the same
-	// rule by exempting these scans. nightshift-60.
-	var atMostOneRow bool
 	// equatedCols holds the UPPER-CASE bare col names that the WHERE
 	// clause equates to a constant literal at the AND-conjunction top
 	// level. Declared outside the runInTx closure so the post-scan
@@ -99,7 +92,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		naturalOrder = nil
 		naturalOrderAliases = nil
 		reverseScanApplied = false
-		atMostOneRow = false
 		equatedCols = nil
 		txn := catalog.NewFDBTransaction(rctx)
 		schema, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
@@ -210,19 +202,21 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// is still recorded as pkCols — the sort eliminator downstream
 		// uses reverseApplied to accept either direction.
 		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
-		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
-			// At-most-one row — direction is irrelevant for the record
-			// set, but forwarding pkScanProps keeps the branch uniform.
+		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
+			// PK equality matches at-most-one row. Java's RemoveSortRule
+			// does NOT exempt 1-row scans — the rule checks the
+			// Ordering property which is `()` for an equality match,
+			// and `()` doesn't satisfy a non-empty requested ordering.
+			// Java rejects `WHERE id = X ORDER BY non_pk_col` with
+			// UnableToPlan; Go must match. Gate on PK-ordering
+			// satisfaction (which covers ORDER BY PK col / empty /
+			// all-equated) rather than the at-most-1-row escape hatch.
+			// nightshift-60 (refined from initial atMostOneRow approach
+			// that diverged from Java).
 			cursor = pkPushdownScanCursor(store, rt, pkVals, pkScanProps)
-			// At-most-one row — sort is trivially no-op. Flag it as
-			// fully ordered by PK so ORDER BY on PK cols is skipped.
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
-			atMostOneRow = true
-		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok && (len(pkVals) == 1 ||
-			len(sq.orderBy) == 0 || allOrderByEquated(sq.orderBy, equatedCols, naturalOrderAliases) ||
-			naturalOrderSatisfies(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) ||
-			naturalOrderSatisfiesReverse(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)) {
+		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			if len(pkVals) == 1 {
 				// Degenerate IN-list: `pk IN (v)` is equivalent to `pk =
 				// v` — take the equality path. Single point scan instead
@@ -232,7 +226,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cursor = pkPushdownScanCursor(store, rt, pkVals, pkScanProps)
 				naturalOrder = pkCols
 				reverseScanApplied = pkReverseApplied
-				atMostOneRow = true
 			} else {
 				// Multi-value IN-list: the lazy chain emits sub-scans in
 				// pkVals' declared order. Pre-sort the values to make the
@@ -1271,14 +1264,21 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// non-aggregate path.
 		isAggregate := len(sq.aggCols) > 0 || sq.countStar
 		satisfiable := naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied
-		// At-most-1-row scans (PK equality, single-value PK IN-list) are
-		// trivially sorted — Java's RemoveSortRule treats their Ordering
-		// as "any" which satisfies any requested ordering. Exempt here.
 		// DISTINCT is exempted because Java rejects DISTINCT entirely
 		// (existing CLAUDE.md gotcha) — the path is already Go-only;
-		// post-dedup sorting was always part of that contract. Same for
-		// the aggregate path (small post-aggregation result set).
-		if !satisfiable && !isAggregate && !sq.distinct && !atMostOneRow {
+		// post-dedup sorting was always part of that contract. Aggregate
+		// is exempted because the post-aggregation result is a small
+		// projected set; sorting it in-memory is harmless and matches
+		// Java's behaviour for groupings within the same query. Note:
+		// at-most-1-row scans (PK equality, single-value IN-list) are
+		// NOT exempted here — Java's RemoveSortRule checks the Ordering
+		// property explicitly, and an equality match has Ordering `()`
+		// which doesn't satisfy a non-empty requested ordering. The PK
+		// equality / IN-list branches above gate on
+		// `pkOrderingSatisfiesOrderBy` and decline when no PK-prefix
+		// ordering satisfies, letting the chain fall through to a
+		// strategy that does (eventually `tryIndexScanForOrdering`).
+		if !satisfiable && !isAggregate && !sq.distinct {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedSort,
 				"ORDER BY clause cannot be satisfied by any scan strategy; no index produces rows in the requested order")
 		}
