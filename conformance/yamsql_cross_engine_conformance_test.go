@@ -2121,13 +2121,12 @@ func arithmeticCompoundScenario() *yamsql.Scenario {
 			{Query: "SELECT a / b FROM t WHERE id = 1", Rows: [][]any{{3}}},
 			// Float division on DOUBLE operands.
 			{Query: "SELECT c / 2 FROM t WHERE id = 1", Rows: [][]any{{0.75}}},
-			// (Unary minus on a column reference is rejected by
-			// fdb-relational 4.11.1.0's parser with `syntax error`.
-			// Bare-paren `(expr)` around a single expression is parsed
-			// as a single-element record/tuple constructor, not a
-			// parenthesised scalar — `SELECT (0 - a) FROM ...` returns
-			// an ImmutableRowStruct. Both rejected for cross-engine
-			// portability; tested in `negation_via_subtraction` below.)
+			// Negation via `0 - col`. Unary minus on a column reference
+			// is rejected by fdb-relational 4.11.1.0's parser with
+			// `syntax error`. Bare-paren `(expr)` around a single
+			// scalar is parsed as a single-element record/tuple
+			// constructor, returning ImmutableRowStruct (the same
+			// "WHERE (b = true)" gotcha extends to projection scalars).
 			{Query: "SELECT 0 - a FROM t WHERE id = 1", Rows: [][]any{{-10}}},
 			// Modulo with explicit parens.
 			{Query: "SELECT (a % b) + 1 FROM t WHERE id = 1", Rows: [][]any{{2}}},
