@@ -1291,8 +1291,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// ordering satisfies, letting the chain fall through to a
 		// strategy that does (eventually `tryIndexScanForOrdering`).
 		if !satisfiable && !isAggregate && !sq.distinct {
+			obCols := make([]string, 0, len(sq.orderBy))
+			for _, ob := range sq.orderBy {
+				if ob.colName != "" {
+					obCols = append(obCols, ob.colName)
+				}
+			}
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedSort,
-				"ORDER BY clause cannot be satisfied by any scan strategy; no index produces rows in the requested order")
+				"ORDER BY %s cannot be satisfied by any scan strategy; no index produces rows in the requested order. Add an index on the ORDER BY column(s) to make the query plannable",
+				strings.Join(obCols, ", "))
 		}
 		if !satisfiable {
 			// Aggregate path only — small result set, sort in-memory.
