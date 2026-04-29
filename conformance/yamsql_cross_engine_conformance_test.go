@@ -193,6 +193,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		nullArithmeticScenario(),
 		orderByIndexedColScenario(),
 		arithmeticCompoundScenario(),
+		dmlSetupScenario(),
 	}
 }
 
@@ -2089,6 +2090,34 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// dmlSetupScenario probes the visibility of mid-stream UPDATE / DELETE
+// in the setup phase. runWithSetup runs each setup statement
+// sequentially before the final query; INSERT then UPDATE then DELETE
+// then SELECT lets us pin both engines' DML semantics end-to-end. The
+// existing scenarios all confined DML to INSERT-only setup; this fills
+// the UPDATE / DELETE gap. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func dmlSetupScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "dml_setup",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			"UPDATE t SET v = 99 WHERE id = 2",
+			"DELETE FROM t WHERE id = 3",
+		},
+		Tests: []yamsql.Test{
+			// Final state: 3 rows {(1,10), (2,99), (4,40)}.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{{1, 10}, {2, 99}, {4, 40}}},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			{Query: "SELECT v FROM t WHERE id = 2", Rows: [][]any{{99}}},
+			{Query: "SELECT id FROM t WHERE id = 3", Rows: [][]any{}},
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{149}}},
+			{Query: "SELECT MIN(v), MAX(v) FROM t", Rows: [][]any{{10, 99}}},
 		},
 	}
 }

@@ -338,19 +338,22 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			naturalOrder = pkCols
 			reverseScanApplied = eqReverse
-		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok && (len(sil.values) == 1 ||
-			len(sq.orderBy) == 0 || allOrderByEquated(sq.orderBy, equatedCols, naturalOrderAliases)) {
+		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok &&
+			((len(sil.values) == 1 && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)) ||
+				(len(sil.values) > 1 && (len(sq.orderBy) == 0 || allOrderByEquated(sq.orderBy, equatedCols, naturalOrderAliases)))) {
 			// Covering also applies to IN-list: each sub-scan can skip
 			// the by-PK fetch when the index covers every referenced
 			// column. Same decision as the equality path.
 			//
-			// Gating (nightshift-60): single-value sub-path always
-			// satisfies any PK-prefix ORDER BY (sets naturalOrder=pkCols
-			// below). Multi-value lazy chain has no usable natural order
-			// across sub-scans; only acceptable when the ORDER BY is
-			// empty or every clause is on an equated col (no order
-			// required). Otherwise fall through to a strategy that can
-			// satisfy the ORDER BY (eventually full PK scan).
+			// Gating (nightshift-60): single-value sub-path is a
+			// secondary-index equality scan that emits in pkCols order;
+			// gated on PK ordering satisfying the ORDER BY (same as
+			// `trySecondaryIndexPushdown`). Multi-value lazy chain has
+			// no usable natural order across sub-scans; only acceptable
+			// when the ORDER BY is empty or every clause is on an
+			// equated col (no order required). Otherwise fall through
+			// to a strategy that can satisfy (eventually full PK scan
+			// or `tryIndexScanForOrdering`).
 			idx := md.GetIndex(sil.indexName)
 			if len(sil.values) == 1 {
 				// Degenerate IN-list: single sub-scan is an index
