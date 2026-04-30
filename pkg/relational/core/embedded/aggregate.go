@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"fmt"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -211,14 +210,13 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		// starts as false (zero-value) — i.e. "still int-only" — and
 		// only flips to true. Overflow on `sumsI[i] += iv` wraps
 		// silently, same as Java's `long` accumulator on SUM(BIGINT).
-		sums         []float64
-		sumsI        []int64
-		sumNonInt    []bool
-		mins         []driver.Value
-		maxes        []driver.Value
-		avgs         []float64
-		avgsN        []int64
-		distinctSets []map[string]struct{}
+		sums      []float64
+		sumsI     []int64
+		sumNonInt []bool
+		mins      []driver.Value
+		maxes     []driver.Value
+		avgs      []float64
+		avgsN     []int64
 	}
 	groupOrder := []string{}
 	groups := map[string]*mapGroupState{}
@@ -260,23 +258,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		}
 		gs, exists := groups[key]
 		if !exists {
-			dsets := make([]map[string]struct{}, len(sq.aggCols))
-			for di, ac := range sq.aggCols {
-				if ac.aggDistinct {
-					dsets[di] = make(map[string]struct{})
-				}
-			}
 			gs = &mapGroupState{
-				groupVals:    gVals,
-				counts:       make([]int64, len(sq.aggCols)),
-				sums:         make([]float64, len(sq.aggCols)),
-				sumsI:        make([]int64, len(sq.aggCols)),
-				sumNonInt:    make([]bool, len(sq.aggCols)),
-				mins:         make([]driver.Value, len(sq.aggCols)),
-				maxes:        make([]driver.Value, len(sq.aggCols)),
-				avgs:         make([]float64, len(sq.aggCols)),
-				avgsN:        make([]int64, len(sq.aggCols)),
-				distinctSets: dsets,
+				groupVals: gVals,
+				counts:    make([]int64, len(sq.aggCols)),
+				sums:      make([]float64, len(sq.aggCols)),
+				sumsI:     make([]int64, len(sq.aggCols)),
+				sumNonInt: make([]bool, len(sq.aggCols)),
+				mins:      make([]driver.Value, len(sq.aggCols)),
+				maxes:     make([]driver.Value, len(sq.aggCols)),
+				avgs:      make([]float64, len(sq.aggCols)),
+				avgsN:     make([]int64, len(sq.aggCols)),
 			}
 			groups[key] = gs
 			groupOrder = append(groupOrder, key)
@@ -319,55 +310,11 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			hasArg := ac.aggArg != "" || ac.aggExpr != nil
-			if ac.aggDistinct && hasArg {
-				if colVal != nil {
-					// Type-tagged key so int 5 and string "5" don't collide
-					// (matches the mixed-type-equality fix in valuesEqual).
-					dk := fmt.Sprintf("%T\x00%v", colVal, colVal)
-					if _, seen := gs.distinctSets[i][dk]; !seen {
-						gs.distinctSets[i][dk] = struct{}{}
-						gs.counts[i]++
-						// Accumulate into the per-function slot so
-						// SUM(DISTINCT)/AVG(DISTINCT)/MIN(DISTINCT)/MAX(DISTINCT)
-						// produce the correct value. COUNT(DISTINCT) already
-						// matches via counts[i] — no extra work.
-						switch ac.aggFunc {
-						case "SUM", "AVG":
-							fv, ok := functions.ToFloat64(colVal)
-							if !ok {
-								return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-									"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, colVal)
-							}
-							if ac.aggFunc == "SUM" {
-								gs.sums[i] += fv
-								if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
-									gs.sumsI[i] += iv
-								} else {
-									gs.sumNonInt[i] = true
-								}
-							} else {
-								gs.avgs[i] += fv
-								gs.avgsN[i]++
-							}
-						case "MIN":
-							if err := requireMinMaxNumeric(colVal); err != nil {
-								return nil, nil, err
-							}
-							if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
-								gs.mins[i] = colVal
-							}
-						case "MAX":
-							if err := requireMinMaxNumeric(colVal); err != nil {
-								return nil, nil, err
-							}
-							if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
-								gs.maxes[i] = colVal
-							}
-						}
-					}
-				}
-				continue
-			}
+			// DISTINCT-aggregate handling lived here pre-nightshift-61.
+			// Removed: the early-return guard at the top of
+			// aggregateMapRows rejects every aggDistinct=true entry
+			// before reaching this loop, so the per-aggregate DISTINCT
+			// branch was dead code.
 			// COUNT(*) (no arg) counts every row, including all-NULL.
 			// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
 			if ac.aggFunc == "COUNT" && !hasArg {
@@ -431,23 +378,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	// play. Per project conformance principle: doesn't work in Java →
 	// doesn't work in Go.
 	if !hasGroups && len(groupOrder) == 0 && sq.havingExpr == nil {
-		dsets := make([]map[string]struct{}, len(sq.aggCols))
-		for di, ac := range sq.aggCols {
-			if ac.aggDistinct {
-				dsets[di] = make(map[string]struct{})
-			}
-		}
 		groups[""] = &mapGroupState{
-			groupVals:    nil,
-			counts:       make([]int64, len(sq.aggCols)),
-			sums:         make([]float64, len(sq.aggCols)),
-			sumsI:        make([]int64, len(sq.aggCols)),
-			sumNonInt:    make([]bool, len(sq.aggCols)),
-			mins:         make([]driver.Value, len(sq.aggCols)),
-			maxes:        make([]driver.Value, len(sq.aggCols)),
-			avgs:         make([]float64, len(sq.aggCols)),
-			avgsN:        make([]int64, len(sq.aggCols)),
-			distinctSets: dsets,
+			groupVals: nil,
+			counts:    make([]int64, len(sq.aggCols)),
+			sums:      make([]float64, len(sq.aggCols)),
+			sumsI:     make([]int64, len(sq.aggCols)),
+			sumNonInt: make([]bool, len(sq.aggCols)),
+			mins:      make([]driver.Value, len(sq.aggCols)),
+			maxes:     make([]driver.Value, len(sq.aggCols)),
+			avgs:      make([]float64, len(sq.aggCols)),
+			avgsN:     make([]int64, len(sq.aggCols)),
 		}
 		groupOrder = append(groupOrder, "")
 	}

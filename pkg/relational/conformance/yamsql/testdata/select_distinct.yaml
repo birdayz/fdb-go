@@ -71,12 +71,17 @@ tests:
       - [0]
       - [1]
   # DISTINCT on expression with positional ORDER BY referring to that
-  # expression — rejected: positional `1` resolves to `v / 2` which is
-  # an arbitrary expression, and Cascades has no rule that satisfies
-  # ORDER BY arbitrary expression (CLAUDE.md gotcha). Go's embedded
-  # engine matches structurally — the positional resolver routes
-  # through the same satisfiability gate that rejects expression-keyed
-  # ORDER BY.
+  # expression — rejected. Note: DISTINCT is intentionally exempt from
+  # the natural-order satisfiability gate (per nightshift-60 — DISTINCT
+  # is a Go-only feature with its own pipeline), so 0AF01
+  # (ErrCodeUnsupportedSort) does NOT fire here. Instead the rejection
+  # comes from the ORDER BY column-resolution path
+  # (`select_query_full.go#1052`): positional `1` resolves to the
+  # first SELECT-list expression `v / 2` whose synthetic internal name
+  # has no matching proto field descriptor, so the lookup returns
+  # nil and raises `ErrCodeInvalidParameter` (22023) "ORDER BY column
+  # ... not found in table ...". Same code path that rejects ORDER BY
+  # of any expression-named-projection.
   #
   # Note: SELECT DISTINCT is itself rejected by fdb-relational entirely
   # (CLAUDE.md gotcha) — Go's embedded engine implements DISTINCT as
