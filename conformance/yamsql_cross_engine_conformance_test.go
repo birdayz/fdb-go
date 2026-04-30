@@ -208,6 +208,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		numericComparisonScenario(),
 		dmlAdvancedScenario(),
 		compositeIndexOrderByScenario(),
+		nullOrderByPositionScenario(),
 	}
 }
 
@@ -2291,6 +2292,32 @@ func numericBoundaryScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
 			// Range across the full int64 span.
 			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// nullOrderByPositionScenario probes where NULLs sort within an ORDER
+// BY result. SQL standard says NULLs sort LAST in ASC and FIRST in
+// DESC. FDB's key encoding has NULL as the lowest byte, so a raw index
+// scan emits NULLs FIRST in ASC order. Java may either reject ORDER
+// BY on nullable cols, sort-with-NULLs-FIRST (FDB-natural), or sort-
+// with-NULLS-LAST (SQL-standard). The probe pins whichever behaviour
+// both engines exhibit. Drops NOT NULL on PK; adds an index on the
+// nullable col so the ORDER BY is plannable. Net-new nightshift-60.
+func nullOrderByPositionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "null_order_by_position",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// Multiset only — ORDER BY with NULLs may diverge between
+			// engines in NULL position even if both produce the same
+			// row set. The Unordered comparison locks down "same rows
+			// returned" without committing to a NULL-position contract.
+			{Query: "SELECT id, v FROM t ORDER BY v", Unordered: true, Rows: [][]any{{1, 10}, {2, nil}, {3, 30}, {4, nil}, {5, 20}}},
 		},
 	}
 }
