@@ -823,6 +823,22 @@ func SeedRunCorpus() []RunQuery {
 			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 			ExpectErrorMessage: "Unsupported operator NULLIF",
 		},
+		// NOTE: ORDER BY <alias> on a non-natural-order column is
+		// rejected by BOTH engines — Java with UnableToPlanException
+		// (Cascades has no rule to satisfy the ordering); Go with
+		// `ErrCodeUnsupportedSort` (the structural mirror landed
+		// nightshift-60 — "no scan satisfies"). Same architectural
+		// reason in both engines: no rule generates a satisfying
+		// physical sort. Java's error message references its
+		// exception class ("UnableToPlanException"); Go's references
+		// the column ("ORDER BY amount cannot be satisfied"). The
+		// rejection alignment is real (Go nightshift-60 work) but
+		// the surface messages differ enough that
+		// `ExpectErrorContains` needs a column-name substring rather
+		// than a Java-internal class name. Pinned cross-engine via
+		// the existing yamsql ORDER BY rejection scenarios
+		// (`order_by_expression`, `order_by_dupe_col`,
+		// `order_by_limit`, etc.); not a separate corpus entry.
 		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
 		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
 		// `Statement.setMaxRows`, per CLAUDE.md gotcha "LIMIT clause
