@@ -2296,14 +2296,19 @@ func numericBoundaryScenario() *yamsql.Scenario {
 	}
 }
 
-// nullOrderByPositionScenario probes where NULLs sort within an ORDER
-// BY result. SQL standard says NULLs sort LAST in ASC and FIRST in
-// DESC. FDB's key encoding has NULL as the lowest byte, so a raw index
-// scan emits NULLs FIRST in ASC order. Java may either reject ORDER
-// BY on nullable cols, sort-with-NULLs-FIRST (FDB-natural), or sort-
-// with-NULLS-LAST (SQL-standard). The probe pins whichever behaviour
-// both engines exhibit. Drops NOT NULL on PK; adds an index on the
-// nullable col so the ORDER BY is plannable. Net-new nightshift-60.
+// nullOrderByPositionScenario pins NULL position in ORDER BY results
+// cross-engine. The Java contract (per fdb-record-layer's
+// ParseHelpers.isNullsLast default — `isDescending`):
+//
+//	ORDER BY col ASC   → NULLs FIRST (FDB key-encoding natural order)
+//	ORDER BY col DESC  → NULLs LAST  (reverse of natural order)
+//
+// FDB's tuple encoding makes NULL the lowest byte, so the natural
+// emission order of an index scan puts NULLs first in ASC. Both Java
+// and Go pin this contract; this probe is the cross-engine guard.
+// `TestFDB_OrderByNullOrdering` is the Go-side regression test for the
+// same contract. Drops NOT NULL on PK; adds an index on the nullable
+// col so the ORDER BY is plannable. Net-new nightshift-60.
 func nullOrderByPositionScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "null_order_by_position",
@@ -2313,11 +2318,17 @@ func nullOrderByPositionScenario() *yamsql.Scenario {
 			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 20)",
 		},
 		Tests: []yamsql.Test{
-			// Multiset only — ORDER BY with NULLs may diverge between
-			// engines in NULL position even if both produce the same
-			// row set. The Unordered comparison locks down "same rows
-			// returned" without committing to a NULL-position contract.
-			{Query: "SELECT id, v FROM t ORDER BY v", Unordered: true, Rows: [][]any{{1, 10}, {2, nil}, {3, 30}, {4, nil}, {5, 20}}},
+			// ASC: NULLs FIRST. Among NULLs, secondary key is PK
+			// (id ASC), so id=2 before id=4. Then non-NULLs in v
+			// ASC: 10, 20, 30 → id=1, 5, 3.
+			{Query: "SELECT id, v FROM t ORDER BY v ASC", Rows: [][]any{{2, nil}, {4, nil}, {1, 10}, {5, 20}, {3, 30}}},
+			// DESC: full reverse of ASC sequence. FDB's reverse-scan
+			// applies key reversal to the entire (v, id) tuple, not
+			// just the leading axis — so within-NULL PK order is also
+			// reversed. ASC order is [2, 4, 1, 5, 3]; DESC is the
+			// strict reverse [3, 5, 1, 4, 2]. NULLs LAST follows from
+			// NULL being the lowest byte in v's encoding.
+			{Query: "SELECT id, v FROM t ORDER BY v DESC", Rows: [][]any{{3, 30}, {5, 20}, {1, 10}, {4, nil}, {2, nil}}},
 		},
 	}
 }
