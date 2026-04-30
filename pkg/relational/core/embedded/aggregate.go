@@ -392,7 +392,21 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	// SQL spec: ungrouped aggregate over an empty input still emits one row
 	// (COUNT=0, SUM/MIN/MAX/AVG=NULL). Materialise a synthetic empty group so
 	// the emit loop produces that row.
-	if !hasGroups && len(groupOrder) == 0 {
+	//
+	// Java alignment (nightshift-61): when HAVING is present, fdb-relational
+	// 4.11.1.0 treats the empty input as "no grouping at all" — HAVING never
+	// fires and the query returns 0 rows. CLAUDE.md gotcha:
+	// "`SELECT <agg> FROM t WHERE <none-match> HAVING <agg-pred>` diverges:
+	// Go follows SQL spec (single grouping), Java treats empty as no
+	// grouping at all". Aligned to Java by skipping the synthetic group
+	// when HAVING is set. Result: `SELECT COUNT(*) FROM t WHERE x = 999
+	// HAVING COUNT(*) >= 0` now returns 0 rows in Go (was 1 row [[0]]),
+	// matching Java. The HAVING-absent path (`SELECT COUNT(*) FROM
+	// empty_t` → 1 row [[0]]) still emits the synthetic group, so SQL-
+	// spec aggregate-over-empty semantics survive when HAVING isn't in
+	// play. Per project conformance principle: doesn't work in Java →
+	// doesn't work in Go.
+	if !hasGroups && len(groupOrder) == 0 && sq.havingExpr == nil {
 		dsets := make([]map[string]struct{}, len(sq.aggCols))
 		for di, ac := range sq.aggCols {
 			if ac.aggDistinct {

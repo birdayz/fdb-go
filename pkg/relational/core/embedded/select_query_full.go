@@ -804,8 +804,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 
 			// SQL spec: ungrouped aggregate over empty input emits one row
-			// (COUNT=0, SUM/MIN/MAX/AVG=NULL).
-			if len(sq.groupBy) == 0 && len(groupOrder) == 0 {
+			// (COUNT=0, SUM/MIN/MAX/AVG=NULL). Java alignment
+			// (nightshift-61): when HAVING is present, fdb-relational
+			// treats the empty input as "no grouping at all" — HAVING
+			// never fires, 0 rows. CLAUDE.md gotcha:
+			// "`SELECT <agg> FROM t WHERE <none-match> HAVING <agg-pred>`
+			// diverges". Aligned to Java by skipping the synthetic group
+			// when HAVING is set. The HAVING-absent path keeps SQL-spec
+			// aggregate-over-empty semantics.
+			if len(sq.groupBy) == 0 && len(groupOrder) == 0 && sq.havingExpr == nil {
 				dsets := make([]map[string]struct{}, len(sq.aggCols))
 				for di, ac := range sq.aggCols {
 					if ac.aggDistinct {
