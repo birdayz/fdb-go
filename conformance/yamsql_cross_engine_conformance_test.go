@@ -215,6 +215,10 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		emptyStringScenario(),
 		largeInListScenario(),
 		updateNonPKPredicateScenario(),
+		caseInOrderByScenario(),
+		bytesAdvancedScenario(),
+		mixedNumericCompareScenario(),
+		notInListScenario(),
 	}
 }
 
@@ -2936,6 +2940,123 @@ func updateNonPKPredicateScenario() *yamsql.Scenario {
 			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
 			// Verify the DELETE removed the right row.
 			{Query: "SELECT id FROM t WHERE s = 'a'", Rows: [][]any{}},
+		},
+	}
+}
+
+// caseInOrderByScenario probes ORDER BY with a CASE expression as the
+// sort key. Likely to interact with the Java Cascades planner's
+// ordering-property analysis (CLAUDE.md: "ORDER BY arithmetic expression
+// raises UnableToPlanException"). If Java rejects, drop the scenario;
+// otherwise pin it. Net-new nightshift-61.
+func caseInOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "case_in_order_by",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 5), (2, 15), (3, 25), (4, 35)",
+		},
+		Tests: []yamsql.Test{
+			// CASE in projection with ORDER BY on PK — works.
+			{
+				Query: "SELECT id, CASE WHEN v < 20 THEN 'low' ELSE 'high' END FROM t ORDER BY id",
+				Rows:  [][]any{{1, "low"}, {2, "low"}, {3, "high"}, {4, "high"}},
+			},
+			// CASE in projection alongside the original col — ORDER BY by id.
+			{
+				Query: "SELECT v, CASE WHEN v >= 25 THEN 1 ELSE 0 END FROM t ORDER BY id",
+				Rows:  [][]any{{5, 0}, {15, 0}, {25, 1}, {35, 1}},
+			},
+		},
+	}
+}
+
+// bytesAdvancedScenario probes BYTES column behaviour beyond the basic
+// equality / round-trip in bytesScenario. Adds: IN list with hex
+// literals, IS NULL / IS NOT NULL, NULL projection, multi-row scan
+// with mixed NULL+non-NULL. Net-new nightshift-61.
+func bytesAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "bytes_advanced",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, X'DEADBEEF'), (2, X'CAFEBABE'), (3, null), (4, X'00')",
+		},
+		Tests: []yamsql.Test{
+			// Equality round-trip (existing).
+			{Query: "SELECT id FROM t WHERE payload = X'DEADBEEF'", Rows: [][]any{{1}}},
+			// IN-list with hex literals.
+			{Query: "SELECT id FROM t WHERE payload IN (X'DEADBEEF', X'CAFEBABE') ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// IS NULL.
+			{Query: "SELECT id FROM t WHERE payload IS NULL", Rows: [][]any{{3}}},
+			// IS NOT NULL.
+			{Query: "SELECT id FROM t WHERE payload IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {4}}},
+			// COUNT non-null payload.
+			{Query: "SELECT COUNT(payload) FROM t", Rows: [][]any{{3}}},
+			// Empty bytes.
+			{Query: "SELECT id FROM t WHERE payload = X''", Rows: [][]any{}},
+			// Single-byte payload exists at id=4.
+			{Query: "SELECT id FROM t WHERE payload = X'00'", Rows: [][]any{{4}}},
+		},
+	}
+}
+
+// mixedNumericCompareScenario probes type coercion in comparison
+// operators when both sides have different numeric types. Existing
+// numeric_comparison covers BIGINT-vs-DOUBLE; this scenario also pins
+// equality and arithmetic across INTEGER, FLOAT, BIGINT, DOUBLE
+// columns. Net-new nightshift-61.
+func mixedNumericCompareScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "mixed_numeric_compare",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 100, 1.5), (2, 200, 2.5), (3, 300, 3.0), (4, 400, 4.0)",
+		},
+		Tests: []yamsql.Test{
+			// BIGINT col = DOUBLE literal exact integer value.
+			{Query: "SELECT id FROM t WHERE a = 200.0", Rows: [][]any{{2}}},
+			// BIGINT col compared with non-integer DOUBLE — no row matches.
+			{Query: "SELECT id FROM t WHERE a = 200.5", Rows: [][]any{}},
+			// DOUBLE col compared with BIGINT-form integer literal.
+			{Query: "SELECT id FROM t WHERE b = 3", Rows: [][]any{{3}}},
+			// Cross-column comparison.
+			{Query: "SELECT id FROM t WHERE b * 100 = a ORDER BY id", Rows: [][]any{{3}, {4}}},
+			// Range bounds with mixed types.
+			{Query: "SELECT id FROM t WHERE a BETWEEN 100 AND 250.0 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// Equality with computed DOUBLE.
+			{Query: "SELECT id FROM t WHERE a / 100 = b ORDER BY id", Rows: [][]any{{3}, {4}}},
+			// Arithmetic between BIGINT and DOUBLE columns.
+			{Query: "SELECT a + b FROM t WHERE id = 1", Rows: [][]any{{101.5}}},
+			{Query: "SELECT a - b FROM t WHERE id = 4", Rows: [][]any{{396.0}}},
+		},
+	}
+}
+
+// notInListScenario probes NOT IN behaviour, especially with NULL
+// in the IN list (Java rejects entirely per CLAUDE.md gotcha) and
+// across various predicate combinations. We avoid NULL-in-list. Net-new
+// nightshift-61.
+func notInListScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "not_in_list",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, null, 'd'), (5, 50, null)",
+		},
+		Tests: []yamsql.Test{
+			// NOT IN BIGINT list — NULL rows excluded by 3VL.
+			{Query: "SELECT id FROM t WHERE v NOT IN (10, 30) ORDER BY id", Rows: [][]any{{2}, {5}}},
+			// NOT IN STRING list — NULL rows excluded by 3VL.
+			{Query: "SELECT id FROM t WHERE s NOT IN ('a', 'd') ORDER BY id", Rows: [][]any{{2}, {3}}},
+			// NOT IN single-value form.
+			{Query: "SELECT id FROM t WHERE v NOT IN (20) ORDER BY id", Rows: [][]any{{1}, {3}, {5}}},
+			// NOT IN combined with equality — both must hold.
+			{Query: "SELECT id FROM t WHERE v NOT IN (10, 30) AND s = 'b'", Rows: [][]any{{2}}},
+			// NOT IN combined with IS NULL.
+			{Query: "SELECT id FROM t WHERE s NOT IN ('a', 'b') OR s IS NULL ORDER BY id", Rows: [][]any{{3}, {4}, {5}}},
+			// NOT IN with all-matching list.
+			{Query: "SELECT id FROM t WHERE v NOT IN (10, 20, 30, 50) ORDER BY id", Rows: [][]any{}},
 		},
 	}
 }

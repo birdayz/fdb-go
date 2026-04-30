@@ -879,30 +879,17 @@ func evalSpecificFunctionCore(
 			return eval(c.GetElseArg().Expression())
 		}
 		return nil, nil
-	case *antlrgen.CaseExpressionFunctionCallContext:
-		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
-		subject, err := eval(c.Expression())
-		if err != nil {
-			return nil, err
-		}
-		for _, alt := range c.AllCaseFuncAlternative() {
-			whenVal, wErr := eval(alt.GetCondition().Expression())
-			if wErr != nil {
-				return nil, wErr
-			}
-			// Simple CASE uses = semantics; NULL = anything is UNKNOWN, so a
-			// NULL subject or whenVal never matches a branch (falls to ELSE).
-			if subject == nil || whenVal == nil {
-				continue
-			}
-			if functions.CompareValues(subject, whenVal) == 0 {
-				return eval(alt.GetConsequent().Expression())
-			}
-		}
-		if c.GetElseArg() != nil {
-			return eval(c.GetElseArg().Expression())
-		}
-		return nil, nil
+	// Simple-CASE form (`CASE expr WHEN val THEN ...`) is intentionally
+	// NOT handled — falls through to the `default:` arm below
+	// (ErrCodeUnsupportedOperation). Mirrors fdb-relational 4.11.1.0's
+	// `BaseVisitor.visitCaseExpressionFunctionCall = visitChildren(ctx)`
+	// — the simple-CASE visitor is a structural no-op there, producing
+	// silently-wrong results in Java (typically returns the ELSE branch
+	// regardless of subject). Same architectural reason in both engines:
+	// the simple-CASE evaluator is not implemented. Searched-CASE
+	// (`CASE WHEN cond THEN ...`) is implemented above and works
+	// correctly. Per CLAUDE.md "Java↔Go conformance gotchas" §
+	// "Parser bugs": doesn't work in Java → doesn't work in Go.
 	case *antlrgen.DataTypeFunctionCallContext:
 		// CAST(expr AS type)
 		val, err := eval(c.Expression())
