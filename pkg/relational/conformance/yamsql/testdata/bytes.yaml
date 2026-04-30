@@ -6,6 +6,7 @@
 name: bytes
 schema_template: |
   CREATE TABLE lb (a BIGINT NOT NULL, b BYTES, PRIMARY KEY (a))
+  CREATE INDEX idx_lb_b ON lb (b)
 setup:
   - INSERT INTO lb VALUES (1, x'deadbeef'), (2, x'cafe'), (3, null)
 tests:

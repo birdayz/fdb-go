@@ -20,15 +20,13 @@ tests:
     rows:
       - ['a', 30]
       - ['b', 70]
-  # Subquery in ORDER BY expression. Sort each row's v relative to MIN.
-  # Same direction as ORDER BY v — but this exercises the ORDER BY
-  # extra-sort-field path with a subquery inside the expression.
+  # Subquery in ORDER BY expression — rejected. Java's Cascades
+  # planner has no rule satisfying ORDER BY arbitrary expression
+  # (a subquery-bearing arithmetic expression here); rejection
+  # emerges from "no scan satisfies". Same architectural reason in
+  # both engines.
   - query: SELECT id FROM t WHERE v IS NOT NULL ORDER BY v - (SELECT MIN(v) FROM t)
-    rows:
-      - [1]
-      - [2]
-      - [3]
-      - [4]
+    error_code: "0AF01"
   # Subquery as argument to a scalar function — UPPER on a string subquery.
   - query: SELECT UPPER((SELECT g FROM t WHERE id = 1)) FROM t WHERE id = 1
     rows:

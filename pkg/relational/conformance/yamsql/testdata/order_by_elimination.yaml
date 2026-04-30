@@ -27,12 +27,14 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX idx_v ON t (v)
+  CREATE INDEX idx_name ON t (name)
   CREATE TABLE ab (
     a BIGINT NOT NULL,
     b BIGINT NOT NULL,
     c BIGINT,
     PRIMARY KEY (a, b)
   )
+  CREATE INDEX idx_ab_c ON ab (c)
   CREATE TABLE rp (
     id BIGINT NOT NULL,
     region STRING,
@@ -189,15 +191,15 @@ tests:
       - [4]
       - [5]
 
-  # ASC + NULLS LAST: must sort (id is NOT NULL so result is the
-  # same, but the sort path is exercised).
+  # ASC + NULLS LAST on PK: requested NULLS placement diverges from
+  # natural order (PK ASC is NULLS FIRST). No scan satisfies the
+  # NULLS LAST request, and Cascades has no rule to rearrange
+  # NULL placement post-scan, so rejection emerges from "no scan
+  # satisfies". Result rows would be the same (id is NOT NULL) but
+  # the planner can't prove that — same architectural reason as
+  # Java's UnableToPlan.
   - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
-    rows:
-      - [1]
-      - [2]
-      - [3]
-      - [4]
-      - [5]
+    error_code: "0AF01"
 
   # -------------------------------------------------------------------
   # LIMIT + ORDER BY elim → early termination
@@ -336,16 +338,12 @@ tests:
     rows:
       - [3, 10]
 
-  # Mixed ASC / DESC — can't satisfy with a single direction. Must
-  # fall back to in-memory sort. Output must match the requested
-  # order regardless.
+  # Mixed ASC / DESC — can't satisfy with a single scan direction.
+  # Java's Cascades planner has no rule to mix ascending and
+  # descending sub-sorts; rejection emerges from "no scan satisfies".
+  # Same architectural reason in both engines.
   - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
-    rows:
-      - [1, 30]
-      - [1, 20]
-      - [1, 10]
-      - [2, 20]
-      - [2, 10]
+    error_code: "0AF01"
 
   # ORDER BY id DESC with alias — alias resolves to the underlying
   # PK col; reverse scan applies.

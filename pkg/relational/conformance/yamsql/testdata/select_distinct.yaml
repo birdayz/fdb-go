@@ -70,9 +70,18 @@ tests:
       - [~]
       - [0]
       - [1]
-  # DISTINCT on expression without alias — works.
+  # DISTINCT on expression with positional ORDER BY referring to that
+  # expression — rejected: positional `1` resolves to `v / 2` which is
+  # an arbitrary expression, and Cascades has no rule that satisfies
+  # ORDER BY arbitrary expression (CLAUDE.md gotcha). Go's embedded
+  # engine matches structurally — the positional resolver routes
+  # through the same satisfiability gate that rejects expression-keyed
+  # ORDER BY.
+  #
+  # Note: SELECT DISTINCT is itself rejected by fdb-relational entirely
+  # (CLAUDE.md gotcha) — Go's embedded engine implements DISTINCT as
+  # a Go-only feature. Aligning Go to reject DISTINCT outright is a
+  # separate larger conformance task tracked in TODO.md; this file
+  # tests Go-only DISTINCT semantics until that lands.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
-    rows:
-      - [~]
-      - [0]
-      - [1]
+    error_code: "22023"

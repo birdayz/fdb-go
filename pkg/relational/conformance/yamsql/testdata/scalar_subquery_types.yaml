@@ -8,6 +8,7 @@
 name: scalar_subquery_types
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, name STRING, active BOOLEAN, score DOUBLE, PRIMARY KEY (id))
+  CREATE INDEX idx_t_score ON t (score)
 setup:
   - INSERT INTO t VALUES (1, 'alice', true, 9.5), (2, 'bob', false, 7.25), (3, 'carol', true, null)
 tests:

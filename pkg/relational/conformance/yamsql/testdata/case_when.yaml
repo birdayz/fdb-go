@@ -53,17 +53,15 @@ tests:
     rows:
       - [2]
       - [4]
-  # CASE in a SELECT column referenced by ORDER BY via alias — ORDER BY
-  # on the alias of a CASE projection, routing through the proto
-  # single-source path's alias redirection.
+  # ORDER BY on the alias of a CASE projection plus PK as tie-break
+  # (multi-column ORDER BY). Java rejects multi-column ORDER BY
+  # entirely (CLAUDE.md gotcha) and also rejects ORDER BY arbitrary
+  # expression (the alias resolves to a CASE expression). Same
+  # architectural reason in both engines.
   - query: |-
       SELECT id, CASE WHEN v IS NULL THEN 1 ELSE 0 END AS is_null
       FROM t ORDER BY is_null DESC, id
-    rows:
-      - [3, 1]
-      - [1, 0]
-      - [2, 0]
-      - [4, 0]
+    error_code: "0AF01"
   # Java-aligned: mixed-type result branches. CASE WHEN cond THEN <int>
   # ELSE <float> END — Java promotes both to DOUBLE so the result type
   # is consistent. Verify Go matches: the integer branch should surface

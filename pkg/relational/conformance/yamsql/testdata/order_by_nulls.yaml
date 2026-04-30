@@ -8,6 +8,7 @@
 name: order_by_nulls
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX idx_v ON t (v)
 setup:
   - INSERT INTO t VALUES (1, 10), (2, null), (3, 5), (4, null), (5, 20)
 tests:
@@ -25,21 +26,14 @@ tests:
       - [5]
       - [~]
       - [~]
-  # Explicit NULLS LAST on ASC (overrides ASC default of NULLS FIRST).
-  # Pre-nightshift-36 the grammar parsed the clause but the flag was
-  # dropped on the floor.
+  # Explicit NULLS LAST on ASC: requested NULL placement diverges from
+  # the natural ASC order (FDB tuple ordering puts NULL first), so no
+  # scan strategy emits rows in the requested order — rejected. Java
+  # rejects for the same architectural reason: Cascades has no rule to
+  # rearrange NULL placement post-scan.
   - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
-    rows:
-      - [5]
-      - [10]
-      - [20]
-      - [~]
-      - [~]
-  # Explicit NULLS FIRST on DESC (overrides DESC default of NULLS LAST).
+    error_code: "0AF01"
+  # Explicit NULLS FIRST on DESC: requested NULL placement diverges
+  # from natural DESC order — rejected for the same reason.
   - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
-    rows:
-      - [~]
-      - [~]
-      - [20]
-      - [10]
-      - [5]
+    error_code: "0AF01"

@@ -160,8 +160,16 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 // require integer operands; float / string operands are an error (not
 // a silent cast). The grammar exposes bitOperator tokens as
 // concatenated text, so `<<` comes through as "<<" and `>>` as ">>".
-// Shift counts outside [0, 64) error rather than invoke Go's undefined
-// behaviour on out-of-range shifts.
+//
+// Bit-shift operators `<<` / `>>` are intentionally NOT registered —
+// matching fdb-relational 4.11.1.0's behaviour. Java tokenizes the
+// operators but has no entry in the function registry, so its planner
+// returns `RelationalException: Unsupported operator <<`. The Go
+// embedded engine mirrors this by NOT having `<<` / `>>` cases here,
+// so they fall through to the default ErrCodeUnsupportedOperation
+// arm. Same architectural reason in both engines: no evaluator
+// registered for shift operators. Per CLAUDE.md "Java↔Go conformance
+// gotchas": doesn't work in Java → doesn't work in Go.
 func ApplyBitOp(left, right any, op string) (any, error) {
 	if left == nil || right == nil {
 		return nil, nil // NULL propagates
@@ -179,20 +187,6 @@ func ApplyBitOp(left, right any, op string) (any, error) {
 		return li | ri, nil
 	case "^":
 		return li ^ ri, nil
-	case "<<":
-		if ri < 0 || ri >= 64 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"shift count out of range: %d", ri)
-		}
-		return li << uint64(ri), nil
-	case ">>":
-		if ri < 0 || ri >= 64 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"shift count out of range: %d", ri)
-		}
-		// Arithmetic right shift (Java >>). Use unsigned (>>>) for
-		// logical; we don't expose that operator.
-		return li >> uint64(ri), nil
 	}
 	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported bitwise operator %q", op)
 }

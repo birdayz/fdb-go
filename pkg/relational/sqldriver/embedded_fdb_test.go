@@ -3288,10 +3288,23 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(bitOr).To(gomega.Equal(int64(15)), "7 | 8 = 15")
 	g.Expect(db.QueryRowContext(ctx, `SELECT val ^ 5 FROM Num WHERE id = 1`).Scan(&bitXor)).To(gomega.Succeed())
 	g.Expect(bitXor).To(gomega.Equal(int64(2)), "7 ^ 5 = 2")
-	g.Expect(db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)).To(gomega.Succeed())
-	g.Expect(shl).To(gomega.Equal(int64(28)), "7 << 2 = 28")
-	g.Expect(db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)).To(gomega.Succeed())
-	g.Expect(shr).To(gomega.Equal(int64(3)), "7 >> 1 = 3")
+	// Bit-shift operators `<<` / `>>` are intentionally rejected to
+	// match fdb-relational 4.11.1.0's effective non-support: Java
+	// tokenizes them but has no entry in the function registry, so the
+	// planner returns "Unsupported operator <<". Same architectural
+	// reason in both engines: no evaluator for shift operators.
+	_ = shl
+	_ = shr
+	shlErr := db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)
+	g.Expect(shlErr).To(gomega.HaveOccurred())
+	var apiErrShl *api.Error
+	g.Expect(errors.As(shlErr, &apiErrShl)).To(gomega.BeTrue(), "want *api.Error, got %T", shlErr)
+	g.Expect(apiErrShl.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	shrErr := db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)
+	g.Expect(shrErr).To(gomega.HaveOccurred())
+	var apiErrShr *api.Error
+	g.Expect(errors.As(shrErr, &apiErrShr)).To(gomega.BeTrue(), "want *api.Error, got %T", shrErr)
+	g.Expect(apiErrShr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 // TestFDB_IsDistinctFrom pins SQL's null-safe equality operator. Grammar
