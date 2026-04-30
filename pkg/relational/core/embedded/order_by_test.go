@@ -212,6 +212,64 @@ func TestScanPropsForOrder(t *testing.T) {
 	}
 }
 
+// TestScanSatisfiesOrderBy covers the nightshift-60 helper that
+// reports whether a pushdown branch's natural emission order (forward
+// or reverse) satisfies the user's ORDER BY clause.
+func TestScanSatisfiesOrderBy(t *testing.T) {
+	t.Parallel()
+	// Empty naturalOrder + non-empty orderBy → false.
+	if scanSatisfiesOrderBy([]orderByClause{asc("a")}, nil, nil, nil) {
+		t.Fatal("empty naturalOrder + non-empty orderBy: expected false")
+	}
+	// ASC orderBy matches forward.
+	if !scanSatisfiesOrderBy([]orderByClause{asc("a")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("ASC prefix: expected satisfies (forward)")
+	}
+	// DESC orderBy matches reverse.
+	if !scanSatisfiesOrderBy([]orderByClause{desc("a")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("DESC prefix: expected satisfies (reverse)")
+	}
+	// Mixed direction: neither forward nor reverse satisfies.
+	if scanSatisfiesOrderBy([]orderByClause{asc("a"), desc("b")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("mixed direction: expected false")
+	}
+	// Qualified col name: stripped to bare for comparison.
+	if !scanSatisfiesOrderBy([]orderByClause{asc("t.a")}, []string{"a"}, nil, nil) {
+		t.Fatal("qualified ASC: expected satisfies")
+	}
+}
+
+// TestPKOrderingSatisfiesOrderBy covers the nightshift-60 gate used
+// on PK pushdown branches.
+func TestPKOrderingSatisfiesOrderBy(t *testing.T) {
+	t.Parallel()
+	// Empty orderBy → trivially satisfied.
+	if !pkOrderingSatisfiesOrderBy(nil, []string{"id"}, nil, nil) {
+		t.Fatal("empty orderBy: expected satisfies")
+	}
+	// All-equated orderBy → satisfied.
+	if !pkOrderingSatisfiesOrderBy(
+		[]orderByClause{asc("id")},
+		[]string{"id"},
+		map[string]bool{"ID": true},
+		nil,
+	) {
+		t.Fatal("all-equated orderBy: expected satisfies")
+	}
+	// PK-prefix ASC → satisfies (forward).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{asc("id")}, []string{"id"}, nil, nil) {
+		t.Fatal("PK ASC: expected satisfies")
+	}
+	// PK-prefix DESC → satisfies (reverse).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{desc("id")}, []string{"id"}, nil, nil) {
+		t.Fatal("PK DESC: expected satisfies")
+	}
+	// Non-PK col → does not satisfy.
+	if pkOrderingSatisfiesOrderBy([]orderByClause{asc("name")}, []string{"id"}, nil, nil) {
+		t.Fatal("non-PK col: expected does not satisfy")
+	}
+}
+
 func TestAllOrderByEquated(t *testing.T) {
 	t.Parallel()
 	if allOrderByEquated(nil, map[string]bool{"A": true}, nil) {
