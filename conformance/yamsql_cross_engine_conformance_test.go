@@ -199,6 +199,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		projectionAliasScenario(),
 		joinOrderByRightPKScenario(),
 		pkDescScenario(),
+		numericBoundaryScenario(),
 	}
 }
 
@@ -2095,6 +2096,39 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// numericBoundaryScenario probes BIGINT boundary values (MAX/MIN/zero)
+// in INSERT, SELECT, and WHERE comparisons. Both engines should handle
+// the full int64 range (-9223372036854775808 to 9223372036854775807).
+// Net-new nightshift-60.
+func numericBoundaryScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "numeric_boundary",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 9223372036854775807)",
+			"INSERT INTO t VALUES (2, -9223372036854775808)",
+			"INSERT INTO t VALUES (3, 0)",
+			"INSERT INTO t VALUES (4, 1)",
+			"INSERT INTO t VALUES (5, -1)",
+		},
+		Tests: []yamsql.Test{
+			// Round-trip BIGINT MAX / MIN / 0.
+			{Query: "SELECT val FROM t WHERE id = 1", Rows: [][]any{{int64(9223372036854775807)}}},
+			{Query: "SELECT val FROM t WHERE id = 2", Rows: [][]any{{int64(-9223372036854775808)}}},
+			{Query: "SELECT val FROM t WHERE id = 3", Rows: [][]any{{0}}},
+			// Comparison around zero.
+			{Query: "SELECT id FROM t WHERE val > 0 ORDER BY id", Rows: [][]any{{1}, {4}}},
+			{Query: "SELECT id FROM t WHERE val < 0 ORDER BY id", Rows: [][]any{{2}, {5}}},
+			{Query: "SELECT id FROM t WHERE val = 0", Rows: [][]any{{3}}},
+			// Boundary in WHERE — exact match on MAX.
+			{Query: "SELECT id FROM t WHERE val = 9223372036854775807", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
+			// Range across the full int64 span.
+			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
 		},
 	}
 }
