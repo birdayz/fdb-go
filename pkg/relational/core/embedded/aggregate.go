@@ -50,6 +50,24 @@ func requireMinMaxNumeric(v driver.Value) error {
 }
 
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
+	// DISTINCT aggregates are intentionally rejected — Java alignment.
+	// fdb-relational 4.11.1.0's parser visitor NPEs on every aggregate
+	// with DISTINCT (`AggregateWindowedFunctionContext.ALL().getText()`
+	// is called unconditionally; ALL is null when DISTINCT is present,
+	// per CLAUDE.md gotcha "COUNT(DISTINCT col) NPEs in fdb-relational").
+	// Go matches by failing at execution time with
+	// `ErrCodeUnsupportedOperation`. Same architectural reason in both
+	// engines: visitor doesn't handle the DISTINCT case. Workaround:
+	// pre-aggregate via a derived table — `SELECT COUNT(*) FROM
+	// (SELECT DISTINCT col FROM t)` — though SELECT DISTINCT itself
+	// has its own conformance status. Per project conformance
+	// principle: doesn't work in Java → doesn't work in Go.
+	for _, ac := range sq.aggCols {
+		if ac.aggDistinct {
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"DISTINCT aggregate %s is not supported", ac.aggFunc)
+		}
+	}
 	if sq.countStar {
 		count := int64(len(filtered))
 		// HAVING refers to the aggregate function, not the SELECT-list

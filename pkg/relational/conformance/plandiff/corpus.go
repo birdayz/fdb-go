@@ -823,6 +823,26 @@ func SeedRunCorpus() []RunQuery {
 			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 			ExpectErrorMessage: "Unsupported operator NULLIF",
 		},
+		// NOTE: COUNT/SUM/AVG/MIN/MAX with DISTINCT are rejected by
+		// BOTH engines — Java NPEs (visitor unconditionally calls
+		// `AggregateWindowedFunctionContext.ALL().getText()` which is
+		// null when DISTINCT is present); Go's embedded engine rejects
+		// at execution time with `ErrCodeUnsupportedOperation`
+		// "DISTINCT aggregate %s is not supported"
+		// (`pkg/relational/core/embedded/aggregate.go` and
+		// `select_query_full.go`). Same architectural reason in both
+		// engines: visitor doesn't handle the DISTINCT case.
+		//
+		// NOT included as a cross-engine corpus entry because Java's
+		// NPE message references the parser-internal class name
+		// (`AggregateWindowedFunctionContext.ALL()`) rather than the
+		// SQL keyword `DISTINCT`, so it can't share a meaningful
+		// substring with Go's clean error message. The rejection
+		// alignment is pinned on the Go side via
+		// `count_distinct.yaml`, `count_distinct_join.yaml`,
+		// `distinct_aggregates.yaml`, `aggregate_expr.yaml`, and
+		// `group_by_validation.yaml`'s `error_code: "0A000"` tests
+		// under the yamsql harness.
 		// NOTE: explicit CROSS JOIN syntax (`a CROSS JOIN b`) is rejected
 		// in BOTH engines — Java NPEs (InnerJoinContext.expression()
 		// null-dereference in the visitor); Go's embedded engine

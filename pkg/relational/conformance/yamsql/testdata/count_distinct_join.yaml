@@ -20,16 +20,15 @@ tests:
     rows:
       - [6]
 
-  # COUNT(DISTINCT cust_id) on the same cross-join — unique cust_ids.
+  # COUNT(DISTINCT) is rejected by both engines (Java NPE; Go
+  # ErrCodeUnsupportedOperation). See count_distinct.yaml for the
+  # full rationale.
   - query: |
       SELECT COUNT(DISTINCT o.cust_id) FROM orders AS o, tags AS t
       WHERE o.cust_id = t.cust_id
-    rows:
-      - [2]
+    error_code: "0A000"
 
-  # COUNT(DISTINCT tag) — unique tags across joined rows.
   - query: |
       SELECT COUNT(DISTINCT t.tag) FROM orders AS o, tags AS t
       WHERE o.cust_id = t.cust_id
-    rows:
-      - [2]
+    error_code: "0A000"

@@ -526,6 +526,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		// GROUP BY aggregate query: scan → group → aggregate.
 		if len(sq.aggCols) > 0 {
+			// DISTINCT aggregates rejected — Java alignment (visitor
+			// NPEs on every aggregate with DISTINCT). See aggregate.go
+			// for full rationale.
+			for _, ac := range sq.aggCols {
+				if ac.aggDistinct {
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+						"DISTINCT aggregate %s is not supported", ac.aggFunc)
+				}
+			}
 			// Resolve group-by field descriptors. Expression group keys
 			// (sq.groupByExprs[i] != nil) skip FD resolution — they are
 			// evaluated per message below via evalExpr.

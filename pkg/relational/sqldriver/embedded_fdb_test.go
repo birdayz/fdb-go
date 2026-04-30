@@ -3701,36 +3701,22 @@ func TestFDB_CountDistinct(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (4, 3, 'US')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// COUNT(DISTINCT customer_id): 3 distinct customers (1, 2, 3).
-	rows, err := db.QueryContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	g.Expect(rows.Next()).To(gomega.BeTrue())
+	// COUNT(DISTINCT) is rejected by both engines (Java NPE on
+	// AggregateWindowedFunctionContext.ALL().getText() with DISTINCT;
+	// Go ErrCodeUnsupportedOperation). Per project conformance
+	// principle: doesn't work in Java → doesn't work in Go.
 	var n int64
-	g.Expect(rows.Scan(&n)).To(gomega.Succeed())
-	g.Expect(n).To(gomega.Equal(int64(3)))
+	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`).Scan(&n)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 
-	// COUNT(DISTINCT region) GROUP BY: grouped by region, count distinct customers per region.
-	rows2, err := db.QueryContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-
-	type regionCount struct {
-		region string
-		count  int64
-	}
-	var rc []regionCount
-	for rows2.Next() {
-		var r regionCount
-		g.Expect(rows2.Scan(&r.region, &r.count)).To(gomega.Succeed())
-		rc = append(rc, r)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(rc).To(gomega.Equal([]regionCount{
-		{"EU", 1},
-		{"US", 2}, // customers 1 and 3 in US
-	}))
+	// COUNT(DISTINCT) inside GROUP BY is also rejected.
+	err = db.QueryRowContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`).Scan(new(string), &n)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 func TestFDB_GreatestLeast(t *testing.T) {
@@ -6297,27 +6283,26 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (5)`) // n NULL
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var sum, mn, mx, cnt int64
-	var avg float64
-	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T`).Scan(&sum)).To(gomega.Succeed())
-	g.Expect(sum).To(gomega.Equal(int64(60)), "SUM(DISTINCT {10,20,30}) = 60")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT AVG(DISTINCT n) FROM T`).Scan(&avg)).To(gomega.Succeed())
-	g.Expect(avg).To(gomega.Equal(float64(20)), "AVG(DISTINCT {10,20,30}) = 20")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT MIN(DISTINCT n) FROM T`).Scan(&mn)).To(gomega.Succeed())
-	g.Expect(mn).To(gomega.Equal(int64(10)))
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT MAX(DISTINCT n) FROM T`).Scan(&mx)).To(gomega.Succeed())
-	g.Expect(mx).To(gomega.Equal(int64(30)))
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(3)))
-
-	// All-NULL group: every aggregate returns NULL (SQL standard).
-	var s sql.NullInt64
-	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T WHERE id = 5`).Scan(&s)).To(gomega.Succeed())
-	g.Expect(s.Valid).To(gomega.BeFalse(), "SUM(DISTINCT) over all-NULL must be NULL")
+	// All DISTINCT-aggregate forms (SUM/AVG/MIN/MAX/COUNT) are
+	// rejected by both engines (Java NPEs on every aggregate with
+	// DISTINCT; Go ErrCodeUnsupportedOperation). Per project
+	// conformance principle: doesn't work in Java → doesn't work in Go.
+	for _, q := range []string{
+		`SELECT SUM(DISTINCT n) FROM T`,
+		`SELECT AVG(DISTINCT n) FROM T`,
+		`SELECT MIN(DISTINCT n) FROM T`,
+		`SELECT MAX(DISTINCT n) FROM T`,
+		`SELECT COUNT(DISTINCT n) FROM T`,
+	} {
+		var dummy any
+		err := db.QueryRowContext(ctx, q).Scan(&dummy)
+		g.Expect(err).To(gomega.HaveOccurred(), "query %q: expected rejection", q)
+		var apiErr *api.Error
+		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+			"query %q: want *api.Error, got %T", q, err)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+			"query %q: want ErrCodeUnsupportedOperation", q)
+	}
 }
 
 // TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
@@ -6397,18 +6382,21 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Four rows, two distinct numeric values — also sanity: duplicates
-	// collapse, same-type equals share a bucket.
+	// COUNT(DISTINCT) is rejected by both engines (Java NPE; Go
+	// ErrCodeUnsupportedOperation). The type-tagged-key invariant
+	// this test originally exercised is still pinned indirectly via
+	// the GROUP BY paths' rowKey encoding (TestFDB_GroupByNullVsNilString
+	// below).
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO T (id, n, s) VALUES (1, 5, 'x'), (2, 5, 'y'), (3, 7, 'x'), (4, 7, 'y')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	var c int64
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT n) over {5,5,7,7} must be 2")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT s) FROM T`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT s) over {'x','y','x','y'} must be 2")
+	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 // TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between
