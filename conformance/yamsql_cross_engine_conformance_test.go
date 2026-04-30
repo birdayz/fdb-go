@@ -210,6 +210,11 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		compositeIndexOrderByScenario(),
 		nullOrderByPositionScenario(),
 		isNullWithIndexScenario(),
+		havingPositiveScenario(),
+		negativeConstantsScenario(),
+		emptyStringScenario(),
+		largeInListScenario(),
+		updateNonPKPredicateScenario(),
 	}
 }
 
@@ -2745,6 +2750,192 @@ func orderByIndexedColScenario() *yamsql.Scenario {
 			// ORDER BY indexed col + WHERE on the same col (range pushdown
 			// fires, distinct from the new full-index branch).
 			{Query: "SELECT id FROM t WHERE v >= 10 ORDER BY v", Rows: [][]any{{2}, {3}, {1}}},
+		},
+	}
+}
+
+// havingPositiveScenario probes HAVING clause shapes with non-empty
+// results. The "WHERE filters all rows + HAVING checks aggregate"
+// shape (e.g. `SELECT COUNT(*) FROM t WHERE id = 999 HAVING COUNT(*) >= 0`)
+// diverges between engines: Go follows SQL spec (single grouping with
+// COUNT=0, then HAVING tests it) → 1 row [[0]]; Java treats the
+// empty-WHERE result as no grouping at all, HAVING never fires → 0 rows.
+// Tracked in CLAUDE.md and exercised by aggregateEmptyTableScenario's
+// last test (which is omitted from this scenario). All shapes here have
+// non-empty WHERE results so the divergence doesn't apply. Net-new
+// nightshift-61.
+func havingPositiveScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "having_positive",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+		},
+		Tests: []yamsql.Test{
+			// COUNT(*) HAVING — passes (4 > 0).
+			{Query: "SELECT COUNT(*) FROM t HAVING COUNT(*) > 0", Rows: [][]any{{4}}},
+			// COUNT(*) HAVING — fails (4 not > 10) → 0 rows.
+			{Query: "SELECT COUNT(*) FROM t HAVING COUNT(*) > 10", Rows: [][]any{}},
+			// COUNT(*) HAVING equality.
+			{Query: "SELECT COUNT(*) FROM t HAVING COUNT(*) = 4", Rows: [][]any{{4}}},
+			// SUM HAVING.
+			{Query: "SELECT SUM(v) FROM t HAVING SUM(v) > 50", Rows: [][]any{{100}}},
+			// SUM HAVING — false predicate.
+			{Query: "SELECT SUM(v) FROM t HAVING SUM(v) < 50", Rows: [][]any{}},
+			// MIN/MAX in projection + HAVING.
+			{Query: "SELECT MIN(v), MAX(v) FROM t HAVING MIN(v) >= 10", Rows: [][]any{{10, 40}}},
+			// HAVING with WHERE that still leaves rows.
+			{Query: "SELECT COUNT(*) FROM t WHERE v > 15 HAVING COUNT(*) >= 1", Rows: [][]any{{3}}},
+			// HAVING combined predicates (AND).
+			{Query: "SELECT COUNT(*) FROM t HAVING COUNT(*) > 0 AND COUNT(*) <= 10", Rows: [][]any{{4}}},
+			// HAVING with arithmetic on aggregate result.
+			{Query: "SELECT SUM(v) FROM t HAVING SUM(v) + 1 > 100", Rows: [][]any{{100}}},
+			// COUNT-based existence check.
+			{Query: "SELECT COUNT(*) FROM t WHERE v = 999 HAVING COUNT(*) > 0", Rows: [][]any{}},
+		},
+	}
+}
+
+// negativeConstantsScenario probes negative number literals in
+// arithmetic, IN-list, comparison, and ORDER BY. Existing scenarios
+// touch negation via `0 - col` (unary minus on a column ref is rejected
+// by fdb-relational's parser, gotcha) but only briefly cover negative
+// literals as constants. Net-new nightshift-61.
+func negativeConstantsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "negative_constants",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, -10), (2, -5), (3, 0), (4, 5), (5, 10)",
+		},
+		Tests: []yamsql.Test{
+			// Equality with negative literal.
+			{Query: "SELECT id FROM t WHERE v = -10", Rows: [][]any{{1}}},
+			// Negative literal in IN-list.
+			{Query: "SELECT id FROM t WHERE v IN (-10, -5, 0) ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			// NOT IN with negatives.
+			{Query: "SELECT id FROM t WHERE v NOT IN (-10, 5) ORDER BY id", Rows: [][]any{{2}, {3}, {5}}},
+			// Range comparison with negatives.
+			{Query: "SELECT id FROM t WHERE v < 0 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE v <= 0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE v >= -5 ORDER BY id", Rows: [][]any{{2}, {3}, {4}, {5}}},
+			// BETWEEN with negative bounds.
+			{Query: "SELECT id FROM t WHERE v BETWEEN -10 AND -1 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE v BETWEEN -5 AND 5 ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			// Arithmetic with negative literal.
+			{Query: "SELECT v + (-1) FROM t WHERE id = 4", Rows: [][]any{{4}}},
+			{Query: "SELECT v * (-2) FROM t WHERE id = 5", Rows: [][]any{{-20}}},
+			// Negative in projection.
+			{Query: "SELECT id, -1 FROM t WHERE id = 1", Rows: [][]any{{1, -1}}},
+			// Mixed-sign sum.
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{0}}},
+		},
+	}
+}
+
+// emptyStringScenario probes empty-string handling in equality, IN,
+// IS NULL, projection, LIKE, and length-style comparisons. Empty
+// strings are commonly mishandled (NULL vs empty conflation, IN
+// list edge cases). Net-new nightshift-61.
+func emptyStringScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "empty_string",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, ''), (2, 'a'), (3, null), (4, 'aa'), (5, '')",
+		},
+		Tests: []yamsql.Test{
+			// Equality with empty literal.
+			{Query: "SELECT id FROM t WHERE s = '' ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// Empty string is NOT NULL.
+			{Query: "SELECT id FROM t WHERE s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {5}}},
+			// NULL distinguishable from empty.
+			{Query: "SELECT id FROM t WHERE s IS NULL", Rows: [][]any{{3}}},
+			// IN-list with empty literal.
+			{Query: "SELECT id FROM t WHERE s IN ('', 'a') ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// NOT IN with empty literal — note NULL row excluded by 3VL.
+			{Query: "SELECT id FROM t WHERE s NOT IN ('a', 'aa') ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// Empty string projection.
+			{Query: "SELECT s FROM t WHERE id = 1", Rows: [][]any{{""}}},
+			// Empty string in COUNT.
+			{Query: "SELECT COUNT(*) FROM t WHERE s = ''", Rows: [][]any{{2}}},
+			// Empty string LIKE.
+			{Query: "SELECT id FROM t WHERE s LIKE '' ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// LIKE %_% on empty doesn't match.
+			{Query: "SELECT id FROM t WHERE s LIKE '_%' ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// Comparison ordering: '' < 'a'.
+			{Query: "SELECT id FROM t WHERE s < 'a' ORDER BY id", Rows: [][]any{{1}, {5}}},
+		},
+	}
+}
+
+// largeInListScenario probes IN-list with many literals to surface any
+// list-size limits or quadratic blowup. fdb-relational has no documented
+// list-size limit; Go's embedded engine builds an in-memory slice scan.
+// 50 elements is well under any sane limit on either side. Net-new
+// nightshift-61.
+func largeInListScenario() *yamsql.Scenario {
+	// Build an IN-list of 50 elements: (1, 2, ..., 50).
+	// Match every row in a 50-row table (id 1..50, v = id*10).
+	inList := ""
+	for i := 1; i <= 50; i++ {
+		if i > 1 {
+			inList += ", "
+		}
+		inList += fmt.Sprintf("%d", i)
+	}
+	insertList := ""
+	for i := 1; i <= 50; i++ {
+		if i > 1 {
+			insertList += ", "
+		}
+		insertList += fmt.Sprintf("(%d, %d)", i, i*10)
+	}
+	return &yamsql.Scenario{
+		Name:           "large_in_list",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES " + insertList,
+		},
+		Tests: []yamsql.Test{
+			// 50-element IN-list matches every row.
+			{Query: "SELECT COUNT(*) FROM t WHERE id IN (" + inList + ")", Rows: [][]any{{50}}},
+			// NOT IN matches none.
+			{Query: "SELECT COUNT(*) FROM t WHERE id NOT IN (" + inList + ")", Rows: [][]any{{0}}},
+			// IN-list partial match — first half.
+			{Query: "SELECT COUNT(*) FROM t WHERE v IN (10, 20, 30, 40, 50, 60, 70, 80, 90, 100)", Rows: [][]any{{10}}},
+			// Large IN with ORDER BY pushed-down PK col.
+			{Query: "SELECT id FROM t WHERE id IN (1, 5, 10, 25, 50) ORDER BY id", Rows: [][]any{{1}, {5}, {10}, {25}, {50}}},
+		},
+	}
+}
+
+// updateNonPKPredicateScenario probes UPDATE / DELETE with WHERE on a
+// non-PK column. Existing dml_setup uses WHERE on the PK col; this
+// probes the secondary-index pushdown (or full-scan-then-filter) path
+// for DML. Net-new nightshift-61.
+func updateNonPKPredicateScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "update_non_pk_predicate",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE INDEX idx_s ON t (s)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, 20, 'd')",
+			// UPDATE WHERE on indexed v col — matches 2 rows.
+			"UPDATE t SET s = 'twenty' WHERE v = 20",
+			// DELETE WHERE on indexed s col.
+			"DELETE FROM t WHERE s = 'a'",
+		},
+		Tests: []yamsql.Test{
+			// Final state: id=2 → s='twenty', id=3 → s='c', id=4 → s='twenty'.
+			{Query: "SELECT id, v, s FROM t ORDER BY id", Rows: [][]any{
+				{2, 20, "twenty"}, {3, 30, "c"}, {4, 20, "twenty"},
+			}},
+			{Query: "SELECT COUNT(*) FROM t WHERE s = 'twenty'", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			// Verify the DELETE removed the right row.
+			{Query: "SELECT id FROM t WHERE s = 'a'", Rows: [][]any{}},
 		},
 	}
 }
