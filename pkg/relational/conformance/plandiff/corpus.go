@@ -823,6 +823,18 @@ func SeedRunCorpus() []RunQuery {
 			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 			ExpectErrorMessage: "Unsupported operator NULLIF",
 		},
+		// NOTE: `SELECT 1+1` (FROM-less SELECT for constant projection)
+		// is a known one-sided divergence: Java rejects standalone
+		// FROM-less SELECT with UnableToPlan (CLAUDE.md gotcha
+		// "SELECT <expr> without FROM is unsupported by the planner")
+		// but ACCEPTS the same form inside CTE base cases like
+		// `WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL ...)`.
+		// Go's embedded engine accepts both contexts uniformly.
+		// Aligning Go to reject standalone FROM-less SELECT while
+		// continuing to accept the CTE base case requires context-
+		// aware parsing (separate parseSelectQuery entry points or a
+		// flag) — deferred as a separate large-scope conformance
+		// task. Probed nightshift-61.
 		// NOTE: `col IN (SELECT ...)` is a known one-sided divergence:
 		// Java NPEs on the form (visitor walks `ExpressionsContext`
 		// which is null when the IN list comes from a subquery, per
