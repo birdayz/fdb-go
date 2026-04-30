@@ -823,6 +823,16 @@ func SeedRunCorpus() []RunQuery {
 			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 			ExpectErrorMessage: "Unsupported operator NULLIF",
 		},
+		// NOTE: `col IN (SELECT ...)` is a known one-sided divergence:
+		// Java NPEs on the form (visitor walks `ExpressionsContext`
+		// which is null when the IN list comes from a subquery, per
+		// CLAUDE.md gotcha "`col IN (SELECT ...)` parser-NPEs in
+		// fdb-relational"); Go's embedded engine implements it
+		// correctly. Aligning Go to reject would invalidate ~14
+		// Go-side test files (yamsql + sqldriver) that exercise the
+		// feature; deferred as a separate large-scope conformance
+		// task. Until then, IN-subquery is a Go-only feature with
+		// no cross-engine corpus entry.
 		// NOTE: COUNT/SUM/AVG/MIN/MAX with DISTINCT are rejected by
 		// BOTH engines — Java NPEs (visitor unconditionally calls
 		// `AggregateWindowedFunctionContext.ALL().getText()` which is
