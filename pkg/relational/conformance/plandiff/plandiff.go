@@ -447,7 +447,14 @@ func NewJavaEngineHTTP(baseURL, clusterFileContent string) Engine {
 	return javaEngine{
 		baseURL:     baseURL,
 		clusterFile: clusterFileContent,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		// 120s, not 30s. Race-instrumented Go runs ~3× slower under
+		// `--@rules_go//go/config:race`, and the harness drives the
+		// Java conformance server in the same process tree as the
+		// race-instrumented test code; under runner memory pressure
+		// the JVM also contends for CPU. 30s flaked when the race
+		// build's first `planSql` calls (cold per-call schema
+		// template + database + schema setup) exceeded the budget.
+		httpClient: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 

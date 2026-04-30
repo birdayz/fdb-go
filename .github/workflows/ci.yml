@@ -56,14 +56,39 @@ jobs:
         # (~2m) because Bazel's main-cache GoStdlib / rules_go "_reset"
         # symlink action keys shift when the server has seen both
         # configs. Investigation in PR #92.
+        #
+        # Memory hygiene on this 8 GB Hetzner runner:
+        #   1. Shut down the main-output_base bazel server before
+        #      starting the race build. Without this, two bazel JVMs
+        #      coexist on the runner (idle main server + active race
+        #      server, ~3-4 GB heap each at peak), and the OS OOM-killer
+        #      eventually takes one out — the symptom is the bazel-
+        #      client-side "Server terminated abruptly (error code: 14,
+        #      'Socket closed')" we saw on master CI run 25146649999
+        #      and PR CI 25146270631.
+        #   2. Cap each bazel JVM's heap with `--host_jvm_args=-Xmx3g`
+        #      so the server alone can't blow past a budget; combined
+        #      with --local_resources=memory it gives bazel an honest
+        #      view of available RAM.
+        #   3. `--local_resources=memory=HOST_RAM*0.6` tells bazel to
+        #      cap concurrent action memory to 60% of host RAM (~4.8 GB
+        #      out of 8 GB). Bazel auto-throttles --jobs accordingly.
+        #      Race-instrumented Go compile actions for `conformance_test`
+        #      peak at ~1.5 GB each; without a memory cap, bazel
+        #      defaults to `auto` jobs (= NPROC) and tries to run
+        #      4-8 of them in parallel, hitting 6-12 GB peak.
         run: |
-          bazelisk --output_base=$HOME/.cache/bazel/_race_output_base test \
+          bazelisk shutdown
+          bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
+            --host_jvm_args=-Xmx3g \
+            test \
             //pkg/fdbgo/client:client_test \
             //pkg/fdbgo/fdb:fdb_test \
             //pkg/recordlayer:recordlayer_test \
             //pkg/recordlayer/chaos:chaos_test \
             //conformance:conformance_test \
             --@rules_go//go/config:race \
+            --local_resources=memory=HOST_RAM*0.6 \
             --test_timeout=900 \
             --test_summary=detailed
 

@@ -104,7 +104,11 @@ func NewJavaRunnerHTTP(baseURL, clusterFileContent string) Runner {
 	return javaRunner{
 		baseURL:     baseURL,
 		clusterFile: clusterFileContent,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		// 120s, not 30s. Same reasoning as NewJavaEngineHTTP — race-
+		// instrumented harness + memory-pressured JVM under CI
+		// pushes per-call latency past 30s on the first few cold
+		// invocations.
+		httpClient: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
