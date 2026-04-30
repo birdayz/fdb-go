@@ -1270,6 +1270,50 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
 }
 
+// TestFDB_SelectOrderByRejectionExpression pins the rejection contract
+// for ORDER BY <arithmetic-expression>. Java's Cascades planner has
+// no rule that can produce a SortPlan over an arbitrary expression,
+// so it raises UnableToPlanException (CLAUDE.md gotcha "ORDER BY
+// <arithmetic-expression> raises UnableToPlanException"). The Go
+// embedded engine matches: expression-based ORDER BY clauses have
+// empty `colName` and don't match any natural-order column, every
+// scan strategy declines, and the post-scan check rejects with
+// 0AF01. The error-message detail substitutes "arbitrary expression"
+// for the column list when no plain-column ORDER BY entry exists.
+// nightshift-60.
+func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_orderby_reject_expr")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject_expr")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_reject_expr_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, a BIGINT NOT NULL, b BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_orderby_reject_expr/items WITH TEMPLATE ob_reject_expr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_orderby_reject_expr?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, a, b) VALUES (1, 10, 20), (2, 5, 15)")).Error().NotTo(gomega.HaveOccurred())
+
+	// ORDER BY arithmetic expression (a + b) — must reject with 0AF01.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY a + b")
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected error; got success")
+	}
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("arbitrary expression"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+}
+
 func TestFDB_SelectOrderByDesc(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

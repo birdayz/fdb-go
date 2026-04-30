@@ -1293,7 +1293,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			obCols := make([]string, 0, len(sq.orderBy))
 			hasExpr := false
 			for _, ob := range sq.orderBy {
-				if ob.expr != nil {
+				// Expression-based ORDER BY clauses get a sentinel
+				// column name (`__orderby_expr_<i>__`) earlier in this
+				// function (extraSortFields setup) which clears
+				// `ob.expr`. Detect the sentinel by name to surface
+				// "arbitrary expression" in the error message rather
+				// than the synthetic identifier.
+				if ob.expr != nil || strings.HasPrefix(ob.colName, "__orderby_expr_") {
 					hasExpr = true
 					continue
 				}
