@@ -202,6 +202,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		numericBoundaryScenario(),
 		coalesceExtraScenario(),
 		likeEscapeScenario(),
+		stringUnicodeScenario(),
 	}
 }
 
@@ -2098,6 +2099,36 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// stringUnicodeScenario verifies Unicode (UTF-8) string handling
+// cross-engine: storage round-trip, equality, IN-list, IS NULL/NOT
+// NULL, comparison projection. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func stringUnicodeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "string_unicode",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'café'), (2, 'naïve'), (3, '日本'), (4, 'apple'), (5, null)",
+		},
+		Tests: []yamsql.Test{
+			// Round-trip equality on accented Latin chars.
+			{Query: "SELECT s FROM t WHERE id = 1", Rows: [][]any{{"café"}}},
+			// Round-trip equality on CJK chars.
+			{Query: "SELECT s FROM t WHERE id = 3", Rows: [][]any{{"日本"}}},
+			// String equality with non-ASCII.
+			{Query: "SELECT id FROM t WHERE s = 'café'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s = '日本'", Rows: [][]any{{3}}},
+			// IN-list with Unicode strings.
+			{Query: "SELECT id FROM t WHERE s IN ('café', '日本') ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// NULL handling alongside Unicode.
+			{Query: "SELECT id FROM t WHERE s IS NULL", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM t WHERE s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// Equality projection — boolean comparison with Unicode operand.
+			{Query: "SELECT id, s = 'café' FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, false}, {3, false}, {4, false}, {5, nil}}},
 		},
 	}
 }
