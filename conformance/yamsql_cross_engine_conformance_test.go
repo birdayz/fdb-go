@@ -207,6 +207,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		indexedInListWithOrderByScenario(),
 		numericComparisonScenario(),
 		dmlAdvancedScenario(),
+		compositeIndexOrderByScenario(),
 	}
 }
 
@@ -2290,6 +2291,39 @@ func numericBoundaryScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
 			// Range across the full int64 span.
 			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// compositeIndexOrderByScenario probes single-column ORDER BY against
+// a composite index. Multi-column ORDER BY is rejected outright by
+// fdb-relational 4.11.1.0's Cascades planner (CLAUDE.md gotcha), so the
+// only portable forms are: single-col ORDER BY where the col is the
+// leading idx col (or its DESC reverse-scan), and the leading-col-
+// equated form where ORDER BY references a trailing idx col (the
+// equated leading col strips from the natural order, exposing the
+// trailing col as a single-col prefix). Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func compositeIndexOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "composite_index_order_by",
+		SchemaTemplate: "CREATE TABLE rp (id BIGINT, region STRING, tag STRING, score BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tag ON rp (region, tag)",
+		Setup: []string{
+			"INSERT INTO rp VALUES (1, 'us', 'pro', 1), (2, 'us', 'free', 2), (3, 'eu', 'pro', 3), (4, 'eu', 'free', 4), (5, 'us', 'pro', 5)",
+		},
+		Tests: []yamsql.Test{
+			// Single-col ORDER BY on leading idx col — index emits in
+			// (region, tag, id), so ORDER BY region is a strict prefix.
+			// Multiset compare since within-region order is unspecified
+			// at the SELECT level.
+			{Query: "SELECT region, tag FROM rp ORDER BY region", Unordered: true, Rows: [][]any{{"eu", "free"}, {"eu", "pro"}, {"us", "free"}, {"us", "pro"}, {"us", "pro"}}},
+			// Reverse-scan satisfies single-col DESC.
+			{Query: "SELECT region, tag FROM rp ORDER BY region DESC", Unordered: true, Rows: [][]any{{"us", "pro"}, {"us", "free"}, {"us", "pro"}, {"eu", "pro"}, {"eu", "free"}}},
+			// Equality on leading col + single-col ORDER BY trailing idx
+			// col — eq strips region, leaves natural-order suffix (tag, id);
+			// ORDER BY tag is a single-col prefix of that.
+			{Query: "SELECT id, tag FROM rp WHERE region = 'us' ORDER BY tag", Unordered: true, Rows: [][]any{{2, "free"}, {1, "pro"}, {5, "pro"}}},
 		},
 	}
 }
