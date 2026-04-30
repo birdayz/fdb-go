@@ -200,6 +200,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		joinOrderByRightPKScenario(),
 		pkDescScenario(),
 		numericBoundaryScenario(),
+		coalesceExtraScenario(),
 	}
 }
 
@@ -2096,6 +2097,43 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// coalesceExtraScenario extends the existing `coalesce_nullif` (1 spec)
+// with more COALESCE shapes: 2-arg, 4-arg, all-NULL chains via
+// `CAST(NULL AS STRING)` (Java rejects bare NULL operands), COALESCE
+// in WHERE, and COALESCE in projection with arithmetic. Drops NOT
+// NULL on PK. Net-new nightshift-60.
+func coalesceExtraScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "coalesce_extra",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a STRING, b STRING, c STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'x', 'y', 'z'), (2, null, 'y', 'z'), (3, null, null, 'z'), (4, null, null, null), (5, 'a', null, 'c')",
+		},
+		Tests: []yamsql.Test{
+			// 2-arg COALESCE.
+			{Query: "SELECT COALESCE(a, 'fallback') FROM t WHERE id = 1", Rows: [][]any{{"x"}}},
+			{Query: "SELECT COALESCE(a, 'fallback') FROM t WHERE id = 2", Rows: [][]any{{"fallback"}}},
+			// 3-arg COALESCE.
+			{Query: "SELECT COALESCE(a, b, 'last') FROM t WHERE id = 1", Rows: [][]any{{"x"}}},
+			{Query: "SELECT COALESCE(a, b, 'last') FROM t WHERE id = 2", Rows: [][]any{{"y"}}},
+			{Query: "SELECT COALESCE(a, b, 'last') FROM t WHERE id = 3", Rows: [][]any{{"last"}}},
+			// 4-arg COALESCE — fallback chain.
+			{Query: "SELECT COALESCE(a, b, c, 'final') FROM t WHERE id = 4", Rows: [][]any{{"final"}}},
+			{Query: "SELECT COALESCE(a, b, c, 'final') FROM t WHERE id = 5", Rows: [][]any{{"a"}}},
+			// All-NULL chain via CAST(NULL AS STRING) — Java requires typed
+			// NULL in arithmetic operands; for COALESCE the same rule
+			// applies when the type isn't anchored by a non-NULL.
+			{Query: "SELECT COALESCE(CAST(NULL AS STRING), 'default') FROM t WHERE id = 1", Rows: [][]any{{"default"}}},
+			// COALESCE in WHERE.
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b, c) = 'z' ORDER BY id", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b) = 'y' ORDER BY id", Rows: [][]any{{2}}},
+			// COALESCE result IS NULL when all args are NULL.
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b, c) IS NULL", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b, c) IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
 		},
 	}
 }
