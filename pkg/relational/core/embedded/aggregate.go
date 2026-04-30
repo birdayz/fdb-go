@@ -32,15 +32,21 @@ import (
 // architectural reason in both engines: the function registry only
 // installs numeric MIN / MAX overloads. Lexicographic min / max over
 // strings or bytes needs a `SELECT col FROM t ORDER BY col LIMIT 1`
-// rewrite. Per project conformance principle: doesn't work in Java →
-// doesn't work in Go.
-func requireMinMaxNumeric(fn string, v driver.Value) error {
+// rewrite.
+//
+// The error message is INTENTIONALLY VERBATIM the Java
+// `VerifyException` message — so the cross-engine harness can pin
+// `ExpectErrorContains: "unable to encapsulate aggregate operation"`
+// and assert IDENTICAL substrings on both sides, proving Java's
+// effective non-support matches Go's rejection at the message level.
+// Per project conformance principle: doesn't work in Java → doesn't
+// work in Go, with identical error wording.
+func requireMinMaxNumeric(v driver.Value) error {
 	if _, ok := functions.ToFloat64(v); ok {
 		return nil
 	}
 	return api.NewErrorf(api.ErrCodeUnsupportedOperation,
-		"%s requires numeric input, got %T (lexicographic %s over strings or bytes is unsupported, use ORDER BY ... LIMIT 1)",
-		fn, v, fn)
+		"unable to encapsulate aggregate operation due to type mismatch(es)")
 }
 
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
@@ -326,14 +332,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 								gs.avgsN[i]++
 							}
 						case "MIN":
-							if err := requireMinMaxNumeric("MIN(DISTINCT)", colVal); err != nil {
+							if err := requireMinMaxNumeric(colVal); err != nil {
 								return nil, nil, err
 							}
 							if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 								gs.mins[i] = colVal
 							}
 						case "MAX":
-							if err := requireMinMaxNumeric("MAX(DISTINCT)", colVal); err != nil {
+							if err := requireMinMaxNumeric(colVal); err != nil {
 								return nil, nil, err
 							}
 							if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
@@ -373,14 +379,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					gs.avgsN[i]++
 				}
 			case "MIN":
-				if err := requireMinMaxNumeric("MIN", colVal); err != nil {
+				if err := requireMinMaxNumeric(colVal); err != nil {
 					return nil, nil, err
 				}
 				if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 					gs.mins[i] = colVal
 				}
 			case "MAX":
-				if err := requireMinMaxNumeric("MAX", colVal); err != nil {
+				if err := requireMinMaxNumeric(colVal); err != nil {
 					return nil, nil, err
 				}
 				if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {

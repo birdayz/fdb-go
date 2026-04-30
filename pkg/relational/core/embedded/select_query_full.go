@@ -740,14 +740,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 									gs.avgsN[i]++
 								}
 							case "MIN":
-								if err := requireMinMaxNumeric("MIN(DISTINCT)", v); err != nil {
+								if err := requireMinMaxNumeric(v); err != nil {
 									return nil, err
 								}
 								if gs.mins[i] == nil || functions.CompareValues(v, gs.mins[i]) < 0 {
 									gs.mins[i] = v
 								}
 							case "MAX":
-								if err := requireMinMaxNumeric("MAX(DISTINCT)", v); err != nil {
+								if err := requireMinMaxNumeric(v); err != nil {
 									return nil, err
 								}
 								if gs.maxes[i] == nil || functions.CompareValues(v, gs.maxes[i]) > 0 {
@@ -786,14 +786,14 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							gs.avgsN[i]++
 						}
 					case "MIN":
-						if err := requireMinMaxNumeric("MIN", v); err != nil {
+						if err := requireMinMaxNumeric(v); err != nil {
 							return nil, err
 						}
 						if gs.mins[i] == nil || functions.CompareValues(v, gs.mins[i]) < 0 {
 							gs.mins[i] = v
 						}
 					case "MAX":
-						if err := requireMinMaxNumeric("MAX", v); err != nil {
+						if err := requireMinMaxNumeric(v); err != nil {
 							return nil, err
 						}
 						if gs.maxes[i] == nil || functions.CompareValues(v, gs.maxes[i]) > 0 {

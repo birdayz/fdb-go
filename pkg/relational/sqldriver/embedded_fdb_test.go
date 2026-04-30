@@ -2914,11 +2914,15 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (2, 'Bob', 'Jones', 0)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, `SELECT CONCAT(first, ' ', last), NULLIF(score, 0) FROM Person ORDER BY id ASC`)
+	// NULLIF is rejected (Java parity — function registry has no
+	// entry; CLAUDE.md gotcha). Use searched-CASE as the workaround:
+	// `CASE WHEN score = 0 THEN NULL ELSE score END`.
+	rows, err := db.QueryContext(ctx,
+		`SELECT CONCAT(first, ' ', last), CASE WHEN score = 0 THEN NULL ELSE score END FROM Person ORDER BY id ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
-	// Row 1: CONCAT = "Alice Smith", NULLIF(100, 0) = 100
+	// Row 1: CONCAT = "Alice Smith", CASE WHEN 100 = 0 THEN NULL ELSE 100 END = 100
 	g.Expect(rows.Next()).To(gomega.BeTrue())
 	var fullName string
 	var score any
@@ -2926,7 +2930,7 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	g.Expect(fullName).To(gomega.Equal("Alice Smith"))
 	g.Expect(score).To(gomega.Equal(int64(100)))
 
-	// Row 2: CONCAT = "Bob Jones", NULLIF(0, 0) = NULL
+	// Row 2: CONCAT = "Bob Jones", CASE WHEN 0 = 0 THEN NULL ELSE 0 END = NULL
 	g.Expect(rows.Next()).To(gomega.BeTrue())
 	var fullName2 string
 	var score2 any
@@ -2935,6 +2939,14 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	g.Expect(score2).To(gomega.BeNil())
 
 	g.Expect(rows.Next()).To(gomega.BeFalse())
+
+	// Pin that NULLIF itself is rejected with ErrCodeUnsupportedOperation.
+	var dummy any
+	nullifErr := db.QueryRowContext(ctx, `SELECT NULLIF(score, 0) FROM Person WHERE id = 1`).Scan(&dummy)
+	g.Expect(nullifErr).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(nullifErr, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", nullifErr)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 func TestFDB_UnionAll(t *testing.T) {

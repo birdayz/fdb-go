@@ -188,7 +188,12 @@ func ApplyBitOp(left, right any, op string) (any, error) {
 	case "^":
 		return li ^ ri, nil
 	}
-	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported bitwise operator %q", op)
+	// Java parity: fdb-relational raises `RelationalException:
+	// Unsupported operator <op>` from the function-registry lookup
+	// (CLAUDE.md gotcha: "Bit-shift operators `<<` / `>>`"). Match
+	// the exact phrasing so cross-engine ExpectErrorContains can pin
+	// identical substrings.
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "Unsupported operator %s", op)
 }
 
 // ToFloat64 coerces int64 / float64 to float64 for mixed-type

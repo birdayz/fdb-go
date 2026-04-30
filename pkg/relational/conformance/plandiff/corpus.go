@@ -20,6 +20,17 @@ package plandiff
 // where one engine accidentally accepts a query the other rejects
 // (or vice versa) — the kind of silent divergence that's invisible
 // to a success-path-only harness.
+//
+// ExpectErrorMessage is the STRICTER alternative — when set, both
+// engines must fail AND each engine's core error message must
+// literally EQUAL this string (Go's `api.Error.Message`, Java's
+// `JavaError.Message` — i.e. the unwrapped server-side root-cause
+// text). Use when the message is intentionally aligned verbatim
+// between engines (e.g. shift / NULLIF / aggregate-type-mismatch
+// rejections, where Go was changed to emit the exact phrasing Java
+// emits). Stronger than ExpectErrorContains because no slack —
+// catches drift the moment either engine reorders / rephrases its
+// message. Mutually exclusive with ExpectErrorContains.
 type RunQuery struct {
 	Name           string
 	SetupSqls      []string
@@ -27,8 +38,12 @@ type RunQuery struct {
 	SchemaTemplate string
 	// ExpectErrorContains: when set, both Java and Go must fail with
 	// an error message containing this substring. Empty = expect
-	// success.
+	// success (unless ExpectErrorMessage is set).
 	ExpectErrorContains string
+	// ExpectErrorMessage: when set, both engines must fail AND each
+	// engine's core error message string equals this value verbatim.
+	// Stronger than ExpectErrorContains.
+	ExpectErrorMessage string
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
@@ -758,6 +773,74 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:           nil,
 			Query:               "SELECT id FROM no_such_table",
 			ExpectErrorContains: "no_such_table",
+		},
+		{
+			// Bit-shift `<<` — fdb-relational 4.11.1.0 tokenizes the
+			// operator but has no entry in the function registry, so
+			// its planner returns the verbatim string
+			// "Unsupported operator <<" (CLAUDE.md gotcha). Go's
+			// embedded engine matches by NOT having `<<` / `>>` cases
+			// in `ApplyBitOp`, AND by emitting the SAME exact message
+			// "Unsupported operator <<" from the default arm. Same
+			// architectural reason in both engines: function
+			// registry has no evaluator for shift operators.
+			//
+			// `ExpectErrorMessage` requires the core error string to
+			// match VERBATIM on both sides — Java's
+			// `JavaError.Message` and Go's `api.Error.Message` —
+			// proving alignment at the message level. Per-entry
+			// isolation (fresh Java server spawned just for this
+			// entry) prevents pollution from prior negative entries.
+			Name:               "bitshift_left_rejected",
+			SchemaTemplate:     "CREATE TABLE T_BSL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_BSL VALUES (1, 7)"},
+			Query:              "SELECT v << 2 FROM T_BSL WHERE id = 1",
+			ExpectErrorMessage: "Unsupported operator <<",
+		},
+		{
+			// Bit-shift `>>` — symmetric to `<<` above. Both engines
+			// emit the verbatim string "Unsupported operator >>".
+			Name:               "bitshift_right_rejected",
+			SchemaTemplate:     "CREATE TABLE T_BSR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_BSR VALUES (1, 8)"},
+			Query:              "SELECT v >> 1 FROM T_BSR WHERE id = 1",
+			ExpectErrorMessage: "Unsupported operator >>",
+		},
+		{
+			// NULLIF — fdb-relational 4.11.1.0's function registry
+			// has no entry, so its planner returns the verbatim
+			// string "Unsupported operator NULLIF" (CLAUDE.md
+			// gotcha). Go's embedded engine matches by NOT having a
+			// NULLIF arm in the scalar-function evaluator switch
+			// AND emitting the SAME exact message
+			// "Unsupported operator NULLIF" from the default arm.
+			// Same architectural reason in both engines: function
+			// registry has no NULLIF evaluator. Workaround:
+			// `CASE WHEN a = b THEN NULL ELSE a END`.
+			Name:               "nullif_rejected",
+			SchemaTemplate:     "CREATE TABLE T_NIF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_NIF VALUES (1, 5)"},
+			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
+			ExpectErrorMessage: "Unsupported operator NULLIF",
+		},
+		{
+			// MIN over a non-numeric (STRING) column — fdb-relational
+			// 4.11.1.0's function registry only installs numeric
+			// MIN / MAX overloads; non-numeric input raises
+			// VerifyException with the verbatim message
+			// "unable to encapsulate aggregate operation due to type
+			// mismatch(es)" (CLAUDE.md gotcha). Go's embedded engine
+			// matches at runtime via the `requireMinMaxNumeric` gate
+			// (`pkg/relational/core/embedded/aggregate.go`) which
+			// returns `ErrCodeUnsupportedOperation` with the SAME
+			// verbatim message. Per-entry isolation prevents
+			// fdb-relational's type-mismatch error-path state-leak
+			// from stalling this spec under load.
+			Name:               "min_over_string_rejected",
+			SchemaTemplate:     "CREATE TABLE T_MOS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_MOS VALUES (1, 'alice')"},
+			Query:              "SELECT MIN(name) FROM T_MOS",
+			ExpectErrorMessage: "unable to encapsulate aggregate operation due to type mismatch(es)",
 		},
 		{
 			// COUNT(*) with predicate over JOIN — exercises the

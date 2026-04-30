@@ -139,13 +139,18 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 		t.Run(q.Name, func(t *testing.T) {
 			t.Parallel()
 			got := r.RunWithSetup(context.Background(), q.SchemaTemplate, q.SetupSqls, q.Query)
-			if q.ExpectErrorContains != "" {
-				// Negative entry: Go must reject. The substring match
-				// is asserted in the cross-engine conformance test;
-				// here we just confirm Go doesn't silently accept.
+			if q.ExpectErrorContains != "" || q.ExpectErrorMessage != "" {
+				// Negative entry: Go must reject. The substring /
+				// verbatim-message match is asserted in the cross-
+				// engine conformance test; here we just confirm Go
+				// doesn't silently accept.
 				if got.Err == nil {
+					expected := q.ExpectErrorContains
+					if expected == "" {
+						expected = q.ExpectErrorMessage
+					}
 					t.Fatalf("Go engine accepted a query expected to fail with %q\nQuery: %s",
-						q.ExpectErrorContains, q.Query)
+						expected, q.Query)
 				}
 				return
 			}

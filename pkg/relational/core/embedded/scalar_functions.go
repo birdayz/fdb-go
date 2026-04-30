@@ -400,22 +400,15 @@ func evalScalarFunctionCallCore(
 			parts = append(parts, fmt.Sprintf("%v", v))
 		}
 		return strings.Join(parts, sep), nil
-	case "NULLIF":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "NULLIF requires 2 arguments")
-		}
-		a, err := eval(fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		b, err2 := eval(fArgs[1].Expression())
-		if err2 != nil {
-			return nil, err2
-		}
-		if functions.CompareValues(a, b) == 0 {
-			return nil, nil
-		}
-		return a, nil
+	// NULLIF is intentionally NOT handled — falls through to the default
+	// "unsupported operator" arm. Mirrors fdb-relational 4.11.1.0's
+	// effective non-support: Java's function registry has no entry for
+	// NULLIF, so its planner returns "Unsupported operator NULLIF"
+	// (CLAUDE.md gotcha). Same architectural reason in both engines:
+	// the function registry has no NULLIF evaluator. Workaround:
+	// rewrite as `CASE WHEN a = b THEN NULL ELSE a END` (searched-CASE
+	// is implemented in both engines). Per project conformance
+	// principle: doesn't work in Java → doesn't work in Go.
 	case "GREATEST", "LEAST":
 		// Java conformance: GREATEST/LEAST return NULL if any argument
 		// is NULL. VariadicFunctionValue.PhysicalOperator's per-typecode
@@ -796,7 +789,14 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		return evalExprPredicate(ctx, conn, msg, e)
 	}
-	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "unsupported scalar function %q", "unsupported specific function %T", fc)
+	// Java parity: fdb-relational's planner returns `RelationalException:
+	// Unsupported operator <name>` from the function-registry lookup
+	// when no entry matches (CLAUDE.md gotchas: "NULLIF is not
+	// registered", "Common SQL scalar functions ... are NOT
+	// registered"). Match the exact phrasing so cross-engine
+	// ExpectErrorContains can pin identical substrings — Go's default
+	// arm now produces "Unsupported operator <name>" mirroring Java.
+	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "Unsupported operator %s", "unsupported specific function %T", fc)
 }
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
