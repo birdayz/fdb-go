@@ -203,6 +203,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		coalesceExtraScenario(),
 		likeEscapeScenario(),
 		stringUnicodeScenario(),
+		constantProjectionScenario(),
 	}
 }
 
@@ -2099,6 +2100,37 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// constantProjectionScenario probes pure-constant projections in
+// SELECT — `SELECT 1 FROM t`, `SELECT 'literal' FROM t`, mixed
+// constant + column. fdb-relational rejects FROM-less SELECT (existing
+// CLAUDE.md gotcha) so all queries here have a FROM. Drops NOT NULL
+// on PK. Net-new nightshift-60.
+func constantProjectionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "constant_projection",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1), (2), (3)",
+		},
+		Tests: []yamsql.Test{
+			// Bare integer literal projection.
+			{Query: "SELECT 1 FROM t WHERE id = 1", Rows: [][]any{{1}}},
+			// Bare string literal projection.
+			{Query: "SELECT 'hello' FROM t WHERE id = 1", Rows: [][]any{{"hello"}}},
+			// Bare boolean literal projection.
+			{Query: "SELECT TRUE FROM t WHERE id = 1", Rows: [][]any{{true}}},
+			// Multiple constants in one row.
+			{Query: "SELECT 1, 2, 3 FROM t WHERE id = 1", Rows: [][]any{{1, 2, 3}}},
+			// Mixed constant + column projection.
+			{Query: "SELECT id, 100 FROM t WHERE id = 1", Rows: [][]any{{1, 100}}},
+			// Constant projection across multiple rows.
+			{Query: "SELECT 'static' FROM t ORDER BY id", Rows: [][]any{{"static"}, {"static"}, {"static"}}},
+			// Mix integer + string + boolean constants.
+			{Query: "SELECT 42, 'x', FALSE FROM t WHERE id = 1", Rows: [][]any{{42, "x", false}}},
 		},
 	}
 }
