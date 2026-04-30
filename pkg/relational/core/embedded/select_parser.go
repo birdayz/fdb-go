@@ -1631,6 +1631,19 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 	switch j := jp.(type) {
 	case *antlrgen.InnerJoinContext:
+		// Explicit `CROSS JOIN` syntax — reject. fdb-relational
+		// 4.11.1.0 NPEs on `a CROSS JOIN b` because its visitor
+		// unconditionally calls `accept(...)` on the ON-clause
+		// expression which is null for CROSS JOIN (CLAUDE.md gotcha).
+		// Go's embedded engine matches by rejecting at parse time —
+		// same architectural reason: the visitor's CROSS-JOIN code
+		// path doesn't exist. Workaround: comma-join `FROM a, b`.
+		// Per project conformance principle: doesn't work in Java →
+		// doesn't work in Go.
+		if j.CROSS() != nil {
+			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products")
+		}
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
 		if !ok {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,

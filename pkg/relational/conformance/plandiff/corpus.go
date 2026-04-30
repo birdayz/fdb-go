@@ -823,6 +823,24 @@ func SeedRunCorpus() []RunQuery {
 			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 			ExpectErrorMessage: "Unsupported operator NULLIF",
 		},
+		// NOTE: explicit CROSS JOIN syntax (`a CROSS JOIN b`) is rejected
+		// in BOTH engines — Java NPEs (InnerJoinContext.expression()
+		// null-dereference in the visitor); Go's embedded engine
+		// rejects at parse time with `ErrCodeUnsupportedOperation`
+		// "explicit CROSS JOIN syntax is not supported"
+		// (`select_parser.go#extractJoinClause`). Same architectural
+		// reason in both engines: the visitor's CROSS-JOIN code path
+		// doesn't exist. Workaround: comma-join `FROM a, b`.
+		//
+		// NOT included as a cross-engine corpus entry because Java's
+		// NPE message (`Cannot invoke ... InnerJoinContext.expression()`)
+		// and Go's clean error message can't share a meaningful
+		// substring without aligning Go to mimic Java's panic-style
+		// failure (which would be a regression in Go's UX). The
+		// rejection alignment is pinned on the Go side via
+		// `cross_join.yaml`'s `error_code: "0A000"` test under the
+		// yamsql harness; Java's NPE behaviour is documented in
+		// CLAUDE.md "Java↔Go conformance gotchas" §Parser bugs.
 		{
 			// MIN over a non-numeric (STRING) column — fdb-relational
 			// 4.11.1.0's function registry only installs numeric
