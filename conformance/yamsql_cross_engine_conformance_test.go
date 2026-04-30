@@ -205,6 +205,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		stringUnicodeScenario(),
 		constantProjectionScenario(),
 		indexedInListWithOrderByScenario(),
+		numericComparisonScenario(),
 	}
 }
 
@@ -2288,6 +2289,43 @@ func numericBoundaryScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
 			// Range across the full int64 span.
 			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// numericComparisonScenario probes type-promoted comparisons cross-engine.
+// Both engines must agree on the truth value of `WHERE bigint_col >
+// double_literal`, `WHERE double_col = bigint_literal`, etc. The
+// existing `between` scenario covers BETWEEN with mixed-type bounds;
+// this fills in the standard `<`, `<=`, `>`, `>=`, `=`, `<>` operators
+// across BIGINT and DOUBLE. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func numericComparisonScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "numeric_comparison",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, i BIGINT, d DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 5, 1.5), (2, 10, 2.5), (3, 100, 3.5), (4, 0, 0.0), (5, -5, -1.5)",
+		},
+		Tests: []yamsql.Test{
+			// BIGINT col vs DOUBLE literal — Java widens to DOUBLE.
+			{Query: "SELECT id FROM t WHERE i > 1.5 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE i < 5.5 ORDER BY id", Rows: [][]any{{1}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE i >= 10.0 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t WHERE i <= -1.5 ORDER BY id", Rows: [][]any{{5}}},
+			// DOUBLE col vs BIGINT literal — widens to DOUBLE.
+			{Query: "SELECT id FROM t WHERE d > 1 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE d < 3 ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE d = 0 ORDER BY id", Rows: [][]any{{4}}},
+			// BIGINT-equality with DOUBLE-valued operand (lossless).
+			{Query: "SELECT id FROM t WHERE i = 5.0", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE i = -5.0", Rows: [][]any{{5}}},
+			// Inequality across types.
+			{Query: "SELECT id FROM t WHERE d <> 0.0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
+			{Query: "SELECT id FROM t WHERE i <> 0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
+			// Compound predicate mixing types.
+			{Query: "SELECT id FROM t WHERE i > 0 AND d > 1.0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE i > 0 OR d < 0.0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
 		},
 	}
 }
