@@ -24,6 +24,25 @@ import (
 // operators, aggregateMapRows becomes the implementation of the
 // HashAggregate operator's Execute method with no semantic change.
 
+// requireMinMaxNumeric is the runtime gate for MIN / MAX over non-NULL
+// values. fdb-relational 4.11.1.0 rejects MIN / MAX over non-numeric
+// columns with `VerifyException: unable to encapsulate aggregate
+// operation due to type mismatch(es)` (CLAUDE.md gotcha:
+// "MIN(s) / MAX(s) over non-numeric columns is unsupported"). Same
+// architectural reason in both engines: the function registry only
+// installs numeric MIN / MAX overloads. Lexicographic min / max over
+// strings or bytes needs a `SELECT col FROM t ORDER BY col LIMIT 1`
+// rewrite. Per project conformance principle: doesn't work in Java →
+// doesn't work in Go.
+func requireMinMaxNumeric(fn string, v driver.Value) error {
+	if _, ok := functions.ToFloat64(v); ok {
+		return nil
+	}
+	return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		"%s requires numeric input, got %T (lexicographic %s over strings or bytes is unsupported, use ORDER BY ... LIMIT 1)",
+		fn, v, fn)
+}
+
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
 	if sq.countStar {
 		count := int64(len(filtered))
@@ -307,10 +326,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 								gs.avgsN[i]++
 							}
 						case "MIN":
+							if err := requireMinMaxNumeric("MIN(DISTINCT)", colVal); err != nil {
+								return nil, nil, err
+							}
 							if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 								gs.mins[i] = colVal
 							}
 						case "MAX":
+							if err := requireMinMaxNumeric("MAX(DISTINCT)", colVal); err != nil {
+								return nil, nil, err
+							}
 							if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
 								gs.maxes[i] = colVal
 							}
@@ -348,10 +373,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					gs.avgsN[i]++
 				}
 			case "MIN":
+				if err := requireMinMaxNumeric("MIN", colVal); err != nil {
+					return nil, nil, err
+				}
 				if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 					gs.mins[i] = colVal
 				}
 			case "MAX":
+				if err := requireMinMaxNumeric("MAX", colVal); err != nil {
+					return nil, nil, err
+				}
 				if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
 					gs.maxes[i] = colVal
 				}
