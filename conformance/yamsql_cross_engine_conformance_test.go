@@ -201,6 +201,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		pkDescScenario(),
 		numericBoundaryScenario(),
 		coalesceExtraScenario(),
+		likeEscapeScenario(),
 	}
 }
 
@@ -2097,6 +2098,32 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// likeEscapeScenario probes LIKE with ESCAPE clause — escape char
+// makes `%` and `_` match literally. The existing `like` scenario
+// covers basic LIKE without ESCAPE; this fills the gap. Drops NOT
+// NULL on PK. Net-new nightshift-60.
+func likeEscapeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "like_escape",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, '50%'), (2, 'test_data'), (3, 'normal'), (4, 'a%b'), (5, 'c_d'), (6, 'plain')",
+		},
+		Tests: []yamsql.Test{
+			// Literal % match via backslash-escape.
+			{Query: "SELECT id FROM t WHERE s LIKE '50\\%' ESCAPE '\\'", Rows: [][]any{{1}}},
+			// Literal _ match.
+			{Query: "SELECT id FROM t WHERE s LIKE 'c\\_d' ESCAPE '\\'", Rows: [][]any{{5}}},
+			// Pattern with both wildcards and literal special chars.
+			{Query: "SELECT id FROM t WHERE s LIKE 'a\\%b' ESCAPE '\\'", Rows: [][]any{{4}}},
+			// Pattern starts with %, then literal _.
+			{Query: "SELECT id FROM t WHERE s LIKE '%\\_data' ESCAPE '\\'", Rows: [][]any{{2}}},
+			// No match for escaped pattern that doesn't exist.
+			{Query: "SELECT id FROM t WHERE s LIKE 'xxx\\%' ESCAPE '\\'", Rows: [][]any{}},
 		},
 	}
 }
