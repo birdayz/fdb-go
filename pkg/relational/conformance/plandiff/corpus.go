@@ -823,6 +823,14 @@ func SeedRunCorpus() []RunQuery {
 			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 			ExpectErrorMessage: "Unsupported operator NULLIF",
 		},
+		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
+		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
+		// `Statement.setMaxRows`, per CLAUDE.md gotcha "LIMIT clause
+		// is not supported in SQL"). Go's embedded engine implements
+		// LIMIT directly. Aligning Go would invalidate dozens of
+		// LIMIT-using yamsql + sqldriver tests; defer to a dedicated
+		// cleanup shift. Probed nightshift-61 — Java's rejection
+		// confirmed.
 		// NOTE: `SELECT 1+1` (FROM-less SELECT for constant projection)
 		// is a known one-sided divergence: Java rejects standalone
 		// FROM-less SELECT with UnableToPlan (CLAUDE.md gotcha
