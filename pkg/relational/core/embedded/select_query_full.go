@@ -1292,14 +1292,27 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// strategy that does (eventually `tryIndexScanForOrdering`).
 		if !satisfiable && !isAggregate && !sq.distinct {
 			obCols := make([]string, 0, len(sq.orderBy))
+			hasExpr := false
 			for _, ob := range sq.orderBy {
+				if ob.expr != nil {
+					hasExpr = true
+					continue
+				}
 				if ob.colName != "" {
 					obCols = append(obCols, ob.colName)
 				}
 			}
+			detail := strings.Join(obCols, ", ")
+			if hasExpr {
+				if detail != "" {
+					detail += " (and arbitrary expression)"
+				} else {
+					detail = "arbitrary expression"
+				}
+			}
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedSort,
 				"ORDER BY %s cannot be satisfied by any scan strategy; no index produces rows in the requested order. Add an index on the ORDER BY column(s) to make the query plannable",
-				strings.Join(obCols, ", "))
+				detail)
 		}
 		if !satisfiable {
 			// Aggregate path only — small result set, sort in-memory.
