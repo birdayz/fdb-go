@@ -443,7 +443,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				naturalOrder = idxNaturalOrder
 				reverseScanApplied = cpReverse
 			}
-		} else if idxName, ok := tryIndexScanForOrdering(sq, rt, md, store, pkCols, equatedCols, naturalOrderAliases); ok {
+		} else if idx, ok := tryIndexScanForOrdering(sq, rt, md, store, pkCols, equatedCols, naturalOrderAliases); ok {
 			// Full-secondary-index scan to satisfy ORDER BY when no WHERE
 			// pushdown matched but an index's natural order satisfies the
 			// requested ordering. nightshift-60: this branch closes the
@@ -457,7 +457,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			// and then be rejected by the post-scan ordering check —
 			// diverging from Java's behaviour. Same Java-conformant
 			// "the rule fires when the inner satisfies" pattern.
-			idx := md.GetIndex(idxName)
 			idxNaturalOrder := append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
 			scanProps, reverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
 			fullRange := pkRangeBounds{}
@@ -465,7 +464,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cursor = coveringIndexRangeScanCursor(store, rt, idx,
 					buildSecondaryIndexRangeTupleRange(fullRange), scanProps)
 			} else {
-				cursor = secondaryIndexRangeScanCursor(store, idxName, fullRange, scanProps)
+				cursor = secondaryIndexRangeScanCursor(store, idx.Name, fullRange, scanProps)
 			}
 			naturalOrder = idxNaturalOrder
 			reverseScanApplied = reverse

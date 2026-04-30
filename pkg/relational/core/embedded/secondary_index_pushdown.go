@@ -174,14 +174,18 @@ func secondaryIndexColumns(idx *recordlayer.Index) []string {
 
 // tryIndexScanForOrdering finds a scannable VALUE secondary index
 // whose natural emission order (idxCols ++ pkCols) satisfies the
-// query's ORDER BY clause. Returns the index name and true on the
-// first match; called from the scan-strategy chain as the last branch
-// before the full-PK fallback. Mirrors Java's Cascades planner picking
-// an index scan as the satisfying inner plan for `RemoveSortRule`
-// when the index's Ordering property matches the requested order, even
-// without WHERE pushdown — without this branch, removing the in-memory
-// sort fallback would reject queries Java accepts (`SELECT col FROM t
-// ORDER BY indexed_col`). nightshift-60.
+// query's ORDER BY clause. Returns the matching `*Index` and true on
+// the first match; called from the scan-strategy chain as the last
+// branch before the full-PK fallback. Mirrors Java's Cascades planner
+// picking an index scan as the satisfying inner plan for
+// `RemoveSortRule` when the index's Ordering property matches the
+// requested order, even without WHERE pushdown — without this branch,
+// removing the in-memory sort fallback would reject queries Java
+// accepts (`SELECT col FROM t ORDER BY indexed_col`). nightshift-60.
+//
+// Returning the `*Index` (not just its name) lets the caller skip a
+// metadata re-lookup whose result it already trusts; the
+// metadata-lookup path is the same we just walked.
 func tryIndexScanForOrdering(
 	sq *selectQuery,
 	rt *recordlayer.RecordType,
@@ -190,9 +194,9 @@ func tryIndexScanForOrdering(
 	pkCols []string,
 	equatedCols map[string]bool,
 	naturalOrderAliases map[string]string,
-) (string, bool) {
+) (*recordlayer.Index, bool) {
 	if len(sq.orderBy) == 0 {
-		return "", false
+		return nil, false
 	}
 	indexes := md.GetIndexesForRecordType(rt.Name)
 	for _, idx := range indexes {
@@ -208,10 +212,10 @@ func tryIndexScanForOrdering(
 		}
 		idxNaturalOrder := append(append([]string{}, idxCols...), pkCols...)
 		if scanSatisfiesOrderBy(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases) {
-			return idx.Name, true
+			return idx, true
 		}
 	}
-	return "", false
+	return nil, false
 }
 
 // secondaryIndexPushdownCursor wraps `store.ScanIndexRecords` and
