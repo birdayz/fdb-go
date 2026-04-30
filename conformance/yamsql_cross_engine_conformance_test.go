@@ -206,6 +206,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		constantProjectionScenario(),
 		indexedInListWithOrderByScenario(),
 		numericComparisonScenario(),
+		dmlAdvancedScenario(),
 	}
 }
 
@@ -2289,6 +2290,47 @@ func numericBoundaryScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
 			// Range across the full int64 span.
 			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// dmlAdvancedScenario extends `dml_setup` with multi-column UPDATE,
+// computed-expression UPDATE, no-match UPDATE/DELETE, and DELETE with
+// compound predicates. INSERT ... SELECT FROM is intentionally NOT
+// tested — fdb-relational 4.11.1.0 rejects it with a syntax error
+// (the grammar's `insertStatement` rule only accepts VALUES). Drops
+// NOT NULL on PK. Net-new nightshift-60.
+func dmlAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "dml_advanced",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400)",
+			// Multi-column SET in one UPDATE.
+			"UPDATE t SET a = 99, b = 999 WHERE id = 1",
+			// UPDATE with computed expression on RHS — references current row's value.
+			"UPDATE t SET a = a + 1 WHERE id = 2",
+			// UPDATE with compound predicate.
+			"UPDATE t SET b = 0 WHERE id > 2 AND a > 25",
+			// DELETE with compound predicate.
+			"DELETE FROM t WHERE id = 4 AND a >= 40",
+			// No-match UPDATE — no row, no error.
+			"UPDATE t SET a = -1 WHERE id = 9999",
+			// No-match DELETE.
+			"DELETE FROM t WHERE id = 9999",
+		},
+		Tests: []yamsql.Test{
+			// Final state: 3 rows {(1, 99, 999), (2, 21, 200), (3, 30, 0)}.
+			{Query: "SELECT id, a, b FROM t ORDER BY id", Rows: [][]any{{1, 99, 999}, {2, 21, 200}, {3, 30, 0}}},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			{Query: "SELECT a, b FROM t WHERE id = 1", Rows: [][]any{{99, 999}}},
+			{Query: "SELECT a FROM t WHERE id = 2", Rows: [][]any{{21}}},
+			{Query: "SELECT b FROM t WHERE id = 3", Rows: [][]any{{0}}},
+			// id=4 was deleted.
+			{Query: "SELECT id FROM t WHERE id = 4", Rows: [][]any{}},
+			// Aggregates over the post-DML state.
+			{Query: "SELECT SUM(a), SUM(b) FROM t", Rows: [][]any{{150, 1199}}},
+			{Query: "SELECT MIN(a), MAX(a) FROM t", Rows: [][]any{{21, 99}}},
 		},
 	}
 }
