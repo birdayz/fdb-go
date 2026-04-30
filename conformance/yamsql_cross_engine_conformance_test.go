@@ -204,6 +204,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		likeEscapeScenario(),
 		stringUnicodeScenario(),
 		constantProjectionScenario(),
+		indexedInListWithOrderByScenario(),
 	}
 }
 
@@ -2100,6 +2101,36 @@ func nullArithmeticScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
 			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
 			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// indexedInListWithOrderByScenario verifies that a query of the form
+// `WHERE indexed_col IN (...) ORDER BY indexed_col` works cross-engine.
+// In Go's chain the multi-value secondary-IN-list lazy chain branch
+// declines (no usable natural order across sub-scans), and the chain
+// falls through to `tryIndexScanForOrdering` which picks the index
+// for ordering and post-filters by the IN-list. Java's planner does
+// the equivalent with a full-index range scan + filter. Drops NOT
+// NULL on PK. Net-new nightshift-60.
+func indexedInListWithOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "indexed_in_list_with_order_by",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_val ON t (val)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 30), (2, 10), (3, 20), (4, 40), (5, 25)",
+		},
+		Tests: []yamsql.Test{
+			// Sorted-input IN-list + ORDER BY indexed col.
+			{Query: "SELECT id, val FROM t WHERE val IN (10, 20, 30) ORDER BY val", Rows: [][]any{{2, 10}, {3, 20}, {1, 30}}},
+			// Unsorted-input IN-list + ORDER BY indexed col — index scan
+			// emits in val order regardless of IN-list shape.
+			{Query: "SELECT id, val FROM t WHERE val IN (30, 10, 20) ORDER BY val", Rows: [][]any{{2, 10}, {3, 20}, {1, 30}}},
+			// IN-list + ORDER BY DESC — reverse-scan via the index.
+			{Query: "SELECT id, val FROM t WHERE val IN (10, 30) ORDER BY val DESC", Rows: [][]any{{1, 30}, {2, 10}}},
+			// IN-list with no matches.
+			{Query: "SELECT id FROM t WHERE val IN (99, 100) ORDER BY val", Rows: [][]any{}},
 		},
 	}
 }
