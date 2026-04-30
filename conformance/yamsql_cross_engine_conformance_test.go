@@ -209,6 +209,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		dmlAdvancedScenario(),
 		compositeIndexOrderByScenario(),
 		nullOrderByPositionScenario(),
+		isNullWithIndexScenario(),
 	}
 }
 
@@ -2292,6 +2293,34 @@ func numericBoundaryScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
 			// Range across the full int64 span.
 			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// isNullWithIndexScenario probes `WHERE col IS NULL ORDER BY col`
+// with a satisfying secondary index. The matched rows all have
+// col=NULL (constant); within them the natural order is the inner
+// key (PK). ORDER BY col is then effectively a no-op — every
+// matched row has the same col value. Both engines should accept
+// without rejection. Drops NOT NULL on PK. Net-new nightshift-60.
+func isNullWithIndexScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "is_null_with_index",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// IS NULL with ORDER BY indexed col — same-value group.
+			{Query: "SELECT id FROM t WHERE v IS NULL ORDER BY v", Unordered: true, Rows: [][]any{{2}, {4}}},
+			// IS NULL with ORDER BY PK — natural-order satisfaction.
+			{Query: "SELECT id FROM t WHERE v IS NULL ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// IS NOT NULL with ORDER BY PK.
+			{Query: "SELECT id, v FROM t WHERE v IS NOT NULL ORDER BY id", Rows: [][]any{{1, 10}, {3, 30}, {5, 20}}},
+			// COUNT over IS NULL.
+			{Query: "SELECT COUNT(*) FROM t WHERE v IS NULL", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v IS NOT NULL", Rows: [][]any{{3}}},
 		},
 	}
 }
