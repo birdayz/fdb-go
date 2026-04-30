@@ -268,6 +268,40 @@ func TestPKOrderingSatisfiesOrderBy(t *testing.T) {
 	if pkOrderingSatisfiesOrderBy([]orderByClause{asc("name")}, []string{"id"}, nil, nil) {
 		t.Fatal("non-PK col: expected does not satisfy")
 	}
+	// Composite PK + ORDER BY first PK col only → satisfies (PK prefix).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{asc("a")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("composite PK + ORDER BY first col: expected satisfies")
+	}
+	// Composite PK + ORDER BY both PK cols ASC → satisfies (full PK prefix).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{asc("a"), asc("b")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("composite PK ORDER BY both ASC: expected satisfies")
+	}
+	// Composite PK + ORDER BY second-only with first equated → satisfies
+	// (equated leading col strips, leaves ORDER BY b vs PK suffix [b]).
+	if !pkOrderingSatisfiesOrderBy(
+		[]orderByClause{asc("b")},
+		[]string{"a", "b"},
+		map[string]bool{"A": true},
+		nil,
+	) {
+		t.Fatal("composite PK ORDER BY second-col with first equated: expected satisfies")
+	}
+	// Composite PK + mixed direction → does NOT satisfy (cursor is forward
+	// or reverse, not mixed).
+	if pkOrderingSatisfiesOrderBy([]orderByClause{asc("a"), desc("b")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("composite PK mixed direction: expected does not satisfy")
+	}
+	// Aliased ORDER BY column resolves through aliasToUnderlying.
+	// `ORDER BY pk` where the projection aliased `id AS pk` should
+	// satisfy because the alias maps back to the PK col.
+	if !pkOrderingSatisfiesOrderBy(
+		[]orderByClause{asc("pk")},
+		[]string{"id"},
+		nil,
+		map[string]string{"PK": "id"},
+	) {
+		t.Fatal("aliased ORDER BY col: expected satisfies via aliasToUnderlying")
+	}
 }
 
 func TestAllOrderByEquated(t *testing.T) {
