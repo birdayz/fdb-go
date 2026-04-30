@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 )
 
@@ -236,6 +237,47 @@ func TestScanSatisfiesOrderBy(t *testing.T) {
 	// Qualified col name: stripped to bare for comparison.
 	if !scanSatisfiesOrderBy([]orderByClause{asc("t.a")}, []string{"a"}, nil, nil) {
 		t.Fatal("qualified ASC: expected satisfies")
+	}
+}
+
+// TestIndexBranchSatisfiesOrderBy covers the nightshift-60
+// secondary-index-branch flavour of scanSatisfiesOrderBy, which
+// computes the (idxCols ++ pkCols) candidate emission order for
+// the supplied secondary index and asks whether the user's ORDER
+// BY is satisfied by it forward or reverse.
+func TestIndexBranchSatisfiesOrderBy(t *testing.T) {
+	t.Parallel()
+	// nil idx → false (declined).
+	if indexBranchSatisfiesOrderBy(nil, []string{"id"}, []orderByClause{asc("v")}, nil, nil) {
+		t.Fatal("nil idx: expected false")
+	}
+	// Single-col index on `v` over PK `id`. Natural emission is (v, id).
+	idxV := recordlayer.NewIndex("idx_v", recordlayer.Field("v"))
+	if !indexBranchSatisfiesOrderBy(idxV, []string{"id"}, []orderByClause{asc("v")}, nil, nil) {
+		t.Fatal("ORDER BY v on (v, id) index: expected satisfies")
+	}
+	// ORDER BY v DESC also satisfies via reverse-scan.
+	if !indexBranchSatisfiesOrderBy(idxV, []string{"id"}, []orderByClause{desc("v")}, nil, nil) {
+		t.Fatal("ORDER BY v DESC: expected satisfies (reverse)")
+	}
+	// ORDER BY w (not in idx) → does not satisfy.
+	if indexBranchSatisfiesOrderBy(idxV, []string{"id"}, []orderByClause{asc("w")}, nil, nil) {
+		t.Fatal("ORDER BY non-idx col: expected false")
+	}
+	// Composite index on (region, tag) over PK (id). Natural emission
+	// is (region, tag, id). ORDER BY region is a single-col prefix.
+	idxRT := recordlayer.NewIndex("idx_rt", recordlayer.Concat(recordlayer.Field("region"), recordlayer.Field("tag")))
+	if !indexBranchSatisfiesOrderBy(idxRT, []string{"id"}, []orderByClause{asc("region")}, nil, nil) {
+		t.Fatal("ORDER BY region on (region, tag, id) index: expected satisfies")
+	}
+	// ORDER BY tag (not the leading idx col) → does not satisfy.
+	if indexBranchSatisfiesOrderBy(idxRT, []string{"id"}, []orderByClause{asc("tag")}, nil, nil) {
+		t.Fatal("ORDER BY non-prefix idx col: expected false")
+	}
+	// ORDER BY tag with region equated → eq strips region from natural
+	// order, leaving (tag, id); ORDER BY tag is a prefix. Satisfies.
+	if !indexBranchSatisfiesOrderBy(idxRT, []string{"id"}, []orderByClause{asc("tag")}, map[string]bool{"REGION": true}, nil) {
+		t.Fatal("ORDER BY tag with region equated: expected satisfies via eq-strip")
 	}
 }
 
