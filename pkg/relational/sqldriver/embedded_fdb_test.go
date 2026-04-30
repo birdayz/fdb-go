@@ -1196,9 +1196,13 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 
 	setup := openTestDB(t, "/testdb_orderby")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby")).Error().NotTo(gomega.HaveOccurred())
+	// INDEX on val so ORDER BY val can pick a scan that satisfies the
+	// requested ordering — matches Java's Cascades RemoveSortRule
+	// firing on an inner index scan whose Ordering property satisfies.
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby/items WITH TEMPLATE ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1224,6 +1228,92 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3}))
 }
 
+// TestFDB_SelectOrderByRejectionNoIndex pins the nightshift-60 fix that
+// removed the in-memory sort fallback for ORDER BY non-natural cols
+// when no satisfying index exists. Java's Cascades planner has only
+// `RemoveSortRule` (no `ImplementSortRule`); when no scan strategy
+// emits rows in the requested order, it throws `UnableToPlanException`.
+// Go's embedded engine now rejects structurally with `ErrCodeUnsupportedSort`
+// (0AF01). The error message includes the ORDER BY column name and a
+// remediation hint. nightshift-60.
+func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_orderby_reject")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject")).Error().NotTo(gomega.HaveOccurred())
+	// NO index on val — ORDER BY val should reject.
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_reject_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_orderby_reject/items WITH TEMPLATE ob_reject_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_orderby_reject?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (3, 300), (1, 100), (2, 200)")).Error().NotTo(gomega.HaveOccurred())
+
+	// ORDER BY val (no index on val) — must reject with 0AF01.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY val ASC")
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected error; got success")
+	}
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("val"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+}
+
+// TestFDB_SelectOrderByRejectionExpression pins the rejection contract
+// for ORDER BY <arithmetic-expression>. Java's Cascades planner has
+// no rule that can produce a SortPlan over an arbitrary expression,
+// so it raises UnableToPlanException (CLAUDE.md gotcha "ORDER BY
+// <arithmetic-expression> raises UnableToPlanException"). The Go
+// embedded engine matches: expression-based ORDER BY clauses have
+// empty `colName` and don't match any natural-order column, every
+// scan strategy declines, and the post-scan check rejects with
+// 0AF01. The error-message detail substitutes "arbitrary expression"
+// for the column list when no plain-column ORDER BY entry exists.
+// nightshift-60.
+func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_orderby_reject_expr")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject_expr")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE ob_reject_expr_tmpl "+
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, a BIGINT NOT NULL, b BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA /testdb_orderby_reject_expr/items WITH TEMPLATE ob_reject_expr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_orderby_reject_expr?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id, a, b) VALUES (1, 10, 20), (2, 5, 15)")).Error().NotTo(gomega.HaveOccurred())
+
+	// ORDER BY arithmetic expression (a + b) — must reject with 0AF01.
+	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY a + b")
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected error; got success")
+	}
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
+	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("arbitrary expression"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+}
+
 func TestFDB_SelectOrderByDesc(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -1233,7 +1323,8 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_desc")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE obdesc_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby_desc/items WITH TEMPLATE obdesc_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1371,7 +1462,8 @@ func TestFDB_SelectWhereRangeComparison(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wr_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_where_range/items WITH TEMPLATE wr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -1554,7 +1646,8 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_noproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE onp_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_ob_noproj/items WITH TEMPLATE onp_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -2110,7 +2203,8 @@ func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_nonproj_tmpl "+
-			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE Item (item_id BIGINT NOT NULL, val BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (item_id)) "+
+			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -3679,7 +3773,8 @@ func TestFDB_SubqueryIN(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_tmpl
 		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE RestaurantOrder (order_id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (order_id))`)
+		CREATE TABLE RestaurantOrder (order_id BIGINT NOT NULL, customer_id BIGINT NOT NULL, amount BIGINT NOT NULL, PRIMARY KEY (order_id))
+		CREATE INDEX idx_customer_name ON Customer (name)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subquery_in/main WITH TEMPLATE subq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -3799,7 +3894,8 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE exists_tmpl
 		CREATE TABLE Customer (id BIGINT NOT NULL, name STRING NOT NULL, PRIMARY KEY (id))
-		CREATE TABLE Flag (id BIGINT NOT NULL, active BIGINT NOT NULL, PRIMARY KEY (id))`)
+		CREATE TABLE Flag (id BIGINT NOT NULL, active BIGINT NOT NULL, PRIMARY KEY (id))
+		CREATE INDEX idx_customer_name ON Customer (name)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_exists_subquery/main WITH TEMPLATE exists_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -6352,7 +6448,8 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_order_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE order_null_tmpl
-		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))`)
+		CREATE TABLE T (id BIGINT NOT NULL, n BIGINT, PRIMARY KEY (id))
+		CREATE INDEX idx_n ON T (n)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_order_null/main WITH TEMPLATE order_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())

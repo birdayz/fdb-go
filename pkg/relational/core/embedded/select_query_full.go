@@ -202,15 +202,21 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// is still recorded as pkCols — the sort eliminator downstream
 		// uses reverseApplied to accept either direction.
 		pkScanProps, pkReverseApplied := scanPropsForOrder(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)
-		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok {
-			// At-most-one row — direction is irrelevant for the record
-			// set, but forwarding pkScanProps keeps the branch uniform.
+		if pkVals, ok := c.tryPKEqualityPushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
+			// PK equality matches at-most-one row. Java's RemoveSortRule
+			// does NOT exempt 1-row scans — the rule checks the
+			// Ordering property which is `()` for an equality match,
+			// and `()` doesn't satisfy a non-empty requested ordering.
+			// Java rejects `WHERE id = X ORDER BY non_pk_col` with
+			// UnableToPlan; Go must match. Gate on PK-ordering
+			// satisfaction (which covers ORDER BY PK col / empty /
+			// all-equated) rather than the at-most-1-row escape hatch.
+			// nightshift-60 (refined from initial atMostOneRow approach
+			// that diverged from Java).
 			cursor = pkPushdownScanCursor(store, rt, pkVals, pkScanProps)
-			// At-most-one row — sort is trivially no-op. Flag it as
-			// fully ordered by PK so ORDER BY on PK cols is skipped.
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
-		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok {
+		} else if pkVals, ok := c.tryPKInListPushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			if len(pkVals) == 1 {
 				// Degenerate IN-list: `pk IN (v)` is equivalent to `pk =
 				// v` — take the equality path. Single point scan instead
@@ -221,26 +227,77 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				naturalOrder = pkCols
 				reverseScanApplied = pkReverseApplied
 			} else {
-				cursor = pkPushdownInListScanCursor(store, rt, pkVals)
-				// IN-list lazy chain — emits in declared-list order,
-				// no usable natural order for ORDER BY elimination.
+				// Multi-value IN-list: the lazy chain emits sub-scans in
+				// pkVals' declared order. Pre-sort the values to make the
+				// emission PK-ordered (ASC sort → ASC emission; DESC sort
+				// → DESC emission). Java's planner does the equivalent —
+				// IN-list scans always emit in key order. Setting
+				// naturalOrder = pkCols then lets the ORDER BY satisfier
+				// recognise the match. nightshift-60.
+				//
+				// The outer `&&` gate above ensures this branch only takes
+				// when ORDER BY is satisfiable by PK ordering (or empty/
+				// equated). When ORDER BY references a non-PK col, the
+				// branch declines and the chain falls through to a strategy
+				// whose natural order does satisfy (eventually
+				// tryIndexScanForOrdering or full PK scan).
+				switch {
+				case naturalOrderSatisfies(sq.orderBy, pkCols, equatedCols, naturalOrderAliases):
+					sort.SliceStable(pkVals, func(i, j int) bool {
+						return functions.CompareValues(pkVals[i].(driver.Value), pkVals[j].(driver.Value)) < 0
+					})
+					cursor = pkPushdownInListScanCursor(store, rt, pkVals)
+					naturalOrder = pkCols
+				case naturalOrderSatisfiesReverse(sq.orderBy, pkCols, equatedCols, naturalOrderAliases):
+					sort.SliceStable(pkVals, func(i, j int) bool {
+						return functions.CompareValues(pkVals[i].(driver.Value), pkVals[j].(driver.Value)) > 0
+					})
+					cursor = pkPushdownInListScanCursor(store, rt, pkVals)
+					naturalOrder = pkCols
+					reverseScanApplied = true
+				default:
+					// ORDER BY empty / all-equated — naturalOrder unused.
+					cursor = pkPushdownInListScanCursor(store, rt, pkVals)
+				}
 			}
-		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok {
+		} else if bounds, ok := c.tryPKRangePushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			cursor = pkPushdownRangeScanCursor(store, rt, bounds, pkScanProps)
 			// Single-col PK range → ASC on the PK col, then nothing.
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
 		} else if cil, ok := c.tryPKCompositeInListPushdown(ctx, sq, rt); ok {
-			cursor = pkCompositeInListScanCursor(store, rt, cil)
-			// Per-sub-scan natural order is ASC on PK cols; but
-			// sub-scans run sequentially over IN-list values in
-			// declared order, so the overall emission isn't sorted.
-		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok {
+			// Pre-sort the IN-list values to make the lazy chain emit
+			// in pkCols order. Each sub-scan emits rows in PK order
+			// internally; sequential sub-scans concatenated in IN-list
+			// order produce overall pkCols ordering iff the IN-list is
+			// sorted. Same approach as the single-col PK IN-list branch
+			// above. nightshift-60.
+			switch {
+			case naturalOrderSatisfies(sq.orderBy, pkCols, equatedCols, naturalOrderAliases):
+				sort.SliceStable(cil.inValues, func(i, j int) bool {
+					return functions.CompareValues(cil.inValues[i].(driver.Value), cil.inValues[j].(driver.Value)) < 0
+				})
+				cursor = pkCompositeInListScanCursor(store, rt, cil)
+				naturalOrder = pkCols
+			case naturalOrderSatisfiesReverse(sq.orderBy, pkCols, equatedCols, naturalOrderAliases):
+				sort.SliceStable(cil.inValues, func(i, j int) bool {
+					return functions.CompareValues(cil.inValues[i].(driver.Value), cil.inValues[j].(driver.Value)) > 0
+				})
+				cursor = pkCompositeInListScanCursor(store, rt, cil)
+				naturalOrder = pkCols
+				reverseScanApplied = true
+			default:
+				cursor = pkCompositeInListScanCursor(store, rt, cil)
+				// naturalOrder stays nil — only acceptable when ORDER BY
+				// is empty / equated, which the post-scan rejection check
+				// catches if it isn't.
+			}
+		} else if cr, ok := c.tryPKCompositeRangePushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			cursor = pkPushdownCompositeRangeScanCursor(store, rt, cr, pkScanProps)
 			// Composite PK range emits rows in ASC PK order.
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
-		} else if cp, ok := c.tryPKCompositePrefixPushdown(ctx, sq, rt); ok {
+		} else if cp, ok := c.tryPKCompositePrefixPushdown(ctx, sq, rt); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			// Pure-prefix composite PK: `WHERE a = 1 AND b = 5` on PK
 			// (a, b, c) narrows to the tuple-prefix scan [rtk, 1, 5]
 			// without any range/IN-list on trailing cols. Last PK
@@ -249,7 +306,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			cursor = pkPushdownScanCursor(store, rt, cp.prefixVals, pkScanProps)
 			naturalOrder = pkCols
 			reverseScanApplied = pkReverseApplied
-		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok {
+		} else if idxName, idxVal, ok := c.trySecondaryIndexPushdown(ctx, store, sq, rt, md); ok && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases) {
 			// The helper itself filters out WRITE_ONLY / DISABLED
 			// indexes while iterating, so any returned index is
 			// guaranteed scannable. Falls through to the next branch
@@ -274,10 +331,22 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 			naturalOrder = pkCols
 			reverseScanApplied = eqReverse
-		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok {
+		} else if sil, ok := c.trySecondaryIndexInListPushdown(ctx, store, sq, rt, md); ok &&
+			((len(sil.values) == 1 && pkOrderingSatisfiesOrderBy(sq.orderBy, pkCols, equatedCols, naturalOrderAliases)) ||
+				(len(sil.values) > 1 && (len(sq.orderBy) == 0 || allOrderByEquated(sq.orderBy, equatedCols, naturalOrderAliases)))) {
 			// Covering also applies to IN-list: each sub-scan can skip
 			// the by-PK fetch when the index covers every referenced
 			// column. Same decision as the equality path.
+			//
+			// Gating (nightshift-60): single-value sub-path is a
+			// secondary-index equality scan that emits in pkCols order;
+			// gated on PK ordering satisfying the ORDER BY (same as
+			// `trySecondaryIndexPushdown`). Multi-value lazy chain has
+			// no usable natural order across sub-scans; only acceptable
+			// when the ORDER BY is empty or every clause is on an
+			// equated col (no order required). Otherwise fall through
+			// to a strategy that can satisfy (eventually full PK scan
+			// or `tryIndexScanForOrdering`).
 			idx := md.GetIndex(sil.indexName)
 			if len(sil.values) == 1 {
 				// Degenerate IN-list: single sub-scan is an index
@@ -300,13 +369,19 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				cursor = secondaryIndexInListScanCursor(store, sil, nil, nil)
 			}
 			// IN-list lazy chain — not sorted across sub-scans.
-		} else if cil, ok := c.trySecondaryIndexCompositeInListPushdown(ctx, store, sq, rt, md); ok {
+		} else if cil, ok := c.trySecondaryIndexCompositeInListPushdown(ctx, store, sq, rt, md); ok &&
+			(len(sq.orderBy) == 0 || allOrderByEquated(sq.orderBy, equatedCols, naturalOrderAliases)) {
+			// Same lazy-chain gate as the secondary-index IN-list branch
+			// above: composite IN-list across sub-scans has no usable
+			// natural order, so only take the branch when the user has
+			// no real ORDER BY to satisfy. Otherwise fall through.
 			if idx := md.GetIndex(cil.indexName); idx != nil && canCoverIndex(sq, idx, rt) {
 				cursor = secondaryIndexCompositeInListScanCursor(store, cil, rt, idx)
 			} else {
 				cursor = secondaryIndexCompositeInListScanCursor(store, cil, nil, nil)
 			}
-		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok {
+		} else if sir, ok := c.trySecondaryIndexRangePushdown(ctx, store, sq, rt, md); ok &&
+			indexBranchSatisfiesOrderBy(md.GetIndex(sir.indexName), pkCols, sq.orderBy, equatedCols, naturalOrderAliases) {
 			idx := md.GetIndex(sir.indexName)
 			// Index range → (idxCol ASC, PKCols ASC). Reverse scan
 			// applies when ORDER BY is an all-DESC prefix of that.
@@ -325,7 +400,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				naturalOrder = idxNaturalOrder
 				reverseScanApplied = rngReverse
 			}
-		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok {
+		} else if sicr, ok := c.trySecondaryIndexCompositeRangePushdown(ctx, store, sq, rt, md); ok &&
+			indexBranchSatisfiesOrderBy(md.GetIndex(sicr.indexName), pkCols, sq.orderBy, equatedCols, naturalOrderAliases) {
 			idx := md.GetIndex(sicr.indexName)
 			var idxNaturalOrder []string
 			if idx != nil {
@@ -342,7 +418,8 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				naturalOrder = idxNaturalOrder
 				reverseScanApplied = crReverse
 			}
-		} else if sicp, ok := c.trySecondaryIndexCompositePrefixPushdown(ctx, store, sq, rt, md); ok {
+		} else if sicp, ok := c.trySecondaryIndexCompositePrefixPushdown(ctx, store, sq, rt, md); ok &&
+			indexBranchSatisfiesOrderBy(md.GetIndex(sicp.indexName), pkCols, sq.orderBy, equatedCols, naturalOrderAliases) {
 			// Pure-prefix composite secondary: equalities on a leading
 			// subset of the index cols, no range / IN on trailing
 			// cols. Narrows to tuple-prefix scan [prefixVals...] on
@@ -366,6 +443,31 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				naturalOrder = idxNaturalOrder
 				reverseScanApplied = cpReverse
 			}
+		} else if idx, ok := tryIndexScanForOrdering(sq, rt, md, store, pkCols, equatedCols, naturalOrderAliases); ok {
+			// Full-secondary-index scan to satisfy ORDER BY when no WHERE
+			// pushdown matched but an index's natural order satisfies the
+			// requested ordering. nightshift-60: this branch closes the
+			// gap that surfaced when removing the in-memory sort fallback
+			// — Java's Cascades planner picks an index scan as the
+			// satisfying inner plan for `RemoveSortRule` when the index's
+			// Ordering property matches the requested order, even
+			// without WHERE pushdown. Without this branch, queries like
+			// `SELECT * FROM t ORDER BY indexed_col` would fall through
+			// to the full-PK scan (PK natural order, doesn't satisfy)
+			// and then be rejected by the post-scan ordering check —
+			// diverging from Java's behaviour. Same Java-conformant
+			// "the rule fires when the inner satisfies" pattern.
+			idxNaturalOrder := append(append([]string{}, secondaryIndexColumns(idx)...), pkCols...)
+			scanProps, reverse := scanPropsForOrder(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases)
+			fullRange := pkRangeBounds{}
+			if canCoverIndex(sq, idx, rt) {
+				cursor = coveringIndexRangeScanCursor(store, rt, idx,
+					buildSecondaryIndexRangeTupleRange(fullRange), scanProps)
+			} else {
+				cursor = secondaryIndexRangeScanCursor(store, idx.Name, fullRange, scanProps)
+			}
+			naturalOrder = idxNaturalOrder
+			reverseScanApplied = reverse
 		} else {
 			// Full type scan emits in PK tuple order (record-type-key
 			// prefix keeps records of the same type contiguous). Use
@@ -955,22 +1057,34 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 			}
 			for _, ob := range sq.orderBy {
-				if projByCol[ob.colName] {
+				obName := ob.colName
+				if projByCol[obName] {
 					continue
 				}
-				if _, isAlias := aliasToCol[ob.colName]; isAlias {
+				if _, isAlias := aliasToCol[obName]; isAlias {
 					// Alias refers to an already-projected column; no extra
 					// sort field. The sort path looks up cols[] which stores
 					// the alias, so no further remapping is needed.
 					continue
 				}
-				fd := allFields.ByName(protoreflect.Name(ob.colName))
+				// Strip table-qualifier from `<alias>.<col>` for single-
+				// source SELECT — the qualifier resolves to either the
+				// table name or its alias; both refer to the same source.
+				// nightshift-60.
+				if dot := strings.Index(obName, "."); dot >= 0 {
+					prefix := obName[:dot]
+					if strings.EqualFold(prefix, sq.tableName) ||
+						(sq.tableAlias != "" && strings.EqualFold(prefix, sq.tableAlias)) {
+						obName = obName[dot+1:]
+					}
+				}
+				fd := allFields.ByName(protoreflect.Name(obName))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"ORDER BY column %q not found in table %q", ob.colName, sq.tableName)
 				}
-				extraSortFields = append(extraSortFields, outField{name: ob.colName, fd: fd})
-				projByCol[ob.colName] = true // avoid duplicates
+				extraSortFields = append(extraSortFields, outField{name: obName, fd: fd})
+				projByCol[obName] = true // avoid duplicates
 			}
 		}
 		// fullFields = projected + extra sort columns; output strips extra at end.
@@ -1146,9 +1260,67 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		//   - NULLS ordering opposite the scan direction's native
 		//     placement (ASC + NULLS LAST, or DESC + NULLS FIRST).
 		//   - ORDER BY col not in naturalOrder prefix.
-		sortSkippable := len(sq.aggCols) == 0 && !sq.countStar &&
-			(naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied)
-		if !sortSkippable {
+		// Java-conformance rejection (nightshift-60). fdb-relational's
+		// Cascades planner has only RemoveSortRule + PushRequestedOrdering
+		// ThroughSortRule — no ImplementSortRule. When no scan strategy
+		// emits rows in the requested order, Cascades produces no
+		// physical plan and CascadesPlanner.resultOrFail throws
+		// UnableToPlanException. The Go embedded engine has no planner;
+		// rejection has to emerge from a structural check at the same
+		// architectural site — "no scan satisfies the requested ORDER BY"
+		// — rather than from rule absence. Aggregate path (with or
+		// without GROUP BY) produces 0/1 row (or N rows for GROUP BY
+		// which Java rejects upstream); the in-memory sort over that
+		// small set is harmless, so the rejection only applies to the
+		// non-aggregate path.
+		isAggregate := len(sq.aggCols) > 0 || sq.countStar
+		satisfiable := naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied
+		// DISTINCT is exempted because Java rejects DISTINCT entirely
+		// (existing CLAUDE.md gotcha) — the path is already Go-only;
+		// post-dedup sorting was always part of that contract. Aggregate
+		// is exempted because the post-aggregation result is a small
+		// projected set; sorting it in-memory is harmless and matches
+		// Java's behaviour for groupings within the same query. Note:
+		// at-most-1-row scans (PK equality, single-value IN-list) are
+		// NOT exempted here — Java's RemoveSortRule checks the Ordering
+		// property explicitly, and an equality match has Ordering `()`
+		// which doesn't satisfy a non-empty requested ordering. The PK
+		// equality / IN-list branches above gate on
+		// `pkOrderingSatisfiesOrderBy` and decline when no PK-prefix
+		// ordering satisfies, letting the chain fall through to a
+		// strategy that does (eventually `tryIndexScanForOrdering`).
+		if !satisfiable && !isAggregate && !sq.distinct {
+			obCols := make([]string, 0, len(sq.orderBy))
+			hasExpr := false
+			for _, ob := range sq.orderBy {
+				// Expression-based ORDER BY clauses get a sentinel
+				// column name (`__orderby_expr_<i>__`) earlier in this
+				// function (extraSortFields setup) which clears
+				// `ob.expr`. Detect the sentinel by name to surface
+				// "arbitrary expression" in the error message rather
+				// than the synthetic identifier.
+				if ob.expr != nil || strings.HasPrefix(ob.colName, "__orderby_expr_") {
+					hasExpr = true
+					continue
+				}
+				if ob.colName != "" {
+					obCols = append(obCols, ob.colName)
+				}
+			}
+			detail := strings.Join(obCols, ", ")
+			if hasExpr {
+				if detail != "" {
+					detail += " (and arbitrary expression)"
+				} else {
+					detail = "arbitrary expression"
+				}
+			}
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedSort,
+				"ORDER BY %s cannot be satisfied by any scan strategy; no index produces rows in the requested order. Add an index on the ORDER BY column(s) to make the query plannable",
+				detail)
+		}
+		if !satisfiable {
+			// Aggregate path only — small result set, sort in-memory.
 			sort.SliceStable(data, func(i, j int) bool {
 				for _, ob := range sq.orderBy {
 					idx, ok := colIdx[ob.colName]

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 )
 
@@ -90,6 +91,28 @@ func TestNaturalOrderSatisfies(t *testing.T) {
 			naturalOrder: []string{"a", "b"},
 			equated:      map[string]bool{"A": true}, // upper key in equated
 			want:         true,
+		},
+		// Qualifier-strip on table-aliased ORDER BY column refs.
+		// nightshift-60: `ORDER BY a.id` on `FROM t AS a` should match
+		// naturalOrder=["id"]. The qualifier is stripped before
+		// comparison.
+		{
+			name:         "qualified ORDER BY col strips alias prefix",
+			orderBy:      []orderByClause{asc("a.id")},
+			naturalOrder: []string{"id"},
+			want:         true,
+		},
+		{
+			name:         "qualified ORDER BY col with case-insensitive col match",
+			orderBy:      []orderByClause{asc("A.ID")},
+			naturalOrder: []string{"id"},
+			want:         true,
+		},
+		{
+			name:         "qualified ORDER BY col bails when col mismatches",
+			orderBy:      []orderByClause{asc("a.name")},
+			naturalOrder: []string{"id"},
+			want:         false,
 		},
 	}
 	for _, tc := range cases {
@@ -187,6 +210,139 @@ func TestScanPropsForOrder(t *testing.T) {
 		nil,
 	); rev {
 		t.Fatal("all-equated DESC: expected forward, got reverse")
+	}
+}
+
+// TestScanSatisfiesOrderBy covers the nightshift-60 helper that
+// reports whether a pushdown branch's natural emission order (forward
+// or reverse) satisfies the user's ORDER BY clause.
+func TestScanSatisfiesOrderBy(t *testing.T) {
+	t.Parallel()
+	// Empty naturalOrder + non-empty orderBy → false.
+	if scanSatisfiesOrderBy([]orderByClause{asc("a")}, nil, nil, nil) {
+		t.Fatal("empty naturalOrder + non-empty orderBy: expected false")
+	}
+	// ASC orderBy matches forward.
+	if !scanSatisfiesOrderBy([]orderByClause{asc("a")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("ASC prefix: expected satisfies (forward)")
+	}
+	// DESC orderBy matches reverse.
+	if !scanSatisfiesOrderBy([]orderByClause{desc("a")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("DESC prefix: expected satisfies (reverse)")
+	}
+	// Mixed direction: neither forward nor reverse satisfies.
+	if scanSatisfiesOrderBy([]orderByClause{asc("a"), desc("b")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("mixed direction: expected false")
+	}
+	// Qualified col name: stripped to bare for comparison.
+	if !scanSatisfiesOrderBy([]orderByClause{asc("t.a")}, []string{"a"}, nil, nil) {
+		t.Fatal("qualified ASC: expected satisfies")
+	}
+}
+
+// TestIndexBranchSatisfiesOrderBy covers the nightshift-60
+// secondary-index-branch flavour of scanSatisfiesOrderBy, which
+// computes the (idxCols ++ pkCols) candidate emission order for
+// the supplied secondary index and asks whether the user's ORDER
+// BY is satisfied by it forward or reverse.
+func TestIndexBranchSatisfiesOrderBy(t *testing.T) {
+	t.Parallel()
+	// nil idx → false (declined).
+	if indexBranchSatisfiesOrderBy(nil, []string{"id"}, []orderByClause{asc("v")}, nil, nil) {
+		t.Fatal("nil idx: expected false")
+	}
+	// Single-col index on `v` over PK `id`. Natural emission is (v, id).
+	idxV := recordlayer.NewIndex("idx_v", recordlayer.Field("v"))
+	if !indexBranchSatisfiesOrderBy(idxV, []string{"id"}, []orderByClause{asc("v")}, nil, nil) {
+		t.Fatal("ORDER BY v on (v, id) index: expected satisfies")
+	}
+	// ORDER BY v DESC also satisfies via reverse-scan.
+	if !indexBranchSatisfiesOrderBy(idxV, []string{"id"}, []orderByClause{desc("v")}, nil, nil) {
+		t.Fatal("ORDER BY v DESC: expected satisfies (reverse)")
+	}
+	// ORDER BY w (not in idx) → does not satisfy.
+	if indexBranchSatisfiesOrderBy(idxV, []string{"id"}, []orderByClause{asc("w")}, nil, nil) {
+		t.Fatal("ORDER BY non-idx col: expected false")
+	}
+	// Composite index on (region, tag) over PK (id). Natural emission
+	// is (region, tag, id). ORDER BY region is a single-col prefix.
+	idxRT := recordlayer.NewIndex("idx_rt", recordlayer.Concat(recordlayer.Field("region"), recordlayer.Field("tag")))
+	if !indexBranchSatisfiesOrderBy(idxRT, []string{"id"}, []orderByClause{asc("region")}, nil, nil) {
+		t.Fatal("ORDER BY region on (region, tag, id) index: expected satisfies")
+	}
+	// ORDER BY tag (not the leading idx col) → does not satisfy.
+	if indexBranchSatisfiesOrderBy(idxRT, []string{"id"}, []orderByClause{asc("tag")}, nil, nil) {
+		t.Fatal("ORDER BY non-prefix idx col: expected false")
+	}
+	// ORDER BY tag with region equated → eq strips region from natural
+	// order, leaving (tag, id); ORDER BY tag is a prefix. Satisfies.
+	if !indexBranchSatisfiesOrderBy(idxRT, []string{"id"}, []orderByClause{asc("tag")}, map[string]bool{"REGION": true}, nil) {
+		t.Fatal("ORDER BY tag with region equated: expected satisfies via eq-strip")
+	}
+}
+
+// TestPKOrderingSatisfiesOrderBy covers the nightshift-60 gate used
+// on PK pushdown branches.
+func TestPKOrderingSatisfiesOrderBy(t *testing.T) {
+	t.Parallel()
+	// Empty orderBy → trivially satisfied.
+	if !pkOrderingSatisfiesOrderBy(nil, []string{"id"}, nil, nil) {
+		t.Fatal("empty orderBy: expected satisfies")
+	}
+	// All-equated orderBy → satisfied.
+	if !pkOrderingSatisfiesOrderBy(
+		[]orderByClause{asc("id")},
+		[]string{"id"},
+		map[string]bool{"ID": true},
+		nil,
+	) {
+		t.Fatal("all-equated orderBy: expected satisfies")
+	}
+	// PK-prefix ASC → satisfies (forward).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{asc("id")}, []string{"id"}, nil, nil) {
+		t.Fatal("PK ASC: expected satisfies")
+	}
+	// PK-prefix DESC → satisfies (reverse).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{desc("id")}, []string{"id"}, nil, nil) {
+		t.Fatal("PK DESC: expected satisfies")
+	}
+	// Non-PK col → does not satisfy.
+	if pkOrderingSatisfiesOrderBy([]orderByClause{asc("name")}, []string{"id"}, nil, nil) {
+		t.Fatal("non-PK col: expected does not satisfy")
+	}
+	// Composite PK + ORDER BY first PK col only → satisfies (PK prefix).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{asc("a")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("composite PK + ORDER BY first col: expected satisfies")
+	}
+	// Composite PK + ORDER BY both PK cols ASC → satisfies (full PK prefix).
+	if !pkOrderingSatisfiesOrderBy([]orderByClause{asc("a"), asc("b")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("composite PK ORDER BY both ASC: expected satisfies")
+	}
+	// Composite PK + ORDER BY second-only with first equated → satisfies
+	// (equated leading col strips, leaves ORDER BY b vs PK suffix [b]).
+	if !pkOrderingSatisfiesOrderBy(
+		[]orderByClause{asc("b")},
+		[]string{"a", "b"},
+		map[string]bool{"A": true},
+		nil,
+	) {
+		t.Fatal("composite PK ORDER BY second-col with first equated: expected satisfies")
+	}
+	// Composite PK + mixed direction → does NOT satisfy (cursor is forward
+	// or reverse, not mixed).
+	if pkOrderingSatisfiesOrderBy([]orderByClause{asc("a"), desc("b")}, []string{"a", "b"}, nil, nil) {
+		t.Fatal("composite PK mixed direction: expected does not satisfy")
+	}
+	// Aliased ORDER BY column resolves through aliasToUnderlying.
+	// `ORDER BY pk` where the projection aliased `id AS pk` should
+	// satisfy because the alias maps back to the PK col.
+	if !pkOrderingSatisfiesOrderBy(
+		[]orderByClause{asc("pk")},
+		[]string{"id"},
+		nil,
+		map[string]string{"PK": "id"},
+	) {
+		t.Fatal("aliased ORDER BY col: expected satisfies via aliasToUnderlying")
 	}
 }
 

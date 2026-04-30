@@ -172,6 +172,52 @@ func secondaryIndexColumns(idx *recordlayer.Index) []string {
 	return nil
 }
 
+// tryIndexScanForOrdering finds a scannable VALUE secondary index
+// whose natural emission order (idxCols ++ pkCols) satisfies the
+// query's ORDER BY clause. Returns the matching `*Index` and true on
+// the first match; called from the scan-strategy chain as the last
+// branch before the full-PK fallback. Mirrors Java's Cascades planner
+// picking an index scan as the satisfying inner plan for
+// `RemoveSortRule` when the index's Ordering property matches the
+// requested order, even without WHERE pushdown — without this branch,
+// removing the in-memory sort fallback would reject queries Java
+// accepts (`SELECT col FROM t ORDER BY indexed_col`). nightshift-60.
+//
+// Returning the `*Index` (not just its name) lets the caller skip a
+// metadata re-lookup whose result it already trusts; the
+// metadata-lookup path is the same we just walked.
+func tryIndexScanForOrdering(
+	sq *selectQuery,
+	rt *recordlayer.RecordType,
+	md *recordlayer.RecordMetaData,
+	store *recordlayer.FDBRecordStore,
+	pkCols []string,
+	equatedCols map[string]bool,
+	naturalOrderAliases map[string]string,
+) (*recordlayer.Index, bool) {
+	if len(sq.orderBy) == 0 {
+		return nil, false
+	}
+	indexes := md.GetIndexesForRecordType(rt.Name)
+	for _, idx := range indexes {
+		if idx.Type != "" && idx.Type != "value" {
+			continue
+		}
+		if !store.IsIndexScannable(idx.Name) {
+			continue
+		}
+		idxCols := secondaryIndexColumns(idx)
+		if len(idxCols) == 0 {
+			continue
+		}
+		idxNaturalOrder := append(append([]string{}, idxCols...), pkCols...)
+		if scanSatisfiesOrderBy(sq.orderBy, idxNaturalOrder, equatedCols, naturalOrderAliases) {
+			return idx, true
+		}
+	}
+	return nil, false
+}
+
 // secondaryIndexPushdownCursor wraps `store.ScanIndexRecords` and
 // adapts its `*FDBIndexedRecord` stream to the `*FDBStoredRecord` the
 // SQL scan loop expects. The `keyVal` argument is either a single

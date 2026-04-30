@@ -186,6 +186,30 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		joinChainedScenario(),
 		multiFeatureSelectScenario(),
 		countDistinctJoinPositiveScenario(),
+		nullCompareScenario(),
+		booleanPrecedenceScenario(),
+		selfJoinScenario(),
+		stringCompareScenario(),
+		nullArithmeticScenario(),
+		orderByIndexedColScenario(),
+		arithmeticCompoundScenario(),
+		dmlSetupScenario(),
+		whereComplexScenario(),
+		pkEqualityOrderByScenario(),
+		projectionAliasScenario(),
+		joinOrderByRightPKScenario(),
+		pkDescScenario(),
+		numericBoundaryScenario(),
+		coalesceExtraScenario(),
+		likeEscapeScenario(),
+		stringUnicodeScenario(),
+		constantProjectionScenario(),
+		indexedInListWithOrderByScenario(),
+		numericComparisonScenario(),
+		dmlAdvancedScenario(),
+		compositeIndexOrderByScenario(),
+		nullOrderByPositionScenario(),
+		isNullWithIndexScenario(),
 	}
 }
 
@@ -1884,6 +1908,843 @@ func nestedDerivedTableScenario() *yamsql.Scenario {
 				Query: "SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub",
 				Rows:  [][]any{{3}},
 			},
+		},
+	}
+}
+
+// nullCompareScenario probes 3VL comparison semantics: comparison
+// operators applied to NULL operands evaluate to UNKNOWN, which is
+// filtered from WHERE and projected as NULL in the SELECT-list. AND/OR
+// Kleene short-circuit (FALSE absorbs UNKNOWN under AND; TRUE absorbs
+// UNKNOWN under OR) is also pinned. Drops NOT NULL on PK. Net-new
+// nightshift-60: existing scenarios cover boolean-column 3VL
+// (`boolean`), NULL-safe equality (`is_distinct_from`), and a single
+// Kleene case (`bug_hunt_probes`); none drive the comparison-of-non-
+// boolean-column-against-NULL path through both projection AND WHERE
+// across the full operator set. Filling that gap surfaces any future
+// drift in either engine's three-valued evaluator.
+func nullCompareScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "null_compare",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 100), (2, 20, null), (3, null, 300), (4, null, null), (5, 50, 500)",
+		},
+		Tests: []yamsql.Test{
+			// Comparison between two cols with NULL on either side ⇒
+			// UNKNOWN ⇒ filtered. v=w never matches (rows 2/3/4 carry a
+			// NULL in at least one operand; rows 1/5 have distinct values).
+			{Query: "SELECT id FROM t WHERE v = w ORDER BY id", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE v <> w ORDER BY id", Rows: [][]any{{1}, {5}}},
+			{Query: "SELECT id FROM t WHERE v < w ORDER BY id", Rows: [][]any{{1}, {5}}},
+			{Query: "SELECT id FROM t WHERE v > w ORDER BY id", Rows: [][]any{}},
+			{Query: "SELECT id FROM t WHERE v <= w ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// Comparison projection with NULL operand ⇒ NULL in result.
+			{Query: "SELECT id, v = 10 FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, false}, {3, nil}, {4, nil}, {5, false}}},
+			{Query: "SELECT id, v < 30 FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, true}, {3, nil}, {4, nil}, {5, false}}},
+			{Query: "SELECT id, v IS NULL FROM t ORDER BY id", Rows: [][]any{{1, false}, {2, false}, {3, true}, {4, true}, {5, false}}},
+			{Query: "SELECT id, v IS NOT NULL FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, true}, {3, false}, {4, false}, {5, true}}},
+			// NOT through 3VL: NOT NULL = NULL ⇒ filtered.
+			{Query: "SELECT id FROM t WHERE NOT (v = 10) ORDER BY id", Rows: [][]any{{2}, {5}}},
+			// Kleene AND: T AND U = U; F AND U = F; U AND U = U.
+			{Query: "SELECT id FROM t WHERE v IS NULL AND w = 300 ORDER BY id", Rows: [][]any{{3}}},
+			// Kleene OR: T OR U = T; F OR U = U; U OR U = U.
+			{Query: "SELECT id FROM t WHERE v IS NULL OR w = 100 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE v = 10 OR w IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {3}, {5}}},
+		},
+	}
+}
+
+// booleanPrecedenceScenario pins SQL operator-precedence behaviour
+// using only fully-parenthesised forms. Implicit-precedence forms
+// (`WHERE a OR b AND c`) are NOT tested cross-engine: fdb-relational
+// 4.11.1.0 parses `a OR b AND c` as `(a OR b) AND c` — diverging from
+// SQL standard where AND binds tighter than OR (`a OR (b AND c)`). The
+// Go embedded engine follows the SQL standard. New CLAUDE.md gotcha
+// added nightshift-60. The explicit-parens forms below remain valid
+// across both engines and pin AND/OR/NOT semantics independently of
+// the divergent precedence question. Drops NOT NULL on PK.
+func booleanPrecedenceScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "boolean_precedence",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 1, 1, 0), (2, 1, 0, 1), (3, 0, 1, 0), (4, 0, 0, 1)",
+		},
+		Tests: []yamsql.Test{
+			// Two equivalent groupings of the same boolean expression —
+			// pin that explicit parens behave identically across engines.
+			{Query: "SELECT id FROM t WHERE a = 1 OR (b = 0 AND c = 1) ORDER BY id", Rows: [][]any{{1}, {2}, {4}}},
+			{Query: "SELECT id FROM t WHERE (a = 1 OR b = 0) AND c = 1 ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// NOT-AND grouping: NOT outside vs NOT inside.
+			{Query: "SELECT id FROM t WHERE (NOT (a = 1)) AND b = 0 ORDER BY id", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE NOT (a = 1 AND b = 0) ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			// NOT-OR grouping: De Morgan's law cross-engine pin.
+			{Query: "SELECT id FROM t WHERE (NOT (a = 1)) OR b = 1 ORDER BY id", Rows: [][]any{{1}, {3}, {4}}},
+			{Query: "SELECT id FROM t WHERE NOT (a = 1 OR b = 1) ORDER BY id", Rows: [][]any{{4}}},
+			// Triple-mix with parens: ((NOT a) AND b) OR c.
+			{Query: "SELECT id FROM t WHERE ((NOT (a = 1)) AND b = 0) OR c = 1 ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// And the alternate grouping: (NOT a) AND (b OR c).
+			{Query: "SELECT id FROM t WHERE (NOT (a = 1)) AND (b = 0 OR c = 1) ORDER BY id", Rows: [][]any{{4}}},
+		},
+	}
+}
+
+// selfJoinScenario probes self-join via comma-join (explicit JOIN ON
+// is broken in fdb-relational 4.11.1.0 per CLAUDE.md). Exercises:
+// equi-self (recovers each row), strict-less self-join (counts ordered
+// pairs), aliased PK comparison. Drops NOT NULL on PK. Net-new
+// nightshift-60: existing JOIN scenarios all use distinct tables; a
+// table joined with itself surfaces aliasing bugs (the Go-side scope
+// resolver and Java's quantifier renaming) that two-table joins miss.
+func selfJoinScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "self_join",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, x BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+		},
+		Tests: []yamsql.Test{
+			// Equi-self-join on PK ⇒ each row pairs with itself.
+			{Query: "SELECT a.id, b.id FROM t a, t b WHERE a.id = b.id ORDER BY a.id", Rows: [][]any{{1, 1}, {2, 2}, {3, 3}}},
+			// Strict-less self-join ⇒ 3 ordered pairs (1,2), (1,3), (2,3).
+			{Query: "SELECT a.id, b.id FROM t a, t b WHERE a.id < b.id", Unordered: true, Rows: [][]any{{1, 2}, {1, 3}, {2, 3}}},
+			// COUNT(*) over the same relation — verifies cardinality.
+			{Query: "SELECT COUNT(*) FROM t a, t b WHERE a.id < b.id", Rows: [][]any{{3}}},
+			// Self-join on non-PK column.
+			{Query: "SELECT a.id, b.id FROM t a, t b WHERE a.x < b.x", Unordered: true, Rows: [][]any{{1, 2}, {1, 3}, {2, 3}}},
+			// Self-join projecting both sides' non-key columns.
+			{Query: "SELECT a.x, b.x FROM t a, t b WHERE a.id = 1 AND b.id = 3", Rows: [][]any{{10, 30}}},
+			// Cartesian product cardinality (no predicate).
+			{Query: "SELECT COUNT(*) FROM t a, t b", Rows: [][]any{{9}}},
+		},
+	}
+}
+
+// stringCompareScenario probes basic string-column comparison
+// semantics: equality (case-sensitive), inequality, lexicographic
+// ordering, IN / NOT IN, empty-string handling, NULL handling.
+// Existing `like` covers LIKE pattern matching; existing `bytes` does
+// the same for BYTES; no scenario today exercises plain string
+// comparison + sort. Drops NOT NULL on PK. Avoids ORDER BY on a
+// NULL-containing column (NULL ordering is dialect-specific and not
+// pinned by either engine's spec). Net-new nightshift-60.
+func stringCompareScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "string_compare",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry'), (4, ''), (5, null), (6, 'Apple')",
+		},
+		Tests: []yamsql.Test{
+			// Case-sensitive equality.
+			{Query: "SELECT id FROM t WHERE s = 'apple'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s = 'Apple'", Rows: [][]any{{6}}},
+			// Inequality filters NULL via 3VL.
+			{Query: "SELECT id FROM t WHERE s <> 'apple' ORDER BY id", Rows: [][]any{{2}, {3}, {4}, {6}}},
+			// Lexicographic ASCII ordering: '' < 'A' < 'B' < 'a' < 'b'.
+			// '' (4) < 'Apple' (6) < 'apple' (1) < 'banana' (2) < 'cherry' (3).
+			{Query: "SELECT id FROM t WHERE s < 'cherry' ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {6}}},
+			{Query: "SELECT id FROM t WHERE s > 'banana' ORDER BY id", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE s >= 'apple' ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE s <= 'banana' ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {6}}},
+			// Empty-string equality.
+			{Query: "SELECT id FROM t WHERE s = ''", Rows: [][]any{{4}}},
+			// NULL handling.
+			{Query: "SELECT id FROM t WHERE s IS NULL", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM t WHERE s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}, {6}}},
+			// IN / NOT IN — NOT IN against non-NULL list filters NULL via 3VL.
+			{Query: "SELECT id FROM t WHERE s IN ('apple', 'banana') ORDER BY id", Rows: [][]any{{1}, {2}}},
+			{Query: "SELECT id FROM t WHERE s NOT IN ('apple', 'banana') ORDER BY id", Rows: [][]any{{3}, {4}, {6}}},
+			// (ORDER BY s requires an index on s — fdb-relational
+			// rejects with UnableToPlan otherwise; existing CLAUDE.md
+			// gotcha. Skipped to keep the schema simple; ORDER BY id
+			// pins natural-order across all the WHERE forms above.)
+			//
+			// String comparison projection.
+			{Query: "SELECT id, s = 'apple' FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, false}, {3, false}, {4, false}, {5, nil}, {6, false}}},
+		},
+	}
+}
+
+// nullArithmeticScenario pins NULL propagation through arithmetic
+// expressions. fdb-relational rejects bare NULL operands ("unable to
+// encapsulate arithmetic operation due to type mismatch"; CLAUDE.md
+// gotcha) so all literal-NULL forms use CAST(NULL AS BIGINT). Column-
+// NULL forms (where column is BIGINT NULL) need no cast. Verifies:
+// (a) NULL absorbs in +, -, *, %, / regardless of operand position;
+// (b) WHERE NULL-arithmetic = X filters everything (UNKNOWN); (c)
+// WHERE NULL-arithmetic IS NULL matches every row.  Drops NOT NULL on
+// PK. Net-new nightshift-60.
+func nullArithmeticScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "null_arithmetic",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, n BIGINT, m BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 3), (2, null, 5), (3, 7, null), (4, null, null)",
+		},
+		Tests: []yamsql.Test{
+			// Column-NULL absorbs in +, -, *, /, %.
+			{Query: "SELECT n + 1 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n - 1 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n * 2 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n / 2 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			{Query: "SELECT n % 2 FROM t WHERE id = 2", Rows: [][]any{{nil}}},
+			// Both column-NULLs absorbed simultaneously.
+			{Query: "SELECT n + m FROM t WHERE id = 4", Rows: [][]any{{nil}}},
+			{Query: "SELECT n + m FROM t WHERE id = 3", Rows: [][]any{{nil}}},
+			{Query: "SELECT n + m FROM t WHERE id = 1", Rows: [][]any{{13}}},
+			// CAST(NULL AS BIGINT) literal absorbs in either position.
+			{Query: "SELECT n + CAST(NULL AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) + n FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) * 5 FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			{Query: "SELECT CAST(NULL AS BIGINT) - CAST(NULL AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{nil}}},
+			// WHERE on NULL arithmetic — UNKNOWN filtered.
+			{Query: "SELECT id FROM t WHERE n + 1 = 11", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE n + m > 0 ORDER BY id", Rows: [][]any{{1}}},
+			// WHERE n + m IS NULL ⇒ matches every row where the result is NULL.
+			{Query: "SELECT id FROM t WHERE n + m IS NULL ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			// WHERE n + m IS NOT NULL ⇒ matches the all-non-NULL row.
+			{Query: "SELECT id FROM t WHERE n + m IS NOT NULL", Rows: [][]any{{1}}},
+		},
+	}
+}
+
+// indexedInListWithOrderByScenario verifies that a query of the form
+// `WHERE indexed_col IN (...) ORDER BY indexed_col` works cross-engine.
+// In Go's chain the multi-value secondary-IN-list lazy chain branch
+// declines (no usable natural order across sub-scans), and the chain
+// falls through to `tryIndexScanForOrdering` which picks the index
+// for ordering and post-filters by the IN-list. Java's planner does
+// the equivalent with a full-index range scan + filter. Drops NOT
+// NULL on PK. Net-new nightshift-60.
+func indexedInListWithOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "indexed_in_list_with_order_by",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_val ON t (val)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 30), (2, 10), (3, 20), (4, 40), (5, 25)",
+		},
+		Tests: []yamsql.Test{
+			// Sorted-input IN-list + ORDER BY indexed col.
+			{Query: "SELECT id, val FROM t WHERE val IN (10, 20, 30) ORDER BY val", Rows: [][]any{{2, 10}, {3, 20}, {1, 30}}},
+			// Unsorted-input IN-list + ORDER BY indexed col — index scan
+			// emits in val order regardless of IN-list shape.
+			{Query: "SELECT id, val FROM t WHERE val IN (30, 10, 20) ORDER BY val", Rows: [][]any{{2, 10}, {3, 20}, {1, 30}}},
+			// IN-list + ORDER BY DESC — reverse-scan via the index.
+			{Query: "SELECT id, val FROM t WHERE val IN (10, 30) ORDER BY val DESC", Rows: [][]any{{1, 30}, {2, 10}}},
+			// IN-list with no matches.
+			{Query: "SELECT id FROM t WHERE val IN (99, 100) ORDER BY val", Rows: [][]any{}},
+		},
+	}
+}
+
+// constantProjectionScenario probes pure-constant projections in
+// SELECT — `SELECT 1 FROM t`, `SELECT 'literal' FROM t`, mixed
+// constant + column. fdb-relational rejects FROM-less SELECT (existing
+// CLAUDE.md gotcha) so all queries here have a FROM. Drops NOT NULL
+// on PK. Net-new nightshift-60.
+func constantProjectionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "constant_projection",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1), (2), (3)",
+		},
+		Tests: []yamsql.Test{
+			// Bare integer literal projection.
+			{Query: "SELECT 1 FROM t WHERE id = 1", Rows: [][]any{{1}}},
+			// Bare string literal projection.
+			{Query: "SELECT 'hello' FROM t WHERE id = 1", Rows: [][]any{{"hello"}}},
+			// Bare boolean literal projection.
+			{Query: "SELECT TRUE FROM t WHERE id = 1", Rows: [][]any{{true}}},
+			// Multiple constants in one row.
+			{Query: "SELECT 1, 2, 3 FROM t WHERE id = 1", Rows: [][]any{{1, 2, 3}}},
+			// Mixed constant + column projection.
+			{Query: "SELECT id, 100 FROM t WHERE id = 1", Rows: [][]any{{1, 100}}},
+			// Constant projection across multiple rows.
+			{Query: "SELECT 'static' FROM t ORDER BY id", Rows: [][]any{{"static"}, {"static"}, {"static"}}},
+			// Mix integer + string + boolean constants.
+			{Query: "SELECT 42, 'x', FALSE FROM t WHERE id = 1", Rows: [][]any{{42, "x", false}}},
+		},
+	}
+}
+
+// stringUnicodeScenario verifies Unicode (UTF-8) string handling
+// cross-engine: storage round-trip, equality, IN-list, IS NULL/NOT
+// NULL, comparison projection. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func stringUnicodeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "string_unicode",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'café'), (2, 'naïve'), (3, '日本'), (4, 'apple'), (5, null)",
+		},
+		Tests: []yamsql.Test{
+			// Round-trip equality on accented Latin chars.
+			{Query: "SELECT s FROM t WHERE id = 1", Rows: [][]any{{"café"}}},
+			// Round-trip equality on CJK chars.
+			{Query: "SELECT s FROM t WHERE id = 3", Rows: [][]any{{"日本"}}},
+			// String equality with non-ASCII.
+			{Query: "SELECT id FROM t WHERE s = 'café'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s = '日本'", Rows: [][]any{{3}}},
+			// IN-list with Unicode strings.
+			{Query: "SELECT id FROM t WHERE s IN ('café', '日本') ORDER BY id", Rows: [][]any{{1}, {3}}},
+			// NULL handling alongside Unicode.
+			{Query: "SELECT id FROM t WHERE s IS NULL", Rows: [][]any{{5}}},
+			{Query: "SELECT id FROM t WHERE s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {4}}},
+			// Equality projection — boolean comparison with Unicode operand.
+			{Query: "SELECT id, s = 'café' FROM t ORDER BY id", Rows: [][]any{{1, true}, {2, false}, {3, false}, {4, false}, {5, nil}}},
+		},
+	}
+}
+
+// likeEscapeScenario probes LIKE with ESCAPE clause — escape char
+// makes `%` and `_` match literally. The existing `like` scenario
+// covers basic LIKE without ESCAPE; this fills the gap. Drops NOT
+// NULL on PK. Net-new nightshift-60.
+func likeEscapeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "like_escape",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, '50%'), (2, 'test_data'), (3, 'normal'), (4, 'a%b'), (5, 'c_d'), (6, 'plain')",
+		},
+		Tests: []yamsql.Test{
+			// Literal % match via backslash-escape.
+			{Query: "SELECT id FROM t WHERE s LIKE '50\\%' ESCAPE '\\'", Rows: [][]any{{1}}},
+			// Literal _ match.
+			{Query: "SELECT id FROM t WHERE s LIKE 'c\\_d' ESCAPE '\\'", Rows: [][]any{{5}}},
+			// Pattern with both wildcards and literal special chars.
+			{Query: "SELECT id FROM t WHERE s LIKE 'a\\%b' ESCAPE '\\'", Rows: [][]any{{4}}},
+			// Pattern starts with %, then literal _.
+			{Query: "SELECT id FROM t WHERE s LIKE '%\\_data' ESCAPE '\\'", Rows: [][]any{{2}}},
+			// No match for escaped pattern that doesn't exist.
+			{Query: "SELECT id FROM t WHERE s LIKE 'xxx\\%' ESCAPE '\\'", Rows: [][]any{}},
+		},
+	}
+}
+
+// coalesceExtraScenario extends the existing `coalesce_nullif` (1 spec)
+// with more COALESCE shapes: 2-arg, 4-arg, all-NULL chains via
+// `CAST(NULL AS STRING)` (Java rejects bare NULL operands), COALESCE
+// in WHERE, and COALESCE in projection with arithmetic. Drops NOT
+// NULL on PK. Net-new nightshift-60.
+func coalesceExtraScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "coalesce_extra",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a STRING, b STRING, c STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'x', 'y', 'z'), (2, null, 'y', 'z'), (3, null, null, 'z'), (4, null, null, null), (5, 'a', null, 'c')",
+		},
+		Tests: []yamsql.Test{
+			// 2-arg COALESCE.
+			{Query: "SELECT COALESCE(a, 'fallback') FROM t WHERE id = 1", Rows: [][]any{{"x"}}},
+			{Query: "SELECT COALESCE(a, 'fallback') FROM t WHERE id = 2", Rows: [][]any{{"fallback"}}},
+			// 3-arg COALESCE.
+			{Query: "SELECT COALESCE(a, b, 'last') FROM t WHERE id = 1", Rows: [][]any{{"x"}}},
+			{Query: "SELECT COALESCE(a, b, 'last') FROM t WHERE id = 2", Rows: [][]any{{"y"}}},
+			{Query: "SELECT COALESCE(a, b, 'last') FROM t WHERE id = 3", Rows: [][]any{{"last"}}},
+			// 4-arg COALESCE — fallback chain.
+			{Query: "SELECT COALESCE(a, b, c, 'final') FROM t WHERE id = 4", Rows: [][]any{{"final"}}},
+			{Query: "SELECT COALESCE(a, b, c, 'final') FROM t WHERE id = 5", Rows: [][]any{{"a"}}},
+			// All-NULL chain via CAST(NULL AS STRING) — Java requires typed
+			// NULL in arithmetic operands; for COALESCE the same rule
+			// applies when the type isn't anchored by a non-NULL.
+			{Query: "SELECT COALESCE(CAST(NULL AS STRING), 'default') FROM t WHERE id = 1", Rows: [][]any{{"default"}}},
+			// COALESCE in WHERE.
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b, c) = 'z' ORDER BY id", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b) = 'y' ORDER BY id", Rows: [][]any{{2}}},
+			// COALESCE result IS NULL when all args are NULL.
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b, c) IS NULL", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b, c) IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
+		},
+	}
+}
+
+// numericBoundaryScenario probes BIGINT boundary values (MAX/MIN/zero)
+// in INSERT, SELECT, and WHERE comparisons. Both engines should handle
+// the full int64 range (-9223372036854775808 to 9223372036854775807).
+// Net-new nightshift-60.
+func numericBoundaryScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "numeric_boundary",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 9223372036854775807)",
+			"INSERT INTO t VALUES (2, -9223372036854775808)",
+			"INSERT INTO t VALUES (3, 0)",
+			"INSERT INTO t VALUES (4, 1)",
+			"INSERT INTO t VALUES (5, -1)",
+		},
+		Tests: []yamsql.Test{
+			// Round-trip BIGINT MAX / MIN / 0.
+			{Query: "SELECT val FROM t WHERE id = 1", Rows: [][]any{{int64(9223372036854775807)}}},
+			{Query: "SELECT val FROM t WHERE id = 2", Rows: [][]any{{int64(-9223372036854775808)}}},
+			{Query: "SELECT val FROM t WHERE id = 3", Rows: [][]any{{0}}},
+			// Comparison around zero.
+			{Query: "SELECT id FROM t WHERE val > 0 ORDER BY id", Rows: [][]any{{1}, {4}}},
+			{Query: "SELECT id FROM t WHERE val < 0 ORDER BY id", Rows: [][]any{{2}, {5}}},
+			{Query: "SELECT id FROM t WHERE val = 0", Rows: [][]any{{3}}},
+			// Boundary in WHERE — exact match on MAX.
+			{Query: "SELECT id FROM t WHERE val = 9223372036854775807", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE val = -9223372036854775808", Rows: [][]any{{2}}},
+			// Range across the full int64 span.
+			{Query: "SELECT COUNT(*) FROM t WHERE val >= -9223372036854775808 AND val <= 9223372036854775807", Rows: [][]any{{5}}},
+		},
+	}
+}
+
+// isNullWithIndexScenario probes `WHERE col IS NULL ORDER BY col`
+// with a satisfying secondary index. The matched rows all have
+// col=NULL (constant); within them the natural order is the inner
+// key (PK). ORDER BY col is then effectively a no-op — every
+// matched row has the same col value. Both engines should accept
+// without rejection. Drops NOT NULL on PK. Net-new nightshift-60.
+func isNullWithIndexScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "is_null_with_index",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// IS NULL with ORDER BY indexed col — same-value group.
+			{Query: "SELECT id FROM t WHERE v IS NULL ORDER BY v", Unordered: true, Rows: [][]any{{2}, {4}}},
+			// IS NULL with ORDER BY PK — natural-order satisfaction.
+			{Query: "SELECT id FROM t WHERE v IS NULL ORDER BY id", Rows: [][]any{{2}, {4}}},
+			// IS NOT NULL with ORDER BY PK.
+			{Query: "SELECT id, v FROM t WHERE v IS NOT NULL ORDER BY id", Rows: [][]any{{1, 10}, {3, 30}, {5, 20}}},
+			// COUNT over IS NULL.
+			{Query: "SELECT COUNT(*) FROM t WHERE v IS NULL", Rows: [][]any{{2}}},
+			{Query: "SELECT COUNT(*) FROM t WHERE v IS NOT NULL", Rows: [][]any{{3}}},
+		},
+	}
+}
+
+// nullOrderByPositionScenario pins NULL position in ORDER BY results
+// cross-engine. The Java contract (per fdb-record-layer's
+// ParseHelpers.isNullsLast default — `isDescending`):
+//
+//	ORDER BY col ASC   → NULLs FIRST (FDB key-encoding natural order)
+//	ORDER BY col DESC  → NULLs LAST  (reverse of natural order)
+//
+// FDB's tuple encoding makes NULL the lowest byte, so the natural
+// emission order of an index scan puts NULLs first in ASC. Both Java
+// and Go pin this contract; this probe is the cross-engine guard.
+// `TestFDB_OrderByNullOrdering` is the Go-side regression test for the
+// same contract. Drops NOT NULL on PK; adds an index on the nullable
+// col so the ORDER BY is plannable. Net-new nightshift-60.
+func nullOrderByPositionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "null_order_by_position",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 20)",
+		},
+		Tests: []yamsql.Test{
+			// ASC: NULLs FIRST. Among NULLs, secondary key is PK
+			// (id ASC), so id=2 before id=4. Then non-NULLs in v
+			// ASC: 10, 20, 30 → id=1, 5, 3.
+			{Query: "SELECT id, v FROM t ORDER BY v ASC", Rows: [][]any{{2, nil}, {4, nil}, {1, 10}, {5, 20}, {3, 30}}},
+			// DESC: full reverse of ASC sequence. FDB's reverse-scan
+			// applies key reversal to the entire (v, id) tuple, not
+			// just the leading axis — so within-NULL PK order is also
+			// reversed. ASC order is [2, 4, 1, 5, 3]; DESC is the
+			// strict reverse [3, 5, 1, 4, 2]. NULLs LAST follows from
+			// NULL being the lowest byte in v's encoding.
+			{Query: "SELECT id, v FROM t ORDER BY v DESC", Rows: [][]any{{3, 30}, {5, 20}, {1, 10}, {4, nil}, {2, nil}}},
+		},
+	}
+}
+
+// compositeIndexOrderByScenario probes single-column ORDER BY against
+// a composite index. Multi-column ORDER BY is rejected outright by
+// fdb-relational 4.11.1.0's Cascades planner (CLAUDE.md gotcha), so the
+// only portable forms are: single-col ORDER BY where the col is the
+// leading idx col (or its DESC reverse-scan), and the leading-col-
+// equated form where ORDER BY references a trailing idx col (the
+// equated leading col strips from the natural order, exposing the
+// trailing col as a single-col prefix). Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func compositeIndexOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "composite_index_order_by",
+		SchemaTemplate: "CREATE TABLE rp (id BIGINT, region STRING, tag STRING, score BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_tag ON rp (region, tag)",
+		Setup: []string{
+			"INSERT INTO rp VALUES (1, 'us', 'pro', 1), (2, 'us', 'free', 2), (3, 'eu', 'pro', 3), (4, 'eu', 'free', 4), (5, 'us', 'pro', 5)",
+		},
+		Tests: []yamsql.Test{
+			// Single-col ORDER BY on leading idx col — index emits in
+			// (region, tag, id), so ORDER BY region is a strict prefix.
+			// Multiset compare since within-region order is unspecified
+			// at the SELECT level.
+			{Query: "SELECT region, tag FROM rp ORDER BY region", Unordered: true, Rows: [][]any{{"eu", "free"}, {"eu", "pro"}, {"us", "free"}, {"us", "pro"}, {"us", "pro"}}},
+			// Reverse-scan satisfies single-col DESC.
+			{Query: "SELECT region, tag FROM rp ORDER BY region DESC", Unordered: true, Rows: [][]any{{"us", "pro"}, {"us", "free"}, {"us", "pro"}, {"eu", "pro"}, {"eu", "free"}}},
+			// Equality on leading col + single-col ORDER BY trailing idx
+			// col — eq strips region, leaves natural-order suffix (tag, id);
+			// ORDER BY tag is a single-col prefix of that.
+			{Query: "SELECT id, tag FROM rp WHERE region = 'us' ORDER BY tag", Unordered: true, Rows: [][]any{{2, "free"}, {1, "pro"}, {5, "pro"}}},
+		},
+	}
+}
+
+// dmlAdvancedScenario extends `dml_setup` with multi-column UPDATE,
+// computed-expression UPDATE, no-match UPDATE/DELETE, and DELETE with
+// compound predicates. INSERT ... SELECT FROM is intentionally NOT
+// tested — fdb-relational 4.11.1.0 rejects it with a syntax error
+// (the grammar's `insertStatement` rule only accepts VALUES). Drops
+// NOT NULL on PK. Net-new nightshift-60.
+func dmlAdvancedScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "dml_advanced",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400)",
+			// Multi-column SET in one UPDATE.
+			"UPDATE t SET a = 99, b = 999 WHERE id = 1",
+			// UPDATE with computed expression on RHS — references current row's value.
+			"UPDATE t SET a = a + 1 WHERE id = 2",
+			// UPDATE with compound predicate.
+			"UPDATE t SET b = 0 WHERE id > 2 AND a > 25",
+			// DELETE with compound predicate.
+			"DELETE FROM t WHERE id = 4 AND a >= 40",
+			// No-match UPDATE — no row, no error.
+			"UPDATE t SET a = -1 WHERE id = 9999",
+			// No-match DELETE.
+			"DELETE FROM t WHERE id = 9999",
+		},
+		Tests: []yamsql.Test{
+			// Final state: 3 rows {(1, 99, 999), (2, 21, 200), (3, 30, 0)}.
+			{Query: "SELECT id, a, b FROM t ORDER BY id", Rows: [][]any{{1, 99, 999}, {2, 21, 200}, {3, 30, 0}}},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			{Query: "SELECT a, b FROM t WHERE id = 1", Rows: [][]any{{99, 999}}},
+			{Query: "SELECT a FROM t WHERE id = 2", Rows: [][]any{{21}}},
+			{Query: "SELECT b FROM t WHERE id = 3", Rows: [][]any{{0}}},
+			// id=4 was deleted.
+			{Query: "SELECT id FROM t WHERE id = 4", Rows: [][]any{}},
+			// Aggregates over the post-DML state.
+			{Query: "SELECT SUM(a), SUM(b) FROM t", Rows: [][]any{{150, 1199}}},
+			{Query: "SELECT MIN(a), MAX(a) FROM t", Rows: [][]any{{21, 99}}},
+		},
+	}
+}
+
+// numericComparisonScenario probes type-promoted comparisons cross-engine.
+// Both engines must agree on the truth value of `WHERE bigint_col >
+// double_literal`, `WHERE double_col = bigint_literal`, etc. The
+// existing `between` scenario covers BETWEEN with mixed-type bounds;
+// this fills in the standard `<`, `<=`, `>`, `>=`, `=`, `<>` operators
+// across BIGINT and DOUBLE. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func numericComparisonScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "numeric_comparison",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, i BIGINT, d DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 5, 1.5), (2, 10, 2.5), (3, 100, 3.5), (4, 0, 0.0), (5, -5, -1.5)",
+		},
+		Tests: []yamsql.Test{
+			// BIGINT col vs DOUBLE literal — Java widens to DOUBLE.
+			{Query: "SELECT id FROM t WHERE i > 1.5 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE i < 5.5 ORDER BY id", Rows: [][]any{{1}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE i >= 10.0 ORDER BY id", Rows: [][]any{{2}, {3}}},
+			{Query: "SELECT id FROM t WHERE i <= -1.5 ORDER BY id", Rows: [][]any{{5}}},
+			// DOUBLE col vs BIGINT literal — widens to DOUBLE.
+			{Query: "SELECT id FROM t WHERE d > 1 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE d < 3 ORDER BY id", Rows: [][]any{{1}, {2}, {4}, {5}}},
+			{Query: "SELECT id FROM t WHERE d = 0 ORDER BY id", Rows: [][]any{{4}}},
+			// BIGINT-equality with DOUBLE-valued operand (lossless).
+			{Query: "SELECT id FROM t WHERE i = 5.0", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE i = -5.0", Rows: [][]any{{5}}},
+			// Inequality across types.
+			{Query: "SELECT id FROM t WHERE d <> 0.0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
+			{Query: "SELECT id FROM t WHERE i <> 0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
+			// Compound predicate mixing types.
+			{Query: "SELECT id FROM t WHERE i > 0 AND d > 1.0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			{Query: "SELECT id FROM t WHERE i > 0 OR d < 0.0 ORDER BY id", Rows: [][]any{{1}, {2}, {3}, {5}}},
+		},
+	}
+}
+
+// pkDescScenario probes ORDER BY DESC on PK columns. The natural
+// emission order of an FDB scan is ASC; DESC is satisfied via a
+// reverse scan when the ORDER BY is an all-DESC prefix of the
+// natural order. Existing scenarios mostly skip DESC variants ("Skips
+// DESC (cursors are ASC-only and Java's planner often can't
+// reverse)"); this scenario re-enables DESC where both engines
+// support it cross-engine. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func pkDescScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "pk_desc",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')",
+		},
+		Tests: []yamsql.Test{
+			// Full PK scan ORDER BY DESC — reverse scan emits in DESC order.
+			{Query: "SELECT id FROM t ORDER BY id DESC", Rows: [][]any{{5}, {4}, {3}, {2}, {1}}},
+			// PK range + ORDER BY id DESC.
+			{Query: "SELECT id FROM t WHERE id >= 3 ORDER BY id DESC", Rows: [][]any{{5}, {4}, {3}}},
+			// PK BETWEEN + ORDER BY id DESC.
+			{Query: "SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id DESC", Rows: [][]any{{4}, {3}, {2}}},
+			// PK equality (at-most-1-row) + ORDER BY id DESC.
+			{Query: "SELECT id, name FROM t WHERE id = 3 ORDER BY id DESC", Rows: [][]any{{3, "c"}}},
+			// PK IN-list + ORDER BY id DESC — my fix sorts IN-list values DESC.
+			{Query: "SELECT id FROM t WHERE id IN (1, 5, 3) ORDER BY id DESC", Rows: [][]any{{5}, {3}, {1}}},
+		},
+	}
+}
+
+// joinOrderByRightPKScenario probes JOIN + ORDER BY on the joined-side
+// PK col. Java's Cascades planner picks the JOIN-side outer based on
+// cost — so `FROM A, B WHERE A.fk = B.pk ORDER BY B.pk` succeeds in
+// Java by running B as the outer scan. Go's nested-loop is fixed
+// (left source = outer) and sorts the result in-memory; the JOIN sort
+// site preserves the in-memory fallback (TODO.md tracks the proper fix
+// gated on C2 QueryExecutor). Both engines produce the same final
+// row set when sorted, so cross-engine equivalence holds. Net-new
+// nightshift-60 to document Java's cost-model JOIN-side reordering.
+func joinOrderByRightPKScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "join_order_by_right_pk",
+		SchemaTemplate: "CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid))" +
+			" CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))",
+		Setup: []string{
+			"INSERT INTO Users VALUES (1, 'alice'), (2, 'bob')",
+			"INSERT INTO Orders VALUES (10, 1, 100), (11, 1, 200), (12, 2, 300)",
+		},
+		Tests: []yamsql.Test{
+			// ORDER BY left source PK — both engines satisfy directly
+			// (left is outer in Go's nested loop; Java picks Users-as-outer
+			// since u.uid is its PK).
+			{Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY u.uid", Unordered: true, Rows: [][]any{{"alice", 100}, {"alice", 200}, {"bob", 300}}},
+			// ORDER BY right source PK — Java picks Orders-as-outer for
+			// natural ordering; Go sorts in-memory post-JOIN. Same result
+			// row set under multiset comparison.
+			{Query: "SELECT u.name, o.total FROM Users u, Orders o WHERE u.uid = o.uid ORDER BY o.oid", Rows: [][]any{{"alice", 100}, {"alice", 200}, {"bob", 300}}},
+			// COUNT over the JOIN — aggregate path, exempt from any
+			// ORDER BY rejection.
+			{Query: "SELECT COUNT(*) FROM Users u, Orders o WHERE u.uid = o.uid", Rows: [][]any{{3}}},
+		},
+	}
+}
+
+// projectionAliasScenario probes column- and table-alias forms in
+// projection. Existing scenarios use aliases incidentally; this pins
+// the cross-engine alignment of `SELECT col AS alias`, `SELECT
+// table.col`, `FROM t AS alias`, and bare-column projection. Drops
+// NOT NULL on PK. Net-new nightshift-60.
+func projectionAliasScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "projection_alias",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')",
+		},
+		Tests: []yamsql.Test{
+			// Single-column rename via AS.
+			{Query: "SELECT id AS pk FROM t ORDER BY id", Rows: [][]any{{1}, {2}, {3}}},
+			// Multi-column with selective rename.
+			{Query: "SELECT id, v AS amount FROM t ORDER BY id", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}}},
+			// Table alias via AS, qualified ORDER BY.
+			{Query: "SELECT a.id, a.v FROM t AS a ORDER BY a.id", Rows: [][]any{{1, 10}, {2, 20}, {3, 30}}},
+			// Table alias without AS keyword.
+			{Query: "SELECT a.id FROM t a ORDER BY a.id", Rows: [][]any{{1}, {2}, {3}}},
+			// Both column and table aliased.
+			{Query: "SELECT a.s AS letter FROM t AS a ORDER BY a.id", Rows: [][]any{{"a"}, {"b"}, {"c"}}},
+			// Aliased column in WHERE — uses underlying col name.
+			{Query: "SELECT id AS pk FROM t WHERE id = 2", Rows: [][]any{{2}}},
+			// Computed projection with alias.
+			{Query: "SELECT id, v + 1 AS plus_one FROM t WHERE id = 1", Rows: [][]any{{1, 11}}},
+		},
+	}
+}
+
+// pkEqualityOrderByScenario pins PK-equality scan ORDER BY behaviour.
+// With NO satisfying index on the ORDER BY col, Java rejects with
+// UnableToPlan even though the result is at-most-1-row. With an
+// index on the ORDER BY col, Java picks that index and succeeds.
+// Cross-engine alignment requires Go to match: drop the Go-permissive
+// at-most-1-row exemption when no satisfying scan exists. ORDER BY
+// PK col always works (PK natural order satisfies). Drops NOT NULL on
+// PK. Net-new nightshift-60.
+func pkEqualityOrderByScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "pk_equality_order_by",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE INDEX idx_s ON t (s)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 100, 'a'), (2, 200, 'b'), (3, 300, 'c')",
+		},
+		Tests: []yamsql.Test{
+			// PK equality + ORDER BY a non-PK col with a satisfying
+			// index. The planner picks the index for ordering and
+			// post-filters by PK equality. 1 row matches.
+			{Query: "SELECT v, s FROM t WHERE id = 2 ORDER BY s", Rows: [][]any{{200, "b"}}},
+			{Query: "SELECT v, s FROM t WHERE id = 2 ORDER BY v", Rows: [][]any{{200, "b"}}},
+			// Single-value PK IN-list — same path.
+			{Query: "SELECT v, s FROM t WHERE id IN (2) ORDER BY s", Rows: [][]any{{200, "b"}}},
+			// PK-equality on a missing key → 0 rows.
+			{Query: "SELECT v, s FROM t WHERE id = 999 ORDER BY s", Rows: [][]any{}},
+			{Query: "SELECT v FROM t WHERE id IN (999) ORDER BY v", Rows: [][]any{}},
+			// PK equality + ORDER BY PK col — PK natural order satisfies
+			// directly without needing an index.
+			{Query: "SELECT v FROM t WHERE id = 1 ORDER BY id", Rows: [][]any{{100}}},
+		},
+	}
+}
+
+// whereComplexScenario probes complex WHERE shapes that combine
+// BETWEEN, IN, IS NULL, IS NOT NULL, NOT, LIKE, AND, OR. Existing
+// scenarios cover each individual primitive; this exercises the
+// combinations to surface any short-circuit / 3VL drift between the
+// engines under multi-leaf WHERE trees. Drops NOT NULL on PK.
+// Net-new nightshift-60.
+func whereComplexScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "where_complex",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c'), (4, 40, null), (5, 50, 'd')",
+		},
+		Tests: []yamsql.Test{
+			// BETWEEN + OR.
+			{Query: "SELECT id FROM t WHERE (v BETWEEN 10 AND 20) OR (s = 'd') ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// BETWEEN + IS NOT NULL combined.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 10 AND 50 AND s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// NOT BETWEEN — NULL operand → UNKNOWN → filtered.
+			{Query: "SELECT id FROM t WHERE v NOT BETWEEN 30 AND 50 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// Two-col IS NOT NULL.
+			{Query: "SELECT id FROM t WHERE v IS NOT NULL AND s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {2}, {5}}},
+			// OR of IS NULL (each row is NULL on at least one col → match).
+			{Query: "SELECT id FROM t WHERE v IS NULL OR s IS NULL ORDER BY id", Rows: [][]any{{3}, {4}}},
+			// NOT (BETWEEN). NULL → NOT NULL = NULL → filtered.
+			{Query: "SELECT id FROM t WHERE NOT (v BETWEEN 30 AND 50) ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// IN-list combined with IS NOT NULL on a different col.
+			{Query: "SELECT id FROM t WHERE v IN (10, 30, 50) AND s IS NOT NULL ORDER BY id", Rows: [][]any{{1}, {5}}},
+			// BETWEEN + LIKE. id=1 v=10 in [10,30] AND s='a' LIKE 'a%' → match.
+			{Query: "SELECT id FROM t WHERE (v BETWEEN 10 AND 30) AND s LIKE 'a%' ORDER BY id", Rows: [][]any{{1}}},
+			// Triple-AND: v non-NULL AND s non-NULL AND v >= 20.
+			{Query: "SELECT id FROM t WHERE v IS NOT NULL AND s IS NOT NULL AND v >= 20 ORDER BY id", Rows: [][]any{{2}, {5}}},
+			// OR + IS NULL — short-circuit on either side.
+			{Query: "SELECT id FROM t WHERE v IS NULL OR (v >= 30 AND s IS NOT NULL) ORDER BY id", Rows: [][]any{{3}, {5}}},
+		},
+	}
+}
+
+// dmlSetupScenario probes the visibility of mid-stream UPDATE / DELETE
+// in the setup phase. runWithSetup runs each setup statement
+// sequentially before the final query; INSERT then UPDATE then DELETE
+// then SELECT lets us pin both engines' DML semantics end-to-end. The
+// existing scenarios all confined DML to INSERT-only setup; this fills
+// the UPDATE / DELETE gap. Drops NOT NULL on PK. Net-new
+// nightshift-60.
+func dmlSetupScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "dml_setup",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			"UPDATE t SET v = 99 WHERE id = 2",
+			"DELETE FROM t WHERE id = 3",
+		},
+		Tests: []yamsql.Test{
+			// Final state: 3 rows {(1,10), (2,99), (4,40)}.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{{1, 10}, {2, 99}, {4, 40}}},
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+			{Query: "SELECT v FROM t WHERE id = 2", Rows: [][]any{{99}}},
+			{Query: "SELECT id FROM t WHERE id = 3", Rows: [][]any{}},
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{149}}},
+			{Query: "SELECT MIN(v), MAX(v) FROM t", Rows: [][]any{{10, 99}}},
+		},
+	}
+}
+
+// arithmeticCompoundScenario probes compound arithmetic in the SELECT
+// list using only fully-parenthesised forms. Implicit-precedence forms
+// like `a + b * 2` are NOT tested — fdb-relational 4.11.1.0 parses
+// arithmetic operators left-to-right with same precedence, so
+// `a + b * 2` evaluates as `(a + b) * 2`, not the SQL-standard
+// `a + (b * 2)`. New CLAUDE.md gotcha added nightshift-60. The Go
+// embedded engine follows standard precedence. The explicit-parens
+// forms below pin operator semantics independently of the precedence
+// divergence. Drops NOT NULL on PK.
+func arithmeticCompoundScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "arithmetic_compound",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 3, 1.5), (2, 20, 4, 2.5)",
+		},
+		Tests: []yamsql.Test{
+			// Parens-explicit compound expressions.
+			{Query: "SELECT a + (b * 2) FROM t WHERE id = 1", Rows: [][]any{{16}}},
+			{Query: "SELECT (a + b) * 2 FROM t WHERE id = 1", Rows: [][]any{{26}}},
+			{Query: "SELECT a - (b - 1) FROM t WHERE id = 1", Rows: [][]any{{8}}},
+			// Mixed integer and double promote to DOUBLE.
+			{Query: "SELECT a + c FROM t WHERE id = 1", Rows: [][]any{{11.5}}},
+			{Query: "SELECT a * c FROM t WHERE id = 1", Rows: [][]any{{15.0}}},
+			// Integer division on BIGINT operands stays integer.
+			{Query: "SELECT a / b FROM t WHERE id = 1", Rows: [][]any{{3}}},
+			// Float division on DOUBLE operands.
+			{Query: "SELECT c / 2 FROM t WHERE id = 1", Rows: [][]any{{0.75}}},
+			// Negation via `0 - col`. Unary minus on a column reference
+			// is rejected by fdb-relational 4.11.1.0's parser with
+			// `syntax error`. Bare-paren `(expr)` around a single
+			// scalar is parsed as a single-element record/tuple
+			// constructor, returning ImmutableRowStruct (the same
+			// "WHERE (b = true)" gotcha extends to projection scalars).
+			{Query: "SELECT 0 - a FROM t WHERE id = 1", Rows: [][]any{{-10}}},
+			// Modulo with explicit parens.
+			{Query: "SELECT (a % b) + 1 FROM t WHERE id = 1", Rows: [][]any{{2}}},
+			// Compound predicate — arithmetic in WHERE.
+			{Query: "SELECT id FROM t WHERE (a + b) > 20 ORDER BY id", Rows: [][]any{{2}}},
+			{Query: "SELECT id FROM t WHERE (a * 2) = 40 ORDER BY id", Rows: [][]any{{2}}},
+		},
+	}
+}
+
+// orderByIndexedColScenario pins the "ORDER BY a column with a
+// satisfying secondary index" path. Net-new nightshift-60: with the
+// in-memory sort fallback removed, Go relies on the new
+// `tryIndexScanForOrdering` branch (full secondary-index scan as the
+// last branch before the full-PK fallback) to satisfy this shape.
+// Cross-engine agreement here pins that the Go branch picks the right
+// index in the same cases Java's RemoveSortRule does. Drops NOT NULL
+// on PK; values chosen so that PK order ≠ indexed-col order.
+func orderByIndexedColScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "order_by_indexed_col",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_v ON t (v)" +
+			" CREATE INDEX idx_s ON t (s)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 30, 'c'), (2, 10, 'aa'), (3, 20, 'b'), (4, 5, 'a')",
+		},
+		Tests: []yamsql.Test{
+			// ORDER BY indexed BIGINT col — full idx_v scan in natural order.
+			{Query: "SELECT id FROM t ORDER BY v", Rows: [][]any{{4}, {2}, {3}, {1}}},
+			{Query: "SELECT id, v FROM t ORDER BY v", Rows: [][]any{{4, 5}, {2, 10}, {3, 20}, {1, 30}}},
+			// ORDER BY indexed STRING col — full idx_s scan. ASCII order:
+			// 'a' < 'aa' < 'b' < 'c'.
+			{Query: "SELECT id, s FROM t ORDER BY s", Rows: [][]any{{4, "a"}, {2, "aa"}, {3, "b"}, {1, "c"}}},
+			// ORDER BY indexed col DESC — reverse-scan satisfies.
+			{Query: "SELECT id FROM t ORDER BY v DESC", Rows: [][]any{{1}, {3}, {2}, {4}}},
+			// ORDER BY indexed col + WHERE on PK (post-filter via the index
+			// scan loop's evalPredicate).
+			{Query: "SELECT id, v FROM t WHERE id > 1 ORDER BY v", Rows: [][]any{{4, 5}, {2, 10}, {3, 20}}},
+			// ORDER BY indexed col + WHERE on the same col (range pushdown
+			// fires, distinct from the new full-index branch).
+			{Query: "SELECT id FROM t WHERE v >= 10 ORDER BY v", Rows: [][]any{{2}, {3}, {1}}},
 		},
 	}
 }
