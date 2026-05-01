@@ -4039,18 +4039,25 @@ func SeedRunCorpus() []RunQuery {
 		},
 		// ===== UNION ALL + composite-PK extended =====
 		{
+			// ORDER BY id added nightshift-65 — same UNION-ALL row-order
+			// flake reasoning as union_all_two_branches_multi_col_projection.
 			Name:           "union_all_two_branches_disjoint_where",
 			SchemaTemplate: "CREATE TABLE T_U1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_U1 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
-			Query:          "SELECT id FROM T_U1 WHERE v < 25 UNION ALL SELECT id FROM T_U1 WHERE v >= 25",
+			Query:          "SELECT id FROM T_U1 WHERE v < 25 UNION ALL SELECT id FROM T_U1 WHERE v >= 25 ORDER BY id",
 		},
 		// 3-branch UNION ALL diverges in row order (Java doesn't honor
 		// outer ORDER-BY-style ordering; row data differs); skipped.
 		{
+			// ORDER BY id added nightshift-65: UNION ALL row order is
+			// undefined per SQL spec; both engines diverged
+			// (interleaved vs concatenated) intermittently. ORDER BY id
+			// over the PK makes ordering deterministic without
+			// changing the UNION ALL pin's intent.
 			Name:           "union_all_two_branches_multi_col_projection",
 			SchemaTemplate: "CREATE TABLE T_U3 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_U3 VALUES (1, 10), (2, 20), (3, 30)"},
-			Query:          "SELECT id, v FROM T_U3 WHERE v < 20 UNION ALL SELECT id, v FROM T_U3 WHERE v >= 20",
+			Query:          "SELECT id, v FROM T_U3 WHERE v < 20 UNION ALL SELECT id, v FROM T_U3 WHERE v >= 20 ORDER BY id",
 		},
 		{
 			Name:           "composite_pk_leading_eq_full_row_projection",
@@ -4915,6 +4922,35 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_J2 VALUES (13, 2, 25)",
 			},
 			Query: "SELECT count(*) FROM T_J1 a, T_J2 b WHERE a.id = b.parent AND b.val > 75",
+		},
+
+		// ===== Compound shapes (probe-pin nightshift-65) =====
+		// Dropped probe_orderby_arith_expr and
+		// probe_orderby_mixed_directions: Java rejects unindexed
+		// ORDER BY with the generic "Cascades planner could not
+		// plan query"; Go's wording is the more specific "ORDER BY
+		// X cannot be satisfied by any scan strategy …". Same root
+		// as TODO #39's UnableToPlanException family. Pinning
+		// these requires either a Go-side wording change (regress-
+		// ing usability) or covering indexes for each ORDER BY,
+		// neither in this batch's scope.
+		// Dropped probe_distinct_two_cols: Go bug — compound
+		// DISTINCT (`SELECT DISTINCT a, b`) does not de-duplicate
+		// across the column tuple, returning all 4 rows including
+		// (x,1) twice; Java correctly returns 3 rows. Single-
+		// column DISTINCT works (see select_distinct corpus). New
+		// TODO required: compound-DISTINCT dedup in Go.
+		{
+			// Two-deep nested derived table with WHERE at both levels.
+			// Pins the visitor-recursion + scope-resolution chain when
+			// inner derived's projection is filtered, then outer filter
+			// further narrows.
+			Name:           "nested_derived_double_where",
+			SchemaTemplate: "CREATE TABLE T_OBE4 (id BIGINT, val BIGINT, tag STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_OBE4 VALUES (1, 10, 'a'), (2, 20, 'a'), (3, 30, 'b'), (4, 40, 'b')",
+			},
+			Query: "SELECT x FROM (SELECT id AS x, val AS y FROM (SELECT id, val, tag FROM T_OBE4 WHERE tag = 'a') AS inner_d WHERE val > 5) AS outer_d WHERE x < 3",
 		},
 	}
 }
