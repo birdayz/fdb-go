@@ -10,16 +10,18 @@ import (
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
-// UNION ALL / UNION DISTINCT executor.
+// UNION ALL executor.
 //
 // Trailing ORDER BY / LIMIT / OFFSET on the rightmost simpleTable
 // is lifted to the combined result — SQL-standard semantics the
 // ANTLR grammar hides by greedily attaching the clause to the last
 // selectElements. Column count + column-type compatibility checks
 // match Java's union.yamsql contract (UNION ALL mismatch → 42F64,
-// UNION DISTINCT mismatch → 0AF00, type mismatch → 42F65). The
-// combined row set is deduplicated for DISTINCT via a rowKey
-// hash.
+// type mismatch → 42F65).
+//
+// Plain `UNION` (implicit DISTINCT) is rejected at entry — Java
+// alignment dayshift-62. fdb-relational's planner has no de-duplication
+// operator wired into the union path, so DISTINCT is not supported.
 //
 // Destined for plan/physical/union.go per RFC 021 Phase 1c.
 
@@ -90,25 +92,12 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 		}
 	}
 
-	quantifier := ""
-	if q := setQ.GetQuantifier(); q != nil {
-		quantifier = strings.ToUpper(q.GetText())
-	}
-
 	// SQL standard: UNION sides must have matching column counts; names
 	// are positional (left's names become the result schema). Java's
-	// union.yamsql asymmetrically splits the SQLSTATE on the quantifier:
-	// UNION ALL arity mismatch errors 42F64 (UNION_INCORRECT_COLUMN_COUNT
-	// — class-22-style data error), while UNION (implicit DISTINCT) with
-	// arity mismatch errors 0AF00 (FEATURE_NOT_SUPPORTED). The DISTINCT
-	// variant can't even be expressed when rows have different arities
-	// because set-membership has no meaning.
+	// union.yamsql errors 42F64 (UNION_INCORRECT_COLUMN_COUNT) on
+	// arity mismatch. Only UNION ALL reaches here (DISTINCT was
+	// rejected at entry).
 	if len(leftCols) != len(rightCols) {
-		if quantifier != "ALL" {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"UNION DISTINCT column count mismatch: left has %d columns, right has %d",
-				len(leftCols), len(rightCols))
-		}
 		return nil, api.NewErrorf(api.ErrCodeUnionIncorrectColumnCount,
 			"UNION ALL column count mismatch: left has %d columns, right has %d",
 			len(leftCols), len(rightCols))
@@ -146,19 +135,6 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	}
 
 	combined := append(leftRows, rightRows...) //nolint:gocritic
-	if quantifier != "ALL" {
-		// UNION (implicit DISTINCT) — deduplicate.
-		seen := make(map[string]struct{}, len(combined))
-		deduped := combined[:0]
-		for _, row := range combined {
-			key := rowKey(row)
-			if _, exists := seen[key]; !exists {
-				seen[key] = struct{}{}
-				deduped = append(deduped, row)
-			}
-		}
-		combined = deduped
-	}
 
 	// Apply union-level ORDER BY against the result schema (leftCols by position).
 	if len(unionOrder) > 0 {
