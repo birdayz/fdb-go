@@ -5279,6 +5279,137 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, s FROM T_SE10 WHERE s LIKE 'a%' OR s LIKE 'c%' ORDER BY id",
 		},
+
+		// ===== JOIN variation probes =====
+		{
+			// Two-table comma join with EQ predicate, projecting columns
+			// from both sides (verifies multi-source projection ordering).
+			Name: "join_eq_proj_both_sides",
+			SchemaTemplate: "CREATE TABLE T_JE1 (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE2 (id BIGINT, owner BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE1 VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')",
+				"INSERT INTO T_JE2 VALUES (10, 1, 'red'), (11, 2, 'blue'), (12, 1, 'green')",
+			},
+			Query: "SELECT a.id, a.name, b.label FROM T_JE1 a, T_JE2 b WHERE a.id = b.owner ORDER BY b.id",
+		},
+		{
+			// Comma join with strict-greater cross-table predicate (no
+			// equality on join cols) — pins cross-product + filter shape.
+			Name: "join_gt_cross_table",
+			SchemaTemplate: "CREATE TABLE T_JE3 (id BIGINT, lo BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE4 (id BIGINT, hi BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE3 VALUES (1, 10), (2, 50), (3, 100)",
+				"INSERT INTO T_JE4 VALUES (1, 25), (2, 75), (3, 200)",
+			},
+			Query: "SELECT count(*) FROM T_JE3 a, T_JE4 b WHERE b.hi > a.lo",
+		},
+		{
+			// Three-table comma join chained via two equality predicates —
+			// pins planner's ability to chain joins through a middle table.
+			Name: "three_way_join_count",
+			SchemaTemplate: "CREATE TABLE T_JE5 (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE6 (id BIGINT, y BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE7 (id BIGINT, z BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE5 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_JE6 VALUES (10, 100), (20, 200), (30, 300)",
+				"INSERT INTO T_JE7 VALUES (100, 1000), (200, 2000), (300, 3000)",
+			},
+			Query: "SELECT count(*) FROM T_JE5 a, T_JE6 b, T_JE7 c WHERE a.x = b.id AND b.y = c.id",
+		},
+		{
+			// Self-join via comma — child rows linked to parent rows by
+			// parent-id; deterministic ORDER BY on child PK.
+			Name:           "self_join_grandchild_chain",
+			SchemaTemplate: "CREATE TABLE T_JE8 (id BIGINT, parent BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE8 VALUES (1, 0, 'root'), (2, 1, 'a'), (3, 1, 'b'), (4, 2, 'c'), (5, 3, 'd')",
+			},
+			Query: "SELECT child.id, parent.name FROM T_JE8 child, T_JE8 parent WHERE child.parent = parent.id ORDER BY child.id",
+		},
+		{
+			// JOIN producing empty result — no left row's owner matches any
+			// right id; pins zero-row output of the join.
+			Name: "join_empty_result",
+			SchemaTemplate: "CREATE TABLE T_JE9 (id BIGINT, owner BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE10 (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE9 VALUES (1, 999), (2, 998)",
+				"INSERT INTO T_JE10 VALUES (1, 'a'), (2, 'b')",
+			},
+			Query: "SELECT count(*) FROM T_JE9 a, T_JE10 b WHERE a.owner = b.id",
+		},
+		{
+			// JOIN where right table is empty — verifies engines agree on
+			// the empty-side cartesian semantics.
+			Name: "join_right_table_empty",
+			SchemaTemplate: "CREATE TABLE T_JE11 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE12 (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE11 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_JE11 a, T_JE12 b WHERE a.id = b.id",
+		},
+		{
+			// JOIN with composite-PK on one side — equality on first PK
+			// component plus a key from the right side.
+			Name: "join_composite_pk_left",
+			SchemaTemplate: "CREATE TABLE T_JE13 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id)) " +
+				"CREATE TABLE T_JE14 (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE13 VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 300)",
+				"INSERT INTO T_JE14 VALUES (1, 'one'), (2, 'two')",
+			},
+			Query: "SELECT a.region, a.val, b.label FROM T_JE13 a, T_JE14 b WHERE a.id = b.id ORDER BY a.region, a.id",
+		},
+		{
+			// COUNT over JOIN with multiple AND predicates on join column
+			// plus filter — pins push-down behavior on the inner side.
+			Name: "join_and_predicate_count",
+			SchemaTemplate: "CREATE TABLE T_JE15 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE16 (id BIGINT, gid BIGINT, score BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE15 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_JE16 VALUES (1, 10, 50), (2, 20, 150), (3, 30, 250), (4, 10, 999)",
+			},
+			Query: "SELECT count(*) FROM T_JE15 a, T_JE16 b WHERE a.gid = b.gid AND b.score > 100",
+		},
+		{
+			// Nested derived-table JOIN: inner SELECT used as a source
+			// then joined to a regular table — pins derived-source plan.
+			Name: "derived_join_outer",
+			SchemaTemplate: "CREATE TABLE T_JE17 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE18 (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE17 VALUES (1, 10, 100), (2, 20, 200), (3, 10, 50), (4, 30, 300)",
+				"INSERT INTO T_JE18 VALUES (10, 'x'), (20, 'y'), (30, 'z')",
+			},
+			Query: "SELECT d.id, b.label FROM (SELECT id, gid FROM T_JE17 WHERE val > 75) AS d, T_JE18 b WHERE d.gid = b.gid ORDER BY d.id",
+		},
+		{
+			// JOIN where same-named column (id) appears in projection from
+			// both sides — verifies dedup via aliasing in column metadata.
+			Name: "join_dup_colname_aliased",
+			SchemaTemplate: "CREATE TABLE T_JE19 (id BIGINT, ref BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JE20 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE19 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_JE20 VALUES (10, 'a'), (20, 'b'), (30, 'c')",
+			},
+			Query: "SELECT a.id AS aid, b.id AS bid, b.name FROM T_JE19 a, T_JE20 b WHERE a.ref = b.id ORDER BY a.id",
+		},
+		{
+			// Three-way self-chain via comma: grandchild -> child -> root
+			// — pins multi-step self-join with three aliases of one table.
+			Name:           "self_join_three_aliases",
+			SchemaTemplate: "CREATE TABLE T_JE21 (id BIGINT, parent BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JE21 VALUES (1, 0, 'root'), (2, 1, 'mid'), (3, 2, 'leaf')",
+			},
+			Query: "SELECT g.id, p.name, gp.name FROM T_JE21 g, T_JE21 p, T_JE21 gp WHERE g.parent = p.id AND p.parent = gp.id ORDER BY g.id",
+		},
 	}
 }
 
