@@ -220,6 +220,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		coalesceTypePromotionScenario(),
 		minMaxBigintBoundaryScenario(),
 		multiInsertSetupScenario(),
+		orderByCompositeIdxFilterScenario(),
+		updateChainScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
 	}
@@ -3145,6 +3147,60 @@ func multiInsertSetupScenario() *yamsql.Scenario {
 			}},
 			// Range over the multi-INSERT result.
 			{Query: "SELECT v FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id", Rows: [][]any{{200}, {300}, {400}}},
+		},
+	}
+}
+
+// orderByCompositeIdxFilterScenario probes ORDER BY composite-index
+// columns with WHERE filter on the leading column. Net-new nightshift-61.
+func orderByCompositeIdxFilterScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "order_by_composite_idx_filter",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, region STRING, bucket BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE INDEX idx_region_bucket ON t (region, bucket)",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'us', 1, 100), (2, 'us', 2, 200), (3, 'eu', 1, 300), (4, 'us', 1, 400), (5, 'eu', 2, 500)",
+		},
+		Tests: []yamsql.Test{
+			// Equated leading col + ORDER BY trailing col — natural-order
+			// satisfied by index scan with region prefix.
+			{
+				Query: "SELECT id, bucket FROM t WHERE region = 'us' ORDER BY bucket",
+				Rows:  [][]any{{1, 1}, {4, 1}, {2, 2}},
+			},
+			// Equated leading + range trailing.
+			{
+				Query: "SELECT id FROM t WHERE region = 'eu' AND bucket >= 1 ORDER BY bucket",
+				Rows:  [][]any{{3}, {5}},
+			},
+			// Equated leading + WHERE filter on trailing.
+			{
+				Query: "SELECT id, v FROM t WHERE region = 'us' AND bucket = 1 ORDER BY id",
+				Rows:  [][]any{{1, 100}, {4, 400}},
+			},
+		},
+	}
+}
+
+// updateChainScenario probes a chain of UPDATEs in setup followed by
+// final-state SELECT. Net-new nightshift-61.
+func updateChainScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "update_chain",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+			"UPDATE t SET v = v + 5 WHERE id = 1",
+			"UPDATE t SET v = v * 2 WHERE id = 1",
+			"UPDATE t SET v = v - 1 WHERE id = 1",
+			"UPDATE t SET v = 99 WHERE id = 2",
+		},
+		Tests: []yamsql.Test{
+			// Final state: id=1 → ((10+5)*2)-1 = 29; id=2 → 99; id=3 → 30.
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{{1, 29}, {2, 99}, {3, 30}}},
+			// Aggregate over the post-chain state.
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{158}}},
+			{Query: "SELECT MAX(v) FROM t", Rows: [][]any{{99}}},
 		},
 	}
 }
