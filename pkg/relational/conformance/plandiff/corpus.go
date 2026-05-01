@@ -3527,6 +3527,20 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT COUNT(*), COUNT(name) FROM T_CCS",
 		},
 		{
+			// PROBE: WHERE flag = TRUE explicit
+			Name:           "where_bool_eq_true",
+			SchemaTemplate: "CREATE TABLE T_SBC (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SBC VALUES (1, TRUE), (2, FALSE), (3, TRUE)"},
+			Query:          "SELECT id FROM T_SBC WHERE flag = TRUE ORDER BY id",
+		},
+		{
+			// PROBE: WHERE with AND chain (3-conjunct)
+			Name:           "where_and_chain_3",
+			SchemaTemplate: "CREATE TABLE T_WAC (id BIGINT, x BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WAC VALUES (1, 10, 20, 30), (2, 5, 25, 35), (3, 10, 20, 35)"},
+			Query:          "SELECT id FROM T_WAC WHERE x = 10 AND y = 20 AND z = 30 ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
