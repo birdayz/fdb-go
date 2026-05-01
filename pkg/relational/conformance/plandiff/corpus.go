@@ -6758,6 +6758,239 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, CAST(b AS STRING) FROM T_CT21 ORDER BY id",
 		},
+
+		// ===== WHERE predicate composition (deeper) — multi-leaf AND/OR/NOT =====
+		// Pins shapes where Java + Go must agree byte-for-byte across mixed
+		// boolean composition: parens, DeMorgan inversions, comparison
+		// interplay, BETWEEN/IN/IS NULL/LIKE in OR-chains, redundancy.
+		{
+			// Mixed AND/OR with parens — disjunctive head AND-ed with a
+			// range. Forces the simplifier to keep the OR group intact.
+			Name:           "where_or_paren_and_range",
+			SchemaTemplate: "CREATE TABLE T_WP1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP1 VALUES (1, 1, 5)",
+				"INSERT INTO T_WP1 VALUES (2, 2, 20)",
+				"INSERT INTO T_WP1 VALUES (3, 3, 30)",
+				"INSERT INTO T_WP1 VALUES (4, 1, 25)",
+			},
+			Query: "SELECT id FROM T_WP1 WHERE (a = 1 OR a = 2) AND b > 10 ORDER BY id",
+		},
+		{
+			// 4-way AND chain — multi-leaf simplification depth.
+			Name:           "where_four_way_and",
+			SchemaTemplate: "CREATE TABLE T_WP2 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP2 VALUES (1, 1, 1, 1, 1)",
+				"INSERT INTO T_WP2 VALUES (2, 1, 1, 1, 0)",
+				"INSERT INTO T_WP2 VALUES (3, 0, 1, 1, 1)",
+				"INSERT INTO T_WP2 VALUES (4, 1, 0, 1, 1)",
+			},
+			Query: "SELECT id FROM T_WP2 WHERE a = 1 AND b = 1 AND c = 1 AND d = 1 ORDER BY id",
+		},
+		{
+			// 4-way OR chain — disjunctive multi-leaf.
+			Name:           "where_four_way_or",
+			SchemaTemplate: "CREATE TABLE T_WP3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP3 VALUES (1, 10)",
+				"INSERT INTO T_WP3 VALUES (2, 20)",
+				"INSERT INTO T_WP3 VALUES (3, 30)",
+				"INSERT INTO T_WP3 VALUES (4, 40)",
+				"INSERT INTO T_WP3 VALUES (5, 50)",
+			},
+			Query: "SELECT id FROM T_WP3 WHERE val = 10 OR val = 20 OR val = 30 OR val = 40 ORDER BY id",
+		},
+		{
+			// Nested parens at compound level — `((a) AND (b))` is the
+			// compound form (Java accepts; bare `(a > 5)` would reject
+			// per the top-level paren ban).
+			Name:           "where_nested_paren_and",
+			SchemaTemplate: "CREATE TABLE T_WP4 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP4 VALUES (1, 6, 5)",
+				"INSERT INTO T_WP4 VALUES (2, 6, 9)",
+				"INSERT INTO T_WP4 VALUES (3, 4, 9)",
+				"INSERT INTO T_WP4 VALUES (4, 7, 11)",
+			},
+			Query: "SELECT id FROM T_WP4 WHERE ((a > 5) AND (b < 10)) ORDER BY id",
+		},
+		{
+			// DeMorgan: NOT(A AND B) ≡ NOT A OR NOT B. Pins the
+			// simplifier's NOT-distribution path.
+			Name:           "where_not_and_demorgan",
+			SchemaTemplate: "CREATE TABLE T_WP5 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP5 VALUES (1, 1, 2)",
+				"INSERT INTO T_WP5 VALUES (2, 1, 3)",
+				"INSERT INTO T_WP5 VALUES (3, 2, 2)",
+				"INSERT INTO T_WP5 VALUES (4, 3, 4)",
+			},
+			Query: "SELECT id FROM T_WP5 WHERE NOT (a = 1 AND b = 2) ORDER BY id",
+		},
+		{
+			// Triple negation — parser robustness. NOT NOT NOT (a > 5)
+			// folds to NOT (a > 5).
+			Name:           "where_triple_not",
+			SchemaTemplate: "CREATE TABLE T_WP6 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP6 VALUES (1, 3, 1)",
+				"INSERT INTO T_WP6 VALUES (2, 5, 1)",
+				"INSERT INTO T_WP6 VALUES (3, 7, 1)",
+				"INSERT INTO T_WP6 VALUES (4, 9, 1)",
+			},
+			Query: "SELECT id FROM T_WP6 WHERE NOT NOT NOT (a > 5) AND b = 1 ORDER BY id",
+		},
+		{
+			// Mixed comparison + IN — pins IN-list lowering when
+			// AND-ed with a range comparison.
+			Name:           "where_cmp_and_in",
+			SchemaTemplate: "CREATE TABLE T_WP7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP7 VALUES (1, 50)",
+				"INSERT INTO T_WP7 VALUES (2, 150)",
+				"INSERT INTO T_WP7 VALUES (3, 250)",
+				"INSERT INTO T_WP7 VALUES (4, 350)",
+			},
+			Query: "SELECT id FROM T_WP7 WHERE val > 100 AND id IN (1, 2, 3) ORDER BY id",
+		},
+		{
+			// BETWEEN AND-ed with a string equality — BETWEEN bounds
+			// + extra leaf composition.
+			Name:           "where_between_and_eq",
+			SchemaTemplate: "CREATE TABLE T_WP8 (id BIGINT, val BIGINT, tag STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP8 VALUES (1, 3, 'x')",
+				"INSERT INTO T_WP8 VALUES (2, 50, 'x')",
+				"INSERT INTO T_WP8 VALUES (3, 50, 'y')",
+				"INSERT INTO T_WP8 VALUES (4, 200, 'x')",
+			},
+			Query: "SELECT id FROM T_WP8 WHERE val BETWEEN 5 AND 100 AND tag = 'x' ORDER BY id",
+		},
+		{
+			// Column-vs-column comparison interplay across an OR.
+			Name:           "where_col_vs_col_or",
+			SchemaTemplate: "CREATE TABLE T_WP9 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP9 VALUES (1, 1, 1, 2, 3)",
+				"INSERT INTO T_WP9 VALUES (2, 1, 2, 3, 3)",
+				"INSERT INTO T_WP9 VALUES (3, 4, 5, 7, 8)",
+				"INSERT INTO T_WP9 VALUES (4, 9, 9, 9, 9)",
+			},
+			Query: "SELECT id FROM T_WP9 WHERE a = b OR c = d ORDER BY id",
+		},
+		{
+			// Subsumed conjunction: a > 5 AND a > 10 ≡ a > 10. Pins
+			// redundant-bound simplification.
+			Name:           "where_subsumed_and",
+			SchemaTemplate: "CREATE TABLE T_WP10 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP10 VALUES (1, 3)",
+				"INSERT INTO T_WP10 VALUES (2, 7)",
+				"INSERT INTO T_WP10 VALUES (3, 12)",
+				"INSERT INTO T_WP10 VALUES (4, 20)",
+			},
+			Query: "SELECT id FROM T_WP10 WHERE a > 5 AND a > 10 ORDER BY id",
+		},
+		{
+			// Range conjunction — closed [10, 50] interval via two
+			// comparisons (the underlying form BETWEEN unfolds to).
+			Name:           "where_range_conjunction",
+			SchemaTemplate: "CREATE TABLE T_WP11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP11 VALUES (1, 5)",
+				"INSERT INTO T_WP11 VALUES (2, 25)",
+				"INSERT INTO T_WP11 VALUES (3, 50)",
+				"INSERT INTO T_WP11 VALUES (4, 60)",
+			},
+			Query: "SELECT id FROM T_WP11 WHERE val >= 10 AND val <= 50 ORDER BY id",
+		},
+		{
+			// Range collapsed to a single value — pin equivalence with
+			// `val = 5`.
+			Name:           "where_range_single_value",
+			SchemaTemplate: "CREATE TABLE T_WP12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP12 VALUES (1, 4)",
+				"INSERT INTO T_WP12 VALUES (2, 5)",
+				"INSERT INTO T_WP12 VALUES (3, 5)",
+				"INSERT INTO T_WP12 VALUES (4, 6)",
+			},
+			Query: "SELECT id FROM T_WP12 WHERE val >= 5 AND val <= 5 ORDER BY id",
+		},
+		{
+			// Always-false predicate (1 = 0) AND-ed with a real leg —
+			// returns 0 rows. Pins literal compare folding.
+			Name:           "where_always_false",
+			SchemaTemplate: "CREATE TABLE T_WP13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP13 VALUES (1, 10)",
+				"INSERT INTO T_WP13 VALUES (2, 20)",
+			},
+			Query: "SELECT id FROM T_WP13 WHERE 1 = 0 AND val > 0 ORDER BY id",
+		},
+		{
+			// IS NULL combined with NOT — alternative to IS NOT NULL.
+			Name:           "where_not_is_null",
+			SchemaTemplate: "CREATE TABLE T_WP14 (id BIGINT, val BIGINT, tag STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP14 VALUES (1, 10, 'a')",
+				"INSERT INTO T_WP14 VALUES (2, NULL, 'b')",
+				"INSERT INTO T_WP14 VALUES (3, 30, 'c')",
+				"INSERT INTO T_WP14 VALUES (4, NULL, 'd')",
+			},
+			Query: "SELECT id FROM T_WP14 WHERE NOT (val IS NULL) AND tag <> 'z' ORDER BY id",
+		},
+		{
+			// Nested OR inside AND — `a = 1 AND (b = 2 OR c = 3)`.
+			Name:           "where_or_inside_and",
+			SchemaTemplate: "CREATE TABLE T_WP15 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP15 VALUES (1, 1, 2, 9)",
+				"INSERT INTO T_WP15 VALUES (2, 1, 9, 3)",
+				"INSERT INTO T_WP15 VALUES (3, 1, 9, 9)",
+				"INSERT INTO T_WP15 VALUES (4, 2, 2, 3)",
+			},
+			Query: "SELECT id FROM T_WP15 WHERE a = 1 AND (b = 2 OR c = 3) ORDER BY id",
+		},
+		{
+			// Triple AND with one IS NULL leg — pins NULL composition
+			// against ordinary comparisons (Kleene under conjunction).
+			Name:           "where_and_is_null_mid",
+			SchemaTemplate: "CREATE TABLE T_WP16 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP16 VALUES (1, 5, NULL, 10)",
+				"INSERT INTO T_WP16 VALUES (2, 5, 1, 10)",
+				"INSERT INTO T_WP16 VALUES (3, -1, NULL, 10)",
+				"INSERT INTO T_WP16 VALUES (4, 5, NULL, 200)",
+			},
+			Query: "SELECT id FROM T_WP16 WHERE a > 0 AND b IS NULL AND c < 100 ORDER BY id",
+		},
+		{
+			// LIKE in an OR-chain with a numeric comparison — pins
+			// LIKE-as-leaf composition.
+			Name:           "where_like_or_cmp",
+			SchemaTemplate: "CREATE TABLE T_WP17 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP17 VALUES (1, 'apple', 50)",
+				"INSERT INTO T_WP17 VALUES (2, 'banana', 200)",
+				"INSERT INTO T_WP17 VALUES (3, 'cherry', 50)",
+				"INSERT INTO T_WP17 VALUES (4, 'avocado', 10)",
+			},
+			Query: "SELECT id FROM T_WP17 WHERE name LIKE 'a%' OR val > 100 ORDER BY id",
+		},
+		{
+			// Always-true predicate (1 = 1) AND-ed with a real leg —
+			// degenerate to the real leg.
+			Name:           "where_always_true",
+			SchemaTemplate: "CREATE TABLE T_WP18 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WP18 VALUES (1, 10)",
+				"INSERT INTO T_WP18 VALUES (2, 20)",
+				"INSERT INTO T_WP18 VALUES (3, 30)",
+			},
+			Query: "SELECT id FROM T_WP18 WHERE 1 = 1 AND val > 15 ORDER BY id",
+		},
 	}
 }
 
