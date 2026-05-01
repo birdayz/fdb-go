@@ -9,7 +9,7 @@
 #     Java's planner ("Unsupported operator MOD", 0A000), so it is
 #     not exercised here.
 #
-#   * Rejected (Java-aligned, swingshift-64 TODO #3): ABS / SQRT /
+#   * Rejected (Java-aligned): ABS / SQRT /
 #     POWER / POW / FLOOR / CEIL / CEILING / ROUND / SIGN / PI /
 #     EXP / LN / LOG / MOD. fdb-relational 4.11.1.0's
 #     @AutoService(BuiltInFunction.class) ArithmeticValue registry

@@ -11,7 +11,7 @@
 #     verify presence + structural shape via IS NOT NULL / IS NULL
 #     rather than literal value equality.
 #
-#   * Rejected (Java-aligned, swingshift-64 TODO #3): MySQL-style
+#   * Rejected (Java-aligned): MySQL-style
 #     aliases NOW / CURDATE / CURTIME / SYSDATE / UTC_TIMESTAMP /
 #     UTC_DATE / UTC_TIME. fdb-relational 4.11.1.0's function
 #     registry has no entries; Java's planner emits "Unsupported

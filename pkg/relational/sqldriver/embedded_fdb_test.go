@@ -3261,7 +3261,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
 
 	// ROUND is absent from fdb-relational 4.11.1.0's BuiltInFunction
-	// registry (swingshift-64 TODO #3) — Java's planner emits
+	// registry — Java's planner emits
 	// "Unsupported operator ROUND" (0A000) before evaluation, so the
 	// pre-cleanup Go-side decimals-argument validation never runs.
 	// Pin the rejection here for both the NULL-decimals and the
@@ -5701,7 +5701,7 @@ func TestFDB_ReversePositionRejected(t *testing.T) {
 // byte-equal wording. Pre-cleanup Go evaluated EXP (NULL on overflow),
 // LN, LOG (Math.log(x)/Math.log(base)), SQRT (NULL on negative), and
 // POWER (NULL on NaN/Inf, otherwise math.Pow) — those Go-side
-// evaluators have been removed (commits 39bcb4d6, b59e1394, swingshift-64).
+// evaluators have been removed (commits 39bcb4d6, b59e1394).
 func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -5893,8 +5893,8 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	// input). STRING-family scalar functions (UPPER / LOWER / TRIM)
 	// are absent from Java's function registry — those are pinned
 	// to reject in TestFDB_StringFunctionsRejected and friends, not
-	// here. ABS / SQRT / FLOOR / SIGN are also absent (swingshift-64
-	// TODO #3) and rejected at the registry layer. The NULL-
+	// here. ABS / SQRT / FLOOR / SIGN are also absent and rejected
+	// at the registry layer. The NULL-
 	// propagation focus here uses the `%` operator — Java exposes
 	// modulo only via `%` (the synonym map binds `%` -> "mod"); the
 	// MOD function-call form is rejected. The Mod evaluator preserves
@@ -6111,7 +6111,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// "Unsupported operator ABS" (SQLSTATE 0A000) before any
 			// argument validation runs. Pre-cleanup, Go evaluated ABS
 			// and rejected MinInt64 with 22003 NUMERIC_VALUE_OUT_OF_RANGE;
-			// with the Go-side dispatch removed (swingshift-64 TODO #3),
+			// with the Go-side dispatch removed,
 			// the rejection now fires at the function-registry layer
 			// with 0A000 and the byte-equal Java message. Per project
 			// conformance principle: doesn't work in Java → doesn't
