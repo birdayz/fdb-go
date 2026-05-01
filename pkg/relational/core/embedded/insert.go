@@ -52,8 +52,11 @@ func wrapSaveRecordError(err error) error {
 	}
 	var existsErr *recordlayer.RecordAlreadyExistsError
 	if errors.As(err, &existsErr) {
+		// Java verbatim: 'record already exists' (the
+		// RecordAlreadyExistsException.getMessage() — fdb-relational
+		// doesn't include the PK in the message). Aligned dayshift-62.
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
-			"primary key %v already exists", existsErr.PrimaryKey)
+			"record already exists")
 	}
 	var keySizeErr *recordlayer.IndexKeySizeError
 	if errors.As(err, &keySizeErr) {

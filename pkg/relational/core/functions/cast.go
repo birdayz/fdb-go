@@ -35,7 +35,7 @@ func CastValue(v any, typeName string) (any, error) {
 		case int64:
 			if is32BitInteger && (n < math.MinInt32 || n > math.MaxInt32) {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value %d out of range for INTEGER", n)
+					"Invalid cast operation Value out of range for INT: %d", n)
 			}
 			return n, nil
 		case float64:
@@ -65,7 +65,7 @@ func CastValue(v any, typeName string) (any, error) {
 			r := int64(rounded)
 			if is32BitInteger && (r < math.MinInt32 || r > math.MaxInt32) {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value %d out of range for INTEGER", r)
+					"Invalid cast operation Value out of range for INT: %d", r)
 			}
 			return r, nil
 		case string:
@@ -77,7 +77,7 @@ func CastValue(v any, typeName string) (any, error) {
 			}
 			if is32BitInteger && (i < math.MinInt32 || i > math.MaxInt32) {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value %d out of range for INTEGER", i)
+					"Invalid cast operation Value out of range for INT: %d", i)
 			}
 			return i, nil
 		case bool:
@@ -125,8 +125,11 @@ func CastValue(v any, typeName string) (any, error) {
 		if n, ok := v.(string); ok {
 			u, err := uuid.Parse(strings.TrimSpace(n))
 			if err != nil {
+				// Java verbatim: 'Invalid UUID value for the UUID type X'
+				// (where X is the input string, no quotes). Aligned
+				// dayshift-62.
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"cannot CAST %q to UUID: %v", n, err)
+					"Invalid UUID value for the UUID type %s", n)
 			}
 			return u.String(), nil
 		}

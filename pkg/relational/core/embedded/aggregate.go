@@ -325,7 +325,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				fv, ok := functions.ToFloat64(colVal)
 				if !ok {
 					return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-						"%s requires numeric input, got %T", ac.aggFunc, colVal)
+						"unable to encapsulate aggregate operation due to type mismatch(es)")
 				}
 				if ac.aggFunc == "SUM" {
 					gs.sums[i] += fv

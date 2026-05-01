@@ -2226,6 +2226,53 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, CASE WHEN v < 10 THEN 'tiny' WHEN v < 100 THEN 'small' ELSE 'big' END FROM T_CRS ORDER BY id",
 		},
 		{
+			// Invalid UUID literal — Java verbatim 'Invalid UUID value
+			// for the UUID type NAME'. Aligned dayshift-62.
+			Name:           "cast_invalid_uuid_rejected",
+			SchemaTemplate: "CREATE TABLE T_CIU (id BIGINT, u UUID, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CIU VALUES (1, CAST('not-a-real-uuid' AS UUID))"},
+			Query:          "SELECT id FROM T_CIU",
+		},
+		{
+			// CAST(BIGINT AS INTEGER) overflow — Java verbatim
+			// 'Invalid cast operation Value out of range for INT: N'.
+			// Aligned dayshift-62.
+			Name:           "cast_bigint_to_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_CBO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CBO VALUES (1)"},
+			Query:          "SELECT CAST(-2147483649 AS INTEGER) FROM T_CBO",
+		},
+		{
+			// PRIMARY KEY violation — Java verbatim 'record already
+			// exists' (RecordAlreadyExistsException.getMessage()).
+			// Aligned dayshift-62 (was Go's PK-included form).
+			Name:           "primary_key_violation_rejected",
+			SchemaTemplate: "CREATE TABLE T_PKV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PKV VALUES (1, 5)",
+				"INSERT INTO T_PKV VALUES (1, 6)",
+			},
+			Query: "SELECT id FROM T_PKV",
+		},
+		{
+			// SUM over a non-numeric column — Java verbatim 'unable to
+			// encapsulate aggregate operation due to type mismatch(es)'
+			// (same SemanticException as MIN/MAX over non-numeric).
+			// Aligned dayshift-62.
+			Name:           "sum_over_string_rejected",
+			SchemaTemplate: "CREATE TABLE T_SOS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SOS VALUES (1, 'a')"},
+			Query:          "SELECT SUM(name) FROM T_SOS",
+		},
+		{
+			// Unsupported scalar function — Java verbatim
+			// 'Unsupported operator NO_SUCH_FUNCTION'. Already aligned.
+			Name:           "select_unknown_function_rejected",
+			SchemaTemplate: "CREATE TABLE T_SUF (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SUF VALUES (1)"},
+			Query:          "SELECT NO_SUCH_FUNCTION(id) FROM T_SUF",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].

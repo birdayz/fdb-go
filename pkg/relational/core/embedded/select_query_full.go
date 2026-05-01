@@ -726,7 +726,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						fv, ok := functions.ToFloat64(v)
 						if !ok {
 							return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-								"%s requires numeric input, got %T", ac.aggFunc, v)
+								"unable to encapsulate aggregate operation due to type mismatch(es)")
 						}
 						if ac.aggFunc == "SUM" {
 							gs.sums[i] += fv
