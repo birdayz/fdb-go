@@ -3562,6 +3562,27 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_NEN WHERE x = y ORDER BY id",
 		},
 		{
+			// PROBE: column with table-alias qualifier
+			Name:           "qualified_col_where",
+			SchemaTemplate: "CREATE TABLE T_QCW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_QCW VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT t.id, t.v FROM T_QCW AS t WHERE t.v = 10",
+		},
+		{
+			// PROBE: BYTES literal in WHERE
+			Name:           "bytes_where",
+			SchemaTemplate: "CREATE TABLE T_BW (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BW VALUES (1, X'cafe'), (2, X'beef')"},
+			Query:          "SELECT id FROM T_BW WHERE payload = X'cafe'",
+		},
+		{
+			// PROBE: BIGINT extreme values
+			Name:           "select_bigint_range",
+			SchemaTemplate: "CREATE TABLE T_SBR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SBR VALUES (1, 9223372036854775806), (2, 0), (3, -9223372036854775807)"},
+			Query:          "SELECT id, v FROM T_SBR ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
