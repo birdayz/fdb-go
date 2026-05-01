@@ -6575,6 +6575,189 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "WITH base AS (SELECT id, val FROM T_RCD WHERE val >= 20) SELECT count(*) FROM base",
 		},
+
+		// ===== CAST and type coercion edges =====
+		{
+			// CAST integer column to DOUBLE in projection — pins
+			// integer→float widening produces 10.0 / 20.0 surface form.
+			Name:           "cast_int_col_to_double_projection",
+			SchemaTemplate: "CREATE TABLE T_CT1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT1 VALUES (1, 10)",
+				"INSERT INTO T_CT1 VALUES (2, 20)",
+			},
+			Query: "SELECT id, CAST(v AS DOUBLE) FROM T_CT1 ORDER BY id",
+		},
+		{
+			// CAST numeric-string column to BIGINT in WHERE RHS —
+			// pins both engines parse the string and compare equal.
+			Name:           "cast_string_to_bigint_in_where",
+			SchemaTemplate: "CREATE TABLE T_CT2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT2 VALUES (1, '5')",
+				"INSERT INTO T_CT2 VALUES (2, '10')",
+				"INSERT INTO T_CT2 VALUES (3, '15')",
+			},
+			Query: "SELECT id FROM T_CT2 WHERE CAST(s AS BIGINT) = 10 ORDER BY id",
+		},
+		{
+			// CAST(NULL AS BIGINT) in projection — pins typed-NULL is
+			// NULL with a BIGINT type tag; both engines emit <nil>.
+			Name:           "cast_null_to_bigint_projection",
+			SchemaTemplate: "CREATE TABLE T_CT3 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT3 VALUES (1)"},
+			Query:          "SELECT id, CAST(NULL AS BIGINT) FROM T_CT3 ORDER BY id",
+		},
+		{
+			// CAST(NULL AS STRING) — pins typed-NULL through string
+			// type. Both engines render <nil> with STRING column type.
+			Name:           "cast_null_to_string_projection",
+			SchemaTemplate: "CREATE TABLE T_CT4 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT4 VALUES (1)"},
+			Query:          "SELECT id, CAST(NULL AS STRING) FROM T_CT4 ORDER BY id",
+		},
+		{
+			// CAST integer literal to STRING — pins '42' rendering
+			// (no padding, no decimal, no leading zeros).
+			Name:           "cast_int_literal_to_string",
+			SchemaTemplate: "CREATE TABLE T_CT5 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT5 VALUES (1)"},
+			Query:          "SELECT id, CAST(42 AS STRING) FROM T_CT5 ORDER BY id",
+		},
+		{
+			// CAST DOUBLE column to STRING — pins exact rendering of
+			// fractional doubles (no Java toString trailing E).
+			Name:           "cast_double_col_to_string",
+			SchemaTemplate: "CREATE TABLE T_CT6 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT6 VALUES (1, 1.5)",
+				"INSERT INTO T_CT6 VALUES (2, 100.25)",
+			},
+			Query: "SELECT id, CAST(v AS STRING) FROM T_CT6 ORDER BY id",
+		},
+		{
+			// CAST string '0' to BOOLEAN — Java behavior unclear,
+			// probe directly. Either parses to FALSE or rejects.
+			Name:           "cast_string_zero_to_boolean",
+			SchemaTemplate: "CREATE TABLE T_CT7 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT7 VALUES (1)"},
+			Query:          "SELECT id, CAST('0' AS BOOLEAN) FROM T_CT7 ORDER BY id",
+		},
+		{
+			// CAST string 'false' to BOOLEAN — probes Java's
+			// Boolean.parseBoolean alignment.
+			Name:           "cast_string_false_to_boolean",
+			SchemaTemplate: "CREATE TABLE T_CT8 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT8 VALUES (1)"},
+			Query:          "SELECT id, CAST('false' AS BOOLEAN) FROM T_CT8 ORDER BY id",
+		},
+		{
+			// CAST string 'true' to BOOLEAN — companion probe.
+			Name:           "cast_string_true_to_boolean",
+			SchemaTemplate: "CREATE TABLE T_CT9 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT9 VALUES (1)"},
+			Query:          "SELECT id, CAST('true' AS BOOLEAN) FROM T_CT9 ORDER BY id",
+		},
+		{
+			// Implicit promotion in mixed >= comparison: BIGINT col
+			// vs DOUBLE literal. Rows 2 and 3 should match.
+			Name:           "implicit_promote_bigint_ge_double",
+			SchemaTemplate: "CREATE TABLE T_CT10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT10 VALUES (1, 1)",
+				"INSERT INTO T_CT10 VALUES (2, 2)",
+				"INSERT INTO T_CT10 VALUES (3, 3)",
+			},
+			Query: "SELECT id FROM T_CT10 WHERE v >= 2.5 ORDER BY id",
+		},
+		{
+			// Implicit promotion in INSERT: BIGINT literal into
+			// DOUBLE column. Pins the row reads back as 7.0.
+			Name:           "implicit_promote_insert_bigint_into_double",
+			SchemaTemplate: "CREATE TABLE T_CT11 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT11 VALUES (1, 7)"},
+			Query:          "SELECT id, v FROM T_CT11 ORDER BY id",
+		},
+		{
+			// CAST in BETWEEN — string column parsed to BIGINT then
+			// compared against literal range. Pins BETWEEN over CAST.
+			Name:           "cast_in_between",
+			SchemaTemplate: "CREATE TABLE T_CT13 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT13 VALUES (1, '5')",
+				"INSERT INTO T_CT13 VALUES (2, '50')",
+				"INSERT INTO T_CT13 VALUES (3, '500')",
+			},
+			Query: "SELECT id FROM T_CT13 WHERE CAST(s AS BIGINT) BETWEEN 1 AND 100 ORDER BY id",
+		},
+		{
+			// Triple CAST chain — STRING → DOUBLE → BIGINT → STRING.
+			// '3.7' → 3.7 → 4 (round) → '4'. Pins lossy multi-step
+			// coercions render byte-equal.
+			Name:           "cast_triple_chain_string_double_bigint_string",
+			SchemaTemplate: "CREATE TABLE T_CT14 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT14 VALUES (1, '3.7')"},
+			Query:          "SELECT id, CAST(CAST(CAST(s AS DOUBLE) AS BIGINT) AS STRING) FROM T_CT14 ORDER BY id",
+		},
+		{
+			// CAST string with negative sign prefix to BIGINT —
+			// '-42' → -42. Pins both engines parse the leading minus.
+			Name:           "cast_string_negative_sign_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CT15 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT15 VALUES (1)"},
+			Query:          "SELECT id, CAST('-42' AS BIGINT) FROM T_CT15 ORDER BY id",
+		},
+		{
+			// CAST string with explicit positive sign — '+42' → 42.
+			// Java's Long.parseLong accepts leading '+'; probe Go.
+			Name:           "cast_string_positive_sign_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CT16 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT16 VALUES (1)"},
+			Query:          "SELECT id, CAST('+42' AS BIGINT) FROM T_CT16 ORDER BY id",
+		},
+		{
+			// CAST DOUBLE column to BIGINT — implicit Math.round
+			// half-up vs IEEE round-to-even. Pins which one both
+			// engines pick (1.5 → 2, 2.5 → 2 or 3?).
+			Name:           "cast_double_half_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CT17 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT17 VALUES (1, 0.5)",
+				"INSERT INTO T_CT17 VALUES (2, 1.5)",
+				"INSERT INTO T_CT17 VALUES (3, 2.5)",
+				"INSERT INTO T_CT17 VALUES (4, -0.5)",
+				"INSERT INTO T_CT17 VALUES (5, -1.5)",
+			},
+			Query: "SELECT id, CAST(v AS BIGINT) FROM T_CT17 ORDER BY id",
+		},
+		{
+			// CAST empty-string to BIGINT — Java's Long.parseLong
+			// throws NumberFormatException. Probe verifies error
+			// message alignment.
+			Name:           "cast_empty_string_to_bigint_rejected",
+			SchemaTemplate: "CREATE TABLE T_CT18 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT18 VALUES (1)"},
+			Query:          "SELECT id, CAST('' AS BIGINT) FROM T_CT18 ORDER BY id",
+		},
+		{
+			// CAST string with internal whitespace 'a b' to BIGINT —
+			// even after trim, fails. Probes error path.
+			Name:           "cast_string_internal_space_to_bigint_rejected",
+			SchemaTemplate: "CREATE TABLE T_CT19 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CT19 VALUES (1)"},
+			Query:          "SELECT id, CAST('1 2' AS BIGINT) FROM T_CT19 ORDER BY id",
+		},
+		{
+			// CAST BOOLEAN to STRING — TRUE/FALSE rendering. Probe
+			// whether 'true'/'false' lowercase matches Java toString.
+			Name:           "cast_boolean_to_string",
+			SchemaTemplate: "CREATE TABLE T_CT21 (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CT21 VALUES (1, TRUE)",
+				"INSERT INTO T_CT21 VALUES (2, FALSE)",
+			},
+			Query: "SELECT id, CAST(b AS STRING) FROM T_CT21 ORDER BY id",
+		},
 	}
 }
 
