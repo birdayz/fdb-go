@@ -1108,21 +1108,34 @@ func run() error {
 	coveragePath := flag.String("coverage", "", "path to LCOV coverage file (optional)")
 	flag.Parse()
 
-	bepPath := ".bazel-bep.jsonl"
+	// Accept one or more BEP file paths. Each `bazelisk test`
+	// invocation writes its own BEP, and the global
+	// `test --build_event_json_file=` setting in .bazelrc means
+	// successive invocations OVERWRITE the same default file. CI
+	// works around this by passing each invocation an explicit path
+	// and forwarding all of them here. Targets from each BEP are
+	// concatenated; duplicate target names (e.g. a test re-run under
+	// the race detector) appear as separate rows so each suite's
+	// outcome is visible. Default path stays `.bazel-bep.jsonl` so
+	// local single-invocation use is unchanged.
+	bepPaths := []string{".bazel-bep.jsonl"}
 	if flag.NArg() > 0 {
-		bepPath = flag.Arg(0)
+		bepPaths = flag.Args()
 	}
 
-	if _, err := os.Stat(bepPath); os.IsNotExist(err) {
-		return fmt.Errorf("BEP file %q not found — run 'bazelisk test //... --build_event_json_file=%s' first", bepPath, bepPath)
-	}
-
-	targets, err := parseBEP(bepPath)
-	if err != nil {
-		return fmt.Errorf("parsing BEP: %w", err)
+	var targets []*TargetResult
+	for _, bepPath := range bepPaths {
+		if _, err := os.Stat(bepPath); os.IsNotExist(err) {
+			return fmt.Errorf("BEP file %q not found — run 'bazelisk test //... --build_event_json_file=%s' first", bepPath, bepPath)
+		}
+		bepTargets, err := parseBEP(bepPath)
+		if err != nil {
+			return fmt.Errorf("parsing BEP %q: %w", bepPath, err)
+		}
+		targets = append(targets, bepTargets...)
 	}
 	if len(targets) == 0 {
-		return fmt.Errorf("no test results found in %s", bepPath)
+		return fmt.Errorf("no test results found in %v", bepPaths)
 	}
 
 	// Sort: failures first, then alphabetically.

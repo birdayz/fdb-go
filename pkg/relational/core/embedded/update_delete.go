@@ -50,6 +50,11 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 
 	tableName := functions.FullIdToName(upd.TableName().FullId())
 	whereExpr := upd.WhereExpr()
+	if whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(whereExpr.Expression()); err != nil {
+			return 0, err
+		}
+	}
 	updatedElems := upd.AllUpdatedElement()
 
 	var updated int64
@@ -195,6 +200,11 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 
 	tableName := functions.FullIdToName(del.TableName().FullId())
 	whereExpr := del.WhereExpr()
+	if whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(whereExpr.Expression()); err != nil {
+			return 0, err
+		}
+	}
 
 	var deleted int64
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {

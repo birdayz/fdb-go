@@ -20,11 +20,14 @@ tests:
   # Mixed-case WHERE / FROM keywords.
   - query: SELECT id WhErE id = 2 fRoM t
     error_code: "42601"  # WHERE before FROM is a parse order issue
-  # Mixed-case ORDER BY / LIMIT.
-  - query: SELECT id frOm t OrDeR bY id deSc LIMit 2
+  # Mixed-case ORDER BY — LIMIT was incidental (rejected at parse
+  # time as of fdb-relational 4.11.1.0); keep the mixed-case
+  # keyword check on ORDER BY / DESC alone.
+  - query: SELECT id frOm t OrDeR bY id deSc
     rows:
       - [3]
       - [2]
+      - [1]
   # Mixed-case AND / OR.
   - query: SELECT id FROM t WHERE id = 1 oR id = 3 OrDeR bY id
     rows:

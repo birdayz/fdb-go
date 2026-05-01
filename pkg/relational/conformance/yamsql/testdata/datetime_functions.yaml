@@ -1,9 +1,26 @@
 # datetime_functions.yaml
 #
-# CURRENT_DATE / CURRENT_TIMESTAMP / CURRENT_TIME / LOCALTIME /
-# CURRENT_USER. Values are non-deterministic (time changes between
-# runs) so the scenarios verify presence + structural shape via
-# IS NOT NULL / IS NULL rather than literal value equality.
+# Two groups:
+#
+#   * Still in Go (SQL-standard form): CURRENT_DATE / CURRENT_TIMESTAMP /
+#     CURRENT_TIME / LOCALTIME / CURRENT_USER. Java's
+#     `BaseVisitor.visitSimpleFunctionCall` is `visitChildren(ctx)` —
+#     a structural no-op that doesn't error. Go's continued working
+#     implementation is a Go-only correctness improvement, not a
+#     divergent rejection. Values are non-deterministic so scenarios
+#     verify presence + structural shape via IS NOT NULL / IS NULL
+#     rather than literal value equality.
+#
+#   * Rejected (Java-aligned): MySQL-style
+#     aliases NOW / CURDATE / CURTIME / SYSDATE / UTC_TIMESTAMP /
+#     UTC_DATE / UTC_TIME. fdb-relational 4.11.1.0's function
+#     registry has no entries; Java's planner emits "Unsupported
+#     operator <NAME>" (0A000). Same architectural reason in both
+#     engines: no evaluator entry.
+#
+# Date-part functions YEAR / MONTH / DAY / HOUR / MINUTE / SECOND /
+# DAYOFMONTH / DAYOFWEEK / DAYOFYEAR are still in Go (TODO #28
+# scope).
 #
 # Returns:
 #   - CURRENT_DATE       → time.Time at midnight UTC of today
@@ -18,6 +35,9 @@ schema_template: |
 setup:
   - INSERT INTO t VALUES (1)
 tests:
+  # ---------------------------------------------------------------
+  # SQL-standard form — still in Go.
+  # ---------------------------------------------------------------
   # CURRENT_TIMESTAMP IS NOT NULL — function evaluates without error.
   - query: SELECT CURRENT_TIMESTAMP IS NOT NULL FROM t WHERE id = 1
     rows:
@@ -100,23 +120,25 @@ tests:
   - query: SELECT YEAR(CAST(NULL AS BIGINT)) IS NULL FROM t WHERE id = 1
     rows:
       - [true]
-  # MySQL alias NOW() → CURRENT_TIMESTAMP — same value within statement.
-  - query: SELECT NOW() = CURRENT_TIMESTAMP FROM t WHERE id = 1
-    rows:
-      - [true]
-  # SYSDATE() and UTC_TIMESTAMP() also alias to CURRENT_TIMESTAMP.
-  - query: SELECT SYSDATE() = NOW() AND UTC_TIMESTAMP() = NOW() FROM t WHERE id = 1
-    rows:
-      - [true]
-  # CURDATE() / UTC_DATE() → CURRENT_DATE.
-  - query: SELECT CURDATE() = CURRENT_DATE AND UTC_DATE() = CURRENT_DATE FROM t WHERE id = 1
-    rows:
-      - [true]
-  # CURTIME() / UTC_TIME() → CURRENT_TIME (a timestamp in our impl).
-  - query: SELECT CURTIME() = CURRENT_TIME AND UTC_TIME() = CURRENT_TIME FROM t WHERE id = 1
-    rows:
-      - [true]
-  # YEAR(NOW()) — date-part on alias result.
-  - query: SELECT YEAR(NOW()) >= 2026 FROM t WHERE id = 1
-    rows:
-      - [true]
+
+  # ---------------------------------------------------------------
+  # MySQL aliases — Java-aligned rejection (0A000).
+  # ---------------------------------------------------------------
+  - query: SELECT NOW() FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT SYSDATE() FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT UTC_TIMESTAMP() FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT CURDATE() FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT UTC_DATE() FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT CURTIME() FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT UTC_TIME() FROM t WHERE id = 1
+    error_code: "0A000"
+  # MySQL alias inside a date-part call: rejection still fires at
+  # the inner function call.
+  - query: SELECT YEAR(NOW()) FROM t WHERE id = 1
+    error_code: "0A000"

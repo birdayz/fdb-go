@@ -502,9 +502,13 @@ func TestUpgradeFirstFilter_Invariants(t *testing.T) {
 	// Every WHERE-carrying SELECT / DELETE / UPDATE shape the text
 	// builder emits today. Extend this list whenever a new shape
 	// lands that carries a WHERE through the logical builder.
+	// LIMIT-carrying shape is rejected at parse time
+	// (fdb-relational 4.11.1.0 / Go aligned), so the LIMIT spine is
+	// unreachable from SQL. ORDER BY without LIMIT still exercises the
+	// same Filter-on-spine invariant.
 	cases := []string{
 		"SELECT * FROM t WHERE id > 5",
-		"SELECT id FROM t WHERE id > 5 ORDER BY id LIMIT 10",
+		"SELECT id FROM t WHERE id > 5 ORDER BY id",
 		"SELECT id, COUNT(*) FROM t WHERE id > 5 GROUP BY id",
 		"SELECT id FROM t WHERE id > 5 AND name = 'x'",
 	}

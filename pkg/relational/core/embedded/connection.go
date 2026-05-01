@@ -80,16 +80,6 @@ type EmbeddedConnection struct {
 	// Non-nil only during execSelect.
 	scalarSubqueryCache map[antlrgen.IQueryContext]any
 
-	// inSubqueryCache memoises pre-evaluated `col IN (SELECT ...)`
-	// subquery results as single-column value lists. Populated by
-	// preEvaluateInSubqueries (walks WHERE leaves under AND chains
-	// only), consumed by extractColInList to drive the IN-list
-	// pushdown chain. Cache miss = subquery was correlated / multi-
-	// column / nested inside OR / NOT — extractColInList bails and
-	// the WHERE falls through to runtime evalPredicate. Non-nil only
-	// during execSelect.
-	inSubqueryCache map[antlrgen.IQueryExpressionBodyContext][]any
-
 	// validQualifiers holds the uppercased set of valid qualifier aliases
 	// for the JOIN query currently executing (left source + every join
 	// source). Used by evalExprAtomOnMap to reject WHERE/ON references
@@ -391,7 +381,6 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	// checkouts would slowly leak memory (and the keys are invalid
 	// against the next statement's tree anyway).
 	c.scalarSubqueryCache = nil
-	c.inSubqueryCache = nil
 	c.sess.ResetSchemaCache()
 	return nil
 }

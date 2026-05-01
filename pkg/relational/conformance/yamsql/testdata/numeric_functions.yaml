@@ -1,9 +1,24 @@
 # numeric_functions.yaml
 #
-# Scalar numeric functions — ABS / SIGN / FLOOR / CEIL / ROUND / MOD
-# / POWER / SQRT / EXP / LN / LOG / PI. Pinned here so future
-# refactors of evalScalarFunctionCallCore don't silently regress any
-# of them. NULL propagation follows SQL standard (NULL in → NULL out).
+# Scalar numeric functions. Two groups:
+#
+#   * Still supported via the `%` operator: modulo. fdb-relational
+#     4.11.1.0 registers Mod in the ArithmeticValue registry AND maps
+#     `%` -> "mod" in the synonym table, so `a % b` works in both
+#     engines. The function-call form `MOD(a, b)` is rejected by
+#     Java's planner ("Unsupported operator MOD", 0A000), so it is
+#     not exercised here.
+#
+#   * Rejected (Java-aligned): ABS / SQRT /
+#     POWER / POW / FLOOR / CEIL / CEILING / ROUND / SIGN / PI /
+#     EXP / LN / LOG / MOD. fdb-relational 4.11.1.0's
+#     @AutoService(BuiltInFunction.class) ArithmeticValue registry
+#     has only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; no
+#     entries for FLOOR / CEIL / SIGN / ROUND / PI / EXP / LN / LOG,
+#     and MOD-as-function is not exposed (only `%`).
+#     Java's planner emits "Unsupported operator <NAME>" (0A000)
+#     before evaluation. Go mirrors byte-equal via the default arm
+#     in scalar_functions.go.
 name: numeric_functions
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, PRIMARY KEY (id))
@@ -14,85 +29,87 @@ setup:
       (3, 0.0, 0),
       (4, null, null)
 tests:
-  # ABS on both integer and floating-point.
-  - query: SELECT ABS(n), ABS(v) FROM t WHERE id = 2
-    rows:
-      - [5, 3.7]
-  # SIGN: -1 / 0 / +1.
-  - query: SELECT SIGN(v) FROM t WHERE id = 1
-    rows:
-      - [1]
-  - query: SELECT SIGN(v) FROM t WHERE id = 2
-    rows:
-      - [-1]
-  - query: SELECT SIGN(v) FROM t WHERE id = 3
-    rows:
-      - [0]
-  # FLOOR / CEIL — half-away-from-zero style on negatives.
-  - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 1
-    rows:
-      - [2.0, 3.0]
-  - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 2
-    rows:
-      - [-4.0, -3.0]
-  # ROUND ties away from zero (Go's math.Round): 1.5 → 2, 2.5 → 3,
-  # -1.5 → -2, -2.5 → -3. NOT banker's rounding (round-half-to-even)
-  # and NOT half-toward-zero — pin the current behaviour so the next
-  # refactor doesn't silently flip it.
+  # ---------------------------------------------------------------
+  # Java-aligned rejections.
+  # ABS / SQRT / POWER / POW.
+  # ---------------------------------------------------------------
+  - query: SELECT ABS(n) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT ABS(v) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT POW(v, 2) FROM t WHERE id = 1
+    error_code: "0A000"
+  # NULL propagation does not apply once the function is rejected
+  # at the registry layer — the rejection fires before evaluation.
+  - query: SELECT ABS(v) FROM t WHERE id = 4
+    error_code: "0A000"
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 4
+    error_code: "0A000"
+
+  # ---------------------------------------------------------------
+  # FLOOR / CEIL / CEILING / ROUND / SIGN / PI / EXP / LN / LOG —
+  # also absent from Java's BuiltInFunction registry, also rejected.
+  # ---------------------------------------------------------------
+  - query: SELECT FLOOR(v) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT FLOOR(v) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT CEIL(v) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT CEILING(v) FROM t WHERE id = 1
+    error_code: "0A000"
   - query: SELECT ROUND(v) FROM t WHERE id = 1
-    rows:
-      - [3.0]
-  - query: SELECT ROUND(v) FROM t WHERE id = 2
-    rows:
-      - [-4.0]
-  # ROUND with decimals: ROUND(pi, 2) = 3.14.
+    error_code: "0A000"
   - query: SELECT ROUND(3.14159, 2) FROM t WHERE id = 1
-    rows:
-      - [3.14]
-  # ROUND with 0 decimals: same as ROUND(x).
+    error_code: "0A000"
   - query: SELECT ROUND(3.7, 0) FROM t WHERE id = 1
-    rows:
-      - [4.0]
-  # ROUND with negative decimals: round to nearest 10.
+    error_code: "0A000"
   - query: SELECT ROUND(1234.5, -2) FROM t WHERE id = 1
-    rows:
-      - [1200.0]
-  # MOD with integer operands preserves the sign of the dividend.
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 3
+    error_code: "0A000"
+  - query: SELECT EXP(0) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT LN(1.0) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT LOG(2, 8) FROM t WHERE id = 1
+    error_code: "0A000"
+  # PI must still be referenced from a FROM-bound query — bare
+  # `SELECT PI()` is rejected as a FROM-less SimpleTable (TestFDB_PiFunctionRejected),
+  # but here the rejection fires at function-registry lookup.
+  - query: SELECT PI() FROM t WHERE id = 1
+    error_code: "0A000"
+  # Rejection fires before evaluation, so NULL inputs don't even
+  # reach the evaluator — same 0A000 surfaces.
+  - query: SELECT FLOOR(v) FROM t WHERE id = 4
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 4
+    error_code: "0A000"
+
+  # ---------------------------------------------------------------
+  # MOD function form is rejected (Java has no MOD function, only
+  # the `%` operator that the synonym map binds to "mod").
+  # ---------------------------------------------------------------
   - query: SELECT MOD(n, 3) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT MOD(n, 3) FROM t WHERE id = 2
+    error_code: "0A000"
+
+  # ---------------------------------------------------------------
+  # Modulo via `%` operator (Java synonym map: `%` -> "mod"). The
+  # `%` operator preserves the sign of the dividend on integers.
+  # ---------------------------------------------------------------
+  - query: SELECT n % 3 FROM t WHERE id = 1
     rows:
       - [1]
-  - query: SELECT MOD(n, 3) FROM t WHERE id = 2
+  - query: SELECT n % 3 FROM t WHERE id = 2
     rows:
       - [-2]
-  # POWER on DOUBLE: 2.5^2 = 6.25.
-  - query: SELECT POWER(v, 2) FROM t WHERE id = 1
-    rows:
-      - [6.25]
-  # SQRT on a perfect square.
-  - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
-    rows:
-      - [3.1622776601683795]
-  # EXP(0) = 1, LN(exp(1)) = 1 (approximately).
-  - query: SELECT EXP(0) FROM t WHERE id = 1
-    rows:
-      - [1.0]
-  # LOG base-e (aka LN). Postgres LOG defaults to base 10, Oracle LOG(base, x).
-  # Keep the current behaviour pinned; callers should prefer LN for
-  # natural log until we align LOG signature with a specific dialect.
-  - query: SELECT LN(1.0) FROM t WHERE id = 1
-    rows:
-      - [0.0]
-  # PI is a nullary constant.
-  - query: SELECT PI() FROM t WHERE id = 1
-    rows:
-      - [3.141592653589793]
-  # NULL propagation — ABS of NULL is NULL, not 0.
-  - query: SELECT ABS(v) FROM t WHERE id = 4
-    rows:
-      - [~]
-  - query: SELECT SIGN(v), FLOOR(v), CEIL(v) FROM t WHERE id = 4
-    rows:
-      - [~, ~, ~]
-  - query: SELECT POWER(v, 2) FROM t WHERE id = 4
-    rows:
-      - [~]

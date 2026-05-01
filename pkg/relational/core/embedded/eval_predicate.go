@@ -34,11 +34,43 @@ import (
 
 // evalPredicate returns true if msg satisfies whereExpr.
 // Only col = constant comparisons are supported. If whereExpr is nil, returns true.
+//
+// Callers MUST invoke rejectTopLevelParenthesizedWhere on the WHERE
+// expression once before the row-loop — this function runs per row
+// and the structural check is row-independent. See
+// select_query_full.go's scan loops for the hoisted call sites.
 func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
 	if whereExpr == nil {
 		return true, nil
 	}
 	return evalExprPredicate(ctx, conn, msg, whereExpr.Expression())
+}
+
+// rejectTopLevelParenthesizedWhere mirrors fdb-relational 4.11.1.0's
+// type check on the WHERE expression's underlying value. Java parses
+// `WHERE (boolean_expr)` as a recordConstructor (single-element
+// tuple); Expression.toUnderlyingPredicate's
+// `Assert.castUnchecked(..., BooleanValue.class)` then fails with
+// the verbatim "expected BooleanValue but got RecordConstructorValue".
+// The check applies only to the TOP-LEVEL expression — Java accepts
+// `(a) AND (b)` because the LogicalExpression's underlying value is
+// a BooleanValue at the surface, even though the leaves are
+// RecordConstructorValues. Match that surface check here.
+//
+// Hoist this once per statement, before the row-scan loop — the check
+// is purely structural over the parse tree (no row dependency), so
+// invoking it inside the per-row evalPredicate would re-walk the same
+// AST N times for an N-row scan.
+func rejectTopLevelParenthesizedWhere(expr antlrgen.IExpressionContext) error {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return nil
+	}
+	if _, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
+		return api.NewError(api.ErrCodeInvalidParameter,
+			"expected BooleanValue but got RecordConstructorValue")
+	}
+	return nil
 }
 
 // evalExprPredicate evaluates an IExpressionContext as a boolean predicate.
@@ -286,24 +318,25 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		fieldVal = v
 	}
 
-	if qb := in.InList().QueryExpressionBody(); qb != nil {
-		if conn == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
-		}
-		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		subCols, _, subRows, err := conn.execQueryBodyRows(ctx, qb)
-		if err != nil {
-			return triFalse, err
-		}
-		// SQL standard: `x IN (SELECT a, b FROM t)` is a column-count
-		// mismatch error (row constructor IN needs `(a, b) IN (...)`).
-		// Previously matchSubqueryIN silently compared against column 0
-		// only — wrong semantics.
-		if len(subCols) != 1 {
-			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"subquery for IN must return exactly one column, got %d", len(subCols))
-		}
-		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)
+	if in.InList().QueryExpressionBody() != nil {
+		// Java alignment (architectural): fdb-relational 4.11.1.0's
+		// AstNormalizer.visitInPredicate (line 437) calls
+		// ParseHelpers.isConstant(ctx.inList().expressions()), but
+		// `ctx.inList().expressions()` is null when the inList went
+		// through the `queryExpressionBody` grammar alternative
+		// (`'(' (queryExpressionBody | expressions) ')'`). The
+		// visitor doesn't handle the subquery alternative —
+		// ParseHelpers.isConstant has @Nonnull on its parameter and
+		// dereferences ctx.expression() unconditionally → NPE. The
+		// NPE is a downstream observable of "visitor doesn't
+		// implement"; per CLAUDE.md principle #10 (emergent behaviour
+		// over special-case checks), Go aligns with the architectural
+		// reality — IN-subquery isn't supported — but emits a clean
+		// Go error instead of reproducing Java's NPE. EXISTS subquery
+		// and JOIN both work cleanly in both engines and are the
+		// supported rewrites.
+		return triFalse, api.NewError(api.ErrCodeUnsupportedQuery,
+			"IN with a subquery argument is not supported; use EXISTS or a JOIN")
 	}
 
 	// The inList grammar rule admits three shapes:

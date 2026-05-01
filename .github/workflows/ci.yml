@@ -79,6 +79,10 @@ jobs:
         #      4-8 of them in parallel, hitting 6-12 GB peak.
         run: |
           bazelisk shutdown
+          # Override the global `--build_event_json_file` from .bazelrc
+          # so the race-suite BEP doesn't overwrite the full-suite BEP
+          # written by the previous `bazelisk test //...` step. The
+          # report step below merges both files.
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
             --host_jvm_args=-Xmx3g \
             test \
@@ -88,6 +92,7 @@ jobs:
             //pkg/recordlayer/chaos:chaos_test \
             //conformance:conformance_test \
             --@rules_go//go/config:race \
+            --build_event_json_file=.bazel-bep.race.jsonl \
             --local_resources=memory=HOST_RAM*0.6 \
             --test_timeout=900 \
             --test_summary=detailed
@@ -97,7 +102,14 @@ jobs:
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
-          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
+          # Merge both BEP files: full-suite (.bazel-bep.jsonl, written
+          # by the first `bazelisk test //...` step) plus the
+          # race-detector subset (.bazel-bep.race.jsonl). Without both,
+          # all `//pkg/relational/...` results were silently dropped
+          # because the race step's BEP overwrote the full one.
+          BEP_ARGS=(.bazel-bep.jsonl)
+          [ -f .bazel-bep.race.jsonl ] && BEP_ARGS+=(.bazel-bep.race.jsonl)
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" "${BEP_ARGS[@]}" > test-report.html
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload test report to Hetzner Object Storage

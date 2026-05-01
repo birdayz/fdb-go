@@ -257,9 +257,13 @@ tests:
       - [10]
       - [1]
 
-  # Counter (1..5) via a depth predicate. Recursive WHERE n < 5 bounds
-  # the recursion. Seed is a no-FROM SELECT literal — exercises the
-  # (sq.tableName == "") single-row path inside the seed.
+  # Counter (1..5) via a depth predicate. The seed is a FROM-less
+  # SELECT literal (`SELECT 1 AS n`); fdb-relational 4.11.1.0 rejects
+  # at parse time via QueryVisitor.visitSimpleTable's
+  # `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
+  # "query is not supported")` — the assertion fires on every
+  # SimpleTable visit, including ones inside a recursive CTE base.
+  # Per the project conformance principle, Go aligns. ErrCode 0AF00.
   - query: |-
       WITH RECURSIVE counter(n) AS (
         SELECT 1 AS n
@@ -267,12 +271,7 @@ tests:
         SELECT n + 1 FROM counter WHERE n < 5
       )
       SELECT n FROM counter ORDER BY n
-    rows:
-      - [1]
-      - [2]
-      - [3]
-      - [4]
-      - [5]
+    error_code: "0AF00"
 
   # Cycle + UNION DISTINCT: reachable set on a 1→2→3→1 cycle must be
   # {1,2,3} and the recursion must terminate (via the seen-row filter,
@@ -329,14 +328,18 @@ tests:
       SELECT id FROM x
     error_code: "0A000"
 
-  # Using the recursive CTE in a WHERE … IN subquery.
+  # Using the recursive CTE in a comma-join (semi-join shape). IN-
+  # subquery is rejected (Java alignment, CLAUDE.md #10); the join
+  # is the supported rewrite that exercises CTE-result + base-table
+  # joining and preserves the same row set as the rejected
+  # `WHERE id IN (SELECT id FROM descendants)` form.
   - query: |-
       WITH RECURSIVE descendants AS (
         SELECT id, parent FROM t WHERE id = 10
         UNION ALL
         SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
       )
-      SELECT id FROM t WHERE id IN (SELECT id FROM descendants) ORDER BY id
+      SELECT t.id FROM t, descendants WHERE t.id = descendants.id ORDER BY t.id
     rows:
       - [10]
       - [40]
@@ -407,7 +410,11 @@ tests:
       # 1 + 10 + 20 + 40 + 50 + 70 + 100 + 210 + 250 = 751
       - [751]
 
-  # ORDER BY + LIMIT on top of the recursive CTE: take first 3 ids.
+  # ORDER BY + LIMIT on top of the recursive CTE — LIMIT rejected at
+  # parse time as of fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY /
+  # 0AF00). Pre-rejection this case pinned ORDER BY-on-recursive-CTE
+  # cap behaviour; ORDER BY without LIMIT over the same recursive
+  # CTE is exercised by other tests in this file.
   - query: |-
       WITH RECURSIVE descendants AS (
         SELECT id, parent FROM t WHERE parent = -1
@@ -415,7 +422,4 @@ tests:
         SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
       )
       SELECT id FROM descendants ORDER BY id LIMIT 3
-    rows:
-      - [1]
-      - [10]
-      - [20]
+    error_code: "0AF00"

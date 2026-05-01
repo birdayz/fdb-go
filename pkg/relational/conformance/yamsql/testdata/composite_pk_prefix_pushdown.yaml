@@ -121,11 +121,13 @@ tests:
       - [2, 10, 'c']
       - [2, 20, 'd']
 
-  # Pure-prefix on 2-col PK with ORDER BY LIMIT: naturalOrder =
-  # pkCols, so the sort is eliminated and LIMIT early-terminates.
-  - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY a, b LIMIT 1
+  # Pure-prefix on 2-col PK with ORDER BY: naturalOrder = pkCols, so
+  # the sort is eliminated. (LIMIT was incidental; rejected at parse
+  # time as of fdb-relational 4.11.1.0.)
+  - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY a, b
     rows:
       - [1, 10, 'a']
+      - [1, 20, 'b']
 
   # -------------------------------------------------------------------
   # No match: `WHERE a = 99` on PK (a, b). Pure-prefix narrows to an

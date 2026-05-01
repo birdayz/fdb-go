@@ -1,9 +1,16 @@
 # subquery_in.yaml
 #
-# SQL §8.4 — x IN (subquery) / x NOT IN (subquery) Kleene semantics
-# when the subquery result contains a NULL row. Pre-swingshift-35
-# `matchSubqueryIN` silently skipped NULLs, so `x NOT IN (SELECT ...)`
-# with a NULL row returned TRUE instead of UNKNOWN. Fixed aba441f0.
+# `col IN (subquery)` is rejected at predicate evaluation time. Java's
+# AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
+# alternative of the inList grammar rule (NPE in ParseHelpers.isConstant
+# whose @Nonnull parameter is dereferenced unconditionally). Per CLAUDE.md
+# principle #10 (emergent behaviour over special-case checks), Go aligns
+# with the architectural property — IN-subquery isn't supported — but
+# emits a clean ErrCodeUnsupportedQuery (0AF00) rather than reproducing
+# Java's NPE. EXISTS / NOT EXISTS / JOIN are the supported rewrites; both
+# engines accept them. Cross-engine byte-equal alignment of this error
+# message is intentionally NOT pursued (Java's wording is the NPE stack
+# trace; not portable).
 name: subquery_in
 schema_template: |
   CREATE TABLE a (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))
@@ -12,45 +19,52 @@ setup:
   - INSERT INTO a VALUES (1, 1), (2, 2), (3, 3)
   - INSERT INTO b VALUES (101, 2), (102, null)
 tests:
-  # x IN (subquery with NULL): id=2 matches concretely; id=1/3 evaluate
-  # UNKNOWN (they might or might not equal the NULL row) and are filtered.
+  # IN-subquery — rejected.
   - query: SELECT id FROM a WHERE v IN (SELECT v FROM b)
-    rows:
-      - [2]
-  # x NOT IN (subquery with NULL): every row yields UNKNOWN because
-  # NOT IN expands to AND over !=, and != NULL is UNKNOWN → the whole
-  # predicate is UNKNOWN → filtered. Net zero rows.
+    error_code: "0AF00"
+  # NOT IN-subquery — also rejected (same path).
   - query: SELECT id FROM a WHERE v NOT IN (SELECT v FROM b)
-    rows: []
-  # Subquery IN against an empty subquery → always FALSE (nothing to match).
+    error_code: "0AF00"
+  # Empty subquery shape — still IN-subquery, still rejected.
   - query: SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE id > 999)
-    rows: []
-  # Subquery NOT IN against an empty subquery → always TRUE.
+    error_code: "0AF00"
   - query: SELECT id FROM a WHERE v NOT IN (SELECT v FROM b WHERE id > 999) ORDER BY id
-    rows:
-      - [1]
-      - [2]
-      - [3]
-  # Subquery IN with all concrete non-matches.
+    error_code: "0AF00"
+  # Concrete-value subquery shape — still rejected (rejection is
+  # syntactic, not semantic).
   - query: SELECT id FROM a WHERE v IN (SELECT v FROM b WHERE v IS NOT NULL AND v != 2)
-    rows: []
-  # Subquery returning column-count mismatch — row-constructor IN needs
-  # matching arity, single-column column-list gets 'must return 1 col'.
+    error_code: "0AF00"
+  # Multi-column subquery — still rejected at the IN-subquery level
+  # (the column-count mismatch never gets a chance to surface).
   - query: SELECT id FROM a WHERE v IN (SELECT id, v FROM b)
-    error_code: "22023"
-  # Cross-type subquery IN errors 22000 CANNOT_CONVERT_TYPE. Matches
-  # the IN-list path's valuesComparable check and the JOIN/WHERE
-  # comparison path. Pre-fix: matchSubqueryIN silently no-matched when
-  # the subquery returned rows of a different type, diverging from the
-  # IN-list path. BIGINT column v vs STRING subquery column.
-  # Use SELECT-literal via a CTE since VALUES isn't supported.
+    error_code: "0AF00"
+  # Cross-type subquery via CTE — still rejected at the IN-subquery
+  # level (the type check doesn't run).
   - query: |-
       WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1)
       SELECT id FROM a WHERE v IN (SELECT label FROM s)
-    error_code: "22000"
-  # NOT IN variant also errors on cross-type. The NOT prefix doesn't
-  # suppress the type check since the comparison still has to run.
+    error_code: "0AF00"
   - query: |-
       WITH s AS (SELECT 'x' AS label FROM a WHERE id = 1)
       SELECT id FROM a WHERE v NOT IN (SELECT label FROM s)
-    error_code: "22000"
+    error_code: "0AF00"
+
+  # Supported rewrite #1: EXISTS / NOT EXISTS — the supported
+  # equivalent for "outer rows whose v matches some inner row's v".
+  # Note NOT EXISTS does NOT have NOT IN's UNKNOWN-on-NULL semantics
+  # — when the query needs that, callers must filter explicit NULLs
+  # in the inner query.
+  - query: SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id
+    rows:
+      - [2]
+  - query: SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) ORDER BY id
+    rows:
+      - [1]
+      - [3]
+
+  # Supported rewrite #2: comma-join (semi-join shape) — outer rows
+  # whose v matches at least one inner row. Duplicates collapse via
+  # DISTINCT on the outer PK.
+  - query: SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id
+    rows:
+      - [2]

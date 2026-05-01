@@ -85,20 +85,10 @@ func extractColInList(
 		return "", nil, false
 	}
 
-	if body := inPred.InList().QueryExpressionBody(); body != nil {
-		// Uncorrelated pre-evaluated IN-subquery: if
-		// preEvaluateInSubqueries cached values for this body, treat
-		// the subquery result as a literal list and drive the existing
-		// push chain. Correlated / unsupported subqueries stay uncached
-		// and fall through to the runtime IN-subquery evaluator.
-		if c != nil && c.inSubqueryCache != nil {
-			if vals, ok := c.inSubqueryCache[body]; ok {
-				if len(vals) == 0 {
-					return "", nil, false
-				}
-				return colName, vals, true
-			}
-		}
+	if inPred.InList().QueryExpressionBody() != nil {
+		// IN-subquery is rejected at runtime by evalInPredicateTri /
+		// evalPredicateOnMapTri; pushdown bails so the rejection
+		// surfaces as the user-visible error.
 		return "", nil, false
 	}
 

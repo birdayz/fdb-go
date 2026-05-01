@@ -386,16 +386,14 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		if fieldVal == nil {
 			return triNull, nil // NULL [NOT] IN (...) = UNKNOWN
 		}
-		if qb := p.InList().QueryExpressionBody(); qb != nil {
-			if conn == nil {
-				return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
-			}
-			defer conn.pushOuterScope(outerScopeFromMapRow(row))()
-			_, _, subRows, subErr := conn.execQueryBodyRows(ctx, qb)
-			if subErr != nil {
-				return triFalse, subErr
-			}
-			return matchSubqueryIN(fieldVal, subRows, p.NOT() != nil)
+		if p.InList().QueryExpressionBody() != nil {
+			// Java alignment (mirror of evalInPredicateTri): IN with a
+			// subquery argument is not supported — Java's
+			// AstNormalizer.visitInPredicate NPEs because the visitor
+			// doesn't implement the queryExpressionBody alternative.
+			// Go rejects with a clean message; use EXISTS or JOIN.
+			return triFalse, api.NewError(api.ErrCodeUnsupportedQuery,
+				"IN with a subquery argument is not supported; use EXISTS or a JOIN")
 		}
 		// Same grammar-shape bail as evalInPredicateTri — `IN ?` /
 		// `IN someCol` parse through the preparedStatementParameter /

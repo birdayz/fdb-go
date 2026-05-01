@@ -218,15 +218,19 @@ tests:
       - [1, 'active', 'x', 10, 'n1']
 
   # -------------------------------------------------------------------
-  # Covered + LIMIT + residual constants
+  # Covered + residual constants
   # -------------------------------------------------------------------
 
-  # LIMIT composes with covering — the cursor stops early after the
-  # limit count of synthesised rows.
-  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 2
+  # Covered ORDER BY pin (LIMIT was incidental — rejected at parse
+  # time as of fdb-relational 4.11.1.0). Pre-LIMIT-rejection this case
+  # asserted LIMIT-early-termination compositions with covering;
+  # without LIMIT the covering path still runs, just over all rows.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v
     rows:
       - [1, 10]
       - [2, 20]
+      - [3, 30]
+      - [4, 40]
 
   # WHERE with only the indexed col + constant residual. The constant
   # `1 = 1` leaf doesn't reference any column — covering still applies.
@@ -283,9 +287,15 @@ tests:
   # covered by the outer index, canCoverIndex bails and the non-
   # covering cursor serves the query. Result is still correct.
 
-  # Outer id (PK) + subquery on t returning id. canCoverIndex's
-  # walker sees 'id' (in need), which is in outer PK → covered.
-  - query: SELECT id FROM t WHERE id IN (SELECT id FROM t WHERE status = 'active') ORDER BY id
+  # Outer id (PK) + correlated EXISTS on t. IN-subquery is rejected
+  # (Java alignment, CLAUDE.md #10); EXISTS is the supported rewrite.
+  # canCoverIndex's walker still sees the outer 'id' reference and
+  # the inner 'status' / 'id' references; the inner table's columns
+  # don't disqualify the outer covering decision because canCoverIndex
+  # only checks bare-column references against (outer idxCols, outer
+  # PKCols). When the walker over-includes inner columns it bails to
+  # the non-covering cursor — result still correct either way.
+  - query: SELECT id FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active') ORDER BY id
     rows:
       - [1]
       - [3]

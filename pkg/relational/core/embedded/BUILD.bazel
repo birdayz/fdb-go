@@ -13,7 +13,6 @@ go_library(
         "eval_predicate_map.go",
         "eval_proto.go",
         "in_list_pushdown.go",
-        "in_subquery.go",
         "insert.go",
         "join.go",
         "like_prefix_pushdown.go",

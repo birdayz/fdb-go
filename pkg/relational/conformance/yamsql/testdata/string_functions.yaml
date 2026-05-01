@@ -1,107 +1,46 @@
 # string_functions.yaml
 #
-# swingshift-35 commit 1707446b: LEFT / RIGHT / SUBSTRING length args
-# use `toIntegerArg` which accepts int64 and whole-valued float64,
-# rejects fractional floats and non-numerics (pre-fix would silently
-# coerce any non-int to 0, truncating to empty string).
+# STRING-family scalar functions (UPPER / LOWER / LENGTH / CHAR_LENGTH
+# / CHARACTER_LENGTH / OCTET_LENGTH / SUBSTRING / SUBSTR / TRIM /
+# LTRIM / RTRIM / LEFT / RIGHT / POSITION / REVERSE / CONCAT /
+# REPLACE) — fdb-relational 4.11.1.0 has no entries for these in its
+# function registry, so its planner returns
+# `RelationalException: Unsupported operator <NAME>` (function name
+# uppercased to match SQL casing). Go aligns by NOT having a case in
+# scalar_functions.go's switch — falling through to the default arm
+# emits the byte-equal "Unsupported operator <name>" message via
+# api.ErrCodeUnsupportedOperation (SQLSTATE 0A000). Per project
+# conformance principle: doesn't work in Java → doesn't work in Go.
 name: string_functions
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1, 'hello world'), (2, ''), (3, null)
 tests:
-  # LEFT basic.
   - query: SELECT LEFT(s, 5) FROM t WHERE id = 1
-    rows:
-      - ['hello']
-  # LEFT with length longer than string — returns whole string.
-  - query: SELECT LEFT(s, 100) FROM t WHERE id = 1
-    rows:
-      - ['hello world']
-  # LEFT on empty string.
-  - query: SELECT LEFT(s, 5) FROM t WHERE id = 2
-    rows:
-      - ['']
-  # LEFT on NULL propagates.
-  - query: SELECT LEFT(s, 5) FROM t WHERE id = 3
-    rows:
-      - [~]
-  # RIGHT basic.
+    error_code: "0A000"
   - query: SELECT RIGHT(s, 5) FROM t WHERE id = 1
-    rows:
-      - ['world']
-  # SUBSTRING 1-based index — "hello world"[7:] = "world".
+    error_code: "0A000"
   - query: SELECT SUBSTRING(s, 7) FROM t WHERE id = 1
-    rows:
-      - ['world']
-  # SUBSTRING with length.
+    error_code: "0A000"
   - query: SELECT SUBSTRING(s, 1, 5) FROM t WHERE id = 1
-    rows:
-      - ['hello']
-  # Fractional-length arg errors per swingshift-35 (toIntegerArg
-  # rejects fractional floats, not silent truncate-to-0).
-  - query: SELECT LEFT(s, 3.5) FROM t WHERE id = 1
-    error_code: "22023"
-  # UPPER/LOWER — propagate NULL, error on non-string.
+    error_code: "0A000"
   - query: SELECT UPPER(s) FROM t WHERE id = 1
-    rows:
-      - ['HELLO WORLD']
+    error_code: "0A000"
   - query: SELECT LOWER('ABCxyz') FROM t WHERE id = 1
-    rows:
-      - ['abcxyz']
-  - query: SELECT UPPER(s) FROM t WHERE id = 3
-    rows:
-      - [~]
-  # LENGTH counts Unicode code points, not bytes — use a multi-byte
-  # string to prove it. "héllo" = 5 code points, 6 UTF-8 bytes.
+    error_code: "0A000"
   - query: SELECT LENGTH('héllo') FROM t WHERE id = 1
-    rows:
-      - [5]
-  # CHAR_LENGTH is the SQL:2003 spec name for the same function.
-  # LEN is the SQL Server short form. All three route to one impl.
+    error_code: "0A000"
   - query: SELECT CHAR_LENGTH('héllo') FROM t WHERE id = 1
-    rows:
-      - [5]
+    error_code: "0A000"
   - query: SELECT CHARACTER_LENGTH('héllo') FROM t WHERE id = 1
-    rows:
-      - [5]
-  # Propagates NULL across the LENGTH family.
-  - query: SELECT CHAR_LENGTH(s) FROM t WHERE id = 3
-    rows:
-      - [~]
-  # OCTET_LENGTH counts BYTES, not code points — the distinction from
-  # CHAR_LENGTH. "héllo" is 5 chars / 6 bytes (é is UTF-8 2-byte).
+    error_code: "0A000"
   - query: SELECT OCTET_LENGTH('héllo') FROM t WHERE id = 1
-    rows:
-      - [6]
-  # OCTET_LENGTH on ASCII string matches CHAR_LENGTH.
-  - query: SELECT OCTET_LENGTH(s) FROM t WHERE id = 1
-    rows:
-      - [11]
-  - query: SELECT OCTET_LENGTH(s) FROM t WHERE id = 3
-    rows:
-      - [~]
-  # POSITION — 1-based index of substring.
+    error_code: "0A000"
   - query: SELECT POSITION('world', s) FROM t WHERE id = 1
-    rows:
-      - [7]
-  # POSITION with no match returns 0.
-  - query: SELECT POSITION('xyz', s) FROM t WHERE id = 1
-    rows:
-      - [0]
-  # POSITION NULL propagation.
-  - query: SELECT POSITION('a', s) FROM t WHERE id = 3
-    rows:
-      - [~]
-  # REVERSE.
+    error_code: "0A000"
   - query: SELECT REVERSE(s) FROM t WHERE id = 1
-    rows:
-      - ['dlrow olleh']
-  # REVERSE on NULL.
-  - query: SELECT REVERSE(s) FROM t WHERE id = 3
-    rows:
-      - [~]
-  # Nested string function calls.
+    error_code: "0A000"
+  # Nested string function calls — outer rejection fires.
   - query: SELECT UPPER(REVERSE(s)) FROM t WHERE id = 1
-    rows:
-      - ['DLROW OLLEH']
+    error_code: "0A000"

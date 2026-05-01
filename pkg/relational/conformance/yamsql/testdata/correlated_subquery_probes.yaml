@@ -27,11 +27,10 @@ tests:
   - query: SELECT fname FROM emp WHERE NOT EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ORDER BY id
     rows:
       - ['Carol']
-  # Correlated IN — inner references outer column.
+  # Correlated IN — rejected (Java NPEs in
+  # AstNormalizer.visitInPredicate; CLAUDE.md #10 alignment).
   - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
-    rows:
-      - ['Alice']
-      - ['Bob']
+    error_code: "0AF00"
   # Correlated scalar subquery — scalar subqueries are pre-evaluated
   # before the outer scan starts (no per-row execution), so correlation
   # is unsupported. Inner errors 42703 at pre-eval time.
@@ -43,19 +42,18 @@ tests:
       - ['Alice']
       - ['Bob']
       - ['Carol']
-  # Uncorrelated IN still works (baseline).
+  # Uncorrelated IN — also rejected (rejection is syntactic, not
+  # semantic). The supported rewrite is uncorrelated EXISTS or a
+  # JOIN; the EXISTS-with-correlation form above already covers
+  # the "outer rows whose id is in the inner result" semantics.
   - query: SELECT fname FROM emp WHERE id IN (SELECT emp_id FROM project) ORDER BY id
-    rows:
-      - ['Alice']
-      - ['Bob']
-  # Java alignment: ORDER BY inside an EXISTS subquery — Java errors
-  # 0AF00 (UNSUPPORTED_QUERY) since ordering inside a set-existence
-  # check is meaningless. Probe Go's behavior.
+    error_code: "0AF00"
+  # LIMIT inside an EXISTS subquery is rejected at parse time as of
+  # fdb-relational 4.11.1.0 (LIMIT clause is not supported., 0AF00).
+  # Pre-rejection this probe pinned that ordering inside a
+  # set-existence check is benign; now LIMIT itself wins.
   - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project ORDER BY id LIMIT 1) ORDER BY id
-    rows:
-      - ['Alice']
-      - ['Bob']
-      - ['Carol']
+    error_code: "0AF00"
 
   # Correlated EXISTS with additional inner filter: keep outer iff the
   # inner has a project with emp_id = outer.id AND inner.id >= 100.
@@ -64,10 +62,9 @@ tests:
       - ['Alice']
       - ['Bob']
 
-  # Correlated NOT IN.
+  # Correlated NOT IN — also rejected.
   - query: SELECT fname FROM emp WHERE id NOT IN (SELECT emp_id FROM project WHERE emp_id = emp.id) ORDER BY id
-    rows:
-      - ['Carol']
+    error_code: "0AF00"
 
   # Correlated with non-matching literal filter: inner never returns
   # rows, so EXISTS is always false.

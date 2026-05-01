@@ -1,9 +1,11 @@
 package embedded
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
@@ -53,15 +55,20 @@ func TestBuildLogicalPlan_SelectStarWhere(t *testing.T) {
 	}
 }
 
-func TestBuildLogicalPlan_SelectColsOrderLimit(t *testing.T) {
+// TestBuildLogicalPlan_SelectColsOrder pins the SELECT-with-ORDER-BY
+// shape (without LIMIT — Java's AstNormalizer rejects LIMIT/OFFSET at
+// parse time, so the LIMIT branch of buildLogicalPlanForSelect is
+// unreachable from SQL; the LogicalLimit operator stays in place for
+// future setMaxRows-routing / Cascades work).
+func TestBuildLogicalPlan_SelectColsOrder(t *testing.T) {
 	t.Parallel()
-	sq := parseSelect(t, "SELECT id, name FROM t ORDER BY id DESC LIMIT 10")
+	sq := parseSelect(t, "SELECT id, name FROM t ORDER BY id DESC")
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
-	// Project at top (projCols set), then Limit, then Sort, then Scan.
-	want := "Project(id, name)\n  Limit(10)\n    Sort(id DESC)\n      Scan(t)"
+	// Project at top (projCols set), then Sort, then Scan.
+	want := "Project(id, name)\n  Sort(id DESC)\n    Scan(t)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -176,17 +183,38 @@ func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 	}
 }
 
-// SELECT without FROM → LogicalValues.
-func TestBuildLogicalPlan_ValuesNoFrom(t *testing.T) {
+// SELECT without FROM is rejected at parse time. fdb-relational
+// 4.11.1.0's QueryVisitor.visitSimpleTable asserts a non-null FROM
+// clause with `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
+// "query is not supported")`; Go's extractFromSimpleTable mirrors the
+// rejection. Per project conformance principle: doesn't work in Java
+// → doesn't work in Go. The LogicalValues builder shape stays in
+// place for future use (e.g., VALUES (...) AS t(...)) but is no
+// longer reachable from a bare SELECT.
+func TestBuildLogicalPlan_ValuesNoFromRejected(t *testing.T) {
 	t.Parallel()
-	sq := parseSelect(t, "SELECT 1 + 2")
-	op := buildLogicalPlanForSelect(sq)
-	if op == nil {
-		t.Fatal("expected non-nil")
+	root, err := parser.Parse("SELECT 1 + 2")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	got := op.Explain("")
-	if !strings.HasPrefix(got, "Values(") {
-		t.Fatalf("got %q, want Values(...)", got)
+	stmt := root.Statements().AllStatement()[0]
+	sel := stmt.SelectStatement()
+	if sel == nil {
+		t.Fatal("expected SELECT statement")
+	}
+	_, err = extractSelectParts(sel)
+	if err == nil {
+		t.Fatal("expected error from extractSelectParts on FROM-less SELECT")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *api.Error, got %T (%v)", err, err)
+	}
+	if apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("got code %s, want %s", apiErr.Code, api.ErrCodeUnsupportedQuery)
+	}
+	if apiErr.Message != "query is not supported" {
+		t.Fatalf("got message %q, want %q", apiErr.Message, "query is not supported")
 	}
 }
 

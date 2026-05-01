@@ -27,9 +27,13 @@ tests:
     error_code: "0AF01"
   - query: SELECT id FROM t ORDER BY a + b DESC
     error_code: "0AF01"
-  # ORDER BY function-call expression — rejected.
+  # ORDER BY function-call expression — function itself is rejected
+  # at the registry layer (0A000) before the planner reaches the
+  # "no scan satisfies" failure. ABS is absent from fdb-relational
+  # 4.11.1.0; same architectural reason in both engines: no
+  # evaluator entry for ABS.
   - query: SELECT id FROM t ORDER BY ABS(a - 10), id
-    error_code: "0AF01"
+    error_code: "0A000"
   # ORDER BY CASE expression — rejected.
   - query: SELECT id FROM t ORDER BY CASE WHEN b < 3 THEN 1 ELSE 0 END, id
     error_code: "0AF01"

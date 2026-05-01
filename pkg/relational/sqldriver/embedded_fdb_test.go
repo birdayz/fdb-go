@@ -57,6 +57,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// expectUnsupportedOperator asserts that err unwraps to an *api.Error
+// with code ErrCodeUnsupportedOperation and the byte-equal Java
+// rejection message ("Unsupported operator <opName>"). Used by the
+// rejection-suite tests pinning Java alignment for scalar functions
+// not in fdb-relational's registry.
+func expectUnsupportedOperator(g gomega.Gomega, err error, opName, ctx string) {
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"%s: want *api.Error, got %T (%v)", ctx, err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+		"%s: want ErrCodeUnsupportedOperation, got %s", ctx, apiErr.Code)
+	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+opName),
+		"%s: want byte-equal Java message", ctx)
+}
+
 // openTestDB returns a *sql.DB wired to the test FDB container.
 // Skips the test if Docker is not available.
 func openTestDB(t *testing.T, dbPath string) *sql.DB {
@@ -1349,7 +1364,15 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{3, 2, 1}))
 }
 
-func TestFDB_SelectLimit(t *testing.T) {
+// TestFDB_SelectLimitRejected pins LIMIT-clause rejection.
+// fdb-relational 4.11.1.0's AstNormalizer.visitLimitClause throws
+// `RelationalException: LIMIT clause is not supported.`
+// (UNSUPPORTED_QUERY / 0AF00). Pagination is a JDBC-only knob via
+// Statement.setMaxRows; SQL-level LIMIT N is not in the planner's
+// repertoire. Go aligns at parse time in extractFromSimpleTable.
+// Per project conformance principle: doesn't work in Java →
+// doesn't work in Go.
+func TestFDB_SelectLimitRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -1369,18 +1392,13 @@ func TestFDB_SelectLimit(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id) VALUES (1), (2), (3), (4), (5)")).Error().NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC LIMIT 3")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.HaveLen(3))
+	_, err = db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC LIMIT 3")
+	g.Expect(err).To(gomega.HaveOccurred(), "LIMIT must be rejected at parse time")
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	g.Expect(apiErr.Message).To(gomega.Equal("LIMIT clause is not supported."))
 }
 
 func TestFDB_SelectWhereAnd(t *testing.T) {
@@ -2777,7 +2795,14 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
-func TestFDB_LimitOffset(t *testing.T) {
+// TestFDB_LimitOffsetRejected pins OFFSET-clause rejection. Java's
+// AstNormalizer.visitLimitClause checks offset first, so the
+// `LIMIT N OFFSET M` shape errors with `OFFSET clause is not
+// supported.` (UNSUPPORTED_QUERY / 0AF00) — even though both clauses
+// are unsupported. Mirror Java's order-of-checks so byte-equal
+// alignment holds for the combined shape. Per project conformance
+// principle: doesn't work in Java → doesn't work in Go.
+func TestFDB_LimitOffsetRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -2800,18 +2825,14 @@ func TestFDB_LimitOffset(t *testing.T) {
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 	}
 
-	// LIMIT 2 OFFSET 1 → rows 2, 3 (sorted by id)
-	rows, err := db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
-	}
-	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+	_, err = db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
+	g.Expect(err).To(gomega.HaveOccurred(), "OFFSET must be rejected at parse time")
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	// Java checks offset first, so the combined shape errors on OFFSET.
+	g.Expect(apiErr.Message).To(gomega.Equal("OFFSET clause is not supported."))
 }
 
 func TestFDB_CaseWhen(t *testing.T) {
@@ -2856,7 +2877,16 @@ func TestFDB_CaseWhen(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]saleRow{{1, "small"}, {2, "medium"}, {3, "large"}}))
 }
 
-func TestFDB_StringFunctions(t *testing.T) {
+// TestFDB_StringFunctionsRejected pins UPPER / LOWER / LENGTH / TRIM
+// rejection. fdb-relational 4.11.1.0 has no entries for these in its
+// function registry, so its planner returns
+// `RelationalException: Unsupported operator <NAME>` (uppercased).
+// Go aligns by NOT having a case in scalar_functions.go's switch —
+// falling through to the default arm emits the byte-equal
+// "Unsupported operator <name>" message via ErrCodeUnsupportedOperation
+// (SQLSTATE 0A000). Per project conformance principle: doesn't work in
+// Java → doesn't work in Go.
+func TestFDB_StringFunctionsRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -2877,21 +2907,31 @@ func TestFDB_StringFunctions(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Word (id, label) VALUES (1, '  Hello  ')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, `SELECT UPPER(TRIM(label)), LOWER(TRIM(label)), LENGTH(TRIM(label)) FROM Word WHERE id = 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	g.Expect(rows.Next()).To(gomega.BeTrue())
-	var upper, lower string
-	var length int64
-	g.Expect(rows.Scan(&upper, &lower, &length)).To(gomega.Succeed())
-	g.Expect(upper).To(gomega.Equal("HELLO"))
-	g.Expect(lower).To(gomega.Equal("hello"))
-	g.Expect(length).To(gomega.Equal(int64(5)))
-	g.Expect(rows.Next()).To(gomega.BeFalse())
+	cases := []struct {
+		query  string
+		opName string // uppercase function name as it appears in the message
+	}{
+		{`SELECT UPPER(label) FROM Word WHERE id = 1`, "UPPER"},
+		{`SELECT LOWER(label) FROM Word WHERE id = 1`, "LOWER"},
+		{`SELECT LENGTH(label) FROM Word WHERE id = 1`, "LENGTH"},
+		{`SELECT TRIM(label) FROM Word WHERE id = 1`, "TRIM"},
+	}
+	for _, tc := range cases {
+		var dummy any
+		err := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(err).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, err, tc.opName, tc.query)
+	}
 }
 
-func TestFDB_ConcatNullIf(t *testing.T) {
+// TestFDB_ConcatNullIfRejected pins both CONCAT and NULLIF rejection.
+// Both are absent from fdb-relational 4.11.1.0's function registry;
+// Java's planner emits "Unsupported operator <NAME>" (SQLSTATE 0A000)
+// and Go aligns through the default arm of evalScalarFunctionCallCore.
+// Searched-CASE remains the workaround for NULLIF; pinned in
+// TestFDB_CaseWhen (and elsewhere). Per project conformance principle:
+// doesn't work in Java → doesn't work in Go.
+func TestFDB_ConcatNullIfRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -2911,42 +2951,27 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (1, 'Alice', 'Smith', 100)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (2, 'Bob', 'Jones', 0)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// NULLIF is rejected (Java parity — function registry has no
-	// entry; CLAUDE.md gotcha). Use searched-CASE as the workaround:
-	// `CASE WHEN score = 0 THEN NULL ELSE score END`.
-	rows, err := db.QueryContext(ctx,
-		`SELECT CONCAT(first, ' ', last), CASE WHEN score = 0 THEN NULL ELSE score END FROM Person ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
+	cases := []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT CONCAT(first, ' ', last) FROM Person WHERE id = 1`, "CONCAT"},
+		{`SELECT NULLIF(score, 0) FROM Person WHERE id = 1`, "NULLIF"},
+	}
+	for _, tc := range cases {
+		var dummy any
+		err := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(err).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, err, tc.opName, tc.query)
+	}
 
-	// Row 1: CONCAT = "Alice Smith", CASE WHEN 100 = 0 THEN NULL ELSE 100 END = 100
-	g.Expect(rows.Next()).To(gomega.BeTrue())
-	var fullName string
+	// Searched-CASE — the workaround for NULLIF — must still work.
 	var score any
-	g.Expect(rows.Scan(&fullName, &score)).To(gomega.Succeed())
-	g.Expect(fullName).To(gomega.Equal("Alice Smith"))
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT CASE WHEN score = 0 THEN NULL ELSE score END FROM Person WHERE id = 1`).
+		Scan(&score)).To(gomega.Succeed())
 	g.Expect(score).To(gomega.Equal(int64(100)))
-
-	// Row 2: CONCAT = "Bob Jones", CASE WHEN 0 = 0 THEN NULL ELSE 0 END = NULL
-	g.Expect(rows.Next()).To(gomega.BeTrue())
-	var fullName2 string
-	var score2 any
-	g.Expect(rows.Scan(&fullName2, &score2)).To(gomega.Succeed())
-	g.Expect(fullName2).To(gomega.Equal("Bob Jones"))
-	g.Expect(score2).To(gomega.BeNil())
-
-	g.Expect(rows.Next()).To(gomega.BeFalse())
-
-	// Pin that NULLIF itself is rejected with ErrCodeUnsupportedOperation.
-	var dummy any
-	nullifErr := db.QueryRowContext(ctx, `SELECT NULLIF(score, 0) FROM Person WHERE id = 1`).Scan(&dummy)
-	g.Expect(nullifErr).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(nullifErr, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", nullifErr)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 func TestFDB_UnionAll(t *testing.T) {
@@ -3133,26 +3158,30 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g.Expect(rows.Scan(&priceStr)).To(gomega.Succeed())
 	g.Expect(priceStr).To(gomega.Equal("42"))
 
-	// SUBSTRING
-	rows2, err := db.QueryContext(ctx, `SELECT SUBSTRING(name, 1, 3) FROM Item WHERE id = 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-	rows2.Next()
-	var sub string
-	g.Expect(rows2.Scan(&sub)).To(gomega.Succeed())
-	g.Expect(sub).To(gomega.Equal("Wid"))
+	// SUBSTRING / REPLACE are STRING-family scalar functions that
+	// fdb-relational 4.11.1.0 has no entry for in its function
+	// registry — Java's planner emits "Unsupported operator <NAME>"
+	// (SQLSTATE 0A000). Go aligns via the default arm of
+	// evalScalarFunctionCallCore. Pinned here so the cast-focused
+	// test still walks the SUBSTRING/REPLACE shapes that pre-cleanup
+	// produced rows.
+	for _, tc := range []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT SUBSTRING(name, 1, 3) FROM Item WHERE id = 1`, "SUBSTRING"},
+		{`SELECT REPLACE(name, 'Widget', 'Thing') FROM Item WHERE id = 1`, "REPLACE"},
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+	}
 
-	// REPLACE
-	rows3, err := db.QueryContext(ctx, `SELECT REPLACE(name, 'Widget', 'Thing') FROM Item WHERE id = 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows3.Close()
-	rows3.Next()
-	var replaced string
-	g.Expect(rows3.Scan(&replaced)).To(gomega.Succeed())
-	g.Expect(replaced).To(gomega.Equal("Thing"))
-
-	// IF function
-	rows4, err := db.QueryContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item ORDER BY id`)
+	// IF function-form is rejected by Java (not in the function
+	// registry). The Java-supported workaround is searched-CASE
+	// (`CASE WHEN cond THEN ... ELSE ... END`).
+	rows4, err := db.QueryContext(ctx, `SELECT CASE WHEN price > 50 THEN 'expensive' ELSE 'cheap' END FROM Item ORDER BY id`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows4.Close()
 	var cats []string
@@ -3162,6 +3191,14 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		cats = append(cats, c)
 	}
 	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
+
+	// IF as a function call is rejected (Java has no IF function;
+	// use searched-CASE instead). Pin the rejection so future
+	// re-additions of an IF arm in the evaluator regress this test.
+	var ifDummy string
+	errIf := db.QueryRowContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item WHERE id = 1`).Scan(&ifDummy)
+	g.Expect(errIf).To(gomega.HaveOccurred(), "IF function-form must be rejected")
+	expectUnsupportedOperator(g, errIf, "IF", "IF function-form")
 
 	// Java conformance (swingshift-35): CAST(float AS INT) rounds (not
 	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
@@ -3223,24 +3260,21 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	}
 	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
 
-	// ROUND's `decimals` argument must validate: fractional float, string,
-	// and other non-integer types should error (was silently ignored before
-	// swingshift-35). NULL decimals → NULL result.
-	var rnd any
-	g.Expect(db.QueryRowContext(ctx, `SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`).Scan(&rnd)).To(gomega.Succeed())
-	g.Expect(rnd).To(gomega.BeNil(), "ROUND(x, NULL) must return NULL")
-
-	rowsRnd, errRnd := db.QueryContext(ctx, `SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`)
-	if errRnd == nil && rowsRnd != nil {
-		defer rowsRnd.Close()
-		if rowsRnd.Next() {
-			var r any
-			errRnd = rowsRnd.Scan(&r)
-		} else {
-			errRnd = rowsRnd.Err()
-		}
+	// ROUND is absent from fdb-relational 4.11.1.0's BuiltInFunction
+	// registry — Java's planner emits
+	// "Unsupported operator ROUND" (0A000) before evaluation, so the
+	// pre-cleanup Go-side decimals-argument validation never runs.
+	// Pin the rejection here for both the NULL-decimals and the
+	// non-integer-decimals shapes that previously walked the evaluator.
+	for _, q := range []string{
+		`SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`,
+		`SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`,
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, q).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", q)
+		expectUnsupportedOperator(g, errRej, "ROUND", q)
 	}
-	g.Expect(errRnd).To(gomega.HaveOccurred(), "ROUND(x, 'abc') must error, not silently default to 0 decimals")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {
@@ -3264,8 +3298,10 @@ func TestFDB_MathFunctions(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Num (id, val) VALUES (1, 7), (2, 3)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// MOD(7, 3) = 1
-	rows, err := db.QueryContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`)
+	// 7 % 3 = 1. Java exposes modulo only via the `%` operator (the
+	// synonym map binds `%` -> "mod"); the function-call form
+	// `MOD(a, b)` is rejected with "Unsupported operator MOD".
+	rows, err := db.QueryContext(ctx, `SELECT val % 3 FROM Num WHERE id = 1`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	rows.Next()
@@ -3273,14 +3309,32 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(rows.Scan(&mod)).To(gomega.Succeed())
 	g.Expect(mod).To(gomega.Equal(int64(1)))
 
-	// POWER(2, 3) = 8
-	rows2, err := db.QueryContext(ctx, `SELECT POWER(2, 3) FROM Num WHERE id = 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-	rows2.Next()
-	var pow int64
-	g.Expect(rows2.Scan(&pow)).To(gomega.Succeed())
-	g.Expect(pow).To(gomega.Equal(int64(8)))
+	// MOD as a function call is rejected (function-form is not in
+	// fdb-relational's BuiltInFunction registry; only the `%`
+	// operator maps to Mod).
+	var dummyMod int64
+	errMod := db.QueryRowContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`).Scan(&dummyMod)
+	g.Expect(errMod).To(gomega.HaveOccurred(), "MOD function-form must be rejected")
+	expectUnsupportedOperator(g, errMod, "MOD", "MOD(val, 3)")
+
+	// POWER / POW are absent from fdb-relational 4.11.1.0's
+	// ArithmeticValue registry; Java's planner emits "Unsupported
+	// operator <NAME>" (0A000) before evaluation. Go mirrors
+	// byte-equal via the default arm in scalar_functions.go.
+	for _, op := range []string{"POWER", "POW"} {
+		var dummy int64
+		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(2, 3) FROM Num WHERE id = 1`, op)).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
+		expectUnsupportedOperator(g, errRej, op, "op="+op)
+	}
+
+	// ABS / SQRT — same rejection.
+	for _, op := range []string{"ABS", "SQRT"} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(val) FROM Num WHERE id = 1`, op)).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
+		expectUnsupportedOperator(g, errRej, op, "op="+op)
+	}
 
 	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
 	// in SqlFunctionCatalogImpl; Go was missing the BitExpressionAtomContext
@@ -3767,7 +3821,17 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	g.Expect(lVal).To(gomega.BeNil(), "LEAST with NULL arg must return NULL (Java conformance)")
 }
 
-func TestFDB_SubqueryIN(t *testing.T) {
+// TestFDB_SubqueryINRejected pins that `col IN (subquery)` and `col NOT
+// IN (subquery)` are rejected at predicate evaluation time. Java's
+// AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
+// alternative of the inList grammar rule (NPE in ParseHelpers.isConstant
+// whose @Nonnull parameter is dereferenced unconditionally). Per CLAUDE.md
+// principle #10 (emergent behaviour over special-case checks), Go aligns
+// with the architectural property — IN-subquery isn't supported — but
+// emits a clean ErrCodeUnsupportedQuery rather than reproducing Java's
+// NPE. EXISTS / NOT EXISTS / JOIN are the supported rewrites and exercised
+// elsewhere (TestFDB_ExistsSubquery, etc).
+func TestFDB_SubqueryINRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3801,11 +3865,29 @@ func TestFDB_SubqueryIN(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO RestaurantOrder (order_id, customer_id, amount) VALUES (3, 1, 150)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Alice has orders > 100, Bob does not, Charlie has no orders.
-	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	expectInSubqueryRejected := func(query string) {
+		t.Helper()
+		_, qErr := db.QueryContext(ctx, query)
+		g.Expect(qErr).To(gomega.HaveOccurred(), "IN-subquery must be rejected: %s", query)
+		var apiErr *api.Error
+		g.Expect(errors.As(qErr, &apiErr)).To(gomega.BeTrue(),
+			"want *api.Error, got %T (%v)", qErr, qErr)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+		g.Expect(apiErr.Message).To(gomega.Equal(
+			"IN with a subquery argument is not supported; use EXISTS or a JOIN"))
+	}
+
+	// IN-subquery — rejected.
+	expectInSubqueryRejected(`SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	// NOT IN-subquery — also rejected (same path).
+	expectInSubqueryRejected(`SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+
+	// Supported rewrite via EXISTS — bread-crumb for users hitting the
+	// rejection. Returns Alice (id=1 with amount > 100).
+	rows, err := db.QueryContext(ctx,
+		`SELECT name FROM Customer AS c WHERE EXISTS (SELECT 1 FROM RestaurantOrder WHERE customer_id = c.id AND amount > 100) ORDER BY name ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
-
 	var names []string
 	for rows.Next() {
 		var name string
@@ -3814,19 +3896,6 @@ func TestFDB_SubqueryIN(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"Alice"}))
-
-	rows2, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-
-	var names2 []string
-	for rows2.Next() {
-		var name string
-		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
-		names2 = append(names2, name)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names2).To(gomega.ConsistOf("Bob", "Charlie"))
 }
 
 func TestFDB_JoinGroupBy(t *testing.T) {
@@ -4020,7 +4089,14 @@ func TestFDB_CTE(t *testing.T) {
 	g.Expect(names2).To(gomega.Equal([]string{"Cheap"}))
 }
 
-func TestFDB_SelectWithoutFrom(t *testing.T) {
+// TestFDB_SelectWithoutFromRejected pins that FROM-less SELECT is
+// rejected at parse time. fdb-relational 4.11.1.0's QueryVisitor.
+// visitSimpleTable (line 225) asserts `simpleTableContext.fromClause()
+// != null` with `ErrorCode.UNSUPPORTED_QUERY` and the byte-equal
+// message "query is not supported". Go's `extractFromSimpleTable`
+// mirrors the rejection. Per the project conformance principle:
+// doesn't work in Java → doesn't work in Go.
+func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -4036,24 +4112,18 @@ func TestFDB_SelectWithoutFrom(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 
-	// SELECT without FROM doesn't need a real schema — just a valid DSN with a path.
+	// FROM-less SELECT doesn't need a real schema — just a valid DSN with a path.
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///select_no_from?cluster_file=%s", clusterFilePath))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, `SELECT 1 + 2, 'hello', 42`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	g.Expect(rows.Next()).To(gomega.BeTrue())
-	var a, c int64
-	var b string
-	g.Expect(rows.Scan(&a, &b, &c)).To(gomega.Succeed())
-	g.Expect(a).To(gomega.Equal(int64(3)))
-	g.Expect(b).To(gomega.Equal("hello"))
-	g.Expect(c).To(gomega.Equal(int64(42)))
-	g.Expect(rows.Next()).To(gomega.BeFalse())
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	_, err = db.QueryContext(ctx, `SELECT 1 + 2, 'hello', 42`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	g.Expect(apiErr.Message).To(gomega.Equal("query is not supported"))
 }
 
 // TestFDB_ConstantProjectionFolding exercises the embedded layer's
@@ -4088,7 +4158,11 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	// Pure constants alongside a row column. Slots 0/2/3 fold; slot 1
 	// (bare column `name`) varies per row. Slot 3 exercises a nested
 	// arithmetic that simplifies through SimplifyValue's Arithmetic arm.
-	rows, err := db.QueryContext(ctx, `SELECT 1+2, name, UPPER('hi'), (1+2)*4 FROM Item ORDER BY id`)
+	// Slot 2 is a string literal — pre-cleanup this was UPPER('hi'),
+	// but STRING-family scalar functions are now registry-rejected;
+	// the constant-folding shape (literal projection across all rows)
+	// is what's under test, not the function call itself.
+	rows, err := db.QueryContext(ctx, `SELECT 1+2, name, 'HI', (1+2)*4 FROM Item ORDER BY id`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4228,8 +4302,11 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, category_id, price) VALUES (3, 2, 50)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// UPDATE products in electronics category (id IN (SELECT id FROM Category WHERE name = 'electronics')).
-	_, err = db.ExecContext(ctx, `UPDATE Product SET price = 999 WHERE category_id IN (SELECT id FROM Category WHERE name = 'electronics')`)
+	// UPDATE products in electronics category via correlated EXISTS.
+	// IN-subquery is rejected (Java alignment, CLAUDE.md #10); EXISTS
+	// is the supported rewrite and exercises the same DML scan-loop
+	// integration with a subquery in WHERE.
+	_, err = db.ExecContext(ctx, `UPDATE Product SET price = 999 WHERE EXISTS (SELECT 1 FROM Category WHERE Category.id = Product.category_id AND Category.name = 'electronics')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx, `SELECT price FROM Product WHERE category_id = 1 ORDER BY id ASC`)
@@ -4244,8 +4321,8 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(prices).To(gomega.Equal([]int64{999, 999}))
 
-	// DELETE products in books category.
-	_, err = db.ExecContext(ctx, `DELETE FROM Product WHERE category_id IN (SELECT id FROM Category WHERE name = 'books')`)
+	// DELETE products in books category via correlated EXISTS.
+	_, err = db.ExecContext(ctx, `DELETE FROM Product WHERE EXISTS (SELECT 1 FROM Category WHERE Category.id = Product.category_id AND Category.name = 'books')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	rows2, err := db.QueryContext(ctx, `SELECT id FROM Product ORDER BY id ASC`)
@@ -4290,20 +4367,22 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, label) VALUES (2, 'pricey')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Function in WHERE on a CTE (map path).
-	rows, err := db.QueryContext(ctx, `
-		WITH products AS (SELECT id, name, price FROM Product)
-		SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
-		names = append(names, n)
+	// UPPER in a WHERE on a CTE (map path) — STRING-family scalar
+	// functions are rejected by Java's function registry; map-path
+	// emits the byte-equal "Unsupported operator UPPER" wording the
+	// proto-path uses, so cross-engine ExpectErrorMessage works
+	// regardless of which Go evaluator path the query routes through.
+	// The shape "function in WHERE on a CTE" is otherwise still
+	// exercised below via COALESCE (which IS in the registry on
+	// both sides).
+	{
+		var dummy any
+		errRej := db.QueryRowContext(ctx, `
+			WITH products AS (SELECT id, name, price FROM Product)
+			SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "UPPER in WHERE must be rejected")
+		expectUnsupportedOperator(g, errRej, "UPPER", "UPPER in WHERE on CTE")
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names).To(gomega.Equal([]string{"Widget"}))
 
 	// COALESCE in SELECT projection on a CTE.
 	rows2, err := db.QueryContext(ctx, `
@@ -4397,9 +4476,13 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CASE WHEN with subquery in the condition.
+	// CASE WHEN with correlated EXISTS in the condition. IN-subquery
+	// is rejected (Java alignment, CLAUDE.md #10) — EXISTS is the
+	// supported rewrite and the actual focus of this test (CASE WHEN
+	// gating an EXISTS predicate inside a SELECT projection) is
+	// preserved.
 	rows, err := db.QueryContext(ctx, `
-		SELECT name, CASE WHEN id IN (SELECT product_id FROM Discount) THEN 'discounted' ELSE 'full price' END
+		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
@@ -4521,10 +4604,13 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (5, 3, 400)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// JOIN + GROUP BY + ORDER BY on aggregate + LIMIT. Previously LIMIT was silently ignored.
+	// JOIN + GROUP BY + ORDER BY on aggregate. LIMIT was incidental
+	// (Java rejects LIMIT at parse time as of fdb-relational 4.11.1.0
+	// — see TestFDB_SelectLimitRejected); the actual focus here is
+	// that GROUP BY + ORDER BY produce all rows in DESC name order.
 	rows, err := db.QueryContext(ctx, `
 		SELECT name, SUM(amount) FROM Customer INNER JOIN Sales ON Customer.id = Sales.customer_id
-		GROUP BY name ORDER BY name DESC LIMIT 2`)
+		GROUP BY name ORDER BY name DESC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4546,10 +4632,11 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 		got = append(got, r)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// DESC: Carol, Bob, Alice; LIMIT 2 → Carol, Bob.
+	// DESC: Carol, Bob, Alice.
 	g.Expect(got).To(gomega.Equal([]row{
 		{"Carol", 900},
 		{"Bob", 50},
+		{"Alice", 300},
 	}))
 }
 
@@ -4773,7 +4860,12 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
-func TestFDB_UpdateSetWithFunction(t *testing.T) {
+// TestFDB_UpdateSetWithFunctionRejected pins UPDATE SET col = UPPER(...)
+// rejection. Java's function registry has no UPPER entry, so the
+// planner emits ErrCodeUnsupportedOperation before the UPDATE plan
+// runs. The "UPDATE SET col = expr" shape with a non-rejected
+// expression (e.g., arithmetic) is exercised in TestFDB_UpdateSetArithmetic.
+func TestFDB_UpdateSetWithFunctionRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -4794,20 +4886,15 @@ func TestFDB_UpdateSetWithFunction(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name) VALUES (1, 'widget')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name) VALUES (2, 'gadget')`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// UPDATE with UPPER() scalar function.
-	_, err = db.ExecContext(ctx, `UPDATE Product SET name = UPPER(name) WHERE id = 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, errRej := db.ExecContext(ctx, `UPDATE Product SET name = UPPER(name) WHERE id = 1`)
+	g.Expect(errRej).To(gomega.HaveOccurred())
+	expectUnsupportedOperator(g, errRej, "UPPER", "UPDATE SET UPPER")
 
+	// The row must be unchanged after the rejected UPDATE.
 	var n string
 	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 1`).Scan(&n)).To(gomega.Succeed())
-	g.Expect(n).To(gomega.Equal("WIDGET"))
-
-	// Unchanged row.
-	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 2`).Scan(&n)).To(gomega.Succeed())
-	g.Expect(n).To(gomega.Equal("gadget"))
+	g.Expect(n).To(gomega.Equal("widget"))
 }
 
 func TestFDB_OrderByExpression(t *testing.T) {
@@ -4851,10 +4938,13 @@ func TestFDB_OrderByExpression(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"a", "b", "c"}))
 
-	// ORDER BY UPPER(name) DESC via CTE.
+	// ORDER BY name DESC via CTE — bare column. (Pre-cleanup this used
+	// ORDER BY UPPER(name) to drive the "ORDER BY a function on a
+	// column" path; UPPER is no longer in the function registry, so
+	// the column-only shape exercises the CTE + ORDER BY pipeline.)
 	rows2, err := db.QueryContext(ctx, `
 		WITH p AS (SELECT id, name FROM Product)
-		SELECT id FROM p ORDER BY UPPER(name) DESC`)
+		SELECT id FROM p ORDER BY name DESC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows2.Close()
 	var ids []int64
@@ -4900,11 +4990,16 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 3, 300)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// JOIN + ORDER BY UPPER(name): apple, middle, zebra.
+	// JOIN + ORDER BY column from joined table: apple, middle, zebra.
+	// (Pre-cleanup this used ORDER BY UPPER(Customer.name) to drive
+	// the "ORDER BY a function on a joined column" path; UPPER is no
+	// longer in the function registry, so the simpler bare-column
+	// shape exercises the JOIN + ORDER BY pipeline that was the
+	// original test focus.)
 	rows, err := db.QueryContext(ctx, `
 		SELECT Customer.name, Sales.amount
 		FROM Customer INNER JOIN Sales ON Customer.id = Sales.customer_id
-		ORDER BY UPPER(Customer.name) ASC`)
+		ORDER BY Customer.name ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	var names []string
@@ -4918,7 +5013,13 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	g.Expect(names).To(gomega.Equal([]string{"apple", "middle", "zebra"}))
 }
 
-func TestFDB_LtrimRtrim(t *testing.T) {
+// TestFDB_LtrimRtrimRejected pins LTRIM / RTRIM / TRIM rejection.
+// Java's fdb-relational 4.11.1.0 function registry has no entries; its
+// planner emits "Unsupported operator <NAME>" (SQLSTATE 0A000) and Go
+// aligns through the default arm of evalScalarFunctionCallCore. Per
+// project conformance principle: doesn't work in Java → doesn't work
+// in Go.
+func TestFDB_LtrimRtrimRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -4940,12 +5041,20 @@ func TestFDB_LtrimRtrim(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (1, '  hello  ')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var l, r, both string
-	g.Expect(db.QueryRowContext(ctx, `SELECT LTRIM(s), RTRIM(s), TRIM(s) FROM T WHERE id = 1`).
-		Scan(&l, &r, &both)).To(gomega.Succeed())
-	g.Expect(l).To(gomega.Equal("hello  "))
-	g.Expect(r).To(gomega.Equal("  hello"))
-	g.Expect(both).To(gomega.Equal("hello"))
+	cases := []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT LTRIM(s) FROM T WHERE id = 1`, "LTRIM"},
+		{`SELECT RTRIM(s) FROM T WHERE id = 1`, "RTRIM"},
+		{`SELECT TRIM(s) FROM T WHERE id = 1`, "TRIM"},
+	}
+	for _, tc := range cases {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+	}
 }
 
 func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
@@ -4983,15 +5092,19 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 1000)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate + LIMIT.
+	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate. LIMIT was
+	// incidental (Java rejects LIMIT at parse time as of
+	// fdb-relational 4.11.1.0 — see TestFDB_SelectLimitRejected); the
+	// actual focus here is that ORDER BY SUM DESC flips the natural
+	// group-iteration order so [Bob, Alice] emerges instead of
+	// [Alice, Bob].
 	rows, err := db.QueryContext(ctx, `
 		WITH big AS (SELECT id, customer_id, amount FROM Sales WHERE amount >= 50)
 		SELECT Customer.name, SUM(big.amount)
 		FROM Customer INNER JOIN big ON Customer.id = big.customer_id
 		GROUP BY Customer.name
 		HAVING SUM(big.amount) > 0
-		ORDER BY SUM(big.amount) DESC
-		LIMIT 2`)
+		ORDER BY SUM(big.amount) DESC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -5075,7 +5188,14 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	g.Expect(cnt).To(gomega.Equal(int64(0)))
 }
 
-func TestFDB_NestedFunctionsAndCase(t *testing.T) {
+// TestFDB_NestedStringFunctionsRejected pins that nested STRING-family
+// scalar function calls (LOWER(TRIM(x)), LENGTH(TRIM(x))) — both proto
+// and map (CTE) paths — surface ErrCodeUnsupportedOperation. The outer
+// function call is what falls through the registry; nesting on the
+// inside is irrelevant since the outer dispatch fails first. The
+// CASE-WHEN portion of the original test is exercised independently
+// in TestFDB_CaseWhen.
+func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5096,50 +5216,45 @@ func TestFDB_NestedFunctionsAndCase(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (1, ' alpha ', 3)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (2, 'BETA', 0)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (3, 'gamma', 10)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Proto path: CASE WHEN + nested scalar functions in projection + WHERE.
-	rows, err := db.QueryContext(ctx, `
-		SELECT LOWER(TRIM(name)) AS clean,
-		       CASE WHEN qty = 0 THEN 'empty' WHEN qty < 5 THEN 'low' ELSE 'high' END AS tier
-		FROM T WHERE LENGTH(TRIM(name)) > 3 ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	type r struct{ clean, tier string }
-	var got []r
-	for rows.Next() {
-		var rr r
-		g.Expect(rows.Scan(&rr.clean, &rr.tier)).To(gomega.Succeed())
-		got = append(got, rr)
+	// Proto path: nested LOWER(TRIM(...)) in projection — outer LOWER
+	// rejected first.
+	{
+		var dummy any
+		errRej := db.QueryRowContext(ctx,
+			`SELECT LOWER(TRIM(name)) FROM T WHERE id = 1`).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred())
+		expectUnsupportedOperator(g, errRej, "LOWER", "proto: LOWER(TRIM(...)) projection")
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(got).To(gomega.Equal([]r{
-		{"alpha", "low"},
-		{"beta", "empty"},
-		{"gamma", "high"},
-	}))
 
-	// Map path via CTE: same expressions work via the unified evaluator core.
-	rows2, err := db.QueryContext(ctx, `
-		WITH cte AS (SELECT id, name, qty FROM T)
-		SELECT LOWER(TRIM(name)) AS clean,
-		       CASE WHEN qty = 0 THEN 'empty' WHEN qty < 5 THEN 'low' ELSE 'high' END AS tier
-		FROM cte WHERE LENGTH(TRIM(name)) > 3 ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-	var got2 []r
-	for rows2.Next() {
-		var rr r
-		g.Expect(rows2.Scan(&rr.clean, &rr.tier)).To(gomega.Succeed())
-		got2 = append(got2, rr)
+	// Proto path: LENGTH(TRIM(...)) in WHERE — outer LENGTH rejected.
+	{
+		var dummy any
+		errRej := db.QueryRowContext(ctx,
+			`SELECT id FROM T WHERE LENGTH(TRIM(name)) > 3`).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred())
+		expectUnsupportedOperator(g, errRej, "LENGTH", "proto: LENGTH(TRIM(...)) in WHERE")
 	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(got2).To(gomega.Equal(got))
+
+	// Map (CTE) path: same shape, same rejection class, byte-equal
+	// "Unsupported operator LOWER" message — the map-eval arm uses
+	// the same wording as the proto-path so cross-engine
+	// ExpectErrorMessage holds regardless of routing.
+	{
+		var dummy any
+		errRej := db.QueryRowContext(ctx, `
+			WITH cte AS (SELECT id, name, qty FROM T)
+			SELECT LOWER(TRIM(name)) FROM cte WHERE id = 1`).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred())
+		expectUnsupportedOperator(g, errRej, "LOWER", "map: LOWER(TRIM(...)) on CTE")
+	}
 }
 
+// TestFDB_FunctionWrappingCase pins that wrapping CASE in a registry-
+// rejected scalar function (UPPER) surfaces ErrCodeUnsupportedOperation
+// — the outer function dispatch fails before CASE evaluation runs.
+// The bare CASE-WHEN expression itself works fine and is exercised in
+// TestFDB_CaseWhen.
 func TestFDB_FunctionWrappingCase(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -5161,22 +5276,14 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, qty) VALUES (1, 5)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id, qty) VALUES (2, 0)`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Scalar function (UPPER) wrapping CASE.
-	rows, err := db.QueryContext(ctx, `
-		SELECT UPPER(CASE WHEN qty > 0 THEN 'yes' ELSE 'no' END) FROM T ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var vals []string
-	for rows.Next() {
-		var v string
-		g.Expect(rows.Scan(&v)).To(gomega.Succeed())
-		vals = append(vals, v)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(vals).To(gomega.Equal([]string{"YES", "NO"}))
+	// Scalar function (UPPER) wrapping CASE — UPPER is registry-rejected.
+	var dummy any
+	errRej := db.QueryRowContext(ctx,
+		`SELECT UPPER(CASE WHEN qty > 0 THEN 'yes' ELSE 'no' END) FROM T WHERE id = 1`).
+		Scan(&dummy)
+	g.Expect(errRej).To(gomega.HaveOccurred())
+	expectUnsupportedOperator(g, errRej, "UPPER", "UPPER wrapping CASE")
 }
 
 func TestFDB_AggregateOrderByStrict(t *testing.T) {
@@ -5364,6 +5471,12 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3})) // id=2 closed+100>50, id=3 open+1<3
 }
 
+// TestFDB_InsertMultiRowWithExpressions pins INSERT VALUES with row
+// expressions. Arithmetic + CASE work; STRING-family scalar functions
+// (UPPER / LOWER / CONCAT) and ABS / SQRT / POWER are rejected by
+// Java's function registry — each rejected call surfaces
+// ErrCodeUnsupportedOperation. The "multi-row VALUES with mixed
+// expressions" shape is preserved using arithmetic + CASE only.
 func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -5383,11 +5496,14 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Insert three rows where each value uses an expression.
+	// Multi-row INSERT VALUES with arithmetic + CASE — both
+	// supported (ABS used to live in slot 3 but is now Java-rejected
+	// at the registry layer; the rejection is asserted in
+	// TestFDB_MathFunctions).
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES
-		(1, UPPER('alpha'), 5 + 5),
-		(2, LOWER('BETA'), 20 * 2),
-		(3, CONCAT('a', 'b'), ABS(-42))`)
+		(1, 'alpha', 5 + 5),
+		(2, 'beta', 20 * 2),
+		(3, 'ab', CASE WHEN 1 < 2 THEN 42 ELSE 0 END)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx, `SELECT id, name, doubled FROM T ORDER BY id ASC`)
@@ -5406,10 +5522,15 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]r{
-		{1, "ALPHA", 10},
+		{1, "alpha", 10},
 		{2, "beta", 40},
 		{3, "ab", 42},
 	}))
+
+	// STRING-family scalar functions in INSERT VALUES — rejected.
+	_, errRej := db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES (4, UPPER('x'), 0)`)
+	g.Expect(errRej).To(gomega.HaveOccurred())
+	expectUnsupportedOperator(g, errRej, "UPPER", "INSERT VALUES UPPER")
 }
 
 func TestFDB_EmptyResultEdgeCases(t *testing.T) {
@@ -5451,11 +5572,18 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	defer rows2.Close()
 	g.Expect(rows2.Next()).To(gomega.BeFalse())
 
-	// EXISTS on empty — false.
-	var result int
+	// EXISTS on empty — false. Wraps the EXISTS in a CTE bound to a
+	// non-empty source so the outer query has a FROM clause (Java's
+	// QueryVisitor rejects FROM-less SELECT — UNSUPPORTED_QUERY 0AF00),
+	// but EXISTS still probes the empty table T for the actual signal.
+	// `(VALUES ROW(1))` is also FROM-less under Java's SimpleTable gate;
+	// route through a CTE that selects from the same empty T plus a
+	// LEFT JOIN trick is overkill — just count rows in T (0) and assert.
+	var emptyCount int64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT CASE WHEN EXISTS (SELECT id FROM T) THEN 1 ELSE 0 END`).Scan(&result)).To(gomega.Succeed())
-	g.Expect(result).To(gomega.Equal(0))
+		`SELECT COUNT(*) FROM T WHERE EXISTS (SELECT id FROM T t2 WHERE t2.id = T.id)`).
+		Scan(&emptyCount)).To(gomega.Succeed())
+	g.Expect(emptyCount).To(gomega.Equal(int64(0)))
 }
 
 func TestFDB_InsertSelectFromCTE(t *testing.T) {
@@ -5503,7 +5631,11 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]r{{3, 30}, {4, 40}, {5, 50}}))
 }
 
-func TestFDB_LeftRight(t *testing.T) {
+// TestFDB_LeftRightRejected pins LEFT / RIGHT rejection. Java's
+// fdb-relational 4.11.1.0 function registry has no entries for either,
+// so its planner emits "Unsupported operator <NAME>" (SQLSTATE 0A000).
+// Go aligns through the default arm of evalScalarFunctionCallCore.
+func TestFDB_LeftRightRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5524,29 +5656,27 @@ func TestFDB_LeftRight(t *testing.T) {
 
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name) VALUES (1, 'foobar')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name) VALUES (2, 'ab')`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var l, r string
-	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(name, 3), RIGHT(name, 3) FROM T WHERE id = 1`).
-		Scan(&l, &r)).To(gomega.Succeed())
-	g.Expect(l).To(gomega.Equal("foo"))
-	g.Expect(r).To(gomega.Equal("bar"))
-
-	// n larger than length: return whole string.
-	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(name, 100), RIGHT(name, 100) FROM T WHERE id = 2`).
-		Scan(&l, &r)).To(gomega.Succeed())
-	g.Expect(l).To(gomega.Equal("ab"))
-	g.Expect(r).To(gomega.Equal("ab"))
-
-	// Negative n: treated as 0, returns empty string.
-	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(name, -5), RIGHT(name, -5) FROM T WHERE id = 1`).
-		Scan(&l, &r)).To(gomega.Succeed())
-	g.Expect(l).To(gomega.Equal(""))
-	g.Expect(r).To(gomega.Equal(""))
+	cases := []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT LEFT(name, 3) FROM T WHERE id = 1`, "LEFT"},
+		{`SELECT RIGHT(name, 3) FROM T WHERE id = 1`, "RIGHT"},
+	}
+	for _, tc := range cases {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+	}
 }
 
-func TestFDB_ReversePosition(t *testing.T) {
+// TestFDB_ReversePositionRejected pins REVERSE / POSITION rejection.
+// Java's fdb-relational 4.11.1.0 function registry has no entries for
+// either, so its planner emits "Unsupported operator <NAME>"
+// (SQLSTATE 0A000). Go aligns through the default arm.
+func TestFDB_ReversePositionRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5568,20 +5698,33 @@ func TestFDB_ReversePosition(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (1, 'hello')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var rev string
-	var pos int64
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT REVERSE(s), POSITION('ll', s) FROM T WHERE id = 1`).
-		Scan(&rev, &pos)).To(gomega.Succeed())
-	g.Expect(rev).To(gomega.Equal("olleh"))
-	g.Expect(pos).To(gomega.Equal(int64(3))) // POSITION(ll, hello) → 3 (1-based)
-
-	var notFound int64
-	g.Expect(db.QueryRowContext(ctx, `SELECT POSITION('zzz', s) FROM T WHERE id = 1`).Scan(&notFound)).To(gomega.Succeed())
-	g.Expect(notFound).To(gomega.Equal(int64(0)))
+	cases := []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT REVERSE(s) FROM T WHERE id = 1`, "REVERSE"},
+		{`SELECT POSITION('ll', s) FROM T WHERE id = 1`, "POSITION"},
+	}
+	for _, tc := range cases {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+	}
 }
 
-func TestFDB_MathFunctionsTranscendental(t *testing.T) {
+// TestFDB_MathFunctionsTranscendentalRejected pins the rejection of
+// SQRT / POWER / POW / EXP / LN / LOG. fdb-relational 4.11.1.0's
+// @AutoService(BuiltInFunction.class) ArithmeticValue registry has
+// only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; none of these
+// transcendental functions are registered. Java's planner emits
+// "Unsupported operator <NAME>" (0A000) before evaluation. Both the
+// proto path and the default arm in scalar_functions.go produce the
+// byte-equal wording. Pre-cleanup Go evaluated EXP (NULL on overflow),
+// LN, LOG (Math.log(x)/Math.log(base)), SQRT (NULL on negative), and
+// POWER (NULL on NaN/Inf, otherwise math.Pow) — those Go-side
+// evaluators have been removed (commits 39bcb4d6, b59e1394).
+func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5603,41 +5746,26 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, x) VALUES (1, 16)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// SQRT(16) = 4.0, EXP(0) = 1.0, LN(1) = 0, LOG(2, 8) = 3.
-	var s, e, l, lb float64
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT SQRT(x), EXP(0), LN(1), LOG(2, 8) FROM T WHERE id = 1`).
-		Scan(&s, &e, &l, &lb)).To(gomega.Succeed())
-	g.Expect(s).To(gomega.Equal(4.0))
-	g.Expect(e).To(gomega.Equal(1.0))
-	g.Expect(l).To(gomega.Equal(0.0))
-	g.Expect(lb).To(gomega.BeNumerically("~", 3.0, 1e-9))
-
-	// SQRT of negative → NULL.
-	var v sql.NullFloat64
-	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(-1) FROM T WHERE id = 1`).Scan(&v)).To(gomega.Succeed())
-	g.Expect(v.Valid).To(gomega.BeFalse())
-
-	// EXP overflow → NULL (matches MySQL).
-	var e2 sql.NullFloat64
-	g.Expect(db.QueryRowContext(ctx, `SELECT EXP(1000) FROM T WHERE id = 1`).Scan(&e2)).To(gomega.Succeed())
-	g.Expect(e2.Valid).To(gomega.BeFalse())
-
-	// swingshift-35: POWER returns NULL on math domain errors.
-	// POWER(0, -1) → +Inf (division by zero); POWER(-1, 0.5) → NaN (complex).
-	// Both must be NULL, not silently returned as NaN/Inf that would poison
-	// downstream comparisons (NaN != NaN).
-	var p sql.NullFloat64
-	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(0, -1) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
-	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(0, -1) must be NULL, not +Inf")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(-1, 0.5) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
-	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(-1, 0.5) must be NULL, not NaN")
-
-	// Normal POWER still works.
-	var p2 float64
-	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(2, 10) FROM T WHERE id = 1`).Scan(&p2)).To(gomega.Succeed())
-	g.Expect(p2).To(gomega.Equal(1024.0))
+	for _, tc := range []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT SQRT(x) FROM T WHERE id = 1`, "SQRT"},
+		{`SELECT SQRT(-1) FROM T WHERE id = 1`, "SQRT"},
+		{`SELECT POWER(2, 10) FROM T WHERE id = 1`, "POWER"},
+		{`SELECT POWER(0, -1) FROM T WHERE id = 1`, "POWER"},
+		{`SELECT POWER(-1, 0.5) FROM T WHERE id = 1`, "POWER"},
+		{`SELECT POW(2, 10) FROM T WHERE id = 1`, "POW"},
+		{`SELECT EXP(0) FROM T WHERE id = 1`, "EXP"},
+		{`SELECT EXP(1000) FROM T WHERE id = 1`, "EXP"},
+		{`SELECT LN(1) FROM T WHERE id = 1`, "LN"},
+		{`SELECT LOG(2, 8) FROM T WHERE id = 1`, "LOG"},
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+	}
 }
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {
@@ -5669,21 +5797,30 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 200)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Parameter in the subquery WHERE.
+	// Parameter in the EXISTS-correlated subquery WHERE. IN-subquery
+	// is rejected (Java alignment, CLAUDE.md #10) — EXISTS preserves
+	// the actual focus of this test (parameter binding inside a
+	// subquery's WHERE clause).
 	var cnt int64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM Sales WHERE customer_id IN (SELECT id FROM Customer WHERE tier = ?)`,
+		`SELECT COUNT(*) FROM Sales AS s WHERE EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
 		"gold").Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 
 	// Parameter in both outer and inner.
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM Sales WHERE amount >= ? AND customer_id IN (SELECT id FROM Customer WHERE tier = ?)`,
+		`SELECT COUNT(*) FROM Sales AS s WHERE amount >= ? AND EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
 		int64(150), "silver").Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 }
 
-func TestFDB_PiFunction(t *testing.T) {
+// TestFDB_PiFunctionRejected pins that bare `SELECT PI()` is rejected
+// at parse time, not because of the function but because it's a
+// FROM-less SELECT. fdb-relational 4.11.1.0's QueryVisitor.
+// visitSimpleTable rejects every FROM-less SimpleTable with
+// UNSUPPORTED_QUERY ("query is not supported") before any function-
+// dispatch step runs. Per project conformance principle, Go aligns.
+func TestFDB_PiFunctionRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5702,8 +5839,13 @@ func TestFDB_PiFunction(t *testing.T) {
 	defer db.Close()
 
 	var pi float64
-	g.Expect(db.QueryRowContext(ctx, `SELECT PI()`).Scan(&pi)).To(gomega.Succeed())
-	g.Expect(pi).To(gomega.BeNumerically("~", 3.14159265358979, 1e-10))
+	err = db.QueryRowContext(ctx, `SELECT PI()`).Scan(&pi)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	g.Expect(apiErr.Message).To(gomega.Equal("query is not supported"))
 }
 
 func TestFDB_CaseInWhereOnCTE(t *testing.T) {
@@ -5772,17 +5914,22 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Scalar functions should propagate NULL (return NULL on NULL input).
-	var upper, lower, trim sql.NullString
-	var absv, sqrtv sql.NullFloat64
+	// Scalar functions should propagate NULL (return NULL on NULL
+	// input). STRING-family scalar functions (UPPER / LOWER / TRIM)
+	// are absent from Java's function registry — those are pinned
+	// to reject in TestFDB_StringFunctionsRejected and friends, not
+	// here. ABS / SQRT / FLOOR / SIGN are also absent and rejected
+	// at the registry layer. The NULL-
+	// propagation focus here uses the `%` operator — Java exposes
+	// modulo only via `%` (the synonym map binds `%` -> "mod"); the
+	// MOD function-call form is rejected. The Mod evaluator preserves
+	// SQL-standard NULL-in/NULL-out semantics for both operands.
+	var modA, modB sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT UPPER(name), LOWER(name), TRIM(name), ABS(val), SQRT(val) FROM T WHERE id = 1`).
-		Scan(&upper, &lower, &trim, &absv, &sqrtv)).To(gomega.Succeed())
-	g.Expect(upper.Valid).To(gomega.BeFalse())
-	g.Expect(lower.Valid).To(gomega.BeFalse())
-	g.Expect(trim.Valid).To(gomega.BeFalse())
-	g.Expect(absv.Valid).To(gomega.BeFalse())
-	g.Expect(sqrtv.Valid).To(gomega.BeFalse())
+		`SELECT val % 3, 10 % val FROM T WHERE id = 1`).
+		Scan(&modA, &modB)).To(gomega.Succeed())
+	g.Expect(modA.Valid).To(gomega.BeFalse())
+	g.Expect(modB.Valid).To(gomega.BeFalse())
 
 	// COALESCE short-circuits on non-NULL argument.
 	var coalesced string
@@ -5971,28 +6118,65 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// swingshift-38: division / modulo by zero returns SQLSTATE
 			// 22012 (division_by_zero) — the SQL-standard class-22 code.
 			// Previously 22023 (INVALID_PARAMETER); more precise now.
+			// Wrapped with `FROM T WHERE id = 1` so the FROM-less
+			// rejection (0AF00) doesn't fire first; the seed row at
+			// id=1 anchors a single-row evaluation.
 			name:     "div by zero (SQL standard error)",
-			sql:      "SELECT 1 / 0",
+			sql:      "SELECT 1 / 0 FROM T WHERE id = 1",
 			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
 			name:     "mod by zero",
-			sql:      "SELECT 5 % 0",
+			sql:      "SELECT 5 % 0 FROM T WHERE id = 1",
 			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
-			// nightshift-36: ABS(MinInt64) returns 22003
-			// (NUMERIC_VALUE_OUT_OF_RANGE), matching the arithmetic-
-			// overflow sites. Previously 22023 (INVALID_PARAMETER) —
-			// the more precise SQL-standard class-22 code is now in use.
-			name:     "ABS(MinInt64) overflow",
-			sql:      "SELECT ABS(-9223372036854775808)",
-			wantCode: api.ErrCodeNumericValueOutOfRange,
+			// ABS is absent from fdb-relational 4.11.1.0's
+			// ArithmeticValue registry — Java's planner emits
+			// "Unsupported operator ABS" (SQLSTATE 0A000) before any
+			// argument validation runs. Pre-cleanup, Go evaluated ABS
+			// and rejected MinInt64 with 22003 NUMERIC_VALUE_OUT_OF_RANGE;
+			// with the Go-side dispatch removed,
+			// the rejection now fires at the function-registry layer
+			// with 0A000 and the byte-equal Java message. Per project
+			// conformance principle: doesn't work in Java → doesn't
+			// work in Go.
+			//
+			// Wrapped in `FROM T WHERE id = 1` because FROM-less SELECT
+			// is now rejected at parse time (UNSUPPORTED_QUERY 0AF00,
+			// fires before the function-registry layer).
+			name:     "ABS (function rejected before arg check)",
+			sql:      "SELECT ABS(-9223372036854775808) FROM T WHERE id = 1",
+			wantCode: api.ErrCodeUnsupportedOperation,
 		},
 		{
-			name:     "SUBSTRING fractional length",
-			sql:      "SELECT SUBSTRING('hello', 1, 2.5)",
-			wantCode: api.ErrCodeInvalidParameter,
+			// SUBSTRING is absent from fdb-relational 4.11.1.0's
+			// function registry — Java's planner emits "Unsupported
+			// operator SUBSTRING" (SQLSTATE 0A000) before any
+			// argument validation runs. Pre-cleanup, Go evaluated
+			// SUBSTRING and rejected fractional-length 2.5 with
+			// 22023 INVALID_PARAMETER; with the Go-side dispatch
+			// removed, the rejection now fires at the function-
+			// registry layer with 0A000 and the byte-equal Java
+			// message. Per project conformance principle: doesn't
+			// work in Java → doesn't work in Go.
+			//
+			// Wrapped in `FROM T WHERE id = 1` because FROM-less SELECT
+			// is now rejected at parse time (UNSUPPORTED_QUERY 0AF00,
+			// fires before the function-registry layer).
+			name:     "SUBSTRING (function rejected before arg check)",
+			sql:      "SELECT SUBSTRING('hello', 1, 2.5) FROM T WHERE id = 1",
+			wantCode: api.ErrCodeUnsupportedOperation,
+		},
+		{
+			// FROM-less SELECT — fdb-relational 4.11.1.0 rejects at
+			// parse time via QueryVisitor.visitSimpleTable's
+			// `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
+			// "query is not supported")`. Go aligns through
+			// extractFromSimpleTable.
+			name:     "FROM-less SELECT (parse-time rejection)",
+			sql:      "SELECT 1 + 1",
+			wantCode: api.ErrCodeUnsupportedQuery,
 		},
 		{
 			name:     "duplicate database",
@@ -6298,13 +6482,18 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	}
 }
 
-// TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
-// when the subquery result contains a NULL row and no concrete match is found,
-// the entire IN expression is UNKNOWN (filters the outer row out in WHERE;
-// NOT IN must not flip it to TRUE). Pre-fix, matchSubqueryIN silently skipped
-// NULL rows — `WHERE NOT IN (subquery with NULL)` returned TRUE instead of
-// UNKNOWN, keeping rows that Java rejects.
-func TestFDB_SubqueryInNullRow(t *testing.T) {
+// TestFDB_SubqueryInNullRowRejected pins that `x [NOT] IN (subquery)` is
+// rejected at predicate evaluation time, including the NULL-row shapes
+// that previously exercised SQL §8.4 UNKNOWN-on-NULL semantics. Java's
+// AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
+// alternative of the inList grammar rule (NPE); per CLAUDE.md principle
+// #10 Go aligns architecturally and emits a clean error. The §8.4
+// semantics this test originally exercised are moot — the feature is
+// gone. NOT EXISTS is the supported rewrite for "outer rows whose value
+// is not in the inner result", with the caveat that NOT EXISTS does
+// NOT have NOT IN's UNKNOWN-on-NULL filtering — callers needing that
+// must filter explicit NULLs in the inner subquery.
+func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -6332,21 +6521,21 @@ func TestFDB_SubqueryInNullRow(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO U (id) VALUES (2)`) // v=NULL
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var c int64
+	expectInSubqueryRejected := func(query string) {
+		t.Helper()
+		var dummy int64
+		qErr := db.QueryRowContext(ctx, query).Scan(&dummy)
+		g.Expect(qErr).To(gomega.HaveOccurred(), "IN-subquery must be rejected: %s", query)
+		var apiErr *api.Error
+		g.Expect(errors.As(qErr, &apiErr)).To(gomega.BeTrue(),
+			"want *api.Error, got %T (%v)", qErr, qErr)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+		g.Expect(apiErr.Message).To(gomega.Equal(
+			"IN with a subquery argument is not supported; use EXISTS or a JOIN"))
+	}
 
-	// n IN (SELECT v FROM U): id=1 matches v=10; id=2,3 don't match + U has a
-	// NULL → UNKNOWN → filtered out. Only id=1 passes.
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM T WHERE n IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(1)), "id=1 matches v=10; others UNKNOWN due to NULL in subquery")
-
-	// n NOT IN (SELECT v FROM U): id=1 matches so excluded; id=2,3 don't
-	// match but NULL in subquery → UNKNOWN → all excluded. Result: 0 rows.
-	// Pre-fix returned 2 rows (id=2 and id=3).
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(0)),
-		"n NOT IN (subquery with NULL) is UNKNOWN for every row; no rows pass")
+	expectInSubqueryRejected(`SELECT COUNT(*) FROM T WHERE n IN (SELECT v FROM U)`)
+	expectInSubqueryRejected(`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`)
 }
 
 // TestFDB_CountDistinctTypeCollision proves COUNT(DISTINCT col) doesn't
@@ -6566,7 +6755,11 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 // TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
 // 5-agent QA audit in one place:
 //   - CAST(NULL AS <type>) must return NULL of the target type, not error
-//   - ABS(MinInt64) must error (two's-complement overflow is undefined)
+//   - ABS / SQRT / POWER are absent from fdb-relational 4.11.1.0's
+//     ArithmeticValue registry — Java's planner emits "Unsupported
+//     operator <NAME>" (0A000) before evaluation. The MinInt64 overflow
+//     check that used to live here is unreachable; assert the rejection
+//     fires instead.
 //   - LEFT/RIGHT/SUBSTRING float-length arg must error, not silently truncate
 func TestFDB_MediumAuditFixes(t *testing.T) {
 	t.Parallel()
@@ -6600,42 +6793,47 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 		g.Expect(out.Valid).To(gomega.BeFalse(), "CAST(NULL AS %s) must be NULL", cast)
 	}
 
-	// ABS(MinInt64) must error (previously flipped sign back to MinInt64 silently).
-	queryErr := func(sql string) error {
-		rows, e := db.QueryContext(ctx, sql)
-		if e != nil {
-			return e
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v any
-			if se := rows.Scan(&v); se != nil {
-				return se
-			}
-		}
-		return rows.Err()
-	}
-	g.Expect(queryErr(`SELECT ABS(n) FROM T WHERE id = 1`)).
-		To(gomega.HaveOccurred(), "ABS(MinInt64) must error rather than wrap")
-
-	// Sanity: ABS on positive/negative non-MinInt64 still works.
-	var absOut int64
-	g.Expect(db.QueryRowContext(ctx, `SELECT ABS(n) FROM T WHERE id = 2`).Scan(&absOut)).To(gomega.Succeed())
-	g.Expect(absOut).To(gomega.Equal(int64(5)))
-
-	// LEFT / RIGHT / SUBSTRING with a fractional float length must error.
-	for _, q := range []string{
-		`SELECT LEFT(s, 2.5) FROM T WHERE id = 1`,
-		`SELECT RIGHT(s, 2.5) FROM T WHERE id = 1`,
-		`SELECT SUBSTRING(s, 1, 2.5) FROM T WHERE id = 1`,
+	// ABS / SQRT / POWER — Java-aligned rejection. The MinInt64
+	// overflow check that lived here previously is unreachable now
+	// that the function-registry rejection fires before any
+	// argument validation.
+	for _, tc := range []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT ABS(n) FROM T WHERE id = 1`, "ABS"},
+		{`SELECT ABS(n) FROM T WHERE id = 2`, "ABS"},
+		{`SELECT SQRT(n) FROM T WHERE id = 2`, "SQRT"},
+		{`SELECT POWER(n, 2) FROM T WHERE id = 2`, "POWER"},
 	} {
-		g.Expect(queryErr(q)).To(gomega.HaveOccurred(), "fractional float length must error: %s", q)
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 
-	// Whole-valued floats should still work (caller convenience).
-	var lft string
-	g.Expect(db.QueryRowContext(ctx, `SELECT LEFT(s, 2.0) FROM T WHERE id = 1`).Scan(&lft)).To(gomega.Succeed())
-	g.Expect(lft).To(gomega.Equal("he"))
+	// LEFT / RIGHT / SUBSTRING are STRING-family scalar functions that
+	// fdb-relational 4.11.1.0 has no entries for — Java's planner
+	// emits "Unsupported operator <NAME>" before any argument
+	// validation runs. The fractional-float-length argument check
+	// that used to live here is therefore unreachable; the rejection
+	// is itself pinned in string_functions.yaml and the other
+	// dedicated tests (TestFDB_LeftRightRejected, etc.). Re-assert
+	// here that the call-site rejection still fires when wrapped in
+	// otherwise-validating arguments.
+	for _, tc := range []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT LEFT(s, 2.5) FROM T WHERE id = 1`, "LEFT"},
+		{`SELECT RIGHT(s, 2.5) FROM T WHERE id = 1`, "RIGHT"},
+		{`SELECT SUBSTRING(s, 1, 2.5) FROM T WHERE id = 1`, "SUBSTRING"},
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+	}
 }
 
 // TestFDB_NotOfUnknownIsUnknown pins down SQL three-valued logic for NOT:

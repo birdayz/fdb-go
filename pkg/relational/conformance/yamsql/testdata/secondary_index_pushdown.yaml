@@ -54,11 +54,12 @@ tests:
     rows:
       - [3]
 
-  # Index pushdown + LIMIT (applied post-fetch; index scan still
-  # yields all matches until the limit is reached).
+  # Index pushdown + LIMIT — LIMIT rejected at parse time as of
+  # fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY / 0AF00). The
+  # index-pushdown ORDER BY path is exercised by the LIMIT-less
+  # cases above.
   - query: SELECT id FROM t WHERE status = 'active' ORDER BY id LIMIT 1
-    rows:
-      - [1]
+    error_code: "0AF00"
 
   # Non-indexed column → falls through to full scan (still correct).
   - query: SELECT id FROM t WHERE v = 30

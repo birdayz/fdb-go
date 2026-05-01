@@ -38,6 +38,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	if len(sq.joins) > 0 {
 		return c.execSelectJoin(ctx, sq)
 	}
+	// WHERE bare-paren rejection — fire once before the row loop.
+	// The check is row-independent (purely structural over the parse
+	// tree); calling it inside the per-row evalPredicate would re-walk
+	// the same AST N times.
+	if sq.whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
+			return nil, err
+		}
+	}
 
 	type row = []driver.Value
 	type outField struct {
@@ -1253,12 +1262,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 		// non-aggregate path.
 		isAggregate := len(sq.aggCols) > 0 || sq.countStar
 		satisfiable := naturalOrderSatisfies(sq.orderBy, naturalOrder, equatedCols, naturalOrderAliases) || reverseScanApplied
-		// DISTINCT is exempted because Java rejects DISTINCT entirely
-		// (existing CLAUDE.md gotcha) — the path is already Go-only;
-		// post-dedup sorting was always part of that contract. Aggregate
-		// is exempted because the post-aggregation result is a small
-		// projected set; sorting it in-memory is harmless and matches
-		// Java's behaviour for groupings within the same query. Note:
+		// DISTINCT is exempted because the deduped result set is
+		// usually small enough that in-memory sort is harmless;
+		// Java's planner rejects DISTINCT + ORDER BY together
+		// (Cascades composition gap, see TODO #1 closure note),
+		// so the combination is one-sided in either direction.
+		// Aggregate is exempted because the post-aggregation result
+		// is a small projected set; sorting it in-memory is harmless
+		// and matches Java's behaviour for groupings within the same
+		// query. Note:
 		// at-most-1-row scans (PK equality, single-value IN-list) are
 		// NOT exempted here — Java's RemoveSortRule checks the Ordering
 		// property explicitly, and an equality match has Ordering `()`
