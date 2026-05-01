@@ -6133,6 +6133,201 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_UDX14 ORDER BY id",
 		},
+
+		// ===== Aggregate edges =====
+		{
+			// SUM over BIGINT column with negative values — pins
+			// signed accumulation (no unsigned coercion).
+			Name:           "sum_bigint_negatives",
+			SchemaTemplate: "CREATE TABLE T_AGE1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE1 VALUES (1, -10), (2, -20), (3, 5), (4, -3)"},
+			Query:          "SELECT sum(v) FROM T_AGE1",
+		},
+		{
+			// SUM over column where every row's value is NULL — SQL
+			// standard says result is NULL (not 0).
+			Name:           "sum_all_null_column",
+			SchemaTemplate: "CREATE TABLE T_AGE2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE2 VALUES (1, NULL)",
+				"INSERT INTO T_AGE2 VALUES (2, NULL)",
+				"INSERT INTO T_AGE2 VALUES (3, NULL)",
+			},
+			Query: "SELECT sum(v) FROM T_AGE2",
+		},
+		{
+			// SUM over a mix of NULL and non-NULL — NULL is skipped,
+			// non-NULL values sum normally.
+			Name:           "sum_skip_null",
+			SchemaTemplate: "CREATE TABLE T_AGE3 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE3 VALUES (1, 10)",
+				"INSERT INTO T_AGE3 VALUES (2, NULL)",
+				"INSERT INTO T_AGE3 VALUES (3, 20)",
+				"INSERT INTO T_AGE3 VALUES (4, NULL)",
+			},
+			Query: "SELECT sum(v) FROM T_AGE3",
+		},
+		{
+			// COUNT(col) with NULL rows — non-NULL only.
+			// COUNT(*) sees all rows; COUNT(col) skips NULLs.
+			Name:           "count_col_skips_null",
+			SchemaTemplate: "CREATE TABLE T_AGE4 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE4 VALUES (1, 10)",
+				"INSERT INTO T_AGE4 VALUES (2, NULL)",
+				"INSERT INTO T_AGE4 VALUES (3, 20)",
+				"INSERT INTO T_AGE4 VALUES (4, NULL)",
+				"INSERT INTO T_AGE4 VALUES (5, 30)",
+			},
+			Query: "SELECT count(v) FROM T_AGE4",
+		},
+		{
+			// SUM over an empty table returns NULL (not 0) per SQL
+			// standard.
+			Name:           "sum_empty_table_null",
+			SchemaTemplate: "CREATE TABLE T_AGE5 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT sum(v) FROM T_AGE5",
+		},
+		{
+			// MIN over a fully-filtered-out scope returns NULL.
+			Name:           "min_empty_filter_null",
+			SchemaTemplate: "CREATE TABLE T_AGE6 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE6 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT min(v) FROM T_AGE6 WHERE v > 1000",
+		},
+		{
+			// MAX over a fully-filtered-out scope returns NULL.
+			Name:           "max_empty_filter_null",
+			SchemaTemplate: "CREATE TABLE T_AGE7 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE7 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT max(v) FROM T_AGE7 WHERE v > 1000",
+		},
+		{
+			// AVG over BIGINT column always returns DOUBLE — pins
+			// type-promotion for AVG result column.
+			Name:           "avg_bigint_returns_double",
+			SchemaTemplate: "CREATE TABLE T_AGE8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE8 VALUES (1, 1), (2, 2)"},
+			Query:          "SELECT avg(v) FROM T_AGE8",
+		},
+		{
+			// SUM, AVG, MIN, MAX in one query — pins multi-aggregate
+			// projection ordering and type lattice.
+			Name:           "sum_avg_min_max_one_query",
+			SchemaTemplate: "CREATE TABLE T_AGE9 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE9 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT sum(v), avg(v), min(v), max(v) FROM T_AGE9",
+		},
+		{
+			// Aggregate over a composite-PK table — pins that the
+			// row-count is unaffected by PK shape.
+			Name:           "count_star_composite_pk",
+			SchemaTemplate: "CREATE TABLE T_AGE10 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE10 VALUES (1, 1, 100)",
+				"INSERT INTO T_AGE10 VALUES (1, 2, 200)",
+				"INSERT INTO T_AGE10 VALUES (2, 1, 300)",
+			},
+			Query: "SELECT count(*), sum(v) FROM T_AGE10",
+		},
+		{
+			// MIN / MAX over STRING column — pins lexicographic order
+			// and Unicode collation choice.
+			Name:           "min_max_string_lex",
+			SchemaTemplate: "CREATE TABLE T_AGE11 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE11 VALUES (1, 'zeta')",
+				"INSERT INTO T_AGE11 VALUES (2, 'alpha')",
+				"INSERT INTO T_AGE11 VALUES (3, 'gamma')",
+			},
+			Query: "SELECT min(name), max(name) FROM T_AGE11",
+		},
+		{
+			// COUNT over CTE source — pins WITH-block aggregate
+			// rewrite into a stream.
+			Name:           "count_over_cte",
+			SchemaTemplate: "CREATE TABLE T_AGE12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE12 VALUES (1, 10)",
+				"INSERT INTO T_AGE12 VALUES (2, 20)",
+				"INSERT INTO T_AGE12 VALUES (3, 30)",
+				"INSERT INTO T_AGE12 VALUES (4, 40)",
+			},
+			Query: "WITH x AS (SELECT id FROM T_AGE12 WHERE v >= 20) SELECT count(*) FROM x",
+		},
+		{
+			// COUNT over derived table — pins same path without WITH.
+			Name:           "count_over_derived",
+			SchemaTemplate: "CREATE TABLE T_AGE13 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE13 VALUES (1, 10)",
+				"INSERT INTO T_AGE13 VALUES (2, 20)",
+				"INSERT INTO T_AGE13 VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_AGE13 WHERE v < 30) AS d",
+		},
+		{
+			// COUNT(*) over UNION ALL subquery — pins UNION ALL row
+			// count via aggregate.
+			Name: "count_over_union_all_two_tables",
+			SchemaTemplate: "CREATE TABLE T_AGE14A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AGE14B (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE14A VALUES (1)",
+				"INSERT INTO T_AGE14A VALUES (2)",
+				"INSERT INTO T_AGE14B VALUES (10)",
+				"INSERT INTO T_AGE14B VALUES (20)",
+				"INSERT INTO T_AGE14B VALUES (30)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_AGE14A UNION ALL SELECT id FROM T_AGE14B) AS u",
+		},
+		{
+			// Aggregate over a multi-table comma JOIN with no
+			// matching rows — pins join-then-count empty case.
+			Name: "agg_join_zero_match",
+			SchemaTemplate: "CREATE TABLE T_AGE15A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AGE15B (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE15A VALUES (1)",
+				"INSERT INTO T_AGE15A VALUES (2)",
+				"INSERT INTO T_AGE15B VALUES (10, 99)",
+				"INSERT INTO T_AGE15B VALUES (11, 100)",
+			},
+			Query: "SELECT count(*), sum(b.parent) FROM T_AGE15A a, T_AGE15B b WHERE a.id = b.parent",
+		},
+		{
+			// Aggregate over a multi-table comma JOIN with matches —
+			// pins SUM aggregating across joined rows.
+			Name: "sum_over_comma_join",
+			SchemaTemplate: "CREATE TABLE T_AGE16A (id BIGINT, mult BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AGE16B (id BIGINT, parent BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE16A VALUES (1, 10)",
+				"INSERT INTO T_AGE16A VALUES (2, 20)",
+				"INSERT INTO T_AGE16B VALUES (100, 1, 5)",
+				"INSERT INTO T_AGE16B VALUES (101, 1, 7)",
+				"INSERT INTO T_AGE16B VALUES (102, 2, 3)",
+			},
+			Query: "SELECT sum(b.v) FROM T_AGE16A a, T_AGE16B b WHERE a.id = b.parent",
+		},
+		{
+			// COUNT(*) over empty table after a filter — pins zero
+			// row aggregate vs NULL aggregate distinction (COUNT(*)
+			// returns 0, not NULL).
+			Name:           "count_star_zero_no_null",
+			SchemaTemplate: "CREATE TABLE T_AGE17 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE17 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT count(*) FROM T_AGE17 WHERE v > 99999",
+		},
+		{
+			// AVG over a fully-filtered-out scope returns NULL.
+			Name:           "avg_empty_filter_null",
+			SchemaTemplate: "CREATE TABLE T_AGE18 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGE18 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT avg(v) FROM T_AGE18 WHERE v > 1000",
+		},
 	}
 }
 
