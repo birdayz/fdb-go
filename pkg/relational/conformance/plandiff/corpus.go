@@ -3343,7 +3343,38 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT sum(CASE WHEN status = 'open' THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END), count(*) FROM T_CIA",
 		},
-
+		{
+			// Searched CASE in projection with explicit ELSE.
+			Name:           "case_searched_with_else",
+			SchemaTemplate: "CREATE TABLE T_CSE (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CSE VALUES (1, 5)",
+				"INSERT INTO T_CSE VALUES (2, 15)",
+				"INSERT INTO T_CSE VALUES (3, 25)",
+			},
+			Query: "SELECT id, CASE WHEN v < 10 THEN 'low' WHEN v < 20 THEN 'mid' ELSE 'high' END FROM T_CSE ORDER BY id",
+		},
+		{
+			// Searched CASE without ELSE — unmatched rows project NULL.
+			Name:           "case_searched_no_else",
+			SchemaTemplate: "CREATE TABLE T_CNE (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CNE VALUES (1, 5)",
+				"INSERT INTO T_CNE VALUES (2, 50)",
+			},
+			Query: "SELECT id, CASE WHEN v < 10 THEN 'low' END FROM T_CNE ORDER BY id",
+		},
+		{
+			// Searched CASE with IS NULL branch.
+			Name:           "case_searched_is_null",
+			SchemaTemplate: "CREATE TABLE T_CSN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CSN VALUES (1, 'alice')",
+				"INSERT INTO T_CSN VALUES (2, NULL)",
+				"INSERT INTO T_CSN VALUES (3, 'bob')",
+			},
+			Query: "SELECT id, CASE WHEN name IS NULL THEN 'missing' ELSE name END FROM T_CSN ORDER BY id",
+		},
 		// ===== BETWEEN edge cases =====
 		{
 			// Single-value BETWEEN — `BETWEEN x AND x` reduces to
