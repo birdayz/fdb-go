@@ -2311,6 +2311,158 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_UNM ORDER BY id",
 		},
+
+		// ===== LIKE pattern variants =====
+		{
+			// LIKE without wildcards — degenerates to equality. Pins
+			// that engines treat anchored literal patterns as exact
+			// matches (no implicit prefix/contains semantics).
+			Name:           "like_no_wildcard_eq",
+			SchemaTemplate: "CREATE TABLE T_LNW (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LNW VALUES (1, 'alpha')",
+				"INSERT INTO T_LNW VALUES (2, 'alphabet')",
+				"INSERT INTO T_LNW VALUES (3, 'beta')",
+			},
+			Query: "SELECT id FROM T_LNW WHERE name LIKE 'alpha' ORDER BY id",
+		},
+		{
+			// LIKE with both leading and trailing % wildcards —
+			// contains-anywhere pattern. Pins planner doesn't
+			// confuse 'contains' with 'prefix' or 'equality'.
+			Name:           "like_contains_middle",
+			SchemaTemplate: "CREATE TABLE T_LCM (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LCM VALUES (1, 'foobarbaz')",
+				"INSERT INTO T_LCM VALUES (2, 'bar')",
+				"INSERT INTO T_LCM VALUES (3, 'qux')",
+				"INSERT INTO T_LCM VALUES (4, 'barbaz')",
+			},
+			Query: "SELECT id FROM T_LCM WHERE name LIKE '%bar%' ORDER BY id",
+		},
+		{
+			// LIKE against NULL — three-valued logic: NULL LIKE
+			// anything yields UNKNOWN, which excludes the row from
+			// the WHERE clause.
+			Name:           "like_against_null",
+			SchemaTemplate: "CREATE TABLE T_LN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LN VALUES (1, 'a')",
+				"INSERT INTO T_LN VALUES (2, NULL)",
+				"INSERT INTO T_LN VALUES (3, 'b')",
+			},
+			Query: "SELECT id FROM T_LN WHERE name LIKE '%' ORDER BY id",
+		},
+
+		// ===== INSERT variants =====
+		{
+			// INSERT multiple rows in a single VALUES clause. Pins
+			// row-batch inserts behave the same as individual inserts.
+			Name:           "insert_multi_values_single_stmt",
+			SchemaTemplate: "CREATE TABLE T_IMV (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IMV VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, val FROM T_IMV ORDER BY id",
+		},
+
+		// ===== UNION ALL edge cases =====
+		{
+			// UNION ALL with overlapping rows — preserves duplicates
+			// (UNION ALL semantics, no dedup).
+			Name:           "union_all_with_dupes",
+			SchemaTemplate: "CREATE TABLE T_UD (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UD VALUES (1, 10)",
+				"INSERT INTO T_UD VALUES (2, 20)",
+				"INSERT INTO T_UD VALUES (3, 30)",
+			},
+			// No outer ORDER BY — UNION ALL planner rejects inner
+			// ORDER BYs and a top-level ORDER BY is also constrained.
+			// Use an aggregate to make the result deterministic.
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UD WHERE val > 5 UNION ALL SELECT id FROM T_UD WHERE val > 15) AS u",
+		},
+		{
+			// UNION ALL of empty + non-empty — empty side contributes
+			// 0 rows, non-empty side contributes its rows.
+			Name:           "union_all_empty_side",
+			SchemaTemplate: "CREATE TABLE T_UE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UE VALUES (1, 100)",
+				"INSERT INTO T_UE VALUES (2, 200)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UE WHERE val > 1000 UNION ALL SELECT id FROM T_UE WHERE val > 50) AS u",
+		},
+
+		// ===== HAVING shapes =====
+		{
+			// HAVING with COUNT predicate over the whole table (no GROUP
+			// BY). Pins HAVING-without-GROUP-BY in both engines.
+			Name:           "having_count_predicate",
+			SchemaTemplate: "CREATE TABLE T_HC (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_HC VALUES (1, 10)",
+				"INSERT INTO T_HC VALUES (2, 20)",
+				"INSERT INTO T_HC VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_HC HAVING count(*) > 2",
+		},
+
+		// ===== Mixed-type arithmetic (DOUBLE + BIGINT) =====
+		{
+			// BIGINT + DOUBLE -> DOUBLE per SQL type-promotion lattice.
+			// Pins both engines pick DOUBLE result type for mixed-type
+			// arithmetic, not BIGINT or INTEGER.
+			Name:           "mixed_arith_bigint_plus_double_col",
+			SchemaTemplate: "CREATE TABLE T_MA3 (id BIGINT, b BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA3 VALUES (1, 10, 1.5)",
+				"INSERT INTO T_MA3 VALUES (2, 20, 2.25)",
+			},
+			Query: "SELECT id, b + d FROM T_MA3 ORDER BY id",
+		},
+		{
+			// DOUBLE / BIGINT preserves DOUBLE precision rather than
+			// integer-dividing. Pins type-aware division.
+			Name:           "mixed_arith_double_div_bigint",
+			SchemaTemplate: "CREATE TABLE T_MA4 (id BIGINT, b BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA4 VALUES (1, 4, 10.0)",
+				"INSERT INTO T_MA4 VALUES (2, 3, 10.0)",
+			},
+			Query: "SELECT id, d / b FROM T_MA4 ORDER BY id",
+		},
+
+		// ===== Three-valued logic in NOT shape =====
+		{
+			// `NOT (flag = TRUE)` — NOT forces predicate context so the
+			// inner parens are accepted. flag=TRUE → FALSE (excluded);
+			// flag=FALSE → TRUE (included); flag=NULL → NOT(NULL)=NULL
+			// (excluded). Pins NOT-of-NULL doesn't accidentally match.
+			Name:           "kleene_not_eq_true",
+			SchemaTemplate: "CREATE TABLE T_KNN (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_KNN VALUES (1, TRUE)",
+				"INSERT INTO T_KNN VALUES (2, FALSE)",
+				"INSERT INTO T_KNN VALUES (3, NULL)",
+			},
+			Query: "SELECT id FROM T_KNN WHERE NOT (flag = TRUE) ORDER BY id",
+		},
+		{
+			// (a > 5) AND (b > 5) where one side is NULL. UNKNOWN AND
+			// TRUE = UNKNOWN → row excluded. UNKNOWN AND FALSE = FALSE
+			// → row excluded. Pins AND-with-NULL collapses correctly.
+			Name:           "kleene_and_with_null_operand",
+			SchemaTemplate: "CREATE TABLE T_KAN (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_KAN VALUES (1, 10, 10)",
+				"INSERT INTO T_KAN VALUES (2, 10, NULL)",
+				"INSERT INTO T_KAN VALUES (3, NULL, 10)",
+				"INSERT INTO T_KAN VALUES (4, NULL, NULL)",
+				"INSERT INTO T_KAN VALUES (5, 1, 10)",
+			},
+			Query: "SELECT id FROM T_KAN WHERE a > 5 AND b > 5 ORDER BY id",
+		},
 	}
 }
 
