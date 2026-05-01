@@ -4970,6 +4970,40 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "WITH a AS (SELECT id, val FROM T_CTC WHERE val > 10), b AS (SELECT id, val FROM a WHERE val < 40), c AS (SELECT id FROM b WHERE val > 15) SELECT count(*) FROM c",
 		},
+
+		// ===== Empty-result shapes =====
+		{
+			// Comma-join with no matching rows — pins empty-result
+			// row metadata for join shapes.
+			Name:           "join_no_match_empty_result",
+			SchemaTemplate: "CREATE TABLE T_JN1 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE TABLE T_JN2 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JN1 VALUES (1, 'a'), (2, 'b')",
+				"INSERT INTO T_JN2 VALUES (10, 99), (11, 100)",
+			},
+			Query: "SELECT count(*) FROM T_JN1 a, T_JN2 b WHERE a.id = b.parent",
+		},
+		{
+			// SELECT after UPDATE that affects multiple rows — pins
+			// the multi-row SET path with ordering recovered via PK.
+			Name:           "update_multi_row_filter",
+			SchemaTemplate: "CREATE TABLE T_UMR (id BIGINT, val BIGINT, tag STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMR VALUES (1, 10, 'x'), (2, 20, 'x'), (3, 30, 'y')",
+				"UPDATE T_UMR SET val = val * 2 WHERE tag = 'x'",
+			},
+			Query: "SELECT id, val FROM T_UMR ORDER BY id",
+		},
+		{
+			// NOT around an OR-chain — pins DeMorgan-shape predicate
+			// in WHERE.
+			Name:           "where_not_or_chain",
+			SchemaTemplate: "CREATE TABLE T_WNO (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_WNO VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT id FROM T_WNO WHERE NOT (v = 10 OR v = 30) ORDER BY id",
+		},
 	}
 }
 
