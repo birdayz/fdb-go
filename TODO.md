@@ -166,6 +166,8 @@ These block the Cascades port (`fdb-relational` Phase 2) or cross-language SQL c
 
 - [ ] **`WHERE (boolean_expr)` with bare parens Go-permissive divergence from Java** — Java rejects with "expected BooleanValue but got RecordConstructorValue" because its parser treats `(...)` as a record/tuple constructor unless it appears in a context that forces predicate parsing (CLAUDE.md gotcha). Go's embedded engine accepts the form. Probed nightshift-61 — Java rejection confirmed. Aligning Go to also reject would invalidate Go-only tests using parenthesised-boolean WHERE shapes; defer to a dedicated cleanup shift.
 
+- [ ] **`CAST(<double> AS BIGINT)` Java-rounds / Go-truncates silent drift** — surfaced nightshift-61 by `cast_chain` cross-engine probe. Java rounds (`CAST(1.9 AS BIGINT) = 2`); Go truncates toward zero (`= 1`) per Go's `int64(float64Value)` semantics. SQL standard is implementation-defined here. Aligning Go to round requires changing `CastValue` in `pkg/relational/core/functions/cast.go` to use `math.RoundToEven` (banker's rounding, matching Java's default mode) when target is integer and source is float. Defer to a dedicated cleanup shift.
+
 <!-- Integer-overflow alignment is NOT needed — `ApplyMathOp` in
 pkg/relational/core/functions/arith.go already overflow-checks via
 AddInt64Checked/SubInt64Checked/MulInt64Checked, raising
