@@ -220,8 +220,9 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 }
 
 // inferFunctionCallJDBCType handles the function-call subtree:
-// scalar functions (UPPER, LOWER, COALESCE, ...) and CASE / CAST forms.
-// Walks into the SpecificFunctionContext for CAST and CASE.
+// scalar functions in fdb-relational's registry (COALESCE, GREATEST,
+// LEAST, date-parts, ...) and CASE / CAST forms. Walks into the
+// SpecificFunctionContext for CAST and CASE.
 func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	switch fc := fc.(type) {
 	case *antlrgen.SpecificFunctionCallContext:
@@ -232,20 +233,19 @@ func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protore
 	return ""
 }
 
-// inferScalarFunctionJDBCType handles COALESCE / IFNULL / NULLIF /
-// ABS by name. Functions whose name we don't recognise fall through
-// to "" — caller's value-based inference can take over. STRING-family
-// scalars (UPPER / LOWER / SUBSTRING / TRIM / CONCAT / etc.) and
-// LENGTH-family scalars are intentionally absent — those evaluate to
-// "Unsupported operator <name>" in scalar_functions.go's default
-// arm, mirroring fdb-relational 4.11.1.0.
+// inferScalarFunctionJDBCType handles type inference for the scalar
+// functions still implemented Go-side. Functions whose name we don't
+// recognise fall through to "" — caller's value-based inference can
+// take over. The Go-only feature names (UPPER / LOWER / LENGTH /
+// SUBSTRING / TRIM / CONCAT / REPLACE / ABS / SQRT / FLOOR / CEIL /
+// ROUND / SIGN / EXP / LN / LOG / IFNULL / IF / IIF / NULLIF / MOD-
+// function-form / NOW / CURDATE / etc.) are intentionally absent —
+// those reject at evaluation time with "Unsupported operator <name>"
+// (byte-equal Java's RelationalException for the same registry-miss).
 func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {
-	case "ABS":
-		// ABS preserves operand type. Recurse into first arg.
-		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)
-	case "COALESCE", "IFNULL":
+	case "COALESCE":
 		// Result type = MaximumType of all arguments. Walk each arg.
 		args := fc.FunctionArgs()
 		if args == nil {
@@ -264,10 +264,6 @@ func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc
 			}
 		}
 		return resultType
-	case "NULLIF":
-		// NULLIF returns the type of the first argument (which is
-		// also the type the second argument was compared against).
-		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)
 	}
 	return ""
 }
