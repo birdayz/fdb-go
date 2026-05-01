@@ -4039,8 +4039,8 @@ func SeedRunCorpus() []RunQuery {
 		},
 		// ===== UNION ALL + composite-PK extended =====
 		{
-			// ORDER BY id added nightshift-65 — same UNION-ALL row-order
-			// flake reasoning as union_all_two_branches_multi_col_projection.
+			// UNION ALL row order is undefined per SQL spec; ORDER BY id
+			// makes the pin deterministic.
 			Name:           "union_all_two_branches_disjoint_where",
 			SchemaTemplate: "CREATE TABLE T_U1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_U1 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
@@ -4049,11 +4049,8 @@ func SeedRunCorpus() []RunQuery {
 		// 3-branch UNION ALL diverges in row order (Java doesn't honor
 		// outer ORDER-BY-style ordering; row data differs); skipped.
 		{
-			// ORDER BY id added nightshift-65: UNION ALL row order is
-			// undefined per SQL spec; both engines diverged
-			// (interleaved vs concatenated) intermittently. ORDER BY id
-			// over the PK makes ordering deterministic without
-			// changing the UNION ALL pin's intent.
+			// UNION ALL row order is undefined per SQL spec; ORDER BY id
+			// makes the pin deterministic.
 			Name:           "union_all_two_branches_multi_col_projection",
 			SchemaTemplate: "CREATE TABLE T_U3 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_U3 VALUES (1, 10), (2, 20), (3, 30)"},
@@ -4924,22 +4921,7 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT count(*) FROM T_J1 a, T_J2 b WHERE a.id = b.parent AND b.val > 75",
 		},
 
-		// ===== Compound shapes (probe-pin nightshift-65) =====
-		// Dropped probe_orderby_arith_expr and
-		// probe_orderby_mixed_directions: Java rejects unindexed
-		// ORDER BY with the generic "Cascades planner could not
-		// plan query"; Go's wording is the more specific "ORDER BY
-		// X cannot be satisfied by any scan strategy …". Same root
-		// as TODO #39's UnableToPlanException family. Pinning
-		// these requires either a Go-side wording change (regress-
-		// ing usability) or covering indexes for each ORDER BY,
-		// neither in this batch's scope.
-		// Dropped probe_distinct_two_cols: Go bug — compound
-		// DISTINCT (`SELECT DISTINCT a, b`) does not de-duplicate
-		// across the column tuple, returning all 4 rows including
-		// (x,1) twice; Java correctly returns 3 rows. Single-
-		// column DISTINCT works (see select_distinct corpus). New
-		// TODO required: compound-DISTINCT dedup in Go.
+		// ===== Compound shapes =====
 		{
 			// Two-deep nested derived table with WHERE at both levels.
 			// Pins the visitor-recursion + scope-resolution chain when
@@ -4951,6 +4933,42 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_OBE4 VALUES (1, 10, 'a'), (2, 20, 'a'), (3, 30, 'b'), (4, 40, 'b')",
 			},
 			Query: "SELECT x FROM (SELECT id AS x, val AS y FROM (SELECT id, val, tag FROM T_OBE4 WHERE tag = 'a') AS inner_d WHERE val > 5) AS outer_d WHERE x < 3",
+		},
+
+		// ===== DML + predicate composition =====
+		{
+			// UPDATE with self-referential multi-column arithmetic —
+			// pins read-then-write of multiple columns from the same
+			// row in a single SET clause.
+			Name:           "update_multi_col_self_ref",
+			SchemaTemplate: "CREATE TABLE T_UMS (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMS VALUES (1, 10, 5), (2, 20, 7)",
+				"UPDATE T_UMS SET a = a + b, b = b + 1 WHERE id = 1",
+			},
+			Query: "SELECT id, a, b FROM T_UMS ORDER BY id",
+		},
+		{
+			// DELETE with OR-chained predicate — pins multi-leaf
+			// predicate evaluation in DML context.
+			Name:           "delete_or_chain",
+			SchemaTemplate: "CREATE TABLE T_DOR (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DOR VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"DELETE FROM T_DOR WHERE val = 20 OR val = 40",
+			},
+			Query: "SELECT id, val FROM T_DOR ORDER BY id",
+		},
+		{
+			// Three-level CTE chain (a→b→c). count(*) avoids the
+			// "order by is not supported in subquery" Java rejection
+			// that triggers when an outer ORDER BY follows a CTE block.
+			Name:           "cte_three_level_chain",
+			SchemaTemplate: "CREATE TABLE T_CTC (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTC VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "WITH a AS (SELECT id, val FROM T_CTC WHERE val > 10), b AS (SELECT id, val FROM a WHERE val < 40), c AS (SELECT id FROM b WHERE val > 15) SELECT count(*) FROM c",
 		},
 	}
 }

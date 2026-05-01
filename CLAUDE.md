@@ -11,6 +11,8 @@ This file is for **general instructions only** — project goals, testing rules,
 
 If you're tempted to add a 5-line note explaining a divergence, write it as a code comment at the call site instead.
 
+**Never put shift tags in code comments.** No `nightshift-65`, no `swingshift-64`, no `landed in shift X`. Shift refs rot the moment the codebase outlives the shift naming scheme and they leak ephemeral process state into permanent files. Code comments explain WHY the code is the way it is — not WHEN it got there or WHO did it. That belongs in `shifts/*.md` handovers and PR descriptions. Old shift-tag refs already in the codebase are cleanup fodder; don't add new ones.
+
 ## Testing
 
 - Real FDB via testcontainers, never mocks. High and thorough coverage required for every feature/fix/behavior change — edge cases, error paths, zero-value behavior.
