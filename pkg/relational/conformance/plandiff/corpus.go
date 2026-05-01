@@ -5975,6 +5975,164 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_EX29A a WHERE a.status = 1 AND NOT EXISTS (SELECT 1 FROM T_EX29B b WHERE b.gid = a.gid) ORDER BY id",
 		},
+
+		// ===== UPDATE / DELETE edge cases =====
+		{
+			// UPDATE every row in the table — no WHERE clause. Pins
+			// that the unbounded UPDATE form mutates all rows.
+			Name:           "update_all_rows_no_where",
+			SchemaTemplate: "CREATE TABLE T_UDX1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX1 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_UDX1 SET val = 0",
+			},
+			Query: "SELECT id, val FROM T_UDX1 ORDER BY id",
+		},
+		{
+			// UPDATE setting a column to itself (`SET x = x`) — pins
+			// that the no-op assignment is accepted and leaves rows
+			// byte-equal.
+			Name:           "update_set_col_to_itself",
+			SchemaTemplate: "CREATE TABLE T_UDX2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX2 VALUES (1, 10), (2, 20)",
+				"UPDATE T_UDX2 SET val = val",
+			},
+			Query: "SELECT id, val FROM T_UDX2 ORDER BY id",
+		},
+		{
+			// UPDATE multiple non-PK columns in a single SET list.
+			// Pins multi-target SET assignment binding.
+			Name:           "update_multi_nonpk_columns",
+			SchemaTemplate: "CREATE TABLE T_UDX3 (id BIGINT, a BIGINT, b STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX3 VALUES (1, 10, 'x'), (2, 20, 'y')",
+				"UPDATE T_UDX3 SET a = 100, b = 'z' WHERE id = 1",
+			},
+			Query: "SELECT id, a, b FROM T_UDX3 ORDER BY id",
+		},
+		{
+			// UPDATE with a SET RHS computed from multiple columns —
+			// `total = price * qty`. Pins multi-column read-side
+			// binding inside a SET.
+			Name:           "update_arith_from_multi_cols",
+			SchemaTemplate: "CREATE TABLE T_UDX4 (id BIGINT, price BIGINT, qty BIGINT, total BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX4 VALUES (1, 5, 2, 0), (2, 7, 3, 0)",
+				"UPDATE T_UDX4 SET total = price * qty",
+			},
+			Query: "SELECT id, price, qty, total FROM T_UDX4 ORDER BY id",
+		},
+		{
+			// DELETE every row — no WHERE clause. Pins unbounded
+			// DELETE empties the table.
+			Name:           "delete_all_rows_no_where",
+			SchemaTemplate: "CREATE TABLE T_UDX5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX5 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_UDX5",
+			},
+			Query: "SELECT count(*) FROM T_UDX5",
+		},
+		{
+			// DELETE on a compound PK predicate — pins that both
+			// PK columns combine to identify exactly one row.
+			Name:           "delete_compound_pk_predicate",
+			SchemaTemplate: "CREATE TABLE T_UDX6 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX6 VALUES ('us', 1, 10), ('us', 5, 50), ('eu', 5, 60)",
+				"DELETE FROM T_UDX6 WHERE region = 'us' AND id = 5",
+			},
+			Query: "SELECT region, id, val FROM T_UDX6 ORDER BY region, id",
+		},
+		{
+			// DELETE with EXISTS subquery over a base table source.
+			// Restricted to base table sources only (Go has a known
+			// inner-predicate-drop on derived/CTE EXISTS sources).
+			Name: "delete_with_exists_base",
+			SchemaTemplate: "CREATE TABLE T_UDX7 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UDX7B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX7 VALUES (1, 10), (2, 20), (3, 99)",
+				"INSERT INTO T_UDX7B VALUES (10), (20)",
+				"DELETE FROM T_UDX7 a WHERE EXISTS (SELECT 1 FROM T_UDX7B b WHERE b.gid = a.gid)",
+			},
+			Query: "SELECT id, gid FROM T_UDX7 ORDER BY id",
+		},
+		{
+			// Full DML cycle: DELETE then INSERT then SELECT. Pins
+			// that successive DML statements compose deterministically
+			// in setup ordering.
+			Name:           "dml_cycle_delete_insert_select",
+			SchemaTemplate: "CREATE TABLE T_UDX8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX8 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_UDX8 WHERE id = 1",
+				"INSERT INTO T_UDX8 VALUES (3, 30)",
+			},
+			Query: "SELECT id, val FROM T_UDX8 ORDER BY id",
+		},
+		{
+			// UPDATE row, then DELETE that same row, then SELECT.
+			// Pins that same-row UPDATE-then-DELETE leaves nothing.
+			Name:           "update_then_delete_same_row",
+			SchemaTemplate: "CREATE TABLE T_UDX10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX10 VALUES (1, 10), (2, 20)",
+				"UPDATE T_UDX10 SET val = 999 WHERE id = 1",
+				"DELETE FROM T_UDX10 WHERE id = 1",
+			},
+			Query: "SELECT id, val FROM T_UDX10 ORDER BY id",
+		},
+		{
+			// DELETE with `>` predicate on an indexed column. Pins
+			// range-DELETE planning on a non-PK indexed col.
+			Name:           "delete_gt_predicate",
+			SchemaTemplate: "CREATE TABLE T_UDX11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX11 VALUES (1, 10), (2, 50), (3, 100), (4, 200)",
+				"DELETE FROM T_UDX11 WHERE val > 75",
+			},
+			Query: "SELECT id, val FROM T_UDX11 ORDER BY id",
+		},
+		{
+			// DELETE with NOT IN literal list. Pins NOT-IN
+			// negation semantics on a DELETE-WHERE.
+			Name:           "delete_not_in_literal_list",
+			SchemaTemplate: "CREATE TABLE T_UDX12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"DELETE FROM T_UDX12 WHERE id NOT IN (1, 3)",
+			},
+			Query: "SELECT id, val FROM T_UDX12 ORDER BY id",
+		},
+		{
+			// UPDATE then DELETE then INSERT then SELECT — full
+			// DML lifecycle on a single key. Pins ordered DML
+			// composition end-to-end.
+			Name:           "dml_full_cycle_single_key",
+			SchemaTemplate: "CREATE TABLE T_UDX13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX13 VALUES (1, 10)",
+				"UPDATE T_UDX13 SET val = 11 WHERE id = 1",
+				"DELETE FROM T_UDX13 WHERE id = 1",
+				"INSERT INTO T_UDX13 VALUES (1, 12)",
+			},
+			Query: "SELECT id, val FROM T_UDX13 ORDER BY id",
+		},
+		{
+			// DELETE WHERE filter that doesn't match any row —
+			// table stays intact. (Distinct from existing
+			// delete_no_match: uses a literal-equality predicate,
+			// not >.)
+			Name:           "delete_no_match_eq_predicate",
+			SchemaTemplate: "CREATE TABLE T_UDX14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDX14 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_UDX14 WHERE id = 999",
+			},
+			Query: "SELECT id, val FROM T_UDX14 ORDER BY id",
+		},
 	}
 }
 
