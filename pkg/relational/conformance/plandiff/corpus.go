@@ -2016,16 +2016,30 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_ILR VALUES (1)"},
 			Query:          "SELECT INTERVAL '1' DAY FROM T_ILR",
 		},
-		// NOTE: double-divide-by-zero (Java returns +Infinity per
-		// IEEE-754; Go matches as of dayshift-62) is NOT a corpus
-		// entry because the Java conformance server's JSON encoder
-		// emits the bare token `Infinity` (not valid JSON), which
-		// the Go HTTP client rejects at unmarshal. Java/Go behavioural
-		// alignment is correct; the harness fails on transport.
-		// Tracked for a future shift: fix
-		// conformance/sql_plan_steps.java#resultSetToJson to encode
-		// Infinity / NaN as strings or use a JSON encoder that
-		// supports them.
+		{
+			// Double-precision divide by zero: Java's IEEE-754 default
+			// returns +Infinity (no throw). Critically distinct from
+			// integer divide-by-zero which throws "/ by zero".
+			//
+			// IEEE-754 specials are encoded as JSON strings on both
+			// sides (Java's encodeValue → "Infinity" string; Go's
+			// coerceForComparison maps math.Inf to "Infinity" string)
+			// because Gson's JsonPrimitive emits bare `Infinity` tokens
+			// that aren't valid JSON. The string-encoding is symmetric
+			// between engines so the harness still asserts byte-equal
+			// rows.
+			Name:           "double_divide_by_zero_returns_infinity",
+			SchemaTemplate: "CREATE TABLE T_DDZ (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DDZ VALUES (1, 5.0)"},
+			Query:          "SELECT v / 0.0 FROM T_DDZ",
+		},
+		{
+			// Double-precision 0/0 returns NaN (IEEE-754).
+			Name:           "double_zero_div_zero_returns_nan",
+			SchemaTemplate: "CREATE TABLE T_DZZ (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DZZ VALUES (1, 0.0)"},
+			Query:          "SELECT v / 0.0 FROM T_DZZ",
+		},
 		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
