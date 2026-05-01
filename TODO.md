@@ -8,7 +8,7 @@ Java Record Layer version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
 
 ## Phase 1 — Parallel quick wins (no gates, start immediately)
 
-- [ ] **#1** Go-only cleanup: `SELECT DISTINCT` plain projection. ~15 file rewrite; unblocks ORDER BY exemption removal. (~1 shift)
+- [x] **#1** Go-only cleanup: `SELECT DISTINCT` plain projection. **Closed obsolete (swingshift-64)**: empirical probe showed fdb-relational 4.11.1.0 accepts plain `SELECT DISTINCT col FROM T` (Cascades has a DISTINCT-projection rule). Java's `UnableToPlanException` only fires for DISTINCT + ORDER BY together — a shape-specific Cascades composition gap, not blanket DISTINCT non-support. Aligning Go would mean shape-detection (bolt-on `if X` per CLAUDE.md principle #10), not a clean removal. Leave Go's DISTINCT pipeline in place; revisit narrow shape alignment if cross-engine divergence surfaces in real corpora.
 - [ ] **#2** Go-only cleanup: scalar STRING family (UPPER / LOWER / LENGTH / SUBSTRING / SUBSTR / TRIM / LTRIM / RTRIM / CONCAT / `||` / REPLACE / LEFT / RIGHT / POSITION / REVERSE). ~25 file rewrite. (~1-2 shifts)
 - [ ] **#3** Go-only cleanup: scalar ARITHMETIC (ABS / SQRT / POWER) + DATETIME (CURRENT_TIMESTAMP / NOW). ~8 file rewrite. (~1 shift)
 - [ ] **#4** Go-only cleanup: `LIMIT N` → `setMaxRows` alignment. Dozens of files but mechanical. (~1 shift)
