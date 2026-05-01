@@ -1969,6 +1969,53 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT SUM(v) FROM T_SOV",
 		},
+		{
+			// 0.1 + 0.2 = 0.30000000000000004 — IEEE-754 imprecision.
+			// Both engines use double-precision floats; the surface
+			// representation must match exactly.
+			Name:           "floating_point_imprecision",
+			SchemaTemplate: "CREATE TABLE T_FPI (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_FPI VALUES (1)"},
+			Query:          "SELECT 0.1 + 0.2 FROM T_FPI",
+		},
+		{
+			// IS DISTINCT FROM NULL — `v IS DISTINCT FROM NULL` is TRUE
+			// when v is non-NULL (NULL-safe inequality). Both engines
+			// implement the SQL-spec semantics identically.
+			Name:           "is_distinct_from_null_filter",
+			SchemaTemplate: "CREATE TABLE T_IDFN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDFN VALUES (1, NULL)",
+				"INSERT INTO T_IDFN VALUES (2, 5)",
+			},
+			Query: "SELECT id FROM T_IDFN WHERE v IS DISTINCT FROM NULL ORDER BY id",
+		},
+		{
+			// Empty IN list `IN ()` — both engines reject as a
+			// shared-grammar syntax error pointing at the empty
+			// parentheses.
+			Name:           "empty_in_list_rejected",
+			SchemaTemplate: "CREATE TABLE T_EIL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_EIL VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_EIL WHERE v IN ()",
+		},
+		{
+			// DATE / TIMESTAMP literals are not in the fdb-relational
+			// grammar (4.11.1.0); both engines reject as syntax error
+			// at the DATE keyword.
+			Name:           "date_literal_rejected",
+			SchemaTemplate: "CREATE TABLE T_DLR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DLR VALUES (1)"},
+			Query:          "SELECT DATE '2024-01-01' FROM T_DLR",
+		},
+		{
+			// INTERVAL literals are not in the grammar; both engines
+			// reject at the INTERVAL keyword.
+			Name:           "interval_literal_rejected",
+			SchemaTemplate: "CREATE TABLE T_ILR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ILR VALUES (1)"},
+			Query:          "SELECT INTERVAL '1' DAY FROM T_ILR",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{
