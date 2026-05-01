@@ -839,6 +839,17 @@ func SeedRunCorpus() []RunQuery {
 		// the existing yamsql ORDER BY rejection scenarios
 		// (`order_by_expression`, `order_by_dupe_col`,
 		// `order_by_limit`, etc.); not a separate corpus entry.
+		// NOTE: `WITH RECURSIVE name AS (non-self-referencing-body)` is
+		// a known one-sided divergence: Java rejects with
+		// "condition is not met!" because it requires an actual
+		// UNION ALL self-reference for RECURSIVE (CLAUDE.md gotcha).
+		// SQL spec + Postgres permit the non-self-referencing body
+		// (RECURSIVE is a scope enabler, not a requirement). Go's
+		// embedded engine matches SQL spec / Postgres, so it accepts.
+		// Probed nightshift-61 — Java rejection confirmed. Aligning
+		// Go to also reject would invalidate yamsql `recursive_cte`
+		// scenarios that use the non-self-referencing form. Defer
+		// to a dedicated cleanup shift.
 		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
 		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
 		// `Statement.setMaxRows`, per CLAUDE.md gotcha "LIMIT clause
