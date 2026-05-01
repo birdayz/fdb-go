@@ -3436,6 +3436,27 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT COUNT(*) FROM T_CF WHERE v > 15",
 		},
 		{
+			// PROBE: AVG over BIGINT — pin floating-point semantics
+			Name:           "avg_int",
+			SchemaTemplate: "CREATE TABLE T_AI (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AI VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT AVG(v) FROM T_AI",
+		},
+		{
+			// PROBE: aggregate over empty result
+			Name:           "agg_empty_result",
+			SchemaTemplate: "CREATE TABLE T_AE (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AE VALUES (1, 10)"},
+			Query:          "SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM T_AE WHERE id > 100",
+		},
+		{
+			// PROBE: WHERE OR distinct branches
+			Name:           "where_or",
+			SchemaTemplate: "CREATE TABLE T_WO (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WO VALUES (1, 5), (2, 50), (3, 500)"},
+			Query:          "SELECT id FROM T_WO WHERE v < 10 OR v > 100 ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
