@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -123,7 +124,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(tableName))
 		}
 		msgDesc := rt.Descriptor
 
@@ -256,7 +257,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(tableName))
 		}
 		msgDesc := rt.Descriptor
 

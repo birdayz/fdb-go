@@ -183,8 +183,11 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 		// projection context), Java accepts the bare column and
 		// converts via truthiness. Fall through to value-eval below.
 		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue && !allowBareField {
+			// Java verbatim: "expected BooleanValue but got FieldValue".
+			// Cross-engine corpus `bare_bool_where_rejected` pins
+			// byte-equality.
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"expected BooleanValue but got FieldValue: bare column reference cannot be used as a predicate; use an explicit comparison (e.g. col = TRUE)")
+				"expected BooleanValue but got FieldValue")
 		}
 		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`),
 		// or bare FieldValue in operand/projection context.
@@ -232,8 +235,11 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	// FALSE for these comparisons → empty result set, the dangerous
 	// kind of bug. Now we error to match Java.
 	if !valuesComparable(left, right) {
+		// Java verbatim: "The operands of a comparison operator are
+		// not compatible." (period included). Cross-engine corpus
+		// `type_mismatch_compare` pins byte-equality.
 		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"cannot compare %T with %T", left, right)
+			"The operands of a comparison operator are not compatible.")
 	}
 
 	cmp := functions.CompareValues(left, right)

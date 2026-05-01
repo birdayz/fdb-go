@@ -124,7 +124,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", sq.tableName)
+			// Java verbatim: "Unknown table NAME" (uppercased).
+			// Cross-engine corpus `undefined_table` pins byte-equality.
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+				"Unknown table %s", strings.ToUpper(sq.tableName))
 		}
 		msgDesc := rt.Descriptor
 
@@ -982,8 +985,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				fd := allFields.ByName(protoreflect.Name(lookupName))
 				if fd == nil {
+					// Java verbatim: fdb-relational raises
+					// "Attempting to query non existing column NAME"
+					// (uppercased identifier). Cross-engine corpus
+					// entry `undefined_column` pins byte-equality.
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"column %q not found in table %q", colName, sq.tableName)
+						"Attempting to query non existing column %s", strings.ToUpper(colName))
 				}
 				outName := colName
 				if i < len(sq.projAliases) && sq.projAliases[i] != "" {

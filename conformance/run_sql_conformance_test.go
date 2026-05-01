@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
@@ -251,81 +250,42 @@ var _ = Describe("RunSql Harness", func() {
 		defer os.Remove(clusterFilePath)
 		goR := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 
+		// Java is the spec. Per entry, ask Java first; whatever it does
+		// (success with rows / failure with a message) becomes the
+		// expected behaviour Go must match. No per-entry expected-text
+		// annotation — drift on either side surfaces immediately.
 		corpus := plandiff.SeedRunCorpus()
 		for _, rq := range corpus {
 			rq := rq
 			By(rq.Name, func() {
-				// Negative entries used to need a per-entry fresh Java
-				// server because hangs were attributed to "fdb-relational
-				// state-leak". The actual root cause (dayshift-62) was
-				// stale-keep-alive on the Go HTTP client side: Sun's
-				// HttpServer closes idle connections at 30s, Go's default
-				// IdleConnTimeout was 90s, so Go reused connections Java
-				// had already closed and the POST hung at 120s. Fixed in
-				// plandiff/runsql.go + java_invoker_test.go by setting
-				// IdleConnTimeout=20s. Per-entry isolation is no longer
-				// necessary; positive and negative entries share the
-				// outer-It Java server cleanly.
-				perEntryJavaR := javaR
-
-				javaResult := perEntryJavaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 
-				if rq.ExpectErrorMessage != "" {
-					// Strictest negative test: both engines must fail AND
-					// each engine's CORE error message string equals
-					// rq.ExpectErrorMessage verbatim (Go's
-					// `api.Error.Message`, Java's
-					// `JavaError.Message` — the unwrapped server-side
-					// root-cause text, not the wrapper-prefixed
-					// `err.Error()`). Use when Go has been deliberately
-					// aligned to emit the exact phrasing Java emits.
-					Expect(javaResult.Err).To(HaveOccurred(),
-						"corpus entry %q: Java accepted a query expected to fail with message %q",
-						rq.Name, rq.ExpectErrorMessage)
+				if javaResult.Err != nil {
+					// Java errored → Go must error with a byte-equal
+					// core message. Both engines unwrap to a typed
+					// error carrying just the server-side root-cause
+					// text (no wrapper prefixes).
 					Expect(goResult.Err).To(HaveOccurred(),
-						"corpus entry %q: Go accepted a query expected to fail with message %q",
-						rq.Name, rq.ExpectErrorMessage)
+						"corpus entry %q: Java errored but Go succeeded\n  Java: %s",
+						rq.Name, javaResult.Err.Error())
 					var je *plandiff.JavaError
 					Expect(errors.As(javaResult.Err, &je)).To(BeTrue(),
-						"corpus entry %q: Java error is not *plandiff.JavaError: %T", rq.Name, javaResult.Err)
+						"corpus entry %q: Java error is %T (not *plandiff.JavaError); harness can't extract verbatim message",
+						rq.Name, javaResult.Err)
 					var ge *api.Error
 					Expect(errors.As(goResult.Err, &ge)).To(BeTrue(),
-						"corpus entry %q: Go error is not *api.Error: %T", rq.Name, goResult.Err)
-					Expect(je.Message).To(Equal(rq.ExpectErrorMessage),
-						"corpus entry %q: Java error message verbatim mismatch", rq.Name)
-					Expect(ge.Message).To(Equal(rq.ExpectErrorMessage),
-						"corpus entry %q: Go error message verbatim mismatch", rq.Name)
-					return
-				}
-				if rq.ExpectErrorContains != "" {
-					// Negative test: both engines must fail AND each
-					// error message must contain the substring (matched
-					// case-insensitively because Java and Go have
-					// different identifier-case conventions in error
-					// messages — fdb-relational uppercases identifiers
-					// per spec, Go preserves user-typed case). The
-					// substring's CONTENT is what we're checking, not
-					// its case.
-					Expect(javaResult.Err).To(HaveOccurred(),
-						"corpus entry %q: Java accepted a query expected to fail with %q",
-						rq.Name, rq.ExpectErrorContains)
-					Expect(goResult.Err).To(HaveOccurred(),
-						"corpus entry %q: Go accepted a query expected to fail with %q",
-						rq.Name, rq.ExpectErrorContains)
-					needle := strings.ToLower(rq.ExpectErrorContains)
-					Expect(strings.ToLower(javaResult.Err.Error())).To(ContainSubstring(needle),
-						"corpus entry %q: Java error message missing expected substring", rq.Name)
-					Expect(strings.ToLower(goResult.Err.Error())).To(ContainSubstring(needle),
-						"corpus entry %q: Go error message missing expected substring", rq.Name)
+						"corpus entry %q: Go error is %T (not *api.Error); harness can't extract verbatim message",
+						rq.Name, goResult.Err)
+					Expect(ge.Message).To(Equal(je.Message),
+						"corpus entry %q: error messages diverge\n  Java: %q\n  Go:   %q",
+						rq.Name, je.Message, ge.Message)
 					return
 				}
 
-				Expect(javaResult.Err).NotTo(HaveOccurred(),
-					"corpus entry %q: Java executor errored", rq.Name)
+				// Java succeeded → Go must succeed with byte-equal rows.
 				Expect(goResult.Err).NotTo(HaveOccurred(),
-					"corpus entry %q: Go executor errored", rq.Name)
-
+					"corpus entry %q: Java succeeded but Go errored", rq.Name)
 				Expect(goResult.Rows.Columns).To(Equal(javaResult.Rows.Columns),
 					"corpus entry %q: column metadata diverged between Java and Go", rq.Name)
 				Expect(goResult.Rows.Rows).To(Equal(javaResult.Rows.Rows),

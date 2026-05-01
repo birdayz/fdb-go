@@ -3,47 +3,32 @@ package plandiff
 // SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
 // (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
 // The conformance test runs each entry through BOTH engines (Java
-// fdb-relational + Go embedded) and asserts byte-equivalent column
-// metadata + row values.
+// fdb-relational + Go embedded) and asserts byte-equivalent results.
+//
+// Java is the spec. The harness asserts:
+//   - If Java succeeds: Go must also succeed AND produce byte-equal
+//     column metadata and row values.
+//   - If Java errors: Go must also error AND produce a byte-equal
+//     core error message (Go's `api.Error.Message` ==
+//     Java's `JavaError.Message`).
+//
+// The test author DOES NOT predict the error message. Whatever Java
+// emits is the ground truth — Go must match. This catches both silent
+// acceptance on one side AND Go's-message-drift-from-Java's at every
+// query, without requiring per-entry expected-text annotations.
+//
+// Adding a new entry: just append {Name, SchemaTemplate, SetupSqls,
+// Query}. No baseline RowSet, no expected-error-text. The harness
+// figures out what Java does and pins Go to match it.
 //
 // Each entry's SetupSqls must produce deterministic state — SELECTs
 // without ORDER BY can't be added until we trust both engines'
 // row-order semantics match. Today every entry orders by primary key.
-//
-// Adding a new entry: just append {Name, SchemaTemplate, SetupSqls,
-// Query}. No baseline RowSet to capture or paste — the cross-engine
-// equivalence check is the assertion.
-//
-// ExpectErrorContains turns the entry into a NEGATIVE test. When
-// non-empty, the harness asserts BOTH engines fail (any error) AND
-// each engine's error message contains the substring. Catches cases
-// where one engine accidentally accepts a query the other rejects
-// (or vice versa) — the kind of silent divergence that's invisible
-// to a success-path-only harness.
-//
-// ExpectErrorMessage is the STRICTER alternative — when set, both
-// engines must fail AND each engine's core error message must
-// literally EQUAL this string (Go's `api.Error.Message`, Java's
-// `JavaError.Message` — i.e. the unwrapped server-side root-cause
-// text). Use when the message is intentionally aligned verbatim
-// between engines (e.g. shift / NULLIF / aggregate-type-mismatch
-// rejections, where Go was changed to emit the exact phrasing Java
-// emits). Stronger than ExpectErrorContains because no slack —
-// catches drift the moment either engine reorders / rephrases its
-// message. Mutually exclusive with ExpectErrorContains.
 type RunQuery struct {
 	Name           string
 	SetupSqls      []string
 	Query          string
 	SchemaTemplate string
-	// ExpectErrorContains: when set, both Java and Go must fail with
-	// an error message containing this substring. Empty = expect
-	// success (unless ExpectErrorMessage is set).
-	ExpectErrorContains string
-	// ExpectErrorMessage: when set, both engines must fail AND each
-	// engine's core error message string equals this value verbatim.
-	// Stronger than ExpectErrorContains.
-	ExpectErrorMessage string
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
@@ -745,11 +730,10 @@ func SeedRunCorpus() []RunQuery {
 			// engine has its own identifier-case convention in error
 			// messages — Java uppercases per fdb-relational spec, Go
 			// preserves user-typed case at the error site).
-			Name:                "undefined_column",
-			SchemaTemplate:      "CREATE TABLE T_UC (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO T_UC VALUES (1)"},
-			Query:               "SELECT no_such_col FROM T_UC",
-			ExpectErrorContains: "no_such_col",
+			Name:           "undefined_column",
+			SchemaTemplate: "CREATE TABLE T_UC (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_UC VALUES (1)"},
+			Query:          "SELECT no_such_col FROM T_UC",
 		},
 		{
 			// Bare `WHERE flag` on a BOOLEAN column. fdb-relational
@@ -759,20 +743,18 @@ func SeedRunCorpus() []RunQuery {
 			// rejects it the same way; if Go silently accepted (e.g.
 			// by coercing the FieldValue to bool), this test surfaces
 			// the divergence.
-			Name:                "bare_bool_where_rejected",
-			SchemaTemplate:      "CREATE TABLE T_BBW (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO T_BBW VALUES (1, TRUE)"},
-			Query:               "SELECT id FROM T_BBW WHERE flag",
-			ExpectErrorContains: "BooleanValue",
+			Name:           "bare_bool_where_rejected",
+			SchemaTemplate: "CREATE TABLE T_BBW (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BBW VALUES (1, TRUE)"},
+			Query:          "SELECT id FROM T_BBW WHERE flag",
 		},
 		{
 			// Reference to a table that doesn't exist → both engines
 			// must reject. Substring matched case-insensitively.
-			Name:                "undefined_table",
-			SchemaTemplate:      "CREATE TABLE T_UT (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls:           nil,
-			Query:               "SELECT id FROM no_such_table",
-			ExpectErrorContains: "no_such_table",
+			Name:           "undefined_table",
+			SchemaTemplate: "CREATE TABLE T_UT (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT id FROM no_such_table",
 		},
 		{
 			// Bit-shift `<<` — fdb-relational 4.11.1.0 tokenizes the
@@ -791,20 +773,18 @@ func SeedRunCorpus() []RunQuery {
 			// proving alignment at the message level. Per-entry
 			// isolation (fresh Java server spawned just for this
 			// entry) prevents pollution from prior negative entries.
-			Name:               "bitshift_left_rejected",
-			SchemaTemplate:     "CREATE TABLE T_BSL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_BSL VALUES (1, 7)"},
-			Query:              "SELECT v << 2 FROM T_BSL WHERE id = 1",
-			ExpectErrorMessage: "Unsupported operator <<",
+			Name:           "bitshift_left_rejected",
+			SchemaTemplate: "CREATE TABLE T_BSL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BSL VALUES (1, 7)"},
+			Query:          "SELECT v << 2 FROM T_BSL WHERE id = 1",
 		},
 		{
 			// Bit-shift `>>` — symmetric to `<<` above. Both engines
 			// emit the verbatim string "Unsupported operator >>".
-			Name:               "bitshift_right_rejected",
-			SchemaTemplate:     "CREATE TABLE T_BSR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_BSR VALUES (1, 8)"},
-			Query:              "SELECT v >> 1 FROM T_BSR WHERE id = 1",
-			ExpectErrorMessage: "Unsupported operator >>",
+			Name:           "bitshift_right_rejected",
+			SchemaTemplate: "CREATE TABLE T_BSR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BSR VALUES (1, 8)"},
+			Query:          "SELECT v >> 1 FROM T_BSR WHERE id = 1",
 		},
 		{
 			// NULLIF — fdb-relational 4.11.1.0's function registry
@@ -817,11 +797,10 @@ func SeedRunCorpus() []RunQuery {
 			// Same architectural reason in both engines: function
 			// registry has no NULLIF evaluator. Workaround:
 			// `CASE WHEN a = b THEN NULL ELSE a END`.
-			Name:               "nullif_rejected",
-			SchemaTemplate:     "CREATE TABLE T_NIF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_NIF VALUES (1, 5)"},
-			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
-			ExpectErrorMessage: "Unsupported operator NULLIF",
+			Name:           "nullif_rejected",
+			SchemaTemplate: "CREATE TABLE T_NIF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NIF VALUES (1, 5)"},
+			Query:          "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 		},
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
@@ -943,11 +922,10 @@ func SeedRunCorpus() []RunQuery {
 			// verbatim message. Per-entry isolation prevents
 			// fdb-relational's type-mismatch error-path state-leak
 			// from stalling this spec under load.
-			Name:               "min_over_string_rejected",
-			SchemaTemplate:     "CREATE TABLE T_MOS (id BIGINT, name STRING, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_MOS VALUES (1, 'alice')"},
-			Query:              "SELECT MIN(name) FROM T_MOS",
-			ExpectErrorMessage: "unable to encapsulate aggregate operation due to type mismatch(es)",
+			Name:           "min_over_string_rejected",
+			SchemaTemplate: "CREATE TABLE T_MOS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MOS VALUES (1, 'alice')"},
+			Query:          "SELECT MIN(name) FROM T_MOS",
 		},
 		{
 			// COUNT(*) with predicate over JOIN — exercises the
@@ -1280,11 +1258,10 @@ func SeedRunCorpus() []RunQuery {
 			// "operands ... not compatible"; Go uses "cannot compare
 			// X with Y" — common substring "compa" matches both case-
 			// insensitively.
-			Name:                "type_mismatch_compare",
-			SchemaTemplate:      "CREATE TABLE T_TMC (id BIGINT, name STRING, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO T_TMC VALUES (1, 'x')"},
-			Query:               "SELECT id FROM T_TMC WHERE name > 5",
-			ExpectErrorContains: "compa",
+			Name:           "type_mismatch_compare",
+			SchemaTemplate: "CREATE TABLE T_TMC (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TMC VALUES (1, 'x')"},
+			Query:          "SELECT id FROM T_TMC WHERE name > 5",
 		},
 
 		// ===== String handling — swingshift-52 =====
@@ -1796,11 +1773,10 @@ func SeedRunCorpus() []RunQuery {
 
 		// ===== More negative entries: error-parity surface =====
 		{
-			Name:                "insert_into_undefined_table",
-			SchemaTemplate:      "CREATE TABLE T_NEG1 (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO no_such_dml_table VALUES (1)"},
-			Query:               "SELECT id FROM T_NEG1",
-			ExpectErrorContains: "no_such_dml_table",
+			Name:           "insert_into_undefined_table",
+			SchemaTemplate: "CREATE TABLE T_NEG1 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO no_such_dml_table VALUES (1)"},
+			Query:          "SELECT id FROM T_NEG1",
 		},
 		// Same cumulative-state hang. Returns clean "Value of
 		// column 'NAME' is not provided" in 96ms in isolation;
@@ -2581,11 +2557,10 @@ func SeedRunCorpus() []RunQuery {
 			// emitting the SAME verbatim message. ExpectErrorMessage
 			// pins byte-equality. Per-entry isolation prevents Java
 			// state-leak from stalling other negative entries.
-			Name:               "recursive_cte_non_self_ref_rejected",
-			SchemaTemplate:     "CREATE TABLE T_RNS (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_RNS VALUES (1, -1)"},
-			Query:              "WITH RECURSIVE nonrec AS (SELECT id FROM T_RNS WHERE parent = -1) SELECT id FROM nonrec",
-			ExpectErrorMessage: "condition is not met!",
+			Name:           "recursive_cte_non_self_ref_rejected",
+			SchemaTemplate: "CREATE TABLE T_RNS (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RNS VALUES (1, -1)"},
+			Query:          "WITH RECURSIVE nonrec AS (SELECT id FROM T_RNS WHERE parent = -1) SELECT id FROM nonrec",
 		},
 		{
 			// Multi-CTE form: `WITH RECURSIVE roots AS (no-self-ref),
@@ -2604,8 +2579,7 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_RMP VALUES (1, -1)",
 				"INSERT INTO T_RMP VALUES (2, 1)",
 			},
-			Query:              "WITH RECURSIVE roots AS (SELECT id, parent FROM T_RMP WHERE parent = -1), descendants AS (SELECT id, parent FROM T_RMP WHERE id = 1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, T_RMP AS b WHERE b.parent = a.id) SELECT id FROM descendants",
-			ExpectErrorMessage: "condition is not met!",
+			Query: "WITH RECURSIVE roots AS (SELECT id, parent FROM T_RMP WHERE parent = -1), descendants AS (SELECT id, parent FROM T_RMP WHERE id = 1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, T_RMP AS b WHERE b.parent = a.id) SELECT id FROM descendants",
 		},
 
 		// ===== JOIN with WHERE on inner table =====
