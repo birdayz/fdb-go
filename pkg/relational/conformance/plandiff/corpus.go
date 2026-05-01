@@ -6436,6 +6436,145 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_IDX14 VALUES (1, 100), (2, 200), (3, 300)"},
 			Query:          "SELECT id, v FROM T_IDX14 WHERE v < 50 ORDER BY id",
 		},
+
+		// ===== Recursive CTE / multi-CTE / CTE composition =====
+		{
+			// Recursive CTE counting depth via SELECT n+1 FROM c WHERE n < 10.
+			// Base case must come from a real table (Java rejects standalone
+			// FROM-less SELECT but accepts inside CTE base; we pull the seed
+			// from a single-row table to stay portable).
+			Name:           "recursive_cte_depth_counter",
+			SchemaTemplate: "CREATE TABLE T_RC1 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RC1 VALUES (1)"},
+			Query:          "WITH RECURSIVE c AS (SELECT id AS n FROM T_RC1 UNION ALL SELECT n + 1 FROM c WHERE n < 10) SELECT count(*) FROM c",
+		},
+		{
+			// Recursive parent-child traversal counting all descendants
+			// of a root node. Tree: 1 -> {2, 3}; 2 -> {4, 5}; 3 -> {6}.
+			// Expected count: 6 (rows are root + descendants).
+			Name:           "recursive_cte_tree_descendants",
+			SchemaTemplate: "CREATE TABLE T_RC2 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC2 VALUES (1, -1), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent FROM T_RC2 WHERE id = 1 UNION ALL SELECT t.id, t.parent FROM r, T_RC2 AS t WHERE t.parent = r.id) SELECT count(*) FROM r",
+		},
+		{
+			// Recursive CTE with WHERE filter on the recursive branch —
+			// only walk children whose id is below a threshold. Pins
+			// recursive-side WHERE evaluation.
+			Name:           "recursive_cte_filtered_branch",
+			SchemaTemplate: "CREATE TABLE T_RC3 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC3 VALUES (1, -1), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 4), (8, 5)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent FROM T_RC3 WHERE id = 1 UNION ALL SELECT t.id, t.parent FROM r, T_RC3 AS t WHERE t.parent = r.id AND t.id < 6) SELECT count(*) FROM r",
+		},
+		{
+			// Recursive CTE on a linked-list / chain: 1 -> 2 -> 3 -> 4 -> 5.
+			// Each node points to its successor via `next`. Walk from
+			// head and count chain length.
+			Name:           "recursive_cte_linked_list",
+			SchemaTemplate: "CREATE TABLE T_RC4 (id BIGINT, next BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC4 VALUES (1, 2), (2, 3), (3, 4), (4, 5), (5, -1)",
+			},
+			Query: "WITH RECURSIVE walk AS (SELECT id, next FROM T_RC4 WHERE id = 1 UNION ALL SELECT t.id, t.next FROM walk, T_RC4 AS t WHERE t.id = walk.next) SELECT count(*) FROM walk",
+		},
+		{
+			// Recursive CTE with multi-column projection in both base and
+			// recursive arms. Pins struct-shaped recursion frame.
+			Name:           "recursive_cte_multi_column",
+			SchemaTemplate: "CREATE TABLE T_RC5 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC5 VALUES (1, -1, 100), (2, 1, 200), (3, 1, 300), (4, 2, 400)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent, val FROM T_RC5 WHERE id = 1 UNION ALL SELECT t.id, t.parent, t.val FROM r, T_RC5 AS t WHERE t.parent = r.id) SELECT count(*) FROM r",
+		},
+		{
+			// Empty recursion: base case returns no rows so the recursive
+			// expansion is empty too. count(*) = 0. Pins zero-iteration
+			// behaviour.
+			Name:           "recursive_cte_empty_base",
+			SchemaTemplate: "CREATE TABLE T_RC6 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC6 VALUES (1, -1), (2, 1)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent FROM T_RC6 WHERE id = 999 UNION ALL SELECT t.id, t.parent FROM r, T_RC6 AS t WHERE t.parent = r.id) SELECT count(*) FROM r",
+		},
+		{
+			// Two CTEs in WITH: first projects a filtered set, second
+			// joins a base table against the first. Pins CTE composition
+			// without recursion.
+			Name:           "two_cte_first_feeds_second",
+			SchemaTemplate: "CREATE TABLE T_RC7 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC7 VALUES (1, 'us', 100), (2, 'us', 200), (3, 'eu', 50), (4, 'eu', 300), (5, 'us', 400)",
+			},
+			Query: "WITH us AS (SELECT id, val FROM T_RC7 WHERE region = 'us'), big_us AS (SELECT id FROM us WHERE val > 150) SELECT count(*) FROM big_us",
+		},
+		{
+			// CTE used twice in same SELECT — self-join on the CTE.
+			// Pins planner reuse of the CTE binding across two FROM
+			// references.
+			Name:           "cte_used_twice_self_join",
+			SchemaTemplate: "CREATE TABLE T_RC8 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC8 VALUES (1, -1), (2, 1), (3, 1), (4, 2)",
+			},
+			Query: "WITH x AS (SELECT id, parent FROM T_RC8) SELECT count(*) FROM x AS a, x AS b WHERE a.id = b.parent",
+		},
+		{
+			// CTE chain four levels deep: each CTE filters/projects from
+			// the previous. Pins dependency-chain resolution.
+			Name:           "cte_chain_four_levels",
+			SchemaTemplate: "CREATE TABLE T_RC9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RC9 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50), (6, 60), (7, 70), (8, 80)",
+			},
+			Query: "WITH a AS (SELECT id, val FROM T_RC9 WHERE val > 10), b AS (SELECT id, val FROM a WHERE val > 30), c AS (SELECT id, val FROM b WHERE val > 50), d AS (SELECT id FROM c WHERE val > 60) SELECT count(*) FROM d",
+		},
+		{
+			// CTE with multi-column projection and downstream filter.
+			Name:           "cte_multi_column_projection",
+			SchemaTemplate: "CREATE TABLE T_RCA (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RCA VALUES (1, 'a', 10), (2, 'b', 20), (3, 'c', 30), (4, 'd', 40)",
+			},
+			Query: "WITH proj AS (SELECT id, name, val FROM T_RCA) SELECT count(*) FROM proj WHERE val > 15",
+		},
+		{
+			// Recursive CTE on a tree where the recursive arm walks
+			// from an internal node, not the root. Pins arbitrary-seed
+			// traversal.
+			Name:           "recursive_cte_subtree_from_internal_node",
+			SchemaTemplate: "CREATE TABLE T_RCB (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RCB VALUES (1, -1), (2, 1), (3, 1), (4, 2), (5, 2), (6, 4), (7, 5)",
+			},
+			Query: "WITH RECURSIVE sub AS (SELECT id, parent FROM T_RCB WHERE id = 2 UNION ALL SELECT t.id, t.parent FROM sub, T_RCB AS t WHERE t.parent = sub.id) SELECT count(*) FROM sub",
+		},
+		{
+			// Recursive CTE walking a chain with bounded depth — the
+			// chain has 5 nodes, but the WHERE clause stops at depth 3.
+			// Pins early-termination semantics on recursion frame value.
+			Name:           "recursive_cte_bounded_chain",
+			SchemaTemplate: "CREATE TABLE T_RCC (id BIGINT, next BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RCC VALUES (1, 2), (2, 3), (3, 4), (4, 5), (5, -1)",
+			},
+			Query: "WITH RECURSIVE walk AS (SELECT id, next FROM T_RCC WHERE id = 1 UNION ALL SELECT t.id, t.next FROM walk, T_RCC AS t WHERE t.id = walk.next AND walk.id < 3) SELECT count(*) FROM walk",
+		},
+		{
+			// Non-recursive WITH followed by SELECT count(*) — single
+			// CTE, single use. Baseline shape that anchors the family.
+			Name:           "single_cte_count_star",
+			SchemaTemplate: "CREATE TABLE T_RCD (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RCD VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "WITH base AS (SELECT id, val FROM T_RCD WHERE val >= 20) SELECT count(*) FROM base",
+		},
 	}
 }
 
