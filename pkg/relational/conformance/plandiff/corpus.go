@@ -2397,6 +2397,66 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_UPK",
 		},
 		{
+			// UUID round-trip — INSERT canonical-form, SELECT back
+			// matches.
+			Name:           "insert_uuid_round_trip",
+			SchemaTemplate: "CREATE TABLE T_IUR (id BIGINT, u UUID, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IUR VALUES (1, CAST('00000000-0000-0000-0000-000000000042' AS UUID))"},
+			Query:          "SELECT id, u FROM T_IUR ORDER BY id",
+		},
+		{
+			// COUNT(*) over a fresh table with no rows — both engines
+			// return one row with [0].
+			Name:           "count_star_empty_table",
+			SchemaTemplate: "CREATE TABLE T_CSE (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT count(*) FROM T_CSE",
+		},
+		{
+			// INSERT with explicit column list matching arity.
+			Name:           "insert_explicit_cols_full_match",
+			SchemaTemplate: "CREATE TABLE T_IEC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IEC (id, v) VALUES (1, 5)"},
+			Query:          "SELECT id, v FROM T_IEC",
+		},
+		{
+			// `0.0 - 1.5` projection — DOUBLE arithmetic.
+			Name:           "select_zero_minus_double",
+			SchemaTemplate: "CREATE TABLE T_SZD (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SZD VALUES (1)"},
+			Query:          "SELECT 0.0 - 1.5 FROM T_SZD",
+		},
+		{
+			// SUM with HAVING filtering on the aggregate value.
+			Name:           "sum_with_having_filter",
+			SchemaTemplate: "CREATE TABLE T_SHF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SHF VALUES (1, 5)",
+				"INSERT INTO T_SHF VALUES (2, 10)",
+			},
+			Query: "SELECT SUM(v) FROM T_SHF HAVING SUM(v) > 10",
+		},
+		{
+			// LIKE pattern with regex-special character (`!`) literal —
+			// Both engines treat `!` as a literal char, not regex.
+			Name:           "like_with_punctuation",
+			SchemaTemplate: "CREATE TABLE T_LWP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LWP VALUES (1, 'hello world!')"},
+			Query:          "SELECT id FROM T_LWP WHERE name LIKE 'hello %!'",
+		},
+		{
+			// IS NULL combined with OR — predicate eval correctly
+			// short-circuits on UNKNOWN.
+			Name:           "is_null_or_compound_predicate",
+			SchemaTemplate: "CREATE TABLE T_INO (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INO VALUES (1, NULL)",
+				"INSERT INTO T_INO VALUES (2, 5)",
+				"INSERT INTO T_INO VALUES (3, 10)",
+			},
+			Query: "SELECT id FROM T_INO WHERE v IS NULL OR v < 7 ORDER BY id",
+		},
+		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
 			Name:           "select_bool_column_trio",
 			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
