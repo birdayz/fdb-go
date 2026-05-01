@@ -3541,6 +3541,27 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_WAC WHERE x = 10 AND y = 20 AND z = 30 ORDER BY id",
 		},
 		{
+			// PROBE: NULL filter
+			Name:           "select_with_null_filter",
+			SchemaTemplate: "CREATE TABLE T_SNF (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SNF VALUES (1, 'a'), (2, NULL), (3, 'c')"},
+			Query:          "SELECT id, name FROM T_SNF WHERE name IS NOT NULL ORDER BY id",
+		},
+		{
+			// PROBE: arithmetic on NULL (NULL propagation)
+			Name:           "arith_null_prop",
+			SchemaTemplate: "CREATE TABLE T_ANP (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ANP VALUES (1, 10), (2, NULL)"},
+			Query:          "SELECT id, v + 5 FROM T_ANP ORDER BY id",
+		},
+		{
+			// PROBE: NULL = NULL → UNKNOWN (filtered out)
+			Name:           "null_eq_null",
+			SchemaTemplate: "CREATE TABLE T_NEN (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NEN VALUES (1, NULL, NULL), (2, 10, 10)"},
+			Query:          "SELECT id FROM T_NEN WHERE x = y ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
