@@ -27,7 +27,7 @@ Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One b
 
 ## Work tracking
 
-`TODO.md` is the authoritative priority list — flat buckets `## CRITICAL > ## HIGH > ## MEDIUM > ## LOW`, items as `- [x]` / `- [ ]`. **At shift start, pick from the highest unchecked bucket.** Handover follow-ups are suggestions, not the priority list. When CRITICAL/HIGH is unchecked, you do NOT spend a shift on MEDIUM. Finish what you start before climbing down.
+`TODO.md` is the authoritative execution order — numbered items in 6 sequential phases, items inside a phase run in parallel unless gated. **At shift start, pick the lowest-numbered unchecked item whose gates are satisfied.** Handover follow-ups are suggestions, not the priority list. Finish what you start before moving on.
 
 **Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features. Don't push unless asked.
 
