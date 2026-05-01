@@ -75,17 +75,22 @@ tests:
 
   # ORDER BY applied on the outer wrapper of a derived table. Pre-
   # swingshift-41 the derived-table branch discarded ORDER BY along
-  # with GROUP BY. Verify sort now applies.
+  # with GROUP BY. Verify sort now applies. (LIMIT was incidental;
+  # rejected at parse time as of fdb-relational 4.11.1.0.) 13 rows:
+  # 8× col1=20 then 5× col1=10.
   - query: |-
-      SELECT col1 FROM (SELECT col1 FROM t1) AS x ORDER BY col1 DESC LIMIT 2
+      SELECT col1 FROM (SELECT col1 FROM t1) AS x ORDER BY col1 DESC
     rows:
       - [20]
       - [20]
-
-  # LIMIT on derived-table outer also applies (was being dropped).
-  - query: |-
-      SELECT col1 FROM (SELECT col1 FROM t1) AS x ORDER BY col1 LIMIT 3
-    rows:
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [20]
+      - [10]
+      - [10]
       - [10]
       - [10]
       - [10]

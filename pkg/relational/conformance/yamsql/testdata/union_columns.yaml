@@ -39,12 +39,15 @@ tests:
       - [2, 20]
       - [2, 200]
 
-  # ORDER BY DESC on union, with LIMIT applied to the combined result.
-  # Top-2 by v DESC across both sides.
-  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC LIMIT 2
+  # ORDER BY DESC on union — pins that ORDER BY DESC applies to the
+  # combined result. (LIMIT was incidental; rejected at parse time as
+  # of fdb-relational 4.11.1.0.)
+  - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY v DESC
     rows:
       - [2, 200]
       - [1, 100]
+      - [2, 20]
+      - [1, 10]
 
   # ORDER BY on a column name that exists on the right but not the left
   # fails with 42703 (undefined_column): the result schema is the LEFT's
@@ -52,11 +55,11 @@ tests:
   - query: SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w
     error_code: "42703"
 
-  # OFFSET combined with LIMIT on a UNION — applies to the combined result.
+  # LIMIT / OFFSET on a UNION are rejected at parse time
+  # (fdb-relational 4.11.1.0 / Go aligned). Java checks offset first,
+  # so the combined shape errors on OFFSET.
   - query: SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1
-    rows:
-      - [20]
-      - [100]
+    error_code: "0AF00"
 
   # UNION (without ALL) — Java rejects "only UNION ALL is supported"
   # (0A000); aligned .

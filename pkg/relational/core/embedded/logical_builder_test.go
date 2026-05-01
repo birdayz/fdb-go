@@ -53,15 +53,20 @@ func TestBuildLogicalPlan_SelectStarWhere(t *testing.T) {
 	}
 }
 
-func TestBuildLogicalPlan_SelectColsOrderLimit(t *testing.T) {
+// TestBuildLogicalPlan_SelectColsOrder pins the SELECT-with-ORDER-BY
+// shape (without LIMIT — Java's AstNormalizer rejects LIMIT/OFFSET at
+// parse time, so the LIMIT branch of buildLogicalPlanForSelect is
+// unreachable from SQL; the LogicalLimit operator stays in place for
+// future setMaxRows-routing / Cascades work).
+func TestBuildLogicalPlan_SelectColsOrder(t *testing.T) {
 	t.Parallel()
-	sq := parseSelect(t, "SELECT id, name FROM t ORDER BY id DESC LIMIT 10")
+	sq := parseSelect(t, "SELECT id, name FROM t ORDER BY id DESC")
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
-	// Project at top (projCols set), then Limit, then Sort, then Scan.
-	want := "Project(id, name)\n  Limit(10)\n    Sort(id DESC)\n      Scan(t)"
+	// Project at top (projCols set), then Sort, then Scan.
+	want := "Project(id, name)\n  Sort(id DESC)\n    Scan(t)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

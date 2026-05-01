@@ -48,14 +48,12 @@ tests:
     rows:
       - ['Alice']
       - ['Bob']
-  # Java alignment: ORDER BY inside an EXISTS subquery — Java errors
-  # 0AF00 (UNSUPPORTED_QUERY) since ordering inside a set-existence
-  # check is meaningless. Probe Go's behavior.
+  # LIMIT inside an EXISTS subquery is rejected at parse time as of
+  # fdb-relational 4.11.1.0 (LIMIT clause is not supported., 0AF00).
+  # Pre-rejection this probe pinned that ordering inside a
+  # set-existence check is benign; now LIMIT itself wins.
   - query: SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project ORDER BY id LIMIT 1) ORDER BY id
-    rows:
-      - ['Alice']
-      - ['Bob']
-      - ['Carol']
+    error_code: "0AF00"
 
   # Correlated EXISTS with additional inner filter: keep outer iff the
   # inner has a project with emp_id = outer.id AND inner.id >= 100.

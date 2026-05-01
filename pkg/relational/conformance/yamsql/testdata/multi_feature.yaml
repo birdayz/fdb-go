@@ -1,10 +1,12 @@
 # multi_feature.yaml
 #
 # End-to-end scenario chaining several features at once: CTE + WHERE +
-# GROUP BY + aggregate + HAVING + ORDER BY + LIMIT. This is the kind of
-# query a real user might write, and exercises the whole execution
-# pipeline including the tri-state NULL handling the harness has spent
-# the shift hardening.
+# GROUP BY + aggregate + HAVING + ORDER BY. This is the kind of query
+# a real user might write, and exercises the whole execution pipeline
+# including the tri-state NULL handling the harness has spent the
+# shift hardening. (LIMIT was previously chained on too — Java rejects
+# LIMIT at parse time as of fdb-relational 4.11.1.0; the rejection
+# itself is pinned by offset.yaml.)
 name: multi_feature
 schema_template: |
   CREATE TABLE orders (id BIGINT NOT NULL, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
@@ -25,15 +27,18 @@ tests:
       # customer 300: 10 — excluded from CTE.
       - [200, 60]
       - [100, 125]
-  # Same query but LIMIT 1 — keeps only the top customer.
+  # Same query, ORDER BY SUM DESC — pins that ORDER-BY-aggregate-DESC
+  # works on the CTE-wrapped aggregate. LIMIT was incidental (rejected
+  # at parse time as of fdb-relational 4.11.1.0).
   - query: |-
       WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
       SELECT customer_id, SUM(total) FROM hv
       GROUP BY customer_id
       HAVING SUM(total) > 50
-      ORDER BY SUM(total) DESC LIMIT 1
+      ORDER BY SUM(total) DESC
     rows:
       - [100, 125]
+      - [200, 60]
   # Column-to-column comparison in WHERE — pins that the predicate
   # evaluator handles both sides via the same path (not literal-only).
   # id=3 has total=NULL → 100 > NULL is UNKNOWN → filtered.

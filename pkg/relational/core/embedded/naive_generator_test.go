@@ -46,12 +46,15 @@ func TestNaiveGenerator_Explain_SelectStar(t *testing.T) {
 
 func TestNaiveGenerator_Explain_SelectWhere(t *testing.T) {
 	t.Parallel()
-	p := helperPlan(t, "SELECT id, name FROM users WHERE active = TRUE ORDER BY id LIMIT 10")
+	// LIMIT is rejected at parse time (fdb-relational 4.11.1.0's
+	// AstNormalizer / Go's extractFromSimpleTable), so this exercises
+	// the WHERE + ORDER BY composition only. The LogicalLimit operator
+	// remains in the builder for future setMaxRows-routing.
+	p := helperPlan(t, "SELECT id, name FROM users WHERE active = TRUE ORDER BY id")
 	got := p.Explain()
-	// Composition: Project → Limit → Sort → Filter → Scan.
+	// Composition: Project → Sort → Filter → Scan.
 	for _, want := range []string{
 		"Project(id, name)",
-		"Limit(10)",
 		"Sort(id ASC)",
 		"Filter(active = TRUE)",
 		"Scan(users)",

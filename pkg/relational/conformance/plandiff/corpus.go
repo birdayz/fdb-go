@@ -876,6 +876,29 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_NOW VALUES (1, 0)"},
 			Query:          "SELECT NOW() FROM T_NOW WHERE id = 1",
 		},
+		{
+			// LIMIT clause: fdb-relational 4.11.1.0's AstNormalizer
+			// rejects with `RelationalException: LIMIT clause is not
+			// supported.` (UNSUPPORTED_QUERY / 0AF00). Pagination is a
+			// JDBC-only knob via Statement.setMaxRows. Go aligns at
+			// parse time in extractFromSimpleTable; the rejection
+			// fires before any LIMIT plumbing runs.
+			Name:           "limit_clause_rejected",
+			SchemaTemplate: "CREATE TABLE T_LIM (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LIM VALUES (1, 1), (2, 2), (3, 3)"},
+			Query:          "SELECT id FROM T_LIM ORDER BY id LIMIT 2",
+		},
+		{
+			// OFFSET clause: AstNormalizer.visitLimitClause checks
+			// offset first, so `LIMIT N OFFSET M` fails with
+			// `OFFSET clause is not supported.` even though both are
+			// rejected. Pin the order-of-checks so Go's surface
+			// mirrors Java's.
+			Name:           "offset_clause_rejected",
+			SchemaTemplate: "CREATE TABLE T_OFF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OFF VALUES (1, 1), (2, 2), (3, 3)"},
+			Query:          "SELECT id FROM T_OFF ORDER BY id LIMIT 2 OFFSET 1",
+		},
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
 		// (Cascades has no rule to satisfy the ordering); Go with

@@ -3,7 +3,6 @@ package embedded
 import (
 	"database/sql/driver"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -975,57 +974,33 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		}
 	}
 
-	// Parse LIMIT [OFFSET] clause.
-	limitClauseCtx := simpleTable.LimitClause()
-	if limitClauseCtx != nil {
-		parseLimitAtom := func(a antlrgen.ILimitClauseAtomContext, label string) (int64, error) {
-			if a == nil || a.DecimalLiteral() == nil {
-				return 0, nil
-			}
-			n, parseErr := strconv.ParseInt(a.DecimalLiteral().GetText(), 10, 64)
-			if parseErr != nil {
-				return 0, api.NewErrorf(api.ErrCodeInvalidRowCountInLimitClause, "invalid %s value %q: %v", label, a.DecimalLiteral().GetText(), parseErr)
-			}
-			// Postgres, MySQL, Oracle, and SQL:2008 all reject negative
-			// LIMIT/OFFSET. Previously Go silently treated negative LIMIT
-			// as "no limit" (the downstream guard uses `sq.limit >= 0`),
-			// hiding user bugs like `LIMIT -1` instead of surfacing them.
-			// SQLSTATE: 2201W (invalid_row_count_in_limit_clause), the
-			// SQL-standard class-22 code for this exact case.
-			if n < 0 {
-				return 0, api.NewErrorf(api.ErrCodeInvalidRowCountInLimitClause, "%s cannot be negative: %d", label, n)
-			}
-			return n, nil
+	// Reject LIMIT / OFFSET at parse time — fdb-relational 4.11.1.0's
+	// AstNormalizer.visitLimitClause throws UNSUPPORTED_QUERY for
+	// either, with a fixed message per branch ("OFFSET clause is not
+	// supported." / "LIMIT clause is not supported."). Pagination is
+	// a JDBC-only knob exposed via Statement.setMaxRows; SQL-level
+	// LIMIT N is not in the planner's repertoire. Java checks offset
+	// first, so `LIMIT N OFFSET M` errors on OFFSET; mirror that
+	// order so byte-equal alignment holds for the combined shape.
+	if limitClauseCtx := simpleTable.LimitClause(); limitClauseCtx != nil {
+		hasOffset := limitClauseCtx.GetOffset() != nil
+		hasLimit := limitClauseCtx.GetLimit() != nil
+		// MySQL "LIMIT offset, count" form: AllLimitClauseAtom() returns
+		// two atoms, neither set as the named GetLimit/GetOffset. Java's
+		// AstNormalizer doesn't special-case this — both atoms hit the
+		// `ctx.limit != null` branch via the grammar's labeling. Treat
+		// both atoms as a LIMIT presence for rejection.
+		atoms := limitClauseCtx.AllLimitClauseAtom()
+		if !hasLimit && !hasOffset && len(atoms) > 0 {
+			hasLimit = true
 		}
-		// Grammar exposes GetLimit() / GetOffset() for "LIMIT n OFFSET m" form,
-		// and AllLimitClauseAtom() for the MySQL "LIMIT offset, count" form.
-		if limitClauseCtx.GetLimit() != nil {
-			n, parseErr := parseLimitAtom(limitClauseCtx.GetLimit(), "LIMIT")
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			sq.limit = n
-			if limitClauseCtx.GetOffset() != nil {
-				off, parseErr := parseLimitAtom(limitClauseCtx.GetOffset(), "OFFSET")
-				if parseErr != nil {
-					return nil, parseErr
-				}
-				sq.offset = off
-			}
-		} else {
-			atoms := limitClauseCtx.AllLimitClauseAtom()
-			if len(atoms) > 1 {
-				// MySQL allows "LIMIT offset, count" — reject for simplicity.
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					"LIMIT offset,count syntax is not supported; use LIMIT count OFFSET n")
-			}
-			if len(atoms) == 1 {
-				n, parseErr := parseLimitAtom(atoms[0], "LIMIT")
-				if parseErr != nil {
-					return nil, parseErr
-				}
-				sq.limit = n
-			}
+		if hasOffset {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"OFFSET clause is not supported.")
+		}
+		if hasLimit {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"LIMIT clause is not supported.")
 		}
 	}
 

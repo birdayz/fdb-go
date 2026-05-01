@@ -407,7 +407,11 @@ tests:
       # 1 + 10 + 20 + 40 + 50 + 70 + 100 + 210 + 250 = 751
       - [751]
 
-  # ORDER BY + LIMIT on top of the recursive CTE: take first 3 ids.
+  # ORDER BY + LIMIT on top of the recursive CTE — LIMIT rejected at
+  # parse time as of fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY /
+  # 0AF00). Pre-rejection this case pinned ORDER BY-on-recursive-CTE
+  # cap behaviour; ORDER BY without LIMIT over the same recursive
+  # CTE is exercised by other tests in this file.
   - query: |-
       WITH RECURSIVE descendants AS (
         SELECT id, parent FROM t WHERE parent = -1
@@ -415,7 +419,4 @@ tests:
         SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
       )
       SELECT id FROM descendants ORDER BY id LIMIT 3
-    rows:
-      - [1]
-      - [10]
-      - [20]
+    error_code: "0AF00"

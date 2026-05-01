@@ -32,9 +32,10 @@ tests:
   - query: SELECT id, name FROM t WHERE id = 99
     rows: []
 
-  # With ORDER BY + LIMIT on top — trivial on ≤1 row; just verifies
-  # pushdown doesn't bypass those clauses.
-  - query: SELECT name FROM t WHERE id = 2 ORDER BY id LIMIT 1
+  # With ORDER BY on top — trivial on ≤1 row; just verifies pushdown
+  # doesn't bypass that clause. (LIMIT was incidental; rejected at
+  # parse time as of fdb-relational 4.11.1.0.)
+  - query: SELECT name FROM t WHERE id = 2 ORDER BY id
     rows:
       - ['beta']
 

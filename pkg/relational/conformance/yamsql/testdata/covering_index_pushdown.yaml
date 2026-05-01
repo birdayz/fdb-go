@@ -218,15 +218,19 @@ tests:
       - [1, 'active', 'x', 10, 'n1']
 
   # -------------------------------------------------------------------
-  # Covered + LIMIT + residual constants
+  # Covered + residual constants
   # -------------------------------------------------------------------
 
-  # LIMIT composes with covering — the cursor stops early after the
-  # limit count of synthesised rows.
-  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 2
+  # Covered ORDER BY pin (LIMIT was incidental — rejected at parse
+  # time as of fdb-relational 4.11.1.0). Pre-LIMIT-rejection this case
+  # asserted LIMIT-early-termination compositions with covering;
+  # without LIMIT the covering path still runs, just over all rows.
+  - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v
     rows:
       - [1, 10]
       - [2, 20]
+      - [3, 30]
+      - [4, 40]
 
   # WHERE with only the indexed col + constant residual. The constant
   # `1 = 1` leaf doesn't reference any column — covering still applies.

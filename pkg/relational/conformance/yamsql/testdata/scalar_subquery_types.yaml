@@ -49,13 +49,16 @@ tests:
   # registry only installs numeric MIN / MAX overloads (CLAUDE.md
   # gotcha: "MIN(s) / MAX(s) over non-numeric columns is unsupported
   # by fdb-relational"). Go's embedded engine matches at runtime via
-  # `requireMinMaxNumeric`. Lexicographic min/max needs an
-  # `ORDER BY ... LIMIT 1` rewrite. Same architectural reason:
-  # function registry has no non-numeric MIN/MAX evaluator.
+  # `requireMinMaxNumeric`. Lexicographic min/max would need an
+  # `ORDER BY ... LIMIT 1` rewrite — but LIMIT itself is also
+  # rejected at parse time as of fdb-relational 4.11.1.0
+  # (UNSUPPORTED_QUERY / 0AF00), so even that workaround is
+  # unavailable. Same architectural reason: function registry has no
+  # non-numeric MIN/MAX evaluator.
   - query: SELECT (SELECT MIN(name) FROM t) FROM t WHERE id = 1
     error_code: "0A000"
-  # Subquery whose inner SELECT itself contains an ORDER BY + LIMIT 1
-  # (a common idiom for "first row by some criterion").
+  # Subquery whose inner SELECT contains an ORDER BY + LIMIT 1
+  # (a common idiom for "first row by some criterion") — LIMIT is
+  # rejected at parse time as of fdb-relational 4.11.1.0.
   - query: SELECT (SELECT name FROM t ORDER BY score DESC LIMIT 1) FROM t WHERE id = 1
-    rows:
-      - ['alice']
+    error_code: "0AF00"

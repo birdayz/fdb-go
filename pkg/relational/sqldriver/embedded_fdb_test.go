@@ -1349,7 +1349,15 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{3, 2, 1}))
 }
 
-func TestFDB_SelectLimit(t *testing.T) {
+// TestFDB_SelectLimitRejected pins LIMIT-clause rejection.
+// fdb-relational 4.11.1.0's AstNormalizer.visitLimitClause throws
+// `RelationalException: LIMIT clause is not supported.`
+// (UNSUPPORTED_QUERY / 0AF00). Pagination is a JDBC-only knob via
+// Statement.setMaxRows; SQL-level LIMIT N is not in the planner's
+// repertoire. Go aligns at parse time in extractFromSimpleTable.
+// Per project conformance principle: doesn't work in Java →
+// doesn't work in Go.
+func TestFDB_SelectLimitRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -1369,18 +1377,13 @@ func TestFDB_SelectLimit(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO Item (item_id) VALUES (1), (2), (3), (4), (5)")).Error().NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC LIMIT 3")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.HaveLen(3))
+	_, err = db.QueryContext(ctx, "SELECT item_id FROM Item ORDER BY item_id ASC LIMIT 3")
+	g.Expect(err).To(gomega.HaveOccurred(), "LIMIT must be rejected at parse time")
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	g.Expect(apiErr.Message).To(gomega.Equal("LIMIT clause is not supported."))
 }
 
 func TestFDB_SelectWhereAnd(t *testing.T) {
@@ -2777,7 +2780,14 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
-func TestFDB_LimitOffset(t *testing.T) {
+// TestFDB_LimitOffsetRejected pins OFFSET-clause rejection. Java's
+// AstNormalizer.visitLimitClause checks offset first, so the
+// `LIMIT N OFFSET M` shape errors with `OFFSET clause is not
+// supported.` (UNSUPPORTED_QUERY / 0AF00) — even though both clauses
+// are unsupported. Mirror Java's order-of-checks so byte-equal
+// alignment holds for the combined shape. Per project conformance
+// principle: doesn't work in Java → doesn't work in Go.
+func TestFDB_LimitOffsetRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -2800,18 +2810,14 @@ func TestFDB_LimitOffset(t *testing.T) {
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 	}
 
-	// LIMIT 2 OFFSET 1 → rows 2, 3 (sorted by id)
-	rows, err := db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
-	}
-	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+	_, err = db.QueryContext(ctx, `SELECT id FROM Item ORDER BY id ASC LIMIT 2 OFFSET 1`)
+	g.Expect(err).To(gomega.HaveOccurred(), "OFFSET must be rejected at parse time")
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	// Java checks offset first, so the combined shape errors on OFFSET.
+	g.Expect(apiErr.Message).To(gomega.Equal("OFFSET clause is not supported."))
 }
 
 func TestFDB_CaseWhen(t *testing.T) {
@@ -4573,10 +4579,13 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (5, 3, 400)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// JOIN + GROUP BY + ORDER BY on aggregate + LIMIT. Previously LIMIT was silently ignored.
+	// JOIN + GROUP BY + ORDER BY on aggregate. LIMIT was incidental
+	// (Java rejects LIMIT at parse time as of fdb-relational 4.11.1.0
+	// — see TestFDB_SelectLimitRejected); the actual focus here is
+	// that GROUP BY + ORDER BY produce all rows in DESC name order.
 	rows, err := db.QueryContext(ctx, `
 		SELECT name, SUM(amount) FROM Customer INNER JOIN Sales ON Customer.id = Sales.customer_id
-		GROUP BY name ORDER BY name DESC LIMIT 2`)
+		GROUP BY name ORDER BY name DESC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4598,10 +4607,11 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 		got = append(got, r)
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// DESC: Carol, Bob, Alice; LIMIT 2 → Carol, Bob.
+	// DESC: Carol, Bob, Alice.
 	g.Expect(got).To(gomega.Equal([]row{
 		{"Carol", 900},
 		{"Bob", 50},
+		{"Alice", 300},
 	}))
 }
 
@@ -5067,15 +5077,19 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (3, 2, 1000)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate + LIMIT.
+	// CTE + JOIN + GROUP BY + HAVING + ORDER BY aggregate. LIMIT was
+	// incidental (Java rejects LIMIT at parse time as of
+	// fdb-relational 4.11.1.0 — see TestFDB_SelectLimitRejected); the
+	// actual focus here is that ORDER BY SUM DESC flips the natural
+	// group-iteration order so [Bob, Alice] emerges instead of
+	// [Alice, Bob].
 	rows, err := db.QueryContext(ctx, `
 		WITH big AS (SELECT id, customer_id, amount FROM Sales WHERE amount >= 50)
 		SELECT Customer.name, SUM(big.amount)
 		FROM Customer INNER JOIN big ON Customer.id = big.customer_id
 		GROUP BY Customer.name
 		HAVING SUM(big.amount) > 0
-		ORDER BY SUM(big.amount) DESC
-		LIMIT 2`)
+		ORDER BY SUM(big.amount) DESC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 

@@ -202,46 +202,31 @@ tests:
     error_code: "0AF01"
 
   # -------------------------------------------------------------------
-  # LIMIT + ORDER BY elim → early termination
+  # LIMIT / OFFSET clauses are rejected at parse time as of
+  # fdb-relational 4.11.1.0 (UNSUPPORTED_QUERY / 0AF00) — Java's
+  # AstNormalizer.visitLimitClause throws
+  # "LIMIT clause is not supported." (or
+  # "OFFSET clause is not supported." — Java checks offset first).
+  # Pagination is JDBC-only via Statement.setMaxRows. The
+  # early-termination plumbing remains in execSelectQueryFull for
+  # eventual setMaxRows-routing, but is unreachable from SQL. Pin
+  # the rejection here too so the surface stays Java-aligned.
   # -------------------------------------------------------------------
-  #
-  # When the scan's natural order satisfies ORDER BY AND there's a
-  # LIMIT, the scan loop stops reading after OFFSET+LIMIT rows —
-  # avoiding unnecessary FDB round-trips. Not directly observable
-  # from result rows, but correctness must hold.
 
   - query: SELECT id FROM t ORDER BY id LIMIT 3
-    rows:
-      - [1]
-      - [2]
-      - [3]
+    error_code: "0AF00"
 
   - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 2
-    rows:
-      - [3]
-      - [4]
+    error_code: "0AF00"
 
-  # Secondary-index range + LIMIT + ORDER BY idx col — early term.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    rows:
-      - [3, 10]
-      - [5, 15]
-      - [2, 20]
+    error_code: "0AF00"
 
-  # ORDER BY elim doesn't fire (DESC) — early termination off,
-  # full sort runs. Result still correct.
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
-    rows:
-      - [5]
-      - [4]
+    error_code: "0AF00"
 
-  # DISTINCT + LIMIT — early termination disabled (dedup may drop
-  # rows). Full scan runs. Result correct.
   - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    rows:
-      - [10]
-      - [15]
-      - [20]
+    error_code: "0AF00"
 
   # -------------------------------------------------------------------
   # ORDER BY alias + natural-order elim
@@ -258,11 +243,9 @@ tests:
       - [4]
       - [5]
 
-  # Alias + LIMIT → early termination fires.
+  # Alias + LIMIT — LIMIT rejected at parse time (0AF00).
   - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
-    rows:
-      - [1]
-      - [2]
+    error_code: "0AF00"
 
   # Alias that shadows a different col — ORDER BY matches the
   # alias's underlying column, not the alias's own name.
@@ -324,12 +307,9 @@ tests:
       - [1, 20]
       - [1, 10]
 
-  # ORDER BY id DESC + LIMIT — reverse scan early-terminates after
-  # LIMIT rows. Result is the top-N in DESC order.
+  # ORDER BY id DESC + LIMIT — LIMIT rejected at parse time (0AF00).
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
-    rows:
-      - [5]
-      - [4]
+    error_code: "0AF00"
 
   # PK equality + ORDER BY id DESC — single row, direction irrelevant
   # to the row set. Pins that the reverse-scan branch doesn't break
@@ -345,13 +325,12 @@ tests:
   - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
     error_code: "0AF01"
 
-  # ORDER BY id DESC with alias — alias resolves to the underlying
-  # PK col; reverse scan applies.
+  # ORDER BY DESC with alias + LIMIT — LIMIT rejected at parse time
+  # (0AF00). The alias-resolves-to-PK-col reverse-scan path is still
+  # exercised by the LIMIT-less ORDER BY DESC alias case below /
+  # earlier.
   - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
-    rows:
-      - [5]
-      - [4]
-      - [3]
+    error_code: "0AF00"
 
   # ORDER BY DESC on a non-leading naturalOrder col, but the leading
   # col is equated in WHERE. Equality-prefix relaxation: a is constant
@@ -377,12 +356,11 @@ tests:
       - [2, 10]
       - [2, 20]
 
-  # Leading PK col equated + LIMIT early-termination must still be
-  # correct. Forward scan emits (a=2,b=10) then (a=2,b=20); LIMIT 1
-  # should stop after first match.
+  # Leading PK col equated + LIMIT — LIMIT rejected at parse time
+  # (0AF00). The equality-prefix-relaxation forward-scan path is
+  # still exercised by the LIMIT-less case immediately above.
   - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
-    rows:
-      - [2, 10]
+    error_code: "0AF00"
 
   # ORDER BY includes the equated col followed by a non-equated col.
   # `ORDER BY a DESC, b DESC` with a equated — a's direction is
@@ -439,11 +417,11 @@ tests:
       - [5, 15]
       - [3, 10]
 
-  # Same with LIMIT — early termination should work under reverse scan.
+  # Same with LIMIT — LIMIT rejected at parse time (0AF00). The
+  # reverse-scan path is still exercised by the LIMIT-less DESC case
+  # immediately above.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
-    rows:
-      - [4, 40]
-      - [1, 30]
+    error_code: "0AF00"
 
   # Composite secondary index range: idx_region_plan ordering is
   # (region, plan, id). ORDER BY plan DESC under a pure-prefix
@@ -458,10 +436,9 @@ tests:
       - [1, 'us', 'pro']
       - [2, 'us', 'free']
 
-  # Equated leading + DESC on trailing non-equated col: relaxation
-  # strips region from naturalOrder, leaving (plan, id). ORDER BY
-  # plan DESC is all-DESC prefix of that. Reverse scan under a
-  # pure-prefix composite pushdown.
+  # Equated leading + DESC on trailing non-equated col + LIMIT —
+  # LIMIT rejected at parse time (0AF00). The composite-secondary
+  # reverse-scan path under equality-prefix relaxation is still
+  # exercised by the LIMIT-less DESC case earlier in this file.
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
-    rows:
-      - [4]
+    error_code: "0AF00"

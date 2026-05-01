@@ -82,10 +82,11 @@ tests:
     rows:
       - [2]
 
-  # Single-element IN with ORDER BY + LIMIT — equality promotion sets
-  # naturalOrder = pkCols, so ORDER BY on PK is eliminated and LIMIT
-  # is early-terminated. Output row set must still match scan.
-  - query: SELECT id, name FROM t WHERE id IN (3) ORDER BY id LIMIT 1
+  # Single-element IN with ORDER BY — equality promotion sets
+  # naturalOrder = pkCols, so ORDER BY on PK is eliminated. (LIMIT
+  # was incidental; rejected at parse time as of
+  # fdb-relational 4.11.1.0.)
+  - query: SELECT id, name FROM t WHERE id IN (3) ORDER BY id
     rows:
       - [3, 'three']
 
@@ -346,13 +347,13 @@ tests:
       - [1, 'active']
       - [3, 'active']
 
-  # Single-element IN on a secondary index with LIMIT — the equality
-  # promotion sets naturalOrder = pkCols, enabling LIMIT
-  # early-termination when ORDER BY is on PK cols. Semantics identical
-  # to N-element IN with LIMIT.
-  - query: SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id LIMIT 1
+  # Single-element IN on a secondary index with ORDER BY on PK — the
+  # equality promotion sets naturalOrder = pkCols. (LIMIT was
+  # incidental; rejected at parse time as of fdb-relational 4.11.1.0.)
+  - query: SELECT id, status FROM t2 WHERE status IN ('active') ORDER BY id
     rows:
       - [1, 'active']
+      - [3, 'active']
 
   # Index IN + residual — index narrows to status IN (A, B);
   # residual `v > 10` post-filters.

@@ -1,62 +1,35 @@
 # offset.yaml
 #
-# OFFSET clause (only after LIMIT — grammar requires LIMIT precede
-# OFFSET). Pins swingshift-35's strict negative-value rejection and
-# OFFSET-past-end handling.
+# OFFSET / LIMIT — fdb-relational 4.11.1.0's AstNormalizer rejects both
+# clauses at parse time with UNSUPPORTED_QUERY (0AF00). Pagination is a
+# JDBC-only knob via Statement.setMaxRows; SQL-level LIMIT N / OFFSET
+# M is not in the planner's repertoire. Java checks offset first, so
+# the combined `LIMIT N OFFSET M` shape errors on OFFSET. Go aligns at
+# parse time in extractFromSimpleTable. Per project conformance
+# principle: doesn't work in Java → doesn't work in Go.
 name: offset
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))
 setup:
   - INSERT INTO t VALUES (1), (2), (3), (4), (5)
 tests:
-  # LIMIT + OFFSET.
+  # LIMIT + OFFSET — OFFSET-first error.
   - query: SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 1
-    rows:
-      - [2]
-      - [3]
-  # OFFSET past end yields no rows.
+    error_code: "0AF00"
   - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 100
-    rows: []
-  # OFFSET 0 is a no-op.
+    error_code: "0AF00"
   - query: SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 0
-    rows:
-      - [1]
-      - [2]
-      - [3]
-  # Grammar rejects negative literals in LIMIT at parse time (42601)
-  # — the runtime 2201W check from nightshift-39 (was 22023 in
-  # swingshift-35) is unreachable via SQL literals, only via
-  # parameterised LIMIT ?. Documented here so future changes that
-  # relax the grammar know the downstream check still exists.
-  # SQLSTATE 2201W (invalid_row_count_in_limit_clause) is the SQL-
-  # standard class-22 code for LIMIT/OFFSET range violations,
-  # tightened from generic 22023 INVALID_PARAMETER.
-  # LIMIT 0 — explicit no-rows.
-  - query: SELECT id FROM t ORDER BY id LIMIT 0
-    rows: []
-  # LIMIT exactly equals row count — returns all rows.
-  - query: SELECT id FROM t ORDER BY id LIMIT 5
-    rows:
-      - [1]
-      - [2]
-      - [3]
-      - [4]
-      - [5]
-  # LIMIT larger than row count — returns all rows.
-  - query: SELECT id FROM t ORDER BY id LIMIT 100
-    rows:
-      - [1]
-      - [2]
-      - [3]
-      - [4]
-      - [5]
-  # OFFSET partial overlap at end.
+    error_code: "0AF00"
   - query: SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 3
-    rows:
-      - [4]
-      - [5]
-  # OFFSET without LIMIT — parser rejects 42601 (grammar requires LIMIT).
-  # This matches Java where the standard SQL grammar has OFFSET nested
-  # inside the LIMIT clause. Workaround: use LIMIT 9223372036854775807.
+    error_code: "0AF00"
+  # Bare LIMIT.
+  - query: SELECT id FROM t ORDER BY id LIMIT 0
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 5
+    error_code: "0AF00"
+  - query: SELECT id FROM t ORDER BY id LIMIT 100
+    error_code: "0AF00"
+  # OFFSET without LIMIT — grammar rejects 42601 (LIMIT-required).
+  # Standard SQL grammar nests OFFSET inside the LIMIT clause.
   - query: SELECT id FROM t ORDER BY id OFFSET 2
     error_code: "42601"
