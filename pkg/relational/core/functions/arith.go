@@ -93,19 +93,19 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 		case "+":
 			r, ok := AddInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d + %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return r, nil
 		case "-":
 			r, ok := SubInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d - %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return r, nil
 		case "*":
 			r, ok := MulInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d * %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return r, nil
 		case "/":
@@ -114,7 +114,7 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 			}
 			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d / %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return li / ri, nil
 		case "%":

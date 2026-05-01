@@ -2082,6 +2082,62 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_ITM",
 		},
 		{
+			// INSERT with type mismatch (string into BIGINT column) —
+			// Java verbatim 'A value cannot be assigned to a variable
+			// because the type of the value does not match the type of
+			// the variable and cannot be promoted to the type of the
+			// variable.' Aligned dayshift-62.
+			Name:           "insert_type_mismatch_rejected",
+			SchemaTemplate: "CREATE TABLE T_ITMT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ITMT VALUES (1, 'abc')"},
+			Query:          "SELECT id FROM T_ITMT",
+		},
+		{
+			// UPDATE referencing a non-existent column — Java verbatim
+			// 'Attempting to query non existing column X' (same
+			// alignment as SELECT path; aligned UPDATE-side dayshift-62).
+			Name:           "update_undefined_column_rejected",
+			SchemaTemplate: "CREATE TABLE T_UUC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_UUC VALUES (1, 5)", "UPDATE T_UUC SET no_such_col = 1"},
+			Query:          "SELECT id FROM T_UUC",
+		},
+		{
+			// Integer overflow on +, -, * — all aligned to Java
+			// verbatim 'long overflow' (was 'integer overflow on N OP M').
+			// Aligned dayshift-62.
+			Name:           "add_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_AIO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AIO VALUES (1)"},
+			Query:          "SELECT 9223372036854775807 + 1 FROM T_AIO",
+		},
+		{
+			Name:           "sub_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_SIO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SIO VALUES (1)"},
+			Query:          "SELECT -9223372036854775808 - 1 FROM T_SIO",
+		},
+		{
+			Name:           "mul_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_MIO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MIO VALUES (1)"},
+			Query:          "SELECT 4611686018427387904 * 2 FROM T_MIO",
+		},
+		{
+			// Compound HAVING with multiple conjuncts.
+			Name:           "having_compound_predicate",
+			SchemaTemplate: "CREATE TABLE T_HCP (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_HCP VALUES (1, 5)"},
+			Query:          "SELECT count(*) FROM T_HCP HAVING count(*) > 0 AND count(*) < 5",
+		},
+		{
+			// Aliased projection — both engines preserve the alias as
+			// the column name in the result set.
+			Name:           "projection_aliased_simple",
+			SchemaTemplate: "CREATE TABLE T_PAS (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_PAS VALUES (1)"},
+			Query:          "SELECT id AS my_id FROM T_PAS",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].

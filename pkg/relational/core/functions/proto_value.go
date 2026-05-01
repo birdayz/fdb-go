@@ -253,6 +253,11 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 			}
 		}
 	}
+	// Java verbatim: 'A value cannot be assigned to a variable because
+	// the type of the value does not match the type of the variable
+	// and cannot be promoted to the type of the variable.' — same
+	// SemanticException Java emits at INSERT / UPDATE type mismatch.
+	// Aligned dayshift-62.
 	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidParameter,
-		"cannot convert %T to proto field kind %s", val, fd.Kind())
+		"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 }

@@ -116,7 +116,12 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				colName := functions.FullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", colName, tableName)
+					// Java verbatim: 'Attempting to query non existing
+					// column NAME' (uppercased identifier). Aligned
+					// dayshift-62 to match the SELECT path's same
+					// alignment.
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"Attempting to query non existing column %s", strings.ToUpper(colName))
 				}
 				val, evalErr := evalExpr(ctx, c, cloned, elem.Expression())
 				if evalErr != nil {
