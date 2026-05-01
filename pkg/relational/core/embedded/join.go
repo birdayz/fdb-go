@@ -22,6 +22,15 @@ import (
 // nested_loop_join.go per RFC 021 Phase 1c.
 
 func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery) (driver.Rows, error) {
+	// WHERE bare-paren rejection — fire BEFORE the transaction starts
+	// so we don't waste a cross-join scan only to reject. The check is
+	// row-independent (purely structural over the parse tree).
+	if sq.whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
+			return nil, err
+		}
+	}
+
 	var cols []string
 	var colTypes []string
 	var data [][]driver.Value
@@ -220,11 +229,8 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		}
 
 		// Apply WHERE filter using map-based evaluation.
-		if sq.whereExpr != nil {
-			if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
-				return nil, err
-			}
-		}
+		// (rejectTopLevelParenthesizedWhere fires once at execSelectJoin
+		// entry, before the transaction — see the function preamble.)
 		var filtered []map[string]driver.Value
 		for _, row := range joined {
 			if sq.whereExpr == nil {

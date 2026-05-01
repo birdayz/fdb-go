@@ -2043,10 +2043,13 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_UDR UNION SELECT id FROM T_UDR",
 		},
 		{
-			// OFFSET clause is unsupported by fdb-relational's grammar —
-			// rejected as syntax error pointing at the OFFSET token.
-			// Both engines hit the same parser path.
-			Name:           "offset_clause_rejected",
+			// Standalone OFFSET (no LIMIT) is unsupported by
+			// fdb-relational's grammar — rejected as syntax error
+			// pointing at the OFFSET token. Distinct from the
+			// `limit_clause_rejected` / `offset_clause_rejected`
+			// entries which test the AstNormalizer rejection of the
+			// SQL-parseable LIMIT N OFFSET M form.
+			Name:           "offset_standalone_syntax_rejected",
 			SchemaTemplate: "CREATE TABLE T_OFC (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_OFC VALUES (1)"},
 			Query:          "SELECT id FROM T_OFC OFFSET 1",

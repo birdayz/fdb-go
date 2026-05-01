@@ -19,6 +19,14 @@ import (
 // Supports WHERE, projected columns, ORDER BY, LIMIT, and OFFSET.
 // Aggregate queries and JOINs against CTEs are not yet supported.
 func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQuery, cte *cteData) (driver.Rows, error) {
+	// WHERE bare-paren rejection — fire before any row materialization
+	// since the check is row-independent (purely structural over the
+	// parse tree).
+	if sq.whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
+			return nil, err
+		}
+	}
 	alias := sq.tableAlias
 	if alias == "" {
 		alias = sq.tableName
@@ -40,11 +48,9 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	// Build map rows.
 	mapRows := cteRowsToMaps(cte, alias)
 
-	// Apply WHERE filter.
+	// Apply WHERE filter. (rejectTopLevelParenthesizedWhere fires
+	// once at execSelectFromCTE entry — see the function preamble.)
 	if sq.whereExpr != nil {
-		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
-			return nil, err
-		}
 		filtered := mapRows[:0]
 		for _, row := range mapRows {
 			ok, err := evalPredicateOnMapExpr(ctx, c, row, sq.whereExpr.Expression())
