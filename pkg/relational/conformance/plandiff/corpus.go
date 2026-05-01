@@ -1237,6 +1237,18 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_NII WHERE v IN (1, 3) ORDER BY id",
 		},
 		{
+			// Java rejects NULL anywhere in the IN list. SQL §8.4 +
+			// Postgres would treat NULL elements as UNKNOWN-tolerant
+			// (row excluded if no other element matches); fdb-relational
+			// rejects outright. Aligned dayshift-62.
+			Name:           "null_in_in_list_rejected",
+			SchemaTemplate: "CREATE TABLE T_NIIR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NIIR VALUES (1, 1)",
+			},
+			Query: "SELECT id FROM T_NIIR WHERE v IN (1, NULL)",
+		},
+		{
 			Name:           "null_in_between",
 			SchemaTemplate: "CREATE TABLE T_NIB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{

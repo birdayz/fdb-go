@@ -320,24 +320,26 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			"IN requires a parenthesized expression list or subquery")
 	}
 	exprs := exprsCtx.AllExpression()
-	var hadNullElement bool
+	// Pre-scan: Java rejects any NULL element in the IN list, even
+	// when an earlier element matches. fdb-relational does this at
+	// plan time before evaluation; we mirror by checking all elements
+	// before short-circuiting the match.
+	values := make([]any, 0, len(exprs))
 	for _, expr := range exprs {
 		// Java-aligned: IN list elements are arbitrary expressions, not
-		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL that
-		// Java's in-predicate.yamsql tests directly. Use evalExpr to
-		// evaluate each element against the same proto message, allowing
-		// arithmetic, function calls, even subqueries.
+		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL.
 		litVal, err := evalExpr(ctx, conn, msg, expr)
 		if err != nil {
 			return triFalse, err
 		}
 		if litVal == nil {
-			// NULL in the list can never match (x = NULL is UNKNOWN), but
-			// contributes UNKNOWN to the expansion if nothing else matches.
-			// SQL §8.4: `x IN (..., NULL)` = UNKNOWN, `x NOT IN (..., NULL)` = UNKNOWN.
-			hadNullElement = true
-			continue
+			// Java verbatim: "NULL values are not allowed in the IN list".
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"NULL values are not allowed in the IN list")
 		}
+		values = append(values, litVal)
+	}
+	for _, litVal := range values {
 		// Java alignment: cross-type IN element errors 22000
 		// (CANNOT_CONVERT_TYPE), matching the comparison-operator path.
 		if !valuesComparable(fieldVal, litVal) {
@@ -350,11 +352,6 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			}
 			return triTrue, nil
 		}
-	}
-	// No element matched. If any NULL literal was seen, the overall result
-	// is UNKNOWN — the row filters out in WHERE but NOT of it stays UNKNOWN.
-	if hadNullElement {
-		return triNull, nil
 	}
 	if in.NOT() != nil {
 		return triTrue, nil

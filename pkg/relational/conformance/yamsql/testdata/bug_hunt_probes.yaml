@@ -26,22 +26,12 @@ tests:
   # (INCOMPATIBLE_TYPE).
   - query: SELECT id FROM t WHERE s = 1
     error_code: "22000"
-  # NULL in IN list — `WHERE x IN (1, NULL, 3)` returns rows where
-  # x = 1 OR x = 3 OR x IS NULL ... actually no, SQL spec: NULL in IN
-  # list with no match → UNKNOWN, not FALSE. Row dropped.
-  # x=10 → 10 IN (1,NULL,30): 10!=1, 10=NULL→UNKNOWN, 10!=30 → UNKNOWN → drop
-  # x=30 → 30 IN (1,NULL,30): match → TRUE
-  # x=null → NULL IN (...): UNKNOWN → drop
-  # Only id=3 (n=30) returns.
+  # NULL in IN list — Java rejects with verbatim "NULL values are not
+  # allowed in the IN list" (22000). Aligned dayshift-62.
   - query: SELECT id FROM t WHERE n IN (1, NULL, 30) ORDER BY id
-    rows:
-      - [3]
-  # NOT IN with NULL in list: x NOT IN (1, NULL, 3) → for x=10:
-  # NOT (10=1 OR 10=NULL OR 10=3) → NOT (FALSE OR UNKNOWN OR FALSE)
-  # → NOT UNKNOWN → UNKNOWN → drop. So NOT IN (..., NULL) returns
-  # NOTHING for all rows. SQL spec, weird but correct.
+    error_code: "22000"
   - query: SELECT id FROM t WHERE n NOT IN (1, NULL, 30)
-    rows: []
+    error_code: "22000"
   # COUNT(NULL) — SQL spec: COUNT(*) counts all; COUNT(col) skips
   # NULLs. id=4 has n=NULL so COUNT(n) over all rows is 3, COUNT(*) is 4.
   - query: SELECT COUNT(*), COUNT(n), COUNT(s) FROM t
