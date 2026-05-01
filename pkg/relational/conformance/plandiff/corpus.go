@@ -3499,6 +3499,20 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT SUM(x + y) FROM T_SE",
 		},
 		{
+			// PROBE: SELECT with column alias (AS keyword)
+			Name:           "alias_as",
+			SchemaTemplate: "CREATE TABLE T_AA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AA VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id AS row_id, v AS value FROM T_AA ORDER BY row_id",
+		},
+		{
+			// PROBE: WHERE col = literal of different type (type promotion)
+			Name:           "where_int_eq_double_lit",
+			SchemaTemplate: "CREATE TABLE T_IDL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IDL VALUES (1, 10), (2, 11)"},
+			Query:          "SELECT id FROM T_IDL WHERE v = 10.0 ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
