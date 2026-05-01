@@ -126,58 +126,9 @@ func evalScalarFunctionCallCore(
 	// fdb-relational 4.11.1.0 ArithmeticValue registry has only
 	// Add / Sub / Mul / Div / Mod / bitwise ops. Other math
 	// functions fall through to "Unsupported operator <name>".
-	case "FLOOR", "CEIL", "CEILING", "ROUND":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		var f float64
-		switch n := v.(type) {
-		case int64:
-			return n, nil // already integer
-		case float64:
-			f = n
-		default:
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be numeric", name)
-		}
-		var result float64
-		switch name {
-		case "FLOOR":
-			result = math.Floor(f)
-		case "CEIL", "CEILING":
-			result = math.Ceil(f)
-		case "ROUND":
-			decimals := int64(0)
-			if len(fArgs) >= 2 {
-				dv, derr := eval(fArgs[1].Expression())
-				if derr != nil {
-					return nil, derr
-				}
-				// NULL decimals → NULL result (SQL standard NULL propagation).
-				if dv == nil {
-					return nil, nil
-				}
-				d, ierr := functions.ToIntegerArg(dv, "ROUND", "decimals")
-				if ierr != nil {
-					return nil, ierr
-				}
-				decimals = d
-			}
-			if decimals == 0 {
-				result = math.Round(f)
-			} else {
-				factor := math.Pow(10, float64(decimals))
-				result = math.Round(f*factor) / factor
-			}
-		}
-		// Return int64 if no fractional part.
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
-			return int64(result), nil
-		}
-		return result, nil
+	// FLOOR / CEIL / CEILING / ROUND intentionally NOT handled —
+	// Java's @AutoService(BuiltInFunction.class) ArithmeticValue
+	// registry has no entries; falls through to default arm.
 	case "MOD":
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
@@ -215,31 +166,7 @@ func evalScalarFunctionCallCore(
 		}
 		// Float MOD by zero returns NaN per IEEE-754; Java does not throw.
 		return math.Mod(af, bf), nil
-	case "SIGN":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		switch n := v.(type) {
-		case int64:
-			if n > 0 {
-				return int64(1), nil
-			} else if n < 0 {
-				return int64(-1), nil
-			}
-			return int64(0), nil
-		case float64:
-			if n > 0 {
-				return float64(1), nil
-			} else if n < 0 {
-				return float64(-1), nil
-			}
-			return float64(0), nil
-		}
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN: argument must be numeric")
+	// SIGN intentionally NOT handled — falls through to default.
 	// CONCAT / CONCAT_WS intentionally NOT handled — Java's function
 	// registry has no entry; falls through to "Unsupported operator
 	// CONCAT". Workaround: none in fdb-relational; pin rejection.
@@ -293,76 +220,9 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
-	case "PI":
-		return math.Pi, nil
-	case "EXP":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		f, ok := functions.ToFloat64(v)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP: argument must be numeric, got %T", v)
-		}
-		result := math.Exp(f)
-		if math.IsInf(result, 0) || math.IsNaN(result) {
-			return nil, nil // Overflow / NaN → NULL, matching MySQL.
-		}
-		return result, nil
-	case "LN":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		f, ok := functions.ToFloat64(v)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LN: argument must be numeric, got %T", v)
-		}
-		// NaN: `f <= 0` is false for NaN, so guard misses. Same treatment
-		// as <= 0 — undefined → NULL.
-		if math.IsNaN(f) || f <= 0 {
-			return nil, nil
-		}
-		return math.Log(f), nil
-	case "LOG":
-		// LOG(x) = natural log; LOG(base, x) = log_base(x).
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG requires 1 or 2 arguments")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		f, ok := functions.ToFloat64(v)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v)
-		}
-		if len(fArgs) == 1 {
-			// NaN input: `f <= 0` is false for NaN, so the guard misses.
-			// Same treatment as <= 0 — undefined → NULL.
-			if math.IsNaN(f) || f <= 0 {
-				return nil, nil
-			}
-			return math.Log(f), nil
-		}
-		v2, err := eval(fArgs[1].Expression())
-		if err != nil || v2 == nil {
-			return nil, err
-		}
-		f2, ok := functions.ToFloat64(v2)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOG: argument must be numeric, got %T", v2)
-		}
-		if math.IsNaN(f) || math.IsNaN(f2) || f <= 0 || f == 1 || f2 <= 0 {
-			return nil, nil
-		}
-		return math.Log(f2) / math.Log(f), nil
+	// PI / EXP / LN / LOG intentionally NOT handled — falls through
+	// to default. Java's BuiltInFunction registry has no entries for
+	// transcendental math.
 	// REVERSE / POSITION / LEFT / RIGHT / SUBSTRING / SUBSTR /
 	// REPLACE intentionally NOT handled — Java's function registry
 	// has no entry; falls through to "Unsupported operator <name>".

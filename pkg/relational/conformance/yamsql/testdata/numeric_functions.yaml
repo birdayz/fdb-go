@@ -2,19 +2,19 @@
 #
 # Scalar numeric functions. Two groups:
 #
-#   * Still in Go (and pinned here): SIGN / FLOOR / CEIL / ROUND /
-#     MOD / EXP / LN / LOG / PI. fdb-relational 4.11.1.0's
-#     ArithmeticValue registry doesn't have these either, so they
-#     are arguably also Java-rejected — covered separately under
-#     TODO #28's follow-up scope. Pinned here for the existing Go
-#     evaluator behaviour.
+#   * Still in Go (and pinned here): MOD. fdb-relational 4.11.1.0
+#     registers Mod in the ArithmeticValue registry, so this is the
+#     one math fn that survives the swingshift-64 alignment pass.
 #
 #   * Rejected (Java-aligned, swingshift-64 TODO #3): ABS / SQRT /
-#     POWER / POW. fdb-relational 4.11.1.0's ArithmeticValue
-#     registry has only Add/Sub/Mul/Div/Mod/bitwise; SqlFunctionCatalogImpl
-#     has no entries for these, so Java's planner emits
-#     "Unsupported operator <NAME>" (0A000) before evaluation. Go
-#     mirrors byte-equal via the default arm in scalar_functions.go.
+#     POWER / POW / FLOOR / CEIL / CEILING / ROUND / SIGN / PI /
+#     EXP / LN / LOG. fdb-relational 4.11.1.0's
+#     @AutoService(BuiltInFunction.class) ArithmeticValue registry
+#     has only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; no
+#     entries for FLOOR / CEIL / SIGN / ROUND / PI / EXP / LN / LOG.
+#     Java's planner emits "Unsupported operator <NAME>" (0A000)
+#     before evaluation. Go mirrors byte-equal via the default arm
+#     in scalar_functions.go.
 name: numeric_functions
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, PRIMARY KEY (id))
@@ -26,7 +26,8 @@ setup:
       (4, null, null)
 tests:
   # ---------------------------------------------------------------
-  # Java-aligned rejections (ABS / SQRT / POWER / POW).
+  # Java-aligned rejections.
+  # ABS / SQRT / POWER / POW.
   # ---------------------------------------------------------------
   - query: SELECT ABS(n) FROM t WHERE id = 2
     error_code: "0A000"
@@ -46,48 +47,52 @@ tests:
     error_code: "0A000"
 
   # ---------------------------------------------------------------
-  # Still in Go: SIGN / FLOOR / CEIL / ROUND / MOD / EXP / LN / LOG
-  # / PI.
+  # FLOOR / CEIL / CEILING / ROUND / SIGN / PI / EXP / LN / LOG —
+  # also absent from Java's BuiltInFunction registry, also rejected.
   # ---------------------------------------------------------------
-  # SIGN: -1 / 0 / +1.
-  - query: SELECT SIGN(v) FROM t WHERE id = 1
-    rows:
-      - [1]
-  - query: SELECT SIGN(v) FROM t WHERE id = 2
-    rows:
-      - [-1]
-  - query: SELECT SIGN(v) FROM t WHERE id = 3
-    rows:
-      - [0]
-  # FLOOR / CEIL — half-away-from-zero style on negatives.
-  - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 1
-    rows:
-      - [2.0, 3.0]
-  - query: SELECT FLOOR(v), CEIL(v) FROM t WHERE id = 2
-    rows:
-      - [-4.0, -3.0]
-  # ROUND ties away from zero (Go's math.Round): 1.5 → 2, 2.5 → 3,
-  # -1.5 → -2, -2.5 → -3. NOT banker's rounding (round-half-to-even)
-  # and NOT half-toward-zero — pin the current behaviour so the next
-  # refactor doesn't silently flip it.
+  - query: SELECT FLOOR(v) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT FLOOR(v) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT CEIL(v) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT CEILING(v) FROM t WHERE id = 1
+    error_code: "0A000"
   - query: SELECT ROUND(v) FROM t WHERE id = 1
-    rows:
-      - [3.0]
-  - query: SELECT ROUND(v) FROM t WHERE id = 2
-    rows:
-      - [-4.0]
-  # ROUND with decimals: ROUND(pi, 2) = 3.14.
+    error_code: "0A000"
   - query: SELECT ROUND(3.14159, 2) FROM t WHERE id = 1
-    rows:
-      - [3.14]
-  # ROUND with 0 decimals: same as ROUND(x).
+    error_code: "0A000"
   - query: SELECT ROUND(3.7, 0) FROM t WHERE id = 1
-    rows:
-      - [4.0]
-  # ROUND with negative decimals: round to nearest 10.
+    error_code: "0A000"
   - query: SELECT ROUND(1234.5, -2) FROM t WHERE id = 1
-    rows:
-      - [1200.0]
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 3
+    error_code: "0A000"
+  - query: SELECT EXP(0) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT LN(1.0) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT LOG(2, 8) FROM t WHERE id = 1
+    error_code: "0A000"
+  # PI must still be referenced from a FROM-bound query — bare
+  # `SELECT PI()` is rejected as a FROM-less SimpleTable (TestFDB_PiFunctionRejected),
+  # but here the rejection fires at function-registry lookup.
+  - query: SELECT PI() FROM t WHERE id = 1
+    error_code: "0A000"
+  # Rejection fires before evaluation, so NULL inputs don't even
+  # reach the evaluator — same 0A000 surfaces.
+  - query: SELECT FLOOR(v) FROM t WHERE id = 4
+    error_code: "0A000"
+  - query: SELECT SIGN(v) FROM t WHERE id = 4
+    error_code: "0A000"
+
+  # ---------------------------------------------------------------
+  # Still in Go: MOD.
+  # ---------------------------------------------------------------
   # MOD with integer operands preserves the sign of the dividend.
   - query: SELECT MOD(n, 3) FROM t WHERE id = 1
     rows:
@@ -95,21 +100,3 @@ tests:
   - query: SELECT MOD(n, 3) FROM t WHERE id = 2
     rows:
       - [-2]
-  # EXP(0) = 1, LN(exp(1)) = 1 (approximately).
-  - query: SELECT EXP(0) FROM t WHERE id = 1
-    rows:
-      - [1.0]
-  # LOG base-e (aka LN). Postgres LOG defaults to base 10, Oracle LOG(base, x).
-  # Keep the current behaviour pinned; callers should prefer LN for
-  # natural log until we align LOG signature with a specific dialect.
-  - query: SELECT LN(1.0) FROM t WHERE id = 1
-    rows:
-      - [0.0]
-  # PI is a nullary constant.
-  - query: SELECT PI() FROM t WHERE id = 1
-    rows:
-      - [3.141592653589793]
-  # NULL propagation through still-Go functions.
-  - query: SELECT SIGN(v), FLOOR(v), CEIL(v) FROM t WHERE id = 4
-    rows:
-      - [~, ~, ~]

@@ -3253,24 +3253,27 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	}
 	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
 
-	// ROUND's `decimals` argument must validate: fractional float, string,
-	// and other non-integer types should error (was silently ignored before
-	// swingshift-35). NULL decimals → NULL result.
-	var rnd any
-	g.Expect(db.QueryRowContext(ctx, `SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`).Scan(&rnd)).To(gomega.Succeed())
-	g.Expect(rnd).To(gomega.BeNil(), "ROUND(x, NULL) must return NULL")
-
-	rowsRnd, errRnd := db.QueryContext(ctx, `SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`)
-	if errRnd == nil && rowsRnd != nil {
-		defer rowsRnd.Close()
-		if rowsRnd.Next() {
-			var r any
-			errRnd = rowsRnd.Scan(&r)
-		} else {
-			errRnd = rowsRnd.Err()
-		}
+	// ROUND is absent from fdb-relational 4.11.1.0's BuiltInFunction
+	// registry (swingshift-64 TODO #3) — Java's planner emits
+	// "Unsupported operator ROUND" (0A000) before evaluation, so the
+	// pre-cleanup Go-side decimals-argument validation never runs.
+	// Pin the rejection here for both the NULL-decimals and the
+	// non-integer-decimals shapes that previously walked the evaluator.
+	for _, q := range []string{
+		`SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`,
+		`SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`,
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, q).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", q)
+		var apiErr *api.Error
+		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
+			"query %q: want *api.Error, got %T (%v)", q, errRej, errRej)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+			"query %q", q)
+		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator ROUND"),
+			"query %q", q)
 	}
-	g.Expect(errRnd).To(gomega.HaveOccurred(), "ROUND(x, 'abc') must error, not silently default to 0 decimals")
 }
 
 func TestFDB_MathFunctions(t *testing.T) {
@@ -5731,10 +5734,18 @@ func TestFDB_ReversePositionRejected(t *testing.T) {
 	}
 }
 
-// TestFDB_MathFunctionsTranscendental pins EXP / LN / LOG (still in
-// Go) and the rejection of SQRT / POWER / POW (Java-aligned —
-// fdb-relational 4.11.1.0's ArithmeticValue registry has neither).
-func TestFDB_MathFunctionsTranscendental(t *testing.T) {
+// TestFDB_MathFunctionsTranscendentalRejected pins the rejection of
+// SQRT / POWER / POW / EXP / LN / LOG. fdb-relational 4.11.1.0's
+// @AutoService(BuiltInFunction.class) ArithmeticValue registry has
+// only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; none of these
+// transcendental functions are registered. Java's planner emits
+// "Unsupported operator <NAME>" (0A000) before evaluation. Both the
+// proto path and the default arm in scalar_functions.go produce the
+// byte-equal wording. Pre-cleanup Go evaluated EXP (NULL on overflow),
+// LN, LOG (Math.log(x)/Math.log(base)), SQRT (NULL on negative), and
+// POWER (NULL on NaN/Inf, otherwise math.Pow) — those Go-side
+// evaluators have been removed (commits 39bcb4d6, b59e1394, swingshift-64).
+func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5756,28 +5767,6 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, x) VALUES (1, 16)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// EXP(0) = 1, LN(1) = 0, LOG(2, 8) = 3 — still in Go.
-	var e, l, lb float64
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT EXP(0), LN(1), LOG(2, 8) FROM T WHERE id = 1`).
-		Scan(&e, &l, &lb)).To(gomega.Succeed())
-	g.Expect(e).To(gomega.Equal(1.0))
-	g.Expect(l).To(gomega.Equal(0.0))
-	g.Expect(lb).To(gomega.BeNumerically("~", 3.0, 1e-9))
-
-	// EXP overflow → NULL (matches MySQL).
-	var e2 sql.NullFloat64
-	g.Expect(db.QueryRowContext(ctx, `SELECT EXP(1000) FROM T WHERE id = 1`).Scan(&e2)).To(gomega.Succeed())
-	g.Expect(e2.Valid).To(gomega.BeFalse())
-
-	// SQRT / POWER / POW — Java-aligned rejection. fdb-relational
-	// 4.11.1.0's ArithmeticValue registry has only Add/Sub/Mul/
-	// Div/Mod/bitwise; Java's planner emits "Unsupported operator
-	// <NAME>" (0A000) before evaluation. Both proto-path and the
-	// default arm in scalar_functions.go now produce the byte-equal
-	// wording. Pre-cleanup Go evaluated SQRT (NULL on negative,
-	// real-domain otherwise) and POWER (NULL on NaN/Inf, otherwise
-	// math.Pow) — those Go-side evaluators have been removed.
 	for _, tc := range []struct {
 		query  string
 		opName string
@@ -5788,6 +5777,10 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 		{`SELECT POWER(0, -1) FROM T WHERE id = 1`, "POWER"},
 		{`SELECT POWER(-1, 0.5) FROM T WHERE id = 1`, "POWER"},
 		{`SELECT POW(2, 10) FROM T WHERE id = 1`, "POW"},
+		{`SELECT EXP(0) FROM T WHERE id = 1`, "EXP"},
+		{`SELECT EXP(1000) FROM T WHERE id = 1`, "EXP"},
+		{`SELECT LN(1) FROM T WHERE id = 1`, "LN"},
+		{`SELECT LOG(2, 8) FROM T WHERE id = 1`, "LOG"},
 	} {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
@@ -5949,16 +5942,17 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	// input). STRING-family scalar functions (UPPER / LOWER / TRIM)
 	// are absent from Java's function registry — those are pinned
 	// to reject in TestFDB_StringFunctionsRejected and friends, not
-	// here. ABS / SQRT are also absent (swingshift-64 TODO #3) and
-	// rejected at the registry layer; the NULL-propagation focus
-	// here uses still-Go functions (FLOOR, SIGN) whose evaluators
-	// preserve SQL-standard NULL-in/NULL-out semantics.
-	var floorv, signv sql.NullFloat64
+	// here. ABS / SQRT / FLOOR / SIGN are also absent (swingshift-64
+	// TODO #3) and rejected at the registry layer. The NULL-
+	// propagation focus here uses MOD — still in Go because Java's
+	// ArithmeticValue registry has Mod — whose evaluator preserves
+	// SQL-standard NULL-in/NULL-out semantics for both operands.
+	var modA, modB sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT FLOOR(val), SIGN(val) FROM T WHERE id = 1`).
-		Scan(&floorv, &signv)).To(gomega.Succeed())
-	g.Expect(floorv.Valid).To(gomega.BeFalse())
-	g.Expect(signv.Valid).To(gomega.BeFalse())
+		`SELECT MOD(val, 3), MOD(10, val) FROM T WHERE id = 1`).
+		Scan(&modA, &modB)).To(gomega.Succeed())
+	g.Expect(modA.Valid).To(gomega.BeFalse())
+	g.Expect(modB.Valid).To(gomega.BeFalse())
 
 	// COALESCE short-circuits on non-NULL argument.
 	var coalesced string
