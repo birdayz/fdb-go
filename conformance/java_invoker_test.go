@@ -121,6 +121,30 @@ func startJavaServer() (*JavaInvoker, error) {
 		return nil, fmt.Errorf("failed to read port from server stdout\nstderr: %s", string(stderrBytes))
 	}
 
+	// CRITICAL: drain stderr in the background. Java's HTTP request
+	// handler calls e.printStackTrace() on every caught exception
+	// (conformance_server.java#handleInvoke), writing ~5-10KB per error
+	// to stderr. Linux's pipe buffer is 64KB by default. After ~6
+	// errors, the pipe fills up and Java's NEXT printStackTrace() call
+	// BLOCKS on the stderr write — the request handler thread blocks
+	// before sending the HTTP response, and Go's POST hangs at the 120s
+	// response timeout. Surfaced  by the cross-engine
+	// negative-path harness; jstack showed Java idle (no active worker
+	// thread) because the request handler had been blocked mid-stderr-
+	// write since some earlier exception, while subsequent requests
+	// queued up in TCP buffers waiting for a worker. Continuously
+	// reading from stderr keeps the pipe drained so writes never block.
+	// Forward to our stderr so failures still surface visibly during
+	// debugging.
+	go func() { _, _ = io.Copy(os.Stderr, stderr) }()
+	// Continue to drain stdout too — anything beyond CONFORMANCE_SERVER_PORT
+	// is unexpected but we don't want it backing up either.
+	go func() {
+		for scanner.Scan() {
+			fmt.Fprintln(os.Stderr, "[java-stdout]", scanner.Text())
+		}
+	}()
+
 	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 
 	invoker := &JavaInvoker{

@@ -100,15 +100,15 @@ func NewJavaRunner() Runner { return javaRunner{} }
 // NewJavaRunnerHTTP returns a Runner that drives the Java conformance
 // server at baseURL against the FDB cluster whose cluster-file content
 // is clusterFileContent (matches NewJavaEngineHTTP's parameter contract).
+//
+// 120s response timeout (not 30s) — race-instrumented harness +
+// memory-pressured JVM under CI pushes per-call latency past 30s on
+// the first few cold invocations.
 func NewJavaRunnerHTTP(baseURL, clusterFileContent string) Runner {
 	return javaRunner{
 		baseURL:     baseURL,
 		clusterFile: clusterFileContent,
-		// 120s, not 30s. Same reasoning as NewJavaEngineHTTP — race-
-		// instrumented harness + memory-pressured JVM under CI
-		// pushes per-call latency past 30s on the first few cold
-		// invocations.
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient:  &http.Client{Timeout: 120 * time.Second},
 	}
 }
 

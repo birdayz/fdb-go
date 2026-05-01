@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -51,8 +52,11 @@ func wrapSaveRecordError(err error) error {
 	}
 	var existsErr *recordlayer.RecordAlreadyExistsError
 	if errors.As(err, &existsErr) {
+		// Java verbatim: 'record already exists' (the
+		// RecordAlreadyExistsException.getMessage() — fdb-relational
+		// doesn't include the PK in the message).
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
-			"primary key %v already exists", existsErr.PrimaryKey)
+			"record already exists")
 	}
 	var keySizeErr *recordlayer.IndexKeySizeError
 	if errors.As(err, &keySizeErr) {
@@ -123,7 +127,7 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(tableName))
 		}
 		msgDesc := rt.Descriptor
 
@@ -166,8 +170,11 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 					return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 						"INSERT column list has %d columns but VALUES has %d", len(cols), len(exprs))
 				}
+				// Java verbatim for plain INSERT VALUES with arity
+				// mismatch: 'provided record cannot be assigned as its
+				// type is incompatible with the target type'.
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"column count %d does not match value count %d", len(cols), len(exprs))
+					"provided record cannot be assigned as its type is incompatible with the target type")
 			}
 			msg := dynamicpb.NewMessage(msgDesc)
 			for i, col := range cols {
@@ -256,7 +263,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(tableName))
 		}
 		msgDesc := rt.Descriptor
 
@@ -294,7 +301,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 		if len(cols) != len(srcCols) {
 			// Java alignment: column-count mismatch errors 22000.
 			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"column count %d does not match SELECT column count %d", len(cols), len(srcCols))
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 		}
 
 		for _, row := range srcRows {

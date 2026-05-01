@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -67,9 +68,23 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(tableName))
 		}
 		msgDesc := rt.Descriptor
+
+		// Java alignment: UPDATE on a PK column with a non-NULL value
+		// is rejected with 'record does not exist' (Java's in-place
+		// UPDATE uses the PK value to look up the source row;
+		// modifying the PK column leaves no row at the new key on
+		// save). The check fires INSIDE the row-update loop, after
+		// the NULL-into-NOT-NULL check, so SET id = NULL on a PK
+		// column still surfaces the more specific NotNullViolation
+		// rather than this PK-rejection.
+		pkCols := extractPKUserFields(rt.PrimaryKey)
+		pkSet := make(map[string]struct{}, len(pkCols))
+		for _, p := range pkCols {
+			pkSet[p] = struct{}{}
+		}
 
 		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
@@ -115,7 +130,12 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				colName := functions.FullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
 				if fd == nil {
-					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", colName, tableName)
+					// Java verbatim: 'Attempting to query non existing
+					// column NAME' (uppercased identifier). Aligned
+					//  to match the SELECT path's same
+					// alignment.
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"Attempting to query non existing column %s", strings.ToUpper(colName))
 				}
 				val, evalErr := evalExpr(ctx, c, cloned, elem.Expression())
 				if evalErr != nil {
@@ -130,6 +150,15 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					}
 					clonedRefl.Clear(fd)
 					continue
+				}
+				// Java alignment : UPDATE on a PK column
+				// with a non-NULL value is rejected with verbatim
+				// 'record does not exist' (Java's RecordDoesNotExist
+				// from the in-place save lookup). NULL case already
+				// handled above (NotNullViolation, more specific).
+				if _, isPK := pkSet[colName]; isPK {
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+						"record does not exist")
 				}
 				protoVal, convErr := functions.ConvertToProtoValue(fd, val)
 				if convErr != nil {
@@ -183,7 +212,7 @@ func (c *EmbeddedConnection) execDelete(ctx context.Context, del antlrgen.IDelet
 
 		rt := md.GetRecordType(tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", tableName)
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(tableName))
 		}
 
 		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)

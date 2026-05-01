@@ -183,8 +183,11 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 		// projection context), Java accepts the bare column and
 		// converts via truthiness. Fall through to value-eval below.
 		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue && !allowBareField {
+			// Java verbatim: "expected BooleanValue but got FieldValue".
+			// Cross-engine corpus `bare_bool_where_rejected` pins
+			// byte-equality.
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"expected BooleanValue but got FieldValue: bare column reference cannot be used as a predicate; use an explicit comparison (e.g. col = TRUE)")
+				"expected BooleanValue but got FieldValue")
 		}
 		// Non-comparison atom (e.g. `WHERE CASE WHEN ... END`, `WHERE some_bool_fn(x)`),
 		// or bare FieldValue in operand/projection context.
@@ -232,8 +235,11 @@ func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, m
 	// FALSE for these comparisons → empty result set, the dangerous
 	// kind of bug. Now we error to match Java.
 	if !valuesComparable(left, right) {
+		// Java verbatim: "The operands of a comparison operator are
+		// not compatible." (period included). Cross-engine corpus
+		// `type_mismatch_compare` pins byte-equality.
 		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"cannot compare %T with %T", left, right)
+			"The operands of a comparison operator are not compatible.")
 	}
 
 	cmp := functions.CompareValues(left, right)
@@ -314,24 +320,26 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			"IN requires a parenthesized expression list or subquery")
 	}
 	exprs := exprsCtx.AllExpression()
-	var hadNullElement bool
+	// Pre-scan: Java rejects any NULL element in the IN list, even
+	// when an earlier element matches. fdb-relational does this at
+	// plan time before evaluation; we mirror by checking all elements
+	// before short-circuiting the match.
+	values := make([]any, 0, len(exprs))
 	for _, expr := range exprs {
 		// Java-aligned: IN list elements are arbitrary expressions, not
-		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL that
-		// Java's in-predicate.yamsql tests directly. Use evalExpr to
-		// evaluate each element against the same proto message, allowing
-		// arithmetic, function calls, even subqueries.
+		// just constants. `b IN (1+0, 3+0, 5, 7)` is valid SQL.
 		litVal, err := evalExpr(ctx, conn, msg, expr)
 		if err != nil {
 			return triFalse, err
 		}
 		if litVal == nil {
-			// NULL in the list can never match (x = NULL is UNKNOWN), but
-			// contributes UNKNOWN to the expansion if nothing else matches.
-			// SQL §8.4: `x IN (..., NULL)` = UNKNOWN, `x NOT IN (..., NULL)` = UNKNOWN.
-			hadNullElement = true
-			continue
+			// Java verbatim: "NULL values are not allowed in the IN list".
+			return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
+				"NULL values are not allowed in the IN list")
 		}
+		values = append(values, litVal)
+	}
+	for _, litVal := range values {
 		// Java alignment: cross-type IN element errors 22000
 		// (CANNOT_CONVERT_TYPE), matching the comparison-operator path.
 		if !valuesComparable(fieldVal, litVal) {
@@ -344,11 +352,6 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 			}
 			return triTrue, nil
 		}
-	}
-	// No element matched. If any NULL literal was seen, the overall result
-	// is UNKNOWN — the row filters out in WHERE but NOT of it stays UNKNOWN.
-	if hadNullElement {
-		return triNull, nil
 	}
 	if in.NOT() != nil {
 		return triTrue, nil
@@ -480,11 +483,11 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 	// matching the rest of our cross-type rejection surface).
 	if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
 		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, lo)
+			"The operands of a comparison operator are not compatible.")
 	}
 	if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
 		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, hi)
+			"The operands of a comparison operator are not compatible.")
 	}
 
 	// compareTri returns TRUE/FALSE/NULL based on whether the comparison

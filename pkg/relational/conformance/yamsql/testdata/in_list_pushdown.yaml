@@ -89,12 +89,10 @@ tests:
     rows:
       - [3, 'three']
 
-  # Single-element IN after NULL-drop — `IN (5, NULL)` has NULL
-  # stripped by the extractor, leaving a one-element list that the
-  # dispatcher promotes to equality.
+  # NULL in IN list — Java rejects with "NULL values are not allowed
+  # in the IN list" (22000); aligned Go-side .
   - query: SELECT id FROM t WHERE id IN (5, NULL)
-    rows:
-      - [5]
+    error_code: "22000"
 
   # All values → all rows (order by id to deterministically compare).
   - query: SELECT id FROM t WHERE id IN (1, 2, 3, 4, 5) ORDER BY id
@@ -176,20 +174,13 @@ tests:
   # IN with NULL in the list
   # -------------------------------------------------------------------
 
-  # NULL in the list is dropped — `id IN (1, NULL, 3)` narrows to
-  # point scans on {1, 3}. The UNKNOWN branch contributes no rows
-  # anyway (id is NOT NULL, so id = NULL never true, and the
-  # UNKNOWN-for-non-match case is not reachable here). Result equals
-  # the non-NULL subset.
+  # NULL in IN list rejected (Java alignment).
   - query: SELECT id FROM t WHERE id IN (1, NULL, 3) ORDER BY id
-    rows:
-      - [1]
-      - [3]
+    error_code: "22000"
 
-  # IN with only NULL — bails to scan. No row matches (all rows'
-  # id = NULL yields UNKNOWN, which WHERE treats as false).
+  # IN with only NULL — Java-aligned rejection.
   - query: SELECT id FROM t WHERE id IN (NULL)
-    rows: []
+    error_code: "22000"
 
   # -------------------------------------------------------------------
   # Type mismatch — cross-type IN element

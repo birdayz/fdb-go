@@ -429,6 +429,32 @@ class SqlPlanSteps {
             return JsonNull.INSTANCE;
         }
         if (v instanceof Number) {
+            // Gson's JsonPrimitive((Number)) emits a bare token for the
+            // numeric value, which produces invalid JSON when the value
+            // is +Infinity / -Infinity / NaN (Gson writes 'Infinity',
+            // '-Infinity', 'NaN' literals — not valid JSON, the Go HTTP
+            // client unmarshal rejects them). For floats / doubles we
+            // detect the IEEE-754 specials and encode them as strings
+            // ("Infinity", "-Infinity", "NaN") so the JSON stays valid;
+            // the harness on either side decodes the string back to the
+            // appropriate float when comparing.
+            if (v instanceof Double) {
+                double d = (Double) v;
+                if (Double.isInfinite(d)) {
+                    return new JsonPrimitive(d > 0 ? "Infinity" : "-Infinity");
+                }
+                if (Double.isNaN(d)) {
+                    return new JsonPrimitive("NaN");
+                }
+            } else if (v instanceof Float) {
+                float f = (Float) v;
+                if (Float.isInfinite(f)) {
+                    return new JsonPrimitive(f > 0 ? "Infinity" : "-Infinity");
+                }
+                if (Float.isNaN(f)) {
+                    return new JsonPrimitive("NaN");
+                }
+            }
             return new JsonPrimitive((Number) v);
         }
         if (v instanceof Boolean) {

@@ -124,7 +124,10 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		rt := md.GetRecordType(sq.tableName)
 		if rt == nil {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "table %q not found in schema", sq.tableName)
+			// Java verbatim: "Unknown table NAME" (uppercased).
+			// Cross-engine corpus `undefined_table` pins byte-equality.
+			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
+				"Unknown table %s", strings.ToUpper(sq.tableName))
 		}
 		msgDesc := rt.Descriptor
 
@@ -723,12 +726,20 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						fv, ok := functions.ToFloat64(v)
 						if !ok {
 							return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-								"%s requires numeric input, got %T", ac.aggFunc, v)
+								"unable to encapsulate aggregate operation due to type mismatch(es)")
 						}
 						if ac.aggFunc == "SUM" {
 							gs.sums[i] += fv
 							if iv, isInt := v.(int64); isInt && !gs.sumNonInt[i] {
-								gs.sumsI[i] += iv
+								// Java verbatim: ArithmeticException
+								// "long overflow" on SUM(BIGINT)
+								// overflow.
+								r, ok := functions.AddInt64Checked(gs.sumsI[i], iv)
+								if !ok {
+									return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
+										"long overflow")
+								}
+								gs.sumsI[i] = r
 							} else {
 								gs.sumNonInt[i] = true
 							}
@@ -982,8 +993,12 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				}
 				fd := allFields.ByName(protoreflect.Name(lookupName))
 				if fd == nil {
+					// Java verbatim: fdb-relational raises
+					// "Attempting to query non existing column NAME"
+					// (uppercased identifier). Cross-engine corpus
+					// entry `undefined_column` pins byte-equality.
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"column %q not found in table %q", colName, sq.tableName)
+						"Attempting to query non existing column %s", strings.ToUpper(colName))
 				}
 				outName := colName
 				if i < len(sq.projAliases) && sq.projAliases[i] != "" {

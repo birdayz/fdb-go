@@ -3,47 +3,32 @@ package plandiff
 // SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
 // (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
 // The conformance test runs each entry through BOTH engines (Java
-// fdb-relational + Go embedded) and asserts byte-equivalent column
-// metadata + row values.
+// fdb-relational + Go embedded) and asserts byte-equivalent results.
+//
+// Java is the spec. The harness asserts:
+//   - If Java succeeds: Go must also succeed AND produce byte-equal
+//     column metadata and row values.
+//   - If Java errors: Go must also error AND produce a byte-equal
+//     core error message (Go's `api.Error.Message` ==
+//     Java's `JavaError.Message`).
+//
+// The test author DOES NOT predict the error message. Whatever Java
+// emits is the ground truth — Go must match. This catches both silent
+// acceptance on one side AND Go's-message-drift-from-Java's at every
+// query, without requiring per-entry expected-text annotations.
+//
+// Adding a new entry: just append {Name, SchemaTemplate, SetupSqls,
+// Query}. No baseline RowSet, no expected-error-text. The harness
+// figures out what Java does and pins Go to match it.
 //
 // Each entry's SetupSqls must produce deterministic state — SELECTs
 // without ORDER BY can't be added until we trust both engines'
 // row-order semantics match. Today every entry orders by primary key.
-//
-// Adding a new entry: just append {Name, SchemaTemplate, SetupSqls,
-// Query}. No baseline RowSet to capture or paste — the cross-engine
-// equivalence check is the assertion.
-//
-// ExpectErrorContains turns the entry into a NEGATIVE test. When
-// non-empty, the harness asserts BOTH engines fail (any error) AND
-// each engine's error message contains the substring. Catches cases
-// where one engine accidentally accepts a query the other rejects
-// (or vice versa) — the kind of silent divergence that's invisible
-// to a success-path-only harness.
-//
-// ExpectErrorMessage is the STRICTER alternative — when set, both
-// engines must fail AND each engine's core error message must
-// literally EQUAL this string (Go's `api.Error.Message`, Java's
-// `JavaError.Message` — i.e. the unwrapped server-side root-cause
-// text). Use when the message is intentionally aligned verbatim
-// between engines (e.g. shift / NULLIF / aggregate-type-mismatch
-// rejections, where Go was changed to emit the exact phrasing Java
-// emits). Stronger than ExpectErrorContains because no slack —
-// catches drift the moment either engine reorders / rephrases its
-// message. Mutually exclusive with ExpectErrorContains.
 type RunQuery struct {
 	Name           string
 	SetupSqls      []string
 	Query          string
 	SchemaTemplate string
-	// ExpectErrorContains: when set, both Java and Go must fail with
-	// an error message containing this substring. Empty = expect
-	// success (unless ExpectErrorMessage is set).
-	ExpectErrorContains string
-	// ExpectErrorMessage: when set, both engines must fail AND each
-	// engine's core error message string equals this value verbatim.
-	// Stronger than ExpectErrorContains.
-	ExpectErrorMessage string
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
@@ -745,11 +730,10 @@ func SeedRunCorpus() []RunQuery {
 			// engine has its own identifier-case convention in error
 			// messages — Java uppercases per fdb-relational spec, Go
 			// preserves user-typed case at the error site).
-			Name:                "undefined_column",
-			SchemaTemplate:      "CREATE TABLE T_UC (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO T_UC VALUES (1)"},
-			Query:               "SELECT no_such_col FROM T_UC",
-			ExpectErrorContains: "no_such_col",
+			Name:           "undefined_column",
+			SchemaTemplate: "CREATE TABLE T_UC (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_UC VALUES (1)"},
+			Query:          "SELECT no_such_col FROM T_UC",
 		},
 		{
 			// Bare `WHERE flag` on a BOOLEAN column. fdb-relational
@@ -759,20 +743,18 @@ func SeedRunCorpus() []RunQuery {
 			// rejects it the same way; if Go silently accepted (e.g.
 			// by coercing the FieldValue to bool), this test surfaces
 			// the divergence.
-			Name:                "bare_bool_where_rejected",
-			SchemaTemplate:      "CREATE TABLE T_BBW (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO T_BBW VALUES (1, TRUE)"},
-			Query:               "SELECT id FROM T_BBW WHERE flag",
-			ExpectErrorContains: "BooleanValue",
+			Name:           "bare_bool_where_rejected",
+			SchemaTemplate: "CREATE TABLE T_BBW (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BBW VALUES (1, TRUE)"},
+			Query:          "SELECT id FROM T_BBW WHERE flag",
 		},
 		{
 			// Reference to a table that doesn't exist → both engines
 			// must reject. Substring matched case-insensitively.
-			Name:                "undefined_table",
-			SchemaTemplate:      "CREATE TABLE T_UT (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls:           nil,
-			Query:               "SELECT id FROM no_such_table",
-			ExpectErrorContains: "no_such_table",
+			Name:           "undefined_table",
+			SchemaTemplate: "CREATE TABLE T_UT (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT id FROM no_such_table",
 		},
 		{
 			// Bit-shift `<<` — fdb-relational 4.11.1.0 tokenizes the
@@ -791,20 +773,18 @@ func SeedRunCorpus() []RunQuery {
 			// proving alignment at the message level. Per-entry
 			// isolation (fresh Java server spawned just for this
 			// entry) prevents pollution from prior negative entries.
-			Name:               "bitshift_left_rejected",
-			SchemaTemplate:     "CREATE TABLE T_BSL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_BSL VALUES (1, 7)"},
-			Query:              "SELECT v << 2 FROM T_BSL WHERE id = 1",
-			ExpectErrorMessage: "Unsupported operator <<",
+			Name:           "bitshift_left_rejected",
+			SchemaTemplate: "CREATE TABLE T_BSL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BSL VALUES (1, 7)"},
+			Query:          "SELECT v << 2 FROM T_BSL WHERE id = 1",
 		},
 		{
 			// Bit-shift `>>` — symmetric to `<<` above. Both engines
 			// emit the verbatim string "Unsupported operator >>".
-			Name:               "bitshift_right_rejected",
-			SchemaTemplate:     "CREATE TABLE T_BSR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_BSR VALUES (1, 8)"},
-			Query:              "SELECT v >> 1 FROM T_BSR WHERE id = 1",
-			ExpectErrorMessage: "Unsupported operator >>",
+			Name:           "bitshift_right_rejected",
+			SchemaTemplate: "CREATE TABLE T_BSR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BSR VALUES (1, 8)"},
+			Query:          "SELECT v >> 1 FROM T_BSR WHERE id = 1",
 		},
 		{
 			// NULLIF — fdb-relational 4.11.1.0's function registry
@@ -817,11 +797,10 @@ func SeedRunCorpus() []RunQuery {
 			// Same architectural reason in both engines: function
 			// registry has no NULLIF evaluator. Workaround:
 			// `CASE WHEN a = b THEN NULL ELSE a END`.
-			Name:               "nullif_rejected",
-			SchemaTemplate:     "CREATE TABLE T_NIF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_NIF VALUES (1, 5)"},
-			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
-			ExpectErrorMessage: "Unsupported operator NULLIF",
+			Name:           "nullif_rejected",
+			SchemaTemplate: "CREATE TABLE T_NIF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NIF VALUES (1, 5)"},
+			Query:          "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 		},
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
@@ -943,11 +922,10 @@ func SeedRunCorpus() []RunQuery {
 			// verbatim message. Per-entry isolation prevents
 			// fdb-relational's type-mismatch error-path state-leak
 			// from stalling this spec under load.
-			Name:               "min_over_string_rejected",
-			SchemaTemplate:     "CREATE TABLE T_MOS (id BIGINT, name STRING, PRIMARY KEY (id))",
-			SetupSqls:          []string{"INSERT INTO T_MOS VALUES (1, 'alice')"},
-			Query:              "SELECT MIN(name) FROM T_MOS",
-			ExpectErrorMessage: "unable to encapsulate aggregate operation due to type mismatch(es)",
+			Name:           "min_over_string_rejected",
+			SchemaTemplate: "CREATE TABLE T_MOS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MOS VALUES (1, 'alice')"},
+			Query:          "SELECT MIN(name) FROM T_MOS",
 		},
 		{
 			// COUNT(*) with predicate over JOIN — exercises the
@@ -1259,6 +1237,18 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_NII WHERE v IN (1, 3) ORDER BY id",
 		},
 		{
+			// Java rejects NULL anywhere in the IN list. SQL §8.4 +
+			// Postgres would treat NULL elements as UNKNOWN-tolerant
+			// (row excluded if no other element matches); fdb-relational
+			// rejects outright.
+			Name:           "null_in_in_list_rejected",
+			SchemaTemplate: "CREATE TABLE T_NIIR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NIIR VALUES (1, 1)",
+			},
+			Query: "SELECT id FROM T_NIIR WHERE v IN (1, NULL)",
+		},
+		{
 			Name:           "null_in_between",
 			SchemaTemplate: "CREATE TABLE T_NIB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -1280,11 +1270,10 @@ func SeedRunCorpus() []RunQuery {
 			// "operands ... not compatible"; Go uses "cannot compare
 			// X with Y" — common substring "compa" matches both case-
 			// insensitively.
-			Name:                "type_mismatch_compare",
-			SchemaTemplate:      "CREATE TABLE T_TMC (id BIGINT, name STRING, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO T_TMC VALUES (1, 'x')"},
-			Query:               "SELECT id FROM T_TMC WHERE name > 5",
-			ExpectErrorContains: "compa",
+			Name:           "type_mismatch_compare",
+			SchemaTemplate: "CREATE TABLE T_TMC (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TMC VALUES (1, 'x')"},
+			Query:          "SELECT id FROM T_TMC WHERE name > 5",
 		},
 
 		// ===== String handling — swingshift-52 =====
@@ -1796,11 +1785,10 @@ func SeedRunCorpus() []RunQuery {
 
 		// ===== More negative entries: error-parity surface =====
 		{
-			Name:                "insert_into_undefined_table",
-			SchemaTemplate:      "CREATE TABLE T_NEG1 (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls:           []string{"INSERT INTO no_such_dml_table VALUES (1)"},
-			Query:               "SELECT id FROM T_NEG1",
-			ExpectErrorContains: "no_such_dml_table",
+			Name:           "insert_into_undefined_table",
+			SchemaTemplate: "CREATE TABLE T_NEG1 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO no_such_dml_table VALUES (1)"},
+			Query:          "SELECT id FROM T_NEG1",
 		},
 		// Same cumulative-state hang. Returns clean "Value of
 		// column 'NAME' is not provided" in 96ms in isolation;
@@ -1894,9 +1882,972 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_UA WHERE val = 100 UNION ALL SELECT id FROM T_UA WHERE val = 200 ORDER BY id",
 		},
-		// `UNION` without ALL (DISTINCT implied) is rejected by
-		// fdb-relational 4.11.1.0 with "only UNION ALL is supported".
-		// Add UNION-DISTINCT corpus entry when upstream lands DISTINCT.
+		{
+			// `UNION` without ALL (implicit DISTINCT) is rejected by
+			// fdb-relational with verbatim "only UNION ALL is supported".
+			// fdb-relational's planner has no de-duplication operator
+			// wired into the union path.
+			Name:           "union_distinct_rejected",
+			SchemaTemplate: "CREATE TABLE T_UDR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDR VALUES (1)",
+			},
+			Query: "SELECT id FROM T_UDR UNION SELECT id FROM T_UDR",
+		},
+		{
+			// OFFSET clause is unsupported by fdb-relational's grammar —
+			// rejected as syntax error pointing at the OFFSET token.
+			// Both engines hit the same parser path.
+			Name:           "offset_clause_rejected",
+			SchemaTemplate: "CREATE TABLE T_OFC (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OFC VALUES (1)"},
+			Query:          "SELECT id FROM T_OFC OFFSET 1",
+		},
+		{
+			// CAST to an unknown type is a syntax error pointing at the
+			// type identifier. Both engines align via shared ANTLR
+			// grammar rejection.
+			Name:           "cast_to_unknown_type_rejected",
+			SchemaTemplate: "CREATE TABLE T_CUT (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CUT VALUES (1)"},
+			Query:          "SELECT CAST(id AS WIDGET) FROM T_CUT",
+		},
+		{
+			// HAVING without GROUP BY on a single row scope — both
+			// engines treat the entire result as one implicit group;
+			// HAVING then filters it. Empty table → no rows.
+			Name:           "having_without_group_by_empty",
+			SchemaTemplate: "CREATE TABLE T_HAE (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT id FROM T_HAE HAVING id > 0",
+		},
+		{
+			// INSERT with explicit column list omitting a nullable
+			// column → that column is implicitly NULL. Pins both
+			// engines treat omitted columns as NULL (not error).
+			Name:           "insert_explicit_cols_implicit_null",
+			SchemaTemplate: "CREATE TABLE T_IEN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IEN (id) VALUES (1)",
+			},
+			Query: "SELECT id, v FROM T_IEN ORDER BY id",
+		},
+		{
+			// AVG over an empty table — both engines emit one row with
+			// AVG=NULL (SUM=NULL, COUNT=0 → NULL/0 = NULL, not error).
+			Name:           "avg_over_empty_table",
+			SchemaTemplate: "CREATE TABLE T_AVE (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT AVG(v) FROM T_AVE",
+		},
+		{
+			// Integer division by zero — Java verbatim "/ by zero"
+			// (Java's stock ArithmeticException.getMessage()). Aligned
+			// Go-side  (was "division by zero").
+			Name:           "divide_by_zero_int",
+			SchemaTemplate: "CREATE TABLE T_DBZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DBZ VALUES (1, 5)"},
+			Query:          "SELECT v / 0 FROM T_DBZ",
+		},
+		{
+			// Integer modulo by zero — same Java message.
+			Name:           "modulo_by_zero_int",
+			SchemaTemplate: "CREATE TABLE T_MBZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MBZ VALUES (1, 5)"},
+			Query:          "SELECT v % 0 FROM T_MBZ",
+		},
+		{
+			// SUM(BIGINT) overflow — Java throws ArithmeticException
+			// 'long overflow' (Math.addExact). Pre- Go's
+			// int64 accumulator silently wrapped; aligned via
+			// AddInt64Checked at every SUM accumulation site.
+			Name:           "sum_bigint_overflow",
+			SchemaTemplate: "CREATE TABLE T_SOV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SOV VALUES (1, 9223372036854775807)",
+				"INSERT INTO T_SOV VALUES (2, 1)",
+			},
+			Query: "SELECT SUM(v) FROM T_SOV",
+		},
+		{
+			// 0.1 + 0.2 = 0.30000000000000004 — IEEE-754 imprecision.
+			// Both engines use double-precision floats; the surface
+			// representation must match exactly.
+			Name:           "floating_point_imprecision",
+			SchemaTemplate: "CREATE TABLE T_FPI (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_FPI VALUES (1)"},
+			Query:          "SELECT 0.1 + 0.2 FROM T_FPI",
+		},
+		{
+			// IS DISTINCT FROM NULL — `v IS DISTINCT FROM NULL` is TRUE
+			// when v is non-NULL (NULL-safe inequality). Both engines
+			// implement the SQL-spec semantics identically.
+			Name:           "is_distinct_from_null_filter",
+			SchemaTemplate: "CREATE TABLE T_IDFN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDFN VALUES (1, NULL)",
+				"INSERT INTO T_IDFN VALUES (2, 5)",
+			},
+			Query: "SELECT id FROM T_IDFN WHERE v IS DISTINCT FROM NULL ORDER BY id",
+		},
+		{
+			// Empty IN list `IN ()` — both engines reject as a
+			// shared-grammar syntax error pointing at the empty
+			// parentheses.
+			Name:           "empty_in_list_rejected",
+			SchemaTemplate: "CREATE TABLE T_EIL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_EIL VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_EIL WHERE v IN ()",
+		},
+		{
+			// DATE / TIMESTAMP literals are not in the fdb-relational
+			// grammar (4.11.1.0); both engines reject as syntax error
+			// at the DATE keyword.
+			Name:           "date_literal_rejected",
+			SchemaTemplate: "CREATE TABLE T_DLR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DLR VALUES (1)"},
+			Query:          "SELECT DATE '2024-01-01' FROM T_DLR",
+		},
+		{
+			// INTERVAL literals are not in the grammar; both engines
+			// reject at the INTERVAL keyword.
+			Name:           "interval_literal_rejected",
+			SchemaTemplate: "CREATE TABLE T_ILR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ILR VALUES (1)"},
+			Query:          "SELECT INTERVAL '1' DAY FROM T_ILR",
+		},
+		{
+			// Double-precision divide by zero: Java's IEEE-754 default
+			// returns +Infinity (no throw). Critically distinct from
+			// integer divide-by-zero which throws "/ by zero".
+			//
+			// IEEE-754 specials are encoded as JSON strings on both
+			// sides (Java's encodeValue → "Infinity" string; Go's
+			// coerceForComparison maps math.Inf to "Infinity" string)
+			// because Gson's JsonPrimitive emits bare `Infinity` tokens
+			// that aren't valid JSON. The string-encoding is symmetric
+			// between engines so the harness still asserts byte-equal
+			// rows.
+			Name:           "double_divide_by_zero_returns_infinity",
+			SchemaTemplate: "CREATE TABLE T_DDZ (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DDZ VALUES (1, 5.0)"},
+			Query:          "SELECT v / 0.0 FROM T_DDZ",
+		},
+		{
+			// Double-precision 0/0 returns NaN (IEEE-754).
+			Name:           "double_zero_div_zero_returns_nan",
+			SchemaTemplate: "CREATE TABLE T_DZZ (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DZZ VALUES (1, 0.0)"},
+			Query:          "SELECT v / 0.0 FROM T_DZZ",
+		},
+		{
+			// Aggregate in WHERE — Java rejects with verbatim
+			// 'unable to eval an aggregation function with eval()'
+			// (IllegalStateException from the scalar evaluator
+			// hitting an aggregate node).
+			Name:           "agg_in_where_rejected",
+			SchemaTemplate: "CREATE TABLE T_AIWR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AIWR VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_AIWR WHERE COUNT(*) > 0",
+		},
+		{
+			// BETWEEN with cross-type bounds — Java verbatim
+			// 'The operands of a comparison operator are not
+			// compatible.' Aligned Go-side  (was
+			// 'BETWEEN bounds incompatible: cannot compare X and Y').
+			Name:           "between_cross_type_bounds_rejected",
+			SchemaTemplate: "CREATE TABLE T_BCT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BCT VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_BCT WHERE v BETWEEN 'a' AND 10",
+		},
+		{
+			// INSERT with too few values — Java verbatim
+			// 'A value cannot be assigned to a variable because the
+			// type of the value does not match the type of the
+			// variable and cannot be promoted to the type of the
+			// variable.' (one message for column-count and
+			// type-mismatch; both surface the same SemanticException).
+			//
+			Name:           "insert_too_few_values_rejected",
+			SchemaTemplate: "CREATE TABLE T_ITF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ITF VALUES (1)"},
+			Query:          "SELECT id FROM T_ITF",
+		},
+		{
+			// INSERT with too many values — same Java message as
+			// too-few, regardless of which side has more columns.
+			Name:           "insert_too_many_values_rejected",
+			SchemaTemplate: "CREATE TABLE T_ITM (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ITM VALUES (1, 2, 3)"},
+			Query:          "SELECT id FROM T_ITM",
+		},
+		{
+			// INSERT with type mismatch (string into BIGINT column) —
+			// Java verbatim 'A value cannot be assigned to a variable
+			// because the type of the value does not match the type of
+			// the variable and cannot be promoted to the type of the
+			// variable.'
+			Name:           "insert_type_mismatch_rejected",
+			SchemaTemplate: "CREATE TABLE T_ITMT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ITMT VALUES (1, 'abc')"},
+			Query:          "SELECT id FROM T_ITMT",
+		},
+		{
+			// UPDATE referencing a non-existent column — Java verbatim
+			// 'Attempting to query non existing column X' (same
+			// alignment as SELECT path; aligned UPDATE-side ).
+			Name:           "update_undefined_column_rejected",
+			SchemaTemplate: "CREATE TABLE T_UUC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_UUC VALUES (1, 5)", "UPDATE T_UUC SET no_such_col = 1"},
+			Query:          "SELECT id FROM T_UUC",
+		},
+		{
+			// Integer overflow on +, -, * — all aligned to Java
+			// verbatim 'long overflow' (was 'integer overflow on N OP M').
+			//
+			Name:           "add_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_AIO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AIO VALUES (1)"},
+			Query:          "SELECT 9223372036854775807 + 1 FROM T_AIO",
+		},
+		{
+			Name:           "sub_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_SIO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SIO VALUES (1)"},
+			Query:          "SELECT -9223372036854775808 - 1 FROM T_SIO",
+		},
+		{
+			Name:           "mul_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_MIO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MIO VALUES (1)"},
+			Query:          "SELECT 4611686018427387904 * 2 FROM T_MIO",
+		},
+		{
+			// Compound HAVING with multiple conjuncts.
+			Name:           "having_compound_predicate",
+			SchemaTemplate: "CREATE TABLE T_HCP (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_HCP VALUES (1, 5)"},
+			Query:          "SELECT count(*) FROM T_HCP HAVING count(*) > 0 AND count(*) < 5",
+		},
+		{
+			// Aliased projection — both engines preserve the alias as
+			// the column name in the result set.
+			Name:           "projection_aliased_simple",
+			SchemaTemplate: "CREATE TABLE T_PAS (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_PAS VALUES (1)"},
+			Query:          "SELECT id AS my_id FROM T_PAS",
+		},
+		{
+			// EXISTS subquery in WHERE — correlated reference from the
+			// outer scope through to the inner.
+			Name:           "exists_correlated_subquery",
+			SchemaTemplate: "CREATE TABLE T_ECS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ECS VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_ECS AS o WHERE EXISTS (SELECT 1 FROM T_ECS AS i WHERE i.id = o.id)",
+		},
+		{
+			// AVG over BIGINT column → DOUBLE result (SQL spec
+			// promotes int aggregate to floating). Both engines emit
+			// 6.0 for AVG(5, 7).
+			Name:           "avg_over_bigint",
+			SchemaTemplate: "CREATE TABLE T_AVB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AVB VALUES (1, 5)",
+				"INSERT INTO T_AVB VALUES (2, 7)",
+			},
+			Query: "SELECT AVG(v) FROM T_AVB",
+		},
+		{
+			// CAST(-1 AS BIGINT) — negative literal, signed BIGINT
+			// preserves the sign.
+			Name:           "cast_negative_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CNB (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CNB VALUES (1)"},
+			Query:          "SELECT CAST(-1 AS BIGINT) FROM T_CNB",
+		},
+		{
+			// CAST(double AS STRING) — both engines stringify with
+			// trailing-zero stripping (3.14 not 3.140000).
+			Name:           "cast_double_to_string",
+			SchemaTemplate: "CREATE TABLE T_CDS (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CDS VALUES (1)"},
+			Query:          "SELECT CAST(3.14 AS STRING) FROM T_CDS",
+		},
+		{
+			// CAST(BIGINT AS BIGINT) — identity cast, no-op.
+			Name:           "cast_to_self_type",
+			SchemaTemplate: "CREATE TABLE T_CST (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CST VALUES (1)"},
+			Query:          "SELECT CAST(id AS BIGINT) FROM T_CST",
+		},
+		{
+			// String + string → concat in Java (operator-overload for
+			// strings).
+			Name:           "string_concat_via_plus",
+			SchemaTemplate: "CREATE TABLE T_SCP (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SCP VALUES (1, 'foo', 'bar')"},
+			Query:          "SELECT a + b FROM T_SCP",
+		},
+		{
+			// Empty-string in IN-list — empty string ('') is a valid
+			// SQL string value, distinct from NULL.
+			Name:           "empty_string_in_list",
+			SchemaTemplate: "CREATE TABLE T_ESI (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ESI VALUES (1, '')"},
+			Query:          "SELECT id FROM T_ESI WHERE name IN ('', 'a')",
+		},
+		{
+			// Typed NULL in arithmetic — `CAST(NULL AS BIGINT) + 1`
+			// returns NULL (3VL: NULL absorbs).
+			Name:           "typed_null_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_TNA (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TNA VALUES (1)"},
+			Query:          "SELECT CAST(NULL AS BIGINT) + 1 FROM T_TNA",
+		},
+		{
+			// IS NULL on arithmetic expression — (NULL + 1) IS NULL = TRUE.
+			Name:           "is_null_on_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_INA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INA VALUES (1, NULL)",
+				"INSERT INTO T_INA VALUES (2, 5)",
+			},
+			Query: "SELECT id FROM T_INA WHERE (v + 1) IS NULL ORDER BY id",
+		},
+		{
+			// CASE returning STRING values — pins multi-branch CASE
+			// with literal string THEN expressions.
+			Name:           "case_returning_strings",
+			SchemaTemplate: "CREATE TABLE T_CRS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CRS VALUES (1, 5)",
+				"INSERT INTO T_CRS VALUES (2, 50)",
+			},
+			Query: "SELECT id, CASE WHEN v < 10 THEN 'tiny' WHEN v < 100 THEN 'small' ELSE 'big' END FROM T_CRS ORDER BY id",
+		},
+		{
+			// Invalid UUID literal — Java verbatim 'Invalid UUID value
+			// for the UUID type NAME'.
+			Name:           "cast_invalid_uuid_rejected",
+			SchemaTemplate: "CREATE TABLE T_CIU (id BIGINT, u UUID, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CIU VALUES (1, CAST('not-a-real-uuid' AS UUID))"},
+			Query:          "SELECT id FROM T_CIU",
+		},
+		{
+			// CAST(BIGINT AS INTEGER) overflow — Java verbatim
+			// 'Invalid cast operation Value out of range for INT: N'.
+			//
+			Name:           "cast_bigint_to_int_overflow_rejected",
+			SchemaTemplate: "CREATE TABLE T_CBO (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CBO VALUES (1)"},
+			Query:          "SELECT CAST(-2147483649 AS INTEGER) FROM T_CBO",
+		},
+		{
+			// PRIMARY KEY violation — Java verbatim 'record already
+			// exists' (RecordAlreadyExistsException.getMessage()).
+			//(was Go's PK-included form).
+			Name:           "primary_key_violation_rejected",
+			SchemaTemplate: "CREATE TABLE T_PKV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PKV VALUES (1, 5)",
+				"INSERT INTO T_PKV VALUES (1, 6)",
+			},
+			Query: "SELECT id FROM T_PKV",
+		},
+		{
+			// SUM over a non-numeric column — Java verbatim 'unable to
+			// encapsulate aggregate operation due to type mismatch(es)'
+			// (same SemanticException as MIN/MAX over non-numeric).
+			//
+			Name:           "sum_over_string_rejected",
+			SchemaTemplate: "CREATE TABLE T_SOS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SOS VALUES (1, 'a')"},
+			Query:          "SELECT SUM(name) FROM T_SOS",
+		},
+		{
+			// Unsupported scalar function — Java verbatim
+			// 'Unsupported operator NO_SUCH_FUNCTION'. Already aligned.
+			Name:           "select_unknown_function_rejected",
+			SchemaTemplate: "CREATE TABLE T_SUF (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SUF VALUES (1)"},
+			Query:          "SELECT NO_SUCH_FUNCTION(id) FROM T_SUF",
+		},
+		{
+			// HAVING with a concrete predicate that filters non-empty
+			// data. fdb-relational accepts non-aggregate column refs
+			// in HAVING when there's no GROUP BY — both engines treat
+			// the result as one implicit group.
+			Name:           "having_id_predicate_filters",
+			SchemaTemplate: "CREATE TABLE T_HIP (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_HIP VALUES (1), (2), (3)"},
+			Query:          "SELECT id FROM T_HIP HAVING id > 1 ORDER BY id",
+		},
+		{
+			// Negating MinInt64 — `0 - (-9223372036854775808)` would
+			// overflow because the absolute value doesn't fit in
+			// int64. Both engines throw 'long overflow'.
+			Name:           "negate_min_int64_overflow",
+			SchemaTemplate: "CREATE TABLE T_NMI (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NMI VALUES (1)"},
+			Query:          "SELECT 0 - (-9223372036854775808) FROM T_NMI",
+		},
+		{
+			// LIKE with empty pattern — matches only empty strings.
+			Name:           "like_empty_pattern",
+			SchemaTemplate: "CREATE TABLE T_LEP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LEP VALUES (1, 'a')"},
+			Query:          "SELECT id FROM T_LEP WHERE name LIKE ''",
+		},
+		{
+			// LIKE with single-underscore pattern — matches single-char
+			// strings, not empty or multi-char.
+			Name:           "like_single_underscore",
+			SchemaTemplate: "CREATE TABLE T_LSU (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LSU VALUES (1, '')",
+				"INSERT INTO T_LSU VALUES (2, 'a')",
+				"INSERT INTO T_LSU VALUES (3, 'ab')",
+			},
+			Query: "SELECT id FROM T_LSU WHERE name LIKE '_' ORDER BY id",
+		},
+		{
+			// 3-way comma-join with PK-equality predicates between
+			// each pair. Both engines treat as a chained nested-loop
+			// inner join.
+			Name: "join_3_way_chain",
+			SchemaTemplate: "CREATE TABLE T_T1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_T2 (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_T3 (id BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_T1 VALUES (1)",
+				"INSERT INTO T_T2 VALUES (1, 10)",
+				"INSERT INTO T_T3 VALUES (1, 100)",
+			},
+			Query: "SELECT t1.id, t2.x, t3.y FROM T_T1 AS t1, T_T2 AS t2, T_T3 AS t3 WHERE t1.id = t2.id AND t1.id = t3.id",
+		},
+		{
+			// Cartesian product (no JOIN predicate) — `count(*)`
+			// returns NxM. Both engines emit one row.
+			Name: "cartesian_product_count",
+			SchemaTemplate: "CREATE TABLE T_J1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_J2 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_J1 VALUES (1), (2)",
+				"INSERT INTO T_J2 VALUES (10), (20)",
+			},
+			Query: "SELECT count(*) FROM T_J1, T_J2",
+		},
+		{
+			// UPDATE with arithmetic compound expression.
+			Name:           "update_arithmetic_compound",
+			SchemaTemplate: "CREATE TABLE T_UAC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UAC VALUES (1, 5)",
+				"UPDATE T_UAC SET v = v * 2 + 1",
+			},
+			Query: "SELECT id, v FROM T_UAC",
+		},
+		{
+			// DELETE with IN-list — both engines remove matching ids.
+			Name:           "delete_with_in_list",
+			SchemaTemplate: "CREATE TABLE T_DIL (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DIL VALUES (1), (2), (3)",
+				"DELETE FROM T_DIL WHERE id IN (1, 3)",
+			},
+			Query: "SELECT id FROM T_DIL ORDER BY id",
+		},
+		{
+			// MAX over a column with all-negative values — both
+			// engines correctly identify the largest (closest to zero).
+			Name:           "max_over_all_negative",
+			SchemaTemplate: "CREATE TABLE T_MON (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MON VALUES (1, -5)",
+				"INSERT INTO T_MON VALUES (2, -10)",
+				"INSERT INTO T_MON VALUES (3, -2)",
+			},
+			Query: "SELECT MAX(v) FROM T_MON",
+		},
+		{
+			// IS NULL on arithmetic with zero multiplier — `v * 0`
+			// is NULL only when v is NULL (NULL * 0 = NULL per SQL
+			// 3VL).
+			Name:           "is_null_arith_zero_mul",
+			SchemaTemplate: "CREATE TABLE T_INZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INZ VALUES (1, 0)",
+				"INSERT INTO T_INZ VALUES (2, NULL)",
+			},
+			Query: "SELECT id FROM T_INZ WHERE (v * 0) IS NULL ORDER BY id",
+		},
+		{
+			// UPDATE on a PK column — Java rejects 'record does not
+			// exist' (in-place UPDATE can't modify the PK; the read-
+			// then-save lookup at the new key has no source row).
+			// detect PK col in SET
+			// clause and reject before the loop with the verbatim
+			// Java message.
+			Name:           "update_pk_column_rejected",
+			SchemaTemplate: "CREATE TABLE T_UPK (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPK VALUES (1, 5)",
+				"UPDATE T_UPK SET id = 2",
+			},
+			Query: "SELECT id FROM T_UPK",
+		},
+		{
+			// UUID round-trip — INSERT canonical-form, SELECT back
+			// matches.
+			Name:           "insert_uuid_round_trip",
+			SchemaTemplate: "CREATE TABLE T_IUR (id BIGINT, u UUID, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IUR VALUES (1, CAST('00000000-0000-0000-0000-000000000042' AS UUID))"},
+			Query:          "SELECT id, u FROM T_IUR ORDER BY id",
+		},
+		{
+			// COUNT(*) over a fresh table with no rows — both engines
+			// return one row with [0].
+			Name:           "count_star_empty_table",
+			SchemaTemplate: "CREATE TABLE T_CSE (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT count(*) FROM T_CSE",
+		},
+		{
+			// INSERT with explicit column list matching arity.
+			Name:           "insert_explicit_cols_full_match",
+			SchemaTemplate: "CREATE TABLE T_IEC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IEC (id, v) VALUES (1, 5)"},
+			Query:          "SELECT id, v FROM T_IEC",
+		},
+		{
+			// `0.0 - 1.5` projection — DOUBLE arithmetic.
+			Name:           "select_zero_minus_double",
+			SchemaTemplate: "CREATE TABLE T_SZD (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SZD VALUES (1)"},
+			Query:          "SELECT 0.0 - 1.5 FROM T_SZD",
+		},
+		{
+			// SUM with HAVING filtering on the aggregate value.
+			Name:           "sum_with_having_filter",
+			SchemaTemplate: "CREATE TABLE T_SHF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SHF VALUES (1, 5)",
+				"INSERT INTO T_SHF VALUES (2, 10)",
+			},
+			Query: "SELECT SUM(v) FROM T_SHF HAVING SUM(v) > 10",
+		},
+		{
+			// LIKE pattern with regex-special character (`!`) literal —
+			// Both engines treat `!` as a literal char, not regex.
+			Name:           "like_with_punctuation",
+			SchemaTemplate: "CREATE TABLE T_LWP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LWP VALUES (1, 'hello world!')"},
+			Query:          "SELECT id FROM T_LWP WHERE name LIKE 'hello %!'",
+		},
+		{
+			// IS NULL combined with OR — predicate eval correctly
+			// short-circuits on UNKNOWN.
+			Name:           "is_null_or_compound_predicate",
+			SchemaTemplate: "CREATE TABLE T_INO (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INO VALUES (1, NULL)",
+				"INSERT INTO T_INO VALUES (2, 5)",
+				"INSERT INTO T_INO VALUES (3, 10)",
+			},
+			Query: "SELECT id FROM T_INO WHERE v IS NULL OR v < 7 ORDER BY id",
+		},
+		{
+			// CAST(string-with-non-numeric-content AS BIGINT) — Java
+			// verbatim 'Invalid cast operation Cannot cast string
+			// "abc" to LONG: For input string: "abc"' (the quirky
+			// duplicated input string is Java's stock
+			// NumberFormatException message wrapped by fdb-relational's
+			// 'Invalid cast operation' prefix).
+			Name:           "cast_string_non_numeric_rejected",
+			SchemaTemplate: "CREATE TABLE T_CSN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CSN VALUES (1)"},
+			Query:          "SELECT CAST('abc' AS BIGINT) FROM T_CSN",
+		},
+		{
+			// INSERT integer-literal into a DOUBLE column — auto-promotes.
+			Name:           "insert_int_into_double",
+			SchemaTemplate: "CREATE TABLE T_IID (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IID VALUES (1, 5)"},
+			Query:          "SELECT id, v FROM T_IID",
+		},
+		{
+			// PK column accepts negative BIGINT (signed).
+			Name:           "insert_negative_bigint_pk",
+			SchemaTemplate: "CREATE TABLE T_INB (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_INB VALUES (-1)"},
+			Query:          "SELECT id FROM T_INB",
+		},
+		{
+			// INSERT fractional-double into BIGINT column — Java
+			// rejects with the generic 'A value cannot be assigned...'
+			// SemanticException; Go aligned to drop the more-specific
+			// 'not a whole integer' message.
+			Name:           "insert_fractional_double_into_bigint_rejected",
+			SchemaTemplate: "CREATE TABLE T_IFD (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IFD VALUES (1, 3.14)"},
+			Query:          "SELECT id, v FROM T_IFD",
+		},
+		{
+			// INSERT BOOLEAN into BIGINT column — both engines reject.
+			Name:           "insert_bool_into_bigint_rejected",
+			SchemaTemplate: "CREATE TABLE T_IBB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IBB VALUES (1, TRUE)"},
+			Query:          "SELECT id, v FROM T_IBB",
+		},
+		{
+			// `0.0 - v` projection over a DOUBLE column.
+			Name:           "projection_negate_double_col",
+			SchemaTemplate: "CREATE TABLE T_PND (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_PND VALUES (1, 3.5)"},
+			Query:          "SELECT 0.0 - v FROM T_PND",
+		},
+		{
+			Name:           "is_distinct_from_concrete",
+			SchemaTemplate: "CREATE TABLE T_IDC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDC VALUES (1, 5)",
+				"INSERT INTO T_IDC VALUES (2, 10)",
+			},
+			Query: "SELECT id FROM T_IDC WHERE v IS DISTINCT FROM 5 ORDER BY id",
+		},
+		{
+			Name:           "between_strings_natural",
+			SchemaTemplate: "CREATE TABLE T_BSN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BSN VALUES (1, 'apple')",
+				"INSERT INTO T_BSN VALUES (2, 'banana')",
+				"INSERT INTO T_BSN VALUES (3, 'cherry')",
+			},
+			Query: "SELECT id FROM T_BSN WHERE name BETWEEN 'b' AND 'd' ORDER BY id",
+		},
+		{
+			// LIKE '%' matches every row including empty strings.
+			Name:           "like_just_percent_match_all",
+			SchemaTemplate: "CREATE TABLE T_LJP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LJP VALUES (1, '')",
+				"INSERT INTO T_LJP VALUES (2, 'a')",
+				"INSERT INTO T_LJP VALUES (3, 'abc')",
+			},
+			Query: "SELECT id FROM T_LJP WHERE name LIKE '%' ORDER BY id",
+		},
+		{
+			Name:           "min_over_double",
+			SchemaTemplate: "CREATE TABLE T_MD (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MD VALUES (1, 1.5)",
+				"INSERT INTO T_MD VALUES (2, 0.5)",
+				"INSERT INTO T_MD VALUES (3, 2.0)",
+			},
+			Query: "SELECT MIN(v) FROM T_MD",
+		},
+		{
+			// Secondary-index equality lookup.
+			Name:           "select_with_index_eq",
+			SchemaTemplate: "CREATE TABLE T_SI (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON T_SI (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_SI VALUES (1, 100)",
+				"INSERT INTO T_SI VALUES (2, 200)",
+				"INSERT INTO T_SI VALUES (3, 300)",
+			},
+			Query: "SELECT id FROM T_SI WHERE v = 200",
+		},
+		{
+			// Secondary-index range lookup.
+			Name:           "select_with_index_range",
+			SchemaTemplate: "CREATE TABLE T_SIR (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON T_SIR (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_SIR VALUES (1, 100)",
+				"INSERT INTO T_SIR VALUES (2, 200)",
+				"INSERT INTO T_SIR VALUES (3, 300)",
+			},
+			Query: "SELECT id FROM T_SIR WHERE v > 100 AND v < 300",
+		},
+		{
+			// Composite-PK equality on first column only — emits all
+			// matching rows in (region, id) PK order.
+			Name:           "composite_pk_eq_only_first_col",
+			SchemaTemplate: "CREATE TABLE T_CPF (region STRING, id BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPF VALUES ('us', 1)",
+				"INSERT INTO T_CPF VALUES ('us', 2)",
+				"INSERT INTO T_CPF VALUES ('eu', 3)",
+			},
+			Query: "SELECT region, id FROM T_CPF WHERE region = 'us' ORDER BY region, id",
+		},
+		{
+			// COUNT(*) over a fully-filtered-out scope returns one row
+			// with [0].
+			Name:           "count_star_filtered_to_empty",
+			SchemaTemplate: "CREATE TABLE T_CFE (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CFE VALUES (1), (2)"},
+			Query:          "SELECT count(*) FROM T_CFE WHERE id > 100",
+		},
+		{
+			// COALESCE with multiple arguments — picks the first
+			// non-NULL.
+			Name:           "coalesce_multi_arg",
+			SchemaTemplate: "CREATE TABLE T_CMA (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMA VALUES (1, NULL, NULL, 5)",
+				"INSERT INTO T_CMA VALUES (2, 10, NULL, 0)",
+			},
+			Query: "SELECT id, COALESCE(a, b, c) FROM T_CMA ORDER BY id",
+		},
+		{
+			// UPDATE on a non-PK column with WHERE filter.
+			Name:           "update_non_pk_with_where",
+			SchemaTemplate: "CREATE TABLE T_UNW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UNW VALUES (1, 5)",
+				"INSERT INTO T_UNW VALUES (2, 10)",
+				"UPDATE T_UNW SET v = 100 WHERE id = 1",
+			},
+			Query: "SELECT id, v FROM T_UNW ORDER BY id",
+		},
+		{
+			// Self-Cartesian product — count is N*N.
+			Name:           "self_cartesian_count",
+			SchemaTemplate: "CREATE TABLE T_SCP (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SCP VALUES (1), (2), (3)"},
+			Query:          "SELECT count(*) FROM T_SCP, T_SCP AS u",
+		},
+		{
+			// Multi-alias self-join with WHERE predicate.
+			Name:           "multi_alias_self_join_count",
+			SchemaTemplate: "CREATE TABLE T_MASJ (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MASJ VALUES (1, 0)",
+				"INSERT INTO T_MASJ VALUES (2, 1)",
+				"INSERT INTO T_MASJ VALUES (3, 1)",
+			},
+			Query: "SELECT count(*) FROM T_MASJ AS a, T_MASJ AS b WHERE a.parent = b.id",
+		},
+		{
+			// NOT EXISTS correlated subquery — outer row excluded
+			// when the inner query produces any matching row.
+			Name:           "not_exists_correlated",
+			SchemaTemplate: "CREATE TABLE T_NEC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NEC VALUES (1, 5)",
+				"INSERT INTO T_NEC VALUES (2, 5)",
+			},
+			Query: "SELECT id FROM T_NEC AS o WHERE NOT EXISTS (SELECT 1 FROM T_NEC AS i WHERE i.id = o.id - 100) ORDER BY id",
+		},
+		{
+			// String comparison — lexicographic ordering on STRING.
+			Name:           "compare_string_lex",
+			SchemaTemplate: "CREATE TABLE T_CSL (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CSL VALUES (1, 'a')",
+				"INSERT INTO T_CSL VALUES (2, 'b')",
+				"INSERT INTO T_CSL VALUES (3, 'c')",
+			},
+			Query: "SELECT id FROM T_CSL WHERE name > 'a' ORDER BY id",
+		},
+		{
+			// Bitwise AND on integer column.
+			Name:           "bitwise_and_int",
+			SchemaTemplate: "CREATE TABLE T_BAW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BAW VALUES (1, 5)"},
+			Query:          "SELECT v & 1 FROM T_BAW",
+		},
+		{
+			// Bitwise OR.
+			Name:           "bitwise_or_int",
+			SchemaTemplate: "CREATE TABLE T_BOR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BOR VALUES (1, 5)"},
+			Query:          "SELECT v | 2 FROM T_BOR",
+		},
+		{
+			// Bitwise XOR.
+			Name:           "bitwise_xor_int",
+			SchemaTemplate: "CREATE TABLE T_BXR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BXR VALUES (1, 5)"},
+			Query:          "SELECT v ^ 3 FROM T_BXR",
+		},
+		{
+			// COUNT(*) over a UNION ALL subquery (derived table).
+			Name: "count_over_union_all_subquery",
+			SchemaTemplate: "CREATE TABLE T_AOU1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AOU2 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AOU1 VALUES (1)",
+				"INSERT INTO T_AOU2 VALUES (2)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_AOU1 UNION ALL SELECT id FROM T_AOU2) AS u",
+		},
+		{
+			// CTE referenced from a JOIN.
+			Name:           "cte_in_join_with_filter",
+			SchemaTemplate: "CREATE TABLE T_CIJ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CIJ VALUES (1, 100)",
+				"INSERT INTO T_CIJ VALUES (2, 200)",
+			},
+			Query: "WITH big AS (SELECT id, v FROM T_CIJ WHERE v > 150) SELECT count(*) FROM T_CIJ AS t, big WHERE t.id = big.id",
+		},
+		{
+			// `WHERE NULL = NULL` — SQL §8.2 collapses to UNKNOWN; the
+			// row is filtered out. Both engines correctly emit empty.
+			Name:           "where_null_eq_null_excludes",
+			SchemaTemplate: "CREATE TABLE T_NEN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NEN VALUES (1)"},
+			Query:          "SELECT id FROM T_NEN WHERE NULL = NULL",
+		},
+		{
+			// `NULL IS NULL` is TRUE (not UNKNOWN) per SQL spec.
+			Name:           "literal_null_is_null_match",
+			SchemaTemplate: "CREATE TABLE T_LNN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LNN VALUES (1)"},
+			Query:          "SELECT id FROM T_LNN WHERE NULL IS NULL",
+		},
+		{
+			// CASE WHEN with typed-NULL THEN branch — both engines
+			// preserve NULL through the CASE.
+			Name:           "case_typed_null_then_branch",
+			SchemaTemplate: "CREATE TABLE T_CTNB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CTNB VALUES (1, 5)"},
+			Query:          "SELECT id, CASE WHEN v < 10 THEN CAST(NULL AS BIGINT) ELSE 0 END FROM T_CTNB",
+		},
+		{
+			// Compare two NULL columns (`a = b` over (NULL, NULL)) —
+			// 3VL: NULL = NULL is UNKNOWN, row excluded.
+			Name:           "compare_two_null_columns",
+			SchemaTemplate: "CREATE TABLE T_CTN (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CTN VALUES (1, NULL, NULL)"},
+			Query:          "SELECT id FROM T_CTN WHERE a = b",
+		},
+		{
+			// AVG over a single-row scope.
+			Name:           "avg_over_single_row",
+			SchemaTemplate: "CREATE TABLE T_ASR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ASR VALUES (1, 5)"},
+			Query:          "SELECT AVG(v) FROM T_ASR",
+		},
+		{
+			// SUM, COUNT, AVG combined in one projection.
+			Name:           "sum_count_avg_combined",
+			SchemaTemplate: "CREATE TABLE T_SCA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCA VALUES (1, 5)",
+				"INSERT INTO T_SCA VALUES (2, 10)",
+			},
+			Query: "SELECT SUM(v), COUNT(*), AVG(v) FROM T_SCA",
+		},
+		{
+			// MIN and MAX on a uniform column return the same value.
+			Name:           "min_max_over_uniform_col",
+			SchemaTemplate: "CREATE TABLE T_MMU (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MMU VALUES (1, 5)",
+				"INSERT INTO T_MMU VALUES (2, 5)",
+				"INSERT INTO T_MMU VALUES (3, 5)",
+			},
+			Query: "SELECT MIN(v), MAX(v) FROM T_MMU",
+		},
+		{
+			// SELECT bool column with TRUE / FALSE / NULL preservation.
+			Name:           "select_bool_column_trio",
+			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SBT VALUES (1, TRUE)",
+				"INSERT INTO T_SBT VALUES (2, FALSE)",
+				"INSERT INTO T_SBT VALUES (3, NULL)",
+			},
+			Query: "SELECT id, b FROM T_SBT ORDER BY id",
+		},
+		{
+			// CAST string→BIGINT with leading/trailing whitespace —
+			// both engines trim before parsing (Java's Long.parseLong
+			// after .trim()).
+			Name:           "cast_string_whitespace_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CSW (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CSW VALUES (1)"},
+			Query:          "SELECT CAST('  42  ' AS BIGINT) FROM T_CSW",
+		},
+		{
+			// CAST string→BIGINT with leading zeros — '00042' → 42.
+			Name:           "cast_string_leading_zeros_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CSZ (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CSZ VALUES (1)"},
+			Query:          "SELECT CAST('00042' AS BIGINT) FROM T_CSZ",
+		},
+		{
+			// Aggregate over a fully-filtered-out scope returns NULL
+			// for SUM (and 0 for COUNT, but here we test SUM). Both
+			// engines emit one row with [<nil>].
+			Name:           "sum_with_filter_no_match",
+			SchemaTemplate: "CREATE TABLE T_SWFN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SWFN VALUES (1, 5)"},
+			Query:          "SELECT SUM(v) FROM T_SWFN WHERE v > 1000",
+		},
+		{
+			// MIN over fully-filtered scope returns NULL, not error.
+			Name:           "min_with_filter_no_match",
+			SchemaTemplate: "CREATE TABLE T_MWFN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MWFN VALUES (1, 5)"},
+			Query:          "SELECT MIN(v) FROM T_MWFN WHERE v > 1000",
+		},
+		{
+			// `t.*` qualified-star projection — both engines expand to
+			// all of t's columns in declaration order.
+			Name:           "select_star_qualified_alias",
+			SchemaTemplate: "CREATE TABLE T_SSQA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SSQA VALUES (1, 5)"},
+			Query:          "SELECT t.* FROM T_SSQA AS t",
+		},
+		{
+			// Integer literal that exceeds int32 range is parsed as
+			// BIGINT (or DOUBLE per fdb-relational's bare-int-literal
+			// rule). Both engines surface the same numeric value.
+			Name:           "int_literal_above_int32_max",
+			SchemaTemplate: "CREATE TABLE T_ILM (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ILM VALUES (1)"},
+			Query:          "SELECT 2147483648 FROM T_ILM",
+		},
+		{
+			// Empty record constructor `()` — both engines reject as
+			// shared parser syntax error.
+			Name:           "empty_record_constructor_rejected",
+			SchemaTemplate: "CREATE TABLE T_ERCR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERCR VALUES (1)"},
+			Query:          "SELECT () FROM T_ERCR",
+		},
+		{
+			// `WHERE name = NULL` always yields UNKNOWN regardless of
+			// name's value (even empty string). Both engines filter
+			// out all rows.
+			Name:           "where_eq_null_yields_empty",
+			SchemaTemplate: "CREATE TABLE T_WEN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WEN VALUES (1, '')"},
+			Query:          "SELECT id FROM T_WEN WHERE name = NULL",
+		},
+		{
+			// BETWEEN with reversed string bounds (`'z' AND 'a'`) yields
+			// no rows in both engines (lexicographic order).
+			Name:           "between_reversed_string_bounds",
+			SchemaTemplate: "CREATE TABLE T_BRSB (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BRSB VALUES (1, 'b')"},
+			Query:          "SELECT id FROM T_BRSB WHERE name BETWEEN 'z' AND 'a'",
+		},
+		{
+			// LIKE with regex-special chars in the pattern — '.' is a
+			// literal dot in LIKE (not a regex metacharacter). Both
+			// engines treat it as a literal match.
+			Name:           "like_regex_special_literal",
+			SchemaTemplate: "CREATE TABLE T_LRSL (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LRSL VALUES (1, 'a.b')",
+				"INSERT INTO T_LRSL VALUES (2, 'a*b')",
+			},
+			Query: "SELECT id FROM T_LRSL WHERE name LIKE 'a.b' ORDER BY id",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{
@@ -2106,6 +3057,522 @@ func SeedRunCorpus() []RunQuery {
 				"DELETE FROM T_DA",
 			},
 			Query: "SELECT id FROM T_DA",
+		},
+
+		// ===== Composite primary key pushdown shapes  =====
+		// PK = (region, id). The Cascades planner picks different scan
+		// strategies for partial-PK equality, full-PK equality, and a
+		// range on the leading PK column. We verify both engines emit
+		// identical row sets across the three shapes.
+		{
+			// Equality on leading PK column only — narrows to a region
+			// prefix; emits in (region, id) PK order.
+			Name:           "composite_pk_leading_eq",
+			SchemaTemplate: "CREATE TABLE T_CPK1 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK1 VALUES ('us', 1, 100)",
+				"INSERT INTO T_CPK1 VALUES ('us', 2, 200)",
+				"INSERT INTO T_CPK1 VALUES ('us', 3, 300)",
+				"INSERT INTO T_CPK1 VALUES ('eu', 1, 500)",
+				"INSERT INTO T_CPK1 VALUES ('eu', 2, 600)",
+			},
+			Query: "SELECT id, val FROM T_CPK1 WHERE region = 'us' ORDER BY region, id",
+		},
+		{
+			// Full-PK equality — single-row read by composite key.
+			Name:           "composite_pk_full_eq",
+			SchemaTemplate: "CREATE TABLE T_CPK2 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK2 VALUES ('us', 1, 100)",
+				"INSERT INTO T_CPK2 VALUES ('us', 2, 200)",
+				"INSERT INTO T_CPK2 VALUES ('eu', 1, 500)",
+			},
+			Query: "SELECT val FROM T_CPK2 WHERE region = 'us' AND id = 2 ORDER BY region, id",
+		},
+		{
+			// Equality on leading PK + range on trailing PK — Cascades
+			// implements as a key-range scan with both bounds derived
+			// from the PK structure.
+			Name:           "composite_pk_eq_and_range",
+			SchemaTemplate: "CREATE TABLE T_CPK3 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK3 VALUES ('us', 1, 100)",
+				"INSERT INTO T_CPK3 VALUES ('us', 2, 200)",
+				"INSERT INTO T_CPK3 VALUES ('us', 3, 300)",
+				"INSERT INTO T_CPK3 VALUES ('us', 4, 400)",
+				"INSERT INTO T_CPK3 VALUES ('eu', 2, 999)",
+			},
+			Query: "SELECT id, val FROM T_CPK3 WHERE region = 'us' AND id >= 2 AND id < 4 ORDER BY region, id",
+		},
+
+		// ===== Multi-aggregate single SELECT =====
+		// Pins type-promotion + aggregator wiring when several aggregates
+		// touch the same column. Java's planner wires one aggregator per
+		// distinct (op, col) pair; Go's grouping-bucket emits each.
+		{
+			// COUNT(*) + COUNT(col) + SUM + MIN + MAX in one SELECT.
+			// COUNT(*) counts all rows, COUNT(val) skips NULL.
+			Name:           "multi_agg_same_col",
+			SchemaTemplate: "CREATE TABLE T_MA1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA1 VALUES (1, 10)",
+				"INSERT INTO T_MA1 VALUES (2, 20)",
+				"INSERT INTO T_MA1 VALUES (3, NULL)",
+				"INSERT INTO T_MA1 VALUES (4, 40)",
+			},
+			Query: "SELECT count(*), count(val), sum(val), min(val), max(val) FROM T_MA1",
+		},
+		{
+			// Aggregates over different columns in the same SELECT.
+			// COUNT(*), SUM(price), AVG(qty) — three separate buckets.
+			Name:           "multi_agg_different_cols",
+			SchemaTemplate: "CREATE TABLE T_MA2 (id BIGINT, qty BIGINT, price DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA2 VALUES (1, 5, 1.5)",
+				"INSERT INTO T_MA2 VALUES (2, 10, 2.5)",
+				"INSERT INTO T_MA2 VALUES (3, 15, 3.5)",
+			},
+			Query: "SELECT count(*), sum(price), avg(qty) FROM T_MA2",
+		},
+
+		// ===== CASE expression edge cases =====
+		// nightshift-61 documented that simple-CASE form is silently
+		// broken in fdb-relational; we use only searched-CASE here.
+		{
+			// CASE WHEN ... THEN ... (no ELSE) — defaults to NULL when
+			// no WHEN matches. Pins three-valued semantics when ELSE is
+			// omitted.
+			Name:           "case_no_else",
+			SchemaTemplate: "CREATE TABLE T_CN (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CN VALUES (1, 10)",
+				"INSERT INTO T_CN VALUES (2, 20)",
+				"INSERT INTO T_CN VALUES (3, 30)",
+			},
+			Query: "SELECT id, CASE WHEN val < 25 THEN 'low' END FROM T_CN ORDER BY id",
+		},
+		{
+			// Nested CASE — outer CASE branches whose THEN values are
+			// themselves CASE expressions. Pins recursive evaluation.
+			Name:           "case_nested_in_then",
+			SchemaTemplate: "CREATE TABLE T_CNES (id BIGINT, val BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CNES VALUES (1, 5, TRUE)",
+				"INSERT INTO T_CNES VALUES (2, 5, FALSE)",
+				"INSERT INTO T_CNES VALUES (3, 50, TRUE)",
+				"INSERT INTO T_CNES VALUES (4, 50, FALSE)",
+			},
+			Query: "SELECT id, CASE WHEN val < 10 THEN CASE WHEN flag = TRUE THEN 'small_yes' ELSE 'small_no' END ELSE CASE WHEN flag = TRUE THEN 'big_yes' ELSE 'big_no' END END FROM T_CNES ORDER BY id",
+		},
+		{
+			// CASE inside aggregate — Go-permissive type-inference
+			// divergence from Java surfaced . Java reports
+			// `SUM(CASE WHEN p THEN 1 ELSE 0 END)` as INTEGER (the
+			// Cascades planner inherits the integer-literal branch
+			// type and Java's SUM(INTEGER) overload preserves INTEGER);
+			// Go reports BIGINT (`inferConstantJDBCType` types bare
+			// integer literals as BIGINT, and SUM with `aggExpr != nil`
+			// recursively-infers BIGINT for the CASE result). The
+			// divergence lives in two layers — Go's literal-typing
+			// AND Go's aggregate-result inheritance from `aggExpr`. To
+			// align without changing Go's row values, the CAST below
+			// pins the CASE branches to BIGINT so SUM stays BIGINT in
+			// Java too. The bare-int-literal form is documented as a
+			// CLAUDE.md gotcha + tracked as a TODO; revisit when
+			// aggregate column-type inference is unified with Cascades
+			// SUM-overload resolution.
+			Name:           "case_in_aggregate_bigint_cast",
+			SchemaTemplate: "CREATE TABLE T_CIA (id BIGINT, status STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CIA VALUES (1, 'open')",
+				"INSERT INTO T_CIA VALUES (2, 'closed')",
+				"INSERT INTO T_CIA VALUES (3, 'open')",
+				"INSERT INTO T_CIA VALUES (4, 'pending')",
+				"INSERT INTO T_CIA VALUES (5, 'open')",
+			},
+			Query: "SELECT sum(CASE WHEN status = 'open' THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END), count(*) FROM T_CIA",
+		},
+
+		// ===== BETWEEN edge cases =====
+		{
+			// Single-value BETWEEN — `BETWEEN x AND x` reduces to
+			// equality. Pins inclusive bound semantics.
+			Name:           "between_equal_bounds",
+			SchemaTemplate: "CREATE TABLE T_BE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BE VALUES (1, 5)",
+				"INSERT INTO T_BE VALUES (2, 10)",
+				"INSERT INTO T_BE VALUES (3, 10)",
+				"INSERT INTO T_BE VALUES (4, 15)",
+			},
+			Query: "SELECT id FROM T_BE WHERE val BETWEEN 10 AND 10 ORDER BY id",
+		},
+		{
+			// Reversed-bound BETWEEN — SQL spec says `BETWEEN hi AND lo`
+			// matches no rows (since the predicate is `v >= hi AND v <= lo`,
+			// false for hi > lo). Pins both engines collapse the same way.
+			Name:           "between_reversed_bounds",
+			SchemaTemplate: "CREATE TABLE T_BR (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BR VALUES (1, 5)",
+				"INSERT INTO T_BR VALUES (2, 10)",
+				"INSERT INTO T_BR VALUES (3, 15)",
+				"INSERT INTO T_BR VALUES (4, 20)",
+			},
+			Query: "SELECT id FROM T_BR WHERE val BETWEEN 20 AND 5 ORDER BY id",
+		},
+		{
+			// BETWEEN with one NULL bound — three-valued logic: NULL
+			// upper means UNKNOWN for any value, BETWEEN evaluates
+			// (val >= 5 AND val <= NULL) → UNKNOWN → row excluded.
+			// Per CLAUDE.md the bare-NULL-in-arithmetic gotcha; the
+			// BETWEEN rewrite uses comparison ops so this should
+			// evaluate cleanly in both engines.
+			Name:           "between_with_null_upper",
+			SchemaTemplate: "CREATE TABLE T_BN (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BN VALUES (1, 5)",
+				"INSERT INTO T_BN VALUES (2, 10)",
+				"INSERT INTO T_BN VALUES (3, 15)",
+			},
+			Query: "SELECT id FROM T_BN WHERE val BETWEEN 5 AND CAST(NULL AS BIGINT) ORDER BY id",
+		},
+
+		// ===== DML no-op edges =====
+		{
+			// DELETE WHERE matches no rows — should leave the table
+			// intact. Pins that DML bind to WHERE evaluation.
+			Name:           "delete_no_match",
+			SchemaTemplate: "CREATE TABLE T_DNM (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DNM VALUES (1, 10)",
+				"INSERT INTO T_DNM VALUES (2, 20)",
+				"DELETE FROM T_DNM WHERE val > 1000",
+			},
+			Query: "SELECT id, val FROM T_DNM ORDER BY id",
+		},
+		{
+			// UPDATE WHERE matches no rows — table stays unchanged.
+			Name:           "update_no_match",
+			SchemaTemplate: "CREATE TABLE T_UNM (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UNM VALUES (1, 10)",
+				"INSERT INTO T_UNM VALUES (2, 20)",
+				"UPDATE T_UNM SET val = 999 WHERE val > 1000",
+			},
+			Query: "SELECT id, val FROM T_UNM ORDER BY id",
+		},
+
+		// ===== LIKE pattern variants =====
+		{
+			// LIKE without wildcards — degenerates to equality. Pins
+			// that engines treat anchored literal patterns as exact
+			// matches (no implicit prefix/contains semantics).
+			Name:           "like_no_wildcard_eq",
+			SchemaTemplate: "CREATE TABLE T_LNW (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LNW VALUES (1, 'alpha')",
+				"INSERT INTO T_LNW VALUES (2, 'alphabet')",
+				"INSERT INTO T_LNW VALUES (3, 'beta')",
+			},
+			Query: "SELECT id FROM T_LNW WHERE name LIKE 'alpha' ORDER BY id",
+		},
+		{
+			// LIKE with both leading and trailing % wildcards —
+			// contains-anywhere pattern. Pins planner doesn't
+			// confuse 'contains' with 'prefix' or 'equality'.
+			Name:           "like_contains_middle",
+			SchemaTemplate: "CREATE TABLE T_LCM (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LCM VALUES (1, 'foobarbaz')",
+				"INSERT INTO T_LCM VALUES (2, 'bar')",
+				"INSERT INTO T_LCM VALUES (3, 'qux')",
+				"INSERT INTO T_LCM VALUES (4, 'barbaz')",
+			},
+			Query: "SELECT id FROM T_LCM WHERE name LIKE '%bar%' ORDER BY id",
+		},
+		{
+			// LIKE against NULL — three-valued logic: NULL LIKE
+			// anything yields UNKNOWN, which excludes the row from
+			// the WHERE clause.
+			Name:           "like_against_null",
+			SchemaTemplate: "CREATE TABLE T_LN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LN VALUES (1, 'a')",
+				"INSERT INTO T_LN VALUES (2, NULL)",
+				"INSERT INTO T_LN VALUES (3, 'b')",
+			},
+			Query: "SELECT id FROM T_LN WHERE name LIKE '%' ORDER BY id",
+		},
+
+		// ===== INSERT variants =====
+		{
+			// INSERT multiple rows in a single VALUES clause. Pins
+			// row-batch inserts behave the same as individual inserts.
+			Name:           "insert_multi_values_single_stmt",
+			SchemaTemplate: "CREATE TABLE T_IMV (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IMV VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, val FROM T_IMV ORDER BY id",
+		},
+
+		// ===== UNION ALL edge cases =====
+		{
+			// UNION ALL with overlapping rows — preserves duplicates
+			// (UNION ALL semantics, no dedup).
+			Name:           "union_all_with_dupes",
+			SchemaTemplate: "CREATE TABLE T_UD (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UD VALUES (1, 10)",
+				"INSERT INTO T_UD VALUES (2, 20)",
+				"INSERT INTO T_UD VALUES (3, 30)",
+			},
+			// No outer ORDER BY — UNION ALL planner rejects inner
+			// ORDER BYs and a top-level ORDER BY is also constrained.
+			// Use an aggregate to make the result deterministic.
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UD WHERE val > 5 UNION ALL SELECT id FROM T_UD WHERE val > 15) AS u",
+		},
+		{
+			// UNION ALL of empty + non-empty — empty side contributes
+			// 0 rows, non-empty side contributes its rows.
+			Name:           "union_all_empty_side",
+			SchemaTemplate: "CREATE TABLE T_UE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UE VALUES (1, 100)",
+				"INSERT INTO T_UE VALUES (2, 200)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UE WHERE val > 1000 UNION ALL SELECT id FROM T_UE WHERE val > 50) AS u",
+		},
+
+		// ===== HAVING shapes =====
+		{
+			// HAVING with COUNT predicate over the whole table (no GROUP
+			// BY). Pins HAVING-without-GROUP-BY in both engines.
+			Name:           "having_count_predicate",
+			SchemaTemplate: "CREATE TABLE T_HC (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_HC VALUES (1, 10)",
+				"INSERT INTO T_HC VALUES (2, 20)",
+				"INSERT INTO T_HC VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_HC HAVING count(*) > 2",
+		},
+
+		// ===== Mixed-type arithmetic (DOUBLE + BIGINT) =====
+		{
+			// BIGINT + DOUBLE -> DOUBLE per SQL type-promotion lattice.
+			// Pins both engines pick DOUBLE result type for mixed-type
+			// arithmetic, not BIGINT or INTEGER.
+			Name:           "mixed_arith_bigint_plus_double_col",
+			SchemaTemplate: "CREATE TABLE T_MA3 (id BIGINT, b BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA3 VALUES (1, 10, 1.5)",
+				"INSERT INTO T_MA3 VALUES (2, 20, 2.25)",
+			},
+			Query: "SELECT id, b + d FROM T_MA3 ORDER BY id",
+		},
+		{
+			// DOUBLE / BIGINT preserves DOUBLE precision rather than
+			// integer-dividing. Pins type-aware division.
+			Name:           "mixed_arith_double_div_bigint",
+			SchemaTemplate: "CREATE TABLE T_MA4 (id BIGINT, b BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA4 VALUES (1, 4, 10.0)",
+				"INSERT INTO T_MA4 VALUES (2, 3, 10.0)",
+			},
+			Query: "SELECT id, d / b FROM T_MA4 ORDER BY id",
+		},
+
+		// ===== Three-valued logic in NOT shape =====
+		{
+			// `NOT (flag = TRUE)` — NOT forces predicate context so the
+			// inner parens are accepted. flag=TRUE → FALSE (excluded);
+			// flag=FALSE → TRUE (included); flag=NULL → NOT(NULL)=NULL
+			// (excluded). Pins NOT-of-NULL doesn't accidentally match.
+			Name:           "kleene_not_eq_true",
+			SchemaTemplate: "CREATE TABLE T_KNN (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_KNN VALUES (1, TRUE)",
+				"INSERT INTO T_KNN VALUES (2, FALSE)",
+				"INSERT INTO T_KNN VALUES (3, NULL)",
+			},
+			Query: "SELECT id FROM T_KNN WHERE NOT (flag = TRUE) ORDER BY id",
+		},
+		{
+			// (a > 5) AND (b > 5) where one side is NULL. UNKNOWN AND
+			// TRUE = UNKNOWN → row excluded. UNKNOWN AND FALSE = FALSE
+			// → row excluded. Pins AND-with-NULL collapses correctly.
+			Name:           "kleene_and_with_null_operand",
+			SchemaTemplate: "CREATE TABLE T_KAN (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_KAN VALUES (1, 10, 10)",
+				"INSERT INTO T_KAN VALUES (2, 10, NULL)",
+				"INSERT INTO T_KAN VALUES (3, NULL, 10)",
+				"INSERT INTO T_KAN VALUES (4, NULL, NULL)",
+				"INSERT INTO T_KAN VALUES (5, 1, 10)",
+			},
+			Query: "SELECT id FROM T_KAN WHERE a > 5 AND b > 5 ORDER BY id",
+		},
+
+		// ===== CAST chains and edge cases =====
+		{
+			// CAST(CAST(...)) chain — pins lossy round-trips. DOUBLE
+			// 1.5 → BIGINT (rounds to 2 per Java's Math.round) →
+			// DOUBLE 2.0. Both engines round identically.
+			Name:           "cast_chain_double_to_bigint_to_double",
+			SchemaTemplate: "CREATE TABLE T_CC1 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CC1 VALUES (1, 1.5)",
+				"INSERT INTO T_CC1 VALUES (2, 2.6)",
+				"INSERT INTO T_CC1 VALUES (3, 3.4)",
+			},
+			Query: "SELECT id, CAST(CAST(v AS BIGINT) AS DOUBLE) FROM T_CC1 ORDER BY id",
+		},
+		{
+			// CAST a typed NULL through different types — both engines
+			// preserve NULL through CAST. Pins typed-NULL round-trips.
+			Name:           "cast_typed_null_chain",
+			SchemaTemplate: "CREATE TABLE T_CTN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTN VALUES (1)",
+				"INSERT INTO T_CTN VALUES (2)",
+			},
+			Query: "SELECT id, CAST(CAST(NULL AS BIGINT) AS STRING) FROM T_CTN ORDER BY id",
+		},
+		{
+			// CAST(string AS BIGINT) — implicit numeric parsing.
+			// Pins both engines parse '42' identically.
+			Name:           "cast_string_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CSB (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CSB VALUES (1, '42')",
+				"INSERT INTO T_CSB VALUES (2, '-7')",
+				"INSERT INTO T_CSB VALUES (3, '0')",
+			},
+			Query: "SELECT id, CAST(s AS BIGINT) FROM T_CSB ORDER BY id",
+		},
+
+		// ===== UPDATE edge cases =====
+		{
+			// UPDATE with predicate referencing NEW logic — UPDATE
+			// SET val = val + 1 WHERE val < 50 — only some rows match.
+			Name:           "update_with_predicate",
+			SchemaTemplate: "CREATE TABLE T_UWP (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UWP VALUES (1, 10)",
+				"INSERT INTO T_UWP VALUES (2, 50)",
+				"INSERT INTO T_UWP VALUES (3, 100)",
+				"UPDATE T_UWP SET val = val + 1 WHERE val < 50",
+			},
+			Query: "SELECT id, val FROM T_UWP ORDER BY id",
+		},
+		{
+			// UPDATE setting one column to NULL. Pins NULL-to-column
+			// assignment in both engines.
+			Name:           "update_set_null",
+			SchemaTemplate: "CREATE TABLE T_USN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_USN VALUES (1, 'alice')",
+				"INSERT INTO T_USN VALUES (2, 'bob')",
+				"UPDATE T_USN SET name = NULL WHERE id = 2",
+			},
+			Query: "SELECT id, name FROM T_USN ORDER BY id",
+		},
+
+		// ===== Multi-CTE shapes =====
+		{
+			// Two CTEs in a single WITH clause; one feeds the other.
+			Name:           "cte_chain",
+			SchemaTemplate: "CREATE TABLE T_CCH (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CCH VALUES (1, 'us', 100)",
+				"INSERT INTO T_CCH VALUES (2, 'us', 200)",
+				"INSERT INTO T_CCH VALUES (3, 'eu', 50)",
+				"INSERT INTO T_CCH VALUES (4, 'eu', 300)",
+			},
+			Query: "WITH us AS (SELECT id, val FROM T_CCH WHERE region = 'us'), big AS (SELECT id, val FROM us WHERE val > 100) SELECT count(*) FROM big",
+		},
+
+		// ===== Aggregate edge cases (no GROUP BY) =====
+		{
+			// SUM/MIN/MAX on a column that's NULL in all rows.
+			// SUM(NULL) = NULL, MIN(NULL) = NULL, MAX(NULL) = NULL.
+			// Pins all-NULL aggregate result.
+			Name:           "agg_all_null_column",
+			SchemaTemplate: "CREATE TABLE T_AAN (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AAN VALUES (1, NULL)",
+				"INSERT INTO T_AAN VALUES (2, NULL)",
+				"INSERT INTO T_AAN VALUES (3, NULL)",
+			},
+			Query: "SELECT sum(val), min(val), max(val), count(val) FROM T_AAN",
+		},
+		{
+			// COUNT(*) over filtered single row — confirms simple
+			// aggregate path with WHERE pushdown.
+			Name:           "count_star_one_row",
+			SchemaTemplate: "CREATE TABLE T_C1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C1 VALUES (1, 10)",
+				"INSERT INTO T_C1 VALUES (2, 20)",
+				"INSERT INTO T_C1 VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_C1 WHERE id = 2",
+		},
+
+		// ===== Negative: WITH RECURSIVE non-self-referencing =====
+		{
+			// fdb-relational 4.11.1.0 rejects `WITH RECURSIVE name AS
+			// (non-self-ref-body)` with "condition is not met!" via its
+			// semantic-verifier check. SQL spec / Postgres permit the
+			// form (RECURSIVE is a scope enabler, not a requirement).
+			// Go aligns at execution time in select_dispatch.go (when
+			// `recursiveKeyword && !containsTableRef(body, cteName)`)
+			// emitting the SAME verbatim message. ExpectErrorMessage
+			// pins byte-equality. Per-entry isolation prevents Java
+			// state-leak from stalling other negative entries.
+			Name:           "recursive_cte_non_self_ref_rejected",
+			SchemaTemplate: "CREATE TABLE T_RNS (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RNS VALUES (1, -1)"},
+			Query:          "WITH RECURSIVE nonrec AS (SELECT id FROM T_RNS WHERE parent = -1) SELECT id FROM nonrec",
+		},
+		{
+			// Multi-CTE form: `WITH RECURSIVE roots AS (no-self-ref),
+			// descendants AS (... UNION ALL ...)` — direct probe against
+			// the Java conformance server  confirmed Java
+			// rejects this with the SAME verbatim "condition is not met!"
+			// message in ~1.2s (NOT a timeout). The earlier 156s harness
+			// hang was a per-entry-isolation gap: ExpectErrorMessage
+			// entries weren't getting fresh Java servers, so a sequence
+			// of two negative entries poisoned the second. Fixed in
+			// run_sql_conformance_test.go to give both ExpectErrorContains
+			// AND ExpectErrorMessage their own per-entry server.
+			Name:           "recursive_cte_multi_partial_self_ref_rejected",
+			SchemaTemplate: "CREATE TABLE T_RMP (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RMP VALUES (1, -1)",
+				"INSERT INTO T_RMP VALUES (2, 1)",
+			},
+			Query: "WITH RECURSIVE roots AS (SELECT id, parent FROM T_RMP WHERE parent = -1), descendants AS (SELECT id, parent FROM T_RMP WHERE id = 1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, T_RMP AS b WHERE b.parent = a.id) SELECT id FROM descendants",
+		},
+
+		// ===== JOIN with WHERE on inner table =====
+		{
+			// Comma-join with WHERE filter on the right table only —
+			// pins JOIN+filter pushdown semantics.
+			Name: "join_filter_inner_only",
+			SchemaTemplate: "CREATE TABLE T_J1 (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_J2 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_J1 VALUES (1, 'a')",
+				"INSERT INTO T_J1 VALUES (2, 'b')",
+				"INSERT INTO T_J2 VALUES (10, 1, 100)",
+				"INSERT INTO T_J2 VALUES (11, 1, 50)",
+				"INSERT INTO T_J2 VALUES (12, 2, 200)",
+				"INSERT INTO T_J2 VALUES (13, 2, 25)",
+			},
+			Query: "SELECT count(*) FROM T_J1 a, T_J2 b WHERE a.id = b.parent AND b.val > 75",
 		},
 	}
 }

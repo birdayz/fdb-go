@@ -86,6 +86,17 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 	// toward zero). Going through float first would turn 10 / 3 into
 	// 3.333 instead of 3, and unchecked ops would silently wrap
 	// MAX_INT + 1 to MIN_INT.
+	// String + string → concat (Java alignment). Java's
+	// `+` is overloaded for strings; fdb-relational evaluates
+	// 'foo' + 'bar' = 'foobar'. Other operators (- * / %) on strings
+	// remain unsupported.
+	if op == "+" {
+		if ls, lstr := left.(string); lstr {
+			if rs, rstr := right.(string); rstr {
+				return ls + rs, nil
+			}
+		}
+	}
 	li, lok := left.(int64)
 	ri, rok := right.(int64)
 	if lok && rok {
@@ -93,33 +104,33 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 		case "+":
 			r, ok := AddInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d + %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return r, nil
 		case "-":
 			r, ok := SubInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d - %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return r, nil
 		case "*":
 			r, ok := MulInt64Checked(li, ri)
 			if !ok {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d * %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return r, nil
 		case "/":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 			}
 			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "integer overflow on %d / %d", li, ri)
+				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "long overflow")
 			}
 			return li / ri, nil
 		case "%":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 			}
 			return li % ri, nil
 		default:
@@ -141,14 +152,15 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 	case "*":
 		result = lf * rf
 	case "/":
-		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
-		}
+		// Java IEEE-754 semantics for double division: x / 0.0 = ±Infinity,
+		// 0.0 / 0.0 = NaN. fdb-relational does NOT throw — only integer
+		// division throws ArithmeticException "/ by zero". Aligned
+		// A previous broad-stroke change incorrectly threw
+		// for both int and float).
 		result = lf / rf
 	case "%":
-		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
-		}
+		// Java's `%` over double follows Math.IEEEremainder-like — for
+		// rf=0 returns NaN, never throws. Mirror via math.Mod.
 		result = math.Mod(lf, rf)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)

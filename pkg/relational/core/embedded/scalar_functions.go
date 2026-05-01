@@ -78,6 +78,12 @@ func evalScalarFunctionCallCore(
 	case *antlrgen.UserDefinedScalarFunctionCallContext:
 		name = strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
 		args = f.FunctionArgs()
+	case *antlrgen.AggregateFunctionCallContext:
+		// Java verbatim: aggregate function in scalar (e.g. WHERE)
+		// context throws IllegalStateException 'unable to eval an
+		// aggregation function with eval()'.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unable to eval an aggregation function with eval()")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported function call type %T", fc)
 	}
@@ -298,14 +304,16 @@ func evalScalarFunctionCallCore(
 		if !aok || !bok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
 		}
-		if bf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "MOD: division by zero")
-		}
 		if _, aIsInt := av.(int64); aIsInt {
 			if _, bIsInt := bv.(int64); bIsInt {
+				if bf == 0 {
+					// Integer MOD by zero — Java throws "/ by zero".
+					return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
+				}
 				return int64(af) % int64(bf), nil
 			}
 		}
+		// Float MOD by zero returns NaN per IEEE-754; Java does not throw.
 		return math.Mod(af, bf), nil
 	case "POWER", "POW":
 		if len(fArgs) < 2 {

@@ -2985,7 +2985,12 @@ func TestFDB_UnionAll(t *testing.T) {
 	g.Expect(labels).To(gomega.ConsistOf("alpha", "beta"))
 }
 
-func TestFDB_UnionDistinct(t *testing.T) {
+// TestFDB_UnionDistinctRejected pins Java alignment: plain UNION
+// (without ALL) is rejected by fdb-relational with verbatim
+// "only UNION ALL is supported" because the planner has no
+// de-duplication operator. Per project conformance principle
+// (doesn't work in Java → doesn't work in Go), Go rejects too.
+func TestFDB_UnionDistinctRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3006,20 +3011,8 @@ func TestFDB_UnionDistinct(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Tag (id, tag) VALUES (1, 'go'), (2, 'go'), (3, 'fdb')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// UNION (implicit DISTINCT): duplicates removed.
-	rows, err := db.QueryContext(ctx, `SELECT tag FROM Tag WHERE id = 1 UNION SELECT tag FROM Tag WHERE id = 2`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var tags []string
-	for rows.Next() {
-		var tag string
-		g.Expect(rows.Scan(&tag)).To(gomega.Succeed())
-		tags = append(tags, tag)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// Two rows with tag='go' UNION'd → one row.
-	g.Expect(tags).To(gomega.ConsistOf("go"))
+	_, err = db.QueryContext(ctx, `SELECT tag FROM Tag WHERE id = 1 UNION SELECT tag FROM Tag WHERE id = 2`)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("only UNION ALL is supported")))
 }
 
 func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
@@ -6723,17 +6716,15 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 		`WITH C AS (SELECT n FROM T) SELECT COUNT(*) FROM C WHERE NOT n = NULL`).Scan(&c)).To(gomega.Succeed())
 	g.Expect(c).To(gomega.Equal(int64(0)), "CTE path: NOT (x = NULL) stays UNKNOWN")
 
-	// NULL literal inside IN-list: SQL §8.4 — both IN and NOT IN yield UNKNOWN
-	// when no element matches and any NULL is present in the list. Both filter
-	// out in WHERE. Note the grammar wraps (n IN ...) as a record constructor,
-	// so we use the bare form `n IN (1, NULL)`.
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(0)), "NOT IN (x, NULL) with x=1 matching drops id=1; id=2 is UNKNOWN")
-
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM T WHERE id IN (99, NULL)`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(0)), "IN (no-match, NULL) is UNKNOWN for every row, not FALSE")
+	// NULL literal inside IN-list: Java rejects with verbatim
+	// "NULL values are not allowed in the IN list" (22000). Aligned
+	//  — Go now rejects too. SQL §8.4 + Postgres would
+	// treat the list as UNKNOWN-tolerant; per project conformance
+	// principle (doesn't work in Java → doesn't work in Go), we reject.
+	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("NULL values are not allowed in the IN list")))
+	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id IN (99, NULL)`)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("NULL values are not allowed in the IN list")))
 
 	// BETWEEN NULL bound and LIKE NULL pattern — UNKNOWN propagation sanity.
 	// Grammar quirk: BETWEEN … AND … inside parens parses oddly; rely on

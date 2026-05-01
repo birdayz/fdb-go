@@ -31,6 +31,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/google/uuid"
@@ -227,7 +228,9 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 // coerceForComparison normalises Go driver values to match the Java
 // side's JSON-decoded representation. Numbers → float64, nil → nil,
 // strings/booleans pass through, []byte → base64 string (Java
-// encodes bytes as base64 in encodeValue).
+// encodes bytes as base64 in encodeValue). IEEE-754 specials
+// (±Infinity, NaN) are encoded as strings to match the Java conformance
+// server's JSON encoder (which can't emit those as bare JSON numbers).
 func coerceForComparison(v any) any {
 	if v == nil {
 		return nil
@@ -240,9 +243,9 @@ func coerceForComparison(v any) any {
 	case int:
 		return float64(x)
 	case float32:
-		return float64(x)
+		return floatSpecialOrFloat(float64(x))
 	case float64:
-		return x
+		return floatSpecialOrFloat(x)
 	case bool:
 		return x
 	case string:
@@ -252,6 +255,23 @@ func coerceForComparison(v any) any {
 		return base64Encode(x)
 	}
 	return v
+}
+
+// floatSpecialOrFloat returns "Infinity"/"-Infinity"/"NaN" for IEEE-754
+// specials, matching how Java's encodeValue serialises them as strings
+// (Gson's JsonPrimitive emits bare invalid-JSON tokens for these
+// otherwise). Plain float64 values pass through unchanged.
+func floatSpecialOrFloat(f float64) any {
+	if math.IsInf(f, +1) {
+		return "Infinity"
+	}
+	if math.IsInf(f, -1) {
+		return "-Infinity"
+	}
+	if math.IsNaN(f) {
+		return "NaN"
+	}
+	return f
 }
 
 // base64Encode renders a BYTES value to match Java's base64 wire
