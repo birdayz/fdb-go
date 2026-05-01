@@ -5574,6 +5574,192 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_IE14_DST ORDER BY id",
 		},
+
+		// ===== NULL handling, IS [NOT] DISTINCT FROM, COALESCE edges =====
+		{
+			// COALESCE with both args non-null — first arg wins. Pins
+			// the no-fallback branch through Java's COALESCE function.
+			Name:           "coalesce_both_non_null",
+			SchemaTemplate: "CREATE TABLE T_NLC1 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLC1 VALUES (1, 100, 200)",
+				"INSERT INTO T_NLC1 VALUES (2, 50, 75)",
+			},
+			Query: "SELECT id, COALESCE(x, y) FROM T_NLC1 ORDER BY id",
+		},
+		{
+			// COALESCE with first NULL, second non-null — fallback fires
+			// for every row. Companion to coalesce_both_non_null.
+			Name:           "coalesce_first_null_second_non_null",
+			SchemaTemplate: "CREATE TABLE T_NLC2 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLC2 VALUES (1, NULL, 200)",
+				"INSERT INTO T_NLC2 VALUES (2, NULL, 75)",
+			},
+			Query: "SELECT id, COALESCE(x, y) FROM T_NLC2 ORDER BY id",
+		},
+		{
+			// COALESCE chain of 4 args — pins multi-arg fold. Each row
+			// has NULLs in different positions to verify left-to-right
+			// scan: id=1 picks arg2, id=2 picks arg3, id=3 picks arg4,
+			// id=4 picks arg1.
+			Name:           "coalesce_four_arg_chain",
+			SchemaTemplate: "CREATE TABLE T_NLC3 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLC3 VALUES (1, NULL, 20, 30, 40)",
+				"INSERT INTO T_NLC3 VALUES (2, NULL, NULL, 30, 40)",
+				"INSERT INTO T_NLC3 VALUES (3, NULL, NULL, NULL, 40)",
+				"INSERT INTO T_NLC3 VALUES (4, 10, 20, 30, 40)",
+			},
+			Query: "SELECT id, COALESCE(a, b, c, d) FROM T_NLC3 ORDER BY id",
+		},
+		{
+			// COALESCE in WHERE clause — `COALESCE(col, 0) > 5` treats
+			// NULL as 0, so NULL rows are filtered out (0 not > 5).
+			Name:           "coalesce_in_where_filter",
+			SchemaTemplate: "CREATE TABLE T_NLC4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLC4 VALUES (1, 10)",
+				"INSERT INTO T_NLC4 VALUES (2, NULL)",
+				"INSERT INTO T_NLC4 VALUES (3, 3)",
+				"INSERT INTO T_NLC4 VALUES (4, 100)",
+			},
+			Query: "SELECT id FROM T_NLC4 WHERE COALESCE(val, 0) > 5 ORDER BY id",
+		},
+		{
+			// IS DISTINCT FROM with both non-null operands — degenerates
+			// to `<>`. Pins the non-null branch of the null-safe inequality.
+			// id=1 (5,5): NOT distinct, excluded. id=2 (5,10): distinct,
+			// included. id=3 (7,7): NOT distinct, excluded.
+			Name:           "is_distinct_from_both_non_null",
+			SchemaTemplate: "CREATE TABLE T_NLD1 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLD1 VALUES (1, 5, 5)",
+				"INSERT INTO T_NLD1 VALUES (2, 5, 10)",
+				"INSERT INTO T_NLD1 VALUES (3, 7, 7)",
+			},
+			Query: "SELECT id FROM T_NLD1 WHERE x IS DISTINCT FROM y ORDER BY id",
+		},
+		{
+			// IS DISTINCT FROM where one side is NULL — null-safe: NULL
+			// is distinct from any non-null value, so id=1 (NULL vs 5)
+			// included, id=2 (3 vs 5) included (3<>5), id=3 (5 vs 5)
+			// excluded, id=4 (NULL vs NULL) excluded (both NULL: not
+			// distinct).
+			Name:           "is_distinct_from_one_side_null",
+			SchemaTemplate: "CREATE TABLE T_NLD2 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLD2 VALUES (1, NULL, 5)",
+				"INSERT INTO T_NLD2 VALUES (2, 3, 5)",
+				"INSERT INTO T_NLD2 VALUES (3, 5, 5)",
+				"INSERT INTO T_NLD2 VALUES (4, NULL, NULL)",
+			},
+			Query: "SELECT id FROM T_NLD2 WHERE x IS DISTINCT FROM y ORDER BY id",
+		},
+		{
+			// IS NOT DISTINCT FROM where both sides are NULL — TRUE
+			// (opposite of `=`, which would be UNKNOWN). id=4 with
+			// (NULL,NULL) survives. id=1 (NULL vs 5): distinct → excluded.
+			// id=2 (3 vs 5): distinct → excluded. id=3 (5 vs 5): not
+			// distinct → included.
+			Name:           "is_not_distinct_from_both_null",
+			SchemaTemplate: "CREATE TABLE T_NLD3 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLD3 VALUES (1, NULL, 5)",
+				"INSERT INTO T_NLD3 VALUES (2, 3, 5)",
+				"INSERT INTO T_NLD3 VALUES (3, 5, 5)",
+				"INSERT INTO T_NLD3 VALUES (4, NULL, NULL)",
+			},
+			Query: "SELECT id FROM T_NLD3 WHERE x IS NOT DISTINCT FROM y ORDER BY id",
+		},
+		{
+			// IS NULL on a computed expression with two columns —
+			// `(a + b) IS NULL` is TRUE iff either operand is NULL.
+			// Distinct from existing is_null_on_arithmetic (single col +
+			// literal) — this exercises 3VL through binary-column add.
+			Name:           "is_null_on_two_col_add",
+			SchemaTemplate: "CREATE TABLE T_NLA1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLA1 VALUES (1, 10, 20)",
+				"INSERT INTO T_NLA1 VALUES (2, NULL, 5)",
+				"INSERT INTO T_NLA1 VALUES (3, 7, NULL)",
+				"INSERT INTO T_NLA1 VALUES (4, NULL, NULL)",
+			},
+			Query: "SELECT id FROM T_NLA1 WHERE (a + b) IS NULL ORDER BY id",
+		},
+		{
+			// IS NOT NULL filtering combined with another predicate.
+			// Pins the negated null-test path: NULL rows are excluded,
+			// then the value predicate further filters.
+			Name:           "is_not_null_with_value_predicate",
+			SchemaTemplate: "CREATE TABLE T_NLA2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLA2 VALUES (1, 10)",
+				"INSERT INTO T_NLA2 VALUES (2, NULL)",
+				"INSERT INTO T_NLA2 VALUES (3, 3)",
+				"INSERT INTO T_NLA2 VALUES (4, 50)",
+			},
+			Query: "SELECT id FROM T_NLA2 WHERE val IS NOT NULL AND val > 5 ORDER BY id",
+		},
+		{
+			// Searched-CASE returning NULL in some branches —
+			// `CASE WHEN cond THEN x ELSE NULL END`. Pins the
+			// NULL-result branch of CASE; THEN returns the column
+			// value, ELSE returns NULL literal.
+			Name:           "case_returning_null_else",
+			SchemaTemplate: "CREATE TABLE T_NLE1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLE1 VALUES (1, 10)",
+				"INSERT INTO T_NLE1 VALUES (2, 5)",
+				"INSERT INTO T_NLE1 VALUES (3, 100)",
+			},
+			Query: "SELECT id, CASE WHEN val > 7 THEN val ELSE NULL END FROM T_NLE1 ORDER BY id",
+		},
+		{
+			// Predicate `col = NULL` is UNKNOWN for every row, so the
+			// query returns no rows. Distinct from existing
+			// null_eq_yields_empty / null_in_equality (which use
+			// `name = NULL` on a STRING column) — this pins the BIGINT
+			// path with a typed-INT comparator and a non-empty table.
+			Name:           "where_bigint_eq_null_returns_empty",
+			SchemaTemplate: "CREATE TABLE T_NLW1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLW1 VALUES (1, 5)",
+				"INSERT INTO T_NLW1 VALUES (2, NULL)",
+				"INSERT INTO T_NLW1 VALUES (3, 10)",
+			},
+			Query: "SELECT id FROM T_NLW1 WHERE val = NULL ORDER BY id",
+		},
+		{
+			// Three-valued AND in WHERE: `(val IS NULL) AND (id > 0)`.
+			// `val IS NULL` is TRUE/FALSE (never UNKNOWN), so the AND
+			// behaves classically here — but exercises the boolean-AND
+			// codegen path with a null-test as the left operand. Only
+			// id=2 (NULL val) survives.
+			Name:           "is_null_and_id_predicate",
+			SchemaTemplate: "CREATE TABLE T_NLW2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLW2 VALUES (1, 5)",
+				"INSERT INTO T_NLW2 VALUES (2, NULL)",
+				"INSERT INTO T_NLW2 VALUES (3, 10)",
+			},
+			Query: "SELECT id FROM T_NLW2 WHERE val IS NULL AND id > 0 ORDER BY id",
+		},
+		{
+			// COALESCE where every row's first arg is non-null —
+			// short-circuits to arg1, fallback never fires. Companion
+			// to coalesce_first_null_second_non_null and
+			// coalesce_with_null. Pins the constant-fallback path
+			// when no row triggers it.
+			Name:           "coalesce_no_null_rows",
+			SchemaTemplate: "CREATE TABLE T_NLC5 (id BIGINT, x BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NLC5 VALUES (1, 100)",
+				"INSERT INTO T_NLC5 VALUES (2, 200)",
+				"INSERT INTO T_NLC5 VALUES (3, 300)",
+			},
+			Query: "SELECT id, COALESCE(x, -999) FROM T_NLC5 ORDER BY id",
+		},
 	}
 }
 
