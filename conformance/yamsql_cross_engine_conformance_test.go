@@ -222,6 +222,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		multiInsertSetupScenario(),
 		orderByCompositeIdxFilterScenario(),
 		updateChainScenario(),
+		betweenEdgeScenario(),
+		stringComparisonOpsScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
 	}
@@ -3201,6 +3203,63 @@ func updateChainScenario() *yamsql.Scenario {
 			// Aggregate over the post-chain state.
 			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{158}}},
 			{Query: "SELECT MAX(v) FROM t", Rows: [][]any{{99}}},
+		},
+	}
+}
+
+// betweenEdgeScenario probes BETWEEN with edge cases:
+// inclusive bounds, reversed bounds (where lo > hi → empty result per
+// SQL spec), NULL bounds, equal bounds, and combined with NOT BETWEEN.
+// Net-new nightshift-61.
+func betweenEdgeScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "between_edge",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, null), (5, 0)",
+		},
+		Tests: []yamsql.Test{
+			// Inclusive bounds: 10 BETWEEN 10 AND 20 → TRUE.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 10 AND 20 ORDER BY id", Rows: [][]any{{1}, {2}}},
+			// Reversed bounds (lo > hi) — per SQL spec returns empty set.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 20 AND 10 ORDER BY id", Rows: [][]any{}},
+			// Equal bounds (lo = hi) — equivalent to v = lo.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 20 AND 20 ORDER BY id", Rows: [][]any{{2}}},
+			// Boundary just below.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 0 AND 9 ORDER BY id", Rows: [][]any{{5}}},
+			// Boundary just above.
+			{Query: "SELECT id FROM t WHERE v BETWEEN 31 AND 100 ORDER BY id", Rows: [][]any{}},
+			// NOT BETWEEN excludes the range — NULL row also excluded by 3VL.
+			{Query: "SELECT id FROM t WHERE v NOT BETWEEN 10 AND 20 ORDER BY id", Rows: [][]any{{3}, {5}}},
+			// NOT BETWEEN combined with IS NULL gives the NULL row plus
+			// the out-of-range rows.
+			{Query: "SELECT id FROM t WHERE v NOT BETWEEN 10 AND 20 OR v IS NULL ORDER BY id", Rows: [][]any{{3}, {4}, {5}}},
+		},
+	}
+}
+
+// stringComparisonOpsScenario pins string comparison operators:
+// =, <>, <, <=, >, >=, with empty-string and lexicographic
+// edge cases. Net-new nightshift-61.
+func stringComparisonOpsScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "string_comparison_ops",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 'apple'), (2, 'banana'), (3, 'cherry'), (4, ''), (5, 'apple_more')",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT id FROM t WHERE s = 'apple'", Rows: [][]any{{1}}},
+			{Query: "SELECT id FROM t WHERE s <> 'apple' ORDER BY id", Rows: [][]any{{2}, {3}, {4}, {5}}},
+			// Lexicographic: '' < 'a' < 'apple' < 'apple_more' < 'banana' < 'cherry'.
+			{Query: "SELECT id FROM t WHERE s < 'apple' ORDER BY id", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM t WHERE s <= 'apple' ORDER BY id", Rows: [][]any{{1}, {4}}},
+			{Query: "SELECT id FROM t WHERE s > 'banana' ORDER BY id", Rows: [][]any{{3}}},
+			{Query: "SELECT id FROM t WHERE s >= 'banana' ORDER BY id", Rows: [][]any{{2}, {3}}},
+			// 'apple_more' > 'apple' (length-extension lexicographic).
+			{Query: "SELECT id FROM t WHERE s > 'apple' ORDER BY id", Rows: [][]any{{2}, {3}, {5}}},
+			// Equality comparison is case-sensitive.
+			{Query: "SELECT id FROM t WHERE s = 'APPLE' ORDER BY id", Rows: [][]any{}},
 		},
 	}
 }
