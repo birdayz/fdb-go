@@ -3097,13 +3097,13 @@ func coalesceTypePromotionScenario() *yamsql.Scenario {
 }
 
 // minMaxBigintBoundaryScenario pins MIN/MAX over int64 boundary values
-// without overflowing arithmetic. Java throws ArithmeticException on
-// arithmetic overflow (newly-discovered nightshift-61 — see CLAUDE.md
-// gotcha "Integer overflow Java throws, Go wraps"); Go's embedded
-// engine silently wraps. Both engines AGREE on MIN/MAX of stored
-// boundary values without intermediate arithmetic — that's what this
-// scenario pins. Arithmetic-overflow divergence is tracked as a
-// separate deferred TODO. Net-new nightshift-61.
+// without overflowing arithmetic. Both engines already agree on
+// arithmetic-overflow rejection (Java raises `ArithmeticException:
+// long overflow`; Go's `ApplyMathOp` raises
+// `ErrCodeNumericValueOutOfRange` via `AddInt64Checked`-family
+// helpers — only the error message text differs). MIN/MAX/COUNT
+// over stored boundary values doesn't trigger overflow either way.
+// Net-new nightshift-61.
 func minMaxBigintBoundaryScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "min_max_bigint_boundary",
