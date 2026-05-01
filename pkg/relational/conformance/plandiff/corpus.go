@@ -3386,6 +3386,28 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, CASE WHEN v < 100 THEN CASE WHEN v < 10 THEN 'tiny' ELSE 'small' END ELSE 'big' END FROM T_CN ORDER BY id",
 		},
+		{
+			// COALESCE 3-arg with mixed NULL sources.
+			Name:           "coalesce_three_args",
+			SchemaTemplate: "CREATE TABLE T_C3 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C3 VALUES (1, 'x', 'y')",
+				"INSERT INTO T_C3 VALUES (2, NULL, 'y')",
+				"INSERT INTO T_C3 VALUES (3, NULL, NULL)",
+			},
+			Query: "SELECT id, COALESCE(a, b, 'default') FROM T_C3 ORDER BY id",
+		},
+		{
+			// COALESCE in WHERE — boolean-context predicate.
+			Name:           "coalesce_in_where",
+			SchemaTemplate: "CREATE TABLE T_CW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CW VALUES (1, 10)",
+				"INSERT INTO T_CW VALUES (2, NULL)",
+				"INSERT INTO T_CW VALUES (3, 30)",
+			},
+			Query: "SELECT id FROM T_CW WHERE COALESCE(v, 0) > 5 ORDER BY id",
+		},
 		// ===== BETWEEN edge cases =====
 		{
 			// Single-value BETWEEN — `BETWEEN x AND x` reduces to
