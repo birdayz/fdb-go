@@ -708,11 +708,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					} else if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
 						v = functions.ProtoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
 					}
-					// DISTINCT-aggregate handling lived here pre-nightshift-61.
-					// Removed: the early-return guard near the top of the
-					// proto aggregate path (line ~533) rejects every
-					// aggDistinct=true entry before reaching this loop, so
-					// the per-aggregate DISTINCT branch was dead code.
 					// COUNT(*) counts every row including all-NULL; no argument.
 					if ac.aggFunc == "COUNT" && !hasArg {
 						gs.counts[i]++

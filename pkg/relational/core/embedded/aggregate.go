@@ -310,11 +310,6 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			hasArg := ac.aggArg != "" || ac.aggExpr != nil
-			// DISTINCT-aggregate handling lived here pre-nightshift-61.
-			// Removed: the early-return guard at the top of
-			// aggregateMapRows rejects every aggDistinct=true entry
-			// before reaching this loop, so the per-aggregate DISTINCT
-			// branch was dead code.
 			// COUNT(*) (no arg) counts every row, including all-NULL.
 			// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
 			if ac.aggFunc == "COUNT" && !hasArg {
