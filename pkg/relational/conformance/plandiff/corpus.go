@@ -3398,6 +3398,25 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, COALESCE(a, b, 'default') FROM T_C3 ORDER BY id",
 		},
 		{
+			// SELECT projection with comma-join + WHERE filter.
+			Name:           "comma_join_where",
+			SchemaTemplate: "CREATE TABLE T_CJA (id BIGINT, x BIGINT, PRIMARY KEY (id)) CREATE TABLE T_CJB (id BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CJA VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_CJB VALUES (1, 100), (2, 200)",
+			},
+			Query: "SELECT a.id, a.x, b.y FROM T_CJA a, T_CJB b WHERE a.id = b.id ORDER BY a.id",
+		},
+		{
+			// NOT BETWEEN range exclusion.
+			Name:           "not_between",
+			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NB VALUES (1, 5), (2, 15), (3, 25)",
+			},
+			Query: "SELECT id FROM T_NB WHERE v NOT BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
 			// COALESCE in WHERE — boolean-context predicate.
 			Name:           "coalesce_in_where",
 			SchemaTemplate: "CREATE TABLE T_CW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
