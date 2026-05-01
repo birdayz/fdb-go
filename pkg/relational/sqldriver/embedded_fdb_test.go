@@ -57,6 +57,21 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// expectUnsupportedOperator asserts that err unwraps to an *api.Error
+// with code ErrCodeUnsupportedOperation and the byte-equal Java
+// rejection message ("Unsupported operator <opName>"). Used by the
+// rejection-suite tests pinning Java alignment for scalar functions
+// not in fdb-relational's registry.
+func expectUnsupportedOperator(g gomega.Gomega, err error, opName, ctx string) {
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"%s: want *api.Error, got %T (%v)", ctx, err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+		"%s: want ErrCodeUnsupportedOperation, got %s", ctx, apiErr.Code)
+	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+opName),
+		"%s: want byte-equal Java message", ctx)
+}
+
 // openTestDB returns a *sql.DB wired to the test FDB container.
 // Skips the test if Docker is not available.
 func openTestDB(t *testing.T, dbPath string) *sql.DB {
@@ -2905,13 +2920,7 @@ func TestFDB_StringFunctionsRejected(t *testing.T) {
 		var dummy any
 		err := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(err).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, err, err)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, err, tc.opName, tc.query)
 	}
 }
 
@@ -2954,13 +2963,7 @@ func TestFDB_ConcatNullIfRejected(t *testing.T) {
 		var dummy any
 		err := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(err).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, err, err)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, err, tc.opName, tc.query)
 	}
 
 	// Searched-CASE — the workaround for NULLIF — must still work.
@@ -3172,13 +3175,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 
 	// IF function
@@ -3266,13 +3263,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, q).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", q)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", q, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q", q)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator ROUND"),
-			"query %q", q)
+		expectUnsupportedOperator(g, errRej, "ROUND", q)
 	}
 }
 
@@ -3314,11 +3305,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 		var dummy int64
 		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(2, 3) FROM Num WHERE id = 1`, op)).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"%s: want *api.Error, got %T (%v)", op, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator " + op))
+		expectUnsupportedOperator(g, errRej, op, "op="+op)
 	}
 
 	// ABS / SQRT — same rejection.
@@ -3326,11 +3313,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(val) FROM Num WHERE id = 1`, op)).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"%s: want *api.Error, got %T (%v)", op, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator " + op))
+		expectUnsupportedOperator(g, errRej, op, "op="+op)
 	}
 
 	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
@@ -4360,11 +4343,7 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 			WITH products AS (SELECT id, name, price FROM Product)
 			SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "UPPER in WHERE must be rejected")
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"want *api.Error, got %T (%v)", errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator UPPER"))
+		expectUnsupportedOperator(g, errRej, "UPPER", "UPPER in WHERE on CTE")
 	}
 
 	// COALESCE in SELECT projection on a CTE.
@@ -4868,11 +4847,7 @@ func TestFDB_UpdateSetWithFunctionRejected(t *testing.T) {
 
 	_, errRej := db.ExecContext(ctx, `UPDATE Product SET name = UPPER(name) WHERE id = 1`)
 	g.Expect(errRej).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-		"want *api.Error, got %T (%v)", errRej, errRej)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator UPPER"))
+	expectUnsupportedOperator(g, errRej, "UPPER", "UPDATE SET UPPER")
 
 	// The row must be unchanged after the rejected UPDATE.
 	var n string
@@ -5036,13 +5011,7 @@ func TestFDB_LtrimRtrimRejected(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 }
 
@@ -5213,11 +5182,7 @@ func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 		errRej := db.QueryRowContext(ctx,
 			`SELECT LOWER(TRIM(name)) FROM T WHERE id = 1`).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred())
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"want *api.Error, got %T (%v)", errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator LOWER"))
+		expectUnsupportedOperator(g, errRej, "LOWER", "proto: LOWER(TRIM(...)) projection")
 	}
 
 	// Proto path: LENGTH(TRIM(...)) in WHERE — outer LENGTH rejected.
@@ -5226,11 +5191,7 @@ func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 		errRej := db.QueryRowContext(ctx,
 			`SELECT id FROM T WHERE LENGTH(TRIM(name)) > 3`).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred())
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"want *api.Error, got %T (%v)", errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator LENGTH"))
+		expectUnsupportedOperator(g, errRej, "LENGTH", "proto: LENGTH(TRIM(...)) in WHERE")
 	}
 
 	// Map (CTE) path: same shape, same rejection class, byte-equal
@@ -5243,11 +5204,7 @@ func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 			WITH cte AS (SELECT id, name, qty FROM T)
 			SELECT LOWER(TRIM(name)) FROM cte WHERE id = 1`).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred())
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"want *api.Error, got %T (%v)", errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator LOWER"))
+		expectUnsupportedOperator(g, errRej, "LOWER", "map: LOWER(TRIM(...)) on CTE")
 	}
 }
 
@@ -5284,11 +5241,7 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 		`SELECT UPPER(CASE WHEN qty > 0 THEN 'yes' ELSE 'no' END) FROM T WHERE id = 1`).
 		Scan(&dummy)
 	g.Expect(errRej).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-		"want *api.Error, got %T (%v)", errRej, errRej)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator UPPER"))
+	expectUnsupportedOperator(g, errRej, "UPPER", "UPPER wrapping CASE")
 }
 
 func TestFDB_AggregateOrderByStrict(t *testing.T) {
@@ -5535,11 +5488,7 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	// STRING-family scalar functions in INSERT VALUES — rejected.
 	_, errRej := db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES (4, UPPER('x'), 0)`)
 	g.Expect(errRej).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-		"want *api.Error, got %T (%v)", errRej, errRej)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
-	g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator UPPER"))
+	expectUnsupportedOperator(g, errRej, "UPPER", "INSERT VALUES UPPER")
 }
 
 func TestFDB_EmptyResultEdgeCases(t *testing.T) {
@@ -5677,13 +5626,7 @@ func TestFDB_LeftRightRejected(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 }
 
@@ -5724,13 +5667,7 @@ func TestFDB_ReversePositionRejected(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 }
 
@@ -5785,13 +5722,7 @@ func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 }
 
@@ -6827,13 +6758,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 
 	// LEFT / RIGHT / SUBSTRING are STRING-family scalar functions that
@@ -6856,13 +6781,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 		var dummy any
 		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
 		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		var apiErr *api.Error
-		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
-			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
-		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
-			"query %q: want ErrCodeUnsupportedOperation", tc.query)
-		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
-			"query %q: want byte-equal Java message", tc.query)
+		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 }
 
