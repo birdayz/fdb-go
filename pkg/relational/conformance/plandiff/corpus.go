@@ -5410,6 +5410,170 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT g.id, p.name, gp.name FROM T_JE21 g, T_JE21 p, T_JE21 gp WHERE g.parent = p.id AND p.parent = gp.id ORDER BY g.id",
 		},
+
+		// ===== INSERT edge cases =====
+		{
+			// Multi-row INSERT in one statement with STRING values —
+			// pins both engines accept comma-separated row constructors
+			// inside a single VALUES clause (vs. one INSERT per row).
+			Name:           "insert_multi_row_strings",
+			SchemaTemplate: "CREATE TABLE T_IE1 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE1 VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+			},
+			Query: "SELECT id, name FROM T_IE1 ORDER BY id",
+		},
+		{
+			// Explicit column list in REVERSE declaration order — pins
+			// that the engines bind values to columns by NAME, not by
+			// positional VALUES index.
+			Name:           "insert_explicit_cols_reverse_order",
+			SchemaTemplate: "CREATE TABLE T_IE2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE2 (v, id) VALUES (99, 1)",
+				"INSERT INTO T_IE2 (v, id) VALUES (88, 2)",
+			},
+			Query: "SELECT id, v FROM T_IE2 ORDER BY id",
+		},
+		{
+			// Explicit column list specifying only PK + one of two
+			// nullable columns; the omitted column reads back NULL.
+			Name:           "insert_explicit_cols_partial",
+			SchemaTemplate: "CREATE TABLE T_IE3 (id BIGINT, a BIGINT, b STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE3 (id, a) VALUES (1, 10)",
+				"INSERT INTO T_IE3 (id, b) VALUES (2, 'x')",
+			},
+			Query: "SELECT id, a, b FROM T_IE3 ORDER BY id",
+		},
+		{
+			// INSERT then UPDATE then SELECT round-trip — pins that an
+			// UPDATE inside SetupSqls observes the just-INSERTed rows
+			// (no cross-statement isolation surprise).
+			Name:           "insert_update_select_roundtrip",
+			SchemaTemplate: "CREATE TABLE T_IE4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE4 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_IE4 SET val = val * 10",
+			},
+			Query: "SELECT id, val FROM T_IE4 ORDER BY id",
+		},
+		{
+			// INSERT with arithmetic expression as a VALUES element —
+			// pins constant folding / expression-eval at INSERT time.
+			Name:           "insert_arith_value",
+			SchemaTemplate: "CREATE TABLE T_IE5 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE5 VALUES (1, 5 + 3)",
+				"INSERT INTO T_IE5 VALUES (2, 10 * 2)",
+				"INSERT INTO T_IE5 VALUES (3, 100 - 1)",
+			},
+			Query: "SELECT id, v FROM T_IE5 ORDER BY id",
+		},
+		{
+			// INSERT with NULL literal in non-PK STRING + DOUBLE columns
+			// — pins NULL acceptance in distinct primitive types within
+			// the same row.
+			Name:           "insert_null_in_nonpk_mixed",
+			SchemaTemplate: "CREATE TABLE T_IE6 (id BIGINT, name STRING, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE6 VALUES (1, NULL, 1.5)",
+				"INSERT INTO T_IE6 VALUES (2, 'b', NULL)",
+				"INSERT INTO T_IE6 VALUES (3, NULL, NULL)",
+			},
+			Query: "SELECT id, name, val FROM T_IE6 ORDER BY id",
+		},
+		{
+			// INSERT INTO target SELECT * FROM source — full-row copy
+			// (no projection, no WHERE) between identical schemas.
+			Name:           "insert_select_star_copy",
+			SchemaTemplate: "CREATE TABLE T_IE7_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IE7_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE7_SRC VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_IE7_DST SELECT * FROM T_IE7_SRC",
+			},
+			Query: "SELECT id, val FROM T_IE7_DST ORDER BY id",
+		},
+		{
+			// INSERT then DELETE-all leaves zero rows — count(*) = 0
+			// pins delete-all semantics under cross-engine.
+			Name:           "insert_then_delete_all_zero",
+			SchemaTemplate: "CREATE TABLE T_IE8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE8 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_IE8 WHERE id > 0",
+			},
+			Query: "SELECT count(*) FROM T_IE8",
+		},
+		{
+			// Three-step DML: INSERT, UPDATE, DELETE in setup, then
+			// SELECT pins the survived rows. Exercises full mutation
+			// chain ordering across engines.
+			Name:           "multi_dml_insert_update_delete",
+			SchemaTemplate: "CREATE TABLE T_IE9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE9 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"UPDATE T_IE9 SET val = val + 1 WHERE id = 2",
+				"DELETE FROM T_IE9 WHERE id = 3",
+			},
+			Query: "SELECT id, val FROM T_IE9 ORDER BY id",
+		},
+		{
+			// INSERT into a table with composite PRIMARY KEY (region,
+			// id). Multi-row insert mixes regions; pins composite-PK
+			// row materialisation.
+			Name:           "insert_composite_pk_multi_row",
+			SchemaTemplate: "CREATE TABLE T_IE10 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE10 VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 300), ('eu', 2, 400)",
+			},
+			Query: "SELECT region, id, val FROM T_IE10 ORDER BY region, id",
+		},
+		{
+			// INSERT N rows then count(*) — pins that count(*) recovers
+			// the exact number of inserted rows under both engines.
+			Name:           "insert_count_recovery",
+			SchemaTemplate: "CREATE TABLE T_IE11 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE11 VALUES (1), (2), (3), (4), (5), (6), (7)",
+			},
+			Query: "SELECT count(*) FROM T_IE11",
+		},
+		{
+			// INSERT empty STRING — pins '' (empty, non-NULL) is stored
+			// and reads back as empty STRING (distinct from NULL).
+			Name:           "insert_empty_string",
+			SchemaTemplate: "CREATE TABLE T_IE12 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE12 VALUES (1, ''), (2, 'x'), (3, '')",
+			},
+			Query: "SELECT id, name FROM T_IE12 ORDER BY id",
+		},
+		{
+			// INSERT then DELETE matched rows then INSERT new rows —
+			// pins re-use of the deleted PKs and ordering of subsequent
+			// INSERTs against partially-mutated state.
+			Name:           "insert_delete_reinsert_pk_reuse",
+			SchemaTemplate: "CREATE TABLE T_IE13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE13 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_IE13 WHERE id = 1",
+				"INSERT INTO T_IE13 VALUES (1, 999)",
+			},
+			Query: "SELECT id, val FROM T_IE13 ORDER BY id",
+		},
+		{
+			// INSERT-from-SELECT projecting an arithmetic expression
+			// from the source table — pins that the projected value
+			// (not raw source col) lands in target.
+			Name:           "insert_select_with_arith_proj",
+			SchemaTemplate: "CREATE TABLE T_IE14_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IE14_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IE14_SRC VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_IE14_DST SELECT id, val * 2 FROM T_IE14_SRC",
+			},
+			Query: "SELECT id, val FROM T_IE14_DST ORDER BY id",
+		},
 	}
 }
 
