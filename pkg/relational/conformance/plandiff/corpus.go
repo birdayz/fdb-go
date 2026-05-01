@@ -843,6 +843,39 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_SSR VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTRING(name, 1, 3) FROM T_SSR WHERE id = 1",
 		},
+		{
+			// ARITHMETIC-family: ABS. fdb-relational 4.11.1.0's
+			// ArithmeticValue registry has only Add / Sub / Mul / Div
+			// / Mod / bitwise — no math functions. Java's planner
+			// returns `Unsupported operator ABS`; Go matches via the
+			// default arm (TODO #3 swingshift-64).
+			Name:           "arith_abs_rejected",
+			SchemaTemplate: "CREATE TABLE T_ABS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ABS VALUES (1, -5)"},
+			Query:          "SELECT ABS(v) FROM T_ABS WHERE id = 1",
+		},
+		{
+			// ARITHMETIC-family: POWER (multi-arg). Pins the
+			// registry-miss is wording-stable across arities.
+			Name:           "arith_power_rejected",
+			SchemaTemplate: "CREATE TABLE T_POW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_POW VALUES (1, 3)"},
+			Query:          "SELECT POWER(v, 2) FROM T_POW WHERE id = 1",
+		},
+		{
+			// DATETIME-family: NOW() — MySQL-style alias not in
+			// fdb-relational's SqlFunctionCatalogImpl synonym map.
+			// Java rejects with `Unsupported operator NOW`. Note: the
+			// SQL-standard form `CURRENT_TIMESTAMP` (no parens) does
+			// NOT route through this path — it's a SimpleFunctionCall
+			// grammar node where Java's BaseVisitor returns
+			// visitChildren (broken pass-through), so cross-engine
+			// alignment for that form is intentionally skipped.
+			Name:           "datetime_now_rejected",
+			SchemaTemplate: "CREATE TABLE T_NOW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NOW VALUES (1, 0)"},
+			Query:          "SELECT NOW() FROM T_NOW WHERE id = 1",
+		},
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
 		// (Cascades has no rule to satisfy the ordering); Go with

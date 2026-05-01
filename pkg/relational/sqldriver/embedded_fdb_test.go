@@ -3297,14 +3297,32 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(rows.Scan(&mod)).To(gomega.Succeed())
 	g.Expect(mod).To(gomega.Equal(int64(1)))
 
-	// POWER(2, 3) = 8
-	rows2, err := db.QueryContext(ctx, `SELECT POWER(2, 3) FROM Num WHERE id = 1`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-	rows2.Next()
-	var pow int64
-	g.Expect(rows2.Scan(&pow)).To(gomega.Succeed())
-	g.Expect(pow).To(gomega.Equal(int64(8)))
+	// POWER / POW are absent from fdb-relational 4.11.1.0's
+	// ArithmeticValue registry; Java's planner emits "Unsupported
+	// operator <NAME>" (0A000) before evaluation. Go mirrors
+	// byte-equal via the default arm in scalar_functions.go.
+	for _, op := range []string{"POWER", "POW"} {
+		var dummy int64
+		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(2, 3) FROM Num WHERE id = 1`, op)).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
+		var apiErr *api.Error
+		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
+			"%s: want *api.Error, got %T (%v)", op, errRej, errRej)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator " + op))
+	}
+
+	// ABS / SQRT — same rejection.
+	for _, op := range []string{"ABS", "SQRT"} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(val) FROM Num WHERE id = 1`, op)).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
+		var apiErr *api.Error
+		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
+			"%s: want *api.Error, got %T (%v)", op, errRej, errRej)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator " + op))
+	}
 
 	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
 	// in SqlFunctionCatalogImpl; Go was missing the BitExpressionAtomContext
@@ -5441,11 +5459,11 @@ func TestFDB_CaseInWhere(t *testing.T) {
 }
 
 // TestFDB_InsertMultiRowWithExpressions pins INSERT VALUES with row
-// expressions. Arithmetic and ABS work; STRING-family scalar functions
-// (UPPER / LOWER / CONCAT) are rejected by Java's function registry —
-// each rejected call surfaces ErrCodeUnsupportedOperation. The
-// "multi-row VALUES with arithmetic expressions" shape is preserved
-// using arithmetic + ABS only.
+// expressions. Arithmetic + CASE work; STRING-family scalar functions
+// (UPPER / LOWER / CONCAT) and ABS / SQRT / POWER are rejected by
+// Java's function registry — each rejected call surfaces
+// ErrCodeUnsupportedOperation. The "multi-row VALUES with mixed
+// expressions" shape is preserved using arithmetic + CASE only.
 func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -5465,11 +5483,14 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Multi-row INSERT VALUES with arithmetic + ABS — both supported.
+	// Multi-row INSERT VALUES with arithmetic + CASE — both
+	// supported (ABS used to live in slot 3 but is now Java-rejected
+	// at the registry layer; the rejection is asserted in
+	// TestFDB_MathFunctions).
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES
 		(1, 'alpha', 5 + 5),
 		(2, 'beta', 20 * 2),
-		(3, 'ab', ABS(-42))`)
+		(3, 'ab', CASE WHEN 1 < 2 THEN 42 ELSE 0 END)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx, `SELECT id, name, doubled FROM T ORDER BY id ASC`)
@@ -5688,6 +5709,9 @@ func TestFDB_ReversePositionRejected(t *testing.T) {
 	}
 }
 
+// TestFDB_MathFunctionsTranscendental pins EXP / LN / LOG (still in
+// Go) and the rejection of SQRT / POWER / POW (Java-aligned —
+// fdb-relational 4.11.1.0's ArithmeticValue registry has neither).
 func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -5710,41 +5734,50 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, x) VALUES (1, 16)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// SQRT(16) = 4.0, EXP(0) = 1.0, LN(1) = 0, LOG(2, 8) = 3.
-	var s, e, l, lb float64
+	// EXP(0) = 1, LN(1) = 0, LOG(2, 8) = 3 — still in Go.
+	var e, l, lb float64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT SQRT(x), EXP(0), LN(1), LOG(2, 8) FROM T WHERE id = 1`).
-		Scan(&s, &e, &l, &lb)).To(gomega.Succeed())
-	g.Expect(s).To(gomega.Equal(4.0))
+		`SELECT EXP(0), LN(1), LOG(2, 8) FROM T WHERE id = 1`).
+		Scan(&e, &l, &lb)).To(gomega.Succeed())
 	g.Expect(e).To(gomega.Equal(1.0))
 	g.Expect(l).To(gomega.Equal(0.0))
 	g.Expect(lb).To(gomega.BeNumerically("~", 3.0, 1e-9))
-
-	// SQRT of negative → NULL.
-	var v sql.NullFloat64
-	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(-1) FROM T WHERE id = 1`).Scan(&v)).To(gomega.Succeed())
-	g.Expect(v.Valid).To(gomega.BeFalse())
 
 	// EXP overflow → NULL (matches MySQL).
 	var e2 sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx, `SELECT EXP(1000) FROM T WHERE id = 1`).Scan(&e2)).To(gomega.Succeed())
 	g.Expect(e2.Valid).To(gomega.BeFalse())
 
-	// swingshift-35: POWER returns NULL on math domain errors.
-	// POWER(0, -1) → +Inf (division by zero); POWER(-1, 0.5) → NaN (complex).
-	// Both must be NULL, not silently returned as NaN/Inf that would poison
-	// downstream comparisons (NaN != NaN).
-	var p sql.NullFloat64
-	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(0, -1) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
-	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(0, -1) must be NULL, not +Inf")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(-1, 0.5) FROM T WHERE id = 1`).Scan(&p)).To(gomega.Succeed())
-	g.Expect(p.Valid).To(gomega.BeFalse(), "POWER(-1, 0.5) must be NULL, not NaN")
-
-	// Normal POWER still works.
-	var p2 float64
-	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(2, 10) FROM T WHERE id = 1`).Scan(&p2)).To(gomega.Succeed())
-	g.Expect(p2).To(gomega.Equal(1024.0))
+	// SQRT / POWER / POW — Java-aligned rejection. fdb-relational
+	// 4.11.1.0's ArithmeticValue registry has only Add/Sub/Mul/
+	// Div/Mod/bitwise; Java's planner emits "Unsupported operator
+	// <NAME>" (0A000) before evaluation. Both proto-path and the
+	// default arm in scalar_functions.go now produce the byte-equal
+	// wording. Pre-cleanup Go evaluated SQRT (NULL on negative,
+	// real-domain otherwise) and POWER (NULL on NaN/Inf, otherwise
+	// math.Pow) — those Go-side evaluators have been removed.
+	for _, tc := range []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT SQRT(x) FROM T WHERE id = 1`, "SQRT"},
+		{`SELECT SQRT(-1) FROM T WHERE id = 1`, "SQRT"},
+		{`SELECT POWER(2, 10) FROM T WHERE id = 1`, "POWER"},
+		{`SELECT POWER(0, -1) FROM T WHERE id = 1`, "POWER"},
+		{`SELECT POWER(-1, 0.5) FROM T WHERE id = 1`, "POWER"},
+		{`SELECT POW(2, 10) FROM T WHERE id = 1`, "POW"},
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		var apiErr *api.Error
+		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
+			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+			"query %q", tc.query)
+		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
+			"query %q", tc.query)
+	}
 }
 
 func TestFDB_ParameterizedSubquery(t *testing.T) {
@@ -5883,14 +5916,16 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	// input). STRING-family scalar functions (UPPER / LOWER / TRIM)
 	// are absent from Java's function registry — those are pinned
 	// to reject in TestFDB_StringFunctionsRejected and friends, not
-	// here. NULL-propagation through accepted functions (ABS, SQRT)
-	// is what's asserted on this path.
-	var absv, sqrtv sql.NullFloat64
+	// here. ABS / SQRT are also absent (swingshift-64 TODO #3) and
+	// rejected at the registry layer; the NULL-propagation focus
+	// here uses still-Go functions (FLOOR, SIGN) whose evaluators
+	// preserve SQL-standard NULL-in/NULL-out semantics.
+	var floorv, signv sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT ABS(val), SQRT(val) FROM T WHERE id = 1`).
-		Scan(&absv, &sqrtv)).To(gomega.Succeed())
-	g.Expect(absv.Valid).To(gomega.BeFalse())
-	g.Expect(sqrtv.Valid).To(gomega.BeFalse())
+		`SELECT FLOOR(val), SIGN(val) FROM T WHERE id = 1`).
+		Scan(&floorv, &signv)).To(gomega.Succeed())
+	g.Expect(floorv.Valid).To(gomega.BeFalse())
+	g.Expect(signv.Valid).To(gomega.BeFalse())
 
 	// COALESCE short-circuits on non-NULL argument.
 	var coalesced string
@@ -6089,13 +6124,19 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
-			// nightshift-36: ABS(MinInt64) returns 22003
-			// (NUMERIC_VALUE_OUT_OF_RANGE), matching the arithmetic-
-			// overflow sites. Previously 22023 (INVALID_PARAMETER) —
-			// the more precise SQL-standard class-22 code is now in use.
-			name:     "ABS(MinInt64) overflow",
+			// ABS is absent from fdb-relational 4.11.1.0's
+			// ArithmeticValue registry — Java's planner emits
+			// "Unsupported operator ABS" (SQLSTATE 0A000) before any
+			// argument validation runs. Pre-cleanup, Go evaluated ABS
+			// and rejected MinInt64 with 22003 NUMERIC_VALUE_OUT_OF_RANGE;
+			// with the Go-side dispatch removed (swingshift-64 TODO #3),
+			// the rejection now fires at the function-registry layer
+			// with 0A000 and the byte-equal Java message. Per project
+			// conformance principle: doesn't work in Java → doesn't
+			// work in Go.
+			name:     "ABS (function rejected before arg check)",
 			sql:      "SELECT ABS(-9223372036854775808)",
-			wantCode: api.ErrCodeNumericValueOutOfRange,
+			wantCode: api.ErrCodeUnsupportedOperation,
 		},
 		{
 			// SUBSTRING is absent from fdb-relational 4.11.1.0's
@@ -6684,7 +6725,11 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 // TestFDB_MediumAuditFixes covers three MEDIUM items from the dayshift-34
 // 5-agent QA audit in one place:
 //   - CAST(NULL AS <type>) must return NULL of the target type, not error
-//   - ABS(MinInt64) must error (two's-complement overflow is undefined)
+//   - ABS / SQRT / POWER are absent from fdb-relational 4.11.1.0's
+//     ArithmeticValue registry — Java's planner emits "Unsupported
+//     operator <NAME>" (0A000) before evaluation. The MinInt64 overflow
+//     check that used to live here is unreachable; assert the rejection
+//     fires instead.
 //   - LEFT/RIGHT/SUBSTRING float-length arg must error, not silently truncate
 func TestFDB_MediumAuditFixes(t *testing.T) {
 	t.Parallel()
@@ -6718,28 +6763,30 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 		g.Expect(out.Valid).To(gomega.BeFalse(), "CAST(NULL AS %s) must be NULL", cast)
 	}
 
-	// ABS(MinInt64) must error (previously flipped sign back to MinInt64 silently).
-	queryErr := func(sql string) error {
-		rows, e := db.QueryContext(ctx, sql)
-		if e != nil {
-			return e
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var v any
-			if se := rows.Scan(&v); se != nil {
-				return se
-			}
-		}
-		return rows.Err()
+	// ABS / SQRT / POWER — Java-aligned rejection. The MinInt64
+	// overflow check that lived here previously is unreachable now
+	// that the function-registry rejection fires before any
+	// argument validation.
+	for _, tc := range []struct {
+		query  string
+		opName string
+	}{
+		{`SELECT ABS(n) FROM T WHERE id = 1`, "ABS"},
+		{`SELECT ABS(n) FROM T WHERE id = 2`, "ABS"},
+		{`SELECT SQRT(n) FROM T WHERE id = 2`, "SQRT"},
+		{`SELECT POWER(n, 2) FROM T WHERE id = 2`, "POWER"},
+	} {
+		var dummy any
+		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
+		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
+		var apiErr *api.Error
+		g.Expect(errors.As(errRej, &apiErr)).To(gomega.BeTrue(),
+			"query %q: want *api.Error, got %T (%v)", tc.query, errRej, errRej)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+			"query %q", tc.query)
+		g.Expect(apiErr.Message).To(gomega.Equal("Unsupported operator "+tc.opName),
+			"query %q", tc.query)
 	}
-	g.Expect(queryErr(`SELECT ABS(n) FROM T WHERE id = 1`)).
-		To(gomega.HaveOccurred(), "ABS(MinInt64) must error rather than wrap")
-
-	// Sanity: ABS on positive/negative non-MinInt64 still works.
-	var absOut int64
-	g.Expect(db.QueryRowContext(ctx, `SELECT ABS(n) FROM T WHERE id = 2`).Scan(&absOut)).To(gomega.Succeed())
-	g.Expect(absOut).To(gomega.Equal(int64(5)))
 
 	// LEFT / RIGHT / SUBSTRING are STRING-family scalar functions that
 	// fdb-relational 4.11.1.0 has no entries for — Java's planner

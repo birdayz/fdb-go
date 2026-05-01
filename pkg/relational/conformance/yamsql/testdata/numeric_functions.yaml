@@ -1,9 +1,20 @@
 # numeric_functions.yaml
 #
-# Scalar numeric functions — ABS / SIGN / FLOOR / CEIL / ROUND / MOD
-# / POWER / SQRT / EXP / LN / LOG / PI. Pinned here so future
-# refactors of evalScalarFunctionCallCore don't silently regress any
-# of them. NULL propagation follows SQL standard (NULL in → NULL out).
+# Scalar numeric functions. Two groups:
+#
+#   * Still in Go (and pinned here): SIGN / FLOOR / CEIL / ROUND /
+#     MOD / EXP / LN / LOG / PI. fdb-relational 4.11.1.0's
+#     ArithmeticValue registry doesn't have these either, so they
+#     are arguably also Java-rejected — covered separately under
+#     TODO #28's follow-up scope. Pinned here for the existing Go
+#     evaluator behaviour.
+#
+#   * Rejected (Java-aligned, swingshift-64 TODO #3): ABS / SQRT /
+#     POWER / POW. fdb-relational 4.11.1.0's ArithmeticValue
+#     registry has only Add/Sub/Mul/Div/Mod/bitwise; SqlFunctionCatalogImpl
+#     has no entries for these, so Java's planner emits
+#     "Unsupported operator <NAME>" (0A000) before evaluation. Go
+#     mirrors byte-equal via the default arm in scalar_functions.go.
 name: numeric_functions
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, v DOUBLE, n BIGINT, PRIMARY KEY (id))
@@ -14,10 +25,30 @@ setup:
       (3, 0.0, 0),
       (4, null, null)
 tests:
-  # ABS on both integer and floating-point.
-  - query: SELECT ABS(n), ABS(v) FROM t WHERE id = 2
-    rows:
-      - [5, 3.7]
+  # ---------------------------------------------------------------
+  # Java-aligned rejections (ABS / SQRT / POWER / POW).
+  # ---------------------------------------------------------------
+  - query: SELECT ABS(n) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT ABS(v) FROM t WHERE id = 2
+    error_code: "0A000"
+  - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT POW(v, 2) FROM t WHERE id = 1
+    error_code: "0A000"
+  # NULL propagation does not apply once the function is rejected
+  # at the registry layer — the rejection fires before evaluation.
+  - query: SELECT ABS(v) FROM t WHERE id = 4
+    error_code: "0A000"
+  - query: SELECT POWER(v, 2) FROM t WHERE id = 4
+    error_code: "0A000"
+
+  # ---------------------------------------------------------------
+  # Still in Go: SIGN / FLOOR / CEIL / ROUND / MOD / EXP / LN / LOG
+  # / PI.
+  # ---------------------------------------------------------------
   # SIGN: -1 / 0 / +1.
   - query: SELECT SIGN(v) FROM t WHERE id = 1
     rows:
@@ -64,14 +95,6 @@ tests:
   - query: SELECT MOD(n, 3) FROM t WHERE id = 2
     rows:
       - [-2]
-  # POWER on DOUBLE: 2.5^2 = 6.25.
-  - query: SELECT POWER(v, 2) FROM t WHERE id = 1
-    rows:
-      - [6.25]
-  # SQRT on a perfect square.
-  - query: SELECT SQRT(v * 4) FROM t WHERE id = 1
-    rows:
-      - [3.1622776601683795]
   # EXP(0) = 1, LN(exp(1)) = 1 (approximately).
   - query: SELECT EXP(0) FROM t WHERE id = 1
     rows:
@@ -86,13 +109,7 @@ tests:
   - query: SELECT PI() FROM t WHERE id = 1
     rows:
       - [3.141592653589793]
-  # NULL propagation — ABS of NULL is NULL, not 0.
-  - query: SELECT ABS(v) FROM t WHERE id = 4
-    rows:
-      - [~]
+  # NULL propagation through still-Go functions.
   - query: SELECT SIGN(v), FLOOR(v), CEIL(v) FROM t WHERE id = 4
     rows:
       - [~, ~, ~]
-  - query: SELECT POWER(v, 2) FROM t WHERE id = 4
-    rows:
-      - [~]

@@ -92,9 +92,13 @@ tests:
   # Multi-column ORDER BY with arbitrary expression — rejected.
   - query: SELECT id FROM t ORDER BY v * 2, id
     error_code: "0AF01"
-  # Multi-column ORDER BY with function-call expression — rejected.
+  # ORDER BY with function-call expression — function itself is
+  # rejected at the registry layer (0A000) before the planner gets a
+  # chance to fail on multi-column-ordering. ABS is absent from
+  # fdb-relational 4.11.1.0; same architectural reason in both
+  # engines: no evaluator entry for ABS.
   - query: SELECT id, v FROM t ORDER BY ABS(v - 3), id LIMIT 2
-    error_code: "0AF01"
+    error_code: "0A000"
   # SELECT * + multi-column ORDER BY with expression — rejected.
   - query: SELECT * FROM t ORDER BY v * 2, id
     error_code: "0AF01"

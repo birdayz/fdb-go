@@ -25,11 +25,19 @@ tests:
   - query: SELECT n FROM t WHERE id = 4
     rows:
       - [42]
-  # INSERT VALUES with function call.
-  - query: INSERT INTO t VALUES (5, ABS(-50))
+  # INSERT VALUES with function call — ABS is absent from
+  # fdb-relational 4.11.1.0's function registry; rejected with
+  # "Unsupported operator ABS" (0A000). Same architectural reason
+  # in both engines: no evaluator entry. Replace with arithmetic
+  # to keep the "INSERT VALUES with derived expression" shape
+  # exercised on a still-supported expression.
+  - query: INSERT INTO t VALUES (5, 25 * 2)
   - query: SELECT n FROM t WHERE id = 5
     rows:
       - [50]
+  # Verify ABS itself is rejected on the INSERT-VALUES path.
+  - query: INSERT INTO t VALUES (50, ABS(-7))
+    error_code: "0A000"
   # INSERT VALUES with COALESCE.
   - query: INSERT INTO t VALUES (6, COALESCE(null, null, 77))
   - query: SELECT n FROM t WHERE id = 6

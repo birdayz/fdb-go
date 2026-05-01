@@ -122,35 +122,10 @@ func evalScalarFunctionCallCore(
 	// message (per swingshift-64 cross-engine probe). Same
 	// architectural reason in both engines: the function registry
 	// has no evaluator. Doesn't work in Java → doesn't work in Go.
-	case "ABS":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		switch n := v.(type) {
-		case int64:
-			// Two's-complement: -math.MinInt64 overflows back to MinInt64.
-			// MySQL/Postgres error; mirror that here rather than returning
-			// the still-negative value.
-			if n == math.MinInt64 {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"ABS: integer overflow for MinInt64 (-9223372036854775808)")
-			}
-			if n < 0 {
-				return -n, nil
-			}
-			return n, nil
-		case float64:
-			if n < 0 {
-				return -n, nil
-			}
-			return n, nil
-		default:
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS: argument must be numeric, got %T", v)
-		}
+	// ABS / SQRT / POWER / POW intentionally NOT handled — Java's
+	// fdb-relational 4.11.1.0 ArithmeticValue registry has only
+	// Add / Sub / Mul / Div / Mod / bitwise ops. Other math
+	// functions fall through to "Unsupported operator <name>".
 	case "FLOOR", "CEIL", "CEILING", "ROUND":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires at least 1 argument", name)
@@ -240,39 +215,6 @@ func evalScalarFunctionCallCore(
 		}
 		// Float MOD by zero returns NaN per IEEE-754; Java does not throw.
 		return math.Mod(af, bf), nil
-	case "POWER", "POW":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER requires 2 arguments")
-		}
-		baseV, berr := eval(fArgs[0].Expression())
-		if berr != nil || baseV == nil {
-			return nil, berr
-		}
-		expV, eerr := eval(fArgs[1].Expression())
-		if eerr != nil || expV == nil {
-			return nil, eerr
-		}
-		base, ok := functions.ToFloat64(baseV)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: base must be numeric, got %T", baseV)
-		}
-		exp, ok := functions.ToFloat64(expV)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POWER: exponent must be numeric, got %T", expV)
-		}
-		result := math.Pow(base, exp)
-		// NaN (e.g. POWER(-1, 0.5)) and ±Inf (e.g. POWER(0, -1)) are math
-		// domain errors. SQL standard says these are undefined; returning
-		// NULL matches SQRT's existing negative-arg convention on this
-		// engine and avoids poisoning downstream aggregates / comparisons
-		// (which treat NaN != NaN).
-		if math.IsNaN(result) || math.IsInf(result, 0) {
-			return nil, nil
-		}
-		if result == math.Trunc(result) && result >= math.MinInt64 && result <= math.MaxInt64 {
-			return int64(result), nil
-		}
-		return result, nil
 	case "SIGN":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN requires 1 argument")
@@ -353,25 +295,6 @@ func evalScalarFunctionCallCore(
 		return best, nil
 	case "PI":
 		return math.Pi, nil
-	case "SQRT":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		f, ok := functions.ToFloat64(v)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SQRT: argument must be numeric, got %T", v)
-		}
-		// NaN input already fails the < 0 check (NaN comparisons always
-		// return false), so it would propagate a NaN result. Treat it the
-		// same as the negative-arg case — NULL.
-		if math.IsNaN(f) || f < 0 {
-			return nil, nil // SQRT of NaN or negative returns NULL per SQL standard.
-		}
-		return math.Sqrt(f), nil
 	case "EXP":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "EXP requires 1 argument")
@@ -456,18 +379,12 @@ func evalScalarFunctionCallCore(
 			return eval(fArgs[1].Expression())
 		}
 		return eval(fArgs[2].Expression())
-	case "NOW", "CURDATE", "CURTIME", "SYSDATE", "UTC_TIMESTAMP", "UTC_DATE", "UTC_TIME":
-		// MySQL-style datetime aliases. NOW/SYSDATE/UTC_TIMESTAMP →
-		// CURRENT_TIMESTAMP; CURDATE/UTC_DATE → CURRENT_DATE;
-		// CURTIME/UTC_TIME → CURRENT_TIME. All take 0 args (a fractional
-		// seconds precision arg is ignored if present). Use the
-		// statement timestamp for within-statement consistency.
-		switch name {
-		case "CURDATE", "UTC_DATE":
-			return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), nil
-		default:
-			return now, nil
-		}
+	// NOW / CURDATE / CURTIME / SYSDATE / UTC_TIMESTAMP / UTC_DATE /
+	// UTC_TIME (MySQL-style datetime aliases) intentionally NOT
+	// handled — fdb-relational 4.11.1.0's function registry has no
+	// entries; falls through to "Unsupported operator <name>". The
+	// SQL-standard form (CURRENT_TIMESTAMP / CURRENT_DATE /
+	// CURRENT_TIME / LOCALTIME) is rejected in evalSpecificFunctionCore.
 	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
 		"DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR":
 		// Date-part functions taking a single time.Time argument.
