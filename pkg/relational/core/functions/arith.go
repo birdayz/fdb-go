@@ -86,6 +86,17 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 	// toward zero). Going through float first would turn 10 / 3 into
 	// 3.333 instead of 3, and unchecked ops would silently wrap
 	// MAX_INT + 1 to MIN_INT.
+	// String + string → concat (Java alignment, dayshift-62). Java's
+	// `+` is overloaded for strings; fdb-relational evaluates
+	// 'foo' + 'bar' = 'foobar'. Other operators (- * / %) on strings
+	// remain unsupported.
+	if op == "+" {
+		if ls, lstr := left.(string); lstr {
+			if rs, rstr := right.(string); rstr {
+				return ls + rs, nil
+			}
+		}
+	}
 	li, lok := left.(int64)
 	ri, rok := right.(int64)
 	if lok && rok {

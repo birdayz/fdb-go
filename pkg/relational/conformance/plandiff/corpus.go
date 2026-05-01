@@ -2138,6 +2138,94 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id AS my_id FROM T_PAS",
 		},
 		{
+			// EXISTS subquery in WHERE — correlated reference from the
+			// outer scope through to the inner.
+			Name:           "exists_correlated_subquery",
+			SchemaTemplate: "CREATE TABLE T_ECS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ECS VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_ECS AS o WHERE EXISTS (SELECT 1 FROM T_ECS AS i WHERE i.id = o.id)",
+		},
+		{
+			// AVG over BIGINT column → DOUBLE result (SQL spec
+			// promotes int aggregate to floating). Both engines emit
+			// 6.0 for AVG(5, 7).
+			Name:           "avg_over_bigint",
+			SchemaTemplate: "CREATE TABLE T_AVB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AVB VALUES (1, 5)",
+				"INSERT INTO T_AVB VALUES (2, 7)",
+			},
+			Query: "SELECT AVG(v) FROM T_AVB",
+		},
+		{
+			// CAST(-1 AS BIGINT) — negative literal, signed BIGINT
+			// preserves the sign.
+			Name:           "cast_negative_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CNB (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CNB VALUES (1)"},
+			Query:          "SELECT CAST(-1 AS BIGINT) FROM T_CNB",
+		},
+		{
+			// CAST(double AS STRING) — both engines stringify with
+			// trailing-zero stripping (3.14 not 3.140000).
+			Name:           "cast_double_to_string",
+			SchemaTemplate: "CREATE TABLE T_CDS (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CDS VALUES (1)"},
+			Query:          "SELECT CAST(3.14 AS STRING) FROM T_CDS",
+		},
+		{
+			// CAST(BIGINT AS BIGINT) — identity cast, no-op.
+			Name:           "cast_to_self_type",
+			SchemaTemplate: "CREATE TABLE T_CST (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CST VALUES (1)"},
+			Query:          "SELECT CAST(id AS BIGINT) FROM T_CST",
+		},
+		{
+			// String + string → concat in Java (operator-overload for
+			// strings). Aligned Go-side dayshift-62.
+			Name:           "string_concat_via_plus",
+			SchemaTemplate: "CREATE TABLE T_SCP (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SCP VALUES (1, 'foo', 'bar')"},
+			Query:          "SELECT a + b FROM T_SCP",
+		},
+		{
+			// Empty-string in IN-list — empty string ('') is a valid
+			// SQL string value, distinct from NULL.
+			Name:           "empty_string_in_list",
+			SchemaTemplate: "CREATE TABLE T_ESI (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ESI VALUES (1, '')"},
+			Query:          "SELECT id FROM T_ESI WHERE name IN ('', 'a')",
+		},
+		{
+			// Typed NULL in arithmetic — `CAST(NULL AS BIGINT) + 1`
+			// returns NULL (3VL: NULL absorbs).
+			Name:           "typed_null_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_TNA (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_TNA VALUES (1)"},
+			Query:          "SELECT CAST(NULL AS BIGINT) + 1 FROM T_TNA",
+		},
+		{
+			// IS NULL on arithmetic expression — (NULL + 1) IS NULL = TRUE.
+			Name:           "is_null_on_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_INA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INA VALUES (1, NULL)",
+				"INSERT INTO T_INA VALUES (2, 5)",
+			},
+			Query: "SELECT id FROM T_INA WHERE (v + 1) IS NULL ORDER BY id",
+		},
+		{
+			// CASE returning STRING values — pins multi-branch CASE
+			// with literal string THEN expressions.
+			Name:           "case_returning_strings",
+			SchemaTemplate: "CREATE TABLE T_CRS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CRS VALUES (1, 5)",
+				"INSERT INTO T_CRS VALUES (2, 50)",
+			},
+			Query: "SELECT id, CASE WHEN v < 10 THEN 'tiny' WHEN v < 100 THEN 'small' ELSE 'big' END FROM T_CRS ORDER BY id",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].
