@@ -167,8 +167,12 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 					return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 						"INSERT column list has %d columns but VALUES has %d", len(cols), len(exprs))
 				}
+				// Java verbatim for plain INSERT VALUES with arity
+				// mismatch: 'provided record cannot be assigned as its
+				// type is incompatible with the target type'.
+				// Aligned dayshift-62.
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"column count %d does not match value count %d", len(cols), len(exprs))
+					"provided record cannot be assigned as its type is incompatible with the target type")
 			}
 			msg := dynamicpb.NewMessage(msgDesc)
 			for i, col := range cols {
@@ -295,7 +299,7 @@ func (c *EmbeddedConnection) execInsertSelect(ctx context.Context, tableName str
 		if len(cols) != len(srcCols) {
 			// Java alignment: column-count mismatch errors 22000.
 			return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"column count %d does not match SELECT column count %d", len(cols), len(srcCols))
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 		}
 
 		for _, row := range srcRows {

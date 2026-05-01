@@ -2061,6 +2061,27 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_BCT WHERE v BETWEEN 'a' AND 10",
 		},
 		{
+			// INSERT with too few values — Java verbatim
+			// 'A value cannot be assigned to a variable because the
+			// type of the value does not match the type of the
+			// variable and cannot be promoted to the type of the
+			// variable.' (one message for column-count and
+			// type-mismatch; both surface the same SemanticException).
+			// Aligned Go-side dayshift-62.
+			Name:           "insert_too_few_values_rejected",
+			SchemaTemplate: "CREATE TABLE T_ITF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ITF VALUES (1)"},
+			Query:          "SELECT id FROM T_ITF",
+		},
+		{
+			// INSERT with too many values — same Java message as
+			// too-few, regardless of which side has more columns.
+			Name:           "insert_too_many_values_rejected",
+			SchemaTemplate: "CREATE TABLE T_ITM (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ITM VALUES (1, 2, 3)"},
+			Query:          "SELECT id FROM T_ITM",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].
