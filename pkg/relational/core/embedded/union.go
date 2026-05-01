@@ -25,7 +25,8 @@ import (
 //
 // Destined for plan/physical/union.go per RFC 021 Phase 1c.
 
-// execUnion executes a UNION ALL / UNION DISTINCT query.
+// execUnion executes a UNION ALL query. Plain UNION (implicit
+// DISTINCT) is rejected at entry per the dayshift-62 alignment.
 //
 // Trailing ORDER BY / LIMIT / OFFSET on the rightmost simpleTable is lifted
 // to the combined result. SQL-standard semantics (and Postgres, MySQL): a
