@@ -224,6 +224,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		updateChainScenario(),
 		betweenEdgeScenario(),
 		stringComparisonOpsScenario(),
+		castChainScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
 	}
@@ -3260,6 +3261,38 @@ func stringComparisonOpsScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE s > 'apple' ORDER BY id", Rows: [][]any{{2}, {3}, {5}}},
 			// Equality comparison is case-sensitive.
 			{Query: "SELECT id FROM t WHERE s = 'APPLE' ORDER BY id", Rows: [][]any{}},
+		},
+	}
+}
+
+// castChainScenario probes nested CAST conversions: int → string → int,
+// DOUBLE round-trip preservation, and DOUBLE→BIGINT rounding (Java's
+// `Math.round` semantics — `floor(x + 0.5)` — already implemented in
+// `pkg/relational/core/functions/cast.go`'s `CastValue.DOUBLE_TO_LONG`
+// path; both engines round 1.9 → 2). Net-new nightshift-61.
+func castChainScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "cast_chain",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 42), (2, -100), (3, 0)",
+		},
+		Tests: []yamsql.Test{
+			// Nested CAST: int → string → int.
+			{Query: "SELECT CAST(CAST(v AS STRING) AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{42}}},
+			// CAST to DOUBLE preserves int magnitude.
+			{Query: "SELECT CAST(v AS DOUBLE) FROM t WHERE id = 2", Rows: [][]any{{-100.0}}},
+			// CAST string literal to BIGINT.
+			{Query: "SELECT CAST('123' AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{123}}},
+			// CAST '0' string to BIGINT.
+			{Query: "SELECT CAST('0' AS BIGINT) FROM t WHERE id = 3", Rows: [][]any{{0}}},
+			// CAST DOUBLE to BIGINT — Java's Math.round (floor(x + 0.5))
+			// rounds 1.9 → 2; Go's CastValue.DOUBLE_TO_LONG matches.
+			// `floor(-1.9 + 0.5) = floor(-1.4) = -2`.
+			{Query: "SELECT CAST(1.9 AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{2}}},
+			{Query: "SELECT CAST(-1.9 AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{-2}}},
+			// CAST int to STRING and back.
+			{Query: "SELECT CAST(CAST(v AS STRING) AS BIGINT) FROM t WHERE id = 2", Rows: [][]any{{-100}}},
 		},
 	}
 }
