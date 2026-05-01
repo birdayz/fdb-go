@@ -2693,6 +2693,65 @@ func SeedRunCorpus() []RunQuery {
 			Query: "WITH big AS (SELECT id, v FROM T_CIJ WHERE v > 150) SELECT count(*) FROM T_CIJ AS t, big WHERE t.id = big.id",
 		},
 		{
+			// `WHERE NULL = NULL` — SQL §8.2 collapses to UNKNOWN; the
+			// row is filtered out. Both engines correctly emit empty.
+			Name:           "where_null_eq_null_excludes",
+			SchemaTemplate: "CREATE TABLE T_NEN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NEN VALUES (1)"},
+			Query:          "SELECT id FROM T_NEN WHERE NULL = NULL",
+		},
+		{
+			// `NULL IS NULL` is TRUE (not UNKNOWN) per SQL spec.
+			Name:           "literal_null_is_null_match",
+			SchemaTemplate: "CREATE TABLE T_LNN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LNN VALUES (1)"},
+			Query:          "SELECT id FROM T_LNN WHERE NULL IS NULL",
+		},
+		{
+			// CASE WHEN with typed-NULL THEN branch — both engines
+			// preserve NULL through the CASE.
+			Name:           "case_typed_null_then_branch",
+			SchemaTemplate: "CREATE TABLE T_CTNB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CTNB VALUES (1, 5)"},
+			Query:          "SELECT id, CASE WHEN v < 10 THEN CAST(NULL AS BIGINT) ELSE 0 END FROM T_CTNB",
+		},
+		{
+			// Compare two NULL columns (`a = b` over (NULL, NULL)) —
+			// 3VL: NULL = NULL is UNKNOWN, row excluded.
+			Name:           "compare_two_null_columns",
+			SchemaTemplate: "CREATE TABLE T_CTN (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CTN VALUES (1, NULL, NULL)"},
+			Query:          "SELECT id FROM T_CTN WHERE a = b",
+		},
+		{
+			// AVG over a single-row scope.
+			Name:           "avg_over_single_row",
+			SchemaTemplate: "CREATE TABLE T_ASR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ASR VALUES (1, 5)"},
+			Query:          "SELECT AVG(v) FROM T_ASR",
+		},
+		{
+			// SUM, COUNT, AVG combined in one projection.
+			Name:           "sum_count_avg_combined",
+			SchemaTemplate: "CREATE TABLE T_SCA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCA VALUES (1, 5)",
+				"INSERT INTO T_SCA VALUES (2, 10)",
+			},
+			Query: "SELECT SUM(v), COUNT(*), AVG(v) FROM T_SCA",
+		},
+		{
+			// MIN and MAX on a uniform column return the same value.
+			Name:           "min_max_over_uniform_col",
+			SchemaTemplate: "CREATE TABLE T_MMU (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MMU VALUES (1, 5)",
+				"INSERT INTO T_MMU VALUES (2, 5)",
+				"INSERT INTO T_MMU VALUES (3, 5)",
+			},
+			Query: "SELECT MIN(v), MAX(v) FROM T_MMU",
+		},
+		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
 			Name:           "select_bool_column_trio",
 			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
