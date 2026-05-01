@@ -34,12 +34,14 @@ import (
 
 // evalPredicate returns true if msg satisfies whereExpr.
 // Only col = constant comparisons are supported. If whereExpr is nil, returns true.
+//
+// Callers MUST invoke rejectTopLevelParenthesizedWhere on the WHERE
+// expression once before the row-loop — this function runs per row
+// and the structural check is row-independent. See
+// select_query_full.go's scan loops for the hoisted call sites.
 func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
 	if whereExpr == nil {
 		return true, nil
-	}
-	if err := rejectTopLevelParenthesizedWhere(whereExpr.Expression()); err != nil {
-		return false, err
 	}
 	return evalExprPredicate(ctx, conn, msg, whereExpr.Expression())
 }
@@ -54,6 +56,11 @@ func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Mess
 // `(a) AND (b)` because the LogicalExpression's underlying value is
 // a BooleanValue at the surface, even though the leaves are
 // RecordConstructorValues. Match that surface check here.
+//
+// Hoist this once per statement, before the row-scan loop — the check
+// is purely structural over the parse tree (no row dependency), so
+// invoking it inside the per-row evalPredicate would re-walk the same
+// AST N times for an N-row scan.
 func rejectTopLevelParenthesizedWhere(expr antlrgen.IExpressionContext) error {
 	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
 	if !ok || pred.Predicate() != nil {

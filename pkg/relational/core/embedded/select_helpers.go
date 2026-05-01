@@ -238,7 +238,7 @@ func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protore
 // scalars (UPPER / LOWER / SUBSTRING / TRIM / CONCAT / etc.) and
 // LENGTH-family scalars are intentionally absent — those evaluate to
 // "Unsupported operator <name>" in scalar_functions.go's default
-// arm, mirroring fdb-relational 4.11.1.0 (per swingshift-64).
+// arm, mirroring fdb-relational 4.11.1.0.
 func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {

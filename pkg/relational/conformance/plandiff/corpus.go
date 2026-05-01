@@ -274,7 +274,7 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_DEL ORDER BY id",
 		},
-		// INFORMATION_SCHEMA: empirically probed swingshift-64. Java
+		// INFORMATION_SCHEMA: empirically probed: Java
 		// rejects with `RelationalException: Unknown reference
 		// INFORMATION_SCHEMA.TABLES` — the catalog is not registered
 		// at all in 4.11.1.0 (no schema-qualified reference, no
@@ -819,7 +819,7 @@ func SeedRunCorpus() []RunQuery {
 			// remaining STRING-family scalars (LOWER / LENGTH /
 			// SUBSTRING / TRIM / CONCAT / REPLACE / LEFT / RIGHT /
 			// POSITION / REVERSE) follow the identical pattern
-			// (see swingshift-64); UPPER is the canonical pin.
+			//; UPPER is the canonical pin.
 			Name:           "string_upper_rejected",
 			SchemaTemplate: "CREATE TABLE T_SUR (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SUR VALUES (1, 'abc')"},
@@ -829,7 +829,7 @@ func SeedRunCorpus() []RunQuery {
 			// STRING-family map-eval path: UPPER inside a CTE's WHERE
 			// routes through evalScalarFunctionCallOnMap. Pre-cleanup
 			// that arm emitted a Go-specific "unsupported function ..."
-			// wording; swingshift-64 unified it to the byte-equal
+			// wording; the map-eval arm was unified to the byte-equal
 			// "Unsupported operator UPPER" so cross-engine alignment
 			// holds regardless of which Go evaluator path the query
 			// takes.
@@ -854,7 +854,7 @@ func SeedRunCorpus() []RunQuery {
 			// ArithmeticValue registry has only Add / Sub / Mul / Div
 			// / Mod / bitwise — no math functions. Java's planner
 			// returns `Unsupported operator ABS`; Go matches via the
-			// default arm (TODO #3 swingshift-64).
+			// default arm.
 			Name:           "arith_abs_rejected",
 			SchemaTemplate: "CREATE TABLE T_ABS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_ABS VALUES (1, -5)"},
@@ -870,7 +870,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// Math-family: FLOOR. Same registry-miss as ABS/SQRT/POWER
-			// (TODO #3 follow-up swingshift-64). Pin canonical FLOOR
+			//. Pin canonical FLOOR
 			// shape; CEIL / CEILING / ROUND / SIGN / PI / EXP / LN /
 			// LOG follow the same byte-equal pattern.
 			Name:           "math_floor_rejected",
@@ -919,7 +919,7 @@ func SeedRunCorpus() []RunQuery {
 			// FROM-less SELECT (CTE base case form) — Java rejects
 			// universally per QueryVisitor.visitSimpleTable's
 			// Assert.notNullUnchecked(fromClause) gate, including
-			// inside CTE bodies. Probed swingshift-64.
+			// inside CTE bodies.
 			Name:           "fromless_in_cte_base_rejected",
 			SchemaTemplate: "CREATE TABLE T_FLC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLC VALUES (1, 1)"},
@@ -945,7 +945,7 @@ func SeedRunCorpus() []RunQuery {
 			// the WHERE expression's TOP-LEVEL only. Compound shapes
 			// like `(a) AND (b)` are accepted (the LogicalExpression
 			// surface type is BooleanValue even with RecordConstructor
-			// leaves underneath). Probed swingshift-64.
+			// leaves underneath).
 			Name:           "where_paren_top_level_rejected",
 			SchemaTemplate: "CREATE TABLE T_WPT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_WPT VALUES (1, 10), (2, 20)"},

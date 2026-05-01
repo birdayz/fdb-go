@@ -38,6 +38,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 	if len(sq.joins) > 0 {
 		return c.execSelectJoin(ctx, sq)
 	}
+	// WHERE bare-paren rejection — fire once before the row loop.
+	// The check is row-independent (purely structural over the parse
+	// tree); calling it inside the per-row evalPredicate would re-walk
+	// the same AST N times.
+	if sq.whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
+			return nil, err
+		}
+	}
 
 	type row = []driver.Value
 	type outField struct {

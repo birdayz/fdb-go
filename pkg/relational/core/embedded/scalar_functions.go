@@ -23,10 +23,13 @@ import (
 // their own evaluators (makeProtoExprEvaluator /
 // makeMapExprEvaluator) and the cores stay path-agnostic.
 //
-// evalScalarFunctionCallCore is the ~700-line switch over scalar
-// function names (UPPER / LOWER / SUBSTRING / CONCAT / TRIM /
-// REPLACE / ABS / CEILING / FLOOR / ROUND / SQRT / POWER / LOG /
-// EXP / MOD / COALESCE / NULLIF / CAST / CURRENT_TIMESTAMP / …).
+// evalScalarFunctionCallCore is the switch over scalar function
+// names that fdb-relational 4.11.1.0 has in its registry: MOD /
+// COALESCE / IFNULL / GREATEST / LEAST / IF / IIF / date-part fns
+// (YEAR / MONTH / DAY / HOUR / MINUTE / SECOND / DAYOFMONTH /
+// DAYOFWEEK / DAYOFYEAR). Names not in this list fall through to
+// the default arm and emit "Unsupported operator <name>" — byte-
+// equal to Java's RelationalException for the same registry-miss.
 // Phase 2 Cascades replaces this with a registry-driven dispatch.
 //
 // evalSpecificFunctionCore handles SpecificFunctionCall nodes
@@ -50,21 +53,15 @@ type predicateEvaluator func(expr antlrgen.IExpressionContext) (bool, error)
 // evalScalarFunctionCall (proto path) and evalScalarFunctionCallOnMap (map
 // path). The two callers differ only in how they evaluate sub-expressions;
 // that variation is captured in the eval / predicateEval adapters.
-//
-// unsupportedFmt is the format string ("... %q ...") used for the default
-// case — proto and map paths use subtly different wording which we preserve
-// verbatim. It must accept exactly one %q for the function name.
 func evalScalarFunctionCallCore(
 	now time.Time,
 	eval exprEvaluator,
 	predicateEval predicateEvaluator,
-	unsupportedFmt string,
-	unsupportedSpecificFmt string,
 	fc antlrgen.IFunctionCallContext,
 ) (driver.Value, error) {
 	// Handle CASE expressions routed through SpecificFunctionCall.
 	if sf, ok := fc.(*antlrgen.SpecificFunctionCallContext); ok {
-		return evalSpecificFunctionCore(now, eval, predicateEval, unsupportedSpecificFmt, sf.SpecificFunction())
+		return evalSpecificFunctionCore(now, eval, predicateEval, sf.SpecificFunction())
 	}
 
 	var name string
@@ -89,6 +86,27 @@ func evalScalarFunctionCallCore(
 	if args != nil {
 		fArgs = args.AllFunctionArg()
 	}
+	// Names intentionally NOT handled — fall through to the default
+	// "Unsupported operator <name>" arm. Java's fdb-relational
+	// 4.11.1.0 has no entries for these in its function registry; Go
+	// matches by absence of a case here, producing the byte-equal
+	// rejection. Doesn't work in Java → doesn't work in Go.
+	//
+	//   STRING:    UPPER, LOWER, LENGTH, CHAR_LENGTH,
+	//              CHARACTER_LENGTH, LEN, OCTET_LENGTH, TRIM, LTRIM,
+	//              RTRIM, CONCAT, CONCAT_WS, REPLACE, LEFT, RIGHT,
+	//              POSITION, REVERSE, SUBSTRING, SUBSTR
+	//   MATH:      ABS, SQRT, POWER, POW, FLOOR, CEIL, CEILING,
+	//              ROUND, SIGN, PI, EXP, LN, LOG
+	//   DATETIME:  NOW, CURDATE, CURTIME, SYSDATE, UTC_TIMESTAMP,
+	//              UTC_DATE, UTC_TIME (function-call form). The
+	//              SQL-standard form CURRENT_TIMESTAMP / CURRENT_DATE
+	//              / CURRENT_TIME / LOCALTIME parses through
+	//              SimpleFunctionCall and stays implemented (Java's
+	//              BaseVisitor.visitSimpleFunctionCall is a broken
+	//              visitChildren no-op — the Go-only working impl
+	//              is a correctness improvement, not a divergence).
+	//   OTHER:     NULLIF (use `CASE WHEN a = b THEN NULL ELSE a END`).
 	switch name {
 	case "COALESCE":
 		for _, fa := range fArgs {
@@ -113,22 +131,6 @@ func evalScalarFunctionCallCore(
 			return v, nil
 		}
 		return eval(fArgs[1].Expression())
-	// STRING-family scalars (UPPER / LOWER / LENGTH / CHAR_LENGTH /
-	// CHARACTER_LENGTH / LEN / OCTET_LENGTH / TRIM / LTRIM / RTRIM)
-	// are intentionally NOT handled — fall through to the default
-	// "Unsupported operator <name>" arm. Java's fdb-relational
-	// 4.11.1.0 has no entries for these in its function registry,
-	// so its planner surfaces RelationalException with that exact
-	// message (per swingshift-64 cross-engine probe). Same
-	// architectural reason in both engines: the function registry
-	// has no evaluator. Doesn't work in Java → doesn't work in Go.
-	// ABS / SQRT / POWER / POW intentionally NOT handled — Java's
-	// fdb-relational 4.11.1.0 ArithmeticValue registry has only
-	// Add / Sub / Mul / Div / Mod / bitwise ops. Other math
-	// functions fall through to "Unsupported operator <name>".
-	// FLOOR / CEIL / CEILING / ROUND intentionally NOT handled —
-	// Java's @AutoService(BuiltInFunction.class) ArithmeticValue
-	// registry has no entries; falls through to default arm.
 	case "MOD":
 		if len(fArgs) < 2 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
@@ -166,19 +168,6 @@ func evalScalarFunctionCallCore(
 		}
 		// Float MOD by zero returns NaN per IEEE-754; Java does not throw.
 		return math.Mod(af, bf), nil
-	// SIGN intentionally NOT handled — falls through to default.
-	// CONCAT / CONCAT_WS intentionally NOT handled — Java's function
-	// registry has no entry; falls through to "Unsupported operator
-	// CONCAT". Workaround: none in fdb-relational; pin rejection.
-	// NULLIF is intentionally NOT handled — falls through to the default
-	// "unsupported operator" arm. Mirrors fdb-relational 4.11.1.0's
-	// effective non-support: Java's function registry has no entry for
-	// NULLIF, so its planner returns "Unsupported operator NULLIF"
-	// (CLAUDE.md gotcha). Same architectural reason in both engines:
-	// the function registry has no NULLIF evaluator. Workaround:
-	// rewrite as `CASE WHEN a = b THEN NULL ELSE a END` (searched-CASE
-	// is implemented in both engines). Per project conformance
-	// principle: doesn't work in Java → doesn't work in Go.
 	case "GREATEST", "LEAST":
 		// Java conformance: GREATEST/LEAST return NULL if any argument
 		// is NULL. VariadicFunctionValue.PhysicalOperator's per-typecode
@@ -220,12 +209,6 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
-	// PI / EXP / LN / LOG intentionally NOT handled — falls through
-	// to default. Java's BuiltInFunction registry has no entries for
-	// transcendental math.
-	// REVERSE / POSITION / LEFT / RIGHT / SUBSTRING / SUBSTR /
-	// REPLACE intentionally NOT handled — Java's function registry
-	// has no entry; falls through to "Unsupported operator <name>".
 	case "IF", "IIF":
 		// IF(cond, true_val, false_val)
 		if len(fArgs) < 3 {
@@ -239,12 +222,6 @@ func evalScalarFunctionCallCore(
 			return eval(fArgs[1].Expression())
 		}
 		return eval(fArgs[2].Expression())
-	// NOW / CURDATE / CURTIME / SYSDATE / UTC_TIMESTAMP / UTC_DATE /
-	// UTC_TIME (MySQL-style datetime aliases) intentionally NOT
-	// handled — fdb-relational 4.11.1.0's function registry has no
-	// entries; falls through to "Unsupported operator <name>". The
-	// SQL-standard form (CURRENT_TIMESTAMP / CURRENT_DATE /
-	// CURRENT_TIME / LOCALTIME) is rejected in evalSpecificFunctionCore.
 	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
 		"DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR":
 		// Date-part functions taking a single time.Time argument.
@@ -284,7 +261,7 @@ func evalScalarFunctionCallCore(
 		}
 		return nil, nil // unreachable
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, name)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "Unsupported operator %s", name)
 	}
 }
 
@@ -316,14 +293,11 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		return evalExprPredicate(ctx, conn, msg, e)
 	}
-	// Java parity: fdb-relational's planner returns `RelationalException:
+	// fdb-relational's planner returns `RelationalException:
 	// Unsupported operator <name>` from the function-registry lookup
-	// when no entry matches (CLAUDE.md gotchas: "NULLIF is not
-	// registered", "Common SQL scalar functions ... are NOT
-	// registered"). Match the exact phrasing so cross-engine
-	// ExpectErrorContains can pin identical substrings — Go's default
-	// arm now produces "Unsupported operator <name>" mirroring Java.
-	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "Unsupported operator %s", "unsupported specific function %T", fc)
+	// when no entry matches; the default arm in
+	// evalScalarFunctionCallCore emits the byte-equal message.
+	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, fc)
 }
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
@@ -331,7 +305,7 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		return evalPredicateOnMapExpr(ctx, conn, row, e)
 	}
-	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "Unsupported operator %s", "unsupported specific function %T", fc)
+	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, fc)
 }
 
 // statementNow forwards to Session.StatementNow. Retained as a
@@ -357,13 +331,10 @@ func (c *EmbeddedConnection) beginStatement() func() {
 // (CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, LOCALTIME, CURRENT_USER).
 // The searched CASE branch needs a boolean predicate evaluator, hence
 // predicateEval in addition to eval.
-//
-// unsupportedFmt must accept exactly one %T for the specific-function type.
 func evalSpecificFunctionCore(
 	now time.Time,
 	eval exprEvaluator,
 	predicateEval predicateEvaluator,
-	unsupportedFmt string,
 	sf antlrgen.ISpecificFunctionContext,
 ) (driver.Value, error) {
 	switch c := sf.(type) {
@@ -429,6 +400,6 @@ func evalSpecificFunctionCore(
 		typeName := strings.ToUpper(c.ConvertedDataType().GetText())
 		return functions.CastValue(val, typeName)
 	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, unsupportedFmt, sf)
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported specific function %T", sf)
 	}
 }
