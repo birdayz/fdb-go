@@ -2382,6 +2382,21 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_INZ WHERE (v * 0) IS NULL ORDER BY id",
 		},
 		{
+			// UPDATE on a PK column — Java rejects 'record does not
+			// exist' (in-place UPDATE can't modify the PK; the read-
+			// then-save lookup at the new key has no source row).
+			// Aligned Go-side dayshift-62: detect PK col in SET
+			// clause and reject before the loop with the verbatim
+			// Java message.
+			Name:           "update_pk_column_rejected",
+			SchemaTemplate: "CREATE TABLE T_UPK (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPK VALUES (1, 5)",
+				"UPDATE T_UPK SET id = 2",
+			},
+			Query: "SELECT id FROM T_UPK",
+		},
+		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
 			Name:           "select_bool_column_trio",
 			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",

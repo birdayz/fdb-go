@@ -72,6 +72,20 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 		}
 		msgDesc := rt.Descriptor
 
+		// Java alignment: UPDATE on a PK column with a non-NULL value
+		// is rejected with 'record does not exist' (Java's in-place
+		// UPDATE uses the PK value to look up the source row;
+		// modifying the PK column leaves no row at the new key on
+		// save). The check fires INSIDE the row-update loop, after
+		// the NULL-into-NOT-NULL check, so SET id = NULL on a PK
+		// column still surfaces the more specific NotNullViolation
+		// rather than this PK-rejection.
+		pkCols := extractPKUserFields(rt.PrimaryKey)
+		pkSet := make(map[string]struct{}, len(pkCols))
+		for _, p := range pkCols {
+			pkSet[p] = struct{}{}
+		}
+
 		ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
 		if ssErr != nil {
 			return nil, ssErr
@@ -136,6 +150,15 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					}
 					clonedRefl.Clear(fd)
 					continue
+				}
+				// Java alignment dayshift-62: UPDATE on a PK column
+				// with a non-NULL value is rejected with verbatim
+				// 'record does not exist' (Java's RecordDoesNotExist
+				// from the in-place save lookup). NULL case already
+				// handled above (NotNullViolation, more specific).
+				if _, isPK := pkSet[colName]; isPK {
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+						"record does not exist")
 				}
 				protoVal, convErr := functions.ConvertToProtoValue(fd, val)
 				if convErr != nil {
