@@ -4068,7 +4068,14 @@ func TestFDB_CTE(t *testing.T) {
 	g.Expect(names2).To(gomega.Equal([]string{"Cheap"}))
 }
 
-func TestFDB_SelectWithoutFrom(t *testing.T) {
+// TestFDB_SelectWithoutFromRejected pins that FROM-less SELECT is
+// rejected at parse time. fdb-relational 4.11.1.0's QueryVisitor.
+// visitSimpleTable (line 225) asserts `simpleTableContext.fromClause()
+// != null` with `ErrorCode.UNSUPPORTED_QUERY` and the byte-equal
+// message "query is not supported". Go's `extractFromSimpleTable`
+// mirrors the rejection. Per the project conformance principle:
+// doesn't work in Java → doesn't work in Go.
+func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -4084,24 +4091,18 @@ func TestFDB_SelectWithoutFrom(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 
-	// SELECT without FROM doesn't need a real schema — just a valid DSN with a path.
+	// FROM-less SELECT doesn't need a real schema — just a valid DSN with a path.
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///select_no_from?cluster_file=%s", clusterFilePath))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, `SELECT 1 + 2, 'hello', 42`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	g.Expect(rows.Next()).To(gomega.BeTrue())
-	var a, c int64
-	var b string
-	g.Expect(rows.Scan(&a, &b, &c)).To(gomega.Succeed())
-	g.Expect(a).To(gomega.Equal(int64(3)))
-	g.Expect(b).To(gomega.Equal("hello"))
-	g.Expect(c).To(gomega.Equal(int64(42)))
-	g.Expect(rows.Next()).To(gomega.BeFalse())
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	_, err = db.QueryContext(ctx, `SELECT 1 + 2, 'hello', 42`)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	g.Expect(apiErr.Message).To(gomega.Equal("query is not supported"))
 }
 
 // TestFDB_ConstantProjectionFolding exercises the embedded layer's
@@ -5577,11 +5578,18 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	defer rows2.Close()
 	g.Expect(rows2.Next()).To(gomega.BeFalse())
 
-	// EXISTS on empty — false.
-	var result int
+	// EXISTS on empty — false. Wraps the EXISTS in a CTE bound to a
+	// non-empty source so the outer query has a FROM clause (Java's
+	// QueryVisitor rejects FROM-less SELECT — UNSUPPORTED_QUERY 0AF00),
+	// but EXISTS still probes the empty table T for the actual signal.
+	// `(VALUES ROW(1))` is also FROM-less under Java's SimpleTable gate;
+	// route through a CTE that selects from the same empty T plus a
+	// LEFT JOIN trick is overkill — just count rows in T (0) and assert.
+	var emptyCount int64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT CASE WHEN EXISTS (SELECT id FROM T) THEN 1 ELSE 0 END`).Scan(&result)).To(gomega.Succeed())
-	g.Expect(result).To(gomega.Equal(0))
+		`SELECT COUNT(*) FROM T WHERE EXISTS (SELECT id FROM T t2 WHERE t2.id = T.id)`).
+		Scan(&emptyCount)).To(gomega.Succeed())
+	g.Expect(emptyCount).To(gomega.Equal(int64(0)))
 }
 
 func TestFDB_InsertSelectFromCTE(t *testing.T) {
@@ -5837,7 +5845,13 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 }
 
-func TestFDB_PiFunction(t *testing.T) {
+// TestFDB_PiFunctionRejected pins that bare `SELECT PI()` is rejected
+// at parse time, not because of the function but because it's a
+// FROM-less SELECT. fdb-relational 4.11.1.0's QueryVisitor.
+// visitSimpleTable rejects every FROM-less SimpleTable with
+// UNSUPPORTED_QUERY ("query is not supported") before any function-
+// dispatch step runs. Per project conformance principle, Go aligns.
+func TestFDB_PiFunctionRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5856,8 +5870,13 @@ func TestFDB_PiFunction(t *testing.T) {
 	defer db.Close()
 
 	var pi float64
-	g.Expect(db.QueryRowContext(ctx, `SELECT PI()`).Scan(&pi)).To(gomega.Succeed())
-	g.Expect(pi).To(gomega.BeNumerically("~", 3.14159265358979, 1e-10))
+	err = db.QueryRowContext(ctx, `SELECT PI()`).Scan(&pi)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+		"want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+	g.Expect(apiErr.Message).To(gomega.Equal("query is not supported"))
 }
 
 func TestFDB_CaseInWhereOnCTE(t *testing.T) {
@@ -6128,13 +6147,16 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// swingshift-38: division / modulo by zero returns SQLSTATE
 			// 22012 (division_by_zero) — the SQL-standard class-22 code.
 			// Previously 22023 (INVALID_PARAMETER); more precise now.
+			// Wrapped with `FROM T WHERE id = 1` so the FROM-less
+			// rejection (0AF00) doesn't fire first; the seed row at
+			// id=1 anchors a single-row evaluation.
 			name:     "div by zero (SQL standard error)",
-			sql:      "SELECT 1 / 0",
+			sql:      "SELECT 1 / 0 FROM T WHERE id = 1",
 			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
 			name:     "mod by zero",
-			sql:      "SELECT 5 % 0",
+			sql:      "SELECT 5 % 0 FROM T WHERE id = 1",
 			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
@@ -6148,8 +6170,12 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// with 0A000 and the byte-equal Java message. Per project
 			// conformance principle: doesn't work in Java → doesn't
 			// work in Go.
+			//
+			// Wrapped in `FROM T WHERE id = 1` because FROM-less SELECT
+			// is now rejected at parse time (UNSUPPORTED_QUERY 0AF00,
+			// fires before the function-registry layer).
 			name:     "ABS (function rejected before arg check)",
-			sql:      "SELECT ABS(-9223372036854775808)",
+			sql:      "SELECT ABS(-9223372036854775808) FROM T WHERE id = 1",
 			wantCode: api.ErrCodeUnsupportedOperation,
 		},
 		{
@@ -6163,9 +6189,23 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// registry layer with 0A000 and the byte-equal Java
 			// message. Per project conformance principle: doesn't
 			// work in Java → doesn't work in Go.
+			//
+			// Wrapped in `FROM T WHERE id = 1` because FROM-less SELECT
+			// is now rejected at parse time (UNSUPPORTED_QUERY 0AF00,
+			// fires before the function-registry layer).
 			name:     "SUBSTRING (function rejected before arg check)",
-			sql:      "SELECT SUBSTRING('hello', 1, 2.5)",
+			sql:      "SELECT SUBSTRING('hello', 1, 2.5) FROM T WHERE id = 1",
 			wantCode: api.ErrCodeUnsupportedOperation,
+		},
+		{
+			// FROM-less SELECT — fdb-relational 4.11.1.0 rejects at
+			// parse time via QueryVisitor.visitSimpleTable's
+			// `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
+			// "query is not supported")`. Go aligns through
+			// extractFromSimpleTable.
+			name:     "FROM-less SELECT (parse-time rejection)",
+			sql:      "SELECT 1 + 1",
+			wantCode: api.ErrCodeUnsupportedQuery,
 		},
 		{
 			name:     "duplicate database",

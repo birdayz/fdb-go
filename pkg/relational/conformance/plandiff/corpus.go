@@ -900,6 +900,14 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_OFF ORDER BY id LIMIT 2 OFFSET 1",
 		},
 		{
+			// PROBE TODO #6: FROM-less SELECT inside CTE base — does
+			// Java accept it where it rejects the standalone form?
+			Name:           "probe_fromless_in_cte_base",
+			SchemaTemplate: "CREATE TABLE T_FLC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_FLC VALUES (1, 1)"},
+			Query:          "WITH base AS (SELECT 1 AS n) SELECT n FROM base",
+		},
+		{
 			// WHERE with a single bare-paren predicate: Java's parser
 			// treats `(boolean_expr)` as a recordConstructor (single-
 			// element tuple). Expression.toUnderlyingPredicate's cast

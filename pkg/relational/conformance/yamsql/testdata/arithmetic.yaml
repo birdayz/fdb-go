@@ -53,10 +53,13 @@ tests:
       - [80]
   # Negative dividend: sign follows dividend for `/` and `%` (Java and
   # Go both do truncation toward zero). `-10 / 3 = -3`, `-10 % 3 = -1`.
-  - query: SELECT -10 / 3
+  # Rewritten with a FROM clause — fdb-relational 4.11.1.0 rejects
+  # FROM-less SELECT (UNSUPPORTED_QUERY / 0AF00); use t WHERE id = 1
+  # to anchor the constant projection on a single row.
+  - query: SELECT -10 / 3 FROM t WHERE id = 1
     rows:
       - [-3]
-  - query: SELECT -10 % 3
+  - query: SELECT -10 % 3 FROM t WHERE id = 1
     rows:
       - [-1]
   # NULL arithmetic — any op with NULL operand returns NULL.

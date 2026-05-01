@@ -257,9 +257,13 @@ tests:
       - [10]
       - [1]
 
-  # Counter (1..5) via a depth predicate. Recursive WHERE n < 5 bounds
-  # the recursion. Seed is a no-FROM SELECT literal — exercises the
-  # (sq.tableName == "") single-row path inside the seed.
+  # Counter (1..5) via a depth predicate. The seed is a FROM-less
+  # SELECT literal (`SELECT 1 AS n`); fdb-relational 4.11.1.0 rejects
+  # at parse time via QueryVisitor.visitSimpleTable's
+  # `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
+  # "query is not supported")` — the assertion fires on every
+  # SimpleTable visit, including ones inside a recursive CTE base.
+  # Per the project conformance principle, Go aligns. ErrCode 0AF00.
   - query: |-
       WITH RECURSIVE counter(n) AS (
         SELECT 1 AS n
@@ -267,12 +271,7 @@ tests:
         SELECT n + 1 FROM counter WHERE n < 5
       )
       SELECT n FROM counter ORDER BY n
-    rows:
-      - [1]
-      - [2]
-      - [3]
-      - [4]
-      - [5]
+    error_code: "0AF00"
 
   # Cycle + UNION DISTINCT: reachable set on a 1→2→3→1 cycle must be
   # {1,2,3} and the recursion must terminate (via the seen-row filter,

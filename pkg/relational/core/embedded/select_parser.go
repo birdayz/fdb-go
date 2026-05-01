@@ -718,22 +718,17 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		// SELECT without FROM: evaluate expressions as constants (single-row result).
-		if projQualifier != "" {
-			return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-				"qualifier %q in SELECT list but query has no FROM clause", projQualifier)
-		}
-		for _, q := range projStarQualifiers {
-			if q != "" {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-					"qualifier %q.* in SELECT list but query has no FROM clause", q)
-			}
-		}
-		return &selectQuery{
-			projCols:    projCols,
-			projAliases: projAliases,
-			projExprs:   projExprs,
-		}, nil
+		// FROM-less SELECT: fdb-relational 4.11.1.0's QueryVisitor's
+		// visitSimpleTable asserts simpleTableContext.fromClause() is
+		// non-null with `Assert.notNullUnchecked(... ErrorCode.
+		// UNSUPPORTED_QUERY, "query is not supported")`. The check
+		// fires universally — including FROM-less SELECTs inside CTE
+		// base cases (every SimpleTable visit hits the gate, no CTE-
+		// context bypass). Match byte-equal. Standalone constant
+		// projection like `SELECT 1+1` and CTE bases like
+		// `WITH base AS (SELECT 1 AS n) ...` both reject.
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"query is not supported")
 	}
 
 	sources := fromClause.TableSources()

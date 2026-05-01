@@ -264,7 +264,13 @@ var _ = Describe("RunSql Harness", func() {
 					// Java errored → Go must error with a byte-equal
 					// core message. Both engines unwrap to a typed
 					// error carrying just the server-side root-cause
-					// text (no wrapper prefixes).
+					// text (no wrapper prefixes). Java's conformance
+					// server traverses the exception cause chain to the
+					// root and emits root.getMessage(); Go's wrap layer
+					// (api.WrapErrorf in CTE / nested visit sites)
+					// adds outer context but preserves the inner via
+					// Unwrap, so we walk to the deepest *api.Error and
+					// compare its Message — symmetric with Java.
 					Expect(goResult.Err).To(HaveOccurred(),
 						"corpus entry %q: Java errored but Go succeeded\n  Java: %s",
 						rq.Name, javaResult.Err.Error())
@@ -276,9 +282,19 @@ var _ = Describe("RunSql Harness", func() {
 					Expect(errors.As(goResult.Err, &ge)).To(BeTrue(),
 						"corpus entry %q: Go error is %T (not *api.Error); harness can't extract verbatim message",
 						rq.Name, goResult.Err)
-					Expect(ge.Message).To(Equal(je.Message),
+					// Walk the cause chain to find the deepest *api.Error.
+					goRootMsg := ge.Message
+					for cause := ge.Unwrap(); cause != nil; {
+						var inner *api.Error
+						if !errors.As(cause, &inner) {
+							break
+						}
+						goRootMsg = inner.Message
+						cause = inner.Unwrap()
+					}
+					Expect(goRootMsg).To(Equal(je.Message),
 						"corpus entry %q: error messages diverge\n  Java: %q\n  Go:   %q",
-						rq.Name, je.Message, ge.Message)
+						rq.Name, je.Message, goRootMsg)
 					return
 				}
 
