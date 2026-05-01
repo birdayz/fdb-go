@@ -3457,6 +3457,20 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_WO WHERE v < 10 OR v > 100 ORDER BY id",
 		},
 		{
+			// PROBE: SELECT TRUE/FALSE constants
+			Name:           "select_bool_constants",
+			SchemaTemplate: "CREATE TABLE T_BC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BC VALUES (1, 10)"},
+			Query:          "SELECT id, TRUE, FALSE FROM T_BC ORDER BY id",
+		},
+		{
+			// PROBE: chained NOT
+			Name:           "not_not_predicate",
+			SchemaTemplate: "CREATE TABLE T_NN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NN VALUES (1, 5), (2, 50)"},
+			Query:          "SELECT id FROM T_NN WHERE NOT NOT (v > 10) ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
