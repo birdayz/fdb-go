@@ -110,7 +110,7 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 			return r, nil
 		case "/":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 			}
 			// MinInt64 / -1 overflows (abs value doesn't fit in int64).
 			if li == math.MinInt64 && ri == -1 {
@@ -119,7 +119,7 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 			return li / ri, nil
 		case "%":
 			if ri == 0 {
-				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
+				return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 			}
 			return li % ri, nil
 		default:
@@ -142,12 +142,12 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 		result = lf * rf
 	case "/":
 		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 		}
 		result = lf / rf
 	case "%":
 		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 		}
 		result = math.Mod(lf, rf)
 	default:

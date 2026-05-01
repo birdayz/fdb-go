@@ -1940,6 +1940,22 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      nil,
 			Query:          "SELECT AVG(v) FROM T_AVE",
 		},
+		{
+			// Integer division by zero — Java verbatim "/ by zero"
+			// (Java's stock ArithmeticException.getMessage()). Aligned
+			// Go-side dayshift-62 (was "division by zero").
+			Name:           "divide_by_zero_int",
+			SchemaTemplate: "CREATE TABLE T_DBZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DBZ VALUES (1, 5)"},
+			Query:          "SELECT v / 0 FROM T_DBZ",
+		},
+		{
+			// Integer modulo by zero — same Java message.
+			Name:           "modulo_by_zero_int",
+			SchemaTemplate: "CREATE TABLE T_MBZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MBZ VALUES (1, 5)"},
+			Query:          "SELECT v % 0 FROM T_MBZ",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{

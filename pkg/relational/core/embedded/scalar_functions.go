@@ -299,7 +299,7 @@ func evalScalarFunctionCallCore(
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
 		}
 		if bf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "MOD: division by zero")
+			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
 		}
 		if _, aIsInt := av.(int64); aIsInt {
 			if _, bIsInt := bv.(int64); bIsInt {
