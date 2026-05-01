@@ -2629,6 +2629,70 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT count(*) FROM T_MASJ AS a, T_MASJ AS b WHERE a.parent = b.id",
 		},
 		{
+			// NOT EXISTS correlated subquery — outer row excluded
+			// when the inner query produces any matching row.
+			Name:           "not_exists_correlated",
+			SchemaTemplate: "CREATE TABLE T_NEC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NEC VALUES (1, 5)",
+				"INSERT INTO T_NEC VALUES (2, 5)",
+			},
+			Query: "SELECT id FROM T_NEC AS o WHERE NOT EXISTS (SELECT 1 FROM T_NEC AS i WHERE i.id = o.id - 100) ORDER BY id",
+		},
+		{
+			// String comparison — lexicographic ordering on STRING.
+			Name:           "compare_string_lex",
+			SchemaTemplate: "CREATE TABLE T_CSL (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CSL VALUES (1, 'a')",
+				"INSERT INTO T_CSL VALUES (2, 'b')",
+				"INSERT INTO T_CSL VALUES (3, 'c')",
+			},
+			Query: "SELECT id FROM T_CSL WHERE name > 'a' ORDER BY id",
+		},
+		{
+			// Bitwise AND on integer column.
+			Name:           "bitwise_and_int",
+			SchemaTemplate: "CREATE TABLE T_BAW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BAW VALUES (1, 5)"},
+			Query:          "SELECT v & 1 FROM T_BAW",
+		},
+		{
+			// Bitwise OR.
+			Name:           "bitwise_or_int",
+			SchemaTemplate: "CREATE TABLE T_BOR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BOR VALUES (1, 5)"},
+			Query:          "SELECT v | 2 FROM T_BOR",
+		},
+		{
+			// Bitwise XOR.
+			Name:           "bitwise_xor_int",
+			SchemaTemplate: "CREATE TABLE T_BXR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BXR VALUES (1, 5)"},
+			Query:          "SELECT v ^ 3 FROM T_BXR",
+		},
+		{
+			// COUNT(*) over a UNION ALL subquery (derived table).
+			Name: "count_over_union_all_subquery",
+			SchemaTemplate: "CREATE TABLE T_AOU1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AOU2 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AOU1 VALUES (1)",
+				"INSERT INTO T_AOU2 VALUES (2)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_AOU1 UNION ALL SELECT id FROM T_AOU2) AS u",
+		},
+		{
+			// CTE referenced from a JOIN.
+			Name:           "cte_in_join_with_filter",
+			SchemaTemplate: "CREATE TABLE T_CIJ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CIJ VALUES (1, 100)",
+				"INSERT INTO T_CIJ VALUES (2, 200)",
+			},
+			Query: "WITH big AS (SELECT id, v FROM T_CIJ WHERE v > 150) SELECT count(*) FROM T_CIJ AS t, big WHERE t.id = big.id",
+		},
+		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
 			Name:           "select_bool_column_trio",
 			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
