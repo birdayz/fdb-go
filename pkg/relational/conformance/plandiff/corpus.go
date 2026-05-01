@@ -3471,6 +3471,34 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_NN WHERE NOT NOT (v > 10) ORDER BY id",
 		},
 		{
+			// PROBE: WHERE col = col (column-to-column equality)
+			Name:           "where_col_eq_col",
+			SchemaTemplate: "CREATE TABLE T_CEC (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CEC VALUES (1, 10, 10), (2, 20, 30)"},
+			Query:          "SELECT id FROM T_CEC WHERE x = y ORDER BY id",
+		},
+		{
+			// PROBE: SELECT same column twice
+			Name:           "select_dup_col",
+			SchemaTemplate: "CREATE TABLE T_SD (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SD VALUES (1, 10)"},
+			Query:          "SELECT id, v, id, v FROM T_SD",
+		},
+		{
+			// PROBE: WHERE with parenthesized AND-OR mix (paren NOT at top-level)
+			Name:           "where_and_in_or",
+			SchemaTemplate: "CREATE TABLE T_WAO (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WAO VALUES (1, 5, 10), (2, 50, 100), (3, 5, 200)"},
+			Query:          "SELECT id FROM T_WAO WHERE (x = 5 AND y = 10) OR (x = 50) ORDER BY id",
+		},
+		{
+			// PROBE: SUM of expression
+			Name:           "sum_expr",
+			SchemaTemplate: "CREATE TABLE T_SE (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SE VALUES (1, 10, 1), (2, 20, 2), (3, 30, 3)"},
+			Query:          "SELECT SUM(x + y) FROM T_SE",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
