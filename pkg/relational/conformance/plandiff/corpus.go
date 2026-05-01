@@ -2051,6 +2051,16 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_AIWR WHERE COUNT(*) > 0",
 		},
 		{
+			// BETWEEN with cross-type bounds — Java verbatim
+			// 'The operands of a comparison operator are not
+			// compatible.' Aligned Go-side dayshift-62 (was
+			// 'BETWEEN bounds incompatible: cannot compare X and Y').
+			Name:           "between_cross_type_bounds_rejected",
+			SchemaTemplate: "CREATE TABLE T_BCT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BCT VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_BCT WHERE v BETWEEN 'a' AND 10",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].

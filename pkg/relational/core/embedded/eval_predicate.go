@@ -483,11 +483,11 @@ func evalBetweenPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg 
 	// matching the rest of our cross-type rejection surface).
 	if fieldVal != nil && lo != nil && !valuesComparable(fieldVal, lo) {
 		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, lo)
+			"The operands of a comparison operator are not compatible.")
 	}
 	if fieldVal != nil && hi != nil && !valuesComparable(fieldVal, hi) {
 		return triFalse, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"BETWEEN bounds incompatible: cannot compare %T and %T", fieldVal, hi)
+			"The operands of a comparison operator are not compatible.")
 	}
 
 	// compareTri returns TRUE/FALSE/NULL based on whether the comparison
