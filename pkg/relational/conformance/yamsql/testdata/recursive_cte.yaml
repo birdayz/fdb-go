@@ -318,7 +318,7 @@ tests:
   # detection must NOT trigger on the alias — only on a real table
   # reference — so this evaluates as a non-recursive CTE. Unqualified
   # projection used to sidestep the known `alias.col → dotted col name`
-  # quirk in non-recursive CTE materialisation. As of dayshift-62 the
+  # quirk in non-recursive CTE materialisation. As of  the
   # single-CTE WITH-RECURSIVE-no-self-ref form is rejected (Java
   # alignment — "condition is not met!", ErrCode 0A000); the table
   # alias `t AS x` is not a self-reference, just a name collision.
@@ -355,7 +355,7 @@ tests:
       - [1]
 
   # Multi-CTE WITH RECURSIVE list: first CTE is plain, second is
-  # recursive. Pre-dayshift-62 Go silently routed the non-self-ref
+  # recursive. Pre- Go silently routed the non-self-ref
   # `roots` CTE through the regular path. Java rejects (verified via
   # direct probe — ~1.2s response): every CTE under RECURSIVE must
   # self-reference, including ones intended as plain non-recursive

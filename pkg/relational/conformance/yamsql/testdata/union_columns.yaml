@@ -59,7 +59,7 @@ tests:
       - [100]
 
   # UNION (without ALL) — Java rejects "only UNION ALL is supported"
-  # (0A000); aligned dayshift-62.
+  # (0A000); aligned .
   - query: SELECT v FROM a UNION SELECT v FROM a ORDER BY v
     error_code: "0AF00"
 

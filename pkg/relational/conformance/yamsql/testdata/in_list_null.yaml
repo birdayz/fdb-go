@@ -4,7 +4,7 @@
 # are not allowed in the IN list" (22000). SQL §8.4 + Postgres would
 # treat the list as UNKNOWN-tolerant; fdb-relational rejects outright.
 # Per project conformance principle (doesn't work in Java → doesn't
-# work in Go), aligned dayshift-62.
+# work in Go), aligned .
 name: in_list_null
 schema_template: |
   CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))

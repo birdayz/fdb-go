@@ -73,7 +73,13 @@ func CastValue(v any, typeName string) (any, error) {
 			// trims whitespace before parsing.
 			i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
 			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast, "cannot CAST %q to integer: %v", n, err)
+				// Java verbatim: 'Invalid cast operation Cannot cast
+				// string 'X' to LONG: For input string: "X"' — the
+				// quirky duplication is Java's stock NumberFormatException
+				// message, wrapped by fdb-relational's "Invalid cast
+				// operation" prefix.
+				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+					"Invalid cast operation Cannot cast string '%s' to LONG: For input string: \"%s\"", n, n)
 			}
 			if is32BitInteger && (i < math.MinInt32 || i > math.MaxInt32) {
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
@@ -127,7 +133,7 @@ func CastValue(v any, typeName string) (any, error) {
 			if err != nil {
 				// Java verbatim: 'Invalid UUID value for the UUID type X'
 				// (where X is the input string, no quotes). Aligned
-				// dayshift-62.
+				// .
 				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
 					"Invalid UUID value for the UUID type %s", n)
 			}

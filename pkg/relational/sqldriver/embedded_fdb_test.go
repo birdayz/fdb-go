@@ -2990,7 +2990,6 @@ func TestFDB_UnionAll(t *testing.T) {
 // "only UNION ALL is supported" because the planner has no
 // de-duplication operator. Per project conformance principle
 // (doesn't work in Java → doesn't work in Go), Go rejects too.
-// Aligned dayshift-62.
 func TestFDB_UnionDistinctRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -6719,7 +6718,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 
 	// NULL literal inside IN-list: Java rejects with verbatim
 	// "NULL values are not allowed in the IN list" (22000). Aligned
-	// dayshift-62 — Go now rejects too. SQL §8.4 + Postgres would
+	//  — Go now rejects too. SQL §8.4 + Postgres would
 	// treat the list as UNKNOWN-tolerant; per project conformance
 	// principle (doesn't work in Java → doesn't work in Go), we reject.
 	_, err = db.QueryContext(ctx, `SELECT COUNT(*) FROM T WHERE id NOT IN (1, NULL)`)

@@ -132,7 +132,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				if fd == nil {
 					// Java verbatim: 'Attempting to query non existing
 					// column NAME' (uppercased identifier). Aligned
-					// dayshift-62 to match the SELECT path's same
+					//  to match the SELECT path's same
 					// alignment.
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"Attempting to query non existing column %s", strings.ToUpper(colName))
@@ -151,7 +151,7 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					clonedRefl.Clear(fd)
 					continue
 				}
-				// Java alignment dayshift-62: UPDATE on a PK column
+				// Java alignment : UPDATE on a PK column
 				// with a non-NULL value is rejected with verbatim
 				// 'record does not exist' (Java's RecordDoesNotExist
 				// from the in-place save lookup). NULL case already

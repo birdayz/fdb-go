@@ -128,7 +128,7 @@ func startJavaServer() (*JavaInvoker, error) {
 	// errors, the pipe fills up and Java's NEXT printStackTrace() call
 	// BLOCKS on the stderr write — the request handler thread blocks
 	// before sending the HTTP response, and Go's POST hangs at the 120s
-	// response timeout. Surfaced dayshift-62 by the cross-engine
+	// response timeout. Surfaced  by the cross-engine
 	// negative-path harness; jstack showed Java idle (no active worker
 	// thread) because the request handler had been blocked mid-stderr-
 	// write since some earlier exception, while subsequent requests

@@ -733,7 +733,7 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							if iv, isInt := v.(int64); isInt && !gs.sumNonInt[i] {
 								// Java verbatim: ArithmeticException
 								// "long overflow" on SUM(BIGINT)
-								// overflow. Aligned dayshift-62.
+								// overflow.
 								r, ok := functions.AddInt64Checked(gs.sumsI[i], iv)
 								if !ok {
 									return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,

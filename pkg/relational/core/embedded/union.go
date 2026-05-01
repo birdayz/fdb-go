@@ -20,13 +20,13 @@ import (
 // type mismatch → 42F65).
 //
 // Plain `UNION` (implicit DISTINCT) is rejected at entry — Java
-// alignment dayshift-62. fdb-relational's planner has no de-duplication
+// alignment. fdb-relational's planner has no de-duplication
 // operator wired into the union path, so DISTINCT is not supported.
 //
 // Destined for plan/physical/union.go per RFC 021 Phase 1c.
 
 // execUnion executes a UNION ALL query. Plain UNION (implicit
-// DISTINCT) is rejected at entry per the dayshift-62 alignment.
+// DISTINCT) is rejected at entry per the  alignment.
 //
 // Trailing ORDER BY / LIMIT / OFFSET on the rightmost simpleTable is lifted
 // to the combined result. SQL-standard semantics (and Postgres, MySQL): a
@@ -49,7 +49,7 @@ func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQu
 	// planner has no de-duplication operator wired into the union path,
 	// so plain UNION (implicit DISTINCT) is rejected outright. Per
 	// project conformance principle, Go aligns at parse time. Aligned
-	// dayshift-62.
+	// .
 	q := setQ.GetQuantifier()
 	if q == nil || strings.ToUpper(q.GetText()) != "ALL" {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,

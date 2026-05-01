@@ -437,7 +437,7 @@ class SqlPlanSteps {
             // detect the IEEE-754 specials and encode them as strings
             // ("Infinity", "-Infinity", "NaN") so the JSON stays valid;
             // the harness on either side decodes the string back to the
-            // appropriate float when comparing. Aligned dayshift-62.
+            // appropriate float when comparing.
             if (v instanceof Double) {
                 double d = (Double) v;
                 if (Double.isInfinite(d)) {

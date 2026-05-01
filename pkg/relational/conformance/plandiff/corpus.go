@@ -1240,7 +1240,7 @@ func SeedRunCorpus() []RunQuery {
 			// Java rejects NULL anywhere in the IN list. SQL §8.4 +
 			// Postgres would treat NULL elements as UNKNOWN-tolerant
 			// (row excluded if no other element matches); fdb-relational
-			// rejects outright. Aligned dayshift-62.
+			// rejects outright.
 			Name:           "null_in_in_list_rejected",
 			SchemaTemplate: "CREATE TABLE T_NIIR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -1886,7 +1886,7 @@ func SeedRunCorpus() []RunQuery {
 			// `UNION` without ALL (implicit DISTINCT) is rejected by
 			// fdb-relational with verbatim "only UNION ALL is supported".
 			// fdb-relational's planner has no de-duplication operator
-			// wired into the union path. Aligned Go-side dayshift-62.
+			// wired into the union path.
 			Name:           "union_distinct_rejected",
 			SchemaTemplate: "CREATE TABLE T_UDR (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -1943,7 +1943,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Integer division by zero — Java verbatim "/ by zero"
 			// (Java's stock ArithmeticException.getMessage()). Aligned
-			// Go-side dayshift-62 (was "division by zero").
+			// Go-side  (was "division by zero").
 			Name:           "divide_by_zero_int",
 			SchemaTemplate: "CREATE TABLE T_DBZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_DBZ VALUES (1, 5)"},
@@ -1958,7 +1958,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// SUM(BIGINT) overflow — Java throws ArithmeticException
-			// 'long overflow' (Math.addExact). Pre-dayshift-62 Go's
+			// 'long overflow' (Math.addExact). Pre- Go's
 			// int64 accumulator silently wrapped; aligned via
 			// AddInt64Checked at every SUM accumulation site.
 			Name:           "sum_bigint_overflow",
@@ -2044,7 +2044,7 @@ func SeedRunCorpus() []RunQuery {
 			// Aggregate in WHERE — Java rejects with verbatim
 			// 'unable to eval an aggregation function with eval()'
 			// (IllegalStateException from the scalar evaluator
-			// hitting an aggregate node). Aligned dayshift-62.
+			// hitting an aggregate node).
 			Name:           "agg_in_where_rejected",
 			SchemaTemplate: "CREATE TABLE T_AIWR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AIWR VALUES (1, 5)"},
@@ -2053,7 +2053,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// BETWEEN with cross-type bounds — Java verbatim
 			// 'The operands of a comparison operator are not
-			// compatible.' Aligned Go-side dayshift-62 (was
+			// compatible.' Aligned Go-side  (was
 			// 'BETWEEN bounds incompatible: cannot compare X and Y').
 			Name:           "between_cross_type_bounds_rejected",
 			SchemaTemplate: "CREATE TABLE T_BCT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
@@ -2067,7 +2067,7 @@ func SeedRunCorpus() []RunQuery {
 			// variable and cannot be promoted to the type of the
 			// variable.' (one message for column-count and
 			// type-mismatch; both surface the same SemanticException).
-			// Aligned Go-side dayshift-62.
+			//
 			Name:           "insert_too_few_values_rejected",
 			SchemaTemplate: "CREATE TABLE T_ITF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_ITF VALUES (1)"},
@@ -2086,7 +2086,7 @@ func SeedRunCorpus() []RunQuery {
 			// Java verbatim 'A value cannot be assigned to a variable
 			// because the type of the value does not match the type of
 			// the variable and cannot be promoted to the type of the
-			// variable.' Aligned dayshift-62.
+			// variable.'
 			Name:           "insert_type_mismatch_rejected",
 			SchemaTemplate: "CREATE TABLE T_ITMT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_ITMT VALUES (1, 'abc')"},
@@ -2095,7 +2095,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// UPDATE referencing a non-existent column — Java verbatim
 			// 'Attempting to query non existing column X' (same
-			// alignment as SELECT path; aligned UPDATE-side dayshift-62).
+			// alignment as SELECT path; aligned UPDATE-side ).
 			Name:           "update_undefined_column_rejected",
 			SchemaTemplate: "CREATE TABLE T_UUC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UUC VALUES (1, 5)", "UPDATE T_UUC SET no_such_col = 1"},
@@ -2104,7 +2104,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Integer overflow on +, -, * — all aligned to Java
 			// verbatim 'long overflow' (was 'integer overflow on N OP M').
-			// Aligned dayshift-62.
+			//
 			Name:           "add_int_overflow_rejected",
 			SchemaTemplate: "CREATE TABLE T_AIO (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AIO VALUES (1)"},
@@ -2182,7 +2182,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// String + string → concat in Java (operator-overload for
-			// strings). Aligned Go-side dayshift-62.
+			// strings).
 			Name:           "string_concat_via_plus",
 			SchemaTemplate: "CREATE TABLE T_SCP (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SCP VALUES (1, 'foo', 'bar')"},
@@ -2227,7 +2227,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// Invalid UUID literal — Java verbatim 'Invalid UUID value
-			// for the UUID type NAME'. Aligned dayshift-62.
+			// for the UUID type NAME'.
 			Name:           "cast_invalid_uuid_rejected",
 			SchemaTemplate: "CREATE TABLE T_CIU (id BIGINT, u UUID, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CIU VALUES (1, CAST('not-a-real-uuid' AS UUID))"},
@@ -2236,7 +2236,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// CAST(BIGINT AS INTEGER) overflow — Java verbatim
 			// 'Invalid cast operation Value out of range for INT: N'.
-			// Aligned dayshift-62.
+			//
 			Name:           "cast_bigint_to_int_overflow_rejected",
 			SchemaTemplate: "CREATE TABLE T_CBO (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CBO VALUES (1)"},
@@ -2245,7 +2245,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// PRIMARY KEY violation — Java verbatim 'record already
 			// exists' (RecordAlreadyExistsException.getMessage()).
-			// Aligned dayshift-62 (was Go's PK-included form).
+			//(was Go's PK-included form).
 			Name:           "primary_key_violation_rejected",
 			SchemaTemplate: "CREATE TABLE T_PKV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -2258,7 +2258,7 @@ func SeedRunCorpus() []RunQuery {
 			// SUM over a non-numeric column — Java verbatim 'unable to
 			// encapsulate aggregate operation due to type mismatch(es)'
 			// (same SemanticException as MIN/MAX over non-numeric).
-			// Aligned dayshift-62.
+			//
 			Name:           "sum_over_string_rejected",
 			SchemaTemplate: "CREATE TABLE T_SOS (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SOS VALUES (1, 'a')"},
@@ -2385,7 +2385,7 @@ func SeedRunCorpus() []RunQuery {
 			// UPDATE on a PK column — Java rejects 'record does not
 			// exist' (in-place UPDATE can't modify the PK; the read-
 			// then-save lookup at the new key has no source row).
-			// Aligned Go-side dayshift-62: detect PK col in SET
+			// detect PK col in SET
 			// clause and reject before the loop with the verbatim
 			// Java message.
 			Name:           "update_pk_column_rejected",
@@ -2455,6 +2455,19 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_INO VALUES (3, 10)",
 			},
 			Query: "SELECT id FROM T_INO WHERE v IS NULL OR v < 7 ORDER BY id",
+		},
+		{
+			// CAST(string-with-non-numeric-content AS BIGINT) — Java
+			// verbatim 'Invalid cast operation Cannot cast string
+			// "abc" to LONG: For input string: "abc"' (the quirky
+			// duplicated input string is Java's stock
+			// NumberFormatException message wrapped by fdb-relational's
+			// 'Invalid cast operation' prefix). Aligned Go-side
+			// .
+			Name:           "cast_string_non_numeric_rejected",
+			SchemaTemplate: "CREATE TABLE T_CSN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CSN VALUES (1)"},
+			Query:          "SELECT CAST('abc' AS BIGINT) FROM T_CSN",
 		},
 		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
@@ -2764,7 +2777,7 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id FROM T_DA",
 		},
 
-		// ===== Composite primary key pushdown shapes (dayshift-62) =====
+		// ===== Composite primary key pushdown shapes  =====
 		// PK = (region, id). The Cascades planner picks different scan
 		// strategies for partial-PK equality, full-PK equality, and a
 		// range on the leading PK column. We verify both engines emit
@@ -2871,7 +2884,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// CASE inside aggregate — Go-permissive type-inference
-			// divergence from Java surfaced dayshift-62. Java reports
+			// divergence from Java surfaced . Java reports
 			// `SUM(CASE WHEN p THEN 1 ELSE 0 END)` as INTEGER (the
 			// Cascades planner inherits the integer-literal branch
 			// type and Java's SUM(INTEGER) overload preserves INTEGER);
@@ -3245,7 +3258,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Multi-CTE form: `WITH RECURSIVE roots AS (no-self-ref),
 			// descendants AS (... UNION ALL ...)` — direct probe against
-			// the Java conformance server (dayshift-62) confirmed Java
+			// the Java conformance server  confirmed Java
 			// rejects this with the SAME verbatim "condition is not met!"
 			// message in ~1.2s (NOT a timeout). The earlier 156s harness
 			// hang was a per-entry-isolation gap: ExpectErrorMessage

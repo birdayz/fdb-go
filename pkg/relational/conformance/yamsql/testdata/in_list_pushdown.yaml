@@ -90,7 +90,7 @@ tests:
       - [3, 'three']
 
   # NULL in IN list — Java rejects with "NULL values are not allowed
-  # in the IN list" (22000); aligned Go-side dayshift-62.
+  # in the IN list" (22000); aligned Go-side .
   - query: SELECT id FROM t WHERE id IN (5, NULL)
     error_code: "22000"
 
@@ -174,7 +174,7 @@ tests:
   # IN with NULL in the list
   # -------------------------------------------------------------------
 
-  # NULL in IN list rejected (Java alignment, dayshift-62).
+  # NULL in IN list rejected (Java alignment).
   - query: SELECT id FROM t WHERE id IN (1, NULL, 3) ORDER BY id
     error_code: "22000"
 

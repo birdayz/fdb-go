@@ -27,7 +27,7 @@ tests:
   - query: SELECT id FROM t WHERE s = 1
     error_code: "22000"
   # NULL in IN list — Java rejects with verbatim "NULL values are not
-  # allowed in the IN list" (22000). Aligned dayshift-62.
+  # allowed in the IN list" (22000).
   - query: SELECT id FROM t WHERE n IN (1, NULL, 30) ORDER BY id
     error_code: "22000"
   - query: SELECT id FROM t WHERE n NOT IN (1, NULL, 30)

@@ -86,7 +86,7 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 	// toward zero). Going through float first would turn 10 / 3 into
 	// 3.333 instead of 3, and unchecked ops would silently wrap
 	// MAX_INT + 1 to MIN_INT.
-	// String + string → concat (Java alignment, dayshift-62). Java's
+	// String + string → concat (Java alignment). Java's
 	// `+` is overloaded for strings; fdb-relational evaluates
 	// 'foo' + 'bar' = 'foobar'. Other operators (- * / %) on strings
 	// remain unsupported.
@@ -155,7 +155,7 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 		// Java IEEE-754 semantics for double division: x / 0.0 = ±Infinity,
 		// 0.0 / 0.0 = NaN. fdb-relational does NOT throw — only integer
 		// division throws ArithmeticException "/ by zero". Aligned
-		// dayshift-62 (a previous broad-stroke change incorrectly threw
+		// A previous broad-stroke change incorrectly threw
 		// for both int and float).
 		result = lf / rf
 	case "%":

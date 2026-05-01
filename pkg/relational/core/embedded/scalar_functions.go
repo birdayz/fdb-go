@@ -81,7 +81,7 @@ func evalScalarFunctionCallCore(
 	case *antlrgen.AggregateFunctionCallContext:
 		// Java verbatim: aggregate function in scalar (e.g. WHERE)
 		// context throws IllegalStateException 'unable to eval an
-		// aggregation function with eval()'. Aligned dayshift-62.
+		// aggregation function with eval()'.
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unable to eval an aggregation function with eval()")
 	default:

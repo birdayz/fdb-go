@@ -333,7 +333,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 						// Java verbatim: throws ArithmeticException
 						// "long overflow" on SUM(BIGINT) overflow.
 						// Mirror via overflow-checked add. Aligned
-						// dayshift-62.
+						// .
 						r, ok := functions.AddInt64Checked(gs.sumsI[i], iv)
 						if !ok {
 							return nil, nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,

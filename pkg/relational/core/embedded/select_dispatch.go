@@ -306,7 +306,7 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 				// raises `condition is not met!` for any CTE under
 				// RECURSIVE that doesn't actually self-reference (both
 				// single-CTE and multi-CTE forms — verified via direct
-				// probe against the Java conformance server, dayshift-62,
+				// probe against the Java conformance server, ,
 				// ~1.2s response time per query when server is fresh).
 				// SQL spec / Postgres treat RECURSIVE as a scope enabler
 				// and would silently fall back to non-recursive

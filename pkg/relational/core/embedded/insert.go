@@ -54,7 +54,7 @@ func wrapSaveRecordError(err error) error {
 	if errors.As(err, &existsErr) {
 		// Java verbatim: 'record already exists' (the
 		// RecordAlreadyExistsException.getMessage() — fdb-relational
-		// doesn't include the PK in the message). Aligned dayshift-62.
+		// doesn't include the PK in the message).
 		return api.WrapErrorf(err, api.ErrCodeUniqueConstraintViolation,
 			"record already exists")
 	}
@@ -173,7 +173,6 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				// Java verbatim for plain INSERT VALUES with arity
 				// mismatch: 'provided record cannot be assigned as its
 				// type is incompatible with the target type'.
-				// Aligned dayshift-62.
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"provided record cannot be assigned as its type is incompatible with the target type")
 			}
