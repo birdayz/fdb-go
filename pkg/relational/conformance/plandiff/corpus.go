@@ -6328,6 +6328,114 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_AGE18 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT avg(v) FROM T_AGE18 WHERE v > 1000",
 		},
+
+		// ===== Additional secondary-index / covering / pushdown shapes =====
+		{
+			// Explicit `>=` lower bound — distinct from existing `>` and
+			// `>= AND <=` shapes; pins single-sided closed range.
+			Name:           "idx_range_gte",
+			SchemaTemplate: "CREATE TABLE T_IDX1 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx1_v ON T_IDX1 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX1 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT id, v FROM T_IDX1 WHERE v >= 30 ORDER BY id",
+		},
+		{
+			// Explicit `<=` upper bound — distinct from existing `<` shape.
+			Name:           "idx_range_lte",
+			SchemaTemplate: "CREATE TABLE T_IDX2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx2_v ON T_IDX2 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX2 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT id, v FROM T_IDX2 WHERE v <= 20 ORDER BY id",
+		},
+		{
+			// String prefix range — pins index range scan on STRING type.
+			Name:           "idx_string_prefix_range",
+			SchemaTemplate: "CREATE TABLE T_IDX3 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_idx3_name ON T_IDX3 (name)",
+			SetupSqls:      []string{"INSERT INTO T_IDX3 VALUES (1, 'apple'), (2, 'apricot'), (3, 'banana'), (4, 'cherry')"},
+			Query:          "SELECT id, name FROM T_IDX3 WHERE name >= 'a' AND name < 'b' ORDER BY id",
+		},
+		{
+			// ORDER BY indexed col DESC — reverse scan.
+			Name:           "idx_order_by_desc",
+			SchemaTemplate: "CREATE TABLE T_IDX4 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx4_v ON T_IDX4 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX4 VALUES (1, 100), (2, 300), (3, 200)"},
+			Query:          "SELECT id, v FROM T_IDX4 ORDER BY v DESC",
+		},
+		{
+			// Two indexes on same table — planner picks the one matching
+			// the WHERE column.
+			Name:           "multi_idx_choose_a",
+			SchemaTemplate: "CREATE TABLE T_IDX5 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx5_a ON T_IDX5 (a) CREATE INDEX idx_idx5_b ON T_IDX5 (b)",
+			SetupSqls:      []string{"INSERT INTO T_IDX5 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"},
+			Query:          "SELECT id, a, b FROM T_IDX5 WHERE a = 20 ORDER BY id",
+		},
+		{
+			// Two indexes on same table — same query but filtering on `b`.
+			Name:           "multi_idx_choose_b",
+			SchemaTemplate: "CREATE TABLE T_IDX6 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx6_a ON T_IDX6 (a) CREATE INDEX idx_idx6_b ON T_IDX6 (b)",
+			SetupSqls:      []string{"INSERT INTO T_IDX6 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"},
+			Query:          "SELECT id, a, b FROM T_IDX6 WHERE b = 200 ORDER BY id",
+		},
+		{
+			// Index lookup with residual filter on a non-indexed column —
+			// the indexed `v=200` should drive the scan, then `name='bob'`
+			// filters the result.
+			Name:           "idx_eq_with_residual_filter",
+			SchemaTemplate: "CREATE TABLE T_IDX7 (id BIGINT, v BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_idx7_v ON T_IDX7 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX7 VALUES (1, 100, 'alice'), (2, 200, 'bob'), (3, 200, 'carol'), (4, 300, 'dave')"},
+			Query:          "SELECT id, v, name FROM T_IDX7 WHERE v = 200 AND name = 'bob' ORDER BY id",
+		},
+		{
+			// IS NULL on an indexed column — pins index handling of NULL.
+			Name:           "idx_is_null",
+			SchemaTemplate: "CREATE TABLE T_IDX8 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx8_v ON T_IDX8 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX8 VALUES (1, 100), (2, NULL), (3, 200), (4, NULL)"},
+			Query:          "SELECT id, v FROM T_IDX8 WHERE v IS NULL ORDER BY id",
+		},
+		{
+			// Composite index full coverage — projection lists exactly the
+			// indexed cols (a, b), no PK lookup needed.
+			Name:           "compidx_covered_proj",
+			SchemaTemplate: "CREATE TABLE T_IDX9 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx9_ab ON T_IDX9 (a, b)",
+			SetupSqls:      []string{"INSERT INTO T_IDX9 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100)"},
+			Query:          "SELECT a, b FROM T_IDX9 WHERE a = 1 ORDER BY a, b",
+		},
+		{
+			// Index range with ORDER BY DESC — reverse range scan.
+			Name:           "idx_range_order_desc",
+			SchemaTemplate: "CREATE TABLE T_IDX10 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx10_v ON T_IDX10 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX10 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT id, v FROM T_IDX10 WHERE v >= 20 ORDER BY v DESC",
+		},
+		{
+			// IN-list on indexed col — pins multi-point index probe.
+			Name:           "idx_in_list",
+			SchemaTemplate: "CREATE TABLE T_IDX11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx11_v ON T_IDX11 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX11 VALUES (1, 100), (2, 200), (3, 300), (4, 400)"},
+			Query:          "SELECT id, v FROM T_IDX11 WHERE v IN (100, 300) ORDER BY id",
+		},
+		{
+			// Composite index, full equality + projection of trailing col
+			// only — pins covered-index leaf access.
+			Name:           "compidx_full_eq_proj_trailing",
+			SchemaTemplate: "CREATE TABLE T_IDX12 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx12_ab ON T_IDX12 (a, b)",
+			SetupSqls:      []string{"INSERT INTO T_IDX12 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100)"},
+			Query:          "SELECT b FROM T_IDX12 WHERE a = 1 AND b = 200 ORDER BY b",
+		},
+		{
+			// Index `=` returning multiple rows (duplicate values in
+			// non-unique secondary index).
+			Name:           "idx_eq_duplicates",
+			SchemaTemplate: "CREATE TABLE T_IDX13 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx13_v ON T_IDX13 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX13 VALUES (1, 100), (2, 100), (3, 100), (4, 200)"},
+			Query:          "SELECT id, v FROM T_IDX13 WHERE v = 100 ORDER BY id",
+		},
+		{
+			// Index range that returns zero rows (range below min) —
+			// pins empty-range early-exit.
+			Name:           "idx_range_below_min",
+			SchemaTemplate: "CREATE TABLE T_IDX14 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_idx14_v ON T_IDX14 (v)",
+			SetupSqls:      []string{"INSERT INTO T_IDX14 VALUES (1, 100), (2, 200), (3, 300)"},
+			Query:          "SELECT id, v FROM T_IDX14 WHERE v < 50 ORDER BY id",
+		},
 	}
 }
 
