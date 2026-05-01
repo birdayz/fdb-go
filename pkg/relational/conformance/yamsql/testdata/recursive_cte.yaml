@@ -328,14 +328,18 @@ tests:
       SELECT id FROM x
     error_code: "0A000"
 
-  # Using the recursive CTE in a WHERE … IN subquery.
+  # Using the recursive CTE in a comma-join (semi-join shape). IN-
+  # subquery is rejected (Java alignment, CLAUDE.md #10); the join
+  # is the supported rewrite that exercises CTE-result + base-table
+  # joining and preserves the same row set as the rejected
+  # `WHERE id IN (SELECT id FROM descendants)` form.
   - query: |-
       WITH RECURSIVE descendants AS (
         SELECT id, parent FROM t WHERE id = 10
         UNION ALL
         SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
       )
-      SELECT id FROM t WHERE id IN (SELECT id FROM descendants) ORDER BY id
+      SELECT t.id FROM t, descendants WHERE t.id = descendants.id ORDER BY t.id
     rows:
       - [10]
       - [40]

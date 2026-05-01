@@ -3821,7 +3821,17 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	g.Expect(lVal).To(gomega.BeNil(), "LEAST with NULL arg must return NULL (Java conformance)")
 }
 
-func TestFDB_SubqueryIN(t *testing.T) {
+// TestFDB_SubqueryINRejected pins that `col IN (subquery)` and `col NOT
+// IN (subquery)` are rejected at predicate evaluation time. Java's
+// AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
+// alternative of the inList grammar rule (NPE in ParseHelpers.isConstant
+// whose @Nonnull parameter is dereferenced unconditionally). Per CLAUDE.md
+// principle #10 (emergent behaviour over special-case checks), Go aligns
+// with the architectural property — IN-subquery isn't supported — but
+// emits a clean ErrCodeUnsupportedQuery rather than reproducing Java's
+// NPE. EXISTS / NOT EXISTS / JOIN are the supported rewrites and exercised
+// elsewhere (TestFDB_ExistsSubquery, etc).
+func TestFDB_SubqueryINRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3855,11 +3865,29 @@ func TestFDB_SubqueryIN(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO RestaurantOrder (order_id, customer_id, amount) VALUES (3, 1, 150)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Alice has orders > 100, Bob does not, Charlie has no orders.
-	rows, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	expectInSubqueryRejected := func(query string) {
+		t.Helper()
+		_, qErr := db.QueryContext(ctx, query)
+		g.Expect(qErr).To(gomega.HaveOccurred(), "IN-subquery must be rejected: %s", query)
+		var apiErr *api.Error
+		g.Expect(errors.As(qErr, &apiErr)).To(gomega.BeTrue(),
+			"want *api.Error, got %T (%v)", qErr, qErr)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+		g.Expect(apiErr.Message).To(gomega.Equal(
+			"IN with a subquery argument is not supported; use EXISTS or a JOIN"))
+	}
+
+	// IN-subquery — rejected.
+	expectInSubqueryRejected(`SELECT name FROM Customer WHERE id IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+	// NOT IN-subquery — also rejected (same path).
+	expectInSubqueryRejected(`SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
+
+	// Supported rewrite via EXISTS — bread-crumb for users hitting the
+	// rejection. Returns Alice (id=1 with amount > 100).
+	rows, err := db.QueryContext(ctx,
+		`SELECT name FROM Customer AS c WHERE EXISTS (SELECT 1 FROM RestaurantOrder WHERE customer_id = c.id AND amount > 100) ORDER BY name ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
-
 	var names []string
 	for rows.Next() {
 		var name string
@@ -3868,19 +3896,6 @@ func TestFDB_SubqueryIN(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"Alice"}))
-
-	rows2, err := db.QueryContext(ctx, `SELECT name FROM Customer WHERE id NOT IN (SELECT customer_id FROM RestaurantOrder WHERE amount > 100) ORDER BY name ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-
-	var names2 []string
-	for rows2.Next() {
-		var name string
-		g.Expect(rows2.Scan(&name)).To(gomega.Succeed())
-		names2 = append(names2, name)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(names2).To(gomega.ConsistOf("Bob", "Charlie"))
 }
 
 func TestFDB_JoinGroupBy(t *testing.T) {
@@ -4287,8 +4302,11 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, category_id, price) VALUES (3, 2, 50)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// UPDATE products in electronics category (id IN (SELECT id FROM Category WHERE name = 'electronics')).
-	_, err = db.ExecContext(ctx, `UPDATE Product SET price = 999 WHERE category_id IN (SELECT id FROM Category WHERE name = 'electronics')`)
+	// UPDATE products in electronics category via correlated EXISTS.
+	// IN-subquery is rejected (Java alignment, CLAUDE.md #10); EXISTS
+	// is the supported rewrite and exercises the same DML scan-loop
+	// integration with a subquery in WHERE.
+	_, err = db.ExecContext(ctx, `UPDATE Product SET price = 999 WHERE EXISTS (SELECT 1 FROM Category WHERE Category.id = Product.category_id AND Category.name = 'electronics')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	rows, err := db.QueryContext(ctx, `SELECT price FROM Product WHERE category_id = 1 ORDER BY id ASC`)
@@ -4303,8 +4321,8 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(prices).To(gomega.Equal([]int64{999, 999}))
 
-	// DELETE products in books category.
-	_, err = db.ExecContext(ctx, `DELETE FROM Product WHERE category_id IN (SELECT id FROM Category WHERE name = 'books')`)
+	// DELETE products in books category via correlated EXISTS.
+	_, err = db.ExecContext(ctx, `DELETE FROM Product WHERE EXISTS (SELECT 1 FROM Category WHERE Category.id = Product.category_id AND Category.name = 'books')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	rows2, err := db.QueryContext(ctx, `SELECT id FROM Product ORDER BY id ASC`)
@@ -4458,9 +4476,13 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CASE WHEN with subquery in the condition.
+	// CASE WHEN with correlated EXISTS in the condition. IN-subquery
+	// is rejected (Java alignment, CLAUDE.md #10) — EXISTS is the
+	// supported rewrite and the actual focus of this test (CASE WHEN
+	// gating an EXISTS predicate inside a SELECT projection) is
+	// preserved.
 	rows, err := db.QueryContext(ctx, `
-		SELECT name, CASE WHEN id IN (SELECT product_id FROM Discount) THEN 'discounted' ELSE 'full price' END
+		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
@@ -5775,16 +5797,19 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sales (id, customer_id, amount) VALUES (2, 2, 200)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Parameter in the subquery WHERE.
+	// Parameter in the EXISTS-correlated subquery WHERE. IN-subquery
+	// is rejected (Java alignment, CLAUDE.md #10) — EXISTS preserves
+	// the actual focus of this test (parameter binding inside a
+	// subquery's WHERE clause).
 	var cnt int64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM Sales WHERE customer_id IN (SELECT id FROM Customer WHERE tier = ?)`,
+		`SELECT COUNT(*) FROM Sales AS s WHERE EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
 		"gold").Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 
 	// Parameter in both outer and inner.
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM Sales WHERE amount >= ? AND customer_id IN (SELECT id FROM Customer WHERE tier = ?)`,
+		`SELECT COUNT(*) FROM Sales AS s WHERE amount >= ? AND EXISTS (SELECT 1 FROM Customer WHERE id = s.customer_id AND tier = ?)`,
 		int64(150), "silver").Scan(&cnt)).To(gomega.Succeed())
 	g.Expect(cnt).To(gomega.Equal(int64(1)))
 }
@@ -6457,13 +6482,18 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	}
 }
 
-// TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
-// when the subquery result contains a NULL row and no concrete match is found,
-// the entire IN expression is UNKNOWN (filters the outer row out in WHERE;
-// NOT IN must not flip it to TRUE). Pre-fix, matchSubqueryIN silently skipped
-// NULL rows — `WHERE NOT IN (subquery with NULL)` returned TRUE instead of
-// UNKNOWN, keeping rows that Java rejects.
-func TestFDB_SubqueryInNullRow(t *testing.T) {
+// TestFDB_SubqueryInNullRowRejected pins that `x [NOT] IN (subquery)` is
+// rejected at predicate evaluation time, including the NULL-row shapes
+// that previously exercised SQL §8.4 UNKNOWN-on-NULL semantics. Java's
+// AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
+// alternative of the inList grammar rule (NPE); per CLAUDE.md principle
+// #10 Go aligns architecturally and emits a clean error. The §8.4
+// semantics this test originally exercised are moot — the feature is
+// gone. NOT EXISTS is the supported rewrite for "outer rows whose value
+// is not in the inner result", with the caveat that NOT EXISTS does
+// NOT have NOT IN's UNKNOWN-on-NULL filtering — callers needing that
+// must filter explicit NULLs in the inner subquery.
+func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -6491,21 +6521,21 @@ func TestFDB_SubqueryInNullRow(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO U (id) VALUES (2)`) // v=NULL
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var c int64
+	expectInSubqueryRejected := func(query string) {
+		t.Helper()
+		var dummy int64
+		qErr := db.QueryRowContext(ctx, query).Scan(&dummy)
+		g.Expect(qErr).To(gomega.HaveOccurred(), "IN-subquery must be rejected: %s", query)
+		var apiErr *api.Error
+		g.Expect(errors.As(qErr, &apiErr)).To(gomega.BeTrue(),
+			"want *api.Error, got %T (%v)", qErr, qErr)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedQuery))
+		g.Expect(apiErr.Message).To(gomega.Equal(
+			"IN with a subquery argument is not supported; use EXISTS or a JOIN"))
+	}
 
-	// n IN (SELECT v FROM U): id=1 matches v=10; id=2,3 don't match + U has a
-	// NULL → UNKNOWN → filtered out. Only id=1 passes.
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM T WHERE n IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(1)), "id=1 matches v=10; others UNKNOWN due to NULL in subquery")
-
-	// n NOT IN (SELECT v FROM U): id=1 matches so excluded; id=2,3 don't
-	// match but NULL in subquery → UNKNOWN → all excluded. Result: 0 rows.
-	// Pre-fix returned 2 rows (id=2 and id=3).
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(0)),
-		"n NOT IN (subquery with NULL) is UNKNOWN for every row; no rows pass")
+	expectInSubqueryRejected(`SELECT COUNT(*) FROM T WHERE n IN (SELECT v FROM U)`)
+	expectInSubqueryRejected(`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`)
 }
 
 // TestFDB_CountDistinctTypeCollision proves COUNT(DISTINCT col) doesn't

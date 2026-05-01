@@ -19,8 +19,9 @@ tests:
   # (Java supports via CTE + UPDATE.)
   - query: UPDATE t SET v = 99 WHERE id IN (WITH x AS (SELECT id FROM t WHERE g=1) SELECT id FROM x)
     error_code: "42601"
-  # Working form: UPDATE WHERE IN subquery without WITH.
-  - query: UPDATE t SET v = 99 WHERE id IN (SELECT id FROM t WHERE g = 1)
+  # Working form: UPDATE WHERE EXISTS correlated subquery (the
+  # supported rewrite for the rejected `id IN (SELECT ...)` shape).
+  - query: UPDATE t SET v = 99 WHERE EXISTS (SELECT 1 FROM t AS sub WHERE sub.id = t.id AND sub.g = 1)
   - query: SELECT id, v FROM t ORDER BY id
     rows:
       - [1, 99]

@@ -318,24 +318,25 @@ func evalInPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto
 		fieldVal = v
 	}
 
-	if qb := in.InList().QueryExpressionBody(); qb != nil {
-		if conn == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "subquery IN not supported in this context")
-		}
-		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		subCols, _, subRows, err := conn.execQueryBodyRows(ctx, qb)
-		if err != nil {
-			return triFalse, err
-		}
-		// SQL standard: `x IN (SELECT a, b FROM t)` is a column-count
-		// mismatch error (row constructor IN needs `(a, b) IN (...)`).
-		// Previously matchSubqueryIN silently compared against column 0
-		// only — wrong semantics.
-		if len(subCols) != 1 {
-			return triFalse, api.NewErrorf(api.ErrCodeInvalidParameter,
-				"subquery for IN must return exactly one column, got %d", len(subCols))
-		}
-		return matchSubqueryIN(fieldVal, subRows, in.NOT() != nil)
+	if in.InList().QueryExpressionBody() != nil {
+		// Java alignment (architectural): fdb-relational 4.11.1.0's
+		// AstNormalizer.visitInPredicate (line 437) calls
+		// ParseHelpers.isConstant(ctx.inList().expressions()), but
+		// `ctx.inList().expressions()` is null when the inList went
+		// through the `queryExpressionBody` grammar alternative
+		// (`'(' (queryExpressionBody | expressions) ')'`). The
+		// visitor doesn't handle the subquery alternative —
+		// ParseHelpers.isConstant has @Nonnull on its parameter and
+		// dereferences ctx.expression() unconditionally → NPE. The
+		// NPE is a downstream observable of "visitor doesn't
+		// implement"; per CLAUDE.md principle #10 (emergent behaviour
+		// over special-case checks), Go aligns with the architectural
+		// reality — IN-subquery isn't supported — but emits a clean
+		// Go error instead of reproducing Java's NPE. EXISTS subquery
+		// and JOIN both work cleanly in both engines and are the
+		// supported rewrites.
+		return triFalse, api.NewError(api.ErrCodeUnsupportedQuery,
+			"IN with a subquery argument is not supported; use EXISTS or a JOIN")
 	}
 
 	// The inList grammar rule admits three shapes:
