@@ -2310,9 +2310,77 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_LSU WHERE name LIKE '_' ORDER BY id",
 		},
-		// NOTE: SUM(int-literal) hits the same SUM(CASE-with-int-literals)
-		// column-type divergence (Java reports INTEGER, Go reports
-		// BIGINT). Tracked TODO; not a corpus entry.
+		{
+			// 3-way comma-join with PK-equality predicates between
+			// each pair. Both engines treat as a chained nested-loop
+			// inner join.
+			Name: "join_3_way_chain",
+			SchemaTemplate: "CREATE TABLE T_T1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_T2 (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_T3 (id BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_T1 VALUES (1)",
+				"INSERT INTO T_T2 VALUES (1, 10)",
+				"INSERT INTO T_T3 VALUES (1, 100)",
+			},
+			Query: "SELECT t1.id, t2.x, t3.y FROM T_T1 AS t1, T_T2 AS t2, T_T3 AS t3 WHERE t1.id = t2.id AND t1.id = t3.id",
+		},
+		{
+			// Cartesian product (no JOIN predicate) — `count(*)`
+			// returns NxM. Both engines emit one row.
+			Name: "cartesian_product_count",
+			SchemaTemplate: "CREATE TABLE T_J1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_J2 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_J1 VALUES (1), (2)",
+				"INSERT INTO T_J2 VALUES (10), (20)",
+			},
+			Query: "SELECT count(*) FROM T_J1, T_J2",
+		},
+		{
+			// UPDATE with arithmetic compound expression.
+			Name:           "update_arithmetic_compound",
+			SchemaTemplate: "CREATE TABLE T_UAC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UAC VALUES (1, 5)",
+				"UPDATE T_UAC SET v = v * 2 + 1",
+			},
+			Query: "SELECT id, v FROM T_UAC",
+		},
+		{
+			// DELETE with IN-list — both engines remove matching ids.
+			Name:           "delete_with_in_list",
+			SchemaTemplate: "CREATE TABLE T_DIL (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DIL VALUES (1), (2), (3)",
+				"DELETE FROM T_DIL WHERE id IN (1, 3)",
+			},
+			Query: "SELECT id FROM T_DIL ORDER BY id",
+		},
+		{
+			// MAX over a column with all-negative values — both
+			// engines correctly identify the largest (closest to zero).
+			Name:           "max_over_all_negative",
+			SchemaTemplate: "CREATE TABLE T_MON (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MON VALUES (1, -5)",
+				"INSERT INTO T_MON VALUES (2, -10)",
+				"INSERT INTO T_MON VALUES (3, -2)",
+			},
+			Query: "SELECT MAX(v) FROM T_MON",
+		},
+		{
+			// IS NULL on arithmetic with zero multiplier — `v * 0`
+			// is NULL only when v is NULL (NULL * 0 = NULL per SQL
+			// 3VL).
+			Name:           "is_null_arith_zero_mul",
+			SchemaTemplate: "CREATE TABLE T_INZ (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INZ VALUES (1, 0)",
+				"INSERT INTO T_INZ VALUES (2, NULL)",
+			},
+			Query: "SELECT id FROM T_INZ WHERE (v * 0) IS NULL ORDER BY id",
+		},
 		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
 			Name:           "select_bool_column_trio",
