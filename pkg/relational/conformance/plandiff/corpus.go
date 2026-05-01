@@ -2463,6 +2463,130 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_KAN WHERE a > 5 AND b > 5 ORDER BY id",
 		},
+
+		// ===== CAST chains and edge cases =====
+		{
+			// CAST(CAST(...)) chain — pins lossy round-trips. DOUBLE
+			// 1.5 → BIGINT (rounds to 2 per Java's Math.round) →
+			// DOUBLE 2.0. Both engines round identically.
+			Name:           "cast_chain_double_to_bigint_to_double",
+			SchemaTemplate: "CREATE TABLE T_CC1 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CC1 VALUES (1, 1.5)",
+				"INSERT INTO T_CC1 VALUES (2, 2.6)",
+				"INSERT INTO T_CC1 VALUES (3, 3.4)",
+			},
+			Query: "SELECT id, CAST(CAST(v AS BIGINT) AS DOUBLE) FROM T_CC1 ORDER BY id",
+		},
+		{
+			// CAST a typed NULL through different types — both engines
+			// preserve NULL through CAST. Pins typed-NULL round-trips.
+			Name:           "cast_typed_null_chain",
+			SchemaTemplate: "CREATE TABLE T_CTN (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTN VALUES (1)",
+				"INSERT INTO T_CTN VALUES (2)",
+			},
+			Query: "SELECT id, CAST(CAST(NULL AS BIGINT) AS STRING) FROM T_CTN ORDER BY id",
+		},
+		{
+			// CAST(string AS BIGINT) — implicit numeric parsing.
+			// Pins both engines parse '42' identically.
+			Name:           "cast_string_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CSB (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CSB VALUES (1, '42')",
+				"INSERT INTO T_CSB VALUES (2, '-7')",
+				"INSERT INTO T_CSB VALUES (3, '0')",
+			},
+			Query: "SELECT id, CAST(s AS BIGINT) FROM T_CSB ORDER BY id",
+		},
+
+		// ===== UPDATE edge cases =====
+		{
+			// UPDATE with predicate referencing NEW logic — UPDATE
+			// SET val = val + 1 WHERE val < 50 — only some rows match.
+			Name:           "update_with_predicate",
+			SchemaTemplate: "CREATE TABLE T_UWP (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UWP VALUES (1, 10)",
+				"INSERT INTO T_UWP VALUES (2, 50)",
+				"INSERT INTO T_UWP VALUES (3, 100)",
+				"UPDATE T_UWP SET val = val + 1 WHERE val < 50",
+			},
+			Query: "SELECT id, val FROM T_UWP ORDER BY id",
+		},
+		{
+			// UPDATE setting one column to NULL. Pins NULL-to-column
+			// assignment in both engines.
+			Name:           "update_set_null",
+			SchemaTemplate: "CREATE TABLE T_USN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_USN VALUES (1, 'alice')",
+				"INSERT INTO T_USN VALUES (2, 'bob')",
+				"UPDATE T_USN SET name = NULL WHERE id = 2",
+			},
+			Query: "SELECT id, name FROM T_USN ORDER BY id",
+		},
+
+		// ===== Multi-CTE shapes =====
+		{
+			// Two CTEs in a single WITH clause; one feeds the other.
+			Name:           "cte_chain",
+			SchemaTemplate: "CREATE TABLE T_CCH (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CCH VALUES (1, 'us', 100)",
+				"INSERT INTO T_CCH VALUES (2, 'us', 200)",
+				"INSERT INTO T_CCH VALUES (3, 'eu', 50)",
+				"INSERT INTO T_CCH VALUES (4, 'eu', 300)",
+			},
+			Query: "WITH us AS (SELECT id, val FROM T_CCH WHERE region = 'us'), big AS (SELECT id, val FROM us WHERE val > 100) SELECT count(*) FROM big",
+		},
+
+		// ===== Aggregate edge cases (no GROUP BY) =====
+		{
+			// SUM/MIN/MAX on a column that's NULL in all rows.
+			// SUM(NULL) = NULL, MIN(NULL) = NULL, MAX(NULL) = NULL.
+			// Pins all-NULL aggregate result.
+			Name:           "agg_all_null_column",
+			SchemaTemplate: "CREATE TABLE T_AAN (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AAN VALUES (1, NULL)",
+				"INSERT INTO T_AAN VALUES (2, NULL)",
+				"INSERT INTO T_AAN VALUES (3, NULL)",
+			},
+			Query: "SELECT sum(val), min(val), max(val), count(val) FROM T_AAN",
+		},
+		{
+			// COUNT(*) over filtered single row — confirms simple
+			// aggregate path with WHERE pushdown.
+			Name:           "count_star_one_row",
+			SchemaTemplate: "CREATE TABLE T_C1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_C1 VALUES (1, 10)",
+				"INSERT INTO T_C1 VALUES (2, 20)",
+				"INSERT INTO T_C1 VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_C1 WHERE id = 2",
+		},
+
+		// ===== JOIN with WHERE on inner table =====
+		{
+			// Comma-join with WHERE filter on the right table only —
+			// pins JOIN+filter pushdown semantics.
+			Name: "join_filter_inner_only",
+			SchemaTemplate: "CREATE TABLE T_J1 (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_J2 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_J1 VALUES (1, 'a')",
+				"INSERT INTO T_J1 VALUES (2, 'b')",
+				"INSERT INTO T_J2 VALUES (10, 1, 100)",
+				"INSERT INTO T_J2 VALUES (11, 1, 50)",
+				"INSERT INTO T_J2 VALUES (12, 2, 200)",
+				"INSERT INTO T_J2 VALUES (13, 2, 25)",
+			},
+			Query: "SELECT count(*) FROM T_J1 a, T_J2 b WHERE a.id = b.parent AND b.val > 75",
+		},
 	}
 }
 
