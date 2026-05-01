@@ -3513,6 +3513,20 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_IDL WHERE v = 10.0 ORDER BY id",
 		},
 		{
+			// PROBE: MIN/MAX on STRING column
+			Name:           "min_max_string",
+			SchemaTemplate: "CREATE TABLE T_MMS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MMS VALUES (1, 'banana'), (2, 'apple'), (3, 'cherry')"},
+			Query:          "SELECT MIN(name), MAX(name) FROM T_MMS",
+		},
+		{
+			// PROBE: COUNT(col) vs COUNT(*) — col counts non-NULL
+			Name:           "count_col_vs_star",
+			SchemaTemplate: "CREATE TABLE T_CCS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CCS VALUES (1, 'a'), (2, NULL), (3, 'c')"},
+			Query:          "SELECT COUNT(*), COUNT(name) FROM T_CCS",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
