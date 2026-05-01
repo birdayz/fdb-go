@@ -4456,6 +4456,66 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT a.id FROM T_EX5 a WHERE EXISTS (SELECT 1 FROM T_EX5B b WHERE a.v > b.threshold) ORDER BY a.id",
 		},
 		{
+			Name: "exists_two_predicates",
+			SchemaTemplate: "CREATE TABLE T_EX6 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX6B (gid BIGINT, val BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX6 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX6B VALUES (10, 100), (20, 50), (30, 200)",
+			},
+			Query: "SELECT id FROM T_EX6 a WHERE EXISTS (SELECT 1 FROM T_EX6B b WHERE b.gid = a.gid AND b.val > 75) ORDER BY id",
+		},
+		{
+			Name: "correlated_exists_two_tables",
+			SchemaTemplate: "CREATE TABLE T_EX7A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX7B (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX7A VALUES (1, 10), (2, 20), (3, 99)",
+				"INSERT INTO T_EX7B VALUES (10, 'a'), (20, 'b')",
+			},
+			Query: "SELECT id FROM T_EX7A a WHERE EXISTS (SELECT 1 FROM T_EX7B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			Name: "not_exists_two_tables",
+			SchemaTemplate: "CREATE TABLE T_EX8A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX8B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX8A VALUES (1, 10), (2, 20), (3, 99)",
+				"INSERT INTO T_EX8B VALUES (10), (20)",
+			},
+			Query: "SELECT id FROM T_EX8A a WHERE NOT EXISTS (SELECT 1 FROM T_EX8B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			Name: "exists_no_match",
+			SchemaTemplate: "CREATE TABLE T_EX9 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX9B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX9 VALUES (1), (2), (3)",
+				"INSERT INTO T_EX9B VALUES (999)",
+			},
+			Query: "SELECT id FROM T_EX9 WHERE EXISTS (SELECT 1 FROM T_EX9B WHERE gid = 1) ORDER BY id",
+		},
+		{
+			Name: "not_exists_all_match",
+			SchemaTemplate: "CREATE TABLE T_EX10 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX10B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX10 VALUES (1), (2), (3)",
+				"INSERT INTO T_EX10B VALUES (1)",
+			},
+			Query: "SELECT id FROM T_EX10 WHERE NOT EXISTS (SELECT 1 FROM T_EX10B WHERE gid = 1) ORDER BY id",
+		},
+		{
+			Name: "not_exists_two_predicates",
+			SchemaTemplate: "CREATE TABLE T_EX12 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX12B (gid BIGINT, val BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX12 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX12B VALUES (10, 100), (20, 50), (30, 200)",
+			},
+			Query: "SELECT id FROM T_EX12 a WHERE NOT EXISTS (SELECT 1 FROM T_EX12B b WHERE b.gid = a.gid AND b.val > 75) ORDER BY id",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
