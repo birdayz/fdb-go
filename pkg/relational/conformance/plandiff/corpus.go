@@ -3408,6 +3408,34 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT a.id, a.x, b.y FROM T_CJA a, T_CJB b WHERE a.id = b.id ORDER BY a.id",
 		},
 		{
+			// PROBE: NULLIF replacement using CASE
+			Name:           "nullif_via_case",
+			SchemaTemplate: "CREATE TABLE T_NIC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NIC VALUES (1, 5), (2, 10)"},
+			Query:          "SELECT id, CASE WHEN v = 5 THEN NULL ELSE v END FROM T_NIC ORDER BY id",
+		},
+		{
+			// PROBE: SELECT with arithmetic expression in projection.
+			Name:           "arith_projection",
+			SchemaTemplate: "CREATE TABLE T_AP (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AP VALUES (1, 10, 3), (2, 20, 4)"},
+			Query:          "SELECT id, x + y, x - y, x * y, x / y FROM T_AP ORDER BY id",
+		},
+		{
+			// PROBE: WHERE with negative literal
+			Name:           "where_negative_literal",
+			SchemaTemplate: "CREATE TABLE T_NEG (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NEG VALUES (1, -5), (2, 10), (3, -15)"},
+			Query:          "SELECT id, v FROM T_NEG WHERE v < 0 ORDER BY id",
+		},
+		{
+			// PROBE: aggregate over filtered set
+			Name:           "count_filtered",
+			SchemaTemplate: "CREATE TABLE T_CF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CF VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT COUNT(*) FROM T_CF WHERE v > 15",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
