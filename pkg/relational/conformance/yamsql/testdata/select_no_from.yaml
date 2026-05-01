@@ -16,10 +16,12 @@ tests:
   - query: SELECT NULL
     rows:
       - [~]
-  # String function on literal.
-  - query: SELECT UPPER('abc')
+  # String literal expression (no functions — STRING-family scalar
+  # functions are rejected by Java's function registry; see
+  # string_functions.yaml).
+  - query: SELECT 'abc'
     rows:
-      - ['ABC']
+      - ['abc']
   # Kleene — NOT TRUE is FALSE.
   - query: SELECT NOT TRUE
     rows:

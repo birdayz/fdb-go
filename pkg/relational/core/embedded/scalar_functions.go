@@ -3,11 +3,9 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"fmt"
 	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -115,88 +113,15 @@ func evalScalarFunctionCallCore(
 			return v, nil
 		}
 		return eval(fArgs[1].Expression())
-	case "UPPER":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "UPPER: argument must be string, got %T", v)
-		}
-		return strings.ToUpper(s), nil
-	case "LOWER":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LOWER: argument must be string, got %T", v)
-		}
-		return strings.ToLower(s), nil
-	case "LENGTH", "LEN", "CHAR_LENGTH", "CHARACTER_LENGTH":
-		// LENGTH / CHAR_LENGTH are synonyms in SQL:2003 and across
-		// Postgres / Oracle / SQL Server when applied to a string —
-		// all count logical characters (Unicode code points), not
-		// bytes. CHARACTER_LENGTH is the spec name; LENGTH and LEN
-		// are the common short forms. Byte-length is OCTET_LENGTH.
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
-		}
-		return int64(utf8.RuneCountInString(s)), nil
-	case "OCTET_LENGTH":
-		// SQL:2003 OCTET_LENGTH — byte count of a string / bytes value,
-		// regardless of encoding. Distinct from CHAR_LENGTH which counts
-		// Unicode code points. Both Postgres and Oracle support it.
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "OCTET_LENGTH requires 1 argument")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		switch x := v.(type) {
-		case string:
-			return int64(len(x)), nil
-		case []byte:
-			return int64(len(x)), nil
-		default:
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "OCTET_LENGTH: argument must be STRING or BYTES, got %T", v)
-		}
-	case "TRIM", "LTRIM", "RTRIM":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s requires 1 argument", name)
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil || v == nil {
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s: argument must be string, got %T", name, v)
-		}
-		switch name {
-		case "LTRIM":
-			return strings.TrimLeft(s, " \t\n\r"), nil
-		case "RTRIM":
-			return strings.TrimRight(s, " \t\n\r"), nil
-		}
-		return strings.TrimSpace(s), nil
+	// STRING-family scalars (UPPER / LOWER / LENGTH / CHAR_LENGTH /
+	// CHARACTER_LENGTH / LEN / OCTET_LENGTH / TRIM / LTRIM / RTRIM)
+	// are intentionally NOT handled — fall through to the default
+	// "Unsupported operator <name>" arm. Java's fdb-relational
+	// 4.11.1.0 has no entries for these in its function registry,
+	// so its planner surfaces RelationalException with that exact
+	// message (per swingshift-64 cross-engine probe). Same
+	// architectural reason in both engines: the function registry
+	// has no evaluator. Doesn't work in Java → doesn't work in Go.
 	case "ABS":
 		if len(fArgs) < 1 {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "ABS requires 1 argument")
@@ -373,41 +298,9 @@ func evalScalarFunctionCallCore(
 			return float64(0), nil
 		}
 		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SIGN: argument must be numeric")
-	case "CONCAT", "CONCAT_WS":
-		// CONCAT_WS(sep, s1, s2, ...) — first arg is separator.
-		// CONCAT(s1, s2, ...) — no separator.
-		sep := ""
-		startIdx := 0
-		if name == "CONCAT_WS" {
-			if len(fArgs) < 1 {
-				return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "CONCAT_WS requires at least 1 argument")
-			}
-			sv, err := eval(fArgs[0].Expression())
-			if err != nil {
-				return nil, err
-			}
-			if sv != nil {
-				sep = fmt.Sprintf("%v", sv)
-			}
-			startIdx = 1
-		}
-		var parts []string
-		for _, fa := range fArgs[startIdx:] {
-			v, err := eval(fa.Expression())
-			if err != nil {
-				return nil, err
-			}
-			if v == nil {
-				// NULL-skip behaviour, matching MySQL and Postgres's
-				// CONCAT(). SQL standard / Oracle / SQL Server
-				// propagate NULL through concatenation instead —
-				// pinned as-is by trim_concat.yaml until a Java
-				// reference settles the question.
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("%v", v))
-		}
-		return strings.Join(parts, sep), nil
+	// CONCAT / CONCAT_WS intentionally NOT handled — Java's function
+	// registry has no entry; falls through to "Unsupported operator
+	// CONCAT". Workaround: none in fdb-relational; pin rejection.
 	// NULLIF is intentionally NOT handled — falls through to the default
 	// "unsupported operator" arm. Mirrors fdb-relational 4.11.1.0's
 	// effective non-support: Java's function registry has no entry for
@@ -547,160 +440,9 @@ func evalScalarFunctionCallCore(
 			return nil, nil
 		}
 		return math.Log(f2) / math.Log(f), nil
-	case "REVERSE":
-		if len(fArgs) < 1 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REVERSE requires 1 argument")
-		}
-		sv, err := eval(fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		s := fmt.Sprintf("%v", sv)
-		runes := []rune(s)
-		for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-			runes[i], runes[j] = runes[j], runes[i]
-		}
-		return string(runes), nil
-	case "POSITION":
-		// POSITION(substr, str) — 1-based rune index of first occurrence, 0 if not found.
-		// (POSITION(substr IN str) has a special grammar form — not supported here.)
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "POSITION requires 2 arguments")
-		}
-		substrV, err := eval(fArgs[0].Expression())
-		if err != nil || substrV == nil {
-			return nil, err
-		}
-		strV, err := eval(fArgs[1].Expression())
-		if err != nil || strV == nil {
-			return nil, err
-		}
-		needle := fmt.Sprintf("%v", substrV)
-		haystack := fmt.Sprintf("%v", strV)
-		byteIdx := strings.Index(haystack, needle)
-		if byteIdx < 0 {
-			return int64(0), nil
-		}
-		return int64(utf8.RuneCountInString(haystack[:byteIdx]) + 1), nil
-	case "LEFT":
-		// LEFT(str, n) — first n runes, or whole string if n >= length.
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "LEFT requires 2 arguments")
-		}
-		sv, err := eval(fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		s := fmt.Sprintf("%v", sv)
-		nVal, nErr := eval(fArgs[1].Expression())
-		if nErr != nil {
-			return nil, nErr
-		}
-		n, err := functions.ToIntegerArg(nVal, "LEFT", "length")
-		if err != nil {
-			return nil, err
-		}
-		if n < 0 {
-			n = 0
-		}
-		runes := []rune(s)
-		if int(n) >= len(runes) {
-			return s, nil
-		}
-		return string(runes[:n]), nil
-	case "RIGHT":
-		// RIGHT(str, n) — last n runes, or whole string if n >= length.
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "RIGHT requires 2 arguments")
-		}
-		sv, err := eval(fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		s := fmt.Sprintf("%v", sv)
-		nVal, nErr := eval(fArgs[1].Expression())
-		if nErr != nil {
-			return nil, nErr
-		}
-		n, err := functions.ToIntegerArg(nVal, "RIGHT", "length")
-		if err != nil {
-			return nil, err
-		}
-		if n < 0 {
-			n = 0
-		}
-		runes := []rune(s)
-		if int(n) >= len(runes) {
-			return s, nil
-		}
-		return string(runes[len(runes)-int(n):]), nil
-	case "SUBSTRING", "SUBSTR":
-		// SUBSTRING(str, pos [, len]) — 1-based position per SQL standard.
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "SUBSTRING requires at least 2 arguments")
-		}
-		sv, err := eval(fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		s := fmt.Sprintf("%v", sv)
-		posVal, posErr := eval(fArgs[1].Expression())
-		if posErr != nil {
-			return nil, posErr
-		}
-		pos, err := functions.ToIntegerArg(posVal, "SUBSTRING", "position")
-		if err != nil {
-			return nil, err
-		}
-		if pos < 1 {
-			pos = 1
-		}
-		runes := []rune(s)
-		start := int(pos) - 1
-		if start >= len(runes) {
-			return "", nil
-		}
-		if len(fArgs) >= 3 {
-			lenVal, lenErr := eval(fArgs[2].Expression())
-			if lenErr != nil {
-				return nil, lenErr
-			}
-			n, err := functions.ToIntegerArg(lenVal, "SUBSTRING", "length")
-			if err != nil {
-				return nil, err
-			}
-			end := start + int(n)
-			if end > len(runes) {
-				end = len(runes)
-			}
-			if end < start {
-				return "", nil
-			}
-			return string(runes[start:end]), nil
-		}
-		return string(runes[start:]), nil
-	case "REPLACE":
-		// REPLACE(str, from, to)
-		if len(fArgs) < 3 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "REPLACE requires 3 arguments")
-		}
-		sv, err := eval(fArgs[0].Expression())
-		if err != nil || sv == nil {
-			return nil, err
-		}
-		fromV, err := eval(fArgs[1].Expression())
-		if err != nil || fromV == nil {
-			return nil, err
-		}
-		toV, err := eval(fArgs[2].Expression())
-		if err != nil {
-			return nil, err
-		}
-		toStr := ""
-		if toV != nil {
-			toStr = fmt.Sprintf("%v", toV)
-		}
-		return strings.ReplaceAll(fmt.Sprintf("%v", sv), fmt.Sprintf("%v", fromV), toStr), nil
+	// REVERSE / POSITION / LEFT / RIGHT / SUBSTRING / SUBSTR /
+	// REPLACE intentionally NOT handled — Java's function registry
+	// has no entry; falls through to "Unsupported operator <name>".
 	case "IF", "IIF":
 		// IF(cond, true_val, false_val)
 		if len(fArgs) < 3 {
@@ -812,7 +554,7 @@ func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, 
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
 		return evalPredicateOnMapExpr(ctx, conn, row, e)
 	}
-	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "unsupported function %q in map eval context", "unsupported specific function %T in map eval", fc)
+	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, "Unsupported operator %s", "unsupported specific function %T", fc)
 }
 
 // statementNow forwards to Session.StatementNow. Retained as a

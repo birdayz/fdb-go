@@ -802,6 +802,47 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_NIF VALUES (1, 5)"},
 			Query:          "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
 		},
+		{
+			// STRING-family: UPPER. fdb-relational 4.11.1.0's function
+			// registry has no entry; Java's planner returns
+			// `RelationalException: Unsupported operator UPPER`. Go
+			// aligns by NOT having a UPPER arm in the scalar-function
+			// switch — the default arm emits the byte-equal
+			// "Unsupported operator UPPER" message. Same architectural
+			// reason in both engines: registry has no evaluator. The
+			// remaining STRING-family scalars (LOWER / LENGTH /
+			// SUBSTRING / TRIM / CONCAT / REPLACE / LEFT / RIGHT /
+			// POSITION / REVERSE) follow the identical pattern
+			// (see swingshift-64); UPPER is the canonical pin.
+			Name:           "string_upper_rejected",
+			SchemaTemplate: "CREATE TABLE T_SUR (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SUR VALUES (1, 'abc')"},
+			Query:          "SELECT UPPER(name) FROM T_SUR WHERE id = 1",
+		},
+		{
+			// STRING-family map-eval path: UPPER inside a CTE's WHERE
+			// routes through evalScalarFunctionCallOnMap. Pre-cleanup
+			// that arm emitted a Go-specific "unsupported function ..."
+			// wording; swingshift-64 unified it to the byte-equal
+			// "Unsupported operator UPPER" so cross-engine alignment
+			// holds regardless of which Go evaluator path the query
+			// takes.
+			Name:           "string_upper_in_cte_where_rejected",
+			SchemaTemplate: "CREATE TABLE T_SUW (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SUW VALUES (1, 'abc')"},
+			Query: "WITH cte AS (SELECT id, name FROM T_SUW) " +
+				"SELECT name FROM cte WHERE UPPER(name) = 'ABC'",
+		},
+		{
+			// STRING-family multi-arg: SUBSTRING — Java rejects the
+			// same way despite the multi-arg shape (registry has no
+			// entry). Pin alongside UPPER to confirm arity doesn't
+			// change the rejection wording.
+			Name:           "string_substring_rejected",
+			SchemaTemplate: "CREATE TABLE T_SSR (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SSR VALUES (1, 'abcdef')"},
+			Query:          "SELECT SUBSTRING(name, 1, 3) FROM T_SSR WHERE id = 1",
+		},
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
 		// (Cascades has no rule to satisfy the ordering); Go with

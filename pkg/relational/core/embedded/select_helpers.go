@@ -232,16 +232,16 @@ func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protore
 	return ""
 }
 
-// inferScalarFunctionJDBCType handles UPPER / LOWER / SUBSTRING /
-// COALESCE / etc. by name. Functions whose name we don't recognise
-// fall through to "" — caller's value-based inference can take over.
+// inferScalarFunctionJDBCType handles COALESCE / IFNULL / NULLIF /
+// ABS by name. Functions whose name we don't recognise fall through
+// to "" — caller's value-based inference can take over. STRING-family
+// scalars (UPPER / LOWER / SUBSTRING / TRIM / CONCAT / etc.) and
+// LENGTH-family scalars are intentionally absent — those evaluate to
+// "Unsupported operator <name>" in scalar_functions.go's default
+// arm, mirroring fdb-relational 4.11.1.0 (per swingshift-64).
 func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {
-	case "UPPER", "LOWER", "SUBSTRING", "TRIM", "LTRIM", "RTRIM", "CONCAT", "REPLACE":
-		return "STRING"
-	case "LENGTH", "CHAR_LENGTH", "OCTET_LENGTH":
-		return "BIGINT"
 	case "ABS":
 		// ABS preserves operand type. Recurse into first arg.
 		return firstFunctionArgType(fc.FunctionArgs(), msgDesc)

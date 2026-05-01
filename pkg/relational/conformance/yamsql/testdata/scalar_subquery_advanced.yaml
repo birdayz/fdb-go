@@ -27,10 +27,13 @@ tests:
   # both engines.
   - query: SELECT id FROM t WHERE v IS NOT NULL ORDER BY v - (SELECT MIN(v) FROM t)
     error_code: "0AF01"
-  # Subquery as argument to a scalar function — UPPER on a string subquery.
-  - query: SELECT UPPER((SELECT g FROM t WHERE id = 1)) FROM t WHERE id = 1
+  # Bare scalar subquery returning a string. (Pre-cleanup this case
+  # used UPPER((SELECT g …)) to exercise subquery-as-function-argument;
+  # since UPPER is no longer in the function registry, the same shape
+  # reduces to a bare scalar subquery in the projection.)
+  - query: SELECT (SELECT g FROM t WHERE id = 1) FROM t WHERE id = 1
     rows:
-      - ['A']
+      - ['a']
   # Subquery in IS NULL predicate. Inner returns NULL for v=5.
   # IS NULL on the subquery result → TRUE.
   - query: SELECT id FROM t WHERE id = 5 AND (SELECT v FROM t WHERE id = 5) IS NULL
