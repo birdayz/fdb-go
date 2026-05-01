@@ -5024,6 +5024,130 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_WTC WHERE a < b AND b < c ORDER BY id",
 		},
+
+		// ===== Numeric / type edges =====
+		{
+			// BIGINT column compared to bare-integer literal — pins
+			// the literal-typing path that picks BIGINT (not INTEGER)
+			// for unsigned-suffixed integer constants.
+			Name:           "bigint_eq_int_literal",
+			SchemaTemplate: "CREATE TABLE T_NE1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE1 VALUES (1, 100)",
+				"INSERT INTO T_NE1 VALUES (2, 200)",
+				"INSERT INTO T_NE1 VALUES (3, 300)",
+			},
+			Query: "SELECT id, val FROM T_NE1 WHERE val = 100 ORDER BY id",
+		},
+		{
+			// BIGINT max/min boundary literals — pins the parser's
+			// signed-int64 range so 9223372036854775807 round-trips
+			// rather than overflowing to negative or rejecting.
+			Name:           "bigint_boundary_values",
+			SchemaTemplate: "CREATE TABLE T_NE2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE2 VALUES (1, 9223372036854775807)",
+				"INSERT INTO T_NE2 VALUES (2, -9223372036854775807)",
+				"INSERT INTO T_NE2 VALUES (3, 0)",
+			},
+			Query: "SELECT id, val FROM T_NE2 ORDER BY id",
+		},
+		{
+			// Arithmetic in projection — addition AND multiplication
+			// in the same SELECT list. Pins the synthetic column-name
+			// scheme ("_0", "_1", ...) for multiple anonymous exprs.
+			Name:           "arith_projection_add_mul",
+			SchemaTemplate: "CREATE TABLE T_NE3 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE3 VALUES (1, 10, 3)",
+				"INSERT INTO T_NE3 VALUES (2, 20, 7)",
+			},
+			Query: "SELECT id, x + y, x * 2 FROM T_NE3 ORDER BY id",
+		},
+		{
+			// Mixed BIGINT+DOUBLE in arithmetic — verifies type
+			// promotion rules: BIGINT op DOUBLE -> DOUBLE.
+			Name:           "mixed_bigint_double_arith",
+			SchemaTemplate: "CREATE TABLE T_NE4 (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE4 VALUES (1, 10, 1.5)",
+				"INSERT INTO T_NE4 VALUES (2, 20, 2.5)",
+			},
+			Query: "SELECT id, n + d FROM T_NE4 ORDER BY id",
+		},
+		{
+			// Comparison with negative literal — pins the unary-minus
+			// parse + signed comparison path.
+			Name:           "where_negative_literal",
+			SchemaTemplate: "CREATE TABLE T_NE5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE5 VALUES (1, -10)",
+				"INSERT INTO T_NE5 VALUES (2, -3)",
+				"INSERT INTO T_NE5 VALUES (3, 0)",
+				"INSERT INTO T_NE5 VALUES (4, 7)",
+			},
+			Query: "SELECT id, val FROM T_NE5 WHERE val > -5 ORDER BY id",
+		},
+		{
+			// SUM and AVG over BIGINT — pins the aggregator's output
+			// types (SUM(BIGINT) -> BIGINT or DOUBLE? AVG -> DOUBLE).
+			Name:           "sum_avg_bigint",
+			SchemaTemplate: "CREATE TABLE T_NE6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE6 VALUES (1, 10)",
+				"INSERT INTO T_NE6 VALUES (2, 20)",
+				"INSERT INTO T_NE6 VALUES (3, 30)",
+			},
+			Query: "SELECT sum(val), avg(val) FROM T_NE6",
+		},
+		{
+			// Modulo on BIGINT — pins the integer-division/mod path
+			// used by hash-bucket queries.
+			Name:           "modulo_bigint",
+			SchemaTemplate: "CREATE TABLE T_NE7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE7 VALUES (1, 10)",
+				"INSERT INTO T_NE7 VALUES (2, 11)",
+				"INSERT INTO T_NE7 VALUES (3, 12)",
+				"INSERT INTO T_NE7 VALUES (4, 13)",
+			},
+			Query: "SELECT id, val % 3 FROM T_NE7 ORDER BY id",
+		},
+		{
+			// Integer division on BIGINT — pins truncation semantics
+			// (7/2 == 3, not 3.5 — Java's BIGINT/BIGINT is BIGINT).
+			Name:           "integer_division_bigint",
+			SchemaTemplate: "CREATE TABLE T_NE8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE8 VALUES (1, 7)",
+				"INSERT INTO T_NE8 VALUES (2, 10)",
+				"INSERT INTO T_NE8 VALUES (3, 15)",
+			},
+			Query: "SELECT id, val / 2 FROM T_NE8 ORDER BY id",
+		},
+		{
+			// DOUBLE division — pins float division (vs integer
+			// truncation): 7.0 / 2.0 == 3.5.
+			Name:           "double_division",
+			SchemaTemplate: "CREATE TABLE T_NE9 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE9 VALUES (1, 7.0)",
+				"INSERT INTO T_NE9 VALUES (2, 10.0)",
+			},
+			Query: "SELECT id, val / 2.0 FROM T_NE9 ORDER BY id",
+		},
+		{
+			// BIGINT column compared to DOUBLE literal — type-promotion
+			// in WHERE: val (BIGINT) = 100.0 (DOUBLE). Should match
+			// the row where val == 100 after promotion.
+			Name:           "bigint_eq_double_literal",
+			SchemaTemplate: "CREATE TABLE T_NE10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NE10 VALUES (1, 100)",
+				"INSERT INTO T_NE10 VALUES (2, 200)",
+			},
+			Query: "SELECT id, val FROM T_NE10 WHERE val = 100.0 ORDER BY id",
+		},
 	}
 }
 
