@@ -839,6 +839,18 @@ func SeedRunCorpus() []RunQuery {
 		// the existing yamsql ORDER BY rejection scenarios
 		// (`order_by_expression`, `order_by_dupe_col`,
 		// `order_by_limit`, etc.); not a separate corpus entry.
+		// NOTE: `WHERE (boolean_expr)` with bare parens is a known
+		// one-sided divergence: Java rejects with "expected
+		// BooleanValue but got RecordConstructorValue" because its
+		// parser treats `(...)` as a record/tuple constructor unless
+		// it's in a context that forces predicate parsing
+		// (CLAUDE.md gotcha "WHERE (boolean_expr) with bare
+		// parentheses is rejected"). Go's embedded engine accepts
+		// the form. Probed nightshift-61 — Java rejection confirmed.
+		// Aligning Go to also reject would invalidate Go-only tests
+		// using parenthesised boolean WHERE shapes; defer to a
+		// dedicated cleanup shift. Until then, redundant parens
+		// around a boolean predicate is a Go-only feature.
 		// NOTE: `WITH RECURSIVE name AS (non-self-referencing-body)` is
 		// a known one-sided divergence: Java rejects with
 		// "condition is not met!" because it requires an actual
