@@ -141,14 +141,15 @@ func ApplyMathOp(left, right any, op string) (any, error) {
 	case "*":
 		result = lf * rf
 	case "/":
-		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
-		}
+		// Java IEEE-754 semantics for double division: x / 0.0 = ±Infinity,
+		// 0.0 / 0.0 = NaN. fdb-relational does NOT throw — only integer
+		// division throws ArithmeticException "/ by zero". Aligned
+		// dayshift-62 (a previous broad-stroke change incorrectly threw
+		// for both int and float).
 		result = lf / rf
 	case "%":
-		if rf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
-		}
+		// Java's `%` over double follows Math.IEEEremainder-like — for
+		// rf=0 returns NaN, never throws. Mirror via math.Mod.
 		result = math.Mod(lf, rf)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported math operator %q", op)

@@ -2016,6 +2016,86 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_ILR VALUES (1)"},
 			Query:          "SELECT INTERVAL '1' DAY FROM T_ILR",
 		},
+		// NOTE: double-divide-by-zero (Java returns +Infinity per
+		// IEEE-754; Go matches as of dayshift-62) is NOT a corpus
+		// entry because the Java conformance server's JSON encoder
+		// emits the bare token `Infinity` (not valid JSON), which
+		// the Go HTTP client rejects at unmarshal. Java/Go behavioural
+		// alignment is correct; the harness fails on transport.
+		// Tracked for a future shift: fix
+		// conformance/sql_plan_steps.java#resultSetToJson to encode
+		// Infinity / NaN as strings or use a JSON encoder that
+		// supports them.
+		{
+			// Aggregate over a fully-filtered-out scope returns NULL
+			// for SUM (and 0 for COUNT, but here we test SUM). Both
+			// engines emit one row with [<nil>].
+			Name:           "sum_with_filter_no_match",
+			SchemaTemplate: "CREATE TABLE T_SWFN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SWFN VALUES (1, 5)"},
+			Query:          "SELECT SUM(v) FROM T_SWFN WHERE v > 1000",
+		},
+		{
+			// MIN over fully-filtered scope returns NULL, not error.
+			Name:           "min_with_filter_no_match",
+			SchemaTemplate: "CREATE TABLE T_MWFN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_MWFN VALUES (1, 5)"},
+			Query:          "SELECT MIN(v) FROM T_MWFN WHERE v > 1000",
+		},
+		{
+			// `t.*` qualified-star projection — both engines expand to
+			// all of t's columns in declaration order.
+			Name:           "select_star_qualified_alias",
+			SchemaTemplate: "CREATE TABLE T_SSQA (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SSQA VALUES (1, 5)"},
+			Query:          "SELECT t.* FROM T_SSQA AS t",
+		},
+		{
+			// Integer literal that exceeds int32 range is parsed as
+			// BIGINT (or DOUBLE per fdb-relational's bare-int-literal
+			// rule). Both engines surface the same numeric value.
+			Name:           "int_literal_above_int32_max",
+			SchemaTemplate: "CREATE TABLE T_ILM (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ILM VALUES (1)"},
+			Query:          "SELECT 2147483648 FROM T_ILM",
+		},
+		{
+			// Empty record constructor `()` — both engines reject as
+			// shared parser syntax error.
+			Name:           "empty_record_constructor_rejected",
+			SchemaTemplate: "CREATE TABLE T_ERCR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ERCR VALUES (1)"},
+			Query:          "SELECT () FROM T_ERCR",
+		},
+		{
+			// `WHERE name = NULL` always yields UNKNOWN regardless of
+			// name's value (even empty string). Both engines filter
+			// out all rows.
+			Name:           "where_eq_null_yields_empty",
+			SchemaTemplate: "CREATE TABLE T_WEN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WEN VALUES (1, '')"},
+			Query:          "SELECT id FROM T_WEN WHERE name = NULL",
+		},
+		{
+			// BETWEEN with reversed string bounds (`'z' AND 'a'`) yields
+			// no rows in both engines (lexicographic order).
+			Name:           "between_reversed_string_bounds",
+			SchemaTemplate: "CREATE TABLE T_BRSB (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BRSB VALUES (1, 'b')"},
+			Query:          "SELECT id FROM T_BRSB WHERE name BETWEEN 'z' AND 'a'",
+		},
+		{
+			// LIKE with regex-special chars in the pattern — '.' is a
+			// literal dot in LIKE (not a regex metacharacter). Both
+			// engines treat it as a literal match.
+			Name:           "like_regex_special_literal",
+			SchemaTemplate: "CREATE TABLE T_LRSL (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LRSL VALUES (1, 'a.b')",
+				"INSERT INTO T_LRSL VALUES (2, 'a*b')",
+			},
+			Query: "SELECT id FROM T_LRSL WHERE name LIKE 'a.b' ORDER BY id",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{

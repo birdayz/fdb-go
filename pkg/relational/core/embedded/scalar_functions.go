@@ -298,14 +298,16 @@ func evalScalarFunctionCallCore(
 		if !aok || !bok {
 			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
 		}
-		if bf == 0 {
-			return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
-		}
 		if _, aIsInt := av.(int64); aIsInt {
 			if _, bIsInt := bv.(int64); bIsInt {
+				if bf == 0 {
+					// Integer MOD by zero — Java throws "/ by zero".
+					return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
+				}
 				return int64(af) % int64(bf), nil
 			}
 		}
+		// Float MOD by zero returns NaN per IEEE-754; Java does not throw.
 		return math.Mod(af, bf), nil
 	case "POWER", "POW":
 		if len(fArgs) < 2 {
