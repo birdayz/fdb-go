@@ -220,6 +220,11 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		}
 
 		// Apply WHERE filter using map-based evaluation.
+		if sq.whereExpr != nil {
+			if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
+				return nil, err
+			}
+		}
 		var filtered []map[string]driver.Value
 		for _, row := range joined {
 			if sq.whereExpr == nil {

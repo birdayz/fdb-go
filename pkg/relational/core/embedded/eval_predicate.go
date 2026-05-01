@@ -38,7 +38,32 @@ func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Mess
 	if whereExpr == nil {
 		return true, nil
 	}
+	if err := rejectTopLevelParenthesizedWhere(whereExpr.Expression()); err != nil {
+		return false, err
+	}
 	return evalExprPredicate(ctx, conn, msg, whereExpr.Expression())
+}
+
+// rejectTopLevelParenthesizedWhere mirrors fdb-relational 4.11.1.0's
+// type check on the WHERE expression's underlying value. Java parses
+// `WHERE (boolean_expr)` as a recordConstructor (single-element
+// tuple); Expression.toUnderlyingPredicate's
+// `Assert.castUnchecked(..., BooleanValue.class)` then fails with
+// the verbatim "expected BooleanValue but got RecordConstructorValue".
+// The check applies only to the TOP-LEVEL expression — Java accepts
+// `(a) AND (b)` because the LogicalExpression's underlying value is
+// a BooleanValue at the surface, even though the leaves are
+// RecordConstructorValues. Match that surface check here.
+func rejectTopLevelParenthesizedWhere(expr antlrgen.IExpressionContext) error {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return nil
+	}
+	if _, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
+		return api.NewError(api.ErrCodeInvalidParameter,
+			"expected BooleanValue but got RecordConstructorValue")
+	}
+	return nil
 }
 
 // evalExprPredicate evaluates an IExpressionContext as a boolean predicate.

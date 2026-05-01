@@ -899,6 +899,23 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_OFF VALUES (1, 1), (2, 2), (3, 3)"},
 			Query:          "SELECT id FROM T_OFF ORDER BY id LIMIT 2 OFFSET 1",
 		},
+		{
+			// WHERE with a single bare-paren predicate: Java's parser
+			// treats `(boolean_expr)` as a recordConstructor (single-
+			// element tuple). Expression.toUnderlyingPredicate's cast
+			// to BooleanValue then fails with the verbatim message
+			// "expected BooleanValue but got RecordConstructorValue".
+			// Go aligns at the WHERE entry sites
+			// (rejectTopLevelParenthesizedWhere) — the check fires on
+			// the WHERE expression's TOP-LEVEL only. Compound shapes
+			// like `(a) AND (b)` are accepted (the LogicalExpression
+			// surface type is BooleanValue even with RecordConstructor
+			// leaves underneath). Probed swingshift-64.
+			Name:           "where_paren_top_level_rejected",
+			SchemaTemplate: "CREATE TABLE T_WPT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WPT VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM T_WPT WHERE (v = 10)",
+		},
 		// NOTE: ORDER BY <alias> on a non-natural-order column is
 		// rejected by BOTH engines — Java with UnableToPlanException
 		// (Cascades has no rule to satisfy the ordering); Go with

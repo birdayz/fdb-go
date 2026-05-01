@@ -42,6 +42,9 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 
 	// Apply WHERE filter.
 	if sq.whereExpr != nil {
+		if err := rejectTopLevelParenthesizedWhere(sq.whereExpr.Expression()); err != nil {
+			return nil, err
+		}
 		filtered := mapRows[:0]
 		for _, row := range mapRows {
 			ok, err := evalPredicateOnMapExpr(ctx, c, row, sq.whereExpr.Expression())

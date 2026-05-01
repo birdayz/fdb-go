@@ -58,9 +58,13 @@ tests:
   # produce the same result.
   - query: SELECT lb.* FROM lb WHERE NOT b = null
     rows: []
-  # Nested parens — (x = y) is a RecordConstructor; NOT (RC) is another
-  # RC wrapping the first. Both unwrap to the comparison, giving UNKNOWN.
-  - query: SELECT lb.* FROM lb WHERE (b = true)
+  # Java alignment: top-level WHERE `(boolean_expr)` parses as a
+  # RecordConstructor (single-element tuple); Java's
+  # Expression.toUnderlyingPredicate cast-asserts BooleanValue and
+  # rejects with `expected BooleanValue but got
+  # RecordConstructorValue`. Go matches at the WHERE entry sites.
+  # Drop the bare parens to express the same predicate.
+  - query: SELECT lb.* FROM lb WHERE b = true
     rows:
       - [1, true]
   - query: SELECT lb.* FROM lb WHERE NOT (b = false)
