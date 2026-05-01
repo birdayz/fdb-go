@@ -1956,6 +1956,19 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_MBZ VALUES (1, 5)"},
 			Query:          "SELECT v % 0 FROM T_MBZ",
 		},
+		{
+			// SUM(BIGINT) overflow — Java throws ArithmeticException
+			// 'long overflow' (Math.addExact). Pre-dayshift-62 Go's
+			// int64 accumulator silently wrapped; aligned via
+			// AddInt64Checked at every SUM accumulation site.
+			Name:           "sum_bigint_overflow",
+			SchemaTemplate: "CREATE TABLE T_SOV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SOV VALUES (1, 9223372036854775807)",
+				"INSERT INTO T_SOV VALUES (2, 1)",
+			},
+			Query: "SELECT SUM(v) FROM T_SOV",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{

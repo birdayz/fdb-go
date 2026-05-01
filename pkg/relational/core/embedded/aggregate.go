@@ -330,7 +330,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				if ac.aggFunc == "SUM" {
 					gs.sums[i] += fv
 					if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
-						gs.sumsI[i] += iv
+						// Java verbatim: throws ArithmeticException
+						// "long overflow" on SUM(BIGINT) overflow.
+						// Mirror via overflow-checked add. Aligned
+						// dayshift-62.
+						r, ok := functions.AddInt64Checked(gs.sumsI[i], iv)
+						if !ok {
+							return nil, nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
+								"long overflow")
+						}
+						gs.sumsI[i] = r
 					} else {
 						gs.sumNonInt[i] = true
 					}
