@@ -42,6 +42,16 @@ import (
 // the end without parentheses), so we do not expect valid SQL to hit
 // the degenerate case.
 func (c *EmbeddedConnection) execUnion(ctx context.Context, setQ *antlrgen.SetQueryContext) (driver.Rows, error) {
+	// Java verbatim: "only UNION ALL is supported". fdb-relational's
+	// planner has no de-duplication operator wired into the union path,
+	// so plain UNION (implicit DISTINCT) is rejected outright. Per
+	// project conformance principle, Go aligns at parse time. Aligned
+	// dayshift-62.
+	q := setQ.GetQuantifier()
+	if q == nil || strings.ToUpper(q.GetText()) != "ALL" {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"only UNION ALL is supported")
+	}
 	leftCols, leftColTypes, leftRows, err := c.execQueryBodyRows(ctx, setQ.GetLeft())
 	if err != nil {
 		return nil, err

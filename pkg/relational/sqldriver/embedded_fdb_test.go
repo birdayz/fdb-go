@@ -2985,7 +2985,13 @@ func TestFDB_UnionAll(t *testing.T) {
 	g.Expect(labels).To(gomega.ConsistOf("alpha", "beta"))
 }
 
-func TestFDB_UnionDistinct(t *testing.T) {
+// TestFDB_UnionDistinctRejected pins Java alignment: plain UNION
+// (without ALL) is rejected by fdb-relational with verbatim
+// "only UNION ALL is supported" because the planner has no
+// de-duplication operator. Per project conformance principle
+// (doesn't work in Java → doesn't work in Go), Go rejects too.
+// Aligned dayshift-62.
+func TestFDB_UnionDistinctRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3006,20 +3012,8 @@ func TestFDB_UnionDistinct(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Tag (id, tag) VALUES (1, 'go'), (2, 'go'), (3, 'fdb')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// UNION (implicit DISTINCT): duplicates removed.
-	rows, err := db.QueryContext(ctx, `SELECT tag FROM Tag WHERE id = 1 UNION SELECT tag FROM Tag WHERE id = 2`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	var tags []string
-	for rows.Next() {
-		var tag string
-		g.Expect(rows.Scan(&tag)).To(gomega.Succeed())
-		tags = append(tags, tag)
-	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	// Two rows with tag='go' UNION'd → one row.
-	g.Expect(tags).To(gomega.ConsistOf("go"))
+	_, err = db.QueryContext(ctx, `SELECT tag FROM Tag WHERE id = 1 UNION SELECT tag FROM Tag WHERE id = 2`)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("only UNION ALL is supported")))
 }
 
 func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {

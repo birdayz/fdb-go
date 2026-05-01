@@ -58,20 +58,17 @@ tests:
       - [20]
       - [100]
 
-  # UNION (implicit DISTINCT) + ORDER BY — dedup happens before the sort.
+  # UNION (without ALL) — Java rejects "only UNION ALL is supported"
+  # (0A000); aligned dayshift-62.
   - query: SELECT v FROM a UNION SELECT v FROM a ORDER BY v
-    rows:
-      - [10]
-      - [20]
+    error_code: "0AF00"
 
-  # Column-count mismatch splits by quantifier per Java's union.yamsql.
-  # UNION ALL arity mismatch errors 42F64 (UNION_INCORRECT_COLUMN_COUNT,
-  # a class-42 Java-specific code aligned at nightshift-39).
+  # Column-count mismatch on UNION ALL — Java errors 42F64
+  # (UNION_INCORRECT_COLUMN_COUNT, class-42 Java-specific code aligned
+  # at nightshift-39).
   - query: SELECT id, v FROM a UNION ALL SELECT id FROM b
     error_code: "42F64"
-  # UNION (implicit DISTINCT) with arity mismatch errors 0AF00
-  # (FEATURE_NOT_SUPPORTED) — set-membership is undefined with
-  # different row arities. Aligned with Java at dayshift-40.
+  # Plain UNION (without ALL) is rejected ahead of any arity check.
   - query: SELECT id, v FROM a UNION SELECT id FROM b
     error_code: "0AF00"
 

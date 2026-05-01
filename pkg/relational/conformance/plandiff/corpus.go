@@ -1882,9 +1882,18 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_UA WHERE val = 100 UNION ALL SELECT id FROM T_UA WHERE val = 200 ORDER BY id",
 		},
-		// `UNION` without ALL (DISTINCT implied) is rejected by
-		// fdb-relational 4.11.1.0 with "only UNION ALL is supported".
-		// Add UNION-DISTINCT corpus entry when upstream lands DISTINCT.
+		{
+			// `UNION` without ALL (implicit DISTINCT) is rejected by
+			// fdb-relational with verbatim "only UNION ALL is supported".
+			// fdb-relational's planner has no de-duplication operator
+			// wired into the union path. Aligned Go-side dayshift-62.
+			Name:           "union_distinct_rejected",
+			SchemaTemplate: "CREATE TABLE T_UDR (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UDR VALUES (1)",
+			},
+			Query: "SELECT id FROM T_UDR UNION SELECT id FROM T_UDR",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{
