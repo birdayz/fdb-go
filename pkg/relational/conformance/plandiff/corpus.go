@@ -2462,12 +2462,89 @@ func SeedRunCorpus() []RunQuery {
 			// "abc" to LONG: For input string: "abc"' (the quirky
 			// duplicated input string is Java's stock
 			// NumberFormatException message wrapped by fdb-relational's
-			// 'Invalid cast operation' prefix). Aligned Go-side
-			// .
+			// 'Invalid cast operation' prefix).
 			Name:           "cast_string_non_numeric_rejected",
 			SchemaTemplate: "CREATE TABLE T_CSN (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSN VALUES (1)"},
 			Query:          "SELECT CAST('abc' AS BIGINT) FROM T_CSN",
+		},
+		{
+			// INSERT integer-literal into a DOUBLE column — auto-promotes.
+			Name:           "insert_int_into_double",
+			SchemaTemplate: "CREATE TABLE T_IID (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IID VALUES (1, 5)"},
+			Query:          "SELECT id, v FROM T_IID",
+		},
+		{
+			// PK column accepts negative BIGINT (signed).
+			Name:           "insert_negative_bigint_pk",
+			SchemaTemplate: "CREATE TABLE T_INB (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_INB VALUES (-1)"},
+			Query:          "SELECT id FROM T_INB",
+		},
+		{
+			// INSERT fractional-double into BIGINT column — Java
+			// rejects with the generic 'A value cannot be assigned...'
+			// SemanticException; Go aligned to drop the more-specific
+			// 'not a whole integer' message.
+			Name:           "insert_fractional_double_into_bigint_rejected",
+			SchemaTemplate: "CREATE TABLE T_IFD (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IFD VALUES (1, 3.14)"},
+			Query:          "SELECT id, v FROM T_IFD",
+		},
+		{
+			// INSERT BOOLEAN into BIGINT column — both engines reject.
+			Name:           "insert_bool_into_bigint_rejected",
+			SchemaTemplate: "CREATE TABLE T_IBB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IBB VALUES (1, TRUE)"},
+			Query:          "SELECT id, v FROM T_IBB",
+		},
+		{
+			// `0.0 - v` projection over a DOUBLE column.
+			Name:           "projection_negate_double_col",
+			SchemaTemplate: "CREATE TABLE T_PND (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_PND VALUES (1, 3.5)"},
+			Query:          "SELECT 0.0 - v FROM T_PND",
+		},
+		{
+			Name:           "is_distinct_from_concrete",
+			SchemaTemplate: "CREATE TABLE T_IDC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDC VALUES (1, 5)",
+				"INSERT INTO T_IDC VALUES (2, 10)",
+			},
+			Query: "SELECT id FROM T_IDC WHERE v IS DISTINCT FROM 5 ORDER BY id",
+		},
+		{
+			Name:           "between_strings_natural",
+			SchemaTemplate: "CREATE TABLE T_BSN (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BSN VALUES (1, 'apple')",
+				"INSERT INTO T_BSN VALUES (2, 'banana')",
+				"INSERT INTO T_BSN VALUES (3, 'cherry')",
+			},
+			Query: "SELECT id FROM T_BSN WHERE name BETWEEN 'b' AND 'd' ORDER BY id",
+		},
+		{
+			// LIKE '%' matches every row including empty strings.
+			Name:           "like_just_percent_match_all",
+			SchemaTemplate: "CREATE TABLE T_LJP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LJP VALUES (1, '')",
+				"INSERT INTO T_LJP VALUES (2, 'a')",
+				"INSERT INTO T_LJP VALUES (3, 'abc')",
+			},
+			Query: "SELECT id FROM T_LJP WHERE name LIKE '%' ORDER BY id",
+		},
+		{
+			Name:           "min_over_double",
+			SchemaTemplate: "CREATE TABLE T_MD (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MD VALUES (1, 1.5)",
+				"INSERT INTO T_MD VALUES (2, 0.5)",
+				"INSERT INTO T_MD VALUES (3, 2.0)",
+			},
+			Query: "SELECT MIN(v) FROM T_MD",
 		},
 		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.

@@ -174,8 +174,12 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 				// code. Whole-valued floats still coerce (supports
 				// INSERT ... SELECT SUM(v) and CASE branches where
 				// the double result is a whole integer).
+				// Java verbatim — same SemanticException as plain INSERT
+				// type-mismatch. fdb-relational doesn't distinguish a
+				// fractional-float-into-int column from a string-into-int
+				// column at the message level.
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"value %g cannot be stored in %s column %q (not a whole integer)", v, fd.Kind(), fd.Name())
+					"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 			}
 			if v < math.MinInt64 || v > math.MaxInt64 {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
