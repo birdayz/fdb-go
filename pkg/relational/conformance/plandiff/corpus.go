@@ -3375,6 +3375,17 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, CASE WHEN name IS NULL THEN 'missing' ELSE name END FROM T_CSN ORDER BY id",
 		},
+		{
+			// Nested searched CASE — CASE branches contain another CASE.
+			Name:           "case_nested",
+			SchemaTemplate: "CREATE TABLE T_CN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CN VALUES (1, 5)",
+				"INSERT INTO T_CN VALUES (2, 50)",
+				"INSERT INTO T_CN VALUES (3, 500)",
+			},
+			Query: "SELECT id, CASE WHEN v < 100 THEN CASE WHEN v < 10 THEN 'tiny' ELSE 'small' END ELSE 'big' END FROM T_CN ORDER BY id",
+		},
 		// ===== BETWEEN edge cases =====
 		{
 			// Single-value BETWEEN — `BETWEEN x AND x` reduces to
