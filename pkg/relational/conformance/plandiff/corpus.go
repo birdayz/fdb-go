@@ -5760,6 +5760,221 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, COALESCE(x, -999) FROM T_NLC5 ORDER BY id",
 		},
+
+		// ===== Additional EXISTS / NOT EXISTS / correlated shapes =====
+		{
+			// EXISTS over self-correlated parent/child: outer.id is the
+			// foreign-key target of inner.parent. Pins the
+			// `EXISTS (SELECT 1 FROM b WHERE b.parent = a.id)` shape
+			// distinct from the gid-equijoin entries above.
+			Name: "exists_parent_child_self",
+			SchemaTemplate: "CREATE TABLE T_EX13A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX13B (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX13A VALUES (1), (2), (3)",
+				"INSERT INTO T_EX13B VALUES (10, 1), (11, 3)",
+			},
+			Query: "SELECT id FROM T_EX13A a WHERE EXISTS (SELECT 1 FROM T_EX13B b WHERE b.parent = a.id) ORDER BY id",
+		},
+		{
+			// EXISTS combined with another AND-predicate on the outer
+			// table — pins planner's ability to keep both predicates
+			// alive after subquery rewrite.
+			Name: "exists_and_outer_predicate",
+			SchemaTemplate: "CREATE TABLE T_EX14A (id BIGINT, gid BIGINT, status BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX14B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX14A VALUES (1, 10, 1), (2, 20, 0), (3, 30, 1), (4, 40, 1)",
+				"INSERT INTO T_EX14B VALUES (10), (30)",
+			},
+			Query: "SELECT id FROM T_EX14A a WHERE a.status = 1 AND EXISTS (SELECT 1 FROM T_EX14B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// EXISTS combined with OR-predicate — outer row qualifies
+			// if either the EXISTS holds OR the outer predicate matches.
+			// Pins disjunction-around-EXISTS planning.
+			Name: "exists_or_outer_predicate",
+			SchemaTemplate: "CREATE TABLE T_EX15A (id BIGINT, gid BIGINT, status BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX15B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX15A VALUES (1, 10, 0), (2, 20, 1), (3, 30, 0), (4, 99, 0)",
+				"INSERT INTO T_EX15B VALUES (10), (30)",
+			},
+			Query: "SELECT id FROM T_EX15A a WHERE a.status = 1 OR EXISTS (SELECT 1 FROM T_EX15B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// Two EXISTS clauses ANDed in the same WHERE — outer row
+			// must satisfy both subqueries simultaneously.
+			Name: "exists_two_anded",
+			SchemaTemplate: "CREATE TABLE T_EX16A (id BIGINT, gid BIGINT, hid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX16B (gid BIGINT, PRIMARY KEY (gid)) " +
+				"CREATE TABLE T_EX16C (hid BIGINT, PRIMARY KEY (hid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX16A VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 10, 999)",
+				"INSERT INTO T_EX16B VALUES (10), (30)",
+				"INSERT INTO T_EX16C VALUES (100), (300)",
+			},
+			Query: "SELECT id FROM T_EX16A a WHERE EXISTS (SELECT 1 FROM T_EX16B b WHERE b.gid = a.gid) AND EXISTS (SELECT 1 FROM T_EX16C c WHERE c.hid = a.hid) ORDER BY id",
+		},
+		{
+			// EXISTS + NOT EXISTS combined — must be in one set, not
+			// in another. Common antijoin/semijoin composition.
+			Name: "exists_and_not_exists",
+			SchemaTemplate: "CREATE TABLE T_EX17A (id BIGINT, gid BIGINT, hid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX17B (gid BIGINT, PRIMARY KEY (gid)) " +
+				"CREATE TABLE T_EX17C (hid BIGINT, PRIMARY KEY (hid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX17A VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 10, 999)",
+				"INSERT INTO T_EX17B VALUES (10), (30)",
+				"INSERT INTO T_EX17C VALUES (100), (300)",
+			},
+			Query: "SELECT id FROM T_EX17A a WHERE EXISTS (SELECT 1 FROM T_EX17B b WHERE b.gid = a.gid) AND NOT EXISTS (SELECT 1 FROM T_EX17C c WHERE c.hid = a.hid) ORDER BY id",
+		},
+		{
+			// EXISTS where inner subquery is empty — every outer row
+			// must be excluded. Pins the "always-false" subquery path.
+			Name: "exists_empty_inner",
+			SchemaTemplate: "CREATE TABLE T_EX18A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX18B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX18A VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_EX18A a WHERE EXISTS (SELECT 1 FROM T_EX18B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// NOT EXISTS where inner subquery is empty — every outer
+			// row must be retained (vacuously true). Pins the
+			// "always-true antijoin" path.
+			Name: "not_exists_empty_inner",
+			SchemaTemplate: "CREATE TABLE T_EX19A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX19B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX19A VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_EX19A a WHERE NOT EXISTS (SELECT 1 FROM T_EX19B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// EXISTS with a constant-true inner — degenerate case where
+			// the subquery references no outer columns and matches all
+			// inner rows; result depends solely on whether T_EX20B is
+			// non-empty.
+			Name: "exists_constant_true_inner",
+			SchemaTemplate: "CREATE TABLE T_EX20A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX20B (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX20A VALUES (1), (2), (3)",
+				"INSERT INTO T_EX20B VALUES (1)",
+			},
+			Query: "SELECT id FROM T_EX20A WHERE EXISTS (SELECT 1 FROM T_EX20B) ORDER BY id",
+		},
+		{
+			// DELETE with EXISTS in WHERE — Java semantics: rows in the
+			// outer table get deleted iff a matching inner row exists.
+			// Setup runs the DELETE; Query verifies the surviving rows.
+			Name: "delete_with_exists",
+			SchemaTemplate: "CREATE TABLE T_EX21A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX21B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX21A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX21B VALUES (10), (30)",
+				"DELETE FROM T_EX21A WHERE EXISTS (SELECT 1 FROM T_EX21B b WHERE b.gid = T_EX21A.gid)",
+			},
+			Query: "SELECT id, gid FROM T_EX21A ORDER BY id",
+		},
+		{
+			// UPDATE with EXISTS in WHERE — outer rows that have a
+			// matching inner row get updated. Setup runs the UPDATE;
+			// Query reads the post-state.
+			Name: "update_with_exists",
+			SchemaTemplate: "CREATE TABLE T_EX22A (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX22B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX22A VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)",
+				"INSERT INTO T_EX22B VALUES (10), (30)",
+				"UPDATE T_EX22A SET val = 0 WHERE EXISTS (SELECT 1 FROM T_EX22B b WHERE b.gid = T_EX22A.gid)",
+			},
+			Query: "SELECT id, gid, val FROM T_EX22A ORDER BY id",
+		},
+		{
+			// DELETE with NOT EXISTS — antijoin shape in DML.
+			Name: "delete_with_not_exists",
+			SchemaTemplate: "CREATE TABLE T_EX23A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX23B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX23A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX23B VALUES (10), (30)",
+				"DELETE FROM T_EX23A WHERE NOT EXISTS (SELECT 1 FROM T_EX23B b WHERE b.gid = T_EX23A.gid)",
+			},
+			Query: "SELECT id, gid FROM T_EX23A ORDER BY id",
+		},
+		{
+			// Correlated EXISTS with inequality on a different column
+			// than the join key — pins predicate evaluation that mixes
+			// equijoin with range filter inside the subquery.
+			Name: "exists_correlated_eq_and_inner_range",
+			SchemaTemplate: "CREATE TABLE T_EX24A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX24B (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX24A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX24B VALUES (100, 10, 5), (101, 20, 200), (102, 30, 1)",
+			},
+			Query: "SELECT id FROM T_EX24A a WHERE EXISTS (SELECT 1 FROM T_EX24B b WHERE b.gid = a.gid AND b.val > 50) ORDER BY id",
+		},
+		{
+			// EXISTS where outer predicate alone (no correlation) but
+			// inner table is selected via an inner-only filter referring
+			// only to inner columns — common "is there any X with
+			// property P" shape.
+			Name: "exists_uncorrelated_inner_filter",
+			SchemaTemplate: "CREATE TABLE T_EX25A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX25B (id BIGINT, status BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX25A VALUES (1), (2), (3)",
+				"INSERT INTO T_EX25B VALUES (1, 0), (2, 0)",
+			},
+			Query: "SELECT id FROM T_EX25A WHERE EXISTS (SELECT 1 FROM T_EX25B b WHERE b.status = 1) ORDER BY id",
+		},
+		{
+			// Three EXISTS chained with AND — stresses subquery
+			// composition past the trivial two-EXISTS shape.
+			Name: "exists_three_anded",
+			SchemaTemplate: "CREATE TABLE T_EX26A (id BIGINT, g1 BIGINT, g2 BIGINT, g3 BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX26B (gid BIGINT, PRIMARY KEY (gid)) " +
+				"CREATE TABLE T_EX26C (gid BIGINT, PRIMARY KEY (gid)) " +
+				"CREATE TABLE T_EX26D (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX26A VALUES (1, 10, 20, 30), (2, 10, 20, 99), (3, 10, 99, 30)",
+				"INSERT INTO T_EX26B VALUES (10)",
+				"INSERT INTO T_EX26C VALUES (20)",
+				"INSERT INTO T_EX26D VALUES (30)",
+			},
+			Query: "SELECT id FROM T_EX26A a WHERE EXISTS (SELECT 1 FROM T_EX26B b WHERE b.gid = a.g1) AND EXISTS (SELECT 1 FROM T_EX26C c WHERE c.gid = a.g2) AND EXISTS (SELECT 1 FROM T_EX26D d WHERE d.gid = a.g3) ORDER BY id",
+		},
+		{
+			// Doubly nested EXISTS — outer EXISTS contains an inner
+			// EXISTS that is itself correlated to the middle row.
+			Name: "exists_nested_correlated",
+			SchemaTemplate: "CREATE TABLE T_EX28A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX28B (id BIGINT, gid BIGINT, hid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX28C (hid BIGINT, PRIMARY KEY (hid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX28A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX28B VALUES (100, 10, 1000), (101, 20, 2000), (102, 30, 3000)",
+				"INSERT INTO T_EX28C VALUES (1000), (3000)",
+			},
+			Query: "SELECT id FROM T_EX28A a WHERE EXISTS (SELECT 1 FROM T_EX28B b WHERE b.gid = a.gid AND EXISTS (SELECT 1 FROM T_EX28C c WHERE c.hid = b.hid)) ORDER BY id",
+		},
+		{
+			// NOT EXISTS combined with AND-predicate on the outer.
+			Name: "not_exists_and_outer_predicate",
+			SchemaTemplate: "CREATE TABLE T_EX29A (id BIGINT, gid BIGINT, status BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX29B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX29A VALUES (1, 10, 1), (2, 20, 0), (3, 30, 1), (4, 40, 1)",
+				"INSERT INTO T_EX29B VALUES (10), (30)",
+			},
+			Query: "SELECT id FROM T_EX29A a WHERE a.status = 1 AND NOT EXISTS (SELECT 1 FROM T_EX29B b WHERE b.gid = a.gid) ORDER BY id",
+		},
 	}
 }
 
