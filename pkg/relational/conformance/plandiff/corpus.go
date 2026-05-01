@@ -3583,6 +3583,78 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, v FROM T_SBR ORDER BY id",
 		},
 		{
+			Name:           "sum_with_where_filter",
+			SchemaTemplate: "CREATE TABLE T_AGG1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG1 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT sum(v) FROM T_AGG1 WHERE v >= 20",
+		},
+		{
+			Name:           "sum_double_with_filter",
+			SchemaTemplate: "CREATE TABLE T_AGG2 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG2 VALUES (1, 1.5), (2, 2.5), (3, 3.5)"},
+			Query:          "SELECT sum(v) FROM T_AGG2 WHERE v > 1.5",
+		},
+		{
+			Name:           "min_string",
+			SchemaTemplate: "CREATE TABLE T_AGG3 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG3 VALUES (1, 'banana'), (2, 'apple'), (3, 'cherry')"},
+			Query:          "SELECT min(name) FROM T_AGG3",
+		},
+		{
+			Name:           "max_string",
+			SchemaTemplate: "CREATE TABLE T_AGG4 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG4 VALUES (1, 'banana'), (2, 'apple'), (3, 'cherry')"},
+			Query:          "SELECT max(name) FROM T_AGG4",
+		},
+		{
+			Name:           "min_max_over_double_extremes",
+			SchemaTemplate: "CREATE TABLE T_AGG5 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG5 VALUES (1, 1.5), (2, -7.25), (3, 100.5)"},
+			Query:          "SELECT min(v), max(v) FROM T_AGG5",
+		},
+		{
+			Name:           "min_max_boolean",
+			SchemaTemplate: "CREATE TABLE T_AGG6 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG6 VALUES (1, TRUE), (2, FALSE), (3, TRUE)"},
+			Query:          "SELECT min(flag), max(flag) FROM T_AGG6",
+		},
+		{
+			Name:           "count_star_with_where_range",
+			SchemaTemplate: "CREATE TABLE T_AGG7 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG7 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT count(*) FROM T_AGG7 WHERE v > 15",
+		},
+		{
+			Name:           "count_col_pk",
+			SchemaTemplate: "CREATE TABLE T_AGG8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG8 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT count(id) FROM T_AGG8",
+		},
+		{
+			Name:           "avg_with_filter",
+			SchemaTemplate: "CREATE TABLE T_AGG9 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG9 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT avg(v) FROM T_AGG9 WHERE v >= 20",
+		},
+		{
+			Name:           "all_aggs_empty_filter_result",
+			SchemaTemplate: "CREATE TABLE T_AGG10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG10 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT count(*), sum(v), min(v), max(v), avg(v) FROM T_AGG10 WHERE v > 1000",
+		},
+		{
+			Name:           "multi_agg_mixed_types",
+			SchemaTemplate: "CREATE TABLE T_AGG14 (id BIGINT, qty BIGINT, price DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG14 VALUES (1, 5, 1.5), (2, 10, 2.5), (3, 15, 3.5)"},
+			Query:          "SELECT count(*), sum(qty), min(price), max(price) FROM T_AGG14",
+		},
+		{
+			Name:           "count_star_filter_string_eq",
+			SchemaTemplate: "CREATE TABLE T_AGG15 (id BIGINT, status STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AGG15 VALUES (1, 'open'), (2, 'closed'), (3, 'open'), (4, 'pending')"},
+			Query:          "SELECT count(*) FROM T_AGG15 WHERE status = 'open'",
+		},
+		{
 			// NOT BETWEEN range exclusion.
 			Name:           "not_between",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
