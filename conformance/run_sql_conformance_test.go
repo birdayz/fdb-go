@@ -212,7 +212,6 @@ var _ = Describe("RunSql Harness", func() {
 		// "hi" (0x68 0x69) → base64 "aGk=".
 		Expect(got.Rows.Rows[0][1].(string)).To(Equal("aGk="))
 	})
-
 	It("runs the SeedRunCorpus through BOTH engines and asserts cross-engine equivalence", func() {
 		// Generic plumbing: every SeedRunCorpus entry is driven through
 		// Java (via the conformance HTTP server) AND Go (via the

@@ -1894,6 +1894,52 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_UDR UNION SELECT id FROM T_UDR",
 		},
+		{
+			// OFFSET clause is unsupported by fdb-relational's grammar —
+			// rejected as syntax error pointing at the OFFSET token.
+			// Both engines hit the same parser path.
+			Name:           "offset_clause_rejected",
+			SchemaTemplate: "CREATE TABLE T_OFC (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OFC VALUES (1)"},
+			Query:          "SELECT id FROM T_OFC OFFSET 1",
+		},
+		{
+			// CAST to an unknown type is a syntax error pointing at the
+			// type identifier. Both engines align via shared ANTLR
+			// grammar rejection.
+			Name:           "cast_to_unknown_type_rejected",
+			SchemaTemplate: "CREATE TABLE T_CUT (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CUT VALUES (1)"},
+			Query:          "SELECT CAST(id AS WIDGET) FROM T_CUT",
+		},
+		{
+			// HAVING without GROUP BY on a single row scope — both
+			// engines treat the entire result as one implicit group;
+			// HAVING then filters it. Empty table → no rows.
+			Name:           "having_without_group_by_empty",
+			SchemaTemplate: "CREATE TABLE T_HAE (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT id FROM T_HAE HAVING id > 0",
+		},
+		{
+			// INSERT with explicit column list omitting a nullable
+			// column → that column is implicitly NULL. Pins both
+			// engines treat omitted columns as NULL (not error).
+			Name:           "insert_explicit_cols_implicit_null",
+			SchemaTemplate: "CREATE TABLE T_IEN (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IEN (id) VALUES (1)",
+			},
+			Query: "SELECT id, v FROM T_IEN ORDER BY id",
+		},
+		{
+			// AVG over an empty table — both engines emit one row with
+			// AVG=NULL (SUM=NULL, COUNT=0 → NULL/0 = NULL, not error).
+			Name:           "avg_over_empty_table",
+			SchemaTemplate: "CREATE TABLE T_AVE (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT AVG(v) FROM T_AVE",
+		},
 
 		// ===== INSERT...SELECT coverage =====
 		{
