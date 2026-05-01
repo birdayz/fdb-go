@@ -225,6 +225,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		betweenEdgeScenario(),
 		stringComparisonOpsScenario(),
 		castChainScenario(),
+		nullInBetweenScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
 	}
@@ -3293,6 +3294,33 @@ func castChainScenario() *yamsql.Scenario {
 			{Query: "SELECT CAST(-1.9 AS BIGINT) FROM t WHERE id = 1", Rows: [][]any{{-2}}},
 			// CAST int to STRING and back.
 			{Query: "SELECT CAST(CAST(v AS STRING) AS BIGINT) FROM t WHERE id = 2", Rows: [][]any{{-100}}},
+		},
+	}
+}
+
+// nullInBetweenScenario probes BETWEEN with NULL bounds. Per SQL 3VL:
+// `x BETWEEN NULL AND y` and `x BETWEEN x AND NULL` both yield UNKNOWN
+// (filtered out in WHERE). Both engines should agree. Net-new
+// nightshift-61.
+func nullInBetweenScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name: "null_in_between",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
+			" CREATE TABLE u (id BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)",
+			"INSERT INTO u VALUES (1, null, 25), (2, 5, null), (3, null, null), (4, 5, 25)",
+		},
+		Tests: []yamsql.Test{
+			// NULL operand on either bound makes BETWEEN UNKNOWN → filtered out.
+			{Query: "SELECT id FROM u WHERE 10 BETWEEN lo AND hi ORDER BY id", Rows: [][]any{{4}}},
+			{Query: "SELECT id FROM u WHERE 30 BETWEEN lo AND hi ORDER BY id", Rows: [][]any{}},
+			// NOT BETWEEN with NULL bound — also UNKNOWN.
+			{Query: "SELECT id FROM u WHERE 10 NOT BETWEEN lo AND hi ORDER BY id", Rows: [][]any{}},
+			// BETWEEN with column on outer side, NULL bound from u (via cross-join).
+			{Query: "SELECT t.id FROM t, u WHERE u.id = 1 AND t.v BETWEEN u.lo AND u.hi ORDER BY t.id", Rows: [][]any{}},
+			// BETWEEN with both bounds present — match.
+			{Query: "SELECT t.id FROM t, u WHERE u.id = 4 AND t.v BETWEEN u.lo AND u.hi ORDER BY t.id", Rows: [][]any{{1}, {2}}},
 		},
 	}
 }
