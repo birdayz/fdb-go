@@ -2273,6 +2273,74 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT NO_SUCH_FUNCTION(id) FROM T_SUF",
 		},
 		{
+			// HAVING with a concrete predicate that filters non-empty
+			// data. fdb-relational accepts non-aggregate column refs
+			// in HAVING when there's no GROUP BY — both engines treat
+			// the result as one implicit group.
+			Name:           "having_id_predicate_filters",
+			SchemaTemplate: "CREATE TABLE T_HIP (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_HIP VALUES (1), (2), (3)"},
+			Query:          "SELECT id FROM T_HIP HAVING id > 1 ORDER BY id",
+		},
+		{
+			// Negating MinInt64 — `0 - (-9223372036854775808)` would
+			// overflow because the absolute value doesn't fit in
+			// int64. Both engines throw 'long overflow'.
+			Name:           "negate_min_int64_overflow",
+			SchemaTemplate: "CREATE TABLE T_NMI (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NMI VALUES (1)"},
+			Query:          "SELECT 0 - (-9223372036854775808) FROM T_NMI",
+		},
+		{
+			// LIKE with empty pattern — matches only empty strings.
+			Name:           "like_empty_pattern",
+			SchemaTemplate: "CREATE TABLE T_LEP (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_LEP VALUES (1, 'a')"},
+			Query:          "SELECT id FROM T_LEP WHERE name LIKE ''",
+		},
+		{
+			// LIKE with single-underscore pattern — matches single-char
+			// strings, not empty or multi-char.
+			Name:           "like_single_underscore",
+			SchemaTemplate: "CREATE TABLE T_LSU (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LSU VALUES (1, '')",
+				"INSERT INTO T_LSU VALUES (2, 'a')",
+				"INSERT INTO T_LSU VALUES (3, 'ab')",
+			},
+			Query: "SELECT id FROM T_LSU WHERE name LIKE '_' ORDER BY id",
+		},
+		// NOTE: SUM(int-literal) hits the same SUM(CASE-with-int-literals)
+		// column-type divergence (Java reports INTEGER, Go reports
+		// BIGINT). Tracked TODO; not a corpus entry.
+		{
+			// SELECT bool column with TRUE / FALSE / NULL preservation.
+			Name:           "select_bool_column_trio",
+			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SBT VALUES (1, TRUE)",
+				"INSERT INTO T_SBT VALUES (2, FALSE)",
+				"INSERT INTO T_SBT VALUES (3, NULL)",
+			},
+			Query: "SELECT id, b FROM T_SBT ORDER BY id",
+		},
+		{
+			// CAST string→BIGINT with leading/trailing whitespace —
+			// both engines trim before parsing (Java's Long.parseLong
+			// after .trim()).
+			Name:           "cast_string_whitespace_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CSW (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CSW VALUES (1)"},
+			Query:          "SELECT CAST('  42  ' AS BIGINT) FROM T_CSW",
+		},
+		{
+			// CAST string→BIGINT with leading zeros — '00042' → 42.
+			Name:           "cast_string_leading_zeros_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CSZ (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CSZ VALUES (1)"},
+			Query:          "SELECT CAST('00042' AS BIGINT) FROM T_CSZ",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].
