@@ -274,11 +274,17 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_DEL ORDER BY id",
 		},
-		// INFORMATION_SCHEMA.TABLES probe deferred: fdb-relational's
-		// SELECT parser doesn't recognize the schema-qualified
-		// reference (syntax error on TABLES). Track A4 needs a
-		// different probe shape — investigate the catalog access
-		// path in a follow-up shift.
+		// INFORMATION_SCHEMA: empirically probed swingshift-64. Java
+		// rejects with `RelationalException: Unknown reference
+		// INFORMATION_SCHEMA.TABLES` — the catalog is not registered
+		// at all in 4.11.1.0 (no schema-qualified reference, no
+		// alternate access path). Go has a working Go-only impl
+		// (system_tables.go / system_rows.go) that's NOT cross-engine
+		// alignable until upstream adds support. TODO #9 decision:
+		// KEEP the Go-only impl (SQL standard feature, removal is a
+		// user-visible regression), DOCUMENT the divergence here, and
+		// PROPOSE upstream when there's bandwidth. TODO #35 (A4
+		// cross-engine byte-equivalence) stays gated on upstream.
 		// LEFT JOIN deferred: fdb-relational 4.11.1.0 returns
 		// `RelationalException: Attempting to query non existing
 		// column CUSTOMERS.CID` — the planner's column resolution
@@ -900,12 +906,23 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_OFF ORDER BY id LIMIT 2 OFFSET 1",
 		},
 		{
-			// PROBE TODO #6: FROM-less SELECT inside CTE base — does
-			// Java accept it where it rejects the standalone form?
-			Name:           "probe_fromless_in_cte_base",
+			// FROM-less SELECT (CTE base case form) — Java rejects
+			// universally per QueryVisitor.visitSimpleTable's
+			// Assert.notNullUnchecked(fromClause) gate, including
+			// inside CTE bodies. Probed swingshift-64.
+			Name:           "fromless_in_cte_base_rejected",
 			SchemaTemplate: "CREATE TABLE T_FLC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLC VALUES (1, 1)"},
 			Query:          "WITH base AS (SELECT 1 AS n) SELECT n FROM base",
+		},
+		{
+			// FROM-less SELECT (standalone) — companion pin to
+			// fromless_in_cte_base_rejected. Same Java site, same
+			// message, different syntactic context.
+			Name:           "fromless_standalone_rejected",
+			SchemaTemplate: "CREATE TABLE T_FL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_FL VALUES (1, 1)"},
+			Query:          "SELECT 1 + 1",
 		},
 		{
 			// WHERE with a single bare-paren predicate: Java's parser
