@@ -561,6 +561,11 @@ func TestRowKey(t *testing.T) {
 		// Binary string containing separator bytes must not collide.
 		{row("foo\x00"), row("foo", "\x00"), false},
 		{row("a", "b"), row("ab"), false},
+		// Compound (STRING, BIGINT) duplicates must produce identical keys
+		// — the canonical SELECT DISTINCT a, b shape (TODO #42 sentinel).
+		{row("x", int64(1)), row("x", int64(1)), true},
+		{row("x", int64(1)), row("x", int64(2)), false},
+		{row("x", int64(1)), row("y", int64(1)), false},
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("case%d", i), func(t *testing.T) {
