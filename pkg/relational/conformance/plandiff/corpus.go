@@ -1,5 +1,7 @@
 package plandiff
 
+import "strings"
+
 // SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
 // (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
 // The conformance test runs each entry through BOTH engines (Java
@@ -7271,6 +7273,154 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CMP16 VALUES (2, 1, 'two-one')",
 			},
 			Query: "SELECT val FROM T_CMP16 WHERE a = 1 AND b = 2",
+		},
+
+		// ===== STRING encoding edges =====
+		// Mixed-script string (Latin + Cyrillic + CJK) round-trips through
+		// the wire and equality matches the original by-bytes.
+		{
+			Name:           "string_mixed_scripts_eq",
+			SchemaTemplate: "CREATE TABLE T_SS1 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS1 VALUES (1, 'Hello Привет 你好')",
+				"INSERT INTO T_SS1 VALUES (2, 'plain')",
+			},
+			Query: "SELECT id, s FROM T_SS1 WHERE s = 'Hello Привет 你好' ORDER BY id",
+		},
+		// Emoji (4-byte UTF-8) round-trip and equality.
+		{
+			Name:           "string_emoji_eq",
+			SchemaTemplate: "CREATE TABLE T_SS2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS2 VALUES (1, '🎉')",
+				"INSERT INTO T_SS2 VALUES (2, '🎉🎉')",
+				"INSERT INTO T_SS2 VALUES (3, 'plain')",
+			},
+			Query: "SELECT id, s FROM T_SS2 WHERE s = '🎉' ORDER BY id",
+		},
+		// Long string (1000 chars) round-trip — pins string-length
+		// handling beyond short-string fast paths.
+		{
+			Name:           "string_long_1000_chars",
+			SchemaTemplate: "CREATE TABLE T_SS3 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS3 VALUES (1, '" + strings.Repeat("a", 1000) + "')",
+			},
+			Query: "SELECT id, s FROM T_SS3 ORDER BY id",
+		},
+		// Embedded backslash literal — `\` is NOT an escape character in
+		// SQL string literals; it's just a byte.
+		{
+			Name:           "string_embedded_backslash",
+			SchemaTemplate: "CREATE TABLE T_SS4 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				`INSERT INTO T_SS4 VALUES (1, 'a\b')`,
+				`INSERT INTO T_SS4 VALUES (2, 'plain')`,
+			},
+			Query: `SELECT id, s FROM T_SS4 WHERE s = 'a\b' ORDER BY id`,
+		},
+		// All-whitespace string — three spaces — distinct from empty
+		// and from NULL.
+		{
+			Name:           "string_all_whitespace_eq",
+			SchemaTemplate: "CREATE TABLE T_SS5 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS5 VALUES (1, '   ')",
+				"INSERT INTO T_SS5 VALUES (2, '')",
+				"INSERT INTO T_SS5 VALUES (3, 'x')",
+			},
+			Query: "SELECT id, s FROM T_SS5 WHERE s = '   ' ORDER BY id",
+		},
+		// Single-space vs empty string distinction in WHERE — must NOT
+		// collapse together.
+		{
+			Name:           "string_single_space_vs_empty",
+			SchemaTemplate: "CREATE TABLE T_SS6 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS6 VALUES (1, ' ')",
+				"INSERT INTO T_SS6 VALUES (2, '')",
+			},
+			Query: "SELECT id, s FROM T_SS6 WHERE s = ' ' ORDER BY id",
+		},
+		// String of digits is NOT coerced to number — '12345' stays a
+		// STRING, equality is byte-wise.
+		{
+			Name:           "string_all_digits_eq",
+			SchemaTemplate: "CREATE TABLE T_SS7 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS7 VALUES (1, '12345')",
+				"INSERT INTO T_SS7 VALUES (2, '67890')",
+				"INSERT INTO T_SS7 VALUES (3, 'abc')",
+			},
+			Query: "SELECT id, s FROM T_SS7 WHERE s = '12345' ORDER BY id",
+		},
+		// Leading-zero string is preserved (no integer-style truncation).
+		{
+			Name:           "string_leading_zeros_preserved",
+			SchemaTemplate: "CREATE TABLE T_SS8 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS8 VALUES (1, '007')",
+				"INSERT INTO T_SS8 VALUES (2, '7')",
+				"INSERT INTO T_SS8 VALUES (3, '0007')",
+			},
+			Query: "SELECT id, s FROM T_SS8 ORDER BY id",
+		},
+		// String comparison is lexicographic (byte-wise), not numeric:
+		// '10' < '2' because '1' (0x31) < '2' (0x32).
+		{
+			Name:           "string_lex_lt_digit_strings",
+			SchemaTemplate: "CREATE TABLE T_SS9 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS9 VALUES (1, '2')",
+				"INSERT INTO T_SS9 VALUES (2, '10')",
+				"INSERT INTO T_SS9 VALUES (3, '100')",
+			},
+			Query: "SELECT id, s FROM T_SS9 WHERE s < '2' ORDER BY id",
+		},
+		// Unicode normalization edge: precomposed 'é' (U+00E9) vs
+		// decomposed 'é' (U+0065 + U+0301). Equality is by bytes,
+		// so they must NOT compare equal.
+		{
+			Name:           "string_unicode_nfc_vs_nfd",
+			SchemaTemplate: "CREATE TABLE T_SS10 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS10 VALUES (1, 'café')",
+				"INSERT INTO T_SS10 VALUES (2, 'café')",
+			},
+			Query: "SELECT id, s FROM T_SS10 WHERE s = 'café' ORDER BY id",
+		},
+		// BOM (U+FEFF) at start of string — preserved as a regular
+		// character; equality compares bytes including the BOM.
+		{
+			Name:           "string_bom_preserved",
+			SchemaTemplate: "CREATE TABLE T_SS11 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS11 VALUES (1, '\ufeffhello')",
+				"INSERT INTO T_SS11 VALUES (2, 'hello')",
+			},
+			Query: "SELECT id, s FROM T_SS11 WHERE s = '\ufeffhello' ORDER BY id",
+		},
+		// Same string into many rows + COUNT(*) — verifies bulk-INSERT
+		// preserves each row independently.
+		{
+			Name:           "string_repeated_count",
+			SchemaTemplate: "CREATE TABLE T_SS12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS12 VALUES (1, 'same'), (2, 'same'), (3, 'same'), (4, 'other'), (5, 'same')",
+			},
+			Query: "SELECT count(*) FROM T_SS12 WHERE s = 'same'",
+		},
+		// Trailing whitespace preserved — STRING is not VARCHAR-padded
+		// and trailing spaces stick in equality.
+		{
+			Name:           "string_trailing_whitespace_preserved",
+			SchemaTemplate: "CREATE TABLE T_SS14 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS14 VALUES (1, 'abc')",
+				"INSERT INTO T_SS14 VALUES (2, 'abc ')",
+				"INSERT INTO T_SS14 VALUES (3, 'abc  ')",
+			},
+			Query: "SELECT id, s FROM T_SS14 WHERE s = 'abc ' ORDER BY id",
 		},
 	}
 }
