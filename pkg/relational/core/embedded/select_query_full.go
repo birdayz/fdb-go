@@ -526,6 +526,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 
 		// GROUP BY aggregate query: scan → group → aggregate.
 		if len(sq.aggCols) > 0 {
+			// DISTINCT aggregates rejected — Java alignment (visitor
+			// NPEs on every aggregate with DISTINCT). See aggregate.go
+			// for full rationale.
+			for _, ac := range sq.aggCols {
+				if ac.aggDistinct {
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+						"DISTINCT aggregate %s is not supported", ac.aggFunc)
+				}
+			}
 			// Resolve group-by field descriptors. Expression group keys
 			// (sq.groupByExprs[i] != nil) skip FD resolution — they are
 			// evaluated per message below via evalExpr.
@@ -614,14 +623,13 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				// accumulator wraps silently, same as Java's `long`.
 				// See aggregate.go for the symmetric map-path
 				// implementation.
-				sums         []float64
-				sumsI        []int64
-				sumNonInt    []bool
-				mins         []driver.Value
-				maxes        []driver.Value
-				avgs         []float64             // running sum for AVG
-				avgsN        []int64               // count for AVG
-				distinctSets []map[string]struct{} // nil unless COUNT(DISTINCT)
+				sums      []float64
+				sumsI     []int64
+				sumNonInt []bool
+				mins      []driver.Value
+				maxes     []driver.Value
+				avgs      []float64 // running sum for AVG
+				avgsN     []int64   // count for AVG
 			}
 			groupOrder := []string{} // insertion order for deterministic output
 			groups := map[string]*groupState{}
@@ -662,23 +670,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 				key := groupByKey(gVals)
 				gs, exists := groups[key]
 				if !exists {
-					distinctSets := make([]map[string]struct{}, len(sq.aggCols))
-					for di, ac := range sq.aggCols {
-						if ac.aggDistinct {
-							distinctSets[di] = make(map[string]struct{})
-						}
-					}
 					gs = &groupState{
-						groupVals:    gVals,
-						counts:       make([]int64, len(sq.aggCols)),
-						sums:         make([]float64, len(sq.aggCols)),
-						sumsI:        make([]int64, len(sq.aggCols)),
-						sumNonInt:    make([]bool, len(sq.aggCols)),
-						mins:         make([]driver.Value, len(sq.aggCols)),
-						maxes:        make([]driver.Value, len(sq.aggCols)),
-						avgs:         make([]float64, len(sq.aggCols)),
-						avgsN:        make([]int64, len(sq.aggCols)),
-						distinctSets: distinctSets,
+						groupVals: gVals,
+						counts:    make([]int64, len(sq.aggCols)),
+						sums:      make([]float64, len(sq.aggCols)),
+						sumsI:     make([]int64, len(sq.aggCols)),
+						sumNonInt: make([]bool, len(sq.aggCols)),
+						mins:      make([]driver.Value, len(sq.aggCols)),
+						maxes:     make([]driver.Value, len(sq.aggCols)),
+						avgs:      make([]float64, len(sq.aggCols)),
+						avgsN:     make([]int64, len(sq.aggCols)),
 					}
 					groups[key] = gs
 					groupOrder = append(groupOrder, key)
@@ -706,50 +707,6 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 						v = ev
 					} else if aggArgFDs[i] != nil && msg.ProtoReflect().Has(aggArgFDs[i]) {
 						v = functions.ProtoValueToDriver(aggArgFDs[i], msg.ProtoReflect().Get(aggArgFDs[i]))
-					}
-					if ac.aggDistinct && hasArg {
-						// *(DISTINCT col|expr): accumulate only the first occurrence
-						// of each distinct non-null value — supports COUNT, SUM,
-						// AVG, MIN, MAX symmetrically.
-						if v == nil {
-							continue
-						}
-						// Type-tagged to keep distinct values of different
-						// concrete types apart (matches valuesEqual's
-						// mixed-type-equality semantic).
-						dk := fmt.Sprintf("%T\x00%v", v, v)
-						if _, seen := gs.distinctSets[i][dk]; !seen {
-							gs.distinctSets[i][dk] = struct{}{}
-							gs.counts[i]++
-							switch ac.aggFunc {
-							case "SUM", "AVG":
-								fv, ok := functions.ToFloat64(v)
-								if !ok {
-									return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-										"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, v)
-								}
-								if ac.aggFunc == "SUM" {
-									gs.sums[i] += fv
-									if iv, isInt := v.(int64); isInt && !gs.sumNonInt[i] {
-										gs.sumsI[i] += iv
-									} else {
-										gs.sumNonInt[i] = true
-									}
-								} else {
-									gs.avgs[i] += fv
-									gs.avgsN[i]++
-								}
-							case "MIN":
-								if gs.mins[i] == nil || functions.CompareValues(v, gs.mins[i]) < 0 {
-									gs.mins[i] = v
-								}
-							case "MAX":
-								if gs.maxes[i] == nil || functions.CompareValues(v, gs.maxes[i]) > 0 {
-									gs.maxes[i] = v
-								}
-							}
-						}
-						continue
 					}
 					// COUNT(*) counts every row including all-NULL; no argument.
 					if ac.aggFunc == "COUNT" && !hasArg {
@@ -780,10 +737,16 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 							gs.avgsN[i]++
 						}
 					case "MIN":
+						if err := requireMinMaxNumeric(v); err != nil {
+							return nil, err
+						}
 						if gs.mins[i] == nil || functions.CompareValues(v, gs.mins[i]) < 0 {
 							gs.mins[i] = v
 						}
 					case "MAX":
+						if err := requireMinMaxNumeric(v); err != nil {
+							return nil, err
+						}
 						if gs.maxes[i] == nil || functions.CompareValues(v, gs.maxes[i]) > 0 {
 							gs.maxes[i] = v
 						}
@@ -792,25 +755,25 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 			}
 
 			// SQL spec: ungrouped aggregate over empty input emits one row
-			// (COUNT=0, SUM/MIN/MAX/AVG=NULL).
-			if len(sq.groupBy) == 0 && len(groupOrder) == 0 {
-				dsets := make([]map[string]struct{}, len(sq.aggCols))
-				for di, ac := range sq.aggCols {
-					if ac.aggDistinct {
-						dsets[di] = make(map[string]struct{})
-					}
-				}
+			// (COUNT=0, SUM/MIN/MAX/AVG=NULL). Java alignment
+			// (nightshift-61): when HAVING is present, fdb-relational
+			// treats the empty input as "no grouping at all" — HAVING
+			// never fires, 0 rows. CLAUDE.md gotcha:
+			// "`SELECT <agg> FROM t WHERE <none-match> HAVING <agg-pred>`
+			// diverges". Aligned to Java by skipping the synthetic group
+			// when HAVING is set. The HAVING-absent path keeps SQL-spec
+			// aggregate-over-empty semantics.
+			if len(sq.groupBy) == 0 && len(groupOrder) == 0 && sq.havingExpr == nil {
 				groups[""] = &groupState{
-					groupVals:    nil,
-					counts:       make([]int64, len(sq.aggCols)),
-					sums:         make([]float64, len(sq.aggCols)),
-					sumsI:        make([]int64, len(sq.aggCols)),
-					sumNonInt:    make([]bool, len(sq.aggCols)),
-					mins:         make([]driver.Value, len(sq.aggCols)),
-					maxes:        make([]driver.Value, len(sq.aggCols)),
-					avgs:         make([]float64, len(sq.aggCols)),
-					avgsN:        make([]int64, len(sq.aggCols)),
-					distinctSets: dsets,
+					groupVals: nil,
+					counts:    make([]int64, len(sq.aggCols)),
+					sums:      make([]float64, len(sq.aggCols)),
+					sumsI:     make([]int64, len(sq.aggCols)),
+					sumNonInt: make([]bool, len(sq.aggCols)),
+					mins:      make([]driver.Value, len(sq.aggCols)),
+					maxes:     make([]driver.Value, len(sq.aggCols)),
+					avgs:      make([]float64, len(sq.aggCols)),
+					avgsN:     make([]int64, len(sq.aggCols)),
 				}
 				groupOrder = append(groupOrder, "")
 			}

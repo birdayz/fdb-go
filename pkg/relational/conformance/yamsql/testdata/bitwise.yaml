@@ -22,24 +22,21 @@ tests:
   - query: SELECT a ^ b FROM t WHERE id = 1
     rows:
       - [12]
-  # Left shift.
-  - query: SELECT 1 << 10
-    rows:
-      - [1024]
-  # Right shift (arithmetic — sign-preserving, matches Java >>).
-  - query: SELECT -8 >> 1
-    rows:
-      - [-4]
+  # Bit-shift operators `<<` / `>>` are intentionally rejected to
+  # match fdb-relational 4.11.1.0's effective non-support: Java
+  # tokenizes them but has no entry in the function registry, so the
+  # planner returns "Unsupported operator <<". Same architectural
+  # reason in both engines: no evaluator for shift operators. Per
+  # CLAUDE.md "Java↔Go conformance gotchas": doesn't work in Java →
+  # doesn't work in Go.
+  - query: SELECT a << 1 FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT a >> 1 FROM t WHERE id = 1
+    error_code: "0A000"
   # NULL propagation — any op with NULL → NULL.
   - query: SELECT a & b FROM t WHERE id = 4
     rows:
       - [~]
-  # Shift count out of range (64-bit integer) — errors 22023.
-  - query: SELECT 1 << 64
-    error_code: "22023"
-  # Negative shift count — errors 22023.
-  - query: SELECT 1 << -1
-    error_code: "22023"
   # Bitwise AND in WHERE predicate — filter rows with low bit set.
   # Precedence note: parsed as (a & 1) = 1, matching C-style. Rows:
   # id=1 (15), id=3 (-1), id=4 (5) all have bit 0 set.

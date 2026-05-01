@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"fmt"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
@@ -24,7 +23,50 @@ import (
 // operators, aggregateMapRows becomes the implementation of the
 // HashAggregate operator's Execute method with no semantic change.
 
+// requireMinMaxNumeric is the runtime gate for MIN / MAX over non-NULL
+// values. fdb-relational 4.11.1.0 rejects MIN / MAX over non-numeric
+// columns with `VerifyException: unable to encapsulate aggregate
+// operation due to type mismatch(es)` (CLAUDE.md gotcha:
+// "MIN(s) / MAX(s) over non-numeric columns is unsupported"). Same
+// architectural reason in both engines: the function registry only
+// installs numeric MIN / MAX overloads. Lexicographic min / max over
+// strings or bytes needs a `SELECT col FROM t ORDER BY col LIMIT 1`
+// rewrite.
+//
+// The error message is INTENTIONALLY VERBATIM the Java
+// `VerifyException` message — so the cross-engine harness can pin
+// `ExpectErrorContains: "unable to encapsulate aggregate operation"`
+// and assert IDENTICAL substrings on both sides, proving Java's
+// effective non-support matches Go's rejection at the message level.
+// Per project conformance principle: doesn't work in Java → doesn't
+// work in Go, with identical error wording.
+func requireMinMaxNumeric(v driver.Value) error {
+	if _, ok := functions.ToFloat64(v); ok {
+		return nil
+	}
+	return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+		"unable to encapsulate aggregate operation due to type mismatch(es)")
+}
+
 func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
+	// DISTINCT aggregates are intentionally rejected — Java alignment.
+	// fdb-relational 4.11.1.0's parser visitor NPEs on every aggregate
+	// with DISTINCT (`AggregateWindowedFunctionContext.ALL().getText()`
+	// is called unconditionally; ALL is null when DISTINCT is present,
+	// per CLAUDE.md gotcha "COUNT(DISTINCT col) NPEs in fdb-relational").
+	// Go matches by failing at execution time with
+	// `ErrCodeUnsupportedOperation`. Same architectural reason in both
+	// engines: visitor doesn't handle the DISTINCT case. Workaround:
+	// pre-aggregate via a derived table — `SELECT COUNT(*) FROM
+	// (SELECT DISTINCT col FROM t)` — though SELECT DISTINCT itself
+	// has its own conformance status. Per project conformance
+	// principle: doesn't work in Java → doesn't work in Go.
+	for _, ac := range sq.aggCols {
+		if ac.aggDistinct {
+			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"DISTINCT aggregate %s is not supported", ac.aggFunc)
+		}
+	}
 	if sq.countStar {
 		count := int64(len(filtered))
 		// HAVING refers to the aggregate function, not the SELECT-list
@@ -168,14 +210,13 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		// starts as false (zero-value) — i.e. "still int-only" — and
 		// only flips to true. Overflow on `sumsI[i] += iv` wraps
 		// silently, same as Java's `long` accumulator on SUM(BIGINT).
-		sums         []float64
-		sumsI        []int64
-		sumNonInt    []bool
-		mins         []driver.Value
-		maxes        []driver.Value
-		avgs         []float64
-		avgsN        []int64
-		distinctSets []map[string]struct{}
+		sums      []float64
+		sumsI     []int64
+		sumNonInt []bool
+		mins      []driver.Value
+		maxes     []driver.Value
+		avgs      []float64
+		avgsN     []int64
 	}
 	groupOrder := []string{}
 	groups := map[string]*mapGroupState{}
@@ -217,23 +258,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		}
 		gs, exists := groups[key]
 		if !exists {
-			dsets := make([]map[string]struct{}, len(sq.aggCols))
-			for di, ac := range sq.aggCols {
-				if ac.aggDistinct {
-					dsets[di] = make(map[string]struct{})
-				}
-			}
 			gs = &mapGroupState{
-				groupVals:    gVals,
-				counts:       make([]int64, len(sq.aggCols)),
-				sums:         make([]float64, len(sq.aggCols)),
-				sumsI:        make([]int64, len(sq.aggCols)),
-				sumNonInt:    make([]bool, len(sq.aggCols)),
-				mins:         make([]driver.Value, len(sq.aggCols)),
-				maxes:        make([]driver.Value, len(sq.aggCols)),
-				avgs:         make([]float64, len(sq.aggCols)),
-				avgsN:        make([]int64, len(sq.aggCols)),
-				distinctSets: dsets,
+				groupVals: gVals,
+				counts:    make([]int64, len(sq.aggCols)),
+				sums:      make([]float64, len(sq.aggCols)),
+				sumsI:     make([]int64, len(sq.aggCols)),
+				sumNonInt: make([]bool, len(sq.aggCols)),
+				mins:      make([]driver.Value, len(sq.aggCols)),
+				maxes:     make([]driver.Value, len(sq.aggCols)),
+				avgs:      make([]float64, len(sq.aggCols)),
+				avgsN:     make([]int64, len(sq.aggCols)),
 			}
 			groups[key] = gs
 			groupOrder = append(groupOrder, key)
@@ -276,49 +310,6 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			hasArg := ac.aggArg != "" || ac.aggExpr != nil
-			if ac.aggDistinct && hasArg {
-				if colVal != nil {
-					// Type-tagged key so int 5 and string "5" don't collide
-					// (matches the mixed-type-equality fix in valuesEqual).
-					dk := fmt.Sprintf("%T\x00%v", colVal, colVal)
-					if _, seen := gs.distinctSets[i][dk]; !seen {
-						gs.distinctSets[i][dk] = struct{}{}
-						gs.counts[i]++
-						// Accumulate into the per-function slot so
-						// SUM(DISTINCT)/AVG(DISTINCT)/MIN(DISTINCT)/MAX(DISTINCT)
-						// produce the correct value. COUNT(DISTINCT) already
-						// matches via counts[i] — no extra work.
-						switch ac.aggFunc {
-						case "SUM", "AVG":
-							fv, ok := functions.ToFloat64(colVal)
-							if !ok {
-								return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-									"%s(DISTINCT) requires numeric input, got %T", ac.aggFunc, colVal)
-							}
-							if ac.aggFunc == "SUM" {
-								gs.sums[i] += fv
-								if iv, isInt := colVal.(int64); isInt && !gs.sumNonInt[i] {
-									gs.sumsI[i] += iv
-								} else {
-									gs.sumNonInt[i] = true
-								}
-							} else {
-								gs.avgs[i] += fv
-								gs.avgsN[i]++
-							}
-						case "MIN":
-							if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
-								gs.mins[i] = colVal
-							}
-						case "MAX":
-							if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
-								gs.maxes[i] = colVal
-							}
-						}
-					}
-				}
-				continue
-			}
 			// COUNT(*) (no arg) counts every row, including all-NULL.
 			// COUNT(<col|expr>)/SUM/MIN/MAX/AVG skip NULLs per SQL standard.
 			if ac.aggFunc == "COUNT" && !hasArg {
@@ -348,10 +339,16 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					gs.avgsN[i]++
 				}
 			case "MIN":
+				if err := requireMinMaxNumeric(colVal); err != nil {
+					return nil, nil, err
+				}
 				if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 					gs.mins[i] = colVal
 				}
 			case "MAX":
+				if err := requireMinMaxNumeric(colVal); err != nil {
+					return nil, nil, err
+				}
 				if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
 					gs.maxes[i] = colVal
 				}
@@ -361,24 +358,31 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	// SQL spec: ungrouped aggregate over an empty input still emits one row
 	// (COUNT=0, SUM/MIN/MAX/AVG=NULL). Materialise a synthetic empty group so
 	// the emit loop produces that row.
-	if !hasGroups && len(groupOrder) == 0 {
-		dsets := make([]map[string]struct{}, len(sq.aggCols))
-		for di, ac := range sq.aggCols {
-			if ac.aggDistinct {
-				dsets[di] = make(map[string]struct{})
-			}
-		}
+	//
+	// Java alignment (nightshift-61): when HAVING is present, fdb-relational
+	// 4.11.1.0 treats the empty input as "no grouping at all" — HAVING never
+	// fires and the query returns 0 rows. CLAUDE.md gotcha:
+	// "`SELECT <agg> FROM t WHERE <none-match> HAVING <agg-pred>` diverges:
+	// Go follows SQL spec (single grouping), Java treats empty as no
+	// grouping at all". Aligned to Java by skipping the synthetic group
+	// when HAVING is set. Result: `SELECT COUNT(*) FROM t WHERE x = 999
+	// HAVING COUNT(*) >= 0` now returns 0 rows in Go (was 1 row [[0]]),
+	// matching Java. The HAVING-absent path (`SELECT COUNT(*) FROM
+	// empty_t` → 1 row [[0]]) still emits the synthetic group, so SQL-
+	// spec aggregate-over-empty semantics survive when HAVING isn't in
+	// play. Per project conformance principle: doesn't work in Java →
+	// doesn't work in Go.
+	if !hasGroups && len(groupOrder) == 0 && sq.havingExpr == nil {
 		groups[""] = &mapGroupState{
-			groupVals:    nil,
-			counts:       make([]int64, len(sq.aggCols)),
-			sums:         make([]float64, len(sq.aggCols)),
-			sumsI:        make([]int64, len(sq.aggCols)),
-			sumNonInt:    make([]bool, len(sq.aggCols)),
-			mins:         make([]driver.Value, len(sq.aggCols)),
-			maxes:        make([]driver.Value, len(sq.aggCols)),
-			avgs:         make([]float64, len(sq.aggCols)),
-			avgsN:        make([]int64, len(sq.aggCols)),
-			distinctSets: dsets,
+			groupVals: nil,
+			counts:    make([]int64, len(sq.aggCols)),
+			sums:      make([]float64, len(sq.aggCols)),
+			sumsI:     make([]int64, len(sq.aggCols)),
+			sumNonInt: make([]bool, len(sq.aggCols)),
+			mins:      make([]driver.Value, len(sq.aggCols)),
+			maxes:     make([]driver.Value, len(sq.aggCols)),
+			avgs:      make([]float64, len(sq.aggCols)),
+			avgsN:     make([]int64, len(sq.aggCols)),
 		}
 		groupOrder = append(groupOrder, "")
 	}

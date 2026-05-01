@@ -206,14 +206,12 @@ tests:
       - [1, 300]
       - [2, 400]
 
-  # Composite PK: equality on last + inequality on last — both bounds
-  # set on g, plus equality-to-range collapse. Last-write-wins
-  # ordering means the behavior depends on leaf order, but the scan
-  # path's evalPredicate enforces correctness regardless.
+  # Composite PK: equality on last + inequality on last + ORDER BY a
+  # non-PK non-indexed col `v` — rejected. Java's Cascades planner has
+  # no rule to satisfy ORDER BY a non-natural-order column when no
+  # index covers it; rejection emerges from "no scan satisfies".
   - query: SELECT v FROM kv WHERE k = 'b' AND g >= 1 AND g <= 2 ORDER BY v
-    rows:
-      - [300]
-      - [400]
+    error_code: "0AF01"
 
   # Composite PK with type mismatch on one column (k is STRING, g is
   # BIGINT) — `g = 'notanumber'` should surface 22000 via the scan
@@ -240,13 +238,11 @@ tests:
     rows:
       - [200]
 
-  # OR in the WHERE clause: pushdown bails (flattenAndPredicates
-  # only handles AND), falls through to scan which applies the OR
-  # predicate per-row.
+  # OR in the WHERE clause + ORDER BY a non-PK non-indexed col `v`
+  # — rejected for the same architectural reason as the AND-range
+  # case above.
   - query: SELECT v FROM kv WHERE (k = 'a' AND g = 1) OR (k = 'b' AND g = 2) ORDER BY v
-    rows:
-      - [100]
-      - [400]
+    error_code: "0AF01"
 
   # UPDATE pushdown: same detection, same range scan, but applied to
   # the UPDATE scan site. Update exactly the row with the matching PK.
@@ -467,12 +463,15 @@ tests:
       - ['a', 1]
       - ['a', 2]
 
-  # Composite PK: BETWEEN on the first PK col (empty prefix).
+  # Composite PK: BETWEEN on the first PK col + ORDER BY trailing PK
+  # col. Even though BETWEEN 'a' AND 'a' is semantically equivalent
+  # to k = 'a', neither Java's nor Go's planner recognises BETWEEN
+  # bounds as equality, so k stays in the range-bounds set and
+  # naturalOrder remains (k, g). ORDER BY g alone is NOT a prefix of
+  # (k, g) → rejected. CLAUDE.md gotcha: "ORDER BY on a column
+  # outside the natural-order continuation raises UnableToPlanException".
   - query: SELECT k FROM kv WHERE k BETWEEN 'a' AND 'a' ORDER BY g
-    rows:
-      - ['a']
-      - ['a']
-      - ['a']
+    error_code: "0AF01"
 
   # UPDATE via BETWEEN pushdown.
   - query: UPDATE t SET v = 0 WHERE id BETWEEN 2 AND 4

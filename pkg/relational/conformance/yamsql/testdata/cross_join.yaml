@@ -11,13 +11,14 @@ setup:
   - INSERT INTO a VALUES (1, 10), (2, 20)
   - INSERT INTO b VALUES (1, 100), (2, 200)
 tests:
-  # Explicit CROSS JOIN syntax — cartesian 2x2 = 4 rows.
+  # Explicit CROSS JOIN syntax — rejected. fdb-relational 4.11.1.0
+  # NPEs on `a CROSS JOIN b` because the visitor unconditionally
+  # accepts the ON-clause expression which is null for CROSS JOIN
+  # (CLAUDE.md gotcha "Explicit `CROSS JOIN` syntax NPEs in
+  # fdb-relational"). Go's embedded engine matches by rejecting at
+  # parse time. Workaround: comma-join `FROM a, b`.
   - query: SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
-    rows:
-      - [1, 1]
-      - [1, 2]
-      - [2, 1]
-      - [2, 2]
+    error_code: "0A000"
   # Comma-join — same result.
   - query: SELECT a.id, b.id FROM a, b ORDER BY a.id, b.id
     rows:

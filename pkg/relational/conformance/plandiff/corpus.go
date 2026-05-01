@@ -20,6 +20,17 @@ package plandiff
 // where one engine accidentally accepts a query the other rejects
 // (or vice versa) — the kind of silent divergence that's invisible
 // to a success-path-only harness.
+//
+// ExpectErrorMessage is the STRICTER alternative — when set, both
+// engines must fail AND each engine's core error message must
+// literally EQUAL this string (Go's `api.Error.Message`, Java's
+// `JavaError.Message` — i.e. the unwrapped server-side root-cause
+// text). Use when the message is intentionally aligned verbatim
+// between engines (e.g. shift / NULLIF / aggregate-type-mismatch
+// rejections, where Go was changed to emit the exact phrasing Java
+// emits). Stronger than ExpectErrorContains because no slack —
+// catches drift the moment either engine reorders / rephrases its
+// message. Mutually exclusive with ExpectErrorContains.
 type RunQuery struct {
 	Name           string
 	SetupSqls      []string
@@ -27,8 +38,12 @@ type RunQuery struct {
 	SchemaTemplate string
 	// ExpectErrorContains: when set, both Java and Go must fail with
 	// an error message containing this substring. Empty = expect
-	// success.
+	// success (unless ExpectErrorMessage is set).
 	ExpectErrorContains string
+	// ExpectErrorMessage: when set, both engines must fail AND each
+	// engine's core error message string equals this value verbatim.
+	// Stronger than ExpectErrorContains.
+	ExpectErrorMessage string
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
@@ -758,6 +773,181 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:           nil,
 			Query:               "SELECT id FROM no_such_table",
 			ExpectErrorContains: "no_such_table",
+		},
+		{
+			// Bit-shift `<<` — fdb-relational 4.11.1.0 tokenizes the
+			// operator but has no entry in the function registry, so
+			// its planner returns the verbatim string
+			// "Unsupported operator <<" (CLAUDE.md gotcha). Go's
+			// embedded engine matches by NOT having `<<` / `>>` cases
+			// in `ApplyBitOp`, AND by emitting the SAME exact message
+			// "Unsupported operator <<" from the default arm. Same
+			// architectural reason in both engines: function
+			// registry has no evaluator for shift operators.
+			//
+			// `ExpectErrorMessage` requires the core error string to
+			// match VERBATIM on both sides — Java's
+			// `JavaError.Message` and Go's `api.Error.Message` —
+			// proving alignment at the message level. Per-entry
+			// isolation (fresh Java server spawned just for this
+			// entry) prevents pollution from prior negative entries.
+			Name:               "bitshift_left_rejected",
+			SchemaTemplate:     "CREATE TABLE T_BSL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_BSL VALUES (1, 7)"},
+			Query:              "SELECT v << 2 FROM T_BSL WHERE id = 1",
+			ExpectErrorMessage: "Unsupported operator <<",
+		},
+		{
+			// Bit-shift `>>` — symmetric to `<<` above. Both engines
+			// emit the verbatim string "Unsupported operator >>".
+			Name:               "bitshift_right_rejected",
+			SchemaTemplate:     "CREATE TABLE T_BSR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_BSR VALUES (1, 8)"},
+			Query:              "SELECT v >> 1 FROM T_BSR WHERE id = 1",
+			ExpectErrorMessage: "Unsupported operator >>",
+		},
+		{
+			// NULLIF — fdb-relational 4.11.1.0's function registry
+			// has no entry, so its planner returns the verbatim
+			// string "Unsupported operator NULLIF" (CLAUDE.md
+			// gotcha). Go's embedded engine matches by NOT having a
+			// NULLIF arm in the scalar-function evaluator switch
+			// AND emitting the SAME exact message
+			// "Unsupported operator NULLIF" from the default arm.
+			// Same architectural reason in both engines: function
+			// registry has no NULLIF evaluator. Workaround:
+			// `CASE WHEN a = b THEN NULL ELSE a END`.
+			Name:               "nullif_rejected",
+			SchemaTemplate:     "CREATE TABLE T_NIF (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_NIF VALUES (1, 5)"},
+			Query:              "SELECT NULLIF(v, 5) FROM T_NIF WHERE id = 1",
+			ExpectErrorMessage: "Unsupported operator NULLIF",
+		},
+		// NOTE: ORDER BY <alias> on a non-natural-order column is
+		// rejected by BOTH engines — Java with UnableToPlanException
+		// (Cascades has no rule to satisfy the ordering); Go with
+		// `ErrCodeUnsupportedSort` (the structural mirror landed
+		// nightshift-60 — "no scan satisfies"). Same architectural
+		// reason in both engines: no rule generates a satisfying
+		// physical sort. Java's error message references its
+		// exception class ("UnableToPlanException"); Go's references
+		// the column ("ORDER BY amount cannot be satisfied"). The
+		// rejection alignment is real (Go nightshift-60 work) but
+		// the surface messages differ enough that
+		// `ExpectErrorContains` needs a column-name substring rather
+		// than a Java-internal class name. Pinned cross-engine via
+		// the existing yamsql ORDER BY rejection scenarios
+		// (`order_by_expression`, `order_by_dupe_col`,
+		// `order_by_limit`, etc.); not a separate corpus entry.
+		// NOTE: `WHERE (boolean_expr)` with bare parens is a known
+		// one-sided divergence: Java rejects with "expected
+		// BooleanValue but got RecordConstructorValue" because its
+		// parser treats `(...)` as a record/tuple constructor unless
+		// it's in a context that forces predicate parsing
+		// (CLAUDE.md gotcha "WHERE (boolean_expr) with bare
+		// parentheses is rejected"). Go's embedded engine accepts
+		// the form. Probed nightshift-61 — Java rejection confirmed.
+		// Aligning Go to also reject would invalidate Go-only tests
+		// using parenthesised boolean WHERE shapes; defer to a
+		// dedicated cleanup shift. Until then, redundant parens
+		// around a boolean predicate is a Go-only feature.
+		// NOTE: `WITH RECURSIVE name AS (non-self-referencing-body)` is
+		// a known one-sided divergence: Java rejects with
+		// "condition is not met!" because it requires an actual
+		// UNION ALL self-reference for RECURSIVE (CLAUDE.md gotcha).
+		// SQL spec + Postgres permit the non-self-referencing body
+		// (RECURSIVE is a scope enabler, not a requirement). Go's
+		// embedded engine matches SQL spec / Postgres, so it accepts.
+		// Probed nightshift-61 — Java rejection confirmed. Aligning
+		// Go to also reject would invalidate yamsql `recursive_cte`
+		// scenarios that use the non-self-referencing form. Defer
+		// to a dedicated cleanup shift.
+		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
+		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
+		// `Statement.setMaxRows`, per CLAUDE.md gotcha "LIMIT clause
+		// is not supported in SQL"). Go's embedded engine implements
+		// LIMIT directly. Aligning Go would invalidate dozens of
+		// LIMIT-using yamsql + sqldriver tests; defer to a dedicated
+		// cleanup shift. Probed nightshift-61 — Java's rejection
+		// confirmed.
+		// NOTE: `SELECT 1+1` (FROM-less SELECT for constant projection)
+		// is a known one-sided divergence: Java rejects standalone
+		// FROM-less SELECT with UnableToPlan (CLAUDE.md gotcha
+		// "SELECT <expr> without FROM is unsupported by the planner")
+		// but ACCEPTS the same form inside CTE base cases like
+		// `WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL ...)`.
+		// Go's embedded engine accepts both contexts uniformly.
+		// Aligning Go to reject standalone FROM-less SELECT while
+		// continuing to accept the CTE base case requires context-
+		// aware parsing (separate parseSelectQuery entry points or a
+		// flag) — deferred as a separate large-scope conformance
+		// task. Probed nightshift-61.
+		// NOTE: `col IN (SELECT ...)` is a known one-sided divergence:
+		// Java NPEs on the form (visitor walks `ExpressionsContext`
+		// which is null when the IN list comes from a subquery, per
+		// CLAUDE.md gotcha "`col IN (SELECT ...)` parser-NPEs in
+		// fdb-relational"); Go's embedded engine implements it
+		// correctly. Aligning Go to reject would invalidate ~14
+		// Go-side test files (yamsql + sqldriver) that exercise the
+		// feature; deferred as a separate large-scope conformance
+		// task. Until then, IN-subquery is a Go-only feature with
+		// no cross-engine corpus entry.
+		// NOTE: COUNT/SUM/AVG/MIN/MAX with DISTINCT are rejected by
+		// BOTH engines — Java NPEs (visitor unconditionally calls
+		// `AggregateWindowedFunctionContext.ALL().getText()` which is
+		// null when DISTINCT is present); Go's embedded engine rejects
+		// at execution time with `ErrCodeUnsupportedOperation`
+		// "DISTINCT aggregate %s is not supported"
+		// (`pkg/relational/core/embedded/aggregate.go` and
+		// `select_query_full.go`). Same architectural reason in both
+		// engines: visitor doesn't handle the DISTINCT case.
+		//
+		// NOT included as a cross-engine corpus entry because Java's
+		// NPE message references the parser-internal class name
+		// (`AggregateWindowedFunctionContext.ALL()`) rather than the
+		// SQL keyword `DISTINCT`, so it can't share a meaningful
+		// substring with Go's clean error message. The rejection
+		// alignment is pinned on the Go side via
+		// `count_distinct.yaml`, `count_distinct_join.yaml`,
+		// `distinct_aggregates.yaml`, `aggregate_expr.yaml`, and
+		// `group_by_validation.yaml`'s `error_code: "0A000"` tests
+		// under the yamsql harness.
+		// NOTE: explicit CROSS JOIN syntax (`a CROSS JOIN b`) is rejected
+		// in BOTH engines — Java NPEs (InnerJoinContext.expression()
+		// null-dereference in the visitor); Go's embedded engine
+		// rejects at parse time with `ErrCodeUnsupportedOperation`
+		// "explicit CROSS JOIN syntax is not supported"
+		// (`select_parser.go#extractJoinClause`). Same architectural
+		// reason in both engines: the visitor's CROSS-JOIN code path
+		// doesn't exist. Workaround: comma-join `FROM a, b`.
+		//
+		// NOT included as a cross-engine corpus entry because Java's
+		// NPE message (`Cannot invoke ... InnerJoinContext.expression()`)
+		// and Go's clean error message can't share a meaningful
+		// substring without aligning Go to mimic Java's panic-style
+		// failure (which would be a regression in Go's UX). The
+		// rejection alignment is pinned on the Go side via
+		// `cross_join.yaml`'s `error_code: "0A000"` test under the
+		// yamsql harness; Java's NPE behaviour is documented in
+		// CLAUDE.md "Java↔Go conformance gotchas" §Parser bugs.
+		{
+			// MIN over a non-numeric (STRING) column — fdb-relational
+			// 4.11.1.0's function registry only installs numeric
+			// MIN / MAX overloads; non-numeric input raises
+			// VerifyException with the verbatim message
+			// "unable to encapsulate aggregate operation due to type
+			// mismatch(es)" (CLAUDE.md gotcha). Go's embedded engine
+			// matches at runtime via the `requireMinMaxNumeric` gate
+			// (`pkg/relational/core/embedded/aggregate.go`) which
+			// returns `ErrCodeUnsupportedOperation` with the SAME
+			// verbatim message. Per-entry isolation prevents
+			// fdb-relational's type-mismatch error-path state-leak
+			// from stalling this spec under load.
+			Name:               "min_over_string_rejected",
+			SchemaTemplate:     "CREATE TABLE T_MOS (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_MOS VALUES (1, 'alice')"},
+			Query:              "SELECT MIN(name) FROM T_MOS",
+			ExpectErrorMessage: "unable to encapsulate aggregate operation due to type mismatch(es)",
 		},
 		{
 			// COUNT(*) with predicate over JOIN — exercises the

@@ -23,11 +23,6 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":yamsql"],
-    # Opt-in: this starts its own FDB container; without the manual tag
-    # `bazelisk test //...` would run it alongside the other FDB-based
-    # test targets, compounding the container-parallelism risk flagged
-    # in CLAUDE.md. Use `just conformance-sql` to run it explicitly.
-    tags = ["manual"],
     deps = [
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",

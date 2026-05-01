@@ -26,10 +26,12 @@ package conformance_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -225,15 +227,22 @@ var _ = Describe("RunSql Harness", func() {
 		// Setup, Query[, ExpectErrorContains]} to SeedRunCorpus().
 		// No baseline RowSet to capture, no conformance-test wiring.
 		//
-		// ISOLATION: this corpus runs ~170 queries through fdb-relational
-		// in a single It block. The shared Java server is polluted by
-		// prior conformance specs (existence_check_*, error_*, etc.)
-		// which have already exercised fdb-relational's error-path
-		// teardown. Cumulative state-leak from those plus our own
-		// corpus's negative entries pushes per-request Java latency past
-		// the 30s HTTP timeout — making innocuous specs like
-		// bare_bool_where_rejected appear to "hang" in //... mode but
-		// pass under focused execution. Use a fresh Java server here.
+		// ISOLATION (nightshift-61): negative entries (those with
+		// `ExpectErrorContains` set) get their own freshly-spawned
+		// Java conformance server, torn down immediately after. This
+		// matches the user's explicit "each test case should be
+		// isolated" requirement: fdb-relational 4.11.1.0's error-path
+		// state cumulates within a single Java JVM (parser caches,
+		// semantic analyser intermediate state, type-resolver
+		// negative-result cache), and the same query that returns a
+		// clean error in <120ms on a fresh server can hit the 30s
+		// HTTP timeout after a handful of prior errors. Per-entry
+		// isolation eliminates cross-entry pollution at the cost of
+		// ~5s extra Java startup per negative entry. Positive entries
+		// share the outer-It isolated server because they exercise the
+		// success path which doesn't accumulate state. The shared
+		// server itself is freshly spawned (not the suite-shared one)
+		// to avoid pollution from prior conformance specs.
 		isoJava, err := NewIsolatedJavaInvoker()
 		Expect(err).NotTo(HaveOccurred(), "failed to spawn isolated Java conformance server")
 		defer func() { _ = isoJava.Close() }()
@@ -246,9 +255,49 @@ var _ = Describe("RunSql Harness", func() {
 		for _, rq := range corpus {
 			rq := rq
 			By(rq.Name, func() {
-				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
+				// Negative entries get their own per-entry Java server
+				// — eliminates cross-entry pollution that otherwise
+				// pushes innocuous specs past the HTTP timeout.
+				perEntryJavaR := javaR
+				if rq.ExpectErrorContains != "" {
+					perJava, err := NewIsolatedJavaInvoker()
+					Expect(err).NotTo(HaveOccurred(),
+						"corpus entry %q: failed to spawn per-entry Java server",
+						rq.Name)
+					defer func() { _ = perJava.Close() }()
+					perEntryJavaR = plandiff.NewJavaRunnerHTTP(javaBaseURL(perJava), env.ClusterFile).(plandiff.SetupRunner)
+				}
+
+				javaResult := perEntryJavaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 
+				if rq.ExpectErrorMessage != "" {
+					// Strictest negative test: both engines must fail AND
+					// each engine's CORE error message string equals
+					// rq.ExpectErrorMessage verbatim (Go's
+					// `api.Error.Message`, Java's
+					// `JavaError.Message` — the unwrapped server-side
+					// root-cause text, not the wrapper-prefixed
+					// `err.Error()`). Use when Go has been deliberately
+					// aligned to emit the exact phrasing Java emits.
+					Expect(javaResult.Err).To(HaveOccurred(),
+						"corpus entry %q: Java accepted a query expected to fail with message %q",
+						rq.Name, rq.ExpectErrorMessage)
+					Expect(goResult.Err).To(HaveOccurred(),
+						"corpus entry %q: Go accepted a query expected to fail with message %q",
+						rq.Name, rq.ExpectErrorMessage)
+					var je *plandiff.JavaError
+					Expect(errors.As(javaResult.Err, &je)).To(BeTrue(),
+						"corpus entry %q: Java error is not *plandiff.JavaError: %T", rq.Name, javaResult.Err)
+					var ge *api.Error
+					Expect(errors.As(goResult.Err, &ge)).To(BeTrue(),
+						"corpus entry %q: Go error is not *api.Error: %T", rq.Name, goResult.Err)
+					Expect(je.Message).To(Equal(rq.ExpectErrorMessage),
+						"corpus entry %q: Java error message verbatim mismatch", rq.Name)
+					Expect(ge.Message).To(Equal(rq.ExpectErrorMessage),
+						"corpus entry %q: Go error message verbatim mismatch", rq.Name)
+					return
+				}
 				if rq.ExpectErrorContains != "" {
 					// Negative test: both engines must fail AND each
 					// error message must contain the substring (matched

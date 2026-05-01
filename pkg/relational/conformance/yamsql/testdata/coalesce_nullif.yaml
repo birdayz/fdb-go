@@ -16,16 +16,16 @@ tests:
       - [2, 'y']
       - [3, 'x']
       - [4, 'default']
-  # NULLIF(a, 'x') — returns NULL when a='x', else a.
+  # NULLIF is rejected — fdb-relational 4.11.1.0's function registry
+  # has no entry, so its planner returns "Unsupported operator NULLIF"
+  # (CLAUDE.md gotcha). Go's embedded engine matches by NOT having a
+  # NULLIF arm in the scalar-function evaluator switch. Same
+  # architectural reason in both engines: the function registry has no
+  # NULLIF evaluator. Workaround: `CASE WHEN a = b THEN NULL ELSE a END`.
   - query: SELECT id, NULLIF(a, 'x') FROM t ORDER BY id
-    rows:
-      - [1, ~]
-      - [2, ~]
-      - [3, ~]
-      - [4, ~]
-  # NULLIF(a, 'y') — rows 2 and 4 have a=NULL (NULLIF of NULL is NULL),
-  # rows 1 and 3 have a='x' ≠ 'y' → a.
-  - query: SELECT id, NULLIF(a, 'y') FROM t ORDER BY id
+    error_code: "0A000"
+  # NULLIF rejected via the searched-CASE workaround.
+  - query: SELECT id, CASE WHEN a = 'y' THEN NULL ELSE a END FROM t ORDER BY id
     rows:
       - [1, 'x']
       - [2, ~]

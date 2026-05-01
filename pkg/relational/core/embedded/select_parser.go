@@ -282,6 +282,18 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 // lookup name. Shared by extractAggFunc (SELECT-list aggregates) and
 // aggColFromAwf (HAVING-harvested aggregates). Returns false when the
 // AWF doesn't match any of the five supported aggregates.
+//
+// DISTINCT aggregates (`COUNT(DISTINCT col)`, `SUM(DISTINCT col)`,
+// `MIN(DISTINCT col)`, `MAX(DISTINCT col)`, `AVG(DISTINCT col)`) are
+// intentionally rejected via the parser path's distinct flag (caller
+// raises ErrCodeUnsupportedOperation before any execution). fdb-
+// relational 4.11.1.0's parser visitor NPEs on every aggregate with
+// DISTINCT (`AggregateWindowedFunctionContext.ALL().getText()` is
+// called unconditionally; ALL is null when DISTINCT is present, per
+// CLAUDE.md gotcha "COUNT(DISTINCT col) NPEs in fdb-relational"). Go
+// matches by surfacing distinct=true to callers, which then reject.
+// Same architectural reason in both engines: visitor doesn't handle
+// the DISTINCT case.
 func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, ok bool) {
 	distinct = awf.DISTINCT() != nil
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {
@@ -1631,6 +1643,19 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 	switch j := jp.(type) {
 	case *antlrgen.InnerJoinContext:
+		// Explicit `CROSS JOIN` syntax — reject. fdb-relational
+		// 4.11.1.0 NPEs on `a CROSS JOIN b` because its visitor
+		// unconditionally calls `accept(...)` on the ON-clause
+		// expression which is null for CROSS JOIN (CLAUDE.md gotcha).
+		// Go's embedded engine matches by rejecting at parse time —
+		// same architectural reason: the visitor's CROSS-JOIN code
+		// path doesn't exist. Workaround: comma-join `FROM a, b`.
+		// Per project conformance principle: doesn't work in Java →
+		// doesn't work in Go.
+		if j.CROSS() != nil {
+			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products")
+		}
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
 		if !ok {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,

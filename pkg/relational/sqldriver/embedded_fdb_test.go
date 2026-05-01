@@ -2914,11 +2914,15 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (2, 'Bob', 'Jones', 0)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	rows, err := db.QueryContext(ctx, `SELECT CONCAT(first, ' ', last), NULLIF(score, 0) FROM Person ORDER BY id ASC`)
+	// NULLIF is rejected (Java parity — function registry has no
+	// entry; CLAUDE.md gotcha). Use searched-CASE as the workaround:
+	// `CASE WHEN score = 0 THEN NULL ELSE score END`.
+	rows, err := db.QueryContext(ctx,
+		`SELECT CONCAT(first, ' ', last), CASE WHEN score = 0 THEN NULL ELSE score END FROM Person ORDER BY id ASC`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
-	// Row 1: CONCAT = "Alice Smith", NULLIF(100, 0) = 100
+	// Row 1: CONCAT = "Alice Smith", CASE WHEN 100 = 0 THEN NULL ELSE 100 END = 100
 	g.Expect(rows.Next()).To(gomega.BeTrue())
 	var fullName string
 	var score any
@@ -2926,7 +2930,7 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	g.Expect(fullName).To(gomega.Equal("Alice Smith"))
 	g.Expect(score).To(gomega.Equal(int64(100)))
 
-	// Row 2: CONCAT = "Bob Jones", NULLIF(0, 0) = NULL
+	// Row 2: CONCAT = "Bob Jones", CASE WHEN 0 = 0 THEN NULL ELSE 0 END = NULL
 	g.Expect(rows.Next()).To(gomega.BeTrue())
 	var fullName2 string
 	var score2 any
@@ -2935,6 +2939,14 @@ func TestFDB_ConcatNullIf(t *testing.T) {
 	g.Expect(score2).To(gomega.BeNil())
 
 	g.Expect(rows.Next()).To(gomega.BeFalse())
+
+	// Pin that NULLIF itself is rejected with ErrCodeUnsupportedOperation.
+	var dummy any
+	nullifErr := db.QueryRowContext(ctx, `SELECT NULLIF(score, 0) FROM Person WHERE id = 1`).Scan(&dummy)
+	g.Expect(nullifErr).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(nullifErr, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", nullifErr)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 func TestFDB_UnionAll(t *testing.T) {
@@ -3288,10 +3300,23 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(bitOr).To(gomega.Equal(int64(15)), "7 | 8 = 15")
 	g.Expect(db.QueryRowContext(ctx, `SELECT val ^ 5 FROM Num WHERE id = 1`).Scan(&bitXor)).To(gomega.Succeed())
 	g.Expect(bitXor).To(gomega.Equal(int64(2)), "7 ^ 5 = 2")
-	g.Expect(db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)).To(gomega.Succeed())
-	g.Expect(shl).To(gomega.Equal(int64(28)), "7 << 2 = 28")
-	g.Expect(db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)).To(gomega.Succeed())
-	g.Expect(shr).To(gomega.Equal(int64(3)), "7 >> 1 = 3")
+	// Bit-shift operators `<<` / `>>` are intentionally rejected to
+	// match fdb-relational 4.11.1.0's effective non-support: Java
+	// tokenizes them but has no entry in the function registry, so the
+	// planner returns "Unsupported operator <<". Same architectural
+	// reason in both engines: no evaluator for shift operators.
+	_ = shl
+	_ = shr
+	shlErr := db.QueryRowContext(ctx, `SELECT val << 2 FROM Num WHERE id = 1`).Scan(&shl)
+	g.Expect(shlErr).To(gomega.HaveOccurred())
+	var apiErrShl *api.Error
+	g.Expect(errors.As(shlErr, &apiErrShl)).To(gomega.BeTrue(), "want *api.Error, got %T", shlErr)
+	g.Expect(apiErrShl.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	shrErr := db.QueryRowContext(ctx, `SELECT val >> 1 FROM Num WHERE id = 1`).Scan(&shr)
+	g.Expect(shrErr).To(gomega.HaveOccurred())
+	var apiErrShr *api.Error
+	g.Expect(errors.As(shrErr, &apiErrShr)).To(gomega.BeTrue(), "want *api.Error, got %T", shrErr)
+	g.Expect(apiErrShr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 // TestFDB_IsDistinctFrom pins SQL's null-safe equality operator. Grammar
@@ -3676,36 +3701,22 @@ func TestFDB_CountDistinct(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (4, 3, 'US')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// COUNT(DISTINCT customer_id): 3 distinct customers (1, 2, 3).
-	rows, err := db.QueryContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-
-	g.Expect(rows.Next()).To(gomega.BeTrue())
+	// COUNT(DISTINCT) is rejected by both engines (Java NPE on
+	// AggregateWindowedFunctionContext.ALL().getText() with DISTINCT;
+	// Go ErrCodeUnsupportedOperation). Per project conformance
+	// principle: doesn't work in Java → doesn't work in Go.
 	var n int64
-	g.Expect(rows.Scan(&n)).To(gomega.Succeed())
-	g.Expect(n).To(gomega.Equal(int64(3)))
+	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`).Scan(&n)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 
-	// COUNT(DISTINCT region) GROUP BY: grouped by region, count distinct customers per region.
-	rows2, err := db.QueryContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows2.Close()
-
-	type regionCount struct {
-		region string
-		count  int64
-	}
-	var rc []regionCount
-	for rows2.Next() {
-		var r regionCount
-		g.Expect(rows2.Scan(&r.region, &r.count)).To(gomega.Succeed())
-		rc = append(rc, r)
-	}
-	g.Expect(rows2.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(rc).To(gomega.Equal([]regionCount{
-		{"EU", 1},
-		{"US", 2}, // customers 1 and 3 in US
-	}))
+	// COUNT(DISTINCT) inside GROUP BY is also rejected.
+	err = db.QueryRowContext(ctx, `SELECT region, COUNT(DISTINCT customer_id) FROM Sale GROUP BY region ORDER BY region ASC`).Scan(new(string), &n)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 func TestFDB_GreatestLeast(t *testing.T) {
@@ -5836,52 +5847,62 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	g.Expect(cnt).To(gomega.Equal(int64(0)))
 }
 
-func TestFDB_SimpleCaseWithNull(t *testing.T) {
+// TestFDB_SimpleCaseRejected pins that simple-CASE syntax
+// (`CASE expr WHEN val THEN ...`) is rejected by the Go embedded
+// engine, matching fdb-relational 4.11.1.0's effective non-support.
+//
+// Java's `BaseVisitor.visitCaseExpressionFunctionCall = visitChildren(ctx)`
+// is a structural no-op — the simple-CASE evaluator is not implemented,
+// so Java silently returns the wrong value (typically the ELSE branch).
+// The Go embedded engine mirrors this by NOT having a `case
+// *antlrgen.CaseExpressionFunctionCallContext` arm in the scalar-
+// function evaluator switch, so the form falls through to the default
+// arm with ErrCodeUnsupportedOperation.
+//
+// Same architectural reason in both engines: the simple-CASE evaluator
+// is not implemented. Workaround: use searched-CASE
+// (`CASE WHEN cond THEN ...`), which both engines implement correctly.
+//
+// Pinned nightshift-61 after the cross-engine harness surfaced Java's
+// silent-misexecution bug.
+func TestFDB_SimpleCaseRejected(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_simple_case_null")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_null")
+	setup := openTestDB(t, "/testdb_simple_case_rejected")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_rejected")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_null_tmpl
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_rej_tmpl
 		CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_null/main WITH TEMPLATE sc_null_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_rejected/main WITH TEMPLATE sc_rej_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_simple_case_null?cluster_file=%s&schema=main", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///testdb_simple_case_rejected?cluster_file=%s&schema=main", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`) // val = NULL
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (2, 5)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (1, 5)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Simple CASE subject=NULL must NEVER match a WHEN branch (x = NULL is UNKNOWN
-	// per SQL standard) — must fall to ELSE.
-	var got1 string
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT CASE val WHEN 5 THEN 'five' WHEN 10 THEN 'ten' ELSE 'unknown' END FROM T WHERE id = 1`).
-		Scan(&got1)).To(gomega.Succeed())
-	g.Expect(got1).To(gomega.Equal("unknown"))
+	// Simple-CASE: must be rejected with ErrCodeUnsupportedOperation.
+	var got string
+	err = db.QueryRowContext(ctx,
+		`SELECT CASE val WHEN 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 1`).
+		Scan(&got)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T (%v)", err, err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 
-	// WHEN NULL must also never match (compareValues(nil, nil) == 0 would incorrectly
-	// match without the guard).
-	var got2 string
+	// Searched-CASE (the workaround) still works.
+	var search string
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT CASE val WHEN NULL THEN 'nope' ELSE 'fallthrough' END FROM T WHERE id = 1`).
-		Scan(&got2)).To(gomega.Succeed())
-	g.Expect(got2).To(gomega.Equal("fallthrough"))
-
-	// Non-NULL subject still matches correctly (sanity check no regression).
-	var got3 string
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT CASE val WHEN 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 2`).
-		Scan(&got3)).To(gomega.Succeed())
-	g.Expect(got3).To(gomega.Equal("five"))
+		`SELECT CASE WHEN val = 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 1`).
+		Scan(&search)).To(gomega.Succeed())
+	g.Expect(search).To(gomega.Equal("five"))
 }
 
 // TestFDB_ErrorPathSQLSTATE covers the error paths that the audit
@@ -6262,27 +6283,26 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (5)`) // n NULL
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	var sum, mn, mx, cnt int64
-	var avg float64
-	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T`).Scan(&sum)).To(gomega.Succeed())
-	g.Expect(sum).To(gomega.Equal(int64(60)), "SUM(DISTINCT {10,20,30}) = 60")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT AVG(DISTINCT n) FROM T`).Scan(&avg)).To(gomega.Succeed())
-	g.Expect(avg).To(gomega.Equal(float64(20)), "AVG(DISTINCT {10,20,30}) = 20")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT MIN(DISTINCT n) FROM T`).Scan(&mn)).To(gomega.Succeed())
-	g.Expect(mn).To(gomega.Equal(int64(10)))
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT MAX(DISTINCT n) FROM T`).Scan(&mx)).To(gomega.Succeed())
-	g.Expect(mx).To(gomega.Equal(int64(30)))
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&cnt)).To(gomega.Succeed())
-	g.Expect(cnt).To(gomega.Equal(int64(3)))
-
-	// All-NULL group: every aggregate returns NULL (SQL standard).
-	var s sql.NullInt64
-	g.Expect(db.QueryRowContext(ctx, `SELECT SUM(DISTINCT n) FROM T WHERE id = 5`).Scan(&s)).To(gomega.Succeed())
-	g.Expect(s.Valid).To(gomega.BeFalse(), "SUM(DISTINCT) over all-NULL must be NULL")
+	// All DISTINCT-aggregate forms (SUM/AVG/MIN/MAX/COUNT) are
+	// rejected by both engines (Java NPEs on every aggregate with
+	// DISTINCT; Go ErrCodeUnsupportedOperation). Per project
+	// conformance principle: doesn't work in Java → doesn't work in Go.
+	for _, q := range []string{
+		`SELECT SUM(DISTINCT n) FROM T`,
+		`SELECT AVG(DISTINCT n) FROM T`,
+		`SELECT MIN(DISTINCT n) FROM T`,
+		`SELECT MAX(DISTINCT n) FROM T`,
+		`SELECT COUNT(DISTINCT n) FROM T`,
+	} {
+		var dummy any
+		err := db.QueryRowContext(ctx, q).Scan(&dummy)
+		g.Expect(err).To(gomega.HaveOccurred(), "query %q: expected rejection", q)
+		var apiErr *api.Error
+		g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(),
+			"query %q: want *api.Error, got %T", q, err)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation),
+			"query %q: want ErrCodeUnsupportedOperation", q)
+	}
 }
 
 // TestFDB_SubqueryInNullRow pins SQL §8.4 semantics for `x [NOT] IN (subquery)`:
@@ -6362,18 +6382,21 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Four rows, two distinct numeric values — also sanity: duplicates
-	// collapse, same-type equals share a bucket.
+	// COUNT(DISTINCT) is rejected by both engines (Java NPE; Go
+	// ErrCodeUnsupportedOperation). The type-tagged-key invariant
+	// this test originally exercised is still pinned indirectly via
+	// the GROUP BY paths' rowKey encoding (TestFDB_GroupByNullVsNilString
+	// below).
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO T (id, n, s) VALUES (1, 5, 'x'), (2, 5, 'y'), (3, 7, 'x'), (4, 7, 'y')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	var c int64
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT n) over {5,5,7,7} must be 2")
-
-	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT s) FROM T`).Scan(&c)).To(gomega.Succeed())
-	g.Expect(c).To(gomega.Equal(int64(2)), "COUNT(DISTINCT s) over {'x','y','x','y'} must be 2")
+	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT n) FROM T`).Scan(&c)
+	g.Expect(err).To(gomega.HaveOccurred())
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", err)
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
 }
 
 // TestFDB_GroupByNullVsNilString pins that GROUP BY distinguishes between

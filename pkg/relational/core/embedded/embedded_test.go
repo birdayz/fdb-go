@@ -609,17 +609,18 @@ func FuzzApplyMathOp(f *testing.F) {
 	})
 }
 
-// FuzzApplyBitOp pins the swingshift-35 bitwise-operator implementation.
-// The function must never panic, must reject non-integer operands cleanly,
-// must propagate NULL, and must guard shift counts against out-of-range
-// values (shift count >= 64 or < 0 is undefined behaviour in Go).
+// FuzzApplyBitOp pins the bitwise-operator implementation. The function
+// must never panic, must reject non-integer operands cleanly, must
+// propagate NULL, and must consistently reject the shift operators
+// `<<` / `>>` per the nightshift-61 Java alignment (Java tokenizes
+// the shift operators but its function registry has no evaluator).
 func FuzzApplyBitOp(f *testing.F) {
 	f.Add(int64(7), int64(3), "&")
 	f.Add(int64(7), int64(3), "|")
 	f.Add(int64(7), int64(3), "^")
+	// Shift seeds — these used to evaluate; now always reject (Java parity).
 	f.Add(int64(7), int64(2), "<<")
 	f.Add(int64(7), int64(1), ">>")
-	// Pathological shift counts (should error, not panic via UB).
 	f.Add(int64(1), int64(64), "<<")
 	f.Add(int64(1), int64(-1), "<<")
 	f.Add(int64(-1), int64(63), ">>")
@@ -629,7 +630,8 @@ func FuzzApplyBitOp(f *testing.F) {
 		// Must not panic. Either returns a value+nil, NULL+nil, or value+error.
 		_, err := functions.ApplyBitOp(a, b, op)
 		_ = err // accept any error
-		// Also try with NULL operands; those must always return nil, nil.
+		// Also try with NULL operands; those must always return nil, nil
+		// regardless of the op (NULL propagates first).
 		v, err := functions.ApplyBitOp(nil, b, op)
 		if err != nil || v != nil {
 			t.Fatalf("functions.ApplyBitOp(nil, _) = (%v, %v), want (nil, nil)", v, err)
@@ -641,6 +643,13 @@ func FuzzApplyBitOp(f *testing.F) {
 		// Non-integer operand must error cleanly, not panic.
 		if _, err := functions.ApplyBitOp("string", b, op); err == nil {
 			t.Fatalf("functions.ApplyBitOp(string, _) must error")
+		}
+		// Shift operators are always rejected (Java parity nightshift-61).
+		if op == "<<" || op == ">>" {
+			_, shErr := functions.ApplyBitOp(a, b, op)
+			if shErr == nil {
+				t.Fatalf("functions.ApplyBitOp(%d, %d, %q) must error post-nightshift-61", a, b, op)
+			}
 		}
 	})
 }
