@@ -2547,6 +2547,88 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT MIN(v) FROM T_MD",
 		},
 		{
+			// Secondary-index equality lookup.
+			Name:           "select_with_index_eq",
+			SchemaTemplate: "CREATE TABLE T_SI (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON T_SI (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_SI VALUES (1, 100)",
+				"INSERT INTO T_SI VALUES (2, 200)",
+				"INSERT INTO T_SI VALUES (3, 300)",
+			},
+			Query: "SELECT id FROM T_SI WHERE v = 200",
+		},
+		{
+			// Secondary-index range lookup.
+			Name:           "select_with_index_range",
+			SchemaTemplate: "CREATE TABLE T_SIR (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON T_SIR (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_SIR VALUES (1, 100)",
+				"INSERT INTO T_SIR VALUES (2, 200)",
+				"INSERT INTO T_SIR VALUES (3, 300)",
+			},
+			Query: "SELECT id FROM T_SIR WHERE v > 100 AND v < 300",
+		},
+		{
+			// Composite-PK equality on first column only — emits all
+			// matching rows in (region, id) PK order.
+			Name:           "composite_pk_eq_only_first_col",
+			SchemaTemplate: "CREATE TABLE T_CPF (region STRING, id BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPF VALUES ('us', 1)",
+				"INSERT INTO T_CPF VALUES ('us', 2)",
+				"INSERT INTO T_CPF VALUES ('eu', 3)",
+			},
+			Query: "SELECT region, id FROM T_CPF WHERE region = 'us' ORDER BY region, id",
+		},
+		{
+			// COUNT(*) over a fully-filtered-out scope returns one row
+			// with [0].
+			Name:           "count_star_filtered_to_empty",
+			SchemaTemplate: "CREATE TABLE T_CFE (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CFE VALUES (1), (2)"},
+			Query:          "SELECT count(*) FROM T_CFE WHERE id > 100",
+		},
+		{
+			// COALESCE with multiple arguments — picks the first
+			// non-NULL.
+			Name:           "coalesce_multi_arg",
+			SchemaTemplate: "CREATE TABLE T_CMA (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMA VALUES (1, NULL, NULL, 5)",
+				"INSERT INTO T_CMA VALUES (2, 10, NULL, 0)",
+			},
+			Query: "SELECT id, COALESCE(a, b, c) FROM T_CMA ORDER BY id",
+		},
+		{
+			// UPDATE on a non-PK column with WHERE filter.
+			Name:           "update_non_pk_with_where",
+			SchemaTemplate: "CREATE TABLE T_UNW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UNW VALUES (1, 5)",
+				"INSERT INTO T_UNW VALUES (2, 10)",
+				"UPDATE T_UNW SET v = 100 WHERE id = 1",
+			},
+			Query: "SELECT id, v FROM T_UNW ORDER BY id",
+		},
+		{
+			// Self-Cartesian product — count is N*N.
+			Name:           "self_cartesian_count",
+			SchemaTemplate: "CREATE TABLE T_SCP (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SCP VALUES (1), (2), (3)"},
+			Query:          "SELECT count(*) FROM T_SCP, T_SCP AS u",
+		},
+		{
+			// Multi-alias self-join with WHERE predicate.
+			Name:           "multi_alias_self_join_count",
+			SchemaTemplate: "CREATE TABLE T_MASJ (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MASJ VALUES (1, 0)",
+				"INSERT INTO T_MASJ VALUES (2, 1)",
+				"INSERT INTO T_MASJ VALUES (3, 1)",
+			},
+			Query: "SELECT count(*) FROM T_MASJ AS a, T_MASJ AS b WHERE a.parent = b.id",
+		},
+		{
 			// SELECT bool column with TRUE / FALSE / NULL preservation.
 			Name:           "select_bool_column_trio",
 			SchemaTemplate: "CREATE TABLE T_SBT (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
