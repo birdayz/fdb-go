@@ -2107,6 +2107,210 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_DA",
 		},
+
+		// ===== Composite primary key pushdown shapes (dayshift-62) =====
+		// PK = (region, id). The Cascades planner picks different scan
+		// strategies for partial-PK equality, full-PK equality, and a
+		// range on the leading PK column. We verify both engines emit
+		// identical row sets across the three shapes.
+		{
+			// Equality on leading PK column only — narrows to a region
+			// prefix; emits in (region, id) PK order.
+			Name:           "composite_pk_leading_eq",
+			SchemaTemplate: "CREATE TABLE T_CPK1 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK1 VALUES ('us', 1, 100)",
+				"INSERT INTO T_CPK1 VALUES ('us', 2, 200)",
+				"INSERT INTO T_CPK1 VALUES ('us', 3, 300)",
+				"INSERT INTO T_CPK1 VALUES ('eu', 1, 500)",
+				"INSERT INTO T_CPK1 VALUES ('eu', 2, 600)",
+			},
+			Query: "SELECT id, val FROM T_CPK1 WHERE region = 'us' ORDER BY region, id",
+		},
+		{
+			// Full-PK equality — single-row read by composite key.
+			Name:           "composite_pk_full_eq",
+			SchemaTemplate: "CREATE TABLE T_CPK2 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK2 VALUES ('us', 1, 100)",
+				"INSERT INTO T_CPK2 VALUES ('us', 2, 200)",
+				"INSERT INTO T_CPK2 VALUES ('eu', 1, 500)",
+			},
+			Query: "SELECT val FROM T_CPK2 WHERE region = 'us' AND id = 2 ORDER BY region, id",
+		},
+		{
+			// Equality on leading PK + range on trailing PK — Cascades
+			// implements as a key-range scan with both bounds derived
+			// from the PK structure.
+			Name:           "composite_pk_eq_and_range",
+			SchemaTemplate: "CREATE TABLE T_CPK3 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK3 VALUES ('us', 1, 100)",
+				"INSERT INTO T_CPK3 VALUES ('us', 2, 200)",
+				"INSERT INTO T_CPK3 VALUES ('us', 3, 300)",
+				"INSERT INTO T_CPK3 VALUES ('us', 4, 400)",
+				"INSERT INTO T_CPK3 VALUES ('eu', 2, 999)",
+			},
+			Query: "SELECT id, val FROM T_CPK3 WHERE region = 'us' AND id >= 2 AND id < 4 ORDER BY region, id",
+		},
+
+		// ===== Multi-aggregate single SELECT =====
+		// Pins type-promotion + aggregator wiring when several aggregates
+		// touch the same column. Java's planner wires one aggregator per
+		// distinct (op, col) pair; Go's grouping-bucket emits each.
+		{
+			// COUNT(*) + COUNT(col) + SUM + MIN + MAX in one SELECT.
+			// COUNT(*) counts all rows, COUNT(val) skips NULL.
+			Name:           "multi_agg_same_col",
+			SchemaTemplate: "CREATE TABLE T_MA1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA1 VALUES (1, 10)",
+				"INSERT INTO T_MA1 VALUES (2, 20)",
+				"INSERT INTO T_MA1 VALUES (3, NULL)",
+				"INSERT INTO T_MA1 VALUES (4, 40)",
+			},
+			Query: "SELECT count(*), count(val), sum(val), min(val), max(val) FROM T_MA1",
+		},
+		{
+			// Aggregates over different columns in the same SELECT.
+			// COUNT(*), SUM(price), AVG(qty) — three separate buckets.
+			Name:           "multi_agg_different_cols",
+			SchemaTemplate: "CREATE TABLE T_MA2 (id BIGINT, qty BIGINT, price DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MA2 VALUES (1, 5, 1.5)",
+				"INSERT INTO T_MA2 VALUES (2, 10, 2.5)",
+				"INSERT INTO T_MA2 VALUES (3, 15, 3.5)",
+			},
+			Query: "SELECT count(*), sum(price), avg(qty) FROM T_MA2",
+		},
+
+		// ===== CASE expression edge cases =====
+		// nightshift-61 documented that simple-CASE form is silently
+		// broken in fdb-relational; we use only searched-CASE here.
+		{
+			// CASE WHEN ... THEN ... (no ELSE) — defaults to NULL when
+			// no WHEN matches. Pins three-valued semantics when ELSE is
+			// omitted.
+			Name:           "case_no_else",
+			SchemaTemplate: "CREATE TABLE T_CN (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CN VALUES (1, 10)",
+				"INSERT INTO T_CN VALUES (2, 20)",
+				"INSERT INTO T_CN VALUES (3, 30)",
+			},
+			Query: "SELECT id, CASE WHEN val < 25 THEN 'low' END FROM T_CN ORDER BY id",
+		},
+		{
+			// Nested CASE — outer CASE branches whose THEN values are
+			// themselves CASE expressions. Pins recursive evaluation.
+			Name:           "case_nested_in_then",
+			SchemaTemplate: "CREATE TABLE T_CNES (id BIGINT, val BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CNES VALUES (1, 5, TRUE)",
+				"INSERT INTO T_CNES VALUES (2, 5, FALSE)",
+				"INSERT INTO T_CNES VALUES (3, 50, TRUE)",
+				"INSERT INTO T_CNES VALUES (4, 50, FALSE)",
+			},
+			Query: "SELECT id, CASE WHEN val < 10 THEN CASE WHEN flag = TRUE THEN 'small_yes' ELSE 'small_no' END ELSE CASE WHEN flag = TRUE THEN 'big_yes' ELSE 'big_no' END END FROM T_CNES ORDER BY id",
+		},
+		{
+			// CASE inside aggregate — Go-permissive type-inference
+			// divergence from Java surfaced dayshift-62. Java reports
+			// `SUM(CASE WHEN p THEN 1 ELSE 0 END)` as INTEGER (the
+			// Cascades planner inherits the integer-literal branch
+			// type and Java's SUM(INTEGER) overload preserves INTEGER);
+			// Go reports BIGINT (`inferConstantJDBCType` types bare
+			// integer literals as BIGINT, and SUM with `aggExpr != nil`
+			// recursively-infers BIGINT for the CASE result). The
+			// divergence lives in two layers — Go's literal-typing
+			// AND Go's aggregate-result inheritance from `aggExpr`. To
+			// align without changing Go's row values, the CAST below
+			// pins the CASE branches to BIGINT so SUM stays BIGINT in
+			// Java too. The bare-int-literal form is documented as a
+			// CLAUDE.md gotcha + tracked as a TODO; revisit when
+			// aggregate column-type inference is unified with Cascades
+			// SUM-overload resolution.
+			Name:           "case_in_aggregate_bigint_cast",
+			SchemaTemplate: "CREATE TABLE T_CIA (id BIGINT, status STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CIA VALUES (1, 'open')",
+				"INSERT INTO T_CIA VALUES (2, 'closed')",
+				"INSERT INTO T_CIA VALUES (3, 'open')",
+				"INSERT INTO T_CIA VALUES (4, 'pending')",
+				"INSERT INTO T_CIA VALUES (5, 'open')",
+			},
+			Query: "SELECT sum(CASE WHEN status = 'open' THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END), count(*) FROM T_CIA",
+		},
+
+		// ===== BETWEEN edge cases =====
+		{
+			// Single-value BETWEEN — `BETWEEN x AND x` reduces to
+			// equality. Pins inclusive bound semantics.
+			Name:           "between_equal_bounds",
+			SchemaTemplate: "CREATE TABLE T_BE (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BE VALUES (1, 5)",
+				"INSERT INTO T_BE VALUES (2, 10)",
+				"INSERT INTO T_BE VALUES (3, 10)",
+				"INSERT INTO T_BE VALUES (4, 15)",
+			},
+			Query: "SELECT id FROM T_BE WHERE val BETWEEN 10 AND 10 ORDER BY id",
+		},
+		{
+			// Reversed-bound BETWEEN — SQL spec says `BETWEEN hi AND lo`
+			// matches no rows (since the predicate is `v >= hi AND v <= lo`,
+			// false for hi > lo). Pins both engines collapse the same way.
+			Name:           "between_reversed_bounds",
+			SchemaTemplate: "CREATE TABLE T_BR (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BR VALUES (1, 5)",
+				"INSERT INTO T_BR VALUES (2, 10)",
+				"INSERT INTO T_BR VALUES (3, 15)",
+				"INSERT INTO T_BR VALUES (4, 20)",
+			},
+			Query: "SELECT id FROM T_BR WHERE val BETWEEN 20 AND 5 ORDER BY id",
+		},
+		{
+			// BETWEEN with one NULL bound — three-valued logic: NULL
+			// upper means UNKNOWN for any value, BETWEEN evaluates
+			// (val >= 5 AND val <= NULL) → UNKNOWN → row excluded.
+			// Per CLAUDE.md the bare-NULL-in-arithmetic gotcha; the
+			// BETWEEN rewrite uses comparison ops so this should
+			// evaluate cleanly in both engines.
+			Name:           "between_with_null_upper",
+			SchemaTemplate: "CREATE TABLE T_BN (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BN VALUES (1, 5)",
+				"INSERT INTO T_BN VALUES (2, 10)",
+				"INSERT INTO T_BN VALUES (3, 15)",
+			},
+			Query: "SELECT id FROM T_BN WHERE val BETWEEN 5 AND CAST(NULL AS BIGINT) ORDER BY id",
+		},
+
+		// ===== DML no-op edges =====
+		{
+			// DELETE WHERE matches no rows — should leave the table
+			// intact. Pins that DML bind to WHERE evaluation.
+			Name:           "delete_no_match",
+			SchemaTemplate: "CREATE TABLE T_DNM (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DNM VALUES (1, 10)",
+				"INSERT INTO T_DNM VALUES (2, 20)",
+				"DELETE FROM T_DNM WHERE val > 1000",
+			},
+			Query: "SELECT id, val FROM T_DNM ORDER BY id",
+		},
+		{
+			// UPDATE WHERE matches no rows — table stays unchanged.
+			Name:           "update_no_match",
+			SchemaTemplate: "CREATE TABLE T_UNM (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UNM VALUES (1, 10)",
+				"INSERT INTO T_UNM VALUES (2, 20)",
+				"UPDATE T_UNM SET val = 999 WHERE val > 1000",
+			},
+			Query: "SELECT id, val FROM T_UNM ORDER BY id",
+		},
 	}
 }
 
