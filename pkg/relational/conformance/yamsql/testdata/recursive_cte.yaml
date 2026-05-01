@@ -97,15 +97,17 @@ tests:
     rows: []
 
   # RECURSIVE keyword on a body that does NOT self-reference. SQL spec
-  # & Postgres: RECURSIVE is a scope enabler, not a requirement — the
-  # CTE is evaluated as a regular non-recursive CTE.
+  # & Postgres: RECURSIVE is a scope enabler, not a requirement — they
+  # would treat the CTE as a regular non-recursive CTE. fdb-relational
+  # 4.11.1.0 rejects with "condition is not met!" via its semantic-
+  # verifier check; per the project conformance principle (doesn't work
+  # in Java → doesn't work in Go), we reject too. ErrCode 0A000.
   - query: |-
       WITH RECURSIVE nonrec AS (
         SELECT id FROM t WHERE parent = -1
       )
       SELECT id FROM nonrec
-    rows:
-      - [1]
+    error_code: "0A000"
 
   # Column-list rename on a recursive CTE. Outer columns come from the
   # rename list, not the inner query.
@@ -316,14 +318,16 @@ tests:
   # detection must NOT trigger on the alias — only on a real table
   # reference — so this evaluates as a non-recursive CTE. Unqualified
   # projection used to sidestep the known `alias.col → dotted col name`
-  # quirk in non-recursive CTE materialisation.
+  # quirk in non-recursive CTE materialisation. As of dayshift-62 the
+  # single-CTE WITH-RECURSIVE-no-self-ref form is rejected (Java
+  # alignment — "condition is not met!", ErrCode 0A000); the table
+  # alias `t AS x` is not a self-reference, just a name collision.
   - query: |-
       WITH RECURSIVE x AS (
         SELECT id, parent FROM t AS x WHERE id = 250
       )
       SELECT id FROM x
-    rows:
-      - [250]
+    error_code: "0A000"
 
   # Using the recursive CTE in a WHERE … IN subquery.
   - query: |-
@@ -351,11 +355,13 @@ tests:
       - [1]
 
   # Multi-CTE WITH RECURSIVE list: first CTE is plain, second is
-  # recursive and references the first in its seed. Exercises that
-  # `recursiveKeyword && containsTableRef(body, cteName)` correctly
-  # routes the first (non-self-referencing) CTE through the regular
-  # path while the second takes the recursive path — and the recursive
-  # CTE's seed sees the already-materialised first CTE.
+  # recursive. Pre-dayshift-62 Go silently routed the non-self-ref
+  # `roots` CTE through the regular path. Java rejects (verified via
+  # direct probe — ~1.2s response): every CTE under RECURSIVE must
+  # self-reference, including ones intended as plain non-recursive
+  # seeds. ErrCode 0A000 ("condition is not met!"). Workaround:
+  # promote the seed predicate inline into the recursive CTE's seed
+  # branch instead of a separate non-recursive CTE.
   - query: |-
       WITH RECURSIVE
         roots AS (SELECT id FROM t WHERE parent = -1),
@@ -365,21 +371,15 @@ tests:
           SELECT b.id, b.parent FROM descendants AS a, t AS b WHERE b.parent = a.id
         )
       SELECT id FROM descendants ORDER BY id
-    rows:
-      - [1]
-      - [10]
-      - [20]
-      - [40]
-      - [50]
-      - [70]
-      - [100]
-      - [210]
-      - [250]
+    error_code: "0A000"
 
   # Nested WITH RECURSIVE — a recursive CTE followed by a
-  # non-recursive CTE that builds on it, all in one WITH list. The
-  # second CTE is non-recursive so doesn't need its own loop; it just
-  # reads from the first one.
+  # non-recursive CTE that builds on it. Same Java alignment as the
+  # roots/descendants case above: every CTE under RECURSIVE must
+  # self-reference, including a downstream non-recursive consumer
+  # (`leaves`). ErrCode 0A000 ("condition is not met!"). Workaround:
+  # apply the leaf filter outside the WITH RECURSIVE clause via a
+  # wrapper SELECT.
   - query: |-
       WITH RECURSIVE descendants AS (
         SELECT id, parent FROM t WHERE parent = -1
@@ -391,13 +391,7 @@ tests:
         WHERE id NOT IN (SELECT parent FROM t WHERE parent IS NOT NULL)
       )
       SELECT id FROM leaves ORDER BY id
-    rows:
-      # Leaf nodes of the tree — ids that are never anybody's parent.
-      - [40]
-      - [70]
-      - [100]
-      - [210]
-      - [250]
+    error_code: "0A000"
 
   # Aggregate over the recursive CTE: sum of all node ids reachable
   # from root. Exercises downstream aggregation on materialised

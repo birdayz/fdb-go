@@ -2570,6 +2570,44 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT count(*) FROM T_C1 WHERE id = 2",
 		},
 
+		// ===== Negative: WITH RECURSIVE non-self-referencing =====
+		{
+			// fdb-relational 4.11.1.0 rejects `WITH RECURSIVE name AS
+			// (non-self-ref-body)` with "condition is not met!" via its
+			// semantic-verifier check. SQL spec / Postgres permit the
+			// form (RECURSIVE is a scope enabler, not a requirement).
+			// Go aligns at execution time in select_dispatch.go (when
+			// `recursiveKeyword && !containsTableRef(body, cteName)`)
+			// emitting the SAME verbatim message. ExpectErrorMessage
+			// pins byte-equality. Per-entry isolation prevents Java
+			// state-leak from stalling other negative entries.
+			Name:               "recursive_cte_non_self_ref_rejected",
+			SchemaTemplate:     "CREATE TABLE T_RNS (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls:          []string{"INSERT INTO T_RNS VALUES (1, -1)"},
+			Query:              "WITH RECURSIVE nonrec AS (SELECT id FROM T_RNS WHERE parent = -1) SELECT id FROM nonrec",
+			ExpectErrorMessage: "condition is not met!",
+		},
+		{
+			// Multi-CTE form: `WITH RECURSIVE roots AS (no-self-ref),
+			// descendants AS (... UNION ALL ...)` — direct probe against
+			// the Java conformance server (dayshift-62) confirmed Java
+			// rejects this with the SAME verbatim "condition is not met!"
+			// message in ~1.2s (NOT a timeout). The earlier 156s harness
+			// hang was a per-entry-isolation gap: ExpectErrorMessage
+			// entries weren't getting fresh Java servers, so a sequence
+			// of two negative entries poisoned the second. Fixed in
+			// run_sql_conformance_test.go to give both ExpectErrorContains
+			// AND ExpectErrorMessage their own per-entry server.
+			Name:           "recursive_cte_multi_partial_self_ref_rejected",
+			SchemaTemplate: "CREATE TABLE T_RMP (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_RMP VALUES (1, -1)",
+				"INSERT INTO T_RMP VALUES (2, 1)",
+			},
+			Query:              "WITH RECURSIVE roots AS (SELECT id, parent FROM T_RMP WHERE parent = -1), descendants AS (SELECT id, parent FROM T_RMP WHERE id = 1 UNION ALL SELECT b.id, b.parent FROM descendants AS a, T_RMP AS b WHERE b.parent = a.id) SELECT id FROM descendants",
+			ExpectErrorMessage: "condition is not met!",
+		},
+
 		// ===== JOIN with WHERE on inner table =====
 		{
 			// Comma-join with WHERE filter on the right table only —

@@ -255,18 +255,18 @@ var _ = Describe("RunSql Harness", func() {
 		for _, rq := range corpus {
 			rq := rq
 			By(rq.Name, func() {
-				// Negative entries get their own per-entry Java server
-				// — eliminates cross-entry pollution that otherwise
-				// pushes innocuous specs past the HTTP timeout.
+				// Negative entries used to need a per-entry fresh Java
+				// server because hangs were attributed to "fdb-relational
+				// state-leak". The actual root cause (dayshift-62) was
+				// stale-keep-alive on the Go HTTP client side: Sun's
+				// HttpServer closes idle connections at 30s, Go's default
+				// IdleConnTimeout was 90s, so Go reused connections Java
+				// had already closed and the POST hung at 120s. Fixed in
+				// plandiff/runsql.go + java_invoker_test.go by setting
+				// IdleConnTimeout=20s. Per-entry isolation is no longer
+				// necessary; positive and negative entries share the
+				// outer-It Java server cleanly.
 				perEntryJavaR := javaR
-				if rq.ExpectErrorContains != "" {
-					perJava, err := NewIsolatedJavaInvoker()
-					Expect(err).NotTo(HaveOccurred(),
-						"corpus entry %q: failed to spawn per-entry Java server",
-						rq.Name)
-					defer func() { _ = perJava.Close() }()
-					perEntryJavaR = plandiff.NewJavaRunnerHTTP(javaBaseURL(perJava), env.ClusterFile).(plandiff.SetupRunner)
-				}
 
 				javaResult := perEntryJavaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)

@@ -292,11 +292,30 @@ func (c *EmbeddedConnection) execSelect(ctx context.Context, sel antlrgen.ISelec
 			var cteRows [][]driver.Value
 			var cteErr error
 			body := nq.Query().QueryExpressionBody()
-			// RECURSIVE is a scope enabler, not a requirement: a CTE
-			// marked RECURSIVE that does not actually self-reference is
-			// evaluated non-recursively (matches Postgres / SQL spec).
+			// fdb-relational requires WITH RECURSIVE to actually
+			// self-reference — non-self-referencing bodies under
+			// RECURSIVE are rejected. SQL spec / Postgres treat
+			// RECURSIVE as a scope enabler not a requirement, but per
+			// the project conformance principle (doesn't work in Java
+			// → doesn't work in Go), we reject too with the verbatim
+			// Java message ("condition is not met!") so cross-engine
+			// ExpectErrorMessage stays byte-equal across engines.
 			var cteColTypes []string
-			if recursiveKeyword && containsTableRef(body, cteName) {
+			if recursiveKeyword && !containsTableRef(body, cteName) {
+				// Java alignment: fdb-relational's SemanticAnalyzer
+				// raises `condition is not met!` for any CTE under
+				// RECURSIVE that doesn't actually self-reference (both
+				// single-CTE and multi-CTE forms — verified via direct
+				// probe against the Java conformance server, dayshift-62,
+				// ~1.2s response time per query when server is fresh).
+				// SQL spec / Postgres treat RECURSIVE as a scope enabler
+				// and would silently fall back to non-recursive
+				// evaluation; per the project conformance principle we
+				// reject too with the verbatim Java message.
+				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+					"condition is not met!")
+			}
+			if recursiveKeyword {
 				cteCols, cteRows, cteErr = c.materializeRecursiveCTE(ctx, body, cteName, renameList, traversalOrder)
 			} else {
 				cteCols, cteColTypes, cteRows, cteErr = c.execQueryBodyRows(ctx, body)
