@@ -5148,6 +5148,137 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_NE10 WHERE val = 100.0 ORDER BY id",
 		},
+
+		// ===== String / comparison edges =====
+		{
+			// LIKE with leading single-char wildcard `_at` — pins
+			// the first-position underscore matching one character.
+			Name:           "like_underscore_prefix",
+			SchemaTemplate: "CREATE TABLE T_SE1 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE1 VALUES (1, 'cat')",
+				"INSERT INTO T_SE1 VALUES (2, 'bat')",
+				"INSERT INTO T_SE1 VALUES (3, 'mat')",
+				"INSERT INTO T_SE1 VALUES (4, 'flat')",
+				"INSERT INTO T_SE1 VALUES (5, 'at')",
+			},
+			Query: "SELECT id, s FROM T_SE1 WHERE s LIKE '_at' ORDER BY id",
+		},
+		{
+			// LIKE with trailing single-char wildcard — pins the
+			// last-position underscore matching one character.
+			Name:           "like_underscore_suffix",
+			SchemaTemplate: "CREATE TABLE T_SE2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE2 VALUES (1, 'cat')",
+				"INSERT INTO T_SE2 VALUES (2, 'cot')",
+				"INSERT INTO T_SE2 VALUES (3, 'cats')",
+				"INSERT INTO T_SE2 VALUES (4, 'ca')",
+			},
+			Query: "SELECT id, s FROM T_SE2 WHERE s LIKE 'ca_' ORDER BY id",
+		},
+		{
+			// LIKE with multiple `%` wildcards — pins greedy
+			// multi-segment matching.
+			Name:           "like_double_percent_mid",
+			SchemaTemplate: "CREATE TABLE T_SE3 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE3 VALUES (1, 'abc')",
+				"INSERT INTO T_SE3 VALUES (2, 'aXbYc')",
+				"INSERT INTO T_SE3 VALUES (3, 'acb')",
+				"INSERT INTO T_SE3 VALUES (4, 'a___b___c')",
+			},
+			Query: "SELECT id, s FROM T_SE3 WHERE s LIKE 'a%b%c' ORDER BY id",
+		},
+		{
+			// NOT LIKE with `%suffix` pattern — pins negation +
+			// trailing-wildcard semantics.
+			Name:           "not_like_suffix",
+			SchemaTemplate: "CREATE TABLE T_SE4 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE4 VALUES (1, 'foo.txt')",
+				"INSERT INTO T_SE4 VALUES (2, 'bar.log')",
+				"INSERT INTO T_SE4 VALUES (3, 'baz.txt')",
+				"INSERT INTO T_SE4 VALUES (4, 'qux.csv')",
+			},
+			Query: "SELECT id, s FROM T_SE4 WHERE s NOT LIKE '%.txt' ORDER BY id",
+		},
+		{
+			// String <= comparison — pins lex byte-order
+			// inclusive upper bound.
+			Name:           "string_lte_compare",
+			SchemaTemplate: "CREATE TABLE T_SE5 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE5 VALUES (1, 'apple')",
+				"INSERT INTO T_SE5 VALUES (2, 'mango')",
+				"INSERT INTO T_SE5 VALUES (3, 'zebra')",
+			},
+			Query: "SELECT id, s FROM T_SE5 WHERE s <= 'mango' ORDER BY id",
+		},
+		{
+			// String >= comparison — pins lex byte-order
+			// inclusive lower bound.
+			Name:           "string_gte_compare",
+			SchemaTemplate: "CREATE TABLE T_SE6 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE6 VALUES (1, 'apple')",
+				"INSERT INTO T_SE6 VALUES (2, 'mango')",
+				"INSERT INTO T_SE6 VALUES (3, 'zebra')",
+			},
+			Query: "SELECT id, s FROM T_SE6 WHERE s >= 'mango' ORDER BY id",
+		},
+		{
+			// NOT IN with a string list — only int NOT IN was
+			// previously pinned.
+			Name:           "string_not_in_list",
+			SchemaTemplate: "CREATE TABLE T_SE7 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE7 VALUES (1, 'alpha')",
+				"INSERT INTO T_SE7 VALUES (2, 'beta')",
+				"INSERT INTO T_SE7 VALUES (3, 'gamma')",
+				"INSERT INTO T_SE7 VALUES (4, 'delta')",
+			},
+			Query: "SELECT id, s FROM T_SE7 WHERE s NOT IN ('beta', 'delta') ORDER BY id",
+		},
+		{
+			// Equality is case-sensitive — uppercase literal must
+			// not match lowercase data, no rows expected.
+			Name:           "string_eq_case_sensitive",
+			SchemaTemplate: "CREATE TABLE T_SE8 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE8 VALUES (1, 'alice')",
+				"INSERT INTO T_SE8 VALUES (2, 'bob')",
+				"INSERT INTO T_SE8 VALUES (3, 'ALICE')",
+			},
+			Query: "SELECT id, name FROM T_SE8 WHERE name = 'ALICE' ORDER BY id",
+		},
+		{
+			// IN with a 4-value string list — exercises larger
+			// IN-list translation than the existing 2-value entry.
+			Name:           "string_in_four_values",
+			SchemaTemplate: "CREATE TABLE T_SE9 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE9 VALUES (1, 'a')",
+				"INSERT INTO T_SE9 VALUES (2, 'b')",
+				"INSERT INTO T_SE9 VALUES (3, 'c')",
+				"INSERT INTO T_SE9 VALUES (4, 'd')",
+				"INSERT INTO T_SE9 VALUES (5, 'e')",
+			},
+			Query: "SELECT id, s FROM T_SE9 WHERE s IN ('a', 'c', 'd', 'e') ORDER BY id",
+		},
+		{
+			// Two LIKE predicates OR'd together — pins the
+			// disjunction over pattern matchers.
+			Name:           "like_or_two_patterns",
+			SchemaTemplate: "CREATE TABLE T_SE10 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SE10 VALUES (1, 'apple')",
+				"INSERT INTO T_SE10 VALUES (2, 'banana')",
+				"INSERT INTO T_SE10 VALUES (3, 'cherry')",
+				"INSERT INTO T_SE10 VALUES (4, 'avocado')",
+			},
+			Query: "SELECT id, s FROM T_SE10 WHERE s LIKE 'a%' OR s LIKE 'c%' ORDER BY id",
+		},
 	}
 }
 
