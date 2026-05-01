@@ -3178,8 +3178,10 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
 	}
 
-	// IF function
-	rows4, err := db.QueryContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item ORDER BY id`)
+	// IF function-form is rejected by Java (not in the function
+	// registry). The Java-supported workaround is searched-CASE
+	// (`CASE WHEN cond THEN ... ELSE ... END`).
+	rows4, err := db.QueryContext(ctx, `SELECT CASE WHEN price > 50 THEN 'expensive' ELSE 'cheap' END FROM Item ORDER BY id`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows4.Close()
 	var cats []string
@@ -3189,6 +3191,14 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 		cats = append(cats, c)
 	}
 	g.Expect(cats).To(gomega.Equal([]string{"cheap", "expensive"}))
+
+	// IF as a function call is rejected (Java has no IF function;
+	// use searched-CASE instead). Pin the rejection so future
+	// re-additions of an IF arm in the evaluator regress this test.
+	var ifDummy string
+	errIf := db.QueryRowContext(ctx, `SELECT IF(price > 50, 'expensive', 'cheap') FROM Item WHERE id = 1`).Scan(&ifDummy)
+	g.Expect(errIf).To(gomega.HaveOccurred(), "IF function-form must be rejected")
+	expectUnsupportedOperator(g, errIf, "IF", "IF function-form")
 
 	// Java conformance (swingshift-35): CAST(float AS INT) rounds (not
 	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
@@ -3288,14 +3298,24 @@ func TestFDB_MathFunctions(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Num (id, val) VALUES (1, 7), (2, 3)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// MOD(7, 3) = 1
-	rows, err := db.QueryContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`)
+	// 7 % 3 = 1. Java exposes modulo only via the `%` operator (the
+	// synonym map binds `%` -> "mod"); the function-call form
+	// `MOD(a, b)` is rejected with "Unsupported operator MOD".
+	rows, err := db.QueryContext(ctx, `SELECT val % 3 FROM Num WHERE id = 1`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 	rows.Next()
 	var mod int64
 	g.Expect(rows.Scan(&mod)).To(gomega.Succeed())
 	g.Expect(mod).To(gomega.Equal(int64(1)))
+
+	// MOD as a function call is rejected (function-form is not in
+	// fdb-relational's BuiltInFunction registry; only the `%`
+	// operator maps to Mod).
+	var dummyMod int64
+	errMod := db.QueryRowContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`).Scan(&dummyMod)
+	g.Expect(errMod).To(gomega.HaveOccurred(), "MOD function-form must be rejected")
+	expectUnsupportedOperator(g, errMod, "MOD", "MOD(val, 3)")
 
 	// POWER / POW are absent from fdb-relational 4.11.1.0's
 	// ArithmeticValue registry; Java's planner emits "Unsupported
@@ -5875,12 +5895,13 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	// to reject in TestFDB_StringFunctionsRejected and friends, not
 	// here. ABS / SQRT / FLOOR / SIGN are also absent (swingshift-64
 	// TODO #3) and rejected at the registry layer. The NULL-
-	// propagation focus here uses MOD — still in Go because Java's
-	// ArithmeticValue registry has Mod — whose evaluator preserves
+	// propagation focus here uses the `%` operator — Java exposes
+	// modulo only via `%` (the synonym map binds `%` -> "mod"); the
+	// MOD function-call form is rejected. The Mod evaluator preserves
 	// SQL-standard NULL-in/NULL-out semantics for both operands.
 	var modA, modB sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx,
-		`SELECT MOD(val, 3), MOD(10, val) FROM T WHERE id = 1`).
+		`SELECT val % 3, 10 % val FROM T WHERE id = 1`).
 		Scan(&modA, &modB)).To(gomega.Succeed())
 	g.Expect(modA.Valid).To(gomega.BeFalse())
 	g.Expect(modB.Valid).To(gomega.BeFalse())

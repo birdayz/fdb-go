@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"math"
 	"strings"
 	"time"
 
@@ -119,55 +118,13 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return nil, nil
-	case "IFNULL":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IFNULL requires 2 arguments")
-		}
-		v, err := eval(fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		if v != nil {
-			return v, nil
-		}
-		return eval(fArgs[1].Expression())
-	case "MOD":
-		if len(fArgs) < 2 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD requires 2 arguments")
-		}
-		av, aerr := eval(fArgs[0].Expression())
-		if aerr != nil || av == nil {
-			return nil, aerr
-		}
-		bv, berr := eval(fArgs[1].Expression())
-		if berr != nil || bv == nil {
-			return nil, berr
-		}
-		toFloat := func(v driver.Value) (float64, bool) {
-			switch n := v.(type) {
-			case int64:
-				return float64(n), true
-			case float64:
-				return n, true
-			}
-			return 0, false
-		}
-		af, aok := toFloat(av)
-		bf, bok := toFloat(bv)
-		if !aok || !bok {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "MOD: arguments must be numeric")
-		}
-		if _, aIsInt := av.(int64); aIsInt {
-			if _, bIsInt := bv.(int64); bIsInt {
-				if bf == 0 {
-					// Integer MOD by zero — Java throws "/ by zero".
-					return nil, api.NewErrorf(api.ErrCodeDivisionByZero, "/ by zero")
-				}
-				return int64(af) % int64(bf), nil
-			}
-		}
-		// Float MOD by zero returns NaN per IEEE-754; Java does not throw.
-		return math.Mod(af, bf), nil
+	// IFNULL intentionally NOT handled — Java rejects with
+	// "Unsupported operator IFNULL". Use COALESCE instead (which
+	// IS in Java's synonym map).
+	// MOD function call form intentionally NOT handled — Java's
+	// synonym map binds the `%` operator to "mod" but rejects the
+	// function-call form `MOD(a, b)` with "Unsupported operator MOD".
+	// Use `a % b` instead.
 	case "GREATEST", "LEAST":
 		// Java conformance: GREATEST/LEAST return NULL if any argument
 		// is NULL. VariadicFunctionValue.PhysicalOperator's per-typecode
@@ -209,19 +166,9 @@ func evalScalarFunctionCallCore(
 			}
 		}
 		return best, nil
-	case "IF", "IIF":
-		// IF(cond, true_val, false_val)
-		if len(fArgs) < 3 {
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "IF requires 3 arguments")
-		}
-		cond, err := eval(fArgs[0].Expression())
-		if err != nil {
-			return nil, err
-		}
-		if functions.IsTruthy(cond) {
-			return eval(fArgs[1].Expression())
-		}
-		return eval(fArgs[2].Expression())
+	// IF / IIF intentionally NOT handled — Java rejects with
+	// "Unsupported operator IF". Use `CASE WHEN cond THEN x ELSE y
+	// END` (searched-CASE is implemented in both engines).
 	case "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
 		"DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR":
 		// Date-part functions taking a single time.Time argument.

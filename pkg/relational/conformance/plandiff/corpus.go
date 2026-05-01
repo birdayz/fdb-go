@@ -869,10 +869,9 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT POWER(v, 2) FROM T_POW WHERE id = 1",
 		},
 		{
-			// Math-family: FLOOR. Same registry-miss as ABS/SQRT/POWER
-			//. Pin canonical FLOOR
-			// shape; CEIL / CEILING / ROUND / SIGN / PI / EXP / LN /
-			// LOG follow the same byte-equal pattern.
+			// Math-family: FLOOR. Same registry-miss as ABS/SQRT/POWER.
+			// Pin canonical FLOOR shape; CEIL / CEILING / ROUND / SIGN
+			// / PI / EXP / LN / LOG follow the same byte-equal pattern.
 			Name:           "math_floor_rejected",
 			SchemaTemplate: "CREATE TABLE T_FLR (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLR VALUES (1, 3.7)"},

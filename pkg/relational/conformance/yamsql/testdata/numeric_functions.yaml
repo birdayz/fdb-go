@@ -2,16 +2,20 @@
 #
 # Scalar numeric functions. Two groups:
 #
-#   * Still in Go (and pinned here): MOD. fdb-relational 4.11.1.0
-#     registers Mod in the ArithmeticValue registry, so this is the
-#     one math fn that survives the swingshift-64 alignment pass.
+#   * Still supported via the `%` operator: modulo. fdb-relational
+#     4.11.1.0 registers Mod in the ArithmeticValue registry AND maps
+#     `%` -> "mod" in the synonym table, so `a % b` works in both
+#     engines. The function-call form `MOD(a, b)` is rejected by
+#     Java's planner ("Unsupported operator MOD", 0A000), so it is
+#     not exercised here.
 #
 #   * Rejected (Java-aligned, swingshift-64 TODO #3): ABS / SQRT /
 #     POWER / POW / FLOOR / CEIL / CEILING / ROUND / SIGN / PI /
-#     EXP / LN / LOG. fdb-relational 4.11.1.0's
+#     EXP / LN / LOG / MOD. fdb-relational 4.11.1.0's
 #     @AutoService(BuiltInFunction.class) ArithmeticValue registry
 #     has only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; no
-#     entries for FLOOR / CEIL / SIGN / ROUND / PI / EXP / LN / LOG.
+#     entries for FLOOR / CEIL / SIGN / ROUND / PI / EXP / LN / LOG,
+#     and MOD-as-function is not exposed (only `%`).
 #     Java's planner emits "Unsupported operator <NAME>" (0A000)
 #     before evaluation. Go mirrors byte-equal via the default arm
 #     in scalar_functions.go.
@@ -91,12 +95,21 @@ tests:
     error_code: "0A000"
 
   # ---------------------------------------------------------------
-  # Still in Go: MOD.
+  # MOD function form is rejected (Java has no MOD function, only
+  # the `%` operator that the synonym map binds to "mod").
   # ---------------------------------------------------------------
-  # MOD with integer operands preserves the sign of the dividend.
   - query: SELECT MOD(n, 3) FROM t WHERE id = 1
+    error_code: "0A000"
+  - query: SELECT MOD(n, 3) FROM t WHERE id = 2
+    error_code: "0A000"
+
+  # ---------------------------------------------------------------
+  # Modulo via `%` operator (Java synonym map: `%` -> "mod"). The
+  # `%` operator preserves the sign of the dividend on integers.
+  # ---------------------------------------------------------------
+  - query: SELECT n % 3 FROM t WHERE id = 1
     rows:
       - [1]
-  - query: SELECT MOD(n, 3) FROM t WHERE id = 2
+  - query: SELECT n % 3 FROM t WHERE id = 2
     rows:
       - [-2]
