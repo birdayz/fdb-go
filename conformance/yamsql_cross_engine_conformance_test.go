@@ -217,6 +217,9 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		updateNonPKPredicateScenario(),
 		caseInOrderByScenario(),
 		bytesAdvancedScenario(),
+		coalesceTypePromotionScenario(),
+		minMaxBigintBoundaryScenario(),
+		multiInsertSetupScenario(),
 		mixedNumericCompareScenario(),
 		notInListScenario(),
 	}
@@ -3057,6 +3060,91 @@ func notInListScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t WHERE s NOT IN ('a', 'b') OR s IS NULL ORDER BY id", Rows: [][]any{{3}, {4}, {5}}},
 			// NOT IN with all-matching list.
 			{Query: "SELECT id FROM t WHERE v NOT IN (10, 20, 30, 50) ORDER BY id", Rows: [][]any{}},
+		},
+	}
+}
+
+// coalesceTypePromotionScenario pins COALESCE behaviour across mixed
+// numeric arg types (BIGINT vs DOUBLE), the typed-NULL anchor pattern
+// (CAST(NULL AS T)), nested COALESCE, and COALESCE in WHERE. Net-new
+// nightshift-61.
+func coalesceTypePromotionScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "coalesce_type_promotion",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, a BIGINT, b DOUBLE, s STRING, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 10, 1.5, 'x'), (2, null, 2.5, null), (3, null, null, 'y'), (4, null, null, null)",
+		},
+		Tests: []yamsql.Test{
+			// BIGINT + DOUBLE → DOUBLE result type.
+			{Query: "SELECT COALESCE(a, b) FROM t WHERE id = 1", Rows: [][]any{{10.0}}},
+			{Query: "SELECT COALESCE(a, b) FROM t WHERE id = 2", Rows: [][]any{{2.5}}},
+			// All-NULL with typed-NULL anchor — typed CAST resolves the
+			// result type when every other arg is NULL.
+			{Query: "SELECT COALESCE(a, b, CAST(99 AS DOUBLE)) FROM t WHERE id = 4", Rows: [][]any{{99.0}}},
+			// COALESCE in WHERE — first non-NULL drives the comparison.
+			{Query: "SELECT id FROM t WHERE COALESCE(a, 0) = 0 ORDER BY id", Rows: [][]any{{2}, {3}, {4}}},
+			// COALESCE result IS NULL — only id=4 has all-NULL.
+			{Query: "SELECT id FROM t WHERE COALESCE(a, b) IS NULL ORDER BY id", Rows: [][]any{{3}, {4}}},
+			// Nested COALESCE.
+			{Query: "SELECT COALESCE(COALESCE(a, b), CAST(-1 AS DOUBLE)) FROM t WHERE id = 4", Rows: [][]any{{-1.0}}},
+			// COALESCE on STRING — typed-NULL anchor needed for all-NULL.
+			{Query: "SELECT COALESCE(s, CAST(NULL AS STRING), 'default') FROM t WHERE id = 4", Rows: [][]any{{"default"}}},
+			// COALESCE applied to projection of typed col + literal.
+			{Query: "SELECT id, COALESCE(s, 'fallback') FROM t WHERE id IN (3, 4) ORDER BY id", Rows: [][]any{{3, "y"}, {4, "fallback"}}},
+		},
+	}
+}
+
+// minMaxBigintBoundaryScenario pins MIN/MAX over int64 boundary values
+// without overflowing arithmetic. Java throws ArithmeticException on
+// arithmetic overflow (newly-discovered nightshift-61 — see CLAUDE.md
+// gotcha "Integer overflow Java throws, Go wraps"); Go's embedded
+// engine silently wraps. Both engines AGREE on MIN/MAX of stored
+// boundary values without intermediate arithmetic — that's what this
+// scenario pins. Arithmetic-overflow divergence is tracked as a
+// separate deferred TODO. Net-new nightshift-61.
+func minMaxBigintBoundaryScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "min_max_bigint_boundary",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, -9223372036854775808), (2, 9223372036854775807), (3, 0)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT MIN(v) FROM t", Rows: [][]any{{int64(-9223372036854775808)}}},
+			{Query: "SELECT MAX(v) FROM t", Rows: [][]any{{int64(9223372036854775807)}}},
+			{Query: "SELECT MIN(v), MAX(v) FROM t", Rows: [][]any{{int64(-9223372036854775808), int64(9223372036854775807)}}},
+			// Round-trip the boundary values via ORDER BY id (PK) so
+			// the natural-order satisfiability gate doesn't reject.
+			{Query: "SELECT v FROM t ORDER BY id", Rows: [][]any{{int64(-9223372036854775808)}, {int64(9223372036854775807)}, {int64(0)}}},
+			// COUNT over boundary values (no arithmetic).
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{3}}},
+		},
+	}
+}
+
+// multiInsertSetupScenario pins multi-statement INSERT setup behaviour
+// — sequential INSERTs in setup must be visible to the SELECT query.
+// Net-new nightshift-61.
+func multiInsertSetupScenario() *yamsql.Scenario {
+	return &yamsql.Scenario{
+		Name:           "multi_insert_setup",
+		SchemaTemplate: "CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		Setup: []string{
+			"INSERT INTO t VALUES (1, 100)",
+			"INSERT INTO t VALUES (2, 200)",
+			"INSERT INTO t VALUES (3, 300), (4, 400)",
+			"INSERT INTO t VALUES (5, 500)",
+		},
+		Tests: []yamsql.Test{
+			{Query: "SELECT COUNT(*) FROM t", Rows: [][]any{{5}}},
+			{Query: "SELECT SUM(v) FROM t", Rows: [][]any{{1500}}},
+			{Query: "SELECT id, v FROM t ORDER BY id", Rows: [][]any{
+				{1, 100}, {2, 200}, {3, 300}, {4, 400}, {5, 500},
+			}},
+			// Range over the multi-INSERT result.
+			{Query: "SELECT v FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id", Rows: [][]any{{200}, {300}, {400}}},
 		},
 	}
 }
