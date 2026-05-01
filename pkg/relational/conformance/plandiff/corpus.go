@@ -6991,6 +6991,144 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_WP18 WHERE 1 = 1 AND val > 15 ORDER BY id",
 		},
+
+		// ===== BOOLEAN / BYTES / UUID column-type probes =====
+		{
+			// BOOLEAN inequality with `<>` — pins UNKNOWN propagation
+			// for NULL row (must NOT be returned, like `=`).
+			Name:           "boolean_neq_true",
+			SchemaTemplate: "CREATE TABLE T_BBU1 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU1 VALUES (1, TRUE), (2, FALSE), (3, NULL)",
+			},
+			Query: "SELECT id, flag FROM T_BBU1 WHERE flag <> TRUE ORDER BY id",
+		},
+		{
+			// BOOLEAN equality FALSE — symmetric to `= TRUE`, pins
+			// TRUE/FALSE asymmetry doesn't accidentally appear.
+			Name:           "boolean_eq_false",
+			SchemaTemplate: "CREATE TABLE T_BBU2 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU2 VALUES (1, TRUE), (2, FALSE), (3, FALSE)",
+			},
+			Query: "SELECT id FROM T_BBU2 WHERE flag = FALSE ORDER BY id",
+		},
+		{
+			// BOOLEAN IS NULL on nullable column — pins three-valued
+			// logic (NULL row matches IS NULL, but not = TRUE/= FALSE).
+			Name:           "boolean_is_null",
+			SchemaTemplate: "CREATE TABLE T_BBU3 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU3 VALUES (1, TRUE), (2, NULL), (3, FALSE)",
+			},
+			Query: "SELECT id FROM T_BBU3 WHERE flag IS NULL ORDER BY id",
+		},
+		{
+			// BOOLEAN IS NOT NULL — complement of IS NULL.
+			Name:           "boolean_is_not_null",
+			SchemaTemplate: "CREATE TABLE T_BBU4 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU4 VALUES (1, TRUE), (2, NULL), (3, FALSE)",
+			},
+			Query: "SELECT id, flag FROM T_BBU4 WHERE flag IS NOT NULL ORDER BY id",
+		},
+		{
+			// COUNT(*) over BOOLEAN-filtered rows — pins predicate +
+			// aggregate composition for boolean column.
+			Name:           "boolean_count_filtered",
+			SchemaTemplate: "CREATE TABLE T_BBU5 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU5 VALUES (1, TRUE), (2, TRUE), (3, FALSE), (4, NULL)",
+			},
+			Query: "SELECT count(*) FROM T_BBU5 WHERE flag = TRUE",
+		},
+		{
+			// BYTES IS NULL — pins NULL handling on a BYTES column.
+			Name:           "bytes_is_null",
+			SchemaTemplate: "CREATE TABLE T_BBU7 (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU7 VALUES (1, X'AA'), (2, NULL), (3, X'BB')",
+			},
+			Query: "SELECT id FROM T_BBU7 WHERE payload IS NULL ORDER BY id",
+		},
+		{
+			// BYTES IS NOT NULL — complement, projects payload too so
+			// base64 wire encoding is exercised.
+			Name:           "bytes_is_not_null",
+			SchemaTemplate: "CREATE TABLE T_BBU8 (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU8 VALUES (1, X'AA'), (2, NULL), (3, X'BB')",
+			},
+			Query: "SELECT id, payload FROM T_BBU8 WHERE payload IS NOT NULL ORDER BY id",
+		},
+		{
+			// COUNT(*) over BYTES-filtered rows — pins predicate +
+			// aggregate composition for BYTES column.
+			Name:           "bytes_count_filtered",
+			SchemaTemplate: "CREATE TABLE T_BBU9 (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU9 VALUES (1, X'AA'), (2, X'BB'), (3, X'AA'), (4, NULL)",
+			},
+			Query: "SELECT count(*) FROM T_BBU9 WHERE payload = X'AA'",
+		},
+		{
+			// BYTES inequality `<>` — pins byte-array NEQ semantics.
+			Name:           "bytes_neq",
+			SchemaTemplate: "CREATE TABLE T_BBU10 (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU10 VALUES (1, X'01'), (2, X'02'), (3, X'01')",
+			},
+			Query: "SELECT id FROM T_BBU10 WHERE payload <> X'01' ORDER BY id",
+		},
+		{
+			// BYTES round-trip with longer hex literal — pins base64
+			// chunk-boundary handling for non-aligned byte counts.
+			Name:           "bytes_long_literal",
+			SchemaTemplate: "CREATE TABLE T_BBU11 (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU11 VALUES (1, X'CAFEBABE'), (2, X'DEADBEEF'), (3, X'00FF00FF00')",
+			},
+			Query: "SELECT id, payload FROM T_BBU11 ORDER BY id",
+		},
+		{
+			// UUID inequality `<>` — pins NEQ comparison at the
+			// proto-message level (not byte-level).
+			Name: "uuid_neq",
+			SchemaTemplate: "CREATE TABLE T_BBU12 (id BIGINT, key UUID, " +
+				"PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU12 VALUES (1, CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_BBU12 VALUES (2, CAST('22222222-2222-2222-2222-222222222222' AS UUID))",
+				"INSERT INTO T_BBU12 VALUES (3, CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+			},
+			Query: "SELECT id FROM T_BBU12 WHERE key <> CAST('11111111-1111-1111-1111-111111111111' AS UUID) ORDER BY id",
+		},
+		{
+			// UUID IS NOT NULL on nullable column — complement of
+			// existing uuid_null.
+			Name: "uuid_is_not_null",
+			SchemaTemplate: "CREATE TABLE T_BBU13 (id BIGINT, key UUID, " +
+				"PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU13 VALUES (1, CAST('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' AS UUID))",
+				"INSERT INTO T_BBU13 VALUES (2, NULL)",
+				"INSERT INTO T_BBU13 VALUES (3, CAST('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' AS UUID))",
+			},
+			Query: "SELECT id, key FROM T_BBU13 WHERE key IS NOT NULL ORDER BY id",
+		},
+		{
+			// COUNT(*) over UUID-filtered rows — pins predicate +
+			// aggregate composition for UUID column.
+			Name: "uuid_count_filtered",
+			SchemaTemplate: "CREATE TABLE T_BBU14 (id BIGINT, key UUID, " +
+				"PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BBU14 VALUES (1, CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_BBU14 VALUES (2, CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_BBU14 VALUES (3, CAST('22222222-2222-2222-2222-222222222222' AS UUID))",
+			},
+			Query: "SELECT count(*) FROM T_BBU14 WHERE key = CAST('11111111-1111-1111-1111-111111111111' AS UUID)",
+		},
 	}
 }
 
