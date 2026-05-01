@@ -2041,6 +2041,16 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT v / 0.0 FROM T_DZZ",
 		},
 		{
+			// Aggregate in WHERE — Java rejects with verbatim
+			// 'unable to eval an aggregation function with eval()'
+			// (IllegalStateException from the scalar evaluator
+			// hitting an aggregate node). Aligned dayshift-62.
+			Name:           "agg_in_where_rejected",
+			SchemaTemplate: "CREATE TABLE T_AIWR (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_AIWR VALUES (1, 5)"},
+			Query:          "SELECT id FROM T_AIWR WHERE COUNT(*) > 0",
+		},
+		{
 			// Aggregate over a fully-filtered-out scope returns NULL
 			// for SUM (and 0 for COUNT, but here we test SUM). Both
 			// engines emit one row with [<nil>].

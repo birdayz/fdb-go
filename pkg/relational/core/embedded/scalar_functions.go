@@ -78,6 +78,12 @@ func evalScalarFunctionCallCore(
 	case *antlrgen.UserDefinedScalarFunctionCallContext:
 		name = strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
 		args = f.FunctionArgs()
+	case *antlrgen.AggregateFunctionCallContext:
+		// Java verbatim: aggregate function in scalar (e.g. WHERE)
+		// context throws IllegalStateException 'unable to eval an
+		// aggregation function with eval()'. Aligned dayshift-62.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unable to eval an aggregation function with eval()")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported function call type %T", fc)
 	}
