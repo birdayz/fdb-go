@@ -7129,6 +7129,149 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT count(*) FROM T_BBU14 WHERE key = CAST('11111111-1111-1111-1111-111111111111' AS UUID)",
 		},
+
+		// ===== Comparison-operator coverage matrix =====
+		{
+			// `<>` on STRING column — three-row dataset, two surviving.
+			Name:           "string_neq_compare",
+			SchemaTemplate: "CREATE TABLE T_CMP1 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP1 VALUES (1, 'apple'), (2, 'mango'), (3, 'zebra')"},
+			Query:          "SELECT id FROM T_CMP1 WHERE s <> 'mango' ORDER BY id",
+		},
+		{
+			// `!=` (alternate not-equal syntax) on STRING — same shape
+			// as <> but probes parser-level synonymy.
+			Name:           "string_bang_eq_compare",
+			SchemaTemplate: "CREATE TABLE T_CMP2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP2 VALUES (1, 'apple'), (2, 'mango'), (3, 'zebra')"},
+			Query:          "SELECT id FROM T_CMP2 WHERE s != 'mango' ORDER BY id",
+		},
+		{
+			// `<>` with NULL operand — three-valued logic returns
+			// no rows since `s <> NULL` is UNKNOWN for every row.
+			Name:           "neq_null_yields_empty",
+			SchemaTemplate: "CREATE TABLE T_CMP3 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP3 VALUES (1, 'a'), (2, NULL), (3, 'b')"},
+			Query:          "SELECT id FROM T_CMP3 WHERE s <> NULL ORDER BY id",
+		},
+		{
+			// `<=` against literal NULL — UNKNOWN for every row, no
+			// matches.
+			Name:           "lte_null_yields_empty",
+			SchemaTemplate: "CREATE TABLE T_CMP4 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP4 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id FROM T_CMP4 WHERE v <= NULL ORDER BY id",
+		},
+		{
+			// AND-chain where one bound subsumes the other —
+			// `< 10` is dead under `< 5`. Distinct from
+			// where_subsumed_and; tests planner constant-fold.
+			Name:           "lt_chain_subsumed",
+			SchemaTemplate: "CREATE TABLE T_CMP6 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP6 VALUES (1, 2), (2, 7), (3, 12)"},
+			Query:          "SELECT id FROM T_CMP6 WHERE a < 5 AND a < 10 ORDER BY id",
+		},
+		{
+			// `=` between two BIGINT cols on the same row — single-
+			// table self-comparison, distinct from self_column_compare
+			// which uses `>`.
+			Name:           "self_col_eq_compare",
+			SchemaTemplate: "CREATE TABLE T_CMP7 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP7 VALUES (1, 5, 10), (2, 10, 10), (3, 20, 10)"},
+			Query:          "SELECT id FROM T_CMP7 WHERE x = y ORDER BY id",
+		},
+		{
+			// `<>` between BIGINT col and CAST result. Ensures
+			// CAST('5' AS BIGINT) folds to a BIGINT literal usable
+			// by inequality.
+			Name:           "neq_with_cast_string",
+			SchemaTemplate: "CREATE TABLE T_CMP8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP8 VALUES (1, 1), (2, 5), (3, 9)"},
+			Query:          "SELECT id FROM T_CMP8 WHERE v <> CAST('5' AS BIGINT) ORDER BY id",
+		},
+		{
+			// Range on STRING: `s >= 'b' AND s <= 'y'` — both
+			// inclusive bounds. Pins lex-order comparison.
+			Name:           "string_range_gte_lte",
+			SchemaTemplate: "CREATE TABLE T_CMP9 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP9 VALUES (1, 'a'), (2, 'b'), (3, 'm'), (4, 'y'), (5, 'z')"},
+			Query:          "SELECT id FROM T_CMP9 WHERE s >= 'b' AND s <= 'y' ORDER BY id",
+		},
+		{
+			// Floating-point subtleties: `0.1 + 0.2 != 0.3`. Pins
+			// that the sum is folded to a literal that 0.3 fails to
+			// match exactly; v = 0.3 should NOT survive.
+			Name:           "double_gt_floating_point_sum",
+			SchemaTemplate: "CREATE TABLE T_CMP10 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP10 VALUES (1, 0.3), (2, 0.4), (3, 0.5)"},
+			Query:          "SELECT id FROM T_CMP10 WHERE v > 0.1 + 0.2 ORDER BY id",
+		},
+		{
+			// `>` against a negative DOUBLE literal.
+			Name:           "double_gt_negative_literal",
+			SchemaTemplate: "CREATE TABLE T_CMP11 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP11 VALUES (1, -1.5), (2, -0.25), (3, 0.0), (4, 1.5)"},
+			Query:          "SELECT id FROM T_CMP11 WHERE v > -0.5 ORDER BY id",
+		},
+		{
+			// Comparison against very large BIGINT (near int64 max).
+			Name:           "bigint_gt_near_max",
+			SchemaTemplate: "CREATE TABLE T_CMP12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CMP12 VALUES (1, 1), (2, 9000000000000000001), (3, 9223372036854775807)"},
+			Query:          "SELECT id FROM T_CMP12 WHERE v > 9000000000000000000 ORDER BY id",
+		},
+		{
+			// IS DISTINCT FROM with three-valued result — col vs col
+			// where one side is NULL. Distinct from is_distinct_from
+			// (col vs literal). Rows where x IS DISTINCT FROM y is TRUE.
+			Name:           "is_distinct_from_col_vs_col",
+			SchemaTemplate: "CREATE TABLE T_CMP13 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMP13 VALUES (1, 5, 5)",
+				"INSERT INTO T_CMP13 VALUES (2, 5, NULL)",
+				"INSERT INTO T_CMP13 VALUES (3, NULL, NULL)",
+				"INSERT INTO T_CMP13 VALUES (4, 7, 9)",
+			},
+			Query: "SELECT id FROM T_CMP13 WHERE x IS DISTINCT FROM y ORDER BY id",
+		},
+		{
+			// `=` on BYTES column. Distinct from bytes_where_equal /
+			// bytes_equality_high_byte by using a multi-byte literal
+			// with mixed bytes.
+			Name:           "bytes_eq_multibyte",
+			SchemaTemplate: "CREATE TABLE T_CMP14 (id BIGINT, b BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMP14 VALUES (1, X'0102')",
+				"INSERT INTO T_CMP14 VALUES (2, X'AABBCC')",
+				"INSERT INTO T_CMP14 VALUES (3, X'AABBCD')",
+			},
+			Query: "SELECT id FROM T_CMP14 WHERE b = X'AABBCC' ORDER BY id",
+		},
+		{
+			// Cross-type col compare: BIGINT col vs DOUBLE col
+			// in same row — pins implicit numeric promotion.
+			Name:           "cross_type_bigint_eq_double_col",
+			SchemaTemplate: "CREATE TABLE T_CMP15 (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMP15 VALUES (1, 5, 5.0)",
+				"INSERT INTO T_CMP15 VALUES (2, 5, 5.5)",
+				"INSERT INTO T_CMP15 VALUES (3, 10, 10.0)",
+			},
+			Query: "SELECT id FROM T_CMP15 WHERE a = b ORDER BY id",
+		},
+		{
+			// Composite-PK equality on BOTH components — pk1 = N AND
+			// pk2 = M. Distinct from composite_pk_full_eq because we
+			// project a non-key column too.
+			Name:           "composite_pk_both_eq_with_payload",
+			SchemaTemplate: "CREATE TABLE T_CMP16 (a BIGINT, b BIGINT, val STRING, PRIMARY KEY (a, b))",
+			SetupSqls: []string{
+				"INSERT INTO T_CMP16 VALUES (1, 1, 'one-one')",
+				"INSERT INTO T_CMP16 VALUES (1, 2, 'one-two')",
+				"INSERT INTO T_CMP16 VALUES (2, 1, 'two-one')",
+			},
+			Query: "SELECT val FROM T_CMP16 WHERE a = 1 AND b = 2",
+		},
 	}
 }
 
