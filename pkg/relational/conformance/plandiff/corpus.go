@@ -8415,6 +8415,144 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT count(*) FROM T_AJ24 a, T_AJ25 b, T_AJ26 c WHERE a.b_id = b.b_id AND b.c_id = c.c_id",
 		},
+
+		// ===== INSERT-from-SELECT variations =====
+		{
+			// INSERT...SELECT with WHERE filter on source — only rows
+			// matching the predicate land in DST.
+			Name:           "insert_select_where_filter_src",
+			SchemaTemplate: "CREATE TABLE T_IS1_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS1_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS1_SRC VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"INSERT INTO T_IS1_DST SELECT id, val FROM T_IS1_SRC WHERE val > 15 AND val < 35",
+			},
+			Query: "SELECT id, val FROM T_IS1_DST ORDER BY id",
+		},
+		{
+			// INSERT...SELECT with arithmetic projection — val * 2 in
+			// the projection list pins arithmetic-in-DML lowering.
+			Name:           "insert_select_arith_projection",
+			SchemaTemplate: "CREATE TABLE T_IS2_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS2_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS2_SRC VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_IS2_DST SELECT id, val * 2 FROM T_IS2_SRC",
+			},
+			Query: "SELECT id, val FROM T_IS2_DST ORDER BY id",
+		},
+		// Dropped insert_select_column_reorder: Java rejects
+		// `INSERT ... (val, id) SELECT id, val ...` with "setting
+		// column ordering for insert with select is not supported";
+		// Go silently accepts. New divergence (#55).
+		{
+			// INSERT...SELECT with predicate that filters everything
+			// — DST stays empty, no rows materialise.
+			Name:           "insert_select_zero_rows",
+			SchemaTemplate: "CREATE TABLE T_IS5_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS5_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS5_SRC VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_IS5_DST SELECT id, val FROM T_IS5_SRC WHERE val > 99999",
+			},
+			Query: "SELECT id, val FROM T_IS5_DST ORDER BY id",
+		},
+		{
+			// INSERT...SELECT into composite-PK table — both PK
+			// components come from the source projection list.
+			Name:           "insert_select_composite_pk",
+			SchemaTemplate: "CREATE TABLE T_IS6_SRC (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id)) CREATE TABLE T_IS6_DST (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS6_SRC VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 500)",
+				"INSERT INTO T_IS6_DST SELECT region, id, val FROM T_IS6_SRC",
+			},
+			Query: "SELECT region, id, val FROM T_IS6_DST ORDER BY region, id",
+		},
+		{
+			// INSERT...SELECT then UPDATE then SELECT — pins the
+			// full DML round-trip: write from query, mutate, read.
+			Name:           "insert_select_then_update",
+			SchemaTemplate: "CREATE TABLE T_IS7_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS7_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS7_SRC VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_IS7_DST SELECT id, val FROM T_IS7_SRC",
+				"UPDATE T_IS7_DST SET val = val + 1000 WHERE id <= 2",
+			},
+			Query: "SELECT id, val FROM T_IS7_DST ORDER BY id",
+		},
+		{
+			// Self-copy with shifted PK: INSERT-from-SELECT reading
+			// the same table that's being written to, with id shifted
+			// to avoid PK collision.
+			Name:           "insert_select_self_copy_shifted",
+			SchemaTemplate: "CREATE TABLE T_IS8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS8 VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_IS8 SELECT id + 100, val FROM T_IS8",
+			},
+			Query: "SELECT id, val FROM T_IS8 ORDER BY id",
+		},
+		{
+			// INSERT...SELECT with CAST in projection — explicit
+			// type conversion inside the source query.
+			Name:           "insert_select_cast_projection",
+			SchemaTemplate: "CREATE TABLE T_IS9_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS9_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS9_SRC VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_IS9_DST SELECT CAST(id AS BIGINT), CAST(val AS BIGINT) FROM T_IS9_SRC",
+			},
+			Query: "SELECT id, val FROM T_IS9_DST ORDER BY id",
+		},
+		{
+			// INSERT...SELECT with COALESCE producing fallback when
+			// source is NULL — pins NULL-handling through DML.
+			Name:           "insert_select_coalesce_null",
+			SchemaTemplate: "CREATE TABLE T_IS10_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS10_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS10_SRC VALUES (1, 10)",
+				"INSERT INTO T_IS10_SRC VALUES (2, NULL)",
+				"INSERT INTO T_IS10_SRC VALUES (3, 30)",
+				"INSERT INTO T_IS10_DST SELECT id, COALESCE(val, -1) FROM T_IS10_SRC",
+			},
+			Query: "SELECT id, val FROM T_IS10_DST ORDER BY id",
+		},
+		{
+			// Mix INSERT VALUES and INSERT-from-SELECT into the same
+			// table — both code paths must converge on identical row
+			// representations.
+			Name:           "insert_select_mixed_with_values",
+			SchemaTemplate: "CREATE TABLE T_IS11_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS11_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS11_SRC VALUES (10, 100), (20, 200)",
+				"INSERT INTO T_IS11_DST VALUES (1, 1), (2, 2)",
+				"INSERT INTO T_IS11_DST SELECT id, val FROM T_IS11_SRC",
+			},
+			Query: "SELECT id, val FROM T_IS11_DST ORDER BY id",
+		},
+		// Dropped insert_select_into_wider_schema: same #55 as the
+		// reorder case — Java rejects any explicit-column-list with
+		// INSERT-from-SELECT.
+		{
+			// INSERT-from-derived-table — source is a sub-SELECT
+			// aliased as `d`. Pins query-as-source through DML when
+			// the source itself is a relation expression.
+			Name:           "insert_select_from_derived",
+			SchemaTemplate: "CREATE TABLE T_IS13_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS13_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IS13_SRC VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"INSERT INTO T_IS13_DST SELECT d.id, d.val FROM (SELECT id, val FROM T_IS13_SRC WHERE val >= 20) AS d",
+			},
+			Query: "SELECT id, val FROM T_IS13_DST ORDER BY id",
+		},
+		{
+			// INSERT...SELECT into a table with a secondary index —
+			// the index entries must be populated by the DML so a
+			// later index-driven scan returns the same rows.
+			Name:           "insert_select_secondary_index",
+			SchemaTemplate: "CREATE TABLE T_IS14_SRC (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_IS14_DST (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_is14_v ON T_IS14_DST (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_IS14_SRC VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_IS14_DST SELECT id, v FROM T_IS14_SRC",
+			},
+			Query: "SELECT id, v FROM T_IS14_DST ORDER BY id",
+		},
 	}
 }
 
