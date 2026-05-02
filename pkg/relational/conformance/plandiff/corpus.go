@@ -14656,6 +14656,636 @@ func SeedRunCorpus() []RunQuery {
 				},
 			},
 		},
+		// ===== Arithmetic edge cases =====
+		{
+			Name:           "arith_bigint_add_overflow",
+			SchemaTemplate: "CREATE TABLE T_ARI_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_01 VALUES (1, 9223372036854775807)",
+			},
+			Query: "SELECT id, v + 1 FROM T_ARI_01 ORDER BY id",
+		},
+		{
+			Name:           "arith_bigint_sub_underflow",
+			SchemaTemplate: "CREATE TABLE T_ARI_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_02 VALUES (1, -9223372036854775808)",
+			},
+			Query: "SELECT id, v - 1 FROM T_ARI_02 ORDER BY id",
+		},
+		{
+			Name:           "arith_mul_by_zero",
+			SchemaTemplate: "CREATE TABLE T_ARI_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_03 VALUES (1, 100), (2, -50), (3, 0)",
+			},
+			Query: "SELECT id, v * 0 FROM T_ARI_03 ORDER BY id",
+		},
+		{
+			Name:           "arith_div_by_zero_error",
+			SchemaTemplate: "CREATE TABLE T_ARI_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_04 VALUES (1, 10)",
+			},
+			Query: "SELECT id, v / 0 FROM T_ARI_04 ORDER BY id",
+		},
+		{
+			Name:           "arith_int_div_truncates",
+			SchemaTemplate: "CREATE TABLE T_ARI_05 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_05 VALUES (1, 7, 2), (2, -7, 2), (3, 7, -2), (4, -7, -2)",
+			},
+			Query: "SELECT id, a / b FROM T_ARI_05 ORDER BY id",
+		},
+		{
+			Name:           "arith_precedence_mul_add",
+			SchemaTemplate: "CREATE TABLE T_ARI_07 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_07 VALUES (1, 2, 3, 4)",
+			},
+			Query: "SELECT id, a + b * c FROM T_ARI_07 ORDER BY id",
+		},
+		{
+			Name:           "arith_parenthesized_override",
+			SchemaTemplate: "CREATE TABLE T_ARI_08 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_08 VALUES (1, 2, 3, 4)",
+			},
+			Query: "SELECT id, (a + b) * c FROM T_ARI_08 ORDER BY id",
+		},
+		{
+			Name:           "arith_unary_minus",
+			SchemaTemplate: "CREATE TABLE T_ARI_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_09 VALUES (1, 10), (2, -20), (3, 0)",
+			},
+			Query: "SELECT id, -v FROM T_ARI_09 ORDER BY id",
+		},
+		{
+			Name:           "arith_in_where",
+			SchemaTemplate: "CREATE TABLE T_ARI_10 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ARI_10 VALUES (1, 10, 5), (2, 20, 10), (3, 30, 15)",
+			},
+			Query: "SELECT id FROM T_ARI_10 WHERE a - b > 10 ORDER BY id",
+		},
+		// ===== Multi-predicate / complex WHERE =====
+		{
+			Name:           "pred_or_disjoint_ranges",
+			SchemaTemplate: "CREATE TABLE T_PRD_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_01 VALUES (1, 5), (2, 15), (3, 50), (4, 80), (5, 100)",
+			},
+			Query: "SELECT id FROM T_PRD_01 WHERE v < 10 OR v > 90 ORDER BY id",
+		},
+		{
+			Name:           "pred_and_or_paren",
+			SchemaTemplate: "CREATE TABLE T_PRD_02 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_02 VALUES (1, 10, 1), (2, 20, 1), (3, 10, 2), (4, 20, 2)",
+			},
+			Query: "SELECT id FROM T_PRD_02 WHERE (a = 10 AND b = 1) OR (a = 20 AND b = 2) ORDER BY id",
+		},
+		{
+			Name:           "pred_not_comparison",
+			SchemaTemplate: "CREATE TABLE T_PRD_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_03 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_PRD_03 WHERE NOT (v > 20) ORDER BY id",
+		},
+		{
+			Name:           "pred_in_list_multi",
+			SchemaTemplate: "CREATE TABLE T_PRD_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_04 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+			},
+			Query: "SELECT id FROM T_PRD_04 WHERE v IN (10, 30, 50) ORDER BY id",
+		},
+		{
+			Name:           "pred_not_in_list",
+			SchemaTemplate: "CREATE TABLE T_PRD_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_05 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT id FROM T_PRD_05 WHERE v NOT IN (20, 40) ORDER BY id",
+		},
+		{
+			Name:           "pred_range_same_col",
+			SchemaTemplate: "CREATE TABLE T_PRD_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_06 VALUES (1, 5), (2, 15), (3, 25), (4, 35)",
+			},
+			Query: "SELECT id FROM T_PRD_06 WHERE v >= 10 AND v <= 30 ORDER BY id",
+		},
+		{
+			Name:           "pred_is_null_mixed",
+			SchemaTemplate: "CREATE TABLE T_PRD_07 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_07 VALUES (1, 10, NULL), (2, NULL, 20), (3, 10, 20), (4, NULL, NULL)",
+			},
+			Query: "SELECT id FROM T_PRD_07 WHERE a IS NOT NULL AND b IS NULL ORDER BY id",
+		},
+		{
+			Name:           "pred_col_vs_col",
+			SchemaTemplate: "CREATE TABLE T_PRD_08 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_08 VALUES (1, 10, 5), (2, 5, 10), (3, 10, 10)",
+			},
+			Query: "SELECT id FROM T_PRD_08 WHERE a > b ORDER BY id",
+		},
+		{
+			Name:           "pred_literal_lhs",
+			SchemaTemplate: "CREATE TABLE T_PRD_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_09 VALUES (1, 5), (2, 15), (3, 25)",
+			},
+			Query: "SELECT id FROM T_PRD_09 WHERE 10 < v ORDER BY id",
+		},
+		{
+			Name:           "pred_deeply_nested",
+			SchemaTemplate: "CREATE TABLE T_PRD_10 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PRD_10 VALUES (1, 1, 1, 100), (2, 2, 2, 100), (3, 1, 2, 50), (4, 2, 1, 200)",
+			},
+			Query: "SELECT id FROM T_PRD_10 WHERE ((a = 1 AND b = 1) OR (a = 2 AND b = 2)) AND c >= 100 ORDER BY id",
+		},
+		// ===== INSERT edge cases =====
+		{
+			Name:           "insert_single_row_verify",
+			SchemaTemplate: "CREATE TABLE T_INS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INS_01 VALUES (42, 100)",
+			},
+			Query: "SELECT id, v FROM T_INS_01 ORDER BY id",
+		},
+		{
+			Name:           "insert_multi_row",
+			SchemaTemplate: "CREATE TABLE T_INS_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INS_02 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+			},
+			Query: "SELECT id, v FROM T_INS_02 ORDER BY id",
+		},
+		{
+			Name:           "insert_null_values",
+			SchemaTemplate: "CREATE TABLE T_INS_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INS_03 VALUES (1, NULL), (2, 20), (3, NULL)",
+			},
+			Query: "SELECT id, v FROM T_INS_03 ORDER BY id",
+		},
+		{
+			Name:           "insert_duplicate_pk_error",
+			SchemaTemplate: "CREATE TABLE T_INS_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INS_04 VALUES (1, 10)",
+				"INSERT INTO T_INS_04 VALUES (1, 20)",
+			},
+			Query: "SELECT id, v FROM T_INS_04 ORDER BY id",
+		},
+		{
+			Name:           "insert_negative_and_zero",
+			SchemaTemplate: "CREATE TABLE T_INS_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_INS_05 VALUES (1, -100), (2, 0), (3, 100)",
+			},
+			Query: "SELECT id, v FROM T_INS_05 ORDER BY id",
+		},
+		// ===== UPDATE edge cases =====
+		{
+			Name:           "update_single_col_single_row",
+			SchemaTemplate: "CREATE TABLE T_UPE_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPE_01 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_UPE_01 SET v = 99 WHERE id = 2",
+			},
+			Query: "SELECT id, v FROM T_UPE_01 ORDER BY id",
+		},
+		{
+			Name:           "update_all_rows",
+			SchemaTemplate: "CREATE TABLE T_UPE_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPE_02 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_UPE_02 SET v = 0",
+			},
+			Query: "SELECT id, v FROM T_UPE_02 ORDER BY id",
+		},
+		{
+			Name:           "update_arithmetic_expr",
+			SchemaTemplate: "CREATE TABLE T_UPE_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPE_03 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_UPE_03 SET v = v * 2 WHERE id >= 2",
+			},
+			Query: "SELECT id, v FROM T_UPE_03 ORDER BY id",
+		},
+		{
+			Name:           "update_set_null",
+			SchemaTemplate: "CREATE TABLE T_UPE_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPE_04 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_UPE_04 SET v = NULL WHERE id = 1",
+			},
+			Query: "SELECT id, v FROM T_UPE_04 ORDER BY id",
+		},
+		{
+			Name:           "update_no_match_noop",
+			SchemaTemplate: "CREATE TABLE T_UPE_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UPE_05 VALUES (1, 10), (2, 20)",
+				"UPDATE T_UPE_05 SET v = 99 WHERE id = 999",
+			},
+			Query: "SELECT id, v FROM T_UPE_05 ORDER BY id",
+		},
+		// ===== DELETE edge cases =====
+		{
+			Name:           "delete_single_by_pk",
+			SchemaTemplate: "CREATE TABLE T_DLE_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DLE_01 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_DLE_01 WHERE id = 2",
+			},
+			Query: "SELECT id, v FROM T_DLE_01 ORDER BY id",
+		},
+		{
+			Name:           "delete_all_rows",
+			SchemaTemplate: "CREATE TABLE T_DLE_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DLE_02 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_DLE_02",
+			},
+			Query: "SELECT COUNT(*) FROM T_DLE_02",
+		},
+		{
+			Name:           "delete_range_predicate",
+			SchemaTemplate: "CREATE TABLE T_DLE_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DLE_03 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)",
+				"DELETE FROM T_DLE_03 WHERE v >= 20",
+			},
+			Query: "SELECT id, v FROM T_DLE_03 ORDER BY id",
+		},
+		{
+			Name:           "delete_no_match_noop",
+			SchemaTemplate: "CREATE TABLE T_DLE_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DLE_04 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_DLE_04 WHERE id = 999",
+			},
+			Query: "SELECT id, v FROM T_DLE_04 ORDER BY id",
+		},
+		{
+			Name:           "delete_then_reinsert",
+			SchemaTemplate: "CREATE TABLE T_DLE_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DLE_05 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_DLE_05 WHERE id = 1",
+				"INSERT INTO T_DLE_05 VALUES (1, 99)",
+			},
+			Query: "SELECT id, v FROM T_DLE_05 ORDER BY id",
+		},
+		// ===== CAST / type conversion =====
+		{
+			Name:           "cast_bigint_to_string",
+			SchemaTemplate: "CREATE TABLE T_CST_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CST_01 VALUES (1, 42), (2, -100)",
+			},
+			Query: "SELECT id, CAST(v AS STRING) FROM T_CST_01 ORDER BY id",
+		},
+		{
+			Name:           "cast_string_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CST_02 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CST_02 VALUES (1, '42'), (2, '-100')",
+			},
+			Query: "SELECT id, CAST(s AS BIGINT) FROM T_CST_02 ORDER BY id",
+		},
+		{
+			Name:           "cast_bigint_to_double",
+			SchemaTemplate: "CREATE TABLE T_CST_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CST_03 VALUES (1, 100), (2, -50)",
+			},
+			Query: "SELECT id, CAST(v AS DOUBLE) FROM T_CST_03 ORDER BY id",
+		},
+		{
+			Name:           "cast_double_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CST_04 (id BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CST_04 VALUES (1, 3.7), (2, -2.9), (3, 0.1)",
+			},
+			Query: "SELECT id, CAST(d AS BIGINT) FROM T_CST_04 ORDER BY id",
+		},
+		{
+			Name:           "cast_null_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_CST_05 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CST_05 VALUES (1)",
+			},
+			Query: "SELECT id, CAST(NULL AS BIGINT) FROM T_CST_05 ORDER BY id",
+		},
+		// ===== Aggregate without GROUP BY =====
+		{
+			Name:           "agg_count_star_nogroup",
+			SchemaTemplate: "CREATE TABLE T_AGN_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGN_01 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT COUNT(*) FROM T_AGN_01",
+		},
+		{
+			Name:           "agg_sum_nogroup",
+			SchemaTemplate: "CREATE TABLE T_AGN_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGN_02 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(v) FROM T_AGN_02",
+		},
+		{
+			Name:           "agg_max_min_nogroup",
+			SchemaTemplate: "CREATE TABLE T_AGN_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGN_03 VALUES (1, 10), (2, 50), (3, 30)",
+			},
+			Query: "SELECT MAX(v), MIN(v) FROM T_AGN_03",
+		},
+		{
+			Name:           "agg_avg_nogroup",
+			SchemaTemplate: "CREATE TABLE T_AGN_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGN_04 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT AVG(v) FROM T_AGN_04",
+		},
+		{
+			Name:           "agg_multi_funcs_nogroup",
+			SchemaTemplate: "CREATE TABLE T_AGN_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGN_05 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT COUNT(*), SUM(v), AVG(v), MAX(v), MIN(v) FROM T_AGN_05",
+		},
+		// ===== GROUP BY edge cases =====
+		{
+			Name:           "groupby_single_key",
+			SchemaTemplate: "CREATE TABLE T_GBY_01 (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_GBY_01 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)",
+			},
+			Query: "SELECT grp, SUM(v) FROM T_GBY_01 GROUP BY grp ORDER BY grp",
+			Divergence: &Divergence{
+				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups and aggregates per SQL spec.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(30)},
+					{float64(2), float64(70)},
+					{float64(3), float64(50)},
+				},
+			},
+		},
+		{
+			Name:           "groupby_multi_key",
+			SchemaTemplate: "CREATE TABLE T_GBY_02 (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_GBY_02 VALUES (1, 1, 1, 10), (2, 1, 1, 20), (3, 1, 2, 30), (4, 2, 1, 40)",
+			},
+			Query: "SELECT a, b, COUNT(*) FROM T_GBY_02 GROUP BY a, b ORDER BY a, b",
+			Divergence: &Divergence{
+				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups by multiple keys per SQL spec.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(1), float64(2)},
+					{float64(1), float64(2), float64(1)},
+					{float64(2), float64(1), float64(1)},
+				},
+			},
+		},
+		{
+			Name:           "groupby_null_key_bigint",
+			SchemaTemplate: "CREATE TABLE T_GBY_03 (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_GBY_03 VALUES (1, 1, 10), (2, NULL, 20), (3, NULL, 30), (4, 1, 40)",
+			},
+			Query: "SELECT grp, SUM(v) FROM T_GBY_03 GROUP BY grp ORDER BY grp",
+			Divergence: &Divergence{
+				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{nil, float64(50)},
+					{float64(1), float64(50)},
+				},
+			},
+		},
+		{
+			Name:           "groupby_all_same_key",
+			SchemaTemplate: "CREATE TABLE T_GBY_04 (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_GBY_04 VALUES (1, 1, 10), (2, 1, 20), (3, 1, 30)",
+			},
+			Query: "SELECT grp, COUNT(*), SUM(v) FROM T_GBY_04 GROUP BY grp ORDER BY grp",
+			Divergence: &Divergence{
+				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly aggregates the single group per SQL spec.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(3), float64(60)},
+				},
+			},
+		},
+		{
+			Name:           "groupby_empty_table",
+			SchemaTemplate: "CREATE TABLE T_GBY_05 (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT grp, COUNT(*) FROM T_GBY_05 GROUP BY grp ORDER BY grp",
+			Divergence: &Divergence{
+				Reason:         "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly returns zero groups for empty table per SQL spec.",
+				Direction:      DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{},
+			},
+		},
+		// ===== String functions & LIKE patterns =====
+		{
+			Name:           "str_like_prefix",
+			SchemaTemplate: "CREATE TABLE T_SF_01 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_01 VALUES (1, 'apple'), (2, 'apricot'), (3, 'banana'), (4, 'avocado')",
+			},
+			Query: "SELECT id, name FROM T_SF_01 WHERE name LIKE 'ap%' ORDER BY id",
+		},
+		{
+			Name:           "str_like_single_char",
+			SchemaTemplate: "CREATE TABLE T_SF_02 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_02 VALUES (1, 'cat'), (2, 'cut'), (3, 'cot'), (4, 'cart')",
+			},
+			Query: "SELECT id, name FROM T_SF_02 WHERE name LIKE 'c_t' ORDER BY id",
+		},
+		{
+			Name:           "str_like_exact",
+			SchemaTemplate: "CREATE TABLE T_SF_03 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_03 VALUES (1, 'hello'), (2, 'world'), (3, 'help')",
+			},
+			Query: "SELECT id, name FROM T_SF_03 WHERE name LIKE 'hello' ORDER BY id",
+		},
+		{
+			Name:           "str_not_like",
+			SchemaTemplate: "CREATE TABLE T_SF_04 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_04 VALUES (1, 'foo'), (2, 'bar'), (3, 'foobar'), (4, 'baz')",
+			},
+			Query: "SELECT id, name FROM T_SF_04 WHERE name NOT LIKE 'foo%' ORDER BY id",
+		},
+		{
+			Name:           "str_like_suffix",
+			SchemaTemplate: "CREATE TABLE T_SF_05 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_05 VALUES (1, 'test'), (2, 'best'), (3, 'testing'), (4, 'rest')",
+			},
+			Query: "SELECT id, name FROM T_SF_05 WHERE name LIKE '%est' ORDER BY id",
+		},
+		{
+			Name:           "str_like_contains",
+			SchemaTemplate: "CREATE TABLE T_SF_06 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_06 VALUES (1, 'abcdef'), (2, 'xcdey'), (3, 'cde'), (4, 'xyz')",
+			},
+			Query: "SELECT id, name FROM T_SF_06 WHERE name LIKE '%cde%' ORDER BY id",
+		},
+		{
+			Name:           "str_upper",
+			SchemaTemplate: "CREATE TABLE T_SF_07 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_07 VALUES (1, 'hello'), (2, 'World'), (3, 'FOO')",
+			},
+			Query: "SELECT id, UPPER(name) FROM T_SF_07 ORDER BY id",
+		},
+		{
+			Name:           "str_lower",
+			SchemaTemplate: "CREATE TABLE T_SF_08 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SF_08 VALUES (1, 'HELLO'), (2, 'World'), (3, 'foo')",
+			},
+			Query: "SELECT id, LOWER(name) FROM T_SF_08 ORDER BY id",
+		},
+		// ===== BETWEEN patterns =====
+		{
+			Name:           "btw_bigint_basic",
+			SchemaTemplate: "CREATE TABLE T_BTW_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_01 VALUES (1, 5), (2, 10), (3, 15), (4, 20), (5, 25)",
+			},
+			Query: "SELECT id, val FROM T_BTW_01 WHERE val BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
+			Name:           "btw_not_between",
+			SchemaTemplate: "CREATE TABLE T_BTW_02 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_02 VALUES (1, 5), (2, 10), (3, 15), (4, 20), (5, 25)",
+			},
+			Query: "SELECT id, val FROM T_BTW_02 WHERE val NOT BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
+			Name:           "btw_lower_bound_inclusive",
+			SchemaTemplate: "CREATE TABLE T_BTW_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_03 VALUES (1, 9), (2, 10), (3, 11)",
+			},
+			Query: "SELECT id, val FROM T_BTW_03 WHERE val BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
+			Name:           "btw_upper_bound_inclusive",
+			SchemaTemplate: "CREATE TABLE T_BTW_04 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_04 VALUES (1, 19), (2, 20), (3, 21)",
+			},
+			Query: "SELECT id, val FROM T_BTW_04 WHERE val BETWEEN 10 AND 20 ORDER BY id",
+		},
+		{
+			Name:           "btw_combined_with_and",
+			SchemaTemplate: "CREATE TABLE T_BTW_05 (id BIGINT, val BIGINT, cat BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_05 VALUES (1, 5, 1), (2, 15, 1), (3, 15, 2), (4, 25, 1)",
+			},
+			Query: "SELECT id FROM T_BTW_05 WHERE val BETWEEN 10 AND 20 AND cat = 1 ORDER BY id",
+		},
+		{
+			Name:           "btw_negative_values",
+			SchemaTemplate: "CREATE TABLE T_BTW_06 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_06 VALUES (1, -20), (2, -10), (3, 0), (4, 10), (5, 20)",
+			},
+			Query: "SELECT id, val FROM T_BTW_06 WHERE val BETWEEN -15 AND 5 ORDER BY id",
+		},
+		{
+			Name:           "btw_same_bounds",
+			SchemaTemplate: "CREATE TABLE T_BTW_07 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BTW_07 VALUES (1, 9), (2, 10), (3, 11)",
+			},
+			Query: "SELECT id, val FROM T_BTW_07 WHERE val BETWEEN 10 AND 10 ORDER BY id",
+		},
+		// ===== CTE (WITH...AS) patterns =====
+		{
+			Name:           "cte2_filtered_count",
+			SchemaTemplate: "CREATE TABLE T_CTE2_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE2_02 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "WITH t AS (SELECT id, v FROM T_CTE2_02 WHERE v >= 20) SELECT COUNT(*) FROM t",
+		},
+		{
+			// CTE + outer ORDER BY: Java rejects with "order by is
+			// not supported in subquery" — a known visitor-level bug
+			// where isTopLevel() uses plan-fragment depth as a subquery
+			// proxy, but CTE queries push a fragment for CTE scope
+			// tracking, making the outer SELECT look nested. The
+			// architectural constraint (ORDER BY must be at plan root
+			// for index-backed sort) is valid for genuine subqueries
+			// but doesn't apply to CTE outer SELECTs. Go correctly
+			// supports it. Java's own WITH.rst documentation shows
+			// CTE + ORDER BY as a working example.
+			Name:           "cte2_outer_order_by",
+			SchemaTemplate: "CREATE TABLE T_CTE2_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CTE2_01 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "WITH t AS (SELECT id, v FROM T_CTE2_01 WHERE v > 10) SELECT id, v FROM t ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Java visitor-level bug: isTopLevel() false for CTE outer SELECT due to CTE scope fragment push. Genuine subquery ORDER BY restriction doesn't apply here.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2), float64(20)},
+					{float64(3), float64(30)},
+				},
+			},
+		},
+		// ===== ORDER BY edge cases =====
+		{
+			Name:           "oby_multi_col_mixed_dir",
+			SchemaTemplate: "CREATE TABLE T_OBY_01 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_OBY_01 VALUES (1, 1, 30), (2, 1, 10), (3, 2, 20), (4, 2, 40)",
+			},
+			Query: "SELECT id, a, b FROM T_OBY_01 ORDER BY a ASC, b DESC",
+		},
+		{
+			Name:           "oby_desc_with_ties",
+			SchemaTemplate: "CREATE TABLE T_OBY_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_OBY_02 VALUES (1, 10), (2, 20), (3, 10), (4, 20), (5, 10)",
+			},
+			Query: "SELECT id, v FROM T_OBY_02 ORDER BY v DESC, id ASC",
+		},
+		{
+			Name:           "oby_null_default_ordering",
+			SchemaTemplate: "CREATE TABLE T_OBY_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_OBY_03 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 20)",
+			},
+			Query: "SELECT id, v FROM T_OBY_03 ORDER BY v ASC, id ASC",
+		},
 	}
 }
 
