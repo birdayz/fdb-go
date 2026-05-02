@@ -27,6 +27,13 @@ func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// IsPhysicalIntersection reports whether the given RelationalExpression
+// is a physicalIntersectionWrapper.
+func IsPhysicalIntersection(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalIntersectionWrapper)
+	return ok
+}
+
 // findPhysicalPlan scans ref's members for the first physical-plan
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
