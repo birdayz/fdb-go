@@ -97,6 +97,10 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		// rationale as Distinct. The PK comparison drops duplicates
 		// without reordering surviving rows.
 		return inheritFromInner(v.GetInner())
+	case *expressions.GroupByExpression:
+		// GroupBy does not preserve input ordering — output is one row
+		// per group, in implementation-defined order.
+		return Ordering{IsKnown: false}
 	default:
 		if hinter, ok := e.(OrderingHinter); ok {
 			return hinter.HintOrdering()

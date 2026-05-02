@@ -8,6 +8,7 @@ go_library(
         "explode.go",
         "expression.go",
         "full_unordered_scan.go",
+        "group_by.go",
         "insert.go",
         "logical_distinct.go",
         "logical_filter.go",

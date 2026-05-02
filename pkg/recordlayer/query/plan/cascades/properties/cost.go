@@ -453,6 +453,20 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 		out := product * sel
 		return Cost{Cardinality: out, CPU: sumCPU + product*SelectCPU}
 
+	case *expressions.GroupByExpression:
+		if len(child) == 0 {
+			return Cost{}
+		}
+		in := child[0].Cardinality
+		// GroupBy output cardinality is estimated as DistinctSelectivity
+		// of the input (same heuristic as Distinct — we don't know the
+		// actual group count). CPU: scan all input rows + per-row
+		// aggregate computation.
+		return Cost{
+			Cardinality: in * DistinctSelectivity,
+			CPU:         sumCPU + in*DistinctCPU,
+		}
+
 	case *expressions.InsertExpression, *expressions.UpdateExpression, *expressions.DeleteExpression:
 		if len(child) == 0 {
 			return Cost{}
