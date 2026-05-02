@@ -48,11 +48,11 @@ func (r *ImplementTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 
 	tfPlan := plans.NewRecordQueryTypeFilterPlan(tf.GetRecordTypes(), innerPlan)
 
-	innerWrap := wrapPhysicalPlan(innerPlan)
-	if innerWrap == nil {
+	innerExpr := findPhysicalExpr(innerRef)
+	if innerExpr == nil {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerWrap))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(NewPhysicalTypeFilterWrapper(tfPlan, innerQ))
 }
 

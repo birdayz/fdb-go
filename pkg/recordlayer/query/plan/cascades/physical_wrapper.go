@@ -34,6 +34,23 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	return nil
 }
 
+// findPhysicalExpr scans ref's members for the first physical-plan
+// expression and returns it as a RelationalExpression. Used by
+// implement rules to obtain the existing wrapper (already memoized
+// in the inner Reference by a prior implement-rule fire) without
+// re-wrapping from scratch.
+func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	for _, m := range ref.Members() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			return m
+		}
+	}
+	return nil
+}
+
 // writeHash64 writes a uint64 to the FNV hasher in big-endian
 // byte order. Shared by all four wrapper types' HashCodeWithoutChildren
 // implementations.

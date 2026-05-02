@@ -47,11 +47,11 @@ func (r *ImplementDistinctRule) OnMatch(call *ExpressionRuleCall) {
 
 	distPlan := plans.NewRecordQueryDistinctPlan(innerPlan)
 
-	innerWrap := wrapPhysicalPlan(innerPlan)
-	if innerWrap == nil {
+	innerExpr := findPhysicalExpr(innerRef)
+	if innerExpr == nil {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerWrap))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(NewPhysicalDistinctWrapper(distPlan, innerQ))
 }
 

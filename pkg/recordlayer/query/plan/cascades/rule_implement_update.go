@@ -48,11 +48,11 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 
 	updPlan := plans.NewRecordQueryUpdatePlan(innerPlan, upd.GetTargetRecordType(), upd.GetTransforms())
 
-	innerWrap := wrapPhysicalPlan(innerPlan)
-	if innerWrap == nil {
+	innerExpr := findPhysicalExpr(innerRef)
+	if innerExpr == nil {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerWrap))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(NewPhysicalUpdateWrapper(updPlan, innerQ))
 }
 

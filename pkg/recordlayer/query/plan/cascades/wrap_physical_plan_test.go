@@ -4,119 +4,76 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
-// TestWrapPhysicalPlan_Scan pins the leaf case.
-func TestWrapPhysicalPlan_Scan(t *testing.T) {
+// TestFindPhysicalExpr_ReturnsWrapperFromReference pins the happy path:
+// a Reference containing a physicalScanWrapper yields that wrapper.
+func TestFindPhysicalExpr_ReturnsWrapperFromReference(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	wrap := wrapPhysicalPlan(scan)
-	if wrap == nil {
-		t.Fatal("wrapPhysicalPlan(Scan) = nil")
+	wrapper := &physicalScanWrapper{plan: scan}
+	ref := expressions.InitialOf(wrapper)
+	got := findPhysicalExpr(ref)
+	if got == nil {
+		t.Fatal("findPhysicalExpr = nil, want non-nil")
 	}
-	if _, ok := wrap.(*physicalScanWrapper); !ok {
-		t.Fatalf("wrap = %T, want *physicalScanWrapper", wrap)
+	if got != wrapper {
+		t.Fatalf("findPhysicalExpr returned %p, want %p (same wrapper)", got, wrapper)
 	}
 }
 
-// TestWrapPhysicalPlan_Filter pins the recursive-wrap path.
-func TestWrapPhysicalPlan_Filter(t *testing.T) {
+// TestFindPhysicalExpr_NilReference returns nil on nil input.
+func TestFindPhysicalExpr_NilReference(t *testing.T) {
+	t.Parallel()
+	if got := findPhysicalExpr(nil); got != nil {
+		t.Fatalf("findPhysicalExpr(nil) = %v, want nil", got)
+	}
+}
+
+// TestFindPhysicalExpr_LogicalOnlyReference returns nil when only
+// logical expressions are present (no physical wrapper).
+func TestFindPhysicalExpr_LogicalOnlyReference(t *testing.T) {
+	t.Parallel()
+	logical := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	ref := expressions.InitialOf(logical)
+	if got := findPhysicalExpr(ref); got != nil {
+		t.Fatalf("findPhysicalExpr(logical-only) = %v, want nil", got)
+	}
+}
+
+// TestFindPhysicalExpr_MixedMembers finds the physical wrapper even
+// when a logical expression was inserted first.
+func TestFindPhysicalExpr_MixedMembers(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
-	wrap := wrapPhysicalPlan(filter)
-	if wrap == nil {
-		t.Fatal("wrapPhysicalPlan(Filter) = nil")
+	wrapper := &physicalScanWrapper{plan: scan}
+	logical := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	// Build ref with logical first, then insert physical.
+	ref := expressions.InitialOf(logical)
+	ref.Insert(wrapper)
+	got := findPhysicalExpr(ref)
+	if got == nil {
+		t.Fatal("findPhysicalExpr(mixed) = nil, want non-nil")
 	}
-	if _, ok := wrap.(*physicalFilterWrapper); !ok {
-		t.Fatalf("wrap = %T, want *physicalFilterWrapper", wrap)
+	if got != wrapper {
+		t.Fatalf("findPhysicalExpr returned %p, want %p", got, wrapper)
 	}
 }
 
-// TestWrapPhysicalPlan_Union pins the N-children wrap path with
-// concatenated quantifiers.
-func TestWrapPhysicalPlan_Union(t *testing.T) {
+// TestFindPhysicalPlan_ReturnsUnderlyingPlan pins findPhysicalPlan:
+// a Reference containing a physicalScanWrapper yields the scan plan.
+func TestFindPhysicalPlan_ReturnsUnderlyingPlan(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
-	wrap := wrapPhysicalPlan(union)
-	if wrap == nil {
-		t.Fatal("wrapPhysicalPlan(Union) = nil")
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	wrapper := &physicalScanWrapper{plan: scan}
+	ref := expressions.InitialOf(wrapper)
+	got := findPhysicalPlan(ref)
+	if got == nil {
+		t.Fatal("findPhysicalPlan = nil, want non-nil")
 	}
-	uw, ok := wrap.(*physicalUnionWrapper)
-	if !ok {
-		t.Fatalf("wrap = %T, want *physicalUnionWrapper", wrap)
-	}
-	if got := len(uw.GetQuantifiers()); got != 2 {
-		t.Fatalf("union wrapper has %d quantifiers, want 2", got)
+	if got != scan {
+		t.Fatalf("findPhysicalPlan returned wrong plan")
 	}
 }
-
-// TestWrapPhysicalPlan_Intersection pins the N-children wrap path
-// for Intersection — symmetric with Union but verifies the
-// review-feedback fix for the missing IntersectionPlan case in
-// wrapPhysicalPlan.
-func TestWrapPhysicalPlan_Intersection(t *testing.T) {
-	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	keys := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
-	}
-	intersection := plans.NewRecordQueryIntersectionPlan(
-		[]plans.RecordQueryPlan{scanA, scanB}, keys)
-	wrap := wrapPhysicalPlan(intersection)
-	if wrap == nil {
-		t.Fatal("wrapPhysicalPlan(Intersection) = nil")
-	}
-	iw, ok := wrap.(*physicalIntersectionWrapper)
-	if !ok {
-		t.Fatalf("wrap = %T, want *physicalIntersectionWrapper", wrap)
-	}
-	if got := len(iw.GetQuantifiers()); got != 2 {
-		t.Fatalf("intersection wrapper has %d quantifiers, want 2", got)
-	}
-}
-
-// TestWrapPhysicalPlan_NestedUnionInIntersection pins the recursive
-// wrap path: Intersection(Union(Scan, Scan), Scan) — once the
-// review-feedback fix lifts the wrapper-symmetry block, this
-// shape can fully wrap.
-func TestWrapPhysicalPlan_NestedUnionInIntersection(t *testing.T) {
-	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
-	innerUnion := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
-	outer := plans.NewRecordQueryIntersectionPlan(
-		[]plans.RecordQueryPlan{innerUnion, scanC},
-		nil)
-	wrap := wrapPhysicalPlan(outer)
-	if wrap == nil {
-		t.Fatal("wrapPhysicalPlan(Intersection(Union, Scan)) = nil — recursive wrap broke")
-	}
-	if _, ok := wrap.(*physicalIntersectionWrapper); !ok {
-		t.Fatalf("outer wrap = %T, want *physicalIntersectionWrapper", wrap)
-	}
-}
-
-// TestWrapPhysicalPlan_NilForUnknownPlan pins the fallback path —
-// returns nil if the concrete plan type isn't recognised.
-func TestWrapPhysicalPlan_NilForUnknownPlan(t *testing.T) {
-	t.Parallel()
-	// Pass a deliberately-nil plan to exercise the type-switch
-	// fall-through. The function should return nil rather than panic.
-	var p plans.RecordQueryPlan
-	if got := wrapPhysicalPlan(p); got != nil {
-		t.Fatalf("wrapPhysicalPlan(nil) = %v, want nil", got)
-	}
-}
-
-// Use ForEachQuantifier to acknowledge unused-import suppression
-// on legacy build configs.
-var _ = expressions.ForEachQuantifier

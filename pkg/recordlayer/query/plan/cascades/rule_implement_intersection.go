@@ -49,6 +49,7 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	innerPlans := make([]plans.RecordQueryPlan, 0, len(children))
+	childRefs := make([]*expressions.Reference, 0, len(children))
 	for _, q := range children {
 		innerRef := q.GetRangesOver()
 		if innerRef == nil {
@@ -59,18 +60,20 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			return // any child not physical → skip the whole rule fire
 		}
 		innerPlans = append(innerPlans, innerPlan)
+		childRefs = append(childRefs, innerRef)
 	}
 
 	intersectionPlan := plans.NewRecordQueryIntersectionPlan(innerPlans, intr.GetComparisonKeyValues())
 
-	// Build wrapped child quantifiers — one per physical inner.
-	childQs := make([]expressions.Quantifier, 0, len(innerPlans))
-	for _, ip := range innerPlans {
-		wrap := wrapPhysicalPlan(ip)
-		if wrap == nil {
+	// Reuse the existing physical wrapper expressions from each child
+	// Reference rather than re-wrapping from scratch.
+	childQs := make([]expressions.Quantifier, 0, len(childRefs))
+	for _, ref := range childRefs {
+		innerExpr := findPhysicalExpr(ref)
+		if innerExpr == nil {
 			return
 		}
-		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(wrap)))
+		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr)))
 	}
 
 	call.Yield(NewPhysicalIntersectionWrapper(intersectionPlan, childQs))

@@ -46,11 +46,11 @@ func (r *ImplementInsertRule) OnMatch(call *ExpressionRuleCall) {
 
 	insPlan := plans.NewRecordQueryInsertPlan(innerPlan, ins.GetTargetRecordType(), ins.GetTargetType())
 
-	innerWrap := wrapPhysicalPlan(innerPlan)
-	if innerWrap == nil {
+	innerExpr := findPhysicalExpr(innerRef)
+	if innerExpr == nil {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerWrap))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
 	call.Yield(NewPhysicalInsertWrapper(insPlan, innerQ))
 }
 
