@@ -8744,11 +8744,23 @@ func SeedRunCorpus() []RunQuery {
 
 		// ===== Identifier resolution: case sensitivity, qualified column refs,
 		// alias visibility, table-name vs column-name resolution =====
-		// Dropped ident_lowercase_table_ref: Java case-folds table
-		// names (`SELECT FROM t_ir1` resolves to T_IR1); Go does not
-		// (errors `Unknown table T_IR1`). Real Go divergence (#56).
-		// Dropped ident_uppercase_col_ref: same #56 family — Go
-		// fails to case-fold column-name references.
+		{
+			// Lowercase table reference against an uppercase-declared
+			// table — pins SQL-spec case folding of unquoted identifiers
+			// (TODO #56 fix landed dayshift-66).
+			Name:           "ident_lowercase_table_ref",
+			SchemaTemplate: "CREATE TABLE T_IR1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR1 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM t_ir1 ORDER BY id",
+		},
+		{
+			// Uppercase column reference against a lowercase-declared
+			// column — same #56 fix, opposite direction.
+			Name:           "ident_uppercase_col_ref",
+			SchemaTemplate: "CREATE TABLE T_IR2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR2 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT ID, VAL FROM T_IR2 ORDER BY ID",
+		},
 		{
 			// Alias in projection: SELECT a.id, a.val FROM t AS a —
 			// pins that the alias replaces the table name as qualifier.
@@ -8817,9 +8829,16 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "WITH x AS (SELECT id FROM T_IR10A), y AS (SELECT id FROM T_IR10B) SELECT count(*) FROM x, y WHERE x.id = y.id",
 		},
-		// Dropped ident_quoted_lowercase_col: Java parses
-		// double-quoted "ID" as a case-preserving identifier; Go
-		// rejects. Quoted-identifier handling divergence (#57).
+		{
+			// Double-quoted identifier matches the (already folded)
+			// canonical column name. Both engines: CREATE TABLE folds
+			// `id` to `ID` in the catalog, then `"ID"` preserves case
+			// and resolves directly. Pins TODO #57 fix landed dayshift-66.
+			Name:           "ident_quoted_canonical_col",
+			SchemaTemplate: "CREATE TABLE T_IR11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR11 VALUES (1, 10), (2, 20)"},
+			Query:          `SELECT "ID" FROM T_IR11 ORDER BY "ID"`,
+		},
 		{
 			// Column qualified by table name (no alias) — pins that
 			// the bare table name is itself a usable qualifier.
@@ -8836,8 +8855,15 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_IR13 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT a.id FROM T_IR13 AS a, T_IR13 AS b WHERE a.id < b.id ORDER BY a.id",
 		},
-		// Dropped ident_lowercase_both_table_and_col: same #56 — Go
-		// fails to case-fold lowercase table reference.
+		{
+			// Lowercase reference for BOTH table AND column — exercises
+			// the case-fold fix from end to end (TODO #56 fix landed
+			// dayshift-66).
+			Name:           "ident_lowercase_both_table_and_col",
+			SchemaTemplate: "CREATE TABLE T_IR14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR14 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id, val FROM t_ir14 ORDER BY id",
+		},
 
 		// ===== Deeply-nested derived tables and subquery-in-FROM variations =====
 		{
