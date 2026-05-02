@@ -369,6 +369,74 @@ func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
 	}
 }
 
+// TestIndexScan_MultipleIndexesBestChoice verifies that when multiple
+// indexes can serve a query, the planner picks the compound index
+// (more bound columns → lower estimated cardinality) over the single-column index.
+func TestIndexScan_MultipleIndexesBestChoice(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	candSingle := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	b1 := values.UniqueCorrelationIdentifier()
+	b2 := values.UniqueCorrelationIdentifier()
+	candCompound := NewValueIndexScanMatchCandidate(
+		"Order$status_amount",
+		[]string{"Order"},
+		[]string{"STATUS", "AMOUNT"},
+		[]values.CorrelationIdentifier{b1, b2},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candSingle, candCompound}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(50)),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx)
+	best, _, err := p.Plan(filterRef)
+	if err != nil {
+		t.Fatalf("planner error: %v", err)
+	}
+
+	w, ok := best.(*physicalIndexScanWrapper)
+	if !ok {
+		t.Fatalf("expected planner to pick physicalIndexScanWrapper, got %T", best)
+	}
+	comps := w.plan.GetScanComparisons()
+	bound := 0
+	for _, cr := range comps {
+		if !cr.IsEmpty() {
+			bound++
+		}
+	}
+	if bound != 2 {
+		t.Fatalf("expected compound index (2 bound columns) chosen, got %d bound", bound)
+	}
+}
+
 // TestIndexScan_CostComparison verifies that the planner's cost model
 // correctly ranks an index scan cheaper than a full-scan+filter on the
 // same query shape.
