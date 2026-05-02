@@ -10876,6 +10876,162 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_OBR10 VALUES ('us', 2, 'b'), ('us', 1, 'a'), ('eu', 1, 'c'), ('eu', 2, 'd')"},
 			Query:          "SELECT region, id, name FROM T_OBR10 ORDER BY region DESC, id DESC",
 		},
+
+		// ===== Misc small fills =====
+		{
+			// AND/OR/NOT/IS NULL/BETWEEN/LIKE chained in one WHERE on
+			// a single table — pins the boolean-tree simplifier across
+			// a representative mix of leaves.
+			Name:           "where_chain_mixed_predicates",
+			SchemaTemplate: "CREATE TABLE T_MX1 (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX1 VALUES (1, 5, 'apple')",
+				"INSERT INTO T_MX1 VALUES (2, 25, 'banana')",
+				"INSERT INTO T_MX1 VALUES (3, 60, NULL)",
+				"INSERT INTO T_MX1 VALUES (4, 80, 'cherry')",
+				"INSERT INTO T_MX1 VALUES (5, 12, 'apricot')",
+			},
+			Query: "SELECT id FROM T_MX1 WHERE (v BETWEEN 10 AND 50 AND s LIKE 'a%') OR s IS NULL ORDER BY id",
+		},
+		{
+			// AND chain with IS NOT NULL + range + LIKE — variation on
+			// the above without OR, pinning conjunction-only leaves.
+			Name:           "where_and_chain_isnotnull_like",
+			SchemaTemplate: "CREATE TABLE T_MX2 (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX2 VALUES (1, 5, NULL)",
+				"INSERT INTO T_MX2 VALUES (2, 25, 'apple')",
+				"INSERT INTO T_MX2 VALUES (3, 30, 'apricot')",
+				"INSERT INTO T_MX2 VALUES (4, 70, 'banana')",
+			},
+			Query: "SELECT id FROM T_MX2 WHERE s IS NOT NULL AND v BETWEEN 20 AND 50 AND s LIKE 'a%' ORDER BY id",
+		},
+		{
+			// DELETE then INSERT same key with different val, then
+			// SELECT — pins the delete-overwrite-by-pk semantics.
+			Name:           "delete_reinsert_same_key_diff_val",
+			SchemaTemplate: "CREATE TABLE T_MX3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX3 VALUES (1, 100)",
+				"INSERT INTO T_MX3 VALUES (2, 200)",
+				"DELETE FROM T_MX3 WHERE id = 1",
+				"INSERT INTO T_MX3 VALUES (1, 999)",
+			},
+			Query: "SELECT id, val FROM T_MX3 ORDER BY id",
+		},
+		{
+			// SUM over a CTE result — pins the aggregate-over-derived
+			// path for a numeric column.
+			Name:           "sum_over_cte",
+			SchemaTemplate: "CREATE TABLE T_MX4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX4 VALUES (1, 10)",
+				"INSERT INTO T_MX4 VALUES (2, 25)",
+				"INSERT INTO T_MX4 VALUES (3, 100)",
+				"INSERT INTO T_MX4 VALUES (4, 250)",
+			},
+			Query: "WITH c AS (SELECT id, val FROM T_MX4 WHERE val >= 25) SELECT sum(val) FROM c",
+		},
+		{
+			// COUNT after multiple INSERT/UPDATE/DELETE in setup —
+			// pins the cumulative-DML-state path.
+			Name:           "count_after_multi_dml",
+			SchemaTemplate: "CREATE TABLE T_MX5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX5 VALUES (1, 1)",
+				"INSERT INTO T_MX5 VALUES (2, 2)",
+				"INSERT INTO T_MX5 VALUES (3, 3)",
+				"UPDATE T_MX5 SET val = 99 WHERE id = 2",
+				"INSERT INTO T_MX5 VALUES (4, 4)",
+				"DELETE FROM T_MX5 WHERE id = 1",
+			},
+			Query: "SELECT count(*) FROM T_MX5",
+		},
+		{
+			// Self-comparison via CTE — same CTE referenced twice in
+			// FROM with a join predicate. Pins the CTE-as-base-table
+			// duplication semantics.
+			Name:           "self_compare_via_cte",
+			SchemaTemplate: "CREATE TABLE T_MX6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX6 VALUES (1, 5)",
+				"INSERT INTO T_MX6 VALUES (2, 5)",
+				"INSERT INTO T_MX6 VALUES (3, 7)",
+			},
+			Query: "WITH x AS (SELECT id, val FROM T_MX6) SELECT count(*) FROM x AS a, x AS b WHERE a.val = b.val",
+		},
+		{
+			// Bulk insert via multi-row VALUES (10 rows), then COUNT —
+			// pins the multi-row-VALUES path and the count match.
+			Name:           "insert_many_count",
+			SchemaTemplate: "CREATE TABLE T_MX7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX7 VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10)",
+			},
+			Query: "SELECT count(*) FROM T_MX7",
+		},
+		{
+			// Insert N rows, delete half, COUNT — pins delete-by-range
+			// + post-delete count agreement.
+			Name:           "delete_half_count",
+			SchemaTemplate: "CREATE TABLE T_MX8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX8 VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)",
+				"DELETE FROM T_MX8 WHERE id <= 3",
+			},
+			Query: "SELECT count(*) FROM T_MX8",
+		},
+		{
+			// COUNT over composite-PK table with leading-eq filter —
+			// pins the prefix-scan count path.
+			Name:           "count_composite_pk_leading_eq",
+			SchemaTemplate: "CREATE TABLE T_MX9 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX9 VALUES ('us', 1, 10)",
+				"INSERT INTO T_MX9 VALUES ('us', 2, 20)",
+				"INSERT INTO T_MX9 VALUES ('us', 3, 30)",
+				"INSERT INTO T_MX9 VALUES ('eu', 1, 40)",
+				"INSERT INTO T_MX9 VALUES ('eu', 2, 50)",
+			},
+			Query: "SELECT count(*) FROM T_MX9 WHERE region = 'us'",
+		},
+		{
+			// MIN over indexed STRING column — pins the
+			// indexed-min-string aggregator path.
+			Name:           "min_indexed_string",
+			SchemaTemplate: "CREATE TABLE T_MX10 (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE INDEX idx_mx10_s ON T_MX10 (s)",
+			SetupSqls: []string{
+				"INSERT INTO T_MX10 VALUES (1, 'banana')",
+				"INSERT INTO T_MX10 VALUES (2, 'apple')",
+				"INSERT INTO T_MX10 VALUES (3, 'cherry')",
+			},
+			Query: "SELECT MIN(s) FROM T_MX10",
+		},
+		{
+			// MAX over indexed BIGINT column — pins the
+			// indexed-max-bigint aggregator path.
+			Name:           "max_indexed_bigint",
+			SchemaTemplate: "CREATE TABLE T_MX11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_mx11_v ON T_MX11 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_MX11 VALUES (1, 50)",
+				"INSERT INTO T_MX11 VALUES (2, 200)",
+				"INSERT INTO T_MX11 VALUES (3, 100)",
+			},
+			Query: "SELECT MAX(v) FROM T_MX11",
+		},
+		{
+			// DELETE then INSERT same key with different val, then
+			// SELECT just the val — variant of the reinsert probe
+			// that asserts the new val survives.
+			Name:           "delete_reinsert_select_val_only",
+			SchemaTemplate: "CREATE TABLE T_MX12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MX12 VALUES (1, 100)",
+				"DELETE FROM T_MX12 WHERE id = 1",
+				"INSERT INTO T_MX12 VALUES (1, 555)",
+			},
+			Query: "SELECT val FROM T_MX12 WHERE id = 1",
+		},
 	}
 }
 
