@@ -113,6 +113,48 @@ func FuzzPlanner_PlanFullPipeline(f *testing.F) {
 	})
 }
 
+// FuzzPlanner_MemoConsistency pins that after Explore, the Memo's
+// internal index is consistent: every Reference in the Memo has all
+// its members' child References also in the Memo.
+func FuzzPlanner_MemoConsistency(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3, 4, 5})
+	f.Add([]byte{3, 7, 2, 1})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if len(b) < 4 {
+			return
+		}
+		expr := buildFuzzExpression(b, 0, 0)
+		ref := expressions.InitialOf(expr)
+		rules := selectRules(b)
+		p := NewPlanner(rules, nil)
+		p.MaxTasks = 5_000
+
+		_, conv := p.Explore(ref)
+		if !conv {
+			t.Skip("did not converge")
+			return
+		}
+		memo := p.Memo()
+		if memo == nil {
+			t.Fatal("Memo is nil after Explore")
+		}
+		// Verify every Reference in the Memo has its children also indexed.
+		for mRef := range memo.References() {
+			for _, member := range mRef.Members() {
+				for _, q := range member.GetQuantifiers() {
+					child := q.GetRangesOver()
+					if child == nil {
+						continue
+					}
+					if !memo.ContainsReference(child) {
+						t.Fatalf("Memo inconsistency: child Reference of %T not in Memo", member)
+					}
+				}
+			}
+		}
+	})
+}
+
 // FuzzPlanner_InitialMemberPreserved pins that the original input
 // expression is never removed from the Reference — rules can ADD
 // alternatives but not REPLACE the input.
