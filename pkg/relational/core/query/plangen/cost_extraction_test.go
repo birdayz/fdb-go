@@ -605,3 +605,54 @@ func TestEndToEnd_CostMonotonicAcrossOptimisation(t *testing.T) {
 		}
 	}
 }
+
+// TestEndToEnd_PlanPrefersIndexScanOverFullScan verifies that
+// Planner.Plan() selects an index scan (lower cost) over a full scan +
+// filter when a suitable index exists.
+func TestEndToEnd_PlanPrefersIndexScanOverFullScan(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+		},
+		q,
+	)
+	ref := expressions.InitialOf(filter)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, tasks, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v (tasks=%d)", err, tasks)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// The plan should be the index scan (cheapest) — not the full scan
+	// or logical filter. Index scan has lower cardinality due to
+	// selectivity reduction.
+	if cascades.IsPhysicalIndexScan(plan) {
+		t.Logf("Plan correctly chose index scan (tasks=%d)", tasks)
+		return
+	}
+	// Also acceptable: physicalFilterWrapper containing an index scan
+	// (residual filter over index scan). In our case, single-predicate
+	// fully consumed means bare index scan.
+	t.Fatalf("Plan chose %T instead of index scan; expected cost model to prefer index over full scan", plan)
+}
