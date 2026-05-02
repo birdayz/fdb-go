@@ -866,7 +866,15 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if atomItem.GetAlias() != nil {
 			aliasRaw := atomItem.GetAlias().GetText()
 			aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
-			isQuoted := aliasRaw != aliasTxt
+			// Structural quote-detection: post-case-fold,
+			// `aliasRaw != aliasTxt` is also true whenever the
+			// raw alias has any lowercase character (the helper
+			// upper-cases unquoted text). Use a structural check
+			// so a lowercased alias `from a hello` doesn't get
+			// classified as quoted.
+			isQuoted := len(aliasRaw) >= 2 &&
+				((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
+					(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
 			if atomItem.AS() == nil && !isQuoted {
 				up := strings.ToUpper(aliasTxt)
 				if up == "LEFT" || up == "RIGHT" {

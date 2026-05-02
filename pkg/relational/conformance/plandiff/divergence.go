@@ -48,8 +48,19 @@ const (
 	// succeeds with SQL-correct rows.
 	DivergenceJavaErrorsGoCorrect DivergenceDirection = "JavaErrorsGoCorrect"
 	// DivergenceJavaWrongRowsGoCorrect — both engines succeed; Java's
-	// rows are SQL-incorrect, Go's are right.
+	// rows are deterministically SQL-incorrect, Go's are right. The
+	// harness fires a stale-annotation guard if Java's rows happen to
+	// match Go's expected; for INTERMITTENT Java bugs (e.g. UNION ALL
+	// outer ORDER BY where Java sometimes returns the right order),
+	// use DivergenceJavaIntermittentGoCorrect instead.
 	DivergenceJavaWrongRowsGoCorrect DivergenceDirection = "JavaWrongRowsGoCorrect"
+	// DivergenceJavaIntermittentGoCorrect — both engines succeed; Java
+	// returns SQL-incorrect rows on SOME runs but may return correct
+	// rows on others (planner non-determinism). Go is deterministic
+	// and correct. Same shape as JavaWrongRowsGoCorrect minus the
+	// stale-annotation guard, since Java's row-for-row match is
+	// expected to be intermittent.
+	DivergenceJavaIntermittentGoCorrect DivergenceDirection = "JavaIntermittentGoCorrect"
 	// DivergenceBothErrorMessagesDrift — both engines reject; error
 	// messages differ in cosmetic ways.
 	DivergenceBothErrorMessagesDrift DivergenceDirection = "BothErrorMessagesDrift"

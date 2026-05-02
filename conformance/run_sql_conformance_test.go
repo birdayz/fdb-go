@@ -289,6 +289,27 @@ var _ = Describe("RunSql Harness", func() {
 						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
 							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
 							rq.Name, div.Direction, div.Reason)
+						// Stale-annotation guard: if Java has silently
+						// started returning the same rows as Go, the
+						// upstream bug may be fixed and the annotation
+						// should be re-audited / removed. Symmetric with
+						// the JavaErrorsGoCorrect "Java succeeded" guard.
+						// For intermittent Java bugs use
+						// DivergenceJavaIntermittentGoCorrect, which
+						// skips this guard.
+						Expect(javaResult.Rows.Rows).NotTo(Equal(div.GoExpectedRows),
+							"corpus entry %q: marked %s but Java now matches Go's expected rows — upstream may be fixed; revisit annotation\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+					case plandiff.DivergenceJavaIntermittentGoCorrect:
+						Expect(javaResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s expects Java to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
+							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
 					case plandiff.DivergenceBothErrorMessagesDrift:
 						Expect(javaResult.Err).To(HaveOccurred(),
 							"corpus entry %q: %s expects Java to error\n  Reason: %s",

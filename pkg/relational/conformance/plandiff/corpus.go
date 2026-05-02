@@ -4063,8 +4063,8 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_UO1 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT id FROM T_UO1 WHERE v < 20 UNION ALL SELECT id FROM T_UO1 WHERE v >= 20 ORDER BY id",
 			Divergence: &Divergence{
-				Reason:    "Java intermittently fails to apply outer ORDER BY on UNION ALL — sometimes returns interleaved branch order. Go's behaviour is SQL-correct.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Reason:    "Java intermittently fails to apply outer ORDER BY on UNION ALL — sometimes returns interleaved branch order, sometimes correctly sorted. Go's behaviour is deterministic and SQL-correct.",
+				Direction: DivergenceJavaIntermittentGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)}, {float64(2)}, {float64(3)},
 				},
@@ -4077,7 +4077,7 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, v FROM T_UO2 WHERE v < 20 UNION ALL SELECT id, v FROM T_UO2 WHERE v >= 20 ORDER BY id",
 			Divergence: &Divergence{
 				Reason:    "Same Java intermittent UNION-ALL ORDER BY bug as union_all_two_branches_disjoint_where; multi-col projection variant.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: DivergenceJavaIntermittentGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)}, {float64(2), float64(20)}, {float64(3), float64(30)},
 				},
