@@ -225,6 +225,83 @@ func TestIndexIntersection_PartialCoverage(t *testing.T) {
 	}
 }
 
+// TestIndexIntersection_ThreeWay verifies 3-way intersection: three
+// predicates on three columns, each with its own index. Together they
+// cover all predicates via a 3-way intersection.
+func TestIndexIntersection_ThreeWay(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	b1 := values.UniqueCorrelationIdentifier()
+	c1 := values.UniqueCorrelationIdentifier()
+	candA := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	candB := NewValueIndexScanMatchCandidate(
+		"Order$amount",
+		[]string{"Order"},
+		[]string{"AMOUNT"},
+		[]values.CorrelationIdentifier{b1},
+		values.UnknownType,
+		false,
+	)
+	candC := NewValueIndexScanMatchCandidate(
+		"Order$date",
+		[]string{"Order"},
+		[]string{"DATE"},
+		[]values.CorrelationIdentifier{c1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{candA, candB, candC}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(50)),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "DATE", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "2024-01-01"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	rule := NewIndexIntersectionRule()
+	results := FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
+
+	// Should produce 2-way intersections (3 pairs) AND a 3-way intersection.
+	found3Way := false
+	for _, r := range results {
+		intr, ok := r.(*expressions.LogicalIntersectionExpression)
+		if !ok {
+			continue
+		}
+		if len(intr.GetQuantifiers()) == 3 {
+			found3Way = true
+			break
+		}
+	}
+	if !found3Way {
+		t.Fatalf("expected a 3-way intersection, got %d results (none with 3 legs)", len(results))
+	}
+}
+
 // TestIndexIntersection_PlannerIntegration verifies the full pipeline:
 // 2-way intersection → ImplementIntersectionRule → physical plan.
 func TestIndexIntersection_PlannerIntegration(t *testing.T) {

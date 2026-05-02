@@ -45,6 +45,12 @@ func NewIndexIntersectionRule() *IndexIntersectionRule {
 
 func (r *IndexIntersectionRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+type intersectionCandidateMatch struct {
+	cand     MatchCandidate
+	consumed []int
+	preds    []predicates.QueryPredicate
+}
+
 func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 	f := matching.Get[*expressions.LogicalFilterExpression](call.Bindings, r.matcher)
 
@@ -69,13 +75,7 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 
 	scanTypes := scan.GetRecordTypes()
 
-	type candidateMatch struct {
-		cand     MatchCandidate
-		consumed []int
-		preds    []predicates.QueryPredicate
-	}
-
-	var matches []candidateMatch
+	var matches []intersectionCandidateMatch
 
 	for _, cand := range candidates {
 		if !recordTypesOverlap(scanTypes, cand.GetRecordTypes()) {
@@ -150,7 +150,7 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			consumedPreds[i] = preds[idx]
 		}
 
-		matches = append(matches, candidateMatch{
+		matches = append(matches, intersectionCandidateMatch{
 			cand:     cand,
 			consumed: inPrefix,
 			preds:    consumedPreds,
@@ -210,6 +210,84 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 	}
+
+	// N-way intersection (K≥3): try all disjoint subsets of size K that
+	// together cover all predicates. Cap at 4-way to avoid combinatorial
+	// explosion.
+	if len(matches) >= 3 {
+		r.tryNWayIntersection(call, scan, matches, preds)
+	}
+}
+
+func (r *IndexIntersectionRule) tryNWayIntersection(
+	call *ExpressionRuleCall,
+	scan *expressions.FullUnorderedScanExpression,
+	matches []intersectionCandidateMatch,
+	preds []predicates.QueryPredicate,
+) {
+	n := len(matches)
+	maxK := 4
+	if n < maxK {
+		maxK = n
+	}
+
+	for k := 3; k <= maxK; k++ {
+		r.chooseK(call, scan, matches, preds, k, 0, nil)
+	}
+}
+
+func (r *IndexIntersectionRule) chooseK(
+	call *ExpressionRuleCall,
+	scan *expressions.FullUnorderedScanExpression,
+	matches []intersectionCandidateMatch,
+	preds []predicates.QueryPredicate,
+	k, start int,
+	chosen []int,
+) {
+	if len(chosen) == k {
+		if !allDisjoint(matches, chosen) {
+			return
+		}
+		totalConsumed := 0
+		for _, idx := range chosen {
+			totalConsumed += len(matches[idx].consumed)
+		}
+		if totalConsumed == 0 {
+			return
+		}
+
+		legs := make([]expressions.Quantifier, k)
+		for i, idx := range chosen {
+			leg := buildFilterLeg(scan, matches[idx].preds)
+			legs[i] = expressions.ForEachQuantifier(call.MemoizeExpression(leg))
+		}
+
+		intersection := expressions.NewLogicalIntersectionExpression(legs, nil)
+
+		if totalConsumed == len(preds) {
+			call.Yield(intersection)
+		} else {
+			consumedSet := make(map[int]bool, totalConsumed)
+			for _, idx := range chosen {
+				for _, pi := range matches[idx].consumed {
+					consumedSet[pi] = true
+				}
+			}
+			var residual []predicates.QueryPredicate
+			for pi, p := range preds {
+				if !consumedSet[pi] {
+					residual = append(residual, p)
+				}
+			}
+			intrQ := expressions.ForEachQuantifier(call.MemoizeExpression(intersection))
+			call.Yield(expressions.NewLogicalFilterExpression(residual, intrQ))
+		}
+		return
+	}
+
+	for i := start; i < len(matches); i++ {
+		r.chooseK(call, scan, matches, preds, k, i+1, append(chosen, i))
+	}
 }
 
 // buildFilterLeg creates a LogicalFilterExpression over a fresh copy
@@ -232,6 +310,21 @@ func disjointSets(a, b []int) bool {
 	for _, v := range b {
 		if _, exists := set[v]; exists {
 			return false
+		}
+	}
+	return true
+}
+
+// allDisjoint returns true if all chosen matches have pairwise
+// disjoint consumed predicate sets.
+func allDisjoint(matches []intersectionCandidateMatch, chosen []int) bool {
+	seen := make(map[int]struct{})
+	for _, idx := range chosen {
+		for _, pi := range matches[idx].consumed {
+			if _, exists := seen[pi]; exists {
+				return false
+			}
+			seen[pi] = struct{}{}
 		}
 	}
 	return true
