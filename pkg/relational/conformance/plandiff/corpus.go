@@ -4379,6 +4379,23 @@ func SeedRunCorpus() []RunQuery {
 		// (returns 2); Java drops one of them and returns 5. TODO #52's
 		// nightshift-65 diagnosis was inverted (Go is the correct side).
 		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
+		{
+			// Probe TODO #45: EXISTS over CTE drops inner predicate.
+			// Outer WITH big = rows of T_EX_B with val>50 (gid 200, 300).
+			// Outer SELECT count over A WHERE EXISTS … FROM big …
+			//   - a.gid=100 → no big with gid=100 → false
+			//   - a.gid=200 → big has (200) → true
+			//   - a.gid=300 → big has (300) → true
+			// → expected count = 2.
+			Name: "exists_over_cte_outer_with_probe",
+			SchemaTemplate: "CREATE TABLE T_EX_A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX_B (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX_A VALUES (1, 100), (2, 200), (3, 300)",
+				"INSERT INTO T_EX_B VALUES (10, 100, 30), (11, 200, 60), (12, 300, 70)",
+			},
+			Query: "WITH big AS (SELECT id, gid, val FROM T_EX_B WHERE val > 50) SELECT count(*) FROM T_EX_A a WHERE EXISTS (SELECT 1 FROM big WHERE big.gid = a.gid)",
+		},
 		// Skipped three_way_join_shared_driver: cross-engine probe
 		// (dayshift-66) showed Go correctly applies BOTH `a.id = b.x`
 		// AND `a.id = c.y` (returns 3); Java drops one or both join

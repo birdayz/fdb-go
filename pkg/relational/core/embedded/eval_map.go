@@ -61,6 +61,17 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 							"column reference %q names unknown table/alias %q", name, qual)
 					}
 					// Outer qualifier: fall through to outer lookup.
+				} else if conn != nil && outerScopesContainQualifier(conn, qualUpper) {
+					// CTE / single-source path (validQualifiers nil) with
+					// an active outer scope whose alias matches the
+					// qualifier — defer to the outer-scope walk below
+					// instead of stripping the qualifier and matching the
+					// CURRENT row's bare key. Without this, `big.gid =
+					// a.gid` inside `EXISTS (SELECT 1 FROM big WHERE …)`
+					// would silently resolve `a.gid` to big's bare `gid`
+					// column, making the predicate `big.gid = big.gid`
+					// (tautology). Outer-scope wins iff the qualifier
+					// names an outer source.
 				} else {
 					v, found = row[name[dot+1:]]
 				}
