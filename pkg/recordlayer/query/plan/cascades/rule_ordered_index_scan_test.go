@@ -115,6 +115,39 @@ func TestOrderedIndexScan_SortKeyMismatch(t *testing.T) {
 	}
 }
 
+// TestOrderedIndexScan_DescSortNotSatisfied verifies that Sort(STATUS DESC)
+// does NOT match a forward index scan on STATUS.
+func TestOrderedIndexScan_DescSortNotSatisfied(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}, Reverse: true}},
+		q,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	rule := NewOrderedIndexScanRule()
+	results := FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
+
+	if len(results) != 0 {
+		t.Fatalf("expected 0 yields (DESC sort can't use forward index scan), got %d", len(results))
+	}
+}
+
 // TestOrderedIndexScan_PlannerIntegration verifies the full pipeline:
 // Sort(STATUS) over Scan with an index on STATUS → sort eliminated,
 // index scan appears at the top.

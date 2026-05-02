@@ -302,3 +302,44 @@ func TestSortOverOrderedElim_SortKeyNotProvidedByIndex(t *testing.T) {
 		}
 	}
 }
+
+// TestSortOverOrderedElim_DescSortNotEliminated verifies that a DESC
+// sort over an index scan is NOT eliminated — forward index scans only
+// provide ascending order.
+func TestSortOverOrderedElim_DescSortNotEliminated(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+
+	// Sort by STATUS DESC — index provides STATUS ASC, not DESC.
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}, Reverse: true}},
+		q,
+	)
+	sortRef := expressions.InitialOf(sort)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx)
+	if _, conv := p.Explore(sortRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	for _, m := range sortRef.Members() {
+		if IsPhysicalIndexScan(m) {
+			t.Fatal("DESC sort should NOT be eliminated by a forward index scan")
+		}
+	}
+}

@@ -72,8 +72,13 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		// Check if the index's leading columns match the sort keys.
+		// Only ascending sorts can be satisfied by a forward index scan.
 		matches := true
 		for i, sk := range sortKeys {
+			if sk.Reverse {
+				matches = false
+				break
+			}
 			fv, ok := sk.Value.(*values.FieldValue)
 			if !ok {
 				matches = false

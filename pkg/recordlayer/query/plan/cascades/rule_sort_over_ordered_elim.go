@@ -66,12 +66,16 @@ func (r *SortOverOrderedElimRule) OnMatch(call *ExpressionRuleCall) {
 
 // orderingSatisfies checks whether the ordering provides at least
 // the sort keys in the same order. Each sort key must match the
-// corresponding ordering key by field name.
+// corresponding ordering key by field name. DESC sort keys cannot be
+// satisfied by a forward index scan (which always produces ascending).
 func orderingSatisfies(ordering properties.Ordering, sortKeys []expressions.SortKey) bool {
 	if len(sortKeys) > len(ordering.Keys) {
 		return false
 	}
 	for i, sk := range sortKeys {
+		if sk.Reverse {
+			return false
+		}
 		orderKey := ordering.Keys[i]
 		if !sameFieldValue(sk.Value, orderKey) {
 			return false
