@@ -326,6 +326,57 @@ func TestImplementIndexScanRule_NoCandidates(t *testing.T) {
 	}
 }
 
+func TestImplementIndexScanRule_RangeScan_TwoInequalitiesSameColumn(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$amount",
+		[]string{"Order"},
+		[]string{"AMOUNT"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	// AMOUNT > 5 AND AMOUNT < 100 — both bind to the same column,
+	// merge into a single inequality range.
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(100)),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	rule := NewImplementIndexScanRule()
+	results := FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 yield, got %d", len(results))
+	}
+	// Both predicates consumed (same column, merged range) → bare index scan.
+	wrapper, ok := results[0].(*physicalIndexScanWrapper)
+	if !ok {
+		t.Fatalf("expected *physicalIndexScanWrapper (all consumed), got %T", results[0])
+	}
+	comps := wrapper.plan.GetScanComparisons()
+	if !comps[0].IsInequality() {
+		t.Fatal("first comparison should be inequality (merged range)")
+	}
+}
+
 func TestImplementIndexScanRule_PlannerIntegration_PrefersIndexOverFullScan(t *testing.T) {
 	t.Parallel()
 
