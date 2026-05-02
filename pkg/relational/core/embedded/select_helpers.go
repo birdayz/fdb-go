@@ -304,33 +304,38 @@ func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: each WHEN-clause has THEN expr; optional ELSE expr.
 		// Result type = MaximumType of all branches.
-		var resultType string
-		for _, alt := range sf.AllCaseFuncAlternative() {
-			t := inferFunctionArgJDBCType(alt.GetConsequent(), msgDesc)
-			if resultType == "" {
-				resultType = t
-			} else if t != "" {
-				resultType = jdbcTypeMax(resultType, t)
-				if resultType == "" {
-					// Non-numeric branches with different types — fall
-					// through to "" for the runner.
-					return ""
-				}
-			}
-		}
-		if elseArg := sf.GetElseArg(); elseArg != nil {
-			t := inferFunctionArgJDBCType(elseArg, msgDesc)
-			if resultType == "" {
-				resultType = t
-			} else if t != "" {
-				if max := jdbcTypeMax(resultType, t); max != "" {
-					resultType = max
-				}
-			}
-		}
-		return resultType
+		return inferCaseBranchesJDBCType(sf.AllCaseFuncAlternative(), sf.GetElseArg(), msgDesc)
+	case *antlrgen.CaseExpressionFunctionCallContext:
+		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
+		return inferCaseBranchesJDBCType(sf.AllCaseFuncAlternative(), sf.GetElseArg(), msgDesc)
 	}
 	return ""
+}
+
+func inferCaseBranchesJDBCType(alts []antlrgen.ICaseFuncAlternativeContext, elseArg antlrgen.IFunctionArgContext, msgDesc protoreflect.MessageDescriptor) string {
+	var resultType string
+	for _, alt := range alts {
+		t := inferFunctionArgJDBCType(alt.GetConsequent(), msgDesc)
+		if resultType == "" {
+			resultType = t
+		} else if t != "" {
+			resultType = jdbcTypeMax(resultType, t)
+			if resultType == "" {
+				return ""
+			}
+		}
+	}
+	if elseArg != nil {
+		t := inferFunctionArgJDBCType(elseArg, msgDesc)
+		if resultType == "" {
+			resultType = t
+		} else if t != "" {
+			if max := jdbcTypeMax(resultType, t); max != "" {
+				resultType = max
+			}
+		}
+	}
+	return resultType
 }
 
 // inferFunctionArgJDBCType extracts the inner expression from a

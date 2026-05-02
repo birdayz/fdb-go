@@ -333,17 +333,25 @@ func evalSpecificFunctionCore(
 			return eval(c.GetElseArg().Expression())
 		}
 		return nil, nil
-	// Simple-CASE form (`CASE expr WHEN val THEN ...`) is intentionally
-	// NOT handled — falls through to the `default:` arm below
-	// (ErrCodeUnsupportedOperation). fdb-relational 4.11.1.0's
-	// `BaseVisitor.visitCaseExpressionFunctionCall` is `visitChildren(ctx)`
-	// — a structural no-op that produces silently-wrong rows but does
-	// NOT error. Empirical probe (TODO #40) shows Java accepts the
-	// simple-CASE shape and returns garbage; Go currently rejects with
-	// "unsupported specific function ...". A divergence in either
-	// direction; see TODO #40 for the three alignment options. Searched-
-	// CASE (`CASE WHEN cond THEN ...`) is implemented above and works
-	// correctly in both engines.
+	case *antlrgen.CaseExpressionFunctionCallContext:
+		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
+		operand, err := eval(c.Expression())
+		if err != nil {
+			return nil, err
+		}
+		for _, alt := range c.AllCaseFuncAlternative() {
+			whenVal, err := eval(alt.GetCondition().Expression())
+			if err != nil {
+				return nil, err
+			}
+			if valuesEqual(operand, whenVal) {
+				return eval(alt.GetConsequent().Expression())
+			}
+		}
+		if c.GetElseArg() != nil {
+			return eval(c.GetElseArg().Expression())
+		}
+		return nil, nil
 	case *antlrgen.DataTypeFunctionCallContext:
 		// CAST(expr AS type)
 		val, err := eval(c.Expression())
