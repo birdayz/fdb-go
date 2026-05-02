@@ -4425,6 +4425,20 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, v FROM T_PAV",
 		},
 		{
+			// Probe TODO #41a: bare-BOOLEAN col in CASE WHEN.
+			Name:           "case_when_bare_bool_col_probe",
+			SchemaTemplate: "CREATE TABLE T_CB (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CB VALUES (1, TRUE), (2, FALSE)"},
+			Query:          "SELECT id, CASE WHEN flag THEN 'on' ELSE 'off' END FROM T_CB ORDER BY id",
+		},
+		{
+			// Probe TODO #41b: WHERE CASE WHEN cond THEN TRUE END.
+			Name:           "where_case_returns_bool_probe",
+			SchemaTemplate: "CREATE TABLE T_WC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WC VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM T_WC WHERE CASE WHEN v > 15 THEN TRUE ELSE FALSE END",
+		},
+		{
 			// Probe TODO #47: CAST BIGINT AS BOOLEAN.
 			Name:           "cast_bigint_to_boolean_probe",
 			SchemaTemplate: "CREATE TABLE T_CBB (id BIGINT, v BIGINT, PRIMARY KEY (id))",

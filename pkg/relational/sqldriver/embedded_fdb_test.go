@@ -5453,20 +5453,21 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, status, priority) VALUES (3, 'open', 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CASE in WHERE: keep rows where (CASE status=open THEN priority<3 ELSE priority>50 END).
+	// Java alignment (TODO #41b): WHERE on a CASE expression is
+	// rejected at planning time with byte-equal `expected BooleanValue
+	// but got PickValue`. Go follows. Use AND/OR for the same logic
+	// (`WHERE (status = 'open' AND priority < 3) OR (status <> 'open'
+	// AND priority > 50)`).
 	rows, err := db.QueryContext(ctx, `
 		SELECT id FROM T WHERE CASE WHEN status = 'open' THEN priority < 3 ELSE priority > 50 END
 		ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected rejection of CASE in WHERE; got success")
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.Equal([]int64{2, 3})) // id=2 closed+100>50, id=3 open+1<3
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Message).To(gomega.Equal("expected BooleanValue but got PickValue"))
 }
 
 // TestFDB_InsertMultiRowWithExpressions pins INSERT VALUES with row
@@ -5872,21 +5873,19 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, status, priority) VALUES (3, 'open', 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Same semantics as TestFDB_CaseInWhere but routed through the map path via a CTE.
+	// Java alignment (TODO #41b): the WHERE-on-CASE rejection fires at
+	// every WHERE entry point including the CTE-routed map path.
 	rows, err := db.QueryContext(ctx, `
 		WITH c AS (SELECT id, status, priority FROM T)
 		SELECT id FROM c WHERE CASE WHEN status = 'open' THEN priority < 3 ELSE priority > 50 END
 		ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected rejection of CASE in WHERE; got success")
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Message).To(gomega.Equal("expected BooleanValue but got PickValue"))
 }
 
 // TestFDB_ThreeWayJoinSharedDriverKey pins SQL-correct

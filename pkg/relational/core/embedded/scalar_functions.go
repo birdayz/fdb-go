@@ -237,8 +237,14 @@ func makeMapExprEvaluator(ctx context.Context, conn *EmbeddedConnection, row map
 
 func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, fc antlrgen.IFunctionCallContext) (any, error) {
 	eval := makeProtoExprEvaluator(ctx, conn, msg)
+	// CASE WHEN's condition is value-context — Java accepts a bare
+	// BOOLEAN field (`CASE WHEN flag THEN …`) and converts via
+	// truthiness, matching the AND/OR/NOT operand rule. Pass
+	// allowBareField=true so the bare-FieldValue check at the
+	// top-level WHERE/HAVING entry doesn't fire here. (TODO #41a)
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
-		return evalExprPredicate(ctx, conn, msg, e)
+		t, err := evalExprPredicateTri(ctx, conn, msg, e, true /* allowBareField */)
+		return t.IsTrue(), err
 	}
 	// fdb-relational's planner returns `RelationalException:
 	// Unsupported operator <name>` from the function-registry lookup
@@ -249,8 +255,11 @@ func evalScalarFunctionCall(ctx context.Context, conn *EmbeddedConnection, msg p
 
 func evalScalarFunctionCallOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, fc antlrgen.IFunctionCallContext) (driver.Value, error) {
 	eval := makeMapExprEvaluator(ctx, conn, row)
+	// Same value-context relaxation as the proto path — see
+	// evalScalarFunctionCall comment.
 	predEval := func(e antlrgen.IExpressionContext) (bool, error) {
-		return evalPredicateOnMapExpr(ctx, conn, row, e)
+		t, err := evalPredicateOnMapExprTri(ctx, conn, row, e)
+		return t.IsTrue(), err
 	}
 	return evalScalarFunctionCallCore(conn.statementNow(), eval, predEval, fc)
 }
