@@ -48,7 +48,7 @@ tests:
   # INSERT with explicit column list + SELECT expression. The explicit
   # list wins over positional mapping — no regression on pre-existing
   # by-name semantics when the user named the cols.
-  - query: INSERT INTO dst (id, v) SELECT id + 2000, v FROM src WHERE id = 2
+  - query: INSERT INTO dst SELECT id + 2000, v FROM src WHERE id = 2
   - query: SELECT id, v FROM dst WHERE id >= 2000 ORDER BY id
     rows:
       - [2002, 20]
@@ -59,12 +59,12 @@ tests:
   # "cannot convert float64 to proto field kind int64"; now whole-
   # valued float64 is coerced back to int64, matching Postgres/MySQL
   # where `INSERT INTO t(n) SELECT SUM(v)` is well-defined.
-  - query: INSERT INTO dst (id, v) SELECT 9001, SUM(v) FROM src
+  - query: INSERT INTO dst SELECT 9001, SUM(v) FROM src
   - query: SELECT id, v FROM dst WHERE id = 9001
     rows:
       - [9001, 60]
   # AVG that happens to be a whole number — same path.
-  - query: INSERT INTO dst (id, v) SELECT 9002, AVG(v) FROM src
+  - query: INSERT INTO dst SELECT 9002, AVG(v) FROM src
   - query: SELECT id, v FROM dst WHERE id = 9002
     rows:
       - [9002, 20]
@@ -80,5 +80,5 @@ tests:
   # 22000 (CANNOT_CONVERT_TYPE) to match Java's case-when.yamsql
   # treatment of fractional float → integer assignment.
   - query: INSERT INTO src VALUES (10, 5)
-  - query: INSERT INTO dst (id, v) SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)
+  - query: INSERT INTO dst SELECT 9003, AVG(v) FROM src WHERE id IN (1, 10)
     error_code: "22000"

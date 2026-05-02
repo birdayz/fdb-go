@@ -4380,6 +4380,51 @@ func SeedRunCorpus() []RunQuery {
 		// nightshift-65 diagnosis was inverted (Go is the correct side).
 		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
 		{
+			// Probe TODO #43: ORDER BY rejection wording for unindexed
+			// expression. Both engines reject; wording differs.
+			Name:           "order_by_arith_unindexed_probe",
+			SchemaTemplate: "CREATE TABLE T_OBA (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA VALUES (1, 1, 2), (2, 2, 1)"},
+			Query:          "SELECT id FROM T_OBA ORDER BY a + b",
+		},
+		// Skipped int32_overflow_insert: wording alignment for INT32
+		// overflow on INSERT (TODO #62) — needs INSERT-as-test-query
+		// support which Go's plandiff harness lacks (only SELECT/SHOW
+		// pass through to the query runner). Documented at the call
+		// site; revisit when the harness gains DML-query routing.
+		// Skipped not_null_scalar: Java's fdb-relational rejects
+		// `STRING NOT NULL` (or any scalar NOT NULL except ARRAY) at
+		// schema-create time with "NOT NULL is only allowed for ARRAY
+		// column type"; Go follows SQL standard and accepts. Aligning
+		// Go to Java's restriction would invalidate dozens of existing
+		// schemas across the test surface — Java's behaviour is the
+		// non-standard side (TODO #50 reclassified Tier D).
+		// Skipped reserved_keyword_col: both engines reject `count` as
+		// column name with a syntax error that echoes the offending
+		// CREATE TABLE fragment. Java's harness wraps the auto-generated
+		// schema-template name in double quotes; Go's doesn't. Pure
+		// cosmetic drift in error formatting; aligning would require
+		// duplicating Java's name-quoting heuristic. Out of scope
+		// (TODO #51 reclassified low-value Tier D).
+		{
+			// Probe TODO #55: INSERT … (cols) SELECT shape.
+			Name: "insert_cols_select_probe",
+			SchemaTemplate: "CREATE TABLE T_ICS_S (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_ICS_D (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ICS_S VALUES (1, 100)",
+				"INSERT INTO T_ICS_D (val, id) SELECT id, val FROM T_ICS_S",
+			},
+			Query: "SELECT id, val FROM T_ICS_D",
+		},
+		{
+			// Probe TODO #60: parenthesized arithmetic in row constructor.
+			Name:           "paren_arithmetic_in_values_probe",
+			SchemaTemplate: "CREATE TABLE T_PAV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_PAV VALUES (1, (2 + 3))"},
+			Query:          "SELECT id, v FROM T_PAV",
+		},
+		{
 			// Probe TODO #47: CAST BIGINT AS BOOLEAN.
 			Name:           "cast_bigint_to_boolean_probe",
 			SchemaTemplate: "CREATE TABLE T_CBB (id BIGINT, v BIGINT, PRIMARY KEY (id))",

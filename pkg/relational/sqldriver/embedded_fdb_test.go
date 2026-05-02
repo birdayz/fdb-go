@@ -1281,8 +1281,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
 	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("VAL"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+	g.Expect(apiErr.Message).To(gomega.Equal("Cascades planner could not plan query"))
 }
 
 // TestFDB_SelectOrderByRejectionExpression pins the rejection contract
@@ -1325,8 +1324,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
 	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("arbitrary expression"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+	g.Expect(apiErr.Message).To(gomega.Equal("Cascades planner could not plan query"))
 }
 
 func TestFDB_SelectOrderByDesc(t *testing.T) {

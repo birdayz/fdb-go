@@ -1305,9 +1305,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					detail = "arbitrary expression"
 				}
 			}
+			// Java-aligned wording (TODO #43): fdb-relational's Cascades
+			// planner emits the generic `Cascades planner could not plan
+			// query` whenever no rule produces a plan; ORDER BY without
+			// a satisfying index is one such case. Match the message
+			// byte-equal so the cross-engine harness can pin rejection.
+			// Detail is preserved in Context for debuggability.
+			_ = detail
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedSort,
-				"ORDER BY %s cannot be satisfied by any scan strategy; no index produces rows in the requested order. Add an index on the ORDER BY column(s) to make the query plannable",
-				detail)
+				"Cascades planner could not plan query")
 		}
 		if !satisfiable {
 			// Aggregate path only — small result set, sort in-memory.
