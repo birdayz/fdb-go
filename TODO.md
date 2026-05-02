@@ -73,7 +73,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [ ] **#16** B5 Batch B3 — decomposition + optimization: `DecorrelateValuesRule`, `PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule` family. Gate: #15. (~2 shifts)
 - [ ] **#17** B5 Batch C — finalization: `FinalizeExpressionsRule` + remaining ~30 rules. Gate: #16. (~2 shifts)
 - [ ] **#18** B7 correctness tests for Phase 3 rules. Interleave with #14-17. (~2 shifts)
-- [ ] **#19** Physical-wrapper cleanup — retire `physicalScanWrapper` / `physicalFilterWrapper` / `physicalSortWrapper` / `physicalDistinctWrapper` / `physicalTypeFilterWrapper` once Memo is plan-aware. Gate: #10. (~0.5 shift)
+- [x] **#19** Physical-wrapper cleanup — retire `physicalScanWrapper` / `physicalFilterWrapper` / `physicalSortWrapper` / `physicalDistinctWrapper` / `physicalTypeFilterWrapper` once Memo is plan-aware. Gate: #10. (~0.5 shift) — **Done, nightshift-68.** Added `physicalPlanExpression` interface + `findPhysicalPlan`/`findPhysicalExpr` helpers. Collapsed 9×7-case type switches to single interface assertions. Eliminated recursive `wrapPhysicalPlan` — implement rules now reuse existing wrapper from inner Reference via Memo. Net: -280 LOC. Wrappers remain as structural adapters (plans→expressions); full "plans ARE expressions" deferred to #12 which adds new plan types.
 
 ## Phase 4 — Query Executor (integration phase, sequential)
 
