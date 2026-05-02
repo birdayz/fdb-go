@@ -8835,6 +8835,117 @@ func SeedRunCorpus() []RunQuery {
 		},
 		// Dropped ident_lowercase_both_table_and_col: same #56 — Go
 		// fails to case-fold lowercase table reference.
+
+		// ===== Deeply-nested derived tables and subquery-in-FROM variations =====
+		{
+			// 3-deep nested derived: triple FROM (SELECT ...) with
+			// progressively narrower projections at each level.
+			Name:           "nested_derived_3deep_chain",
+			SchemaTemplate: "CREATE TABLE T_ND1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND1 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT id FROM (SELECT id, val FROM (SELECT id, val FROM T_ND1 WHERE val > 5) AS d2) AS d1 ORDER BY id",
+		},
+		{
+			// 4-deep nested derived — exercises planner stack-flatten
+			// of trivial passthrough subqueries.
+			Name:           "nested_derived_4deep_chain",
+			SchemaTemplate: "CREATE TABLE T_ND2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND2 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id FROM (SELECT id, val FROM (SELECT id, val FROM (SELECT id, val FROM T_ND2 WHERE val > 5) AS d3) AS d2) AS d1 ORDER BY id",
+		},
+		{
+			// WHERE filter at every level of a 3-deep derived stack.
+			Name:           "nested_derived_3deep_where_each_level",
+			SchemaTemplate: "CREATE TABLE T_ND3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND3 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)"},
+			Query:          "SELECT id FROM (SELECT id, val FROM (SELECT id, val FROM T_ND3 WHERE val > 10) AS d2 WHERE val > 20) AS d1 WHERE val > 30 ORDER BY id",
+		},
+		{
+			// Derived joined to base table with WHERE on outer.
+			Name: "nested_derived_join_base_outer_where",
+			SchemaTemplate: "CREATE TABLE T_ND4A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_ND4B (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND4A VALUES (1, 10), (2, 20), (3, 10), (4, 20)",
+				"INSERT INTO T_ND4B VALUES (10, 'x'), (20, 'y')",
+			},
+			Query: "SELECT s.id, b.label FROM (SELECT id, gid FROM T_ND4A) AS s, T_ND4B b WHERE s.gid = b.gid AND s.id > 1 ORDER BY s.id",
+		},
+		{
+			// Derived projection is count(*) — single-row inner.
+			Name:           "derived_projection_count_star",
+			SchemaTemplate: "CREATE TABLE T_ND5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND5 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT s.c FROM (SELECT count(*) AS c FROM T_ND5 WHERE val > 15) AS s",
+		},
+		{
+			// Derived from composite-PK source — 2-deep with derived
+			// preserving PK shape.
+			Name:           "nested_derived_composite_pk_source",
+			SchemaTemplate: "CREATE TABLE T_ND6 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND6 VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30), ('eu', 2, 40)",
+			},
+			Query: "SELECT region, id, val FROM (SELECT region, id, val FROM (SELECT region, id, val FROM T_ND6 WHERE val > 15) AS d2) AS d1 ORDER BY region, id",
+		},
+		{
+			// Arithmetic in derived projection.
+			Name:           "nested_derived_arithmetic_projection",
+			SchemaTemplate: "CREATE TABLE T_ND7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND7 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM T_ND7) AS d ORDER BY id",
+		},
+		{
+			// Arithmetic projection wrapped in another derived layer.
+			Name:           "nested_derived_arithmetic_2deep",
+			SchemaTemplate: "CREATE TABLE T_ND8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND8 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM T_ND8) AS d2) AS d1 ORDER BY id",
+		},
+		{
+			// count(*) over a 2-deep derived.
+			Name:           "count_star_over_2deep_derived",
+			SchemaTemplate: "CREATE TABLE T_ND9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND9 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT count(*) FROM (SELECT id FROM (SELECT id, val FROM T_ND9 WHERE val > 5) AS d2 WHERE id > 1) AS d1",
+		},
+		{
+			// sum() over a 2-deep derived (no JOIN — #54 only blocks AVG over JOIN).
+			Name:           "sum_over_2deep_derived",
+			SchemaTemplate: "CREATE TABLE T_ND10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND10 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT sum(val) FROM (SELECT id, val FROM (SELECT id, val FROM T_ND10 WHERE val > 5) AS d2) AS d1",
+		},
+		{
+			// 3-deep nested derived with WHERE only at innermost level.
+			Name:           "nested_derived_3deep_where_innermost",
+			SchemaTemplate: "CREATE TABLE T_ND12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT id, val FROM (SELECT id, val FROM (SELECT id, val FROM T_ND12 WHERE val > 15) AS d2) AS d1 ORDER BY id",
+		},
+		{
+			// Aggregate inside derived, projected outward.
+			Name:           "nested_derived_aggregate_outer_select",
+			SchemaTemplate: "CREATE TABLE T_ND13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND13 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT s.total FROM (SELECT sum(val) AS total FROM T_ND13 WHERE val > 5) AS s",
+		},
+		{
+			// Outer projection drops a column the inner derived exposes.
+			Name:           "nested_derived_outer_drops_column",
+			SchemaTemplate: "CREATE TABLE T_ND14 (id BIGINT, val BIGINT, extra BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_ND14 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"},
+			Query:          "SELECT id FROM (SELECT id, val, extra FROM T_ND14 WHERE val > 5) AS d ORDER BY id",
+		},
+		{
+			// Derived with composite-PK source feeding count(*).
+			Name:           "count_over_derived_composite_pk",
+			SchemaTemplate: "CREATE TABLE T_ND15 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND15 VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30)",
+			},
+			Query: "SELECT count(*) FROM (SELECT region, id FROM T_ND15 WHERE val > 5) AS d",
+		},
 	}
 }
 
