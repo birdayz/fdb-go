@@ -8946,6 +8946,176 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT count(*) FROM (SELECT region, id FROM T_ND15 WHERE val > 5) AS d",
 		},
+
+		// ===== Predicate normalization & constant folding edges =====
+		// Pin shapes where the simplifier must fold constants, drop
+		// identity operands, and collapse redundant predicates the same
+		// way in Java and Go. Drift here surfaces as a row-count or
+		// row-order mismatch under the SeedRunCorpus harness.
+		//
+		// Bare-BOOLEAN-literal shapes (e.g. `WHERE TRUE AND p`,
+		// `WHERE FALSE OR p`) are intentionally omitted: Java throws a
+		// `VerifyException` deep in the planner when normalising a bare
+		// boolean literal in a WHERE conjunct, whereas Go succeeds.
+		// Until that planner asymmetry is fixed (companion to TODO #41
+		// for CASE-WHEN bare booleans), these probes can't be pinned
+		// to a shared error message.
+		{
+			// Idempotent AND — `p AND p` is equivalent to `p`. Both
+			// engines should fold the duplicate into a single predicate.
+			Name:           "where_idempotent_and",
+			SchemaTemplate: "CREATE TABLE T_PN3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN3 VALUES (1, 3)",
+				"INSERT INTO T_PN3 VALUES (2, 7)",
+				"INSERT INTO T_PN3 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN3 WHERE val > 5 AND val > 5 ORDER BY id",
+		},
+		{
+			// Idempotent OR — `p OR p` is equivalent to `p`. Both engines
+			// should fold the duplicate into a single predicate.
+			Name:           "where_idempotent_or",
+			SchemaTemplate: "CREATE TABLE T_PN4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN4 VALUES (1, 3)",
+				"INSERT INTO T_PN4 VALUES (2, 7)",
+				"INSERT INTO T_PN4 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN4 WHERE val > 5 OR val > 5 ORDER BY id",
+		},
+		{
+			// Simple negation — `NOT (val > 5)` is equivalent to
+			// `val <= 5` for non-NULL inputs; NULL inputs stay NULL
+			// (UNKNOWN, filtered by WHERE) under SQL three-valued logic.
+			Name:           "where_not_pred",
+			SchemaTemplate: "CREATE TABLE T_PN5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN5 VALUES (1, 3)",
+				"INSERT INTO T_PN5 VALUES (2, 7)",
+				"INSERT INTO T_PN5 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN5 WHERE NOT (val > 5) ORDER BY id",
+		},
+		{
+			// `NOT (val IS NULL)` — semantically the same as
+			// `val IS NOT NULL`. Pins that the simplifier folds the NOT
+			// over IS NULL the same way in both engines (NULL inputs
+			// included in the result here because IS NULL is total —
+			// `NOT (NULL IS NULL)` = NOT TRUE = FALSE, not UNKNOWN).
+			Name:           "where_not_is_null",
+			SchemaTemplate: "CREATE TABLE T_PN6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN6 VALUES (1, 3)",
+				"INSERT INTO T_PN6 VALUES (2, NULL)",
+				"INSERT INTO T_PN6 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN6 WHERE NOT (val IS NULL) ORDER BY id",
+		},
+		{
+			// Single-element IN-list — `val IN (5)` is equivalent to
+			// `val = 5`. Pins that both engines produce the same result
+			// row count and order for the trivial IN.
+			Name:           "where_in_singleton",
+			SchemaTemplate: "CREATE TABLE T_PN7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN7 VALUES (1, 3)",
+				"INSERT INTO T_PN7 VALUES (2, 5)",
+				"INSERT INTO T_PN7 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN7 WHERE val IN (5) ORDER BY id",
+		},
+		{
+			// Single-element NOT IN-list — `val NOT IN (5)` is equivalent
+			// to `val <> 5` for non-NULL inputs. NULL inputs stay UNKNOWN.
+			Name:           "where_not_in_singleton",
+			SchemaTemplate: "CREATE TABLE T_PN8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN8 VALUES (1, 3)",
+				"INSERT INTO T_PN8 VALUES (2, 5)",
+				"INSERT INTO T_PN8 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN8 WHERE val NOT IN (5) ORDER BY id",
+		},
+		{
+			// Literal-tautology AND — `5 = 5` is constant TRUE; the
+			// simplifier should drop it, leaving `val > 0`.
+			Name:           "where_literal_eq_tautology",
+			SchemaTemplate: "CREATE TABLE T_PN9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN9 VALUES (1, -1)",
+				"INSERT INTO T_PN9 VALUES (2, 0)",
+				"INSERT INTO T_PN9 VALUES (3, 4)",
+			},
+			Query: "SELECT id FROM T_PN9 WHERE 5 = 5 AND val > 0 ORDER BY id",
+		},
+		{
+			// Literal-comparison AND — `5 < 10` is constant TRUE; the
+			// simplifier should drop it, leaving `val > 0`.
+			Name:           "where_literal_lt_tautology",
+			SchemaTemplate: "CREATE TABLE T_PN10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN10 VALUES (1, -1)",
+				"INSERT INTO T_PN10 VALUES (2, 0)",
+				"INSERT INTO T_PN10 VALUES (3, 4)",
+			},
+			Query: "SELECT id FROM T_PN10 WHERE 5 < 10 AND val > 0 ORDER BY id",
+		},
+		{
+			// Additive identity — `val + 0` equals `val`. Pins that both
+			// engines fold the `+ 0` away or evaluate it the same way.
+			Name:           "where_additive_identity",
+			SchemaTemplate: "CREATE TABLE T_PN11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN11 VALUES (1, 3)",
+				"INSERT INTO T_PN11 VALUES (2, 7)",
+				"INSERT INTO T_PN11 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN11 WHERE val + 0 > 5 ORDER BY id",
+		},
+		{
+			// Multiplicative identity — `val * 1` equals `val`. Pins that
+			// both engines fold the `* 1` or evaluate it the same way.
+			Name:           "where_multiplicative_identity",
+			SchemaTemplate: "CREATE TABLE T_PN12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN12 VALUES (1, 3)",
+				"INSERT INTO T_PN12 VALUES (2, 7)",
+				"INSERT INTO T_PN12 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN12 WHERE val * 1 > 5 ORDER BY id",
+		},
+		{
+			// Commutative additive identity — `0 + val` equals `val`.
+			// Same shape as `val + 0` but with the literal on the left.
+			Name:           "where_additive_identity_commuted",
+			SchemaTemplate: "CREATE TABLE T_PN13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN13 VALUES (1, 3)",
+				"INSERT INTO T_PN13 VALUES (2, 7)",
+				"INSERT INTO T_PN13 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN13 WHERE 0 + val > 5 ORDER BY id",
+		},
+		{
+			// Single-value BETWEEN with constants — `val BETWEEN 5 AND 5`
+			// is equivalent to `val = 5`. Different table than the
+			// existing T_BE entry which uses BETWEEN 10 AND 10.
+			Name:           "where_between_single_value_5",
+			SchemaTemplate: "CREATE TABLE T_PN14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PN14 VALUES (1, 3)",
+				"INSERT INTO T_PN14 VALUES (2, 5)",
+				"INSERT INTO T_PN14 VALUES (3, 9)",
+			},
+			Query: "SELECT id FROM T_PN14 WHERE val BETWEEN 5 AND 5 ORDER BY id",
+		},
+		// `WHERE id = id` and `WHERE val + 0 = val` (column-self-equality
+		// shapes) are intentionally omitted: Java's planner emits a
+		// `RecordCoreException: Missing binding for __corr_<uuid>` when
+		// it tries to bind a column to itself in the WHERE clause,
+		// whereas Go succeeds. Until that planner asymmetry is fixed,
+		// these probes can't be pinned to a shared error message.
 	}
 }
 
