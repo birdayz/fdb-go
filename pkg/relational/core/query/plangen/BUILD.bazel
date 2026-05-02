@@ -18,6 +18,7 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "cost_extraction_test.go",
+        "index_scan_e2e_test.go",
         "optimize_test.go",
         "plangen_test.go",
     ],

@@ -19,6 +19,14 @@ type physicalPlanExpression interface {
 	GetRecordQueryPlan() plans.RecordQueryPlan
 }
 
+// IsPhysicalIndexScan reports whether the given RelationalExpression is
+// a physicalIndexScanWrapper. Exported so external test packages can
+// identify index scan plans without depending on the unexported type.
+func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalIndexScanWrapper)
+	return ok
+}
+
 // findPhysicalPlan scans ref's members for the first physical-plan
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
