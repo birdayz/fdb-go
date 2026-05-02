@@ -50,7 +50,9 @@ gh pr create --draft --title "{shift-name}: {one-line goal from handover priorit
 
 ## Step 4: Work
 
-**A shift is 8 hours of continuous work.** Work doesn't pause for clock checks. Stopping happens for two reasons only: the user explicitly intervenes (mid-shift review prompt, feedback, redirect), or wind-down begins. Everything else is "keep working."
+**Shift end times are FIXED clock times, not durations.** Day shift ends 14:00 regardless of when you started. Swing ends 22:00. Night ends 06:00. Starting late means a SHORTER shift, not a later end. If you start at 09:18 on a day shift, you have until 14:00 — wind-down begins at 13:30, hard stop at 14:00. Compute the wind-down mark from the shift-end clock, not from your start time.
+
+**Within those bounds, work is continuous.** Work doesn't pause for clock checks. Stopping happens for two reasons only: the user explicitly intervenes (mid-shift review prompt, feedback, redirect), or wind-down begins. Everything else is "keep working."
 
 ### Mid-shift check-in — event-driven, NOT timer-driven
 
@@ -67,7 +69,7 @@ The wall-clock numbers below are descriptive context, NOT triggers:
 |---|---|---|
 | Active work | most of the shift | Work the highest-priority TODOs. Ship features. One thing at a time. |
 | Mid-shift check-in | somewhere around the middle (event-driven) | Reviewer evaluates state, you iterate to LGTM, then keep going. |
-| Wind-down | last 30 min (T+7:30 — T+8:00) | Stop starting NEW features. Final review iteration, verification (fuzz / stress are passive — fine), write handover, merge. |
+| Wind-down | last 30 min before shift-end clock | Stop starting NEW features. Final review iteration, verification (fuzz / stress are passive — fine), write handover, merge. |
 
 Wind-down DOES have a clock trigger (last 30 min) because the shift literally ends. Mid-shift does NOT — that one's event-driven.
 
@@ -93,7 +95,7 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **Mid-shift review is event-driven, NOT timer-driven.** When the user prompts for it (or an external trigger fires), pause, request `@claude review`, iterate to LGTM, then keep going. NEVER stop working in anticipation of mid-shift; NEVER compute a T+3:30 mark and pace yourself toward it. Being a bit late is fine; idling for the clock is not. A clean mid-shift review is a quality signal, not a stop signal.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 - **You MUST keep working until wind-down.** Idling "because piling on more changes risks regressions" or "because the reviewer already approved" is not an option. The risk profile is low (CI + review catch regressions); the cost of an idle shift is high (less ground covered, more work dumped on the next shift). If you genuinely have nothing to do, that means you haven't looked hard enough — audit code you haven't touched, extend fuzz corpus, tighten tests, polish docs. Sitting waiting for review feedback is only acceptable inside the wind-down window. Scheduling wakeups to pass time before wind-down is a mis-use.
-- **Wind down 30 min before shift end.** Stop starting NEW features at the T+7:30 mark. Use the last 30 min for: final review iteration, verification (fuzz / stress are passive — fine), handover doc, merge. New code stops; passive verification continues.
+- **Wind down 30 min before shift-end clock.** Day shift wind-down 13:30, hard stop 14:00. Swing wind-down 21:30, hard stop 22:00. Night wind-down 05:30, hard stop 06:00. Compute the wind-down mark from the END clock, not from your start time — late starts cut into work time, not into wind-down. Use the last 30 min for: final review iteration, verification (fuzz / stress are passive — fine), handover doc, merge. New code stops; passive verification continues.
 - **In wind-down, once the reviewer LGTMs, merge and stop.** Do not pile on more changes inside the last 30 min just to fill time — a clean LGTM in wind-down is the merge signal. Write the handover, merge the PR, clean up. Sitting through the rest of the wind-down window after a clean review is fine; shipping more code is not.
 - **NEVER push to master directly.** Even after merging a shift PR, create a NEW branch for any remaining work. Single-line doc fixes go through a PR. If you catch yourself typing `git push origin master`, STOP. This rule is non-negotiable — dayshift-14 pushed 40+ unreviewed commits to master.
 
