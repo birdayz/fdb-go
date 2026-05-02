@@ -118,16 +118,23 @@ func TestPlanner_IdempotentOnReExplore(t *testing.T) {
 
 // recordingEventHandler captures planner events for assertions.
 type recordingEventHandler struct {
-	exploreRefs  int
-	exploreExprs int
-	applyRules   int
-	growthEvents int
-	optimizeRefs int
+	exploreRefs    int
+	exploreExprs   int
+	applyRules     int
+	growthEvents   int
+	optimizeRefs   int
+	transformRules int
+	ruleYields     int
 }
 
 func (h *recordingEventHandler) OnExploreReference(_ *expressions.Reference) { h.exploreRefs++ }
 func (h *recordingEventHandler) OnExploreExpression(_ expressions.RelationalExpression) {
 	h.exploreExprs++
+}
+
+func (h *recordingEventHandler) OnTransformRule(_ *expressions.Reference, _ ExpressionRule, yielded int) {
+	h.transformRules++
+	h.ruleYields += yielded
 }
 
 func (h *recordingEventHandler) OnApplyRules(_ *expressions.Reference, grew int) {
@@ -163,6 +170,12 @@ func TestPlanner_EventsFire(t *testing.T) {
 	}
 	if h.growthEvents == 0 {
 		t.Fatal("no growth events — rule chain didn't add members?")
+	}
+	if h.transformRules == 0 {
+		t.Fatal("no OnTransformRule events — per-rule tasks didn't fire?")
+	}
+	if h.ruleYields == 0 {
+		t.Fatal("no rule yields reported by OnTransformRule")
 	}
 }
 

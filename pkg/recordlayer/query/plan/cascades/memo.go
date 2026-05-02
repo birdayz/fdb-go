@@ -34,9 +34,16 @@ type Memo struct {
 	// Used for topological lookup during memoization.
 	childToParents map[*expressions.Reference][]parentEdge
 
-	// leafRefs is the set of References holding only leaf expressions
-	// (no quantifiers). Leaf lookup is a fast path during memoization.
-	leafRefs map[*expressions.Reference]struct{}
+	// leafRefs tracks References holding leaf expressions (no
+	// quantifiers). Stored as a SLICE for deterministic iteration
+	// order — Go map iteration is randomized, and non-deterministic
+	// lookup order causes the Planner to be non-deterministic when
+	// the self-reference guard creates duplicate leaf References
+	// that later get indexed.
+	leafRefs []*expressions.Reference
+
+	// leafRefsSet mirrors leafRefs for O(1) containment checks.
+	leafRefsSet map[*expressions.Reference]struct{}
 }
 
 // parentEdge records that `parent` has a member `expr` with a
@@ -54,7 +61,7 @@ func NewMemo(root *expressions.Reference) *Memo {
 		root:           root,
 		refs:           make(map[*expressions.Reference]struct{}),
 		childToParents: make(map[*expressions.Reference][]parentEdge),
-		leafRefs:       make(map[*expressions.Reference]struct{}),
+		leafRefsSet:    make(map[*expressions.Reference]struct{}),
 	}
 	if root != nil {
 		m.indexReference(root)
@@ -181,14 +188,14 @@ func (m *Memo) AddExpression(ref *expressions.Reference, expr expressions.Relati
 		}
 	}
 	if len(expr.GetQuantifiers()) == 0 {
-		m.leafRefs[ref] = struct{}{}
+		m.addLeafRef(ref)
 	}
 }
 
 // memoizeLeaf handles the leaf case: no children.
 func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.Reference {
 	h := expr.HashCodeWithoutChildren()
-	for ref := range m.leafRefs {
+	for _, ref := range m.leafRefs {
 		for _, member := range ref.Members() {
 			if member.HashCodeWithoutChildren() == h &&
 				member.EqualsWithoutChildren(expr, expressions.EmptyAliasMap()) {
@@ -199,7 +206,7 @@ func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.R
 	// Not found — create fresh.
 	ref := expressions.InitialOf(expr)
 	m.refs[ref] = struct{}{}
-	m.leafRefs[ref] = struct{}{}
+	m.addLeafRef(ref)
 	return ref
 }
 
@@ -244,12 +251,13 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 // findCandidateParents returns References that are parents of ALL of
 // the given Quantifiers' child References. This is the topological
 // intersection that narrows down candidates for memoization.
+// Results are returned in insertion order (deterministic).
 func (m *Memo) findCandidateParents(qs []expressions.Quantifier) []*expressions.Reference {
 	if len(qs) == 0 {
 		return nil
 	}
 
-	// Start with parents of the first child Reference.
+	// Start with parents of the first child Reference (in edge order).
 	first := qs[0].GetRangesOver()
 	if first == nil {
 		return nil
@@ -259,10 +267,15 @@ func (m *Memo) findCandidateParents(qs []expressions.Quantifier) []*expressions.
 		return nil
 	}
 
-	// Collect parent References from the first child.
+	// Collect parent References from the first child in edge order
+	// (insertion order, deterministic).
+	var candidateOrder []*expressions.Reference
 	candidates := make(map[*expressions.Reference]struct{}, len(edges))
 	for _, e := range edges {
-		candidates[e.parent] = struct{}{}
+		if _, seen := candidates[e.parent]; !seen {
+			candidates[e.parent] = struct{}{}
+			candidateOrder = append(candidateOrder, e.parent)
+		}
 	}
 
 	// Intersect with parents of subsequent child References.
@@ -279,22 +292,23 @@ func (m *Memo) findCandidateParents(qs []expressions.Quantifier) []*expressions.
 		for _, e := range childEdges {
 			childParents[e.parent] = struct{}{}
 		}
-		// Intersect.
-		for c := range candidates {
-			if _, ok := childParents[c]; !ok {
+		// Intersect: filter candidateOrder in-place.
+		n := 0
+		for _, c := range candidateOrder {
+			if _, ok := childParents[c]; ok {
+				candidateOrder[n] = c
+				n++
+			} else {
 				delete(candidates, c)
 			}
 		}
-		if len(candidates) == 0 {
+		candidateOrder = candidateOrder[:n]
+		if n == 0 {
 			return nil
 		}
 	}
 
-	result := make([]*expressions.Reference, 0, len(candidates))
-	for ref := range candidates {
-		result = append(result, ref)
-	}
-	return result
+	return candidateOrder
 }
 
 // refContainsAll checks whether ref contains a structural equivalent
@@ -373,15 +387,20 @@ func (m *Memo) indexReference(ref *expressions.Reference) {
 		}
 	}
 	if isLeaf {
-		m.leafRefs[ref] = struct{}{}
+		m.addLeafRef(ref)
 	}
+}
+
+// addLeafRef appends ref to the leafRefs slice (if not already present).
+func (m *Memo) addLeafRef(ref *expressions.Reference) {
+	if _, ok := m.leafRefsSet[ref]; ok {
+		return
+	}
+	m.leafRefsSet[ref] = struct{}{}
+	m.leafRefs = append(m.leafRefs, ref)
 }
 
 // leafRefsSlice returns the leaf References as a slice (for iteration).
 func (m *Memo) leafRefsSlice() []*expressions.Reference {
-	result := make([]*expressions.Reference, 0, len(m.leafRefs))
-	for ref := range m.leafRefs {
-		result = append(result, ref)
-	}
-	return result
+	return m.leafRefs
 }
