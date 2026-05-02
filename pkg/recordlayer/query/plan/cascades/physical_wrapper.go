@@ -200,6 +200,7 @@ var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 type physicalIndexScanWrapper struct {
 	plan        *plans.RecordQueryIndexPlan
 	columnNames []string // index column names for ordering property
+	unique      bool
 }
 
 func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }
@@ -269,15 +270,24 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 
 // HintCost: index scans are cheaper than full table scans because
 // they read a subset of records. Apply a selectivity multiplier on
-// top of the physical-wrapper discount.
+// top of the physical-wrapper discount. Unique indexes with all
+// columns equality-bound return cardinality=1 (point lookup).
 func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	base := properties.LeafScanCardinality * physicalWrapperCostMultiplier
 	if w.plan != nil {
+		comps := w.plan.GetScanComparisons()
 		numBound := 0
-		for _, cr := range w.plan.GetScanComparisons() {
+		allEquality := true
+		for _, cr := range comps {
 			if !cr.IsEmpty() {
 				numBound++
+				if !cr.IsEquality() {
+					allEquality = false
+				}
 			}
+		}
+		if w.unique && allEquality && numBound == len(w.columnNames) {
+			return properties.Cost{Cardinality: physicalWrapperCostMultiplier, CPU: 0}
 		}
 		sel := 1.0
 		for i := 0; i < numBound; i++ {

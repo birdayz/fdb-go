@@ -292,6 +292,83 @@ func TestIndexScan_PredicateOrderIndependent(t *testing.T) {
 	}
 }
 
+// TestIndexScan_UniqueIndexPointLookupCost verifies that a unique index
+// with all columns equality-bound returns cardinality ~1 (point lookup),
+// which is cheaper than a non-unique index with the same predicates.
+func TestIndexScan_UniqueIndexPointLookupCost(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	candUnique := NewValueIndexScanMatchCandidate(
+		"Order$id_unique",
+		[]string{"Order"},
+		[]string{"ID"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		true, // unique
+	)
+	b1 := values.UniqueCorrelationIdentifier()
+	candNonUnique := NewValueIndexScanMatchCandidate(
+		"Order$id_nonunique",
+		[]string{"Order"},
+		[]string{"ID"},
+		[]values.CorrelationIdentifier{b1},
+		values.UnknownType,
+		false, // non-unique
+	)
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "ID", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	// Fire with unique index.
+	ctxU := &indexTestPlanContext{candidates: []MatchCandidate{candUnique}}
+	rule := NewImplementIndexScanRule()
+	resultsU := FireExpressionRuleWithMemo(rule, filterRef, ctxU, nil)
+	if len(resultsU) != 1 {
+		t.Fatalf("unique: expected 1 yield, got %d", len(resultsU))
+	}
+	wrapperU := resultsU[0].(*physicalIndexScanWrapper)
+	costU := wrapperU.HintCost(nil)
+
+	// Fire with non-unique index (rebuild filter for fresh reference).
+	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef2 := expressions.InitialOf(scan2)
+	q2 := expressions.ForEachQuantifier(scanRef2)
+	filter2 := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "ID", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+			),
+		},
+		q2,
+	)
+	filterRef2 := expressions.InitialOf(filter2)
+	ctxNU := &indexTestPlanContext{candidates: []MatchCandidate{candNonUnique}}
+	resultsNU := FireExpressionRuleWithMemo(rule, filterRef2, ctxNU, nil)
+	if len(resultsNU) != 1 {
+		t.Fatalf("non-unique: expected 1 yield, got %d", len(resultsNU))
+	}
+	wrapperNU := resultsNU[0].(*physicalIndexScanWrapper)
+	costNU := wrapperNU.HintCost(nil)
+
+	if costU.Cardinality >= costNU.Cardinality {
+		t.Fatalf("unique point lookup (card=%.2f) should be cheaper than non-unique (card=%.2f)",
+			costU.Cardinality, costNU.Cardinality)
+	}
+}
+
 // TestIndexScan_CostComparison verifies that the planner's cost model
 // correctly ranks an index scan cheaper than a full-scan+filter on the
 // same query shape.
