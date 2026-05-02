@@ -9298,6 +9298,131 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT payload FROM T_SCN14 WHERE region = 'us' ORDER BY region, id",
 		},
+
+		// ===== schema-variation shapes =====
+		{
+			// Two tables, each with its own secondary index; query uses
+			// one index. Pins planner not to confuse cross-table indexes.
+			Name: "sv_two_tables_two_indexes_use_one",
+			SchemaTemplate: "CREATE TABLE T_SV1A (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_SV1B (id BIGINT, w BIGINT, PRIMARY KEY (id)) " +
+				"CREATE INDEX idx_sv1a_v ON T_SV1A (v) " +
+				"CREATE INDEX idx_sv1b_w ON T_SV1B (w)",
+			SetupSqls: []string{
+				"INSERT INTO T_SV1A VALUES (1, 100), (2, 200), (3, 300)",
+				"INSERT INTO T_SV1B VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, v FROM T_SV1A WHERE v = 200 ORDER BY id",
+		},
+		{
+			// Three tables in one schema (parent → child → grandchild).
+			// INSERT into all three; SELECT round-trips just the
+			// grandchild. Pins schema-layer registration of >2 tables.
+			Name: "sv_three_table_chain_grandchild_select",
+			SchemaTemplate: "CREATE TABLE T_SV2P (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_SV2C (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_SV2G (id BIGINT, child BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SV2P VALUES (1, 'p1'), (2, 'p2')",
+				"INSERT INTO T_SV2C VALUES (10, 1, 'c10'), (11, 1, 'c11'), (12, 2, 'c12')",
+				"INSERT INTO T_SV2G VALUES (100, 10, 1000), (101, 10, 1001), (102, 12, 1002)",
+			},
+			Query: "SELECT id, child, val FROM T_SV2G ORDER BY id",
+		},
+		{
+			// 3-table schema; query joins parent+child only, leaves
+			// grandchild stored but unread. Pins that an unused table
+			// in the schema doesn't perturb planning of the join.
+			Name: "sv_three_table_chain_join_two",
+			SchemaTemplate: "CREATE TABLE T_SV3P (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_SV3C (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_SV3G (id BIGINT, child BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SV3P VALUES (1, 'p1'), (2, 'p2')",
+				"INSERT INTO T_SV3C VALUES (10, 1, 'c10'), (11, 2, 'c11')",
+				"INSERT INTO T_SV3G VALUES (100, 10, 1000)",
+			},
+			Query: "SELECT p.id, c.label FROM T_SV3P p, T_SV3C c WHERE p.id = c.parent ORDER BY c.id",
+		},
+		{
+			// Composite-PK table with a secondary index on a non-PK
+			// column. Query uses the index (not the PK).
+			Name:           "sv_composite_pk_with_index_on_non_pk",
+			SchemaTemplate: "CREATE TABLE T_SV4 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b)) CREATE INDEX idx_sv4_v ON T_SV4 (v)",
+			SetupSqls:      []string{"INSERT INTO T_SV4 VALUES (1, 1, 100), (1, 2, 200), (2, 1, 300)"},
+			Query:          "SELECT a, b, v FROM T_SV4 WHERE v = 200 ORDER BY v",
+		},
+		{
+			// 3-component composite PK; INSERT/SELECT round-trip
+			// without a WHERE — pins the full row layout under a
+			// 3-key tuple.
+			Name:           "sv_three_component_pk_roundtrip",
+			SchemaTemplate: "CREATE TABLE T_SV5 (a BIGINT, b BIGINT, c BIGINT, payload STRING, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_SV5 VALUES (1, 10, 100, 'aaa')",
+				"INSERT INTO T_SV5 VALUES (1, 10, 200, 'aab')",
+				"INSERT INTO T_SV5 VALUES (1, 20, 100, 'aba')",
+				"INSERT INTO T_SV5 VALUES (2, 10, 100, 'baa')",
+			},
+			Query: "SELECT a, b, c, payload FROM T_SV5 ORDER BY a, b, c",
+		},
+		{
+			// Single table with all primitive scalar types
+			// (BIGINT, INTEGER, DOUBLE, BOOLEAN, STRING, BYTES, UUID).
+			// Pins INSERT/SELECT round-trip across the type lattice.
+			Name:           "sv_seven_types_roundtrip",
+			SchemaTemplate: "CREATE TABLE T_SV7 (id BIGINT, i32 INTEGER, d DOUBLE, b BOOLEAN, s STRING, payload BYTES, u UUID, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SV7 VALUES (1, CAST(42 AS INTEGER), 1.5, TRUE, 'alpha', X'6869', CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_SV7 VALUES (2, CAST(-7 AS INTEGER), -2.25, FALSE, 'beta', X'', CAST('22222222-2222-2222-2222-222222222222' AS UUID))",
+			},
+			Query: "SELECT id, i32, d, b, s, payload, u FROM T_SV7 ORDER BY id",
+		},
+		{
+			// Secondary index on a STRING column; query uses LIKE
+			// prefix match. Pins index-pushdown of LIKE 'foo%'.
+			Name:           "sv_string_index_prefix_like",
+			SchemaTemplate: "CREATE TABLE T_SV8 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_sv8_name ON T_SV8 (name)",
+			SetupSqls:      []string{"INSERT INTO T_SV8 VALUES (1, 'apple'), (2, 'apricot'), (3, 'banana'), (4, 'avocado')"},
+			Query:          "SELECT id, name FROM T_SV8 WHERE name LIKE 'ap%' ORDER BY name",
+		},
+		{
+			// Single-column (PK-only) table; INSERT/SELECT round-trip.
+			// Pins the schema layer's degenerate "no payload" row shape.
+			Name:           "sv_single_column_pk_only",
+			SchemaTemplate: "CREATE TABLE T_SV9 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SV9 VALUES (1), (2), (3)"},
+			Query:          "SELECT id FROM T_SV9 ORDER BY id",
+		},
+		{
+			// Two tables sharing column names (id, val) but joined on
+			// a third column. Pins disambiguation when both sides have
+			// the same field names.
+			Name: "sv_same_column_names_join_third_col",
+			SchemaTemplate: "CREATE TABLE T_SV10A (id BIGINT, val BIGINT, link BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_SV10B (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SV10A VALUES (1, 10, 100), (2, 20, 200)",
+				"INSERT INTO T_SV10B VALUES (100, 1000), (200, 2000)",
+			},
+			Query: "SELECT a.id, a.val, b.val FROM T_SV10A a, T_SV10B b WHERE a.link = b.id ORDER BY a.id",
+		},
+		{
+			// Secondary index on composite (a, b); query has a full-
+			// equality match on both index columns.
+			Name:           "sv_composite_index_full_eq",
+			SchemaTemplate: "CREATE TABLE T_SV11 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_sv11_ab ON T_SV11 (a, b)",
+			SetupSqls:      []string{"INSERT INTO T_SV11 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 10), (4, 2, 20)"},
+			Query:          "SELECT id, a, b FROM T_SV11 WHERE a = 1 AND b = 20 ORDER BY id",
+		},
+		{
+			// Secondary index on composite (a, b); query equality on
+			// the leading column only — exercises prefix scan.
+			Name:           "sv_composite_index_leading_only",
+			SchemaTemplate: "CREATE TABLE T_SV12 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_sv12_ab ON T_SV12 (a, b)",
+			SetupSqls:      []string{"INSERT INTO T_SV12 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 10), (4, 2, 20)"},
+			Query:          "SELECT id, a, b FROM T_SV12 WHERE a = 1 ORDER BY id",
+		},
 	}
 }
 
