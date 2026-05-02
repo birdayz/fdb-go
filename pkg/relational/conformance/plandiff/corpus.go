@@ -10478,6 +10478,172 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_EX2_10 a WHERE EXISTS (SELECT 1 FROM T_EX2_10B b WHERE b.region = a.region) ORDER BY id",
 		},
+
+		// ===== Numeric range edge cases =====
+		{
+			// BIGINT near-max range filter — only 9223372036854775807
+			// passes `> 9223372036854775806`. Pins WHERE-side comparison
+			// at the upper INT64 boundary; complementary to the existing
+			// `bigint_max_boundary` projection-only probe.
+			Name:           "bigint_filter_above_near_max",
+			SchemaTemplate: "CREATE TABLE T_NR1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR1 VALUES (1, 9223372036854775805)",
+				"INSERT INTO T_NR1 VALUES (2, 9223372036854775806)",
+				"INSERT INTO T_NR1 VALUES (3, 9223372036854775807)",
+			},
+			Query: "SELECT id, v FROM T_NR1 WHERE v > 9223372036854775806 ORDER BY id",
+		},
+		{
+			// BIGINT min round-trip — `-9223372036854775808` is the most
+			// negative two's-complement int64 and round-trips through
+			// INSERT + projection. Differs from the existing
+			// `bigint_max_minus_one` (which co-mingles min with max in
+			// one row) by exercising min-only projection ordering.
+			Name:           "bigint_min_round_trip",
+			SchemaTemplate: "CREATE TABLE T_NR2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR2 VALUES (1, -9223372036854775807)",
+				"INSERT INTO T_NR2 VALUES (2, -9223372036854775808)",
+			},
+			Query: "SELECT id, v FROM T_NR2 ORDER BY id",
+		},
+		{
+			// IEEE 754 imprecision in WHERE: `0.1 + 0.2 = 0.3` evaluates
+			// to FALSE because 0.1+0.2 = 0.30000000000000004. Pins the
+			// equality-comparison path on DOUBLE expressions to the
+			// IEEE bit-pattern, not algebraic reasoning.
+			Name:           "double_imprecision_eq_filter",
+			SchemaTemplate: "CREATE TABLE T_NR3 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR3 VALUES (1, 0.3)",
+				"INSERT INTO T_NR3 VALUES (2, 0.30000000000000004)",
+			},
+			Query: "SELECT id, v FROM T_NR3 WHERE 0.1 + 0.2 = v ORDER BY id",
+		},
+		{
+			// DOUBLE arithmetic on whole-number-representable operands
+			// — both 1e10 and 1.0 are exactly representable in float64,
+			// and 1e10 + 1.0 is too (well below 2^53). Pins exact
+			// representable arithmetic; complementary to the existing
+			// imprecision probes.
+			Name:           "double_exact_whole_number_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_NR4 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR4 VALUES (1, 10000000000.0)",
+				"INSERT INTO T_NR4 VALUES (2, 1.0)",
+			},
+			Query: "SELECT id, v + 1.0 FROM T_NR4 ORDER BY id",
+		},
+		{
+			// DOUBLE literal exact equality — 1.0 is exactly
+			// representable, and `WHERE v = 1.0` selects the matching
+			// row. Pins parse-time literal handling + DOUBLE eq path.
+			Name:           "double_literal_exact_equality",
+			SchemaTemplate: "CREATE TABLE T_NR5 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR5 VALUES (1, 1.0)",
+				"INSERT INTO T_NR5 VALUES (2, 2.0)",
+				"INSERT INTO T_NR5 VALUES (3, 1.5)",
+			},
+			Query: "SELECT id, v FROM T_NR5 WHERE v = 1.0 ORDER BY id",
+		},
+		{
+			// BIGINT % BIGINT — `%` between two columns (not a literal).
+			// Pins the modulo path through the binary-evaluator chain
+			// rather than literal-folded.
+			Name:           "bigint_modulo_column_by_column",
+			SchemaTemplate: "CREATE TABLE T_NR7 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR7 VALUES (1, 17, 5)",
+				"INSERT INTO T_NR7 VALUES (2, -17, 5)",
+				"INSERT INTO T_NR7 VALUES (3, 17, -5)",
+				"INSERT INTO T_NR7 VALUES (4, 100, 7)",
+			},
+			Query: "SELECT id, a % b FROM T_NR7 ORDER BY id",
+		},
+		{
+			// SUM of BIGINT values that approaches but stays inside
+			// int64 range (sum = 9223372036854775800, well below
+			// int64-max). Pins the no-overflow path; complementary to
+			// the existing `sum_bigint_overflow` probe.
+			Name:           "sum_bigint_near_max_no_overflow",
+			SchemaTemplate: "CREATE TABLE T_NR8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR8 VALUES (1, 4611686018427387900)",
+				"INSERT INTO T_NR8 VALUES (2, 4611686018427387900)",
+			},
+			Query: "SELECT SUM(v) FROM T_NR8",
+		},
+		{
+			// Mixed BIGINT + DOUBLE comparison at int64 max:
+			// 9223372036854775807 is NOT exactly representable in
+			// float64 (it rounds to 9.2233720368547758E18 = 2^63),
+			// so promoting both sides to DOUBLE makes the equality
+			// behave non-intuitively. Pins the cross-type promotion
+			// path at the precision boundary.
+			Name:           "bigint_eq_double_at_int64_max",
+			SchemaTemplate: "CREATE TABLE T_NR9 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NR9 VALUES (1, 9223372036854775807)"},
+			Query:          "SELECT id, v FROM T_NR9 WHERE v = 9223372036854775807.0",
+		},
+		{
+			// DOUBLE multiplication by a finite operand that produces
+			// a result beyond DOUBLE-max — IEEE 754 yields +Infinity,
+			// not an error. Pins overflow-to-Infinity behavior;
+			// complementary to the existing divide-by-zero Infinity
+			// probe.
+			Name:           "double_multiply_overflow_to_infinity",
+			SchemaTemplate: "CREATE TABLE T_NR10 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NR10 VALUES (1, 1.7976931348623157E308)"},
+			Query:          "SELECT v * 2.0 FROM T_NR10",
+		},
+		{
+			// CAST(BIGINT to INTEGER) on out-of-range value — probe
+			// what happens when the value 2147483648 (int32-max + 1)
+			// is narrowed via CAST. Both engines should agree; this
+			// path is distinct from the INSERT-narrowing in
+			// `integer_overflow_on_insert`.
+			Name:           "cast_bigint_to_integer_overflow",
+			SchemaTemplate: "CREATE TABLE T_NR11 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NR11 VALUES (1)"},
+			Query:          "SELECT CAST(2147483648 AS INTEGER) FROM T_NR11",
+		},
+		{
+			// BIGINT min comparison: filter rows where v >= int64-min.
+			// Should match every row (everything is >= min). Pins the
+			// >= comparison path at the lower INT64 boundary.
+			Name:           "bigint_filter_above_min",
+			SchemaTemplate: "CREATE TABLE T_NR12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR12 VALUES (1, -9223372036854775808)",
+				"INSERT INTO T_NR12 VALUES (2, 0)",
+				"INSERT INTO T_NR12 VALUES (3, 9223372036854775807)",
+			},
+			Query: "SELECT id, v FROM T_NR12 WHERE v >= -9223372036854775807 ORDER BY id",
+		},
+		{
+			// SUM of DOUBLE very-large values: 1e308 + 1e308 overflows
+			// to +Infinity. Pins DOUBLE aggregate overflow behavior
+			// (no error, IEEE 754 saturates).
+			Name:           "sum_double_overflow_to_infinity",
+			SchemaTemplate: "CREATE TABLE T_NR13 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NR13 VALUES (1, 1.0E308)",
+				"INSERT INTO T_NR13 VALUES (2, 1.0E308)",
+			},
+			Query: "SELECT SUM(v) FROM T_NR13",
+		},
+		{
+			// BIGINT subtraction inside int64 range: max - 1 = max-1.
+			// Pins the no-overflow subtraction path at the upper edge,
+			// complementary to the existing `sub_int_overflow_rejected`
+			// (which probes min - 1).
+			Name:           "bigint_max_minus_one_no_overflow",
+			SchemaTemplate: "CREATE TABLE T_NR14 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_NR14 VALUES (1)"},
+			Query:          "SELECT 9223372036854775807 - 1 FROM T_NR14",
+		},
 	}
 }
 
