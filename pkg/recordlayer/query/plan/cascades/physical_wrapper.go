@@ -499,6 +499,21 @@ func (w *physicalSortWrapper) HintCost(child []properties.Cost) properties.Cost 
 	}
 }
 
+func (w *physicalSortWrapper) HintOrdering() properties.Ordering {
+	if w.plan == nil {
+		return properties.Ordering{}
+	}
+	sortKeys := w.plan.GetSortKeys()
+	if len(sortKeys) == 0 {
+		return properties.Ordering{}
+	}
+	keys := make([]values.Value, len(sortKeys))
+	for i, sk := range sortKeys {
+		keys[i] = sk.Value
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys}
+}
+
 var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)
 
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
@@ -580,6 +595,20 @@ func (w *physicalDistinctWrapper) HintCost(child []properties.Cost) properties.C
 	}
 }
 
+func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
 
 // physicalTypeFilterWrapper adapts a `*plans.RecordQueryTypeFilterPlan`
@@ -659,6 +688,20 @@ func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost) properties
 		Cardinality: in * properties.TypeFilterSelectivity * physicalWrapperCostMultiplier,
 		CPU:         (child[0].CPU + in*properties.TypeFilterCPU) * physicalWrapperCostMultiplier,
 	}
+}
+
+func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
 }
 
 var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)

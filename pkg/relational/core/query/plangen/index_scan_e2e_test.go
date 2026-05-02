@@ -348,6 +348,64 @@ func TestEndToEnd_SortElimByIndex(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_SortElimWithPrefixEqAndRangeSuffix verifies sort elimination
+// when an index has both an equality prefix and a range suffix:
+// WHERE status='active' AND date>'2024' ORDER BY date with index(status,date).
+// The equality on status, combined with the range on date, produces rows
+// already ordered by date within the equality group.
+func TestEndToEnd_SortElimWithPrefixEqAndRangeSuffix(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "DATE", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "2024-01-01"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+		filterQ,
+	)
+	ref := expressions.InitialOf(sort)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status_date",
+			columns:     []string{"status", "date"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	foundIndexScanAtTop := false
+	for _, m := range ref.Members() {
+		if cascades.IsPhysicalIndexScan(m) {
+			foundIndexScanAtTop = true
+			break
+		}
+	}
+	if !foundIndexScanAtTop {
+		t.Fatal("sort should be eliminated; index(status,date) with status=eq AND date>x provides date ordering")
+	}
+}
+
 // TestEndToEnd_SortElimThroughResidualFilter verifies sort elimination
 // propagates through a residual filter: Sort(DATE) over
 // Filter(status='active' AND amount>50, Scan) with index on (status,date).
