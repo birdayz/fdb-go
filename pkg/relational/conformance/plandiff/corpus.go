@@ -4353,7 +4353,7 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, v FROM T_E2 ORDER BY id",
 		},
 		{
-			Name:           "empty_string_vs_null",
+			Name:           "empty_string_vs_null_v2",
 			SchemaTemplate: "CREATE TABLE T_E3 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_E3 VALUES (1, ''), (2, NULL), (3, ' ')"},
 			Query:          "SELECT id, s FROM T_E3 ORDER BY id",
@@ -4513,7 +4513,7 @@ func SeedRunCorpus() []RunQuery {
 		},
 		{
 			// NOT BETWEEN range exclusion.
-			Name:           "not_between",
+			Name:           "not_between_v2",
 			SchemaTemplate: "CREATE TABLE T_NB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
 				"INSERT INTO T_NB VALUES (1, 5), (2, 15), (3, 25)",
@@ -4781,7 +4781,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// CAST(string AS BIGINT) — implicit numeric parsing.
 			// Pins both engines parse '42' identically.
-			Name:           "cast_string_to_bigint",
+			Name:           "cast_string_to_bigint_v2",
 			SchemaTemplate: "CREATE TABLE T_CSB (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls: []string{
 				"INSERT INTO T_CSB VALUES (1, '42')",
@@ -5083,7 +5083,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Comparison with negative literal — pins the unary-minus
 			// parse + signed comparison path.
-			Name:           "where_negative_literal",
+			Name:           "where_negative_literal_v2",
 			SchemaTemplate: "CREATE TABLE T_NE5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
 				"INSERT INTO T_NE5 VALUES (1, -10)",
@@ -5108,7 +5108,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Modulo on BIGINT — pins the integer-division/mod path
 			// used by hash-bucket queries.
-			Name:           "modulo_bigint",
+			Name:           "modulo_bigint_v2",
 			SchemaTemplate: "CREATE TABLE T_NE7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
 				"INSERT INTO T_NE7 VALUES (1, 10)",
@@ -9006,7 +9006,7 @@ func SeedRunCorpus() []RunQuery {
 			// over IS NULL the same way in both engines (NULL inputs
 			// included in the result here because IS NULL is total —
 			// `NOT (NULL IS NULL)` = NOT TRUE = FALSE, not UNKNOWN).
-			Name:           "where_not_is_null",
+			Name:           "where_not_is_null_v2",
 			SchemaTemplate: "CREATE TABLE T_PN6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
 				"INSERT INTO T_PN6 VALUES (1, 3)",
@@ -10431,7 +10431,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// NOT EXISTS where the inner table is empty — every outer row
 			// must match (no inner row to fail-the-anti-semijoin against).
-			Name: "not_exists_empty_inner",
+			Name: "not_exists_empty_inner_v2",
 			SchemaTemplate: "CREATE TABLE T_EX2_7 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
 				"CREATE TABLE T_EX2_7B (gid BIGINT, PRIMARY KEY (gid))",
 			SetupSqls: []string{
