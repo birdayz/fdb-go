@@ -13474,6 +13474,423 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, a, b FROM T_DSI_15 WHERE a = 1 AND b >= 10 ORDER BY id",
 		},
+		// --- Scalar subquery shapes -----------------------------------
+		// Scalar subquery: `(SELECT ...)` used as a value-returning
+		// expression — exactly one column, at most one row, zero rows
+		// returns NULL. Standard SQL feature; Go's embedded engine
+		// implements it (added in nightshift-39); fdb-relational 4.11.1.0
+		// rejects all forms at parse time ("syntax error" pointing at
+		// the `(SELECT`). Until Java upstream lands the feature OR a
+		// future Phase 1 cleanup removes it from Go, every entry here
+		// is annotated `JavaErrorsGoCorrect` — the harness pins Go's
+		// SQL-correct rows and asserts Java errored. If Java upstream
+		// implements scalar subquery the assertion fires (`Java
+		// unexpectedly succeeded`) prompting a re-audit.
+		//
+		// Coverage: SELECT list, WHERE eq / gt / <> / OR / BETWEEN,
+		// arithmetic operand (BIGINT / DOUBLE / NULL propagation),
+		// CASE branch, COALESCE wrapper, IS NULL predicate, HAVING
+		// clause, type pass-through (STRING / BOOLEAN / DOUBLE),
+		// COUNT(*) / MIN / MAX / SUM aggregates inside, count-zero-
+		// filter returns 0, zero-row outer returns NULL, multi-table
+		// FROM, secondary-index MAX, nested subquery with derived
+		// table, subquery against a CTE, post-UPDATE / post-DELETE
+		// reads with subquery on the SET / WHERE RHS.
+		{
+			Name:           "scalar_subq_in_select_list",
+			SchemaTemplate: "CREATE TABLE T_SS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_01 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, (SELECT MAX(v) FROM T_SS_01) FROM T_SS_01 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery in SELECT list — Go-only standard-SQL feature; Java's parser rejects with `syntax error` at the inner `(SELECT`. Pins Go's broadcast of MAX(v)=30 to every outer row.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(30)},
+					{float64(2), float64(30)},
+					{float64(3), float64(30)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_where_eq",
+			SchemaTemplate: "CREATE TABLE T_SS_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_02 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_SS_02 WHERE v = (SELECT MAX(v) FROM T_SS_02)",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery as WHERE RHS — Java's parser rejects (Go-only). Go finds id=3 (the row with v=MAX(v)).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(3)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_where_gt",
+			SchemaTemplate: "CREATE TABLE T_SS_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_03 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_SS_03 WHERE v > (SELECT MIN(v) FROM T_SS_03) ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery as WHERE inequality RHS — Java rejects (Go-only). Go returns rows strictly greater than MIN(v)=10.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)}, {float64(3)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_arith",
+			SchemaTemplate: "CREATE TABLE T_SS_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_04 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, v - (SELECT MIN(v) FROM T_SS_04) FROM T_SS_04 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery as arithmetic operand — Java rejects (Go-only). Go computes v - MIN(v) per outer row.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(0)},
+					{float64(2), float64(10)},
+					{float64(3), float64(20)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_zero_rows_returns_null",
+			SchemaTemplate: "CREATE TABLE T_SS_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_05 VALUES (1, 10)",
+			},
+			Query: "SELECT id, (SELECT v FROM T_SS_05 WHERE id = 999) FROM T_SS_05 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Zero-row inner subquery → NULL (SQL-standard); Java rejects the syntax. Pins Go's NULL pass-through.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), nil},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_string_returning",
+			SchemaTemplate: "CREATE TABLE T_SS_06 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_06 VALUES (1, 'alice'), (2, 'bob')",
+			},
+			Query: "SELECT id, (SELECT name FROM T_SS_06 WHERE id = 1) FROM T_SS_06 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "STRING-returning scalar subquery — Java rejects. Pins Go's string pass-through (broadcast 'alice' to every outer row).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), "alice"},
+					{float64(2), "alice"},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_boolean_returning",
+			SchemaTemplate: "CREATE TABLE T_SS_07 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_07 VALUES (1, TRUE), (2, FALSE)",
+			},
+			Query: "SELECT id, (SELECT flag FROM T_SS_07 WHERE id = 1) FROM T_SS_07 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "BOOLEAN-returning scalar subquery — Java rejects. Pins Go's boolean pass-through (TRUE from id=1 broadcast to all rows).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), true},
+					{float64(2), true},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_double_in_arith",
+			SchemaTemplate: "CREATE TABLE T_SS_08 (id BIGINT, score DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_08 VALUES (1, 9.5), (2, 7.25)",
+			},
+			Query: "SELECT (SELECT score FROM T_SS_08 WHERE id = 1) + 0.5 FROM T_SS_08 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "DOUBLE-returning scalar subquery in arithmetic — Java rejects. Pins Go's DOUBLE pass-through (9.5 + 0.5 = 10.0).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(10)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_case_branch",
+			SchemaTemplate: "CREATE TABLE T_SS_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_09 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, CASE WHEN id = 1 THEN (SELECT MAX(v) FROM T_SS_09) ELSE 0 END FROM T_SS_09 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery in CASE branch — Java rejects. Go evaluates only the matching arm; row 1 returns MAX(v)=30, others return ELSE 0.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(30)},
+					{float64(2), float64(0)},
+					{float64(3), float64(0)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_coalesce_zero_row",
+			SchemaTemplate: "CREATE TABLE T_SS_10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_10 VALUES (1, 10)",
+			},
+			Query: "SELECT id, COALESCE((SELECT v FROM T_SS_10 WHERE id = 999), 0) FROM T_SS_10 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "COALESCE wrapping a zero-row scalar subquery — Java rejects. Go returns 0 (the COALESCE default).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(0)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_between_two_subqueries",
+			SchemaTemplate: "CREATE TABLE T_SS_11 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_11 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT id FROM T_SS_11 WHERE v BETWEEN (SELECT MIN(v) FROM T_SS_11) AND (SELECT MAX(v) FROM T_SS_11) ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Two scalar subqueries inside BETWEEN — Java rejects. Go pre-evaluates both bounds and matches all four rows (every v is between MIN and MAX).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)}, {float64(2)}, {float64(3)}, {float64(4)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_two_subqueries_in_arith",
+			SchemaTemplate: "CREATE TABLE T_SS_12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_12 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT (SELECT MAX(v) FROM T_SS_12) - (SELECT MIN(v) FROM T_SS_12) FROM T_SS_12 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "Two scalar subqueries in arithmetic — Java rejects. Both subqueries pre-evaluate and cache independently; result is MAX - MIN = 30 - 10 = 20.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(20)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_having",
+			SchemaTemplate: "CREATE TABLE T_SS_13 (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_13 VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40)",
+			},
+			Query: "SELECT g, SUM(v) FROM T_SS_13 GROUP BY g HAVING SUM(v) > (SELECT MAX(v) / 2 FROM T_SS_13) ORDER BY g",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery in HAVING — Java rejects. Go threshold = MAX(v)/2 = 20; both groups (a:30, b:70) qualify.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"a", float64(30)},
+					{"b", float64(70)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_is_null_predicate",
+			SchemaTemplate: "CREATE TABLE T_SS_15 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_15 VALUES (1, 10), (2, NULL)",
+			},
+			Query: "SELECT id FROM T_SS_15 WHERE id = 2 AND (SELECT v FROM T_SS_15 WHERE id = 2) IS NULL",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery in IS NULL — Java rejects. Inner returns NULL on the matched row; predicate is TRUE; Go returns id=2.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_threshold_from_other_table",
+			SchemaTemplate: "CREATE TABLE T_SS_16A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SS_16B (k STRING, n BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_16A VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_SS_16B VALUES ('limit', 15)",
+			},
+			Query: "SELECT id FROM T_SS_16A WHERE v > (SELECT n FROM T_SS_16B WHERE k = 'limit') ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery from a different table — Java rejects. Go's config-table threshold filters the data table; only id=2 (v=20 > 15) matches.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_nested_with_derived_table",
+			SchemaTemplate: "CREATE TABLE T_SS_19 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_19 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM T_SS_19) AS s) FROM T_SS_19 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "Nested scalar subquery over a derived table — Java rejects. Go returns MAX(x)=30 from the inner derived table.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(30)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_against_cte",
+			SchemaTemplate: "CREATE TABLE T_SS_20 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_20 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "WITH high AS (SELECT v FROM T_SS_20 WHERE v > 25) SELECT id, (SELECT MIN(v) FROM high) FROM T_SS_20 WHERE id = 1",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery against a CTE — Java rejects. Go pulls MIN(v)=30 from the high CTE (rows v>25 are 30 and 40).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(30)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_after_update_with_subq_rhs",
+			SchemaTemplate: "CREATE TABLE T_SS_21A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SS_21B (k STRING, n BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_21A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_SS_21B VALUES ('mul', 100)",
+				"UPDATE T_SS_21A SET v = (SELECT n FROM T_SS_21B WHERE k = 'mul')",
+			},
+			Query: "SELECT id, v FROM T_SS_21A ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "UPDATE SET RHS = scalar subquery — Java rejects the UPDATE at parse time (Go-only). Go applies the broadcast: every row's v becomes 100.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(100)},
+					{float64(2), float64(100)},
+					{float64(3), float64(100)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_after_delete_with_subq_threshold",
+			SchemaTemplate: "CREATE TABLE T_SS_22A (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_SS_22B (k STRING, n BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_22A VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"INSERT INTO T_SS_22B VALUES ('thr', 25)",
+				"DELETE FROM T_SS_22A WHERE v > (SELECT n FROM T_SS_22B WHERE k = 'thr')",
+			},
+			Query: "SELECT id, v FROM T_SS_22A ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "DELETE WHERE RHS = scalar subquery — Java rejects the DELETE at parse time (Go-only). Go deletes rows above threshold=25; survivors are (1,10) and (2,20).",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(10)},
+					{float64(2), float64(20)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_null_inner_propagates_in_arith",
+			SchemaTemplate: "CREATE TABLE T_SS_23 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_23 VALUES (1, 10), (2, NULL)",
+			},
+			Query: "SELECT id, v + (SELECT v FROM T_SS_23 WHERE id = 2) FROM T_SS_23 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery returning NULL in arithmetic — Java rejects. Go's three-valued arithmetic propagates NULL: every outer row's v + NULL is NULL.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), nil},
+					{float64(2), nil},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_with_count_star",
+			SchemaTemplate: "CREATE TABLE T_SS_24 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_24 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, (SELECT COUNT(*) FROM T_SS_24) FROM T_SS_24 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery wrapping COUNT(*) — Java rejects. Go broadcasts the row count (3) to every outer row.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(3)},
+					{float64(2), float64(3)},
+					{float64(3), float64(3)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_or_predicate",
+			SchemaTemplate: "CREATE TABLE T_SS_25 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_25 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_SS_25 WHERE v = (SELECT MIN(v) FROM T_SS_25) OR v = (SELECT MAX(v) FROM T_SS_25) ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subqueries in both arms of OR — Java rejects. Go pre-evaluates both; rows matching MIN (id=1) or MAX (id=3) qualify.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)}, {float64(3)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_with_secondary_index_max",
+			SchemaTemplate: "CREATE TABLE T_SS_26 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v_ss_26 ON T_SS_26 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_26 VALUES (1, 30), (2, 10), (3, 20)",
+			},
+			Query: "SELECT id FROM T_SS_26 WHERE v = (SELECT MAX(v) FROM T_SS_26)",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery resolved through a secondary index — Java rejects. Go's index suffix satisfies MAX(v)=30; outer WHERE finds id=1.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_count_zero_filter_in_arith",
+			SchemaTemplate: "CREATE TABLE T_SS_27 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_27 VALUES (1, 10), (2, 20)",
+			},
+			Query: "SELECT id + (SELECT COUNT(*) FROM T_SS_27 WHERE id = 999) FROM T_SS_27 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "COUNT(*) over a zero-row filter inside scalar subquery — Java rejects. Go returns 0 (not NULL) so id + 0 = id.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)}, {float64(2)},
+				},
+			},
+		},
+		{
+			Name:           "scalar_subq_in_inequality",
+			SchemaTemplate: "CREATE TABLE T_SS_28 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SS_28 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_SS_28 WHERE v <> (SELECT MIN(v) FROM T_SS_28) ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Scalar subquery as <> RHS — Java rejects. Go excludes rows whose v equals MIN(v)=10; survivors are id=2 and id=3.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)}, {float64(3)},
+				},
+			},
+		},
 	}
 }
 
