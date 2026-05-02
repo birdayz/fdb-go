@@ -11,6 +11,29 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// physicalPlanExpression is implemented by all physical-plan wrapper
+// types. Lets implement rules discover physical plans in a Reference
+// with a single interface assertion instead of per-type switches.
+type physicalPlanExpression interface {
+	expressions.RelationalExpression
+	GetRecordQueryPlan() plans.RecordQueryPlan
+}
+
+// findPhysicalPlan scans ref's members for the first physical-plan
+// expression and returns its underlying RecordQueryPlan. Returns nil
+// if no physical plan has been yielded into ref yet.
+func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
+	if ref == nil {
+		return nil
+	}
+	for _, m := range ref.Members() {
+		if ph, ok := m.(physicalPlanExpression); ok {
+			return ph.GetRecordQueryPlan()
+		}
+	}
+	return nil
+}
+
 // writeHash64 writes a uint64 to the FNV hasher in big-endian
 // byte order. Shared by all four wrapper types' HashCodeWithoutChildren
 // implementations.
@@ -55,6 +78,9 @@ type physicalScanWrapper struct {
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalScanWrapper) GetPlan() *plans.RecordQueryScanPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalScanWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns a fresh QuantifiedObjectValue whose Type is
 // the plan's flowed Type. Mirrors FullUnorderedScanExpression's
@@ -153,6 +179,9 @@ func NewPhysicalFilterWrapper(plan *plans.RecordQueryFilterPlan, innerQuant expr
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalFilterWrapper) GetPlan() *plans.RecordQueryFilterPlan { return w.plan }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalFilterWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the inner Quantifier's flowed object value
 // — filter doesn't reshape rows.
 func (w *physicalFilterWrapper) GetResultValue() values.Value {
@@ -247,6 +276,9 @@ func NewPhysicalSortWrapper(plan *plans.RecordQuerySortPlan, innerQuant expressi
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalSortWrapper) GetPlan() *plans.RecordQuerySortPlan { return w.plan }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalSortWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the inner Quantifier's flowed object value
 // — sort doesn't reshape rows.
 func (w *physicalSortWrapper) GetResultValue() values.Value {
@@ -335,6 +367,9 @@ func NewPhysicalDistinctWrapper(plan *plans.RecordQueryDistinctPlan, innerQuant 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalDistinctWrapper) GetPlan() *plans.RecordQueryDistinctPlan { return w.plan }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalDistinctWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalDistinctWrapper) GetResultValue() values.Value {
 	return w.innerQuant.GetFlowedObjectValue()
@@ -412,6 +447,9 @@ func NewPhysicalTypeFilterWrapper(plan *plans.RecordQueryTypeFilterPlan, innerQu
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalTypeFilterWrapper) GetPlan() *plans.RecordQueryTypeFilterPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalTypeFilterWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalTypeFilterWrapper) GetResultValue() values.Value {
@@ -492,6 +530,9 @@ func NewPhysicalInsertWrapper(plan *plans.RecordQueryInsertPlan, innerQuant expr
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalInsertWrapper) GetPlan() *plans.RecordQueryInsertPlan { return w.plan }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalInsertWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalInsertWrapper) GetResultValue() values.Value {
 	return w.innerQuant.GetFlowedObjectValue()
@@ -571,6 +612,9 @@ func NewPhysicalDeleteWrapper(plan *plans.RecordQueryDeletePlan, innerQuant expr
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalDeleteWrapper) GetPlan() *plans.RecordQueryDeletePlan { return w.plan }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalDeleteWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalDeleteWrapper) GetResultValue() values.Value {
 	return w.innerQuant.GetFlowedObjectValue()
@@ -647,6 +691,9 @@ func NewPhysicalUpdateWrapper(plan *plans.RecordQueryUpdatePlan, innerQuant expr
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalUpdateWrapper) GetPlan() *plans.RecordQueryUpdatePlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalUpdateWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalUpdateWrapper) GetResultValue() values.Value {
@@ -727,6 +774,9 @@ func NewPhysicalUnionWrapper(plan *plans.RecordQueryUnionPlan, innerQuants []exp
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalUnionWrapper) GetPlan() *plans.RecordQueryUnionPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalUnionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the first inner's flowed object value.
 // Java's RecordQueryUnionPlan emits rows compatible with all
@@ -815,6 +865,9 @@ func NewPhysicalIntersectionWrapper(plan *plans.RecordQueryIntersectionPlan, inn
 func (w *physicalIntersectionWrapper) GetPlan() *plans.RecordQueryIntersectionPlan {
 	return w.plan
 }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalIntersectionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the first inner's flowed object value —
 // intersection emits rows compatible with all children.

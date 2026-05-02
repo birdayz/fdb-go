@@ -41,28 +41,7 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	var innerPlan plans.RecordQueryPlan
-	for _, m := range innerRef.Members() {
-		switch w := m.(type) {
-		case *physicalScanWrapper:
-			innerPlan = w.GetPlan()
-		case *physicalFilterWrapper:
-			innerPlan = w.GetPlan()
-		case *physicalSortWrapper:
-			innerPlan = w.GetPlan()
-		case *physicalDistinctWrapper:
-			innerPlan = w.GetPlan()
-		case *physicalTypeFilterWrapper:
-			innerPlan = w.GetPlan()
-		case *physicalUnionWrapper:
-			innerPlan = w.GetPlan()
-		case *physicalIntersectionWrapper:
-			innerPlan = w.GetPlan()
-		}
-		if innerPlan != nil {
-			break
-		}
-	}
+	innerPlan := findPhysicalPlan(innerRef)
 	if innerPlan == nil {
 		return
 	}
