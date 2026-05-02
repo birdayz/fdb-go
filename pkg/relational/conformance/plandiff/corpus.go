@@ -8553,6 +8553,191 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, v FROM T_IS14_DST ORDER BY id",
 		},
+
+		// ===== Mixed predicate types — deep AND/OR trees combining
+		// LIKE, IN, BETWEEN, IS NULL, comparisons. Pins planner
+		// boolean-tree normalisation + filter-pushdown shapes.
+		{
+			// (LIKE AND >) OR IN — disjunction across heterogeneous
+			// predicate kinds, forces the planner to keep both
+			// branches of the OR distinct (no covering index push).
+			Name:           "mixed_like_and_gt_or_in",
+			SchemaTemplate: "CREATE TABLE T_MP1 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP1 VALUES (1, 'apple', 5)",
+				"INSERT INTO T_MP1 VALUES (2, 'apricot', 50)",
+				"INSERT INTO T_MP1 VALUES (3, 'banana', 7)",
+				"INSERT INTO T_MP1 VALUES (4, 'cherry', 8)",
+				"INSERT INTO T_MP1 VALUES (5, 'almond', 100)",
+			},
+			Query: "SELECT id FROM T_MP1 WHERE (name LIKE 'a%' AND val > 10) OR id IN (3, 4) ORDER BY id",
+		},
+		{
+			// IS NULL OR (BETWEEN AND =) — NULL-handling OR vs a
+			// fully-bounded range conjunction.
+			Name:           "mixed_isnull_or_between_and_eq",
+			SchemaTemplate: "CREATE TABLE T_MP2 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP2 VALUES (1, 'foo', 7)",
+				"INSERT INTO T_MP2 VALUES (2, NULL, 200)",
+				"INSERT INTO T_MP2 VALUES (3, 'foo', 50)",
+				"INSERT INTO T_MP2 VALUES (4, 'bar', 50)",
+				"INSERT INTO T_MP2 VALUES (5, 'foo', 4)",
+			},
+			Query: "SELECT id FROM T_MP2 WHERE name IS NULL OR (val BETWEEN 5 AND 100 AND name = 'foo') ORDER BY id",
+		},
+		{
+			// (LIKE OR LIKE) AND BETWEEN — two-arm contains-style
+			// LIKE OR'd, conjuncted with a numeric range.
+			Name:           "mixed_two_like_or_and_between",
+			SchemaTemplate: "CREATE TABLE T_MP3 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP3 VALUES (1, 'abc-stuff')",
+				"INSERT INTO T_MP3 VALUES (2, 'plain')",
+				"INSERT INTO T_MP3 VALUES (10, 'has-xyz-in')",
+				"INSERT INTO T_MP3 VALUES (60, 'abc-out-of-range')",
+				"INSERT INTO T_MP3 VALUES (25, 'nothing')",
+			},
+			Query: "SELECT id FROM T_MP3 WHERE (name LIKE '%abc%' OR name LIKE '%xyz%') AND id BETWEEN 1 AND 50 ORDER BY id",
+		},
+		{
+			// NOT(LIKE) AND > — pins NOT-LIKE pushdown beside a
+			// numeric inequality.
+			Name:           "mixed_not_like_and_gt",
+			SchemaTemplate: "CREATE TABLE T_MP4 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP4 VALUES (1, 'query', 10)",
+				"INSERT INTO T_MP4 VALUES (2, 'apple', 20)",
+				"INSERT INTO T_MP4 VALUES (3, 'banana', 3)",
+				"INSERT INTO T_MP4 VALUES (4, 'quartz', 100)",
+				"INSERT INTO T_MP4 VALUES (5, 'date', 6)",
+			},
+			Query: "SELECT id FROM T_MP4 WHERE NOT (name LIKE 'q%') AND val > 5 ORDER BY id",
+		},
+		{
+			// Long AND chain mixing =, >, IN, IS NOT NULL — pins
+			// full-conjunction pushdown.
+			Name:           "mixed_eq_gt_in_isnotnull_chain",
+			SchemaTemplate: "CREATE TABLE T_MP5 (id BIGINT, name STRING, val BIGINT, tag STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP5 VALUES (1, 'a', 100, 't1')",
+				"INSERT INTO T_MP5 VALUES (2, 'a', 50, 't2')",
+				"INSERT INTO T_MP5 VALUES (3, 'a', 5, 't3')",
+				"INSERT INTO T_MP5 VALUES (4, 'b', 100, 't4')",
+				"INSERT INTO T_MP5 VALUES (5, 'a', 100, NULL)",
+			},
+			Query: "SELECT id FROM T_MP5 WHERE name = 'a' AND val > 10 AND id IN (1, 2, 3) AND tag IS NOT NULL ORDER BY id",
+		},
+		{
+			// (IS NULL AND >) OR (LIKE AND <) — two AND-clusters
+			// disjuncted, each NULL-aware.
+			Name:           "mixed_isnull_and_or_like_and",
+			SchemaTemplate: "CREATE TABLE T_MP6 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP6 VALUES (3, NULL, 100)",
+				"INSERT INTO T_MP6 VALUES (4, NULL, 1)",
+				"INSERT INTO T_MP6 VALUES (5, 'banana', 9)",
+				"INSERT INTO T_MP6 VALUES (15, 'banana', 1)",
+				"INSERT INTO T_MP6 VALUES (8, 'cherry', 20)",
+			},
+			Query: "SELECT id FROM T_MP6 WHERE (name IS NULL AND val > 5) OR (name LIKE 'b%' AND id < 10) ORDER BY id",
+		},
+		{
+			// LIKE OR (= AND BETWEEN) — single LIKE arm OR'd with
+			// equality-plus-range conjunction.
+			Name:           "mixed_like_or_eq_and_between",
+			SchemaTemplate: "CREATE TABLE T_MP7 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP7 VALUES (1, 'foobar', 999)",
+				"INSERT INTO T_MP7 VALUES (2, 'food', 5)",
+				"INSERT INTO T_MP7 VALUES (3, 'bar', 15)",
+				"INSERT INTO T_MP7 VALUES (4, 'bar', 25)",
+				"INSERT INTO T_MP7 VALUES (5, 'baz', 15)",
+			},
+			Query: "SELECT id FROM T_MP7 WHERE name LIKE 'foo%' OR (name = 'bar' AND val BETWEEN 10 AND 20) ORDER BY id",
+		},
+		{
+			// BETWEEN AND LIKE-contains AND IS NOT NULL — three-way
+			// AND chain, all positive predicates.
+			Name:           "mixed_between_and_like_and_isnotnull",
+			SchemaTemplate: "CREATE TABLE T_MP8 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP8 VALUES (1, 'unit-test-a', 10)",
+				"INSERT INTO T_MP8 VALUES (5, 'live-test-data', 20)",
+				"INSERT INTO T_MP8 VALUES (50, 'production', 30)",
+				"INSERT INTO T_MP8 VALUES (200, 'test-out', 40)",
+				"INSERT INTO T_MP8 VALUES (10, 'no-match', NULL)",
+			},
+			Query: "SELECT id FROM T_MP8 WHERE id BETWEEN 1 AND 100 AND name LIKE '%test%' AND val IS NOT NULL ORDER BY id",
+		},
+		{
+			// Deeply nested: ((LIKE OR LIKE) AND >) OR (> AND =) —
+			// 4-level boolean tree.
+			Name:           "mixed_deep_nested_or_tree",
+			SchemaTemplate: "CREATE TABLE T_MP9 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP9 VALUES (1, 'apple', 10)",
+				"INSERT INTO T_MP9 VALUES (2, 'banana', 3)",
+				"INSERT INTO T_MP9 VALUES (3, 'banana', 100)",
+				"INSERT INTO T_MP9 VALUES (15, 'x', 50)",
+				"INSERT INTO T_MP9 VALUES (20, 'y', 50)",
+			},
+			Query: "SELECT id FROM T_MP9 WHERE ((name LIKE 'a%' OR name LIKE 'b%') AND val > 5) OR (id > 10 AND name = 'x') ORDER BY id",
+		},
+		{
+			// Three numeric comparisons + LIKE underscore-wildcard.
+			Name:           "mixed_lt_gt_like_underscore",
+			SchemaTemplate: "CREATE TABLE T_MP10 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP10 VALUES (50, 'data_1', 10)",
+				"INSERT INTO T_MP10 VALUES (60, 'data_2', 20)",
+				"INSERT INTO T_MP10 VALUES (70, 'data_99', 30)",
+				"INSERT INTO T_MP10 VALUES (200, 'data_3', 5)",
+				"INSERT INTO T_MP10 VALUES (1, 'data_x', 0)",
+			},
+			Query: "SELECT id FROM T_MP10 WHERE id < 100 AND val > 0 AND name LIKE 'data_%' ORDER BY id",
+		},
+		{
+			// Two IN-lists AND'd — pins multi-IN intersection.
+			Name:           "mixed_two_in_lists_and",
+			SchemaTemplate: "CREATE TABLE T_MP11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP11 VALUES (1, 10)",
+				"INSERT INTO T_MP11 VALUES (2, 99)",
+				"INSERT INTO T_MP11 VALUES (3, 30)",
+				"INSERT INTO T_MP11 VALUES (4, 30)",
+				"INSERT INTO T_MP11 VALUES (5, 20)",
+			},
+			Query: "SELECT id FROM T_MP11 WHERE id IN (1, 2, 3) AND val IN (10, 20, 30) ORDER BY id",
+		},
+		{
+			// LIKE-suffix AND NOT IN AND IS NULL — mixed
+			// negative/null/positive predicates.
+			Name:           "mixed_like_suffix_notin_isnull",
+			SchemaTemplate: "CREATE TABLE T_MP12 (id BIGINT, name STRING, val BIGINT, tag STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP12 VALUES (1, 'a.txt', 5, NULL)",
+				"INSERT INTO T_MP12 VALUES (2, 'b.txt', 0, NULL)",
+				"INSERT INTO T_MP12 VALUES (3, 'c.txt', 5, 't')",
+				"INSERT INTO T_MP12 VALUES (4, 'd.bin', 5, NULL)",
+				"INSERT INTO T_MP12 VALUES (5, 'e.txt', -1, NULL)",
+			},
+			Query: "SELECT id FROM T_MP12 WHERE name LIKE '%.txt' AND val NOT IN (0, -1) AND tag IS NULL ORDER BY id",
+		},
+		{
+			// (BETWEEN OR =) AND (LIKE OR IS NULL) — two binary OR
+			// clusters AND'd; balanced tree.
+			Name:           "mixed_balanced_or_clusters",
+			SchemaTemplate: "CREATE TABLE T_MP13 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MP13 VALUES (1, 'aaa', 50)",
+				"INSERT INTO T_MP13 VALUES (2, NULL, 999)",
+				"INSERT INTO T_MP13 VALUES (3, 'bbb', 200)",
+				"INSERT INTO T_MP13 VALUES (4, 'aaa', 1)",
+				"INSERT INTO T_MP13 VALUES (5, 'ccc', 200)",
+			},
+			Query: "SELECT id FROM T_MP13 WHERE (val BETWEEN 10 AND 100 OR val = 200) AND (name LIKE 'a%' OR name IS NULL) ORDER BY id",
+		},
 	}
 }
 
