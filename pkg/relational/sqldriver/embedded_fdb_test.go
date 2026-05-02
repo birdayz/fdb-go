@@ -5891,6 +5891,48 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
 
+// TestFDB_SignedZeroComparison pins SQL-correct IEEE 754 signed-zero
+// behaviour: `WHERE v >= 0.0` against a row with `v = -0.0` MUST keep
+// the row, since -0.0 == +0.0 by IEEE 754. Java's fdb-relational
+// 4.11.1.0 silently drops the -0.0 row (upstream bug, TODO #48 Tier D);
+// Go is correct. Pinned as a Go-only positive sentinel rather than a
+// cross-engine corpus entry to avoid coupling to the Java bug.
+func TestFDB_SignedZeroComparison(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_signed_zero")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_signed_zero")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE signed_zero_tmpl
+		CREATE TABLE T (id BIGINT, v DOUBLE, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_signed_zero/main WITH TEMPLATE signed_zero_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_signed_zero?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO T VALUES (1, 0.0), (2, -0.0), (3, 1.5), (4, -1.5)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id FROM T WHERE v >= 0.0 ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3}),
+		"`WHERE v >= 0.0` must keep both 0.0 and -0.0 rows (IEEE 754: -0.0 == +0.0 is TRUE)")
+}
+
 func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

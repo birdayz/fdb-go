@@ -4376,6 +4376,13 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_E7 VALUES (1, 0.0), (2, -0.0)"},
 			Query:          "SELECT id, v FROM T_E7 ORDER BY id",
 		},
+		// Skipped double_negative_zero_ge_predicate: cross-engine
+		// probe (dayshift-66) showed Go correctly keeps the -0.0 row
+		// for `WHERE v >= 0.0` (IEEE 754: -0.0 == +0.0 is TRUE) but
+		// Java drops it. Go's behaviour is SQL-correct; Java has an
+		// upstream bug. Pinned as a Go-only assertion in
+		// embedded_fdb_test.go::TestFDB_SignedZeroComparison; corpus
+		// entry omitted until upstream fixes (TODO #48).
 		{
 			Name:           "bigint_max_minus_one",
 			SchemaTemplate: "CREATE TABLE T_E8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
