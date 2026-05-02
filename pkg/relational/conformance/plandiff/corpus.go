@@ -11679,6 +11679,285 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_END7 WHERE v <> NULL ORDER BY id",
 		},
+
+		// ===== dayshift-66 batch =====
+		// Mixed predicate combinations.
+		{
+			// BETWEEN + IN + IS NOT NULL composed with AND — pins
+			// predicate stacking with three different shapes in one WHERE.
+			Name:           "mixed_pred_between_in_isnotnull",
+			SchemaTemplate: "CREATE TABLE T_DS66_01 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_01 VALUES (1, 'us', 50)",
+				"INSERT INTO T_DS66_01 VALUES (2, 'us', 150)",
+				"INSERT INTO T_DS66_01 VALUES (3, 'eu', 250)",
+				"INSERT INTO T_DS66_01 VALUES (4, 'eu', NULL)",
+				"INSERT INTO T_DS66_01 VALUES (5, 'asia', 100)",
+			},
+			Query: "SELECT id, region, val FROM T_DS66_01 WHERE val BETWEEN 50 AND 200 AND region IN ('us', 'eu') AND val IS NOT NULL ORDER BY id",
+		},
+		{
+			// IS NULL OR (BETWEEN AND arithmetic) — disjunction crossing
+			// a NULL predicate with a numeric range and an arithmetic
+			// comparison.
+			Name:           "mixed_pred_null_or_between_arith",
+			SchemaTemplate: "CREATE TABLE T_DS66_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_02 VALUES (1, 10)",
+				"INSERT INTO T_DS66_02 VALUES (2, 25)",
+				"INSERT INTO T_DS66_02 VALUES (3, NULL)",
+				"INSERT INTO T_DS66_02 VALUES (4, 100)",
+				"INSERT INTO T_DS66_02 VALUES (5, 1000)",
+			},
+			Query: "SELECT id, v FROM T_DS66_02 WHERE v IS NULL OR (v BETWEEN 20 AND 200 AND v + 5 > 50) ORDER BY id",
+		},
+		{
+			// NOT (IN list) AND IS NOT NULL — negated set membership
+			// composed with NULL exclusion.
+			Name:           "mixed_pred_not_in_and_notnull",
+			SchemaTemplate: "CREATE TABLE T_DS66_03 (id BIGINT, code STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_03 VALUES (1, 'a')",
+				"INSERT INTO T_DS66_03 VALUES (2, 'b')",
+				"INSERT INTO T_DS66_03 VALUES (3, 'c')",
+				"INSERT INTO T_DS66_03 VALUES (4, NULL)",
+				"INSERT INTO T_DS66_03 VALUES (5, 'd')",
+			},
+			Query: "SELECT id, code FROM T_DS66_03 WHERE NOT (code IN ('a', 'b')) AND code IS NOT NULL ORDER BY id",
+		},
+
+		// Composite-PK shapes.
+		{
+			// Composite PK (region, id, sub) — partial-prefix range:
+			// region equality + id BETWEEN. Pins range scan over the
+			// second PK column.
+			Name:           "composite_pk_partial_prefix_range",
+			SchemaTemplate: "CREATE TABLE T_DS66_04 (region STRING, id BIGINT, sub BIGINT, v BIGINT, PRIMARY KEY (region, id, sub))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_04 VALUES ('us', 1, 1, 100)",
+				"INSERT INTO T_DS66_04 VALUES ('us', 2, 1, 200)",
+				"INSERT INTO T_DS66_04 VALUES ('us', 3, 1, 300)",
+				"INSERT INTO T_DS66_04 VALUES ('us', 5, 1, 500)",
+				"INSERT INTO T_DS66_04 VALUES ('eu', 2, 1, 999)",
+			},
+			Query: "SELECT region, id, sub, v FROM T_DS66_04 WHERE region = 'us' AND id BETWEEN 2 AND 4 ORDER BY region, id, sub",
+		},
+		{
+			// Composite PK with full prefix scan — region eq, projecting
+			// all four columns. Pins ordered iteration within a region.
+			Name:           "composite_pk_full_prefix_scan",
+			SchemaTemplate: "CREATE TABLE T_DS66_05 (region STRING, id BIGINT, payload STRING, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_05 VALUES ('us', 3, 'c')",
+				"INSERT INTO T_DS66_05 VALUES ('us', 1, 'a')",
+				"INSERT INTO T_DS66_05 VALUES ('us', 2, 'b')",
+				"INSERT INTO T_DS66_05 VALUES ('eu', 1, 'x')",
+			},
+			Query: "SELECT region, id, payload FROM T_DS66_05 WHERE region = 'us' ORDER BY region, id",
+		},
+
+		// DML interaction shapes.
+		{
+			// DELETE WHERE with a BETWEEN range, then SELECT verifies
+			// the surviving rows.
+			Name:           "dml_delete_between_then_select",
+			SchemaTemplate: "CREATE TABLE T_DS66_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_06 VALUES (1, 10)",
+				"INSERT INTO T_DS66_06 VALUES (2, 20)",
+				"INSERT INTO T_DS66_06 VALUES (3, 30)",
+				"INSERT INTO T_DS66_06 VALUES (4, 40)",
+				"INSERT INTO T_DS66_06 VALUES (5, 50)",
+				"DELETE FROM T_DS66_06 WHERE v BETWEEN 20 AND 40",
+			},
+			Query: "SELECT id, v FROM T_DS66_06 ORDER BY id",
+		},
+		{
+			// UPDATE arithmetic on a filtered subset, then SELECT
+			// verifies the updated rows + untouched rows.
+			Name:           "dml_update_arith_then_select",
+			SchemaTemplate: "CREATE TABLE T_DS66_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_07 VALUES (1, 100)",
+				"INSERT INTO T_DS66_07 VALUES (2, 200)",
+				"INSERT INTO T_DS66_07 VALUES (3, 300)",
+				"UPDATE T_DS66_07 SET v = v * 10 WHERE id <= 2",
+			},
+			Query: "SELECT id, v FROM T_DS66_07 ORDER BY id",
+		},
+		{
+			// DELETE with IN-list filter on PK, then SELECT.
+			Name:           "dml_delete_in_list_then_select",
+			SchemaTemplate: "CREATE TABLE T_DS66_08 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_08 VALUES (1, 'a')",
+				"INSERT INTO T_DS66_08 VALUES (2, 'b')",
+				"INSERT INTO T_DS66_08 VALUES (3, 'c')",
+				"INSERT INTO T_DS66_08 VALUES (4, 'd')",
+				"DELETE FROM T_DS66_08 WHERE id IN (2, 4)",
+			},
+			Query: "SELECT id, name FROM T_DS66_08 ORDER BY id",
+		},
+
+		// INSERT VALUES shapes.
+		{
+			// INSERT VALUES with negative integers — pins signed-encoding
+			// round-trip for BIGINT.
+			Name:           "insert_values_negative_bigint",
+			SchemaTemplate: "CREATE TABLE T_DS66_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_09 VALUES (1, -100)",
+				"INSERT INTO T_DS66_09 VALUES (2, -1)",
+				"INSERT INTO T_DS66_09 VALUES (3, 0)",
+				"INSERT INTO T_DS66_09 VALUES (4, 1)",
+				"INSERT INTO T_DS66_09 VALUES (5, -9999999999)",
+			},
+			Query: "SELECT id, v FROM T_DS66_09 ORDER BY id",
+		},
+		{
+			// INSERT VALUES mixing types, with NULL in nullable cols
+			// across multiple rows.
+			Name:           "insert_values_mixed_types_with_nulls",
+			SchemaTemplate: "CREATE TABLE T_DS66_10 (id BIGINT, name STRING, score DOUBLE, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_10 VALUES (1, 'alice', 3.14, TRUE)",
+				"INSERT INTO T_DS66_10 VALUES (2, NULL, -2.5, FALSE)",
+				"INSERT INTO T_DS66_10 VALUES (3, 'bob', NULL, NULL)",
+				"INSERT INTO T_DS66_10 VALUES (4, '', 0.0, TRUE)",
+			},
+			Query: "SELECT id, name, score, flag FROM T_DS66_10 ORDER BY id",
+		},
+
+		// LIKE pattern variations.
+		{
+			// Leading wildcard — '%foo' matches any suffix == 'foo'.
+			Name:           "like_leading_wildcard",
+			SchemaTemplate: "CREATE TABLE T_DS66_11 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_11 VALUES (1, 'foobar')",
+				"INSERT INTO T_DS66_11 VALUES (2, 'barfoo')",
+				"INSERT INTO T_DS66_11 VALUES (3, 'foo')",
+				"INSERT INTO T_DS66_11 VALUES (4, 'baz')",
+			},
+			Query: "SELECT id, s FROM T_DS66_11 WHERE s LIKE '%foo' ORDER BY id",
+		},
+		{
+			// Trailing wildcard with single-char wildcard — '_a%'
+			// pins both '_' and '%' meta-character handling in one pattern.
+			Name:           "like_underscore_and_percent",
+			SchemaTemplate: "CREATE TABLE T_DS66_12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_12 VALUES (1, 'cat')",
+				"INSERT INTO T_DS66_12 VALUES (2, 'bat')",
+				"INSERT INTO T_DS66_12 VALUES (3, 'dad')",
+				"INSERT INTO T_DS66_12 VALUES (4, 'cab')",
+				"INSERT INTO T_DS66_12 VALUES (5, 'aaa')",
+			},
+			Query: "SELECT id, s FROM T_DS66_12 WHERE s LIKE '_a%' ORDER BY id",
+		},
+		{
+			// Wildcard on both sides — substring containment.
+			Name:           "like_substring_containment",
+			SchemaTemplate: "CREATE TABLE T_DS66_13 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_13 VALUES (1, 'hello world')",
+				"INSERT INTO T_DS66_13 VALUES (2, 'world peace')",
+				"INSERT INTO T_DS66_13 VALUES (3, 'underworld')",
+				"INSERT INTO T_DS66_13 VALUES (4, 'hi there')",
+			},
+			Query: "SELECT id, s FROM T_DS66_13 WHERE s LIKE '%world%' ORDER BY id",
+		},
+		{
+			// LIKE with no wildcards — degenerates to equality.
+			Name:           "like_no_wildcards_equals",
+			SchemaTemplate: "CREATE TABLE T_DS66_14 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_14 VALUES (1, 'exact')",
+				"INSERT INTO T_DS66_14 VALUES (2, 'exactly')",
+				"INSERT INTO T_DS66_14 VALUES (3, 'not')",
+			},
+			Query: "SELECT id, s FROM T_DS66_14 WHERE s LIKE 'exact' ORDER BY id",
+		},
+
+		// COUNT/SUM/MIN/MAX over filtered subsets.
+		{
+			// COUNT(*) over a BETWEEN-filtered subset.
+			Name:           "count_star_over_between_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_15 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_15 VALUES (1, 5)",
+				"INSERT INTO T_DS66_15 VALUES (2, 15)",
+				"INSERT INTO T_DS66_15 VALUES (3, 25)",
+				"INSERT INTO T_DS66_15 VALUES (4, 35)",
+				"INSERT INTO T_DS66_15 VALUES (5, 50)",
+			},
+			Query: "SELECT count(*) FROM T_DS66_15 WHERE v BETWEEN 10 AND 40",
+		},
+		{
+			// SUM over IN-filtered subset.
+			Name:           "sum_over_in_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_16 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_16 VALUES (1, 100)",
+				"INSERT INTO T_DS66_16 VALUES (2, 200)",
+				"INSERT INTO T_DS66_16 VALUES (3, 300)",
+				"INSERT INTO T_DS66_16 VALUES (4, 400)",
+			},
+			Query: "SELECT sum(v) FROM T_DS66_16 WHERE id IN (1, 3, 4)",
+		},
+		{
+			// MIN and MAX over IS NOT NULL subset.
+			Name:           "min_max_over_notnull_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_17 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_17 VALUES (1, 50)",
+				"INSERT INTO T_DS66_17 VALUES (2, NULL)",
+				"INSERT INTO T_DS66_17 VALUES (3, 10)",
+				"INSERT INTO T_DS66_17 VALUES (4, 100)",
+				"INSERT INTO T_DS66_17 VALUES (5, NULL)",
+			},
+			Query: "SELECT min(v), max(v) FROM T_DS66_17 WHERE v IS NOT NULL",
+		},
+		{
+			// COUNT over a LIKE-filtered subset.
+			Name:           "count_over_like_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_18 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_18 VALUES (1, 'apple')",
+				"INSERT INTO T_DS66_18 VALUES (2, 'apricot')",
+				"INSERT INTO T_DS66_18 VALUES (3, 'banana')",
+				"INSERT INTO T_DS66_18 VALUES (4, 'avocado')",
+			},
+			Query: "SELECT count(*) FROM T_DS66_18 WHERE s LIKE 'a%'",
+		},
+
+		// Nested CTE chains.
+		{
+			// Two-level CTE chain — c1 then c2 references c1.
+			Name:           "nested_cte_two_levels",
+			SchemaTemplate: "CREATE TABLE T_DS66_19 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_19 VALUES (1, 10)",
+				"INSERT INTO T_DS66_19 VALUES (2, 20)",
+				"INSERT INTO T_DS66_19 VALUES (3, 30)",
+				"INSERT INTO T_DS66_19 VALUES (4, 40)",
+			},
+			Query: "WITH c1 AS (SELECT id, v FROM T_DS66_19 WHERE v >= 20), c2 AS (SELECT id, v FROM c1 WHERE v <= 30) SELECT count(*) FROM c2",
+		},
+		{
+			// Three-level CTE chain — c1 -> c2 -> c3 with predicate
+			// pushed at each level.
+			Name:           "nested_cte_three_levels",
+			SchemaTemplate: "CREATE TABLE T_DS66_20 (id BIGINT, v BIGINT, region STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_20 VALUES (1, 100, 'us')",
+				"INSERT INTO T_DS66_20 VALUES (2, 200, 'us')",
+				"INSERT INTO T_DS66_20 VALUES (3, 300, 'eu')",
+				"INSERT INTO T_DS66_20 VALUES (4, 400, 'us')",
+				"INSERT INTO T_DS66_20 VALUES (5, 50, 'us')",
+			},
+			Query: "WITH c1 AS (SELECT id, v, region FROM T_DS66_20 WHERE region = 'us'), c2 AS (SELECT id, v FROM c1 WHERE v >= 100), c3 AS (SELECT id FROM c2 WHERE v < 400) SELECT count(*) FROM c3",
+		},
 	}
 }
 
