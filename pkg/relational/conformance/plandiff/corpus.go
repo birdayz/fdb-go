@@ -10184,6 +10184,172 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT avg(val) FROM T_AN16",
 		},
+
+		// ===== 3-component PK depth — range scans, partial-prefix matches =====
+		{
+			// All-eq exact match on a 3-col PK: degenerate point lookup,
+			// the planner must collapse the scan to a single PK key.
+			Name:           "composite_pk_3col_all_eq_exact",
+			SchemaTemplate: "CREATE TABLE T_CPK4 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK4 VALUES (1, 2, 3, 100)",
+				"INSERT INTO T_CPK4 VALUES (1, 2, 4, 200)",
+				"INSERT INTO T_CPK4 VALUES (1, 3, 3, 300)",
+				"INSERT INTO T_CPK4 VALUES (2, 2, 3, 400)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK4 WHERE a = 1 AND b = 2 AND c = 3 ORDER BY a, b, c",
+		},
+		{
+			// Leading-eq + middle-eq on 3-col PK: prefix scan over the
+			// trailing component only.
+			Name:           "composite_pk_3col_leading_two_eq",
+			SchemaTemplate: "CREATE TABLE T_CPK5 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK5 VALUES (1, 2, 3, 100)",
+				"INSERT INTO T_CPK5 VALUES (1, 2, 4, 200)",
+				"INSERT INTO T_CPK5 VALUES (1, 2, 5, 300)",
+				"INSERT INTO T_CPK5 VALUES (1, 3, 1, 400)",
+				"INSERT INTO T_CPK5 VALUES (2, 2, 3, 500)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK5 WHERE a = 1 AND b = 2 ORDER BY a, b, c",
+		},
+		{
+			// Leading-eq only on 3-col PK: prefix scan over (b, c).
+			Name:           "composite_pk_3col_leading_eq_only",
+			SchemaTemplate: "CREATE TABLE T_CPK6 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK6 VALUES (1, 2, 3, 100)",
+				"INSERT INTO T_CPK6 VALUES (1, 2, 4, 200)",
+				"INSERT INTO T_CPK6 VALUES (1, 3, 1, 300)",
+				"INSERT INTO T_CPK6 VALUES (1, 3, 2, 400)",
+				"INSERT INTO T_CPK6 VALUES (2, 1, 1, 500)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK6 WHERE a = 1 ORDER BY a, b, c",
+		},
+		{
+			// Leading-eq + middle-eq + trailing range: prefix-then-range
+			// scan, the canonical "skip to (1,2,*) and slice c > 5".
+			Name:           "composite_pk_3col_leading_two_eq_trailing_gt",
+			SchemaTemplate: "CREATE TABLE T_CPK7 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK7 VALUES (1, 2, 3, 100)",
+				"INSERT INTO T_CPK7 VALUES (1, 2, 5, 200)",
+				"INSERT INTO T_CPK7 VALUES (1, 2, 6, 300)",
+				"INSERT INTO T_CPK7 VALUES (1, 2, 7, 400)",
+				"INSERT INTO T_CPK7 VALUES (1, 3, 9, 500)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK7 WHERE a = 1 AND b = 2 AND c > 5 ORDER BY a, b, c",
+		},
+		{
+			// Leading-eq + middle range: prefix scan with the second
+			// component as a half-open range, trailing c unconstrained.
+			Name:           "composite_pk_3col_leading_eq_middle_range",
+			SchemaTemplate: "CREATE TABLE T_CPK8 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK8 VALUES (1, 1, 1, 100)",
+				"INSERT INTO T_CPK8 VALUES (1, 2, 1, 200)",
+				"INSERT INTO T_CPK8 VALUES (1, 3, 1, 300)",
+				"INSERT INTO T_CPK8 VALUES (1, 3, 2, 400)",
+				"INSERT INTO T_CPK8 VALUES (1, 4, 1, 500)",
+				"INSERT INTO T_CPK8 VALUES (2, 5, 1, 600)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK8 WHERE a = 1 AND b > 2 ORDER BY a, b, c",
+		},
+		{
+			// All-eq on 3-col PK + payload-only projection: pins that the
+			// covered-by-PK fields are dropped and val alone is returned.
+			Name:           "composite_pk_3col_all_eq_payload_only",
+			SchemaTemplate: "CREATE TABLE T_CPK9 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK9 VALUES (1, 2, 3, 100)",
+				"INSERT INTO T_CPK9 VALUES (1, 2, 4, 200)",
+			},
+			Query: "SELECT val FROM T_CPK9 WHERE a = 1 AND b = 2 AND c = 3 ORDER BY a, b, c",
+		},
+		{
+			// Leading-eq + ORDER BY trailing component DESC: reverse-scan
+			// over a 3-col PK with the leading two pinned. ORDER BY uses
+			// the natural PK direction reversed on the trailing slice.
+			Name:           "composite_pk_3col_leading_two_eq_trailing_desc",
+			SchemaTemplate: "CREATE TABLE T_CPK10 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK10 VALUES (1, 2, 3, 100)",
+				"INSERT INTO T_CPK10 VALUES (1, 2, 4, 200)",
+				"INSERT INTO T_CPK10 VALUES (1, 2, 5, 300)",
+				"INSERT INTO T_CPK10 VALUES (1, 3, 1, 400)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK10 WHERE a = 1 AND b = 2 ORDER BY c DESC",
+		},
+		{
+			// Leading-eq + COUNT(*): aggregate over a partial-prefix
+			// match. Scalar-aggregate, no GROUP BY.
+			Name:           "composite_pk_3col_leading_eq_count_star",
+			SchemaTemplate: "CREATE TABLE T_CPK11 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK11 VALUES (1, 1, 1, 10)",
+				"INSERT INTO T_CPK11 VALUES (1, 1, 2, 20)",
+				"INSERT INTO T_CPK11 VALUES (1, 2, 1, 30)",
+				"INSERT INTO T_CPK11 VALUES (1, 2, 2, 40)",
+				"INSERT INTO T_CPK11 VALUES (2, 1, 1, 50)",
+			},
+			Query: "SELECT count(*) FROM T_CPK11 WHERE a = 1",
+		},
+		{
+			// Two 3-col-PK tables joined on the leading component only:
+			// equi-join on the PK prefix, both sides retain trailing-PK
+			// degrees of freedom.
+			Name: "composite_pk_3col_join_on_leading",
+			SchemaTemplate: "CREATE TABLE T_CPK12 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c)) " +
+				"CREATE TABLE T_CPK13 (a BIGINT, b BIGINT, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK12 VALUES (1, 1, 1, 10)",
+				"INSERT INTO T_CPK12 VALUES (1, 2, 1, 20)",
+				"INSERT INTO T_CPK12 VALUES (2, 1, 1, 30)",
+				"INSERT INTO T_CPK13 VALUES (1, 5, 5, 100)",
+				"INSERT INTO T_CPK13 VALUES (2, 5, 5, 200)",
+				"INSERT INTO T_CPK13 VALUES (3, 5, 5, 300)",
+			},
+			Query: "SELECT count(*) FROM T_CPK12 x, T_CPK13 y WHERE x.a = y.a",
+		},
+		{
+			// 3-col PK with all STRING components: pins string tuple
+			// encoding for every PK slot (region/dept/id).
+			Name:           "composite_pk_3col_all_string",
+			SchemaTemplate: "CREATE TABLE T_CPK14 (region STRING, dept STRING, id STRING, val BIGINT, PRIMARY KEY (region, dept, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK14 VALUES ('eu', 'eng', 'a', 100)",
+				"INSERT INTO T_CPK14 VALUES ('eu', 'eng', 'b', 200)",
+				"INSERT INTO T_CPK14 VALUES ('eu', 'ops', 'a', 300)",
+				"INSERT INTO T_CPK14 VALUES ('us', 'eng', 'a', 400)",
+			},
+			Query: "SELECT region, dept, id, val FROM T_CPK14 WHERE region = 'eu' AND dept = 'eng' ORDER BY region, dept, id",
+		},
+		{
+			// 3-col PK mixed types (BIGINT, STRING, BIGINT): pins tuple
+			// encoding's heterogeneous-element handling on the prefix.
+			Name:           "composite_pk_3col_mixed_types",
+			SchemaTemplate: "CREATE TABLE T_CPK15 (a BIGINT, b STRING, c BIGINT, val BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK15 VALUES (1, 'x', 10, 100)",
+				"INSERT INTO T_CPK15 VALUES (1, 'x', 20, 200)",
+				"INSERT INTO T_CPK15 VALUES (1, 'y', 10, 300)",
+				"INSERT INTO T_CPK15 VALUES (2, 'x', 10, 400)",
+			},
+			Query: "SELECT a, b, c, val FROM T_CPK15 WHERE a = 1 AND b = 'x' ORDER BY a, b, c",
+		},
+		{
+			// 3-col PK + all-eq + range on trailing string: pins the
+			// "leading two prefix-eq + lex range on trailing string" path.
+			Name:           "composite_pk_3col_two_eq_string_range",
+			SchemaTemplate: "CREATE TABLE T_CPK16 (region STRING, dept STRING, id STRING, val BIGINT, PRIMARY KEY (region, dept, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CPK16 VALUES ('eu', 'eng', 'a', 100)",
+				"INSERT INTO T_CPK16 VALUES ('eu', 'eng', 'b', 200)",
+				"INSERT INTO T_CPK16 VALUES ('eu', 'eng', 'c', 300)",
+				"INSERT INTO T_CPK16 VALUES ('eu', 'eng', 'd', 400)",
+			},
+			Query: "SELECT region, dept, id, val FROM T_CPK16 WHERE region = 'eu' AND dept = 'eng' AND id > 'a' ORDER BY region, dept, id",
+		},
 	}
 }
 
