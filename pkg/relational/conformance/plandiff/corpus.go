@@ -10644,6 +10644,137 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_NR14 VALUES (1)"},
 			Query:          "SELECT 9223372036854775807 - 1 FROM T_NR14",
 		},
+
+		// ===== LIKE corner cases: escapes, special chars, anchored patterns =====
+		{
+			// LIKE with literal '%' in stored value via ESCAPE clause.
+			// Pattern 'a\%b' must match only 'a%b' verbatim, NOT 'axxb'
+			// or 'aXb'. Distinct from T_W14 in setup data: forces
+			// the engines to reject every non-percent char between
+			// 'a' and 'b', not merely match a single literal hit.
+			Name:           "like_escape_pct_target_has_pct",
+			SchemaTemplate: "CREATE TABLE T_LK1 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK1 VALUES (1, 'a%b')",
+				"INSERT INTO T_LK1 VALUES (2, 'a%%b')",
+				"INSERT INTO T_LK1 VALUES (3, 'aXb')",
+				"INSERT INTO T_LK1 VALUES (4, 'ab')",
+			},
+			Query: "SELECT id, s FROM T_LK1 WHERE s LIKE 'a\\%b' ESCAPE '\\' ORDER BY id",
+		},
+		{
+			// LIKE with literal '_' in stored value via ESCAPE — pattern
+			// 'a\_b' matches only 'a_b'. Stored values include 'aXb'
+			// (the unguarded '_' would have matched) so this pins the
+			// escape semantics.
+			Name:           "like_escape_underscore_target_has_us",
+			SchemaTemplate: "CREATE TABLE T_LK2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK2 VALUES (1, 'a_b')",
+				"INSERT INTO T_LK2 VALUES (2, 'aXb')",
+				"INSERT INTO T_LK2 VALUES (3, 'a__b')",
+			},
+			Query: "SELECT id, s FROM T_LK2 WHERE s LIKE 'a\\_b' ESCAPE '\\' ORDER BY id",
+		},
+		{
+			// NOT LIKE against a NULL row — three-valued logic:
+			// NOT UNKNOWN = UNKNOWN, so NULL row is excluded from
+			// the result, just like LIKE-against-NULL.
+			Name:           "not_like_null_unknown",
+			SchemaTemplate: "CREATE TABLE T_LK3 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK3 VALUES (1, 'apple')",
+				"INSERT INTO T_LK3 VALUES (2, NULL)",
+				"INSERT INTO T_LK3 VALUES (3, 'banana')",
+			},
+			Query: "SELECT id FROM T_LK3 WHERE s NOT LIKE 'a%' ORDER BY id",
+		},
+		{
+			// LIKE pattern that is just '%' against a table with one
+			// NULL and one empty-string row. Pins both engines:
+			// empty-string row matches, NULL row does not (3VL).
+			Name:           "like_just_pct_with_null_and_empty",
+			SchemaTemplate: "CREATE TABLE T_LK6 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK6 VALUES (1, '')",
+				"INSERT INTO T_LK6 VALUES (2, NULL)",
+				"INSERT INTO T_LK6 VALUES (3, 'something')",
+			},
+			Query: "SELECT id FROM T_LK6 WHERE s LIKE '%' ORDER BY id",
+		},
+		{
+			// Long LIKE pattern with many embedded wildcards — pins
+			// the planner's pattern compiler doesn't choke on length
+			// or fold adjacent '%' wildcards in a way that diverges
+			// from Java. Pattern: 'a%b%c%d%e' with stored values
+			// hitting / missing.
+			Name:           "like_long_alternating_pattern",
+			SchemaTemplate: "CREATE TABLE T_LK8 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK8 VALUES (1, 'a1b2c3d4e')",
+				"INSERT INTO T_LK8 VALUES (2, 'abcde')",
+				"INSERT INTO T_LK8 VALUES (3, 'aXbXcXdXeX')",
+				"INSERT INTO T_LK8 VALUES (4, 'a-b-c-d')",
+			},
+			Query: "SELECT id FROM T_LK8 WHERE s LIKE 'a%b%c%d%e' ORDER BY id",
+		},
+		{
+			// LIKE with mixed wildcards: '_' for one char + '%' for
+			// any. Pattern '_a%' requires exactly one char before
+			// 'a', then anything. Pins single-char wildcard
+			// interaction with '%'.
+			Name:           "like_mixed_underscore_pct",
+			SchemaTemplate: "CREATE TABLE T_LK9 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK9 VALUES (1, 'XaYZ')",
+				"INSERT INTO T_LK9 VALUES (2, 'aYZ')",
+				"INSERT INTO T_LK9 VALUES (3, 'XXaYZ')",
+				"INSERT INTO T_LK9 VALUES (4, 'Xa')",
+			},
+			Query: "SELECT id FROM T_LK9 WHERE s LIKE '_a%' ORDER BY id",
+		},
+		{
+			// LIKE on Unicode multi-byte string with '%' wildcard —
+			// pattern 'café%' against stored 'café noir' / 'cafe'.
+			// Pins both engines treat code-point matching the same
+			// way.
+			Name:           "like_unicode_prefix",
+			SchemaTemplate: "CREATE TABLE T_LK10 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK10 VALUES (1, 'café noir')",
+				"INSERT INTO T_LK10 VALUES (2, 'cafe noir')",
+				"INSERT INTO T_LK10 VALUES (3, 'café')",
+			},
+			Query: "SELECT id FROM T_LK10 WHERE s LIKE 'café%' ORDER BY id",
+		},
+		{
+			// LIKE pattern is the empty string against rows with empty
+			// AND non-empty values. Pins '' LIKE '' is true, 'x' LIKE
+			// '' is false (anchored full-match semantics).
+			Name:           "like_empty_pattern_mixed_rows",
+			SchemaTemplate: "CREATE TABLE T_LK11 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK11 VALUES (1, '')",
+				"INSERT INTO T_LK11 VALUES (2, 'x')",
+				"INSERT INTO T_LK11 VALUES (3, NULL)",
+			},
+			Query: "SELECT id FROM T_LK11 WHERE s LIKE '' ORDER BY id",
+		},
+		{
+			// LIKE with '%' inside a literal segment: pattern 'a%b%'
+			// against stored 'axxbyy', 'axxb', 'ab'. Pins trailing
+			// '%' is non-greedy in the SQL-anchored sense (matches
+			// remainder including empty).
+			Name:           "like_pct_pct_trailing",
+			SchemaTemplate: "CREATE TABLE T_LK12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LK12 VALUES (1, 'axxbyy')",
+				"INSERT INTO T_LK12 VALUES (2, 'axxb')",
+				"INSERT INTO T_LK12 VALUES (3, 'ab')",
+				"INSERT INTO T_LK12 VALUES (4, 'baba')",
+			},
+			Query: "SELECT id FROM T_LK12 WHERE s LIKE 'a%b%' ORDER BY id",
+		},
 	}
 }
 
