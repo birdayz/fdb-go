@@ -9423,6 +9423,146 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_SV12 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 10), (4, 2, 20)"},
 			Query:          "SELECT id, a, b FROM T_SV12 WHERE a = 1 ORDER BY id",
 		},
+
+		// ===== Setup / pre-condition edges =====
+		// DML against empty tables, no-match predicates, round-trip
+		// chains. Pins that DML statements bind correctly when zero
+		// rows match — should be pure no-ops, leaving the table state
+		// untouched and producing the same observable SELECT output.
+		{
+			// UPDATE on a never-populated table — no rows exist, so
+			// the UPDATE must be a clean no-op even with no setup.
+			Name:           "pe_update_empty_table",
+			SchemaTemplate: "CREATE TABLE T_PE1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"UPDATE T_PE1 SET val = 99 WHERE id = 1",
+			},
+			Query: "SELECT count(*) FROM T_PE1",
+		},
+		{
+			// DELETE on a never-populated table — no rows exist, so
+			// the DELETE must be a clean no-op.
+			Name:           "pe_delete_empty_table",
+			SchemaTemplate: "CREATE TABLE T_PE2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"DELETE FROM T_PE2 WHERE id = 1",
+			},
+			Query: "SELECT count(*) FROM T_PE2",
+		},
+		{
+			// DELETE WHERE no rows match an inequality predicate —
+			// complements `delete_no_match` (which uses val > 1000)
+			// with a strict-less-than form against the same dataset.
+			Name:           "pe_delete_no_match_inequality",
+			SchemaTemplate: "CREATE TABLE T_PE3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE3 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_PE3 WHERE val < 0",
+			},
+			Query: "SELECT id, val FROM T_PE3 ORDER BY id",
+		},
+		{
+			// Round-trip: INSERT, DELETE all, INSERT again. The
+			// final state should reflect only the second INSERT.
+			Name:           "pe_insert_delete_all_insert_again",
+			SchemaTemplate: "CREATE TABLE T_PE4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE4 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_PE4 WHERE id > 0",
+				"INSERT INTO T_PE4 VALUES (3, 30), (4, 40)",
+			},
+			Query: "SELECT id, val FROM T_PE4 ORDER BY id",
+		},
+		{
+			// INSERT then DELETE WHERE matches some rows — count
+			// the remaining rows. Pins partial-DML accounting.
+			Name:           "pe_insert_delete_some_count",
+			SchemaTemplate: "CREATE TABLE T_PE5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE5 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"DELETE FROM T_PE5 WHERE val > 25",
+			},
+			Query: "SELECT count(*) FROM T_PE5",
+		},
+		{
+			// UPDATE WHERE matches some rows — total row count
+			// must be unchanged (UPDATE never adds/removes rows).
+			Name:           "pe_update_some_count_unchanged",
+			SchemaTemplate: "CREATE TABLE T_PE6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE6 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"UPDATE T_PE6 SET val = 999 WHERE val > 25",
+			},
+			Query: "SELECT count(*) FROM T_PE6",
+		},
+		{
+			// UPDATE on a non-key predicate, then SELECT to verify
+			// only the matched rows changed values.
+			Name:           "pe_update_nonkey_predicate_verify",
+			SchemaTemplate: "CREATE TABLE T_PE7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE7 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_PE7 SET val = 0 WHERE val = 20",
+			},
+			Query: "SELECT id, val FROM T_PE7 ORDER BY id",
+		},
+		{
+			// SELECT on empty table with a tautology predicate
+			// (1 = 1) — must return zero rows. `1 = 1` is a
+			// comparison, not a bare BOOLEAN literal (#59 OK).
+			Name:           "pe_select_empty_tautology",
+			SchemaTemplate: "CREATE TABLE T_PE8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT id, val FROM T_PE8 WHERE 1 = 1 ORDER BY id",
+		},
+		{
+			// Bulk INSERT followed by bulk DELETE — exercises the
+			// multi-row INSERT path and a DELETE that drops
+			// most-but-not-all rows.
+			Name:           "pe_bulk_insert_bulk_delete",
+			SchemaTemplate: "CREATE TABLE T_PE9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE9 VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)",
+				"DELETE FROM T_PE9 WHERE val < 7",
+			},
+			Query: "SELECT id, val FROM T_PE9 ORDER BY id",
+		},
+		{
+			// DELETE the same row twice — second DELETE must be a
+			// no-op (row already gone). Pins that DML against a
+			// non-existent row doesn't error.
+			Name:           "pe_delete_same_row_twice",
+			SchemaTemplate: "CREATE TABLE T_PE10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE10 VALUES (1, 10), (2, 20)",
+				"DELETE FROM T_PE10 WHERE id = 1",
+				"DELETE FROM T_PE10 WHERE id = 1",
+			},
+			Query: "SELECT id, val FROM T_PE10 ORDER BY id",
+		},
+		{
+			// INSERT then DELETE then SELECT — verify the deleted
+			// row is gone via a SELECT that filters for it.
+			Name:           "pe_insert_delete_select_gone",
+			SchemaTemplate: "CREATE TABLE T_PE11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE11 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_PE11 WHERE id = 2",
+			},
+			Query: "SELECT id, val FROM T_PE11 WHERE id = 2 ORDER BY id",
+		},
+		{
+			// Always-false constant predicate combined with a real
+			// column filter — must short-circuit to zero rows.
+			// Uses `1 = 0` (comparison) so #59 (bare boolean
+			// literal in WHERE conjunct) is not triggered.
+			Name:           "pe_always_false_const_predicate",
+			SchemaTemplate: "CREATE TABLE T_PE12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PE12 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, val FROM T_PE12 WHERE 1 = 0 AND val = 10 ORDER BY id",
+		},
 	}
 }
 
