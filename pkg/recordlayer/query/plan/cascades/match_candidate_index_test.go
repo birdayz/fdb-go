@@ -15,6 +15,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_AllEquality(t *testing.T) {
 	c := NewValueIndexScanMatchCandidate(
 		"Order$status_date",
 		[]string{"Order"},
+		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,
@@ -42,6 +43,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAtEmpty(t *testing.T) {
 	c := NewValueIndexScanMatchCandidate(
 		"idx",
 		[]string{"T"},
+		[]string{"A", "B", "C"},
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
@@ -67,6 +69,7 @@ func TestValueIndexScanMatchCandidate_PrefixMap_StopsAfterInequality(t *testing.
 	c := NewValueIndexScanMatchCandidate(
 		"idx",
 		[]string{"T"},
+		[]string{"A", "B", "C"},
 		[]values.CorrelationIdentifier{a1, a2, a3},
 		values.UnknownType,
 		false,
@@ -99,6 +102,7 @@ func TestValueIndexScanMatchCandidate_ToScanPlan(t *testing.T) {
 	c := NewValueIndexScanMatchCandidate(
 		"Order$status",
 		[]string{"Order"},
+		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
 		values.UnknownType,
 		false,

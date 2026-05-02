@@ -18,17 +18,21 @@ import (
 type ValueIndexScanMatchCandidate struct {
 	indexName       string
 	recordTypes     []string
+	columnNames     []string
 	sargableAliases []values.CorrelationIdentifier
 	flowedType      values.Type
 	unique          bool
 }
 
 // NewValueIndexScanMatchCandidate constructs a match candidate for a
-// secondary index. sargableAliases must be in index key column order
-// (left-to-right).
+// secondary index. columnNames and sargableAliases must be parallel
+// slices in index key column order (left-to-right): columnNames[i] is
+// the field name for the i-th key column, sargableAliases[i] is the
+// correlation identifier used for predicate binding.
 func NewValueIndexScanMatchCandidate(
 	indexName string,
 	recordTypes []string,
+	columnNames []string,
 	sargableAliases []values.CorrelationIdentifier,
 	flowedType values.Type,
 	unique bool,
@@ -37,9 +41,12 @@ func NewValueIndexScanMatchCandidate(
 	copy(aliases, sargableAliases)
 	types := make([]string, len(recordTypes))
 	copy(types, recordTypes)
+	cols := make([]string, len(columnNames))
+	copy(cols, columnNames)
 	return &ValueIndexScanMatchCandidate{
 		indexName:       indexName,
 		recordTypes:     types,
+		columnNames:     cols,
 		sargableAliases: aliases,
 		flowedType:      flowedType,
 		unique:          unique,
@@ -48,6 +55,10 @@ func NewValueIndexScanMatchCandidate(
 
 // CandidateName returns the index name.
 func (c *ValueIndexScanMatchCandidate) CandidateName() string { return c.indexName }
+
+// GetColumnNames returns the ordered column-name list (one per index
+// key column, parallel to GetSargableAliases).
+func (c *ValueIndexScanMatchCandidate) GetColumnNames() []string { return c.columnNames }
 
 // GetSargableAliases returns the ordered parameter list (one per
 // index key column).

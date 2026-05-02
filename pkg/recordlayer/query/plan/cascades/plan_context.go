@@ -64,6 +64,12 @@ type MatchCandidate interface {
 	// index name, or "primary" for the PK scan).
 	CandidateName() string
 
+	// GetColumnNames returns the ordered column-name list (one per
+	// index key column, parallel to GetSargableAliases). Used by rules
+	// to match ComparisonPredicate field references against the index's
+	// key columns.
+	GetColumnNames() []string
+
 	// GetSargableAliases returns the ordered list of parameter
 	// identifiers (one per index key column, left-to-right) that can
 	// be bound by predicate matching. The order determines the index

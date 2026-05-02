@@ -37,6 +37,7 @@ func TestDefaultPlannerConfiguration_ZeroFields(t *testing.T) {
 type stubMatchCandidate struct{ name string }
 
 func (s stubMatchCandidate) CandidateName() string                              { return s.name }
+func (s stubMatchCandidate) GetColumnNames() []string                           { return nil }
 func (s stubMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier { return nil }
 func (s stubMatchCandidate) GetRecordTypes() []string                           { return nil }
 func (s stubMatchCandidate) IsUnique() bool                                     { return false }
