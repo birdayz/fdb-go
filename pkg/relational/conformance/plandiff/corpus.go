@@ -13891,6 +13891,198 @@ func SeedRunCorpus() []RunQuery {
 				},
 			},
 		},
+		// ===== NULL / SQL three-valued-logic edges =====
+		// Pin SQL-3VL shapes the existing null_* corpus doesn't cover:
+		// arithmetic NULL propagation, JOIN ON-NULL non-match, COALESCE
+		// fall-through, IN/NOT-IN with NULL columns, CASE-searched NULL
+		// branches, aggregate NULL skipping, COUNT-distinct of NULL,
+		// UNION-ALL NULL participation, IS-NULL on subquery results,
+		// IS-NULL on arithmetic/CAST.
+		{
+			// `<>` with NULL operand is UNKNOWN, not TRUE — id=2 (NULL,5),
+			// id=3 (NULL,NULL) and id=1 (5,5) all excluded; only id with
+			// concrete a≠b matches.
+			Name:           "null_3vl_ne_excludes_null_operand",
+			SchemaTemplate: "CREATE TABLE T_NL_01 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_01 VALUES (1, 5, 5), (2, 5, 10), (3, NULL, 5), (4, NULL, NULL)",
+			},
+			Query: "SELECT id FROM T_NL_01 WHERE a <> b ORDER BY id",
+		},
+		{
+			// `v <> 10` returns UNKNOWN when v is NULL → row excluded.
+			// Only non-NULL non-10 rows survive — pinned 3VL handling of
+			// inequality against a known literal.
+			Name:           "null_3vl_ne_literal_excludes_null_row",
+			SchemaTemplate: "CREATE TABLE T_NL_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_02 VALUES (1, 10), (2, NULL), (3, 20)",
+			},
+			Query: "SELECT id FROM T_NL_02 WHERE v <> 10 ORDER BY id",
+		},
+		{
+			// JOIN on `a.k = b.k` where either side has NULL: NULL = NULL
+			// is UNKNOWN, so NULL rows on either side never produce a
+			// join match. Only (1,10)-(10,10) and (3,30)-(12,30) join.
+			// Java's Cascades planner throws UnableToPlanException on
+			// this comma-join shape with a non-PK secondary join key
+			// (4.11.1.0); Go plans + executes correctly.
+			Name: "null_in_join_on_eq_excludes_null_keys",
+			SchemaTemplate: "CREATE TABLE T_NL_03_A (id BIGINT, k BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_NL_03_B (id BIGINT, k BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_03_A VALUES (1, 10), (2, NULL), (3, 30)",
+				"INSERT INTO T_NL_03_B VALUES (10, 10), (11, NULL), (12, 30)",
+			},
+			Query: "SELECT a.id, b.id FROM T_NL_03_A a, T_NL_03_B b WHERE a.k = b.k ORDER BY a.id, b.id",
+			Divergence: &Divergence{
+				Reason:    "Java Cascades planner throws UnableToPlanException for comma-join on a non-PK column; Go correctly plans the nested-loop join and applies SQL-3VL NULL-key non-match.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(10)},
+					{float64(3), float64(12)},
+				},
+			},
+		},
+		{
+			// COALESCE returns the first non-NULL argument; if all
+			// arguments are NULL, the result is NULL — id=3 has both
+			// columns NULL, so the projection emits NULL not a fallback.
+			Name:           "null_in_coalesce_all_null_returns_null",
+			SchemaTemplate: "CREATE TABLE T_NL_04 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_04 VALUES (1, 10, NULL), (2, NULL, 20), (3, NULL, NULL)",
+			},
+			Query: "SELECT id, COALESCE(a, b) FROM T_NL_04 ORDER BY id",
+		},
+		{
+			// Searched CASE with `WHEN v IS NULL` correctly catches NULL
+			// rows; the `WHEN v = 5` branch is UNKNOWN for NULL but the
+			// IS-NULL branch fires first, so id=2 routes to -1, id=1 to
+			// 100, id=3 to ELSE (10). Pins searched-CASE NULL handling
+			// (simple-CASE with WHEN NULL is the THE classic SQL gotcha
+			// per CLAUDE.md note + TODO #40 — searched form is canonical).
+			Name:           "null_3vl_case_searched_is_null_branch",
+			SchemaTemplate: "CREATE TABLE T_NL_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_05 VALUES (1, 5), (2, NULL), (3, 10)",
+			},
+			Query: "SELECT id, CASE WHEN v IS NULL THEN -1 WHEN v = 5 THEN 100 ELSE v END FROM T_NL_05 ORDER BY id",
+		},
+		{
+			// `v - CAST(NULL AS BIGINT)` propagates NULL — even when v is
+			// non-NULL the result is NULL. Pins arithmetic-with-typed-NULL.
+			Name:           "null_3vl_sub_minus_typed_null",
+			SchemaTemplate: "CREATE TABLE T_NL_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_06 VALUES (1, 10), (2, NULL)",
+			},
+			Query: "SELECT id, v - CAST(NULL AS BIGINT) FROM T_NL_06 ORDER BY id",
+		},
+		{
+			// `0 * NULL` is NULL, not 0 — multiplication with a NULL
+			// operand still propagates per 3VL even when the other operand
+			// is the multiplicative absorbing element.
+			Name:           "null_3vl_mul_zero_times_null",
+			SchemaTemplate: "CREATE TABLE T_NL_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_07 VALUES (1, NULL), (2, 5)",
+			},
+			Query: "SELECT id, 0 * v FROM T_NL_07 ORDER BY id",
+		},
+		{
+			// `NULL / 0` is NULL — NULL absorbs even when the divisor is
+			// zero. Pins that NULL propagation runs before divide-by-zero
+			// detection.
+			Name:           "null_3vl_div_null_by_zero_returns_null",
+			SchemaTemplate: "CREATE TABLE T_NL_08 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_08 VALUES (1)",
+			},
+			Query: "SELECT CAST(NULL AS BIGINT) / 0 FROM T_NL_08",
+		},
+		{
+			// IS NOT NULL applied to `v + 1`: non-NULL only when v is
+			// non-NULL.
+			Name:           "null_3vl_is_not_null_on_arithmetic",
+			SchemaTemplate: "CREATE TABLE T_NL_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_09 VALUES (1, 10), (2, NULL)",
+			},
+			Query: "SELECT id FROM T_NL_09 WHERE (v + 1) IS NOT NULL ORDER BY id",
+		},
+		{
+			// Aggregates over an all-NULL column: MAX/MIN/AVG all return
+			// NULL (not 0, not error).
+			Name:           "null_in_max_min_avg_all_null",
+			SchemaTemplate: "CREATE TABLE T_NL_10 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_10 VALUES (1, NULL), (2, NULL)",
+			},
+			Query: "SELECT MAX(v), MIN(v), AVG(v) FROM T_NL_10",
+		},
+		{
+			// COUNT(col) excludes NULL rows; COUNT(*) counts all rows.
+			// All-NULL column → COUNT(v)=0, COUNT(*)=3.
+			Name:           "null_in_count_col_excludes_count_star_includes",
+			SchemaTemplate: "CREATE TABLE T_NL_11 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_11 VALUES (1, NULL), (2, NULL), (3, NULL)",
+			},
+			Query: "SELECT COUNT(v), COUNT(*) FROM T_NL_11",
+		},
+		{
+			// NOT IN with literal list — when the table contains a NULL
+			// row, the comparison `NULL <> 10` is UNKNOWN, so the NULL
+			// row is excluded.
+			Name:           "null_3vl_not_in_excludes_null_row",
+			SchemaTemplate: "CREATE TABLE T_NL_12 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_12 VALUES (1, 10), (2, NULL), (3, 30)",
+			},
+			Query: "SELECT id FROM T_NL_12 WHERE v NOT IN (10) ORDER BY id",
+		},
+		{
+			// UNION ALL preserves NULLs as distinct rows. With ORDER BY,
+			// default ASC places NULL first (NULLS FIRST for ASC).
+			// Java's Cascades planner throws UnableToPlanException on
+			// this UNION-ALL-with-outer-ORDER-BY-on-non-PK shape.
+			Name:           "null_in_union_all_null_row_participates",
+			SchemaTemplate: "CREATE TABLE T_NL_13 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_13 VALUES (1, NULL), (2, 10)",
+			},
+			Query: "SELECT v FROM T_NL_13 WHERE id = 1 UNION ALL SELECT v FROM T_NL_13 WHERE id = 2 ORDER BY v",
+			Divergence: &Divergence{
+				Reason:    "Java Cascades planner throws UnableToPlanException for UNION-ALL with outer ORDER BY on a non-PK column; Go correctly plans and emits NULLS-FIRST default ASC ordering.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{nil},
+					{float64(10)},
+				},
+			},
+		},
+		{
+			// CASE searched with NULL in the THEN branch — when the
+			// predicate is true, the result is NULL.
+			Name:           "null_in_case_then_bare_null_with_string_else",
+			SchemaTemplate: "CREATE TABLE T_NL_16 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_16 VALUES (1, 5), (2, 100)",
+			},
+			Query: "SELECT id, CASE WHEN v < 10 THEN 'small' ELSE NULL END FROM T_NL_16 ORDER BY id",
+		},
+		{
+			// BETWEEN with a typed-NULL lower bound — the lower-bound
+			// comparison is UNKNOWN for every row, so the conjunction is
+			// UNKNOWN and no rows match.
+			Name:           "null_in_between_null_lower_bound",
+			SchemaTemplate: "CREATE TABLE T_NL_17 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_NL_17 VALUES (1, 10), (2, NULL), (3, 30)",
+			},
+			Query: "SELECT id FROM T_NL_17 WHERE v BETWEEN CAST(NULL AS BIGINT) AND 100 ORDER BY id",
+		},
 	}
 }
 
