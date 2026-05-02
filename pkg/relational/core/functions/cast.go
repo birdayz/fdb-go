@@ -144,7 +144,13 @@ func CastValue(v any, typeName string) (any, error) {
 		case bool:
 			return n, nil
 		case int64:
-			return n != 0, nil
+			// Java's PromoteValue / SemanticAnalyzer rejects integer →
+			// BOOLEAN with `Invalid cast operation No cast defined from
+			// LONG to BOOLEAN`. Go used to silently coerce via `n != 0`;
+			// align to Java's rejection (TODO #47). Same wording so the
+			// harness pins byte-equal.
+			return nil, api.NewErrorf(api.ErrCodeInvalidCast,
+				"Invalid cast operation No cast defined from LONG to BOOLEAN")
 		case string:
 			// Java CastValue.STRING_TO_BOOLEAN only accepts trim()ed
 			// "true"/"false" (case-insensitive) plus "1"/"0"; Go's

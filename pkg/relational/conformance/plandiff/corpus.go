@@ -4380,6 +4380,13 @@ func SeedRunCorpus() []RunQuery {
 		// nightshift-65 diagnosis was inverted (Go is the correct side).
 		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
 		{
+			// Probe TODO #47: CAST BIGINT AS BOOLEAN.
+			Name:           "cast_bigint_to_boolean_probe",
+			SchemaTemplate: "CREATE TABLE T_CBB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CBB VALUES (1, 0), (2, 1)"},
+			Query:          "SELECT id, CAST(v AS BOOLEAN) FROM T_CBB ORDER BY id",
+		},
+		{
 			// Probe TODO #46: BIGINT literal beyond int64 range
 			// (99999999999999999999 > 2^63-1) in WHERE.
 			Name:           "bigint_literal_overflow_probe",
