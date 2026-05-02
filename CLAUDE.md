@@ -33,6 +33,8 @@ Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One b
 
 **Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features. Don't push unless asked.
 
+**Fix bugs as you find them.** When a corpus probe (parallel-agent batch or otherwise) surfaces a real Go-side divergence, the default response is: investigate root cause → fix in the same shift → pin the corpus entry. Filing a TODO and dropping the entry is a failure mode — it ships nothing, removes the regression sentinel that would have caught the bug, and dumps the work on the next shift. A 30-line TODO writeup is more expensive than the 50-line fix it punts. **Only file a TODO when the fix is genuinely out of scope:** Java upstream bug, gated on a future Phase, or multi-shift effort. Tiny isolated bugs (one comparison op, one missing dedup-key projection, one error-message tweak) MUST be fixed inline. The corpus is the regression net for cross-engine parity; if you can't pin a shape because Go has a bug, fix the bug — don't grow the corpus around it. Nightshift-65 surfaced 23 bugs and fixed zero; that pattern is now explicitly forbidden.
+
 **Delegation:** principal-engineer mindset. Delegate mechanical/boilerplate work to subagents with full context (file paths, snippets, patterns). Critical/tricky pieces: do yourself. Never run two big implementation subagents in parallel.
 
 **Build & verify:** always `just test`. Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
