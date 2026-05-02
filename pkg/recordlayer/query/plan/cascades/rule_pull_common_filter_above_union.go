@@ -59,7 +59,7 @@ func (r *PullCommonFilterAboveUnionRule) OnMatch(call *ExpressionRuleCall) {
 		newQs = append(newQs, f.GetInner())
 	}
 	newUnion := expressions.NewLogicalUnionExpression(newQs)
-	newUnionQ := expressions.ForEachQuantifier(expressions.InitialOf(newUnion))
+	newUnionQ := expressions.ForEachQuantifier(call.MemoizeExpression(newUnion))
 	call.Yield(expressions.NewLogicalFilterExpression(commonPreds, newUnionQ))
 }
 

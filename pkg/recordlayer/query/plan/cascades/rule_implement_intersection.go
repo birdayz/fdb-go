@@ -91,7 +91,7 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		if wrap == nil {
 			return
 		}
-		childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(wrap)))
+		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(wrap)))
 	}
 
 	call.Yield(NewPhysicalIntersectionWrapper(intersectionPlan, childQs))

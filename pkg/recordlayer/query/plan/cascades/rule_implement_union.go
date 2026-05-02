@@ -88,7 +88,7 @@ func (r *ImplementUnionRule) OnMatch(call *ExpressionRuleCall) {
 		if wrap == nil {
 			return
 		}
-		childQs = append(childQs, expressions.ForEachQuantifier(expressions.InitialOf(wrap)))
+		childQs = append(childQs, expressions.ForEachQuantifier(call.MemoizeExpression(wrap)))
 	}
 
 	// We need a wrapper for the union plan too. Since UnionPlan has

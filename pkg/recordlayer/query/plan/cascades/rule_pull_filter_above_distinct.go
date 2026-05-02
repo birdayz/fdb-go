@@ -50,7 +50,7 @@ func (r *PullFilterAboveDistinctRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	// Build Distinct(f.GetInner-source) — REUSE f's inner Quantifier.
 	pulled := expressions.NewLogicalDistinctExpression(f.GetInner())
-	pulledQ := expressions.ForEachQuantifier(expressions.InitialOf(pulled))
+	pulledQ := expressions.ForEachQuantifier(call.MemoizeExpression(pulled))
 	call.Yield(expressions.NewLogicalFilterExpression(f.GetPredicates(), pulledQ))
 }
 

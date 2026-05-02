@@ -71,7 +71,7 @@ func (r *ImplementInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if innerWrap == nil {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerWrap))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerWrap))
 	call.Yield(NewPhysicalInsertWrapper(insPlan, innerQ))
 }
 

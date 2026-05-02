@@ -54,7 +54,7 @@ func (r *PushFilterThroughDistinctRule) OnMatch(call *ExpressionRuleCall) {
 	// Quantifier so the pushed Filter shares the same Reference
 	// pointer as the input.
 	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), dist.GetInner())
-	pushedQ := expressions.ForEachQuantifier(expressions.InitialOf(pushed))
+	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
 	call.Yield(expressions.NewLogicalDistinctExpression(pushedQ))
 }
 

@@ -62,7 +62,7 @@ func (r *PushFilterThroughUnionRule) OnMatch(call *ExpressionRuleCall) {
 		// pointer as the child input — pointer-identity dedup hits
 		// on second fire of the rule.
 		fc := expressions.NewLogicalFilterExpression(f.GetPredicates(), child)
-		pushed = append(pushed, expressions.ForEachQuantifier(expressions.InitialOf(fc)))
+		pushed = append(pushed, expressions.ForEachQuantifier(call.MemoizeExpression(fc)))
 	}
 	call.Yield(expressions.NewLogicalUnionExpression(pushed))
 }

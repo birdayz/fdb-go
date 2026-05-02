@@ -87,7 +87,7 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerWrap == nil {
 		return
 	}
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerWrap))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerWrap))
 	call.Yield(NewPhysicalFilterWrapper(filterPlan, innerQ))
 }
 
@@ -99,7 +99,6 @@ func wrapPhysicalPlan(p plans.RecordQueryPlan) expressions.RelationalExpression 
 	case *plans.RecordQueryScanPlan:
 		return &physicalScanWrapper{plan: concrete}
 	case *plans.RecordQueryFilterPlan:
-		// Need to recursively wrap THIS filter's inner — recurse.
 		innerWrap := wrapPhysicalPlan(concrete.GetInner())
 		if innerWrap == nil {
 			return nil
