@@ -4043,11 +4043,15 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, val FROM T_DML12 WHERE val > 100 ORDER BY id",
 		},
 		// ===== UNION ALL + composite-PK extended =====
-		// Dropped union_all_two_branches_disjoint_where and
-		// union_all_two_branches_multi_col_projection: Go does not
-		// honor `ORDER BY id` on the outer UNION ALL — flakily
-		// returns interleaved branches in non-deterministic order.
-		// Tracked as TODO #44; restore once fixed.
+		// Skipped union_all_two_branches_disjoint_where /
+		// union_all_two_branches_multi_col_projection: cross-engine
+		// probe (dayshift-66) showed Java intermittently fails to honor
+		// the outer ORDER BY on `... UNION ALL ... ORDER BY col`,
+		// returning interleaved branch order on some runs. Go is
+		// deterministic-sorted; pinned via Go-only sentinel
+		// `TestFDB_UnionAllOuterOrderByDeterministic` in sqldriver
+		// tests. Corpus entry omitted until upstream fixes (TODO #44
+		// reclassified Tier D).
 		{
 			Name:           "composite_pk_leading_eq_full_row_projection",
 			SchemaTemplate: "CREATE TABLE T_PK1 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b))",

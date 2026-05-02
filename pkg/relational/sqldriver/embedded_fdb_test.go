@@ -5891,6 +5891,57 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
 
+// TestFDB_UnionAllOuterOrderByDeterministic pins SQL-standard
+// behaviour: a trailing `ORDER BY` after `UNION ALL` applies to the
+// COMBINED result, not just the right branch. Go honours this
+// deterministically; Java's fdb-relational 4.11.1.0 sometimes drops
+// the outer ORDER BY on this shape and returns interleaved branch
+// order — upstream bug (TODO #44 Tier D). Pinned as Go-only positive
+// sentinel rather than cross-engine corpus to avoid coupling to Java's
+// non-deterministic output.
+func TestFDB_UnionAllOuterOrderByDeterministic(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_union_oob")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_oob")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE union_oob_tmpl
+		CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_oob/main WITH TEMPLATE union_oob_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_union_oob?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO T VALUES (1, 10), (2, 20), (3, 30)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	for run := 0; run < 5; run++ {
+		rows, err := db.QueryContext(ctx,
+			"SELECT id, v FROM T WHERE v < 20 UNION ALL SELECT id, v FROM T WHERE v >= 20 ORDER BY id")
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		var ids []int64
+		var vs []int64
+		for rows.Next() {
+			var id, v int64
+			g.Expect(rows.Scan(&id, &v)).To(gomega.Succeed())
+			ids = append(ids, id)
+			vs = append(vs, v)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		rows.Close()
+		g.Expect(ids).To(gomega.Equal([]int64{1, 2, 3}),
+			"trailing ORDER BY id on UNION ALL must apply to combined result (run %d)", run)
+		g.Expect(vs).To(gomega.Equal([]int64{10, 20, 30}),
+			"row values must follow ORDER BY id (run %d)", run)
+	}
+}
+
 // TestFDB_SignedZeroComparison pins SQL-correct IEEE 754 signed-zero
 // behaviour: `WHERE v >= 0.0` against a row with `v = -0.0` MUST keep
 // the row, since -0.0 == +0.0 by IEEE 754. Java's fdb-relational
