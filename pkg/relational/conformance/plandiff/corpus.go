@@ -4380,6 +4380,14 @@ func SeedRunCorpus() []RunQuery {
 		// nightshift-65 diagnosis was inverted (Go is the correct side).
 		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
 		{
+			// Probe TODO #46: BIGINT literal beyond int64 range
+			// (99999999999999999999 > 2^63-1) in WHERE.
+			Name:           "bigint_literal_overflow_probe",
+			SchemaTemplate: "CREATE TABLE T_BLO (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BLO VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM T_BLO WHERE v < 99999999999999999999 ORDER BY id",
+		},
+		{
 			// Probe TODO #63: multi-column UPDATE with self-ref SET.
 			// Pre-fix Go reads in-progress (already-updated) value of y
 			// when computing x's new value; SQL standard says all RHS
