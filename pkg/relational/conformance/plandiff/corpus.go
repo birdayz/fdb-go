@@ -9976,6 +9976,214 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_OBA12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
 			Query:          "SELECT count(*) FROM T_OBA12 WHERE id >= 2 AND id <= 3",
 		},
+
+		// ===== Aggregate NULL semantics =====
+		{
+			// SUM(col) where every row is NULL → NULL (not 0).
+			// SQL standard: SUM ignores NULLs; if all input is NULL the
+			// aggregate yields NULL.
+			Name:           "sum_all_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN1 VALUES (1, NULL)",
+				"INSERT INTO T_AN1 VALUES (2, NULL)",
+				"INSERT INTO T_AN1 VALUES (3, NULL)",
+			},
+			Query: "SELECT sum(val) FROM T_AN1",
+		},
+		{
+			// SUM(col) skips NULL rows, sums the rest.
+			Name:           "sum_some_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN2 VALUES (1, 10)",
+				"INSERT INTO T_AN2 VALUES (2, NULL)",
+				"INSERT INTO T_AN2 VALUES (3, 30)",
+				"INSERT INTO T_AN2 VALUES (4, NULL)",
+				"INSERT INTO T_AN2 VALUES (5, 60)",
+			},
+			Query: "SELECT sum(val) FROM T_AN2",
+		},
+		{
+			// AVG(col) where all rows are NULL → NULL (count is 0).
+			Name:           "avg_all_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN3 VALUES (1, NULL)",
+				"INSERT INTO T_AN3 VALUES (2, NULL)",
+			},
+			Query: "SELECT avg(val) FROM T_AN3",
+		},
+		{
+			// AVG over a column where only one row is non-NULL — the
+			// average is that single value (count=1, sum=val).
+			Name:           "avg_single_non_null",
+			SchemaTemplate: "CREATE TABLE T_AN4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN4 VALUES (1, NULL)",
+				"INSERT INTO T_AN4 VALUES (2, 42)",
+				"INSERT INTO T_AN4 VALUES (3, NULL)",
+			},
+			Query: "SELECT avg(val) FROM T_AN4",
+		},
+		{
+			// MIN(col) skips NULLs.
+			Name:           "min_skips_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN5 VALUES (1, NULL)",
+				"INSERT INTO T_AN5 VALUES (2, 50)",
+				"INSERT INTO T_AN5 VALUES (3, NULL)",
+				"INSERT INTO T_AN5 VALUES (4, 25)",
+				"INSERT INTO T_AN5 VALUES (5, 100)",
+			},
+			Query: "SELECT min(val) FROM T_AN5",
+		},
+		{
+			// MAX(col) skips NULLs.
+			Name:           "max_skips_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN6 VALUES (1, 5)",
+				"INSERT INTO T_AN6 VALUES (2, NULL)",
+				"INSERT INTO T_AN6 VALUES (3, 99)",
+				"INSERT INTO T_AN6 VALUES (4, NULL)",
+				"INSERT INTO T_AN6 VALUES (5, 17)",
+			},
+			Query: "SELECT max(val) FROM T_AN6",
+		},
+		{
+			// COUNT(col) skips NULL, COUNT(*) counts every row — both
+			// in one projection so the cross-engine row pins both
+			// counters in lockstep.
+			Name:           "count_col_vs_star_with_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN7 VALUES (1, 10)",
+				"INSERT INTO T_AN7 VALUES (2, NULL)",
+				"INSERT INTO T_AN7 VALUES (3, NULL)",
+				"INSERT INTO T_AN7 VALUES (4, 40)",
+				"INSERT INTO T_AN7 VALUES (5, 50)",
+			},
+			Query: "SELECT count(*), count(val) FROM T_AN7",
+		},
+		{
+			// SUM with negative + zero + positive — pins signed
+			// arithmetic and that 0 is not skipped.
+			Name:           "sum_mixed_signs_with_zero",
+			SchemaTemplate: "CREATE TABLE T_AN8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN8 VALUES (1, -50)",
+				"INSERT INTO T_AN8 VALUES (2, 0)",
+				"INSERT INTO T_AN8 VALUES (3, 25)",
+				"INSERT INTO T_AN8 VALUES (4, -10)",
+				"INSERT INTO T_AN8 VALUES (5, 35)",
+			},
+			Query: "SELECT sum(val) FROM T_AN8",
+		},
+		{
+			// COUNT(*) over a derived table with WHERE.
+			Name:           "count_over_derived_table",
+			SchemaTemplate: "CREATE TABLE T_AN9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN9 VALUES (1, 10)",
+				"INSERT INTO T_AN9 VALUES (2, 100)",
+				"INSERT INTO T_AN9 VALUES (3, 200)",
+				"INSERT INTO T_AN9 VALUES (4, 300)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id, val FROM T_AN9 WHERE val >= 100) AS x",
+		},
+		{
+			// SUM over a derived table that already filters.
+			Name:           "sum_over_derived_table_with_where",
+			SchemaTemplate: "CREATE TABLE T_AN10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN10 VALUES (1, 10)",
+				"INSERT INTO T_AN10 VALUES (2, 50)",
+				"INSERT INTO T_AN10 VALUES (3, 100)",
+				"INSERT INTO T_AN10 VALUES (4, 200)",
+			},
+			Query: "SELECT sum(val) FROM (SELECT id, val FROM T_AN10 WHERE val >= 50) AS x",
+		},
+		{
+			// AVG of an arithmetic expression: avg(val * 2). Pins that
+			// the aggregate input is the post-multiplication value, so
+			// AVG = (SUM*2)/N rather than (SUM/N)*2 (floating-point
+			// equivalent, but the engine wires the multiplication into
+			// the per-row input).
+			Name:           "avg_arith_expr",
+			SchemaTemplate: "CREATE TABLE T_AN11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN11 VALUES (1, 10)",
+				"INSERT INTO T_AN11 VALUES (2, 20)",
+				"INSERT INTO T_AN11 VALUES (3, 30)",
+			},
+			Query: "SELECT avg(val * 2) FROM T_AN11",
+		},
+		{
+			// SUM of CAST: sum(CAST(s AS BIGINT)) where s is STRING
+			// holding numeric digits. Pins explicit STRING→BIGINT cast
+			// inside an aggregate input.
+			Name:           "sum_cast_string_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_AN12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN12 VALUES (1, '10')",
+				"INSERT INTO T_AN12 VALUES (2, '20')",
+				"INSERT INTO T_AN12 VALUES (3, '30')",
+			},
+			Query: "SELECT sum(CAST(s AS BIGINT)) FROM T_AN12",
+		},
+		{
+			// MIN of arithmetic expression: min(val + 1). Pins
+			// per-row arithmetic feeding MIN.
+			Name:           "min_arith_expr",
+			SchemaTemplate: "CREATE TABLE T_AN13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN13 VALUES (1, 5)",
+				"INSERT INTO T_AN13 VALUES (2, 15)",
+				"INSERT INTO T_AN13 VALUES (3, 25)",
+			},
+			Query: "SELECT min(val + 1) FROM T_AN13",
+		},
+		{
+			// COUNT(*) with a WHERE filter that excludes every row →
+			// 0 (not NULL).
+			Name:           "count_where_excludes_all",
+			SchemaTemplate: "CREATE TABLE T_AN14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN14 VALUES (1, 10)",
+				"INSERT INTO T_AN14 VALUES (2, 20)",
+				"INSERT INTO T_AN14 VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_AN14 WHERE val > 1000",
+		},
+		{
+			// Aggregate over a single-row table — SUM/MIN/MAX all
+			// equal the lone value, COUNT is 1.
+			Name:           "agg_over_single_row",
+			SchemaTemplate: "CREATE TABLE T_AN15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN15 VALUES (1, 77)",
+			},
+			Query: "SELECT sum(val), min(val), max(val), count(*) FROM T_AN15",
+		},
+		{
+			// AVG over column with mix of negatives and zeros, with
+			// NULLs interleaved. Pins that NULLs are skipped, zeros
+			// are counted, and the result is BIGINT-divided per
+			// AVG-over-BIGINT semantics.
+			Name:           "avg_negatives_zeros_with_nulls",
+			SchemaTemplate: "CREATE TABLE T_AN16 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AN16 VALUES (1, -10)",
+				"INSERT INTO T_AN16 VALUES (2, NULL)",
+				"INSERT INTO T_AN16 VALUES (3, 0)",
+				"INSERT INTO T_AN16 VALUES (4, -20)",
+				"INSERT INTO T_AN16 VALUES (5, NULL)",
+				"INSERT INTO T_AN16 VALUES (6, 30)",
+			},
+			Query: "SELECT avg(val) FROM T_AN16",
+		},
 	}
 }
 
