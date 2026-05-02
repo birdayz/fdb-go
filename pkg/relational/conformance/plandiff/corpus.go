@@ -4959,6 +4959,39 @@ func SeedRunCorpus() []RunQuery {
 
 		// ===== UPDATE edge cases =====
 		{
+			// Multi-column UPDATE with self-cross-referenced SET — pins
+			// SQL-standard pre-update RHS reads (TODO #63 fix landed
+			// dayshift-66). x and y both read pre-update values.
+			Name:           "update_multi_col_swap",
+			SchemaTemplate: "CREATE TABLE T_UMS (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMS VALUES (1, 100, 80)",
+				"UPDATE T_UMS SET x = x + y, y = y - x",
+			},
+			Query: "SELECT id, x, y FROM T_UMS",
+		},
+		{
+			// Triple-column UPDATE with all RHS reading pre-update values.
+			Name:           "update_three_col_self_ref",
+			SchemaTemplate: "CREATE TABLE T_UMS3 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMS3 VALUES (1, 1, 2, 3)",
+				"UPDATE T_UMS3 SET a = b + c, b = a + c, c = a + b",
+			},
+			Query: "SELECT id, a, b, c FROM T_UMS3",
+		},
+		{
+			// UPDATE with WHERE predicate using lowercase column ref
+			// against uppercase declaration.
+			Name:           "update_where_lowercase_ref",
+			SchemaTemplate: "CREATE TABLE T_ULR (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ULR VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_ULR SET val = val * 10 WHERE val > 15",
+			},
+			Query: "SELECT id, val FROM T_ULR ORDER BY id",
+		},
+		{
 			// UPDATE with predicate referencing NEW logic — UPDATE
 			// SET val = val + 1 WHERE val < 50 — only some rows match.
 			Name:           "update_with_predicate",
