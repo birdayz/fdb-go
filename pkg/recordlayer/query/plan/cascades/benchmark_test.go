@@ -472,3 +472,48 @@ func BenchmarkBestRefCost(b *testing.B) {
 		_ = ref.GetBest(properties.CostLess)
 	}
 }
+
+func BenchmarkMemo_MemoizeExpression_LeafHit(b *testing.B) {
+	m := NewMemo(nil)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	m.MemoizeExpression(scan)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		m.MemoizeExpression(s)
+	}
+}
+
+func BenchmarkMemo_MemoizeExpression_NonLeafHit(b *testing.B) {
+	m := NewMemo(nil)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := m.MemoizeExpression(scan)
+	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
+	filter := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+	m.MemoizeExpression(filter)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+		m.MemoizeExpression(f)
+	}
+}
+
+func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+		sortRef := expressions.InitialOf(sort)
+		pred := predicates.NewConstantPredicate(predicates.TriTrue)
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pred},
+			expressions.ForEachQuantifier(sortRef),
+		)
+		rootRef := expressions.InitialOf(filter)
+		p := NewPlanner(DefaultExpressionRules(), nil)
+		p.Explore(rootRef)
+	}
+}
