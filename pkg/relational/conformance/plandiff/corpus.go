@@ -8738,6 +8738,103 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_MP13 WHERE (val BETWEEN 10 AND 100 OR val = 200) AND (name LIKE 'a%' OR name IS NULL) ORDER BY id",
 		},
+
+		// ===== Identifier resolution: case sensitivity, qualified column refs,
+		// alias visibility, table-name vs column-name resolution =====
+		// Dropped ident_lowercase_table_ref: Java case-folds table
+		// names (`SELECT FROM t_ir1` resolves to T_IR1); Go does not
+		// (errors `Unknown table T_IR1`). Real Go divergence (#56).
+		// Dropped ident_uppercase_col_ref: same #56 family — Go
+		// fails to case-fold column-name references.
+		{
+			// Alias in projection: SELECT a.id, a.val FROM t AS a —
+			// pins that the alias replaces the table name as qualifier.
+			Name:           "ident_alias_in_projection",
+			SchemaTemplate: "CREATE TABLE T_IR3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR3 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT a.id, a.val FROM T_IR3 AS a ORDER BY a.id",
+		},
+		{
+			// Alias used in WHERE clause — alias scope spans the whole
+			// SELECT, not just the projection list.
+			Name:           "ident_alias_in_where",
+			SchemaTemplate: "CREATE TABLE T_IR4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR4 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT a.id FROM T_IR4 AS a WHERE a.val > 15 ORDER BY a.id",
+		},
+		{
+			// Alias used in ORDER BY — alias resolves like in WHERE.
+			Name:           "ident_alias_in_order_by",
+			SchemaTemplate: "CREATE TABLE T_IR5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR5 VALUES (3, 10), (1, 30), (2, 20)"},
+			Query:          "SELECT a.id, a.val FROM T_IR5 AS a ORDER BY a.id",
+		},
+		{
+			// Single-letter aliases on a self-join — minimal alias names
+			// must still bind unambiguously.
+			Name:           "ident_single_letter_alias_self_join",
+			SchemaTemplate: "CREATE TABLE T_IR6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR6 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT a.id, b.id FROM T_IR6 a, T_IR6 b WHERE a.id = b.id ORDER BY a.id",
+		},
+		{
+			// Mixed-case alias `MyAlias` — Java case-folds unquoted
+			// identifiers; aliasing on both sides should agree.
+			Name:           "ident_mixed_case_alias",
+			SchemaTemplate: "CREATE TABLE T_IR7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR7 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT MyAlias.id, MyAlias.val FROM T_IR7 AS MyAlias ORDER BY MyAlias.id",
+		},
+		{
+			// Alias rebinding in derived table — outer query sees only
+			// the derived alias `d`, not the inner table name.
+			Name:           "ident_alias_rebind_derived",
+			SchemaTemplate: "CREATE TABLE T_IR8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR8 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT d.id, d.val FROM (SELECT id, val FROM T_IR8) AS d ORDER BY d.id",
+		},
+		{
+			// Qualifier-stripping in CTE: `a.id` inside the CTE body
+			// becomes plain `id` outside; outer SELECT references `id`.
+			Name:           "ident_qualifier_stripping_in_cte",
+			SchemaTemplate: "CREATE TABLE T_IR9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR9 VALUES (1, 10), (2, 20)"},
+			Query:          "WITH x AS (SELECT a.id FROM T_IR9 AS a) SELECT count(*) FROM x",
+		},
+		{
+			// Two CTEs with same column name `id` — comma-join with
+			// equality on the shared name forces unambiguous qualified
+			// reference.
+			Name: "ident_two_ctes_same_col_name",
+			SchemaTemplate: "CREATE TABLE T_IR10A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_IR10B (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IR10A VALUES (1), (2), (3)",
+				"INSERT INTO T_IR10B VALUES (2), (3), (4)",
+			},
+			Query: "WITH x AS (SELECT id FROM T_IR10A), y AS (SELECT id FROM T_IR10B) SELECT count(*) FROM x, y WHERE x.id = y.id",
+		},
+		// Dropped ident_quoted_lowercase_col: Java parses
+		// double-quoted "ID" as a case-preserving identifier; Go
+		// rejects. Quoted-identifier handling divergence (#57).
+		{
+			// Column qualified by table name (no alias) — pins that
+			// the bare table name is itself a usable qualifier.
+			Name:           "ident_table_name_qualifier_no_alias",
+			SchemaTemplate: "CREATE TABLE T_IR12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR12 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT T_IR12.id, T_IR12.val FROM T_IR12 ORDER BY T_IR12.id",
+		},
+		{
+			// Self-join via comma with two aliases sharing the same
+			// prefix letter — `a` vs `b`, no ambiguity expected.
+			Name:           "ident_self_join_distinct_aliases",
+			SchemaTemplate: "CREATE TABLE T_IR13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR13 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT a.id FROM T_IR13 AS a, T_IR13 AS b WHERE a.id < b.id ORDER BY a.id",
+		},
+		// Dropped ident_lowercase_both_table_and_col: same #56 — Go
+		// fails to case-fold lowercase table reference.
 	}
 }
 
