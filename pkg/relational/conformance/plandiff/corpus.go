@@ -9875,6 +9875,107 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_IV14 ORDER BY id",
 		},
+
+		// ===== ORDER BY edges combined with WHERE/JOIN/aggregate =====
+		// ORDER BY only on PK or covered indexed cols (Java rejects
+		// unindexed ORDER BY — #43). These pin reverse scans, composite
+		// PK direction combos, ORDER BY-on-index with PK predicates, and
+		// JOIN+ORDER-BY interaction.
+		{
+			// PK DESC + WHERE on non-PK col — forces reverse scan.
+			Name:           "order_by_pk_desc_where_non_agg",
+			SchemaTemplate: "CREATE TABLE T_OBA1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+			Query:          "SELECT id, val FROM T_OBA1 WHERE val > 15 ORDER BY id DESC",
+		},
+		{
+			// ORDER BY indexed col + WHERE on PK — index scan with PK
+			// predicate; pins residual-filter ordering.
+			Name:           "order_by_indexed_where_pk",
+			SchemaTemplate: "CREATE TABLE T_OBA2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_oba2_v ON T_OBA2 (v)",
+			SetupSqls:      []string{"INSERT INTO T_OBA2 VALUES (1, 300), (2, 100), (3, 200), (4, 400), (5, 50)"},
+			Query:          "SELECT id, v FROM T_OBA2 WHERE id >= 2 ORDER BY v",
+		},
+		{
+			// ORDER BY indexed col DESC + WHERE on indexed col —
+			// reverse index scan with leading-eq predicate.
+			Name:           "order_by_indexed_desc_where_indexed",
+			SchemaTemplate: "CREATE TABLE T_OBA3 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_oba3_v ON T_OBA3 (v)",
+			SetupSqls:      []string{"INSERT INTO T_OBA3 VALUES (1, 100), (2, 200), (3, 300), (4, 200)"},
+			Query:          "SELECT id, v FROM T_OBA3 WHERE v >= 200 ORDER BY v DESC",
+		},
+		{
+			// Composite PK both DESC — pins reverse-scan over compound
+			// key (region, id) with both directions inverted.
+			Name:           "order_by_composite_pk_both_desc",
+			SchemaTemplate: "CREATE TABLE T_OBA4 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA4 VALUES ('us', 1, 'a'), ('us', 2, 'b'), ('eu', 1, 'c'), ('eu', 2, 'd')"},
+			Query:          "SELECT region, id, name FROM T_OBA4 ORDER BY region DESC, id DESC",
+		},
+		{
+			// Multiple WHERE predicates ANDed + ORDER BY PK.
+			Name:           "order_by_pk_multi_where",
+			SchemaTemplate: "CREATE TABLE T_OBA5 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA5 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400)"},
+			Query:          "SELECT id, a, b FROM T_OBA5 WHERE a > 15 AND b < 350 ORDER BY id",
+		},
+		{
+			// Empty result + ORDER BY PK — zero-row corner.
+			Name:           "order_by_pk_empty_result",
+			SchemaTemplate: "CREATE TABLE T_OBA6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA6 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id, val FROM T_OBA6 WHERE val > 9999 ORDER BY id",
+		},
+		{
+			// JOIN with WHERE on join cols + ORDER BY PK of inner.
+			Name: "order_by_pk_over_join_where_join_cols",
+			SchemaTemplate: "CREATE TABLE T_OBA7A (uid BIGINT, name STRING, PRIMARY KEY (uid)) " +
+				"CREATE TABLE T_OBA7B (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))",
+			SetupSqls: []string{
+				"INSERT INTO T_OBA7A VALUES (1, 'alice'), (2, 'bob')",
+				"INSERT INTO T_OBA7B VALUES (10, 1, 100), (11, 2, 200), (12, 1, 300)",
+			},
+			Query: "SELECT a.name, b.total FROM T_OBA7A a, T_OBA7B b WHERE a.uid = b.uid ORDER BY b.oid DESC",
+		},
+		{
+			// Single-row result + ORDER BY PK.
+			Name:           "order_by_pk_single_row",
+			SchemaTemplate: "CREATE TABLE T_OBA8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA8 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id, val FROM T_OBA8 WHERE id = 2 ORDER BY id",
+		},
+		{
+			// All-NULL non-PK col + ORDER BY PK — pins NULL projection
+			// pass-through under reverse iteration.
+			Name:           "order_by_pk_desc_all_null_col",
+			SchemaTemplate: "CREATE TABLE T_OBA9 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA9 VALUES (1, NULL), (2, NULL), (3, NULL)"},
+			Query:          "SELECT id, name FROM T_OBA9 ORDER BY id DESC",
+		},
+		{
+			// Composite PK leading-eq + range on trailing + ORDER BY
+			// trailing — covering scan within a single leading bucket.
+			Name:           "order_by_composite_pk_lead_eq_range_trailing",
+			SchemaTemplate: "CREATE TABLE T_OBA10 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA10 VALUES ('us', 1, 'a'), ('us', 2, 'b'), ('us', 3, 'c'), ('eu', 1, 'x')"},
+			Query:          "SELECT region, id, name FROM T_OBA10 WHERE region = 'us' AND id >= 2 ORDER BY id",
+		},
+		{
+			// Indexed col with BETWEEN + ORDER BY indexed col.
+			Name:           "order_by_indexed_between",
+			SchemaTemplate: "CREATE TABLE T_OBA11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_oba11_v ON T_OBA11 (v)",
+			SetupSqls:      []string{"INSERT INTO T_OBA11 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)"},
+			Query:          "SELECT id, v FROM T_OBA11 WHERE v BETWEEN 10 AND 30 ORDER BY v",
+		},
+		{
+			// COUNT(*) + WHERE — aggregate alongside ORDER-BY-PK shape
+			// elsewhere; here we pin scalar-count under WHERE filter
+			// without ORDER BY (single-row result, deterministic).
+			Name:           "count_with_where_pk_predicate",
+			SchemaTemplate: "CREATE TABLE T_OBA12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+			Query:          "SELECT count(*) FROM T_OBA12 WHERE id >= 2 AND id <= 3",
+		},
 	}
 }
 
