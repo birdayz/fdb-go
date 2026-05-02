@@ -522,3 +522,116 @@ func TestEndToEnd_InExplodeIndexScan(t *testing.T) {
 		t.Fatalf("expected at least 2 index scans (one per IN element), got %d", indexScanCount)
 	}
 }
+
+// TestEndToEnd_UniqueIndexPointLookupPreferred verifies that the planner's
+// cost model picks a unique index point-lookup (cardinality=1) over a
+// non-unique range scan on the same column.
+func TestEndToEnd_UniqueIndexPointLookupPreferred(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "ID", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+			),
+		},
+		q,
+	)
+	ref := expressions.InitialOf(filter)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$id_unique",
+			columns:     []string{"id"},
+			recordTypes: []string{"Order"},
+			unique:      true,
+		},
+		e2eIndexDef{
+			name:        "Order$id_nonunique",
+			columns:     []string{"id"},
+			recordTypes: []string{"Order"},
+			unique:      false,
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	if !cascades.IsPhysicalIndexScan(plan) {
+		t.Fatalf("expected index scan, got %T", plan)
+	}
+	indexName := cascades.PhysicalIndexScanName(plan)
+	if indexName != "Order$id_unique" {
+		t.Fatalf("expected unique index chosen (Order$id_unique), got %q", indexName)
+	}
+}
+
+// TestEndToEnd_CompoundIndexBeatsIntersection verifies that when a compound
+// index covers all predicates, the planner picks it over a 2-way
+// intersection of single-column indexes (lower cardinality estimate).
+func TestEndToEnd_CompoundIndexBeatsIntersection(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(50)),
+			),
+		},
+		q,
+	)
+	ref := expressions.InitialOf(filter)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"Order"},
+		},
+		e2eIndexDef{
+			name:        "Order$amount",
+			columns:     []string{"amount"},
+			recordTypes: []string{"Order"},
+		},
+		e2eIndexDef{
+			name:        "Order$status_amount",
+			columns:     []string{"status", "amount"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	if !cascades.IsPhysicalIndexScan(plan) {
+		t.Fatalf("expected compound index scan, got %T", plan)
+	}
+	indexName := cascades.PhysicalIndexScanName(plan)
+	if indexName != "Order$status_amount" {
+		t.Fatalf("expected compound index (Order$status_amount), got %q — planner chose intersection or single-column index instead", indexName)
+	}
+}

@@ -41,6 +41,16 @@ func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// PhysicalIndexScanName returns the index name if expr is a
+// physicalIndexScanWrapper, empty string otherwise.
+func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
+	w, ok := expr.(*physicalIndexScanWrapper)
+	if !ok {
+		return ""
+	}
+	return w.plan.GetIndexName()
+}
+
 // findPhysicalPlan scans ref's members for the first physical-plan
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
