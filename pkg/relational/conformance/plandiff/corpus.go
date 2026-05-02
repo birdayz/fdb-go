@@ -4380,6 +4380,19 @@ func SeedRunCorpus() []RunQuery {
 		// nightshift-65 diagnosis was inverted (Go is the correct side).
 		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
 		{
+			// Probe TODO #63: multi-column UPDATE with self-ref SET.
+			// Pre-fix Go reads in-progress (already-updated) value of y
+			// when computing x's new value; SQL standard says all RHS
+			// reads happen pre-update.
+			Name:           "update_multi_col_self_ref_probe",
+			SchemaTemplate: "CREATE TABLE T_UMC (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMC VALUES (1, 100, 80)",
+				"UPDATE T_UMC SET x = x + y, y = y - x",
+			},
+			Query: "SELECT id, x, y FROM T_UMC ORDER BY id",
+		},
+		{
 			// Probe TODO #45: EXISTS over CTE drops inner predicate.
 			// Outer WITH big = rows of T_EX_B with val>50 (gid 200, 300).
 			// Outer SELECT count over A WHERE EXISTS … FROM big …
