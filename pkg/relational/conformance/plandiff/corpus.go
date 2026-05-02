@@ -14083,6 +14083,386 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_NL_17 WHERE v BETWEEN CAST(NULL AS BIGINT) AND 100 ORDER BY id",
 		},
+		// --- IS [NOT] DISTINCT FROM shapes ----------------------------
+		{
+			Name:           "is_distinct_from_null_vs_value",
+			SchemaTemplate: "CREATE TABLE T_IDF_01 (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDF_01 VALUES (1, 'alpha'), (2, 'beta'), (3, NULL), (4, NULL)",
+			},
+			Query: "SELECT id FROM T_IDF_01 WHERE label IS DISTINCT FROM 'alpha' ORDER BY id",
+		},
+		{
+			Name:           "is_not_distinct_from_null_finds_nulls",
+			SchemaTemplate: "CREATE TABLE T_IDF_02 (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDF_02 VALUES (1, 'alpha'), (2, NULL), (3, NULL)",
+			},
+			Query: "SELECT id FROM T_IDF_02 WHERE label IS NOT DISTINCT FROM NULL ORDER BY id",
+		},
+		{
+			Name:           "is_distinct_from_null_excludes_nulls",
+			SchemaTemplate: "CREATE TABLE T_IDF_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDF_03 VALUES (1, 10), (2, NULL), (3, 20)",
+			},
+			Query: "SELECT id FROM T_IDF_03 WHERE v IS DISTINCT FROM NULL ORDER BY id",
+		},
+		{
+			Name:           "is_not_distinct_from_same_value",
+			SchemaTemplate: "CREATE TABLE T_IDF_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDF_04 VALUES (1, 10), (2, 20), (3, 10)",
+			},
+			Query: "SELECT id FROM T_IDF_04 WHERE v IS NOT DISTINCT FROM 10 ORDER BY id",
+		},
+		{
+			Name:           "is_distinct_from_constant_null_null",
+			SchemaTemplate: "CREATE TABLE T_IDF_05 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IDF_05 VALUES (1), (2)"},
+			Query:          "SELECT id FROM T_IDF_05 WHERE NULL IS DISTINCT FROM NULL",
+		},
+		{
+			Name:           "is_distinct_from_literal_on_left",
+			SchemaTemplate: "CREATE TABLE T_IDF_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDF_06 VALUES (1, 10), (2, NULL), (3, 20)",
+			},
+			Query: "SELECT id FROM T_IDF_06 WHERE NULL IS DISTINCT FROM v ORDER BY id",
+		},
+		{
+			Name:           "is_not_distinct_from_null_both_sides",
+			SchemaTemplate: "CREATE TABLE T_IDF_07 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IDF_07 VALUES (1), (2)",
+			},
+			Query: "SELECT id FROM T_IDF_07 WHERE NULL IS NOT DISTINCT FROM NULL ORDER BY id",
+		},
+		// --- Chained JOIN shapes --------------------------------------
+		{
+			Name: "join_chained_inner_three_tables",
+			SchemaTemplate: "CREATE TABLE T_CJ_EMP (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CJ_DEPT (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CJ_PROJ (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CJ_EMP VALUES (1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 10)",
+				"INSERT INTO T_CJ_DEPT VALUES (10, 'Engineering'), (20, 'Sales')",
+				"INSERT INTO T_CJ_PROJ VALUES (100, 1), (101, 2), (102, 3)",
+			},
+			Query: `SELECT T_CJ_EMP.name, T_CJ_DEPT.name FROM T_CJ_EMP
+				INNER JOIN T_CJ_DEPT ON T_CJ_EMP.dept_id = T_CJ_DEPT.id
+				INNER JOIN T_CJ_PROJ ON T_CJ_PROJ.emp_id = T_CJ_EMP.id
+				ORDER BY T_CJ_EMP.id`,
+		},
+		{
+			Name: "join_comma_three_way_where",
+			SchemaTemplate: "CREATE TABLE T_CJ2_A (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CJ2_B (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CJ2_C (id BIGINT, b_id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CJ2_A VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_CJ2_B VALUES (10, 1), (20, 2)",
+				"INSERT INTO T_CJ2_C VALUES (100, 10), (200, 20)",
+			},
+			Query: "SELECT T_CJ2_A.v, T_CJ2_C.id FROM T_CJ2_A, T_CJ2_B, T_CJ2_C WHERE T_CJ2_A.id = T_CJ2_B.a_id AND T_CJ2_B.id = T_CJ2_C.b_id ORDER BY T_CJ2_A.id",
+		},
+		// --- Nested derived table shapes ------------------------------
+		{
+			Name:           "nested_derived_three_levels",
+			SchemaTemplate: "CREATE TABLE T_ND_01 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND_01 VALUES (1, 10), (2, 20), (3, NULL), (4, 40)",
+			},
+			Query: "SELECT id, n FROM (SELECT id, n FROM (SELECT id, n FROM T_ND_01) AS x WHERE n IS NOT NULL) AS y ORDER BY id",
+		},
+		{
+			Name:           "nested_derived_count_over_filter",
+			SchemaTemplate: "CREATE TABLE T_ND_02 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND_02 VALUES (1, 10), (2, 20), (3, NULL), (4, 40)",
+			},
+			Query: "SELECT COUNT(*) FROM (SELECT id FROM (SELECT id, n FROM T_ND_02) AS x WHERE n IS NOT NULL) AS y",
+		},
+		{
+			Name:           "nested_derived_col_rename",
+			SchemaTemplate: "CREATE TABLE T_ND_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND_03 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT y.a FROM (SELECT x.b AS a FROM (SELECT id AS b FROM T_ND_03) AS x WHERE b > 1) AS y ORDER BY y.a",
+		},
+		{
+			Name:           "nested_derived_distinct_inner",
+			SchemaTemplate: "CREATE TABLE T_ND_04 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ND_04 VALUES (1, 10), (2, 20), (3, 20), (4, 30)",
+			},
+			Query: "SELECT sub.n FROM (SELECT DISTINCT n FROM T_ND_04 WHERE n >= 20) AS sub ORDER BY sub.n",
+			Divergence: &Divergence{
+				Reason:    "Java's Cascades planner can't plan DISTINCT inside a derived table (same upstream bug as TODO #42 compound DISTINCT). Go correctly deduplicates.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(20)}, {float64(30)},
+				},
+			},
+		},
+		// --- Mixed-type equality (error 22000) ------------------------
+		{
+			Name:           "mixed_type_eq_string_vs_bigint",
+			SchemaTemplate: "CREATE TABLE T_MT_01 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MT_01 VALUES (1, 5), (2, 10)",
+			},
+			Query: "SELECT id FROM T_MT_01 WHERE n = '5'",
+		},
+		{
+			Name:           "mixed_type_in_list_string_in_bigint",
+			SchemaTemplate: "CREATE TABLE T_MT_02 (id BIGINT, n BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MT_02 VALUES (1, 5), (2, 10)",
+			},
+			Query: "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
+			Divergence: &Divergence{
+				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT) with SQLSTATE 22000, but error messages differ: Java uses a verbose type-promotion message, Go says 'cannot compare int64 with string in IN list'.",
+				Direction:       DivergenceBothErrorMessagesDrift,
+				GoErrorContains: "cannot compare int64 with string in IN list",
+			},
+		},
+		// --- Self-join shapes -----------------------------------------
+		{
+			Name:           "self_join_parent_child",
+			SchemaTemplate: "CREATE TABLE T_SJ_01 (id BIGINT, parent BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SJ_01 VALUES (1, 0, 10), (2, 1, 20), (3, 1, 30), (4, 2, 40)",
+			},
+			Query: "SELECT c.id, p.v FROM T_SJ_01 AS c INNER JOIN T_SJ_01 AS p ON c.parent = p.id ORDER BY c.id",
+		},
+		{
+			Name:           "self_join_non_equi_less_than",
+			SchemaTemplate: "CREATE TABLE T_SJ_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SJ_02 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT x.id, y.id FROM T_SJ_02 AS x JOIN T_SJ_02 AS y ON x.v < y.v ORDER BY x.id, y.id",
+			Divergence: &Divergence{
+				Reason:    "Java Cascades planner can't plan non-equi JOIN (< predicate on ON clause); Go's nested-loop join handles it correctly.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(2)},
+					{float64(1), float64(3)},
+					{float64(2), float64(3)},
+				},
+			},
+		},
+		// ===== Correlated subqueries (EXISTS / NOT EXISTS) =====
+		{
+			Name: "corr_exists_basic",
+			SchemaTemplate: "CREATE TABLE T_CS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_02 (id BIGINT, fk BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_01 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_CS_02 VALUES (100, 1), (101, 3)",
+			},
+			Query: "SELECT id FROM T_CS_01 WHERE EXISTS (SELECT 1 FROM T_CS_02 WHERE fk = T_CS_01.id) ORDER BY id",
+		},
+		{
+			Name: "corr_exists_with_inner_filter",
+			SchemaTemplate: "CREATE TABLE T_CS_03 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_04 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_03 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_CS_04 VALUES (100, 10, 5), (101, 20, 50), (102, 30, 200)",
+			},
+			Query: "SELECT id FROM T_CS_03 a WHERE EXISTS (SELECT 1 FROM T_CS_04 b WHERE b.gid = a.gid AND b.val > 40) ORDER BY id",
+		},
+		{
+			Name: "corr_not_exists_basic",
+			SchemaTemplate: "CREATE TABLE T_CS_05 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_06 (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_05 VALUES (1, 10), (2, 20), (3, 99)",
+				"INSERT INTO T_CS_06 VALUES (10), (20)",
+			},
+			Query: "SELECT id FROM T_CS_05 a WHERE NOT EXISTS (SELECT 1 FROM T_CS_06 b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			Name:           "corr_exists_self_ref_alias",
+			SchemaTemplate: "CREATE TABLE T_CS_07 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_07 VALUES (1, 0), (2, 1), (3, 1), (4, 99)",
+			},
+			Query: "SELECT o.id FROM T_CS_07 AS o WHERE EXISTS (SELECT 1 FROM T_CS_07 AS i WHERE i.id = o.parent) ORDER BY o.id",
+		},
+		{
+			Name: "corr_exists_empty_inner",
+			SchemaTemplate: "CREATE TABLE T_CS_08 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_09 (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_08 VALUES (1, 10), (2, 20)",
+			},
+			Query: "SELECT id FROM T_CS_08 a WHERE EXISTS (SELECT 1 FROM T_CS_09 b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			Name: "uncorr_exists_baseline",
+			SchemaTemplate: "CREATE TABLE T_CS_10 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_11 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_10 VALUES (1), (2), (3)",
+				"INSERT INTO T_CS_11 VALUES (42)",
+			},
+			Query: "SELECT id FROM T_CS_10 WHERE EXISTS (SELECT 1 FROM T_CS_11) ORDER BY id",
+		},
+		{
+			Name: "uncorr_not_exists_empty",
+			SchemaTemplate: "CREATE TABLE T_CS_12 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_13 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_12 VALUES (1), (2)",
+			},
+			Query: "SELECT id FROM T_CS_12 WHERE NOT EXISTS (SELECT 1 FROM T_CS_13) ORDER BY id",
+		},
+		{
+			Name: "corr_exists_join_outer",
+			SchemaTemplate: "CREATE TABLE T_CS_14 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_15 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_16 (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_14 VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_CS_15 VALUES (100, 10), (101, 20)",
+				"INSERT INTO T_CS_16 VALUES (10, 'a')",
+			},
+			Query: "SELECT a.id FROM T_CS_14 a, T_CS_15 b WHERE a.gid = b.gid AND EXISTS (SELECT 1 FROM T_CS_16 c WHERE c.gid = a.gid) ORDER BY a.id",
+		},
+		{
+			Name: "corr_exists_aliased_save_restore",
+			SchemaTemplate: "CREATE TABLE T_CS_17 (id BIGINT, dept BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_18 (id BIGINT, dept BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_17 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_CS_18 VALUES (100, 10), (101, 30)",
+			},
+			Query: "SELECT e.id FROM T_CS_17 AS e WHERE EXISTS (SELECT 1 FROM T_CS_18 AS p WHERE p.dept = e.dept) ORDER BY e.id",
+		},
+		{
+			Name: "corr_not_exists_inner_always_empty",
+			SchemaTemplate: "CREATE TABLE T_CS_19 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_20 (id BIGINT, gid BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_19 VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_CS_20 VALUES (100, 10)",
+			},
+			Query: "SELECT id FROM T_CS_19 a WHERE NOT EXISTS (SELECT 1 FROM T_CS_20 b WHERE b.gid = a.gid AND b.id = 99999) ORDER BY id",
+		},
+		{
+			Name: "corr_exists_gt_comparison",
+			SchemaTemplate: "CREATE TABLE T_CS_21 (id BIGINT, threshold BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_22 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_21 VALUES (1, 50), (2, 200), (3, 10)",
+				"INSERT INTO T_CS_22 VALUES (100, 100), (101, 150)",
+			},
+			Query: "SELECT id FROM T_CS_21 a WHERE EXISTS (SELECT 1 FROM T_CS_22 b WHERE b.val > a.threshold) ORDER BY id",
+		},
+		{
+			Name: "corr_exists_inner_group_by",
+			SchemaTemplate: "CREATE TABLE T_CS_23 (id BIGINT, cat BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_CS_24 (id BIGINT, cat BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_23 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_CS_24 VALUES (100, 10, 5), (101, 10, 15), (102, 20, 25)",
+			},
+			Query: "SELECT id FROM T_CS_23 a WHERE EXISTS (SELECT cat FROM T_CS_24 b WHERE b.cat = a.cat GROUP BY cat) ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Java's Cascades planner throws UnableToPlanException on GROUP BY inside a correlated EXISTS subquery; Go handles it correctly.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+					{float64(2)},
+				},
+			},
+		},
+		{
+			Name:           "having_count_filter",
+			SchemaTemplate: "CREATE TABLE T_CS_25 (id BIGINT, grp BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CS_25 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 2)",
+			},
+			Query: "SELECT grp, COUNT(*) FROM T_CS_25 GROUP BY grp HAVING COUNT(*) > 2 ORDER BY grp",
+			Divergence: &Divergence{
+				Reason:    "Java's Cascades planner throws UnableToPlanException on HAVING COUNT(*) > N; Go handles it correctly.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2), float64(3)},
+				},
+			},
+		},
+		// ===== DML with subquery predicates =====
+		{
+			Name: "dml_delete_where_exists",
+			SchemaTemplate: "CREATE TABLE T_DMS_01 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DMS_02 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_DMS_01 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"INSERT INTO T_DMS_02 VALUES (2), (4)",
+				"DELETE FROM T_DMS_01 WHERE EXISTS (SELECT 1 FROM T_DMS_02 WHERE T_DMS_02.k = T_DMS_01.id)",
+			},
+			Query: "SELECT id, v FROM T_DMS_01 ORDER BY id",
+		},
+		{
+			Name: "dml_delete_where_not_exists",
+			SchemaTemplate: "CREATE TABLE T_DMS_03 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DMS_04 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_DMS_03 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_DMS_04 VALUES (1), (3)",
+				"DELETE FROM T_DMS_03 WHERE NOT EXISTS (SELECT 1 FROM T_DMS_04 WHERE T_DMS_04.k = T_DMS_03.id)",
+			},
+			Query: "SELECT id, v FROM T_DMS_03 ORDER BY id",
+		},
+		{
+			Name: "dml_update_where_exists",
+			SchemaTemplate: "CREATE TABLE T_DMS_05 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DMS_06 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_DMS_05 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_DMS_06 VALUES (1), (2)",
+				"UPDATE T_DMS_05 SET v = 99 WHERE EXISTS (SELECT 1 FROM T_DMS_06 WHERE T_DMS_06.k = T_DMS_05.id)",
+			},
+			Query: "SELECT id, v FROM T_DMS_05 ORDER BY id",
+		},
+		{
+			Name: "dml_update_where_not_exists",
+			SchemaTemplate: "CREATE TABLE T_DMS_07 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DMS_08 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_DMS_07 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_DMS_08 VALUES (2)",
+				"UPDATE T_DMS_07 SET v = 0 WHERE NOT EXISTS (SELECT 1 FROM T_DMS_08 WHERE T_DMS_08.k = T_DMS_07.id)",
+			},
+			Query: "SELECT id, v FROM T_DMS_07 ORDER BY id",
+		},
+		{
+			Name: "dml_delete_uncorr_exists",
+			SchemaTemplate: "CREATE TABLE T_DMS_09 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DMS_10 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_DMS_09 VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_DMS_10 VALUES (42)",
+				"DELETE FROM T_DMS_09 WHERE EXISTS (SELECT 1 FROM T_DMS_10)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DMS_09",
+		},
+		{
+			Name: "dml_delete_uncorr_not_exists_noop",
+			SchemaTemplate: "CREATE TABLE T_DMS_11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DMS_12 (k BIGINT, PRIMARY KEY (k))",
+			SetupSqls: []string{
+				"INSERT INTO T_DMS_11 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_DMS_12 VALUES (1)",
+				"DELETE FROM T_DMS_11 WHERE NOT EXISTS (SELECT 1 FROM T_DMS_12)",
+			},
+			Query: "SELECT id, v FROM T_DMS_11 ORDER BY id",
+		},
 	}
 }
 
