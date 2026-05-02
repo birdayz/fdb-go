@@ -217,6 +217,58 @@ func TestEndToEnd_IndexIntersection(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_SortElimByIndex verifies that ORDER BY date is eliminated
+// when an index on (status, date) with status equality-bound provides
+// date ordering.
+func TestEndToEnd_SortElimByIndex(t *testing.T) {
+	t.Parallel()
+
+	cmpPred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+	)
+	src := logical.NewSort(
+		logical.NewFilterWithPredicate(
+			logical.NewScan("Order", ""),
+			cmpPred, "STATUS = 'active'",
+		),
+		[]logical.SortKey{{Expr: "DATE", Dir: logical.SortAsc}},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(got)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status_date",
+			columns:     []string{"status", "date"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// The top Reference should contain the index scan directly (sort
+	// eliminated because the index on (status, date) with status=eq
+	// provides date ordering).
+	foundIndexScanAtTop := false
+	for _, m := range ref.Members() {
+		if cascades.IsPhysicalIndexScan(m) {
+			foundIndexScanAtTop = true
+			break
+		}
+	}
+	if !foundIndexScanAtTop {
+		t.Fatal("sort should be eliminated; index scan should appear at top")
+	}
+}
+
 // TestEndToEnd_InExplodeIndexScan tests the IN-to-explode + index scan
 // pipeline: Filter(status IN ['a','b'], Scan) -> Union(IndexScan(=a), IndexScan(=b)).
 func TestEndToEnd_InExplodeIndexScan(t *testing.T) {
