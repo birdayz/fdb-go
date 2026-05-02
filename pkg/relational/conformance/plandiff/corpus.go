@@ -7763,6 +7763,165 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT count(*) FROM T_MS13",
 		},
+
+		// ===== JOIN multi-predicate / nested-derived / qualified-projection =====
+		{
+			// 4-table comma-join with 3 EQ predicates chaining the keys
+			// across all four. Pins planner's ability to handle long
+			// nested-loop join chains where each table joins only the
+			// previous one — no cross-edges.
+			Name: "join_four_way_eq_chain",
+			SchemaTemplate: "CREATE TABLE T_JJ1 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJ2 (id BIGINT, p BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJ3 (id BIGINT, p BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJ4 (id BIGINT, p BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJ1 VALUES (1), (2)",
+				"INSERT INTO T_JJ2 VALUES (10, 1), (11, 2)",
+				"INSERT INTO T_JJ3 VALUES (100, 10), (101, 11)",
+				"INSERT INTO T_JJ4 VALUES (1000, 100), (1001, 101)",
+			},
+			Query: "SELECT a.id, b.id, c.id, d.id FROM T_JJ1 a, T_JJ2 b, T_JJ3 c, T_JJ4 d WHERE a.id = b.p AND b.id = c.p AND c.id = d.p ORDER BY a.id",
+		},
+		{
+			// JOIN with OR-chained join predicates: a.x matches EITHER
+			// b.y OR c.y. Pins disjunctive join evaluation across two
+			// remote tables. Setup ensures rows that match only via
+			// the OR's second branch.
+			Name: "join_or_chained_predicates",
+			SchemaTemplate: "CREATE TABLE T_JJ5 (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJ6 (id BIGINT, y BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJ7 (id BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJ5 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_JJ6 VALUES (100, 10)",
+				"INSERT INTO T_JJ7 VALUES (200, 30)",
+			},
+			Query: "SELECT count(*) FROM T_JJ5 a, T_JJ6 b, T_JJ7 c WHERE a.x = b.y OR a.x = c.y",
+		},
+		{
+			// JOIN where one side is a derived table with its own WHERE
+			// filter; outer query then applies an additional filter on
+			// the join result. Pins: filter pushdown into derived input
+			// + post-join filter remains correct.
+			Name: "join_derived_with_outer_filter",
+			SchemaTemplate: "CREATE TABLE T_JJ8 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJ9 (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJ8 VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300), (4, 20, 50)",
+				"INSERT INTO T_JJ9 VALUES (10, 'x'), (20, 'y')",
+			},
+			Query: "SELECT s.id, b.label FROM (SELECT id, gid, val FROM T_JJ8 WHERE val > 75) AS s, T_JJ9 b WHERE s.gid = b.gid AND b.label = 'y' ORDER BY s.id",
+		},
+		{
+			// Self-join via comma where BOTH sides apply their own
+			// WHERE filter prior to join. Pins independent-side
+			// predicate planning for self-joins.
+			Name:           "self_join_both_sides_filter",
+			SchemaTemplate: "CREATE TABLE T_JJA (id BIGINT, val BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJA VALUES (1, 10, 0), (2, 20, 1), (3, 30, 1), (4, 40, 2), (5, 50, 3)",
+			},
+			Query: "SELECT a.id, b.id FROM T_JJA a, T_JJA b WHERE a.parent = b.id AND a.val > 25 AND b.val < 25 ORDER BY a.id",
+		},
+		{
+			// JOIN producing exactly one row, project from both sides.
+			// Pins single-row join output where setup ensures only one
+			// pair of records satisfies the predicate.
+			Name: "join_single_row_both_sides",
+			SchemaTemplate: "CREATE TABLE T_JJB (id BIGINT, code STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJC (id BIGINT, code STRING, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJB VALUES (1, 'alpha'), (2, 'beta')",
+				"INSERT INTO T_JJC VALUES (10, 'alpha', 'matched'), (11, 'gamma', 'orphan')",
+			},
+			Query: "SELECT a.id, a.code, b.label FROM T_JJB a, T_JJC b WHERE a.code = b.code ORDER BY a.id",
+		},
+		{
+			// JOIN with composite-PK on BOTH sides. Predicate uses both
+			// columns of each composite key. Pins compound-key join
+			// shape where neither side has a single-column key.
+			Name: "join_composite_pk_both_sides",
+			SchemaTemplate: "CREATE TABLE T_JJD (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id)) " +
+				"CREATE TABLE T_JJE (region STRING, id BIGINT, score BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJD VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 300)",
+				"INSERT INTO T_JJE VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30)",
+			},
+			Query: "SELECT a.region, a.id, a.val, b.score FROM T_JJD a, T_JJE b WHERE a.region = b.region AND a.id = b.id ORDER BY a.region, a.id",
+		},
+		{
+			// JOIN with mixed equality + range predicates across tables:
+			// a.id = b.parent (eq) AND b.val > 10 AND b.val < 100. Pins
+			// composition of eq join + remote-side range filter
+			// expressed via paired comparison ops. count(*) sidesteps
+			// the multi-PK ordering shape Java's Cascades planner
+			// rejects with UnableToPlanException on mixed-table sort.
+			Name: "join_eq_plus_range_remote_count",
+			SchemaTemplate: "CREATE TABLE T_JJF (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJG (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJF VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+				"INSERT INTO T_JJG VALUES (10, 1, 5), (11, 1, 50), (12, 2, 99), (13, 2, 200), (14, 3, 75)",
+			},
+			Query: "SELECT count(*) FROM T_JJF a, T_JJG b WHERE a.id = b.parent AND b.val > 10 AND b.val < 100",
+		},
+		{
+			// JOIN producing duplicates (no PK dedup) — count(*)
+			// verifies the cardinality. Setup gives multiple rows on
+			// each side that match the same key, producing a
+			// cross-product within the matched group.
+			Name: "join_duplicates_count",
+			SchemaTemplate: "CREATE TABLE T_JJH (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJI (id BIGINT, gid BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJH VALUES (1, 10), (2, 10), (3, 20)",
+				"INSERT INTO T_JJI VALUES (100, 10), (101, 10), (102, 20), (103, 20)",
+			},
+			Query: "SELECT count(*) FROM T_JJH a, T_JJI b WHERE a.gid = b.gid",
+		},
+		{
+			// Deep WHERE on a join: eq join + remote range + outer
+			// equality on a string column. Pins multi-clause AND
+			// composition across both sides of the join. count(*)
+			// sidesteps the ORDER-BY-on-non-PK shape Java's planner
+			// rejects in this join structure.
+			Name: "join_deep_where_eq_range_eq_count",
+			SchemaTemplate: "CREATE TABLE T_JJO (id BIGINT, region STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJP (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJO VALUES (1, 'us'), (2, 'us'), (3, 'eu')",
+				"INSERT INTO T_JJP VALUES (10, 1, 5), (11, 1, 50), (12, 2, 100), (13, 3, 999)",
+			},
+			Query: "SELECT count(*) FROM T_JJO a, T_JJP b WHERE a.id = b.parent AND b.val > 10 AND a.region = 'us'",
+		},
+		{
+			// Reverse-order projection: project right-side cols first,
+			// then left-side. Pins that the projection list ordering
+			// is preserved across join planning.
+			Name: "join_reverse_order_projection",
+			SchemaTemplate: "CREATE TABLE T_JJQ (id BIGINT, y STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJR (id BIGINT, parent BIGINT, x STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJQ VALUES (1, 'left1'), (2, 'left2')",
+				"INSERT INTO T_JJR VALUES (10, 1, 'right1'), (11, 2, 'right2')",
+			},
+			Query: "SELECT b.x, a.y FROM T_JJQ a, T_JJR b WHERE a.id = b.parent ORDER BY b.id",
+		},
+		{
+			// NULL-safe equality `IS NOT DISTINCT FROM` as the join
+			// predicate. Pins NULL-handling: rows where both sides
+			// have NULL on the join column should match (unlike `=`
+			// which yields UNKNOWN for NULL).
+			Name: "join_is_not_distinct_from_eq",
+			SchemaTemplate: "CREATE TABLE T_JJS (id BIGINT, k BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_JJT (id BIGINT, k BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_JJS VALUES (1, 10), (2, NULL), (3, 30)",
+				"INSERT INTO T_JJT VALUES (100, 10), (101, NULL), (102, 99)",
+			},
+			Query: "SELECT count(*) FROM T_JJS a, T_JJT b WHERE a.k IS NOT DISTINCT FROM b.k",
+		},
 	}
 }
 
