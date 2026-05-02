@@ -191,7 +191,8 @@ var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 // the RelationalExpression interface. Same leaf shape as
 // physicalScanWrapper — index scans have no children in the Memo.
 type physicalIndexScanWrapper struct {
-	plan *plans.RecordQueryIndexPlan
+	plan        *plans.RecordQueryIndexPlan
+	columnNames []string // index column names for ordering property
 }
 
 func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }
@@ -231,6 +232,32 @@ func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (ex
 		return nil, fmt.Errorf("physicalIndexScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
 	}
 	return w, nil
+}
+
+// HintOrdering: an index scan produces rows in index-key order for
+// the non-equality-bound suffix columns. E.g. index(a, b, c) with
+// a = 1 produces output sorted by (b, c).
+func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
+	if w.plan == nil || len(w.columnNames) == 0 {
+		return properties.Ordering{}
+	}
+	comps := w.plan.GetScanComparisons()
+	firstNonEq := 0
+	for i, cr := range comps {
+		if cr.IsEquality() {
+			firstNonEq = i + 1
+		} else {
+			break
+		}
+	}
+	if firstNonEq >= len(w.columnNames) {
+		return properties.Ordering{IsKnown: true}
+	}
+	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq)
+	for i := firstNonEq; i < len(w.columnNames); i++ {
+		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys}
 }
 
 // HintCost: index scans are cheaper than full table scans because

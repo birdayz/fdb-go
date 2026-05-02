@@ -106,6 +106,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),
+		NewSortOverOrderedElimRule(),
 	}
 }
 

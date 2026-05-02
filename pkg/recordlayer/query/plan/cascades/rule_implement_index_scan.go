@@ -126,7 +126,7 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		wrapper := &physicalIndexScanWrapper{plan: idxPlanTyped}
+		wrapper := &physicalIndexScanWrapper{plan: idxPlanTyped, columnNames: colNames}
 
 		residual := residualPredicates(preds, consumed, prefix, aliases, colToIdx)
 		if len(residual) == 0 {

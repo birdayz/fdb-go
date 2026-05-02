@@ -97,9 +97,11 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		// rationale as Distinct. The PK comparison drops duplicates
 		// without reordering surviving rows.
 		return inheritFromInner(v.GetInner())
+	default:
+		if hinter, ok := e.(OrderingHinter); ok {
+			return hinter.HintOrdering()
+		}
 	}
-	// Default: no known ordering (FullUnorderedScan / Union /
-	// Intersection).
 	return Ordering{IsKnown: false}
 }
 
@@ -121,4 +123,13 @@ func inheritFromInner(inner expressions.Quantifier) Ordering {
 // Convenience wrapper over EstimateOrdering.
 func IsOrdered(e expressions.RelationalExpression) bool {
 	return EstimateOrdering(e).IsKnown
+}
+
+// OrderingHinter is the optional interface a RelationalExpression
+// implements to advertise its output ordering. Used by physical
+// wrappers (e.g. index scan) to declare that their output is ordered
+// by specific keys without the ordering property needing to know
+// every concrete wrapper type.
+type OrderingHinter interface {
+	HintOrdering() Ordering
 }
