@@ -4375,6 +4375,24 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, s FROM T_E6 ORDER BY id",
 		},
 		{
+			// SQL standard: backslash is NOT an escape character in
+			// standard string literals — `'a\nb'` is 4 chars `a`, `\`,
+			// `n`, `b`. Pins cross-engine agreement (TODO #61 dropped
+			// dayshift-66 — divergence didn't reproduce).
+			Name:           "string_literal_backslash_n_not_escaped",
+			SchemaTemplate: "CREATE TABLE T_E_BS (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{`INSERT INTO T_E_BS VALUES (1, 'a\nb'), (2, 'no escape')`},
+			Query:          "SELECT id, s FROM T_E_BS ORDER BY id",
+		},
+		{
+			// Same family — double-backslash also passes through as 2
+			// literal backslashes per SQL standard.
+			Name:           "string_literal_double_backslash_not_escaped",
+			SchemaTemplate: "CREATE TABLE T_E_BS2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{`INSERT INTO T_E_BS2 VALUES (1, 'x\\y')`},
+			Query:          "SELECT id, s FROM T_E_BS2 ORDER BY id",
+		},
+		{
 			Name:           "double_negative_zero",
 			SchemaTemplate: "CREATE TABLE T_E7 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_E7 VALUES (1, 0.0), (2, -0.0)"},
