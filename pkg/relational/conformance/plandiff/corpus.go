@@ -7422,6 +7422,176 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, s FROM T_SS14 WHERE s = 'abc ' ORDER BY id",
 		},
+
+		// ===== DML against tables with secondary indexes =====
+		// These shapes pin the index-maintenance write path: after each
+		// INSERT/UPDATE/DELETE, querying the table through a predicate
+		// the index covers must yield results identical to a PK scan.
+		// Java and Go must produce byte-equal post-DML index state.
+		{
+			// INSERT into indexed table, then read through the index.
+			Name:           "dml_idx_insert_then_index_eq",
+			SchemaTemplate: "CREATE TABLE T_DI1 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di1_v ON T_DI1 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI1 VALUES (1, 100)",
+				"INSERT INTO T_DI1 VALUES (2, 200)",
+				"INSERT INTO T_DI1 VALUES (3, 300)",
+			},
+			Query: "SELECT id, v FROM T_DI1 WHERE v = 200 ORDER BY id",
+		},
+		{
+			// UPDATE the indexed column; query through the index using
+			// the NEW value — old index entry must have been removed,
+			// new one inserted.
+			Name:           "dml_idx_update_indexed_query_new",
+			SchemaTemplate: "CREATE TABLE T_DI2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di2_v ON T_DI2 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI2 VALUES (1, 100)",
+				"INSERT INTO T_DI2 VALUES (2, 200)",
+				"UPDATE T_DI2 SET v = 999 WHERE id = 2",
+			},
+			Query: "SELECT id, v FROM T_DI2 WHERE v = 999 ORDER BY id",
+		},
+		{
+			// UPDATE indexed column; query through the index using the
+			// OLD value — must yield empty result for the moved row.
+			Name:           "dml_idx_update_indexed_query_old",
+			SchemaTemplate: "CREATE TABLE T_DI3 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di3_v ON T_DI3 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI3 VALUES (1, 100)",
+				"INSERT INTO T_DI3 VALUES (2, 200)",
+				"UPDATE T_DI3 SET v = 999 WHERE id = 2",
+			},
+			Query: "SELECT id, v FROM T_DI3 WHERE v = 200 ORDER BY id",
+		},
+		{
+			// DELETE rows; index lookup for the deleted value must be
+			// empty (index entry removed in lockstep).
+			Name:           "dml_idx_delete_then_index_eq",
+			SchemaTemplate: "CREATE TABLE T_DI4 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di4_v ON T_DI4 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI4 VALUES (1, 100)",
+				"INSERT INTO T_DI4 VALUES (2, 200)",
+				"INSERT INTO T_DI4 VALUES (3, 300)",
+				"DELETE FROM T_DI4 WHERE id = 2",
+			},
+			Query: "SELECT id, v FROM T_DI4 WHERE v = 200 ORDER BY id",
+		},
+		{
+			// INSERT after DELETE reuses an index slot — pins that the
+			// index reflects the latest write.
+			Name:           "dml_idx_insert_after_delete",
+			SchemaTemplate: "CREATE TABLE T_DI5 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di5_v ON T_DI5 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI5 VALUES (1, 100)",
+				"INSERT INTO T_DI5 VALUES (2, 200)",
+				"DELETE FROM T_DI5 WHERE id = 2",
+				"INSERT INTO T_DI5 VALUES (4, 200)",
+			},
+			Query: "SELECT id, v FROM T_DI5 WHERE v = 200 ORDER BY id",
+		},
+		{
+			// Bulk insert + UPDATE half + DELETE quarter, then index
+			// range query — exercises mixed maintenance.
+			Name:           "dml_idx_mixed_then_range",
+			SchemaTemplate: "CREATE TABLE T_DI6 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di6_v ON T_DI6 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI6 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"UPDATE T_DI6 SET v = v + 1000 WHERE id <= 2",
+				"DELETE FROM T_DI6 WHERE id = 4",
+			},
+			Query: "SELECT id, v FROM T_DI6 WHERE v >= 30 ORDER BY id",
+		},
+		{
+			// STRING-indexed column: INSERT, UPDATE, then equality
+			// lookup through the index on the new value.
+			Name:           "dml_idx_string_update_query",
+			SchemaTemplate: "CREATE TABLE T_DI7 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_di7_name ON T_DI7 (name)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI7 VALUES (1, 'alice')",
+				"INSERT INTO T_DI7 VALUES (2, 'bob')",
+				"UPDATE T_DI7 SET name = 'zelda' WHERE id = 1",
+			},
+			Query: "SELECT id, name FROM T_DI7 WHERE name = 'zelda' ORDER BY id",
+		},
+		{
+			// Composite index: UPDATE the leading column only; query
+			// through the new leading value.
+			Name:           "dml_compidx_update_leading",
+			SchemaTemplate: "CREATE TABLE T_DI8 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di8_ab ON T_DI8 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI8 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100)",
+				"UPDATE T_DI8 SET a = 9 WHERE id = 1",
+			},
+			Query: "SELECT id, a, b FROM T_DI8 WHERE a = 9 ORDER BY id",
+		},
+		{
+			// Composite index: UPDATE the trailing column only; query
+			// through (leading-eq, trailing-eq).
+			Name:           "dml_compidx_update_trailing",
+			SchemaTemplate: "CREATE TABLE T_DI9 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di9_ab ON T_DI9 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI9 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100)",
+				"UPDATE T_DI9 SET b = 555 WHERE id = 2",
+			},
+			Query: "SELECT id, a, b FROM T_DI9 WHERE a = 1 AND b = 555 ORDER BY id",
+		},
+		{
+			// DELETE with a predicate on the indexed column; verify by
+			// PK scan that the row is gone.
+			Name:           "dml_idx_delete_predicate_on_indexed",
+			SchemaTemplate: "CREATE TABLE T_DI10 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di10_v ON T_DI10 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI10 VALUES (1, 100), (2, 200), (3, 300)",
+				"DELETE FROM T_DI10 WHERE v = 200",
+			},
+			Query: "SELECT id, v FROM T_DI10 ORDER BY id",
+		},
+		{
+			// UPDATE indexed column to NULL; IS NULL lookup through
+			// index must return the updated row.
+			Name:           "dml_idx_update_to_null_then_isnull",
+			SchemaTemplate: "CREATE TABLE T_DI11 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di11_v ON T_DI11 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI11 VALUES (1, 100)",
+				"INSERT INTO T_DI11 VALUES (2, 200)",
+				"UPDATE T_DI11 SET v = NULL WHERE id = 2",
+			},
+			Query: "SELECT id, v FROM T_DI11 WHERE v IS NULL ORDER BY id",
+		},
+		{
+			// INSERT a NULL-valued indexed column from the start, then
+			// IS NULL lookup. Pins NULL handling in initial index write.
+			Name:           "dml_idx_insert_null_then_isnull",
+			SchemaTemplate: "CREATE TABLE T_DI12 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di12_v ON T_DI12 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI12 VALUES (1, 100)",
+				"INSERT INTO T_DI12 VALUES (2, NULL)",
+				"INSERT INTO T_DI12 VALUES (3, 300)",
+			},
+			Query: "SELECT id, v FROM T_DI12 WHERE v IS NULL ORDER BY id",
+		},
+		{
+			// UPDATE every row's indexed column, then range query.
+			// Pins that an unfiltered UPDATE rewrites every index entry.
+			Name:           "dml_idx_update_all_then_range",
+			SchemaTemplate: "CREATE TABLE T_DI13 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di13_v ON T_DI13 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI13 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_DI13 SET v = v * 100",
+			},
+			Query: "SELECT id, v FROM T_DI13 WHERE v >= 2000 ORDER BY id",
+		},
+		{
+			// DELETE every row, then index range query — empty result.
+			Name:           "dml_idx_delete_all_then_range",
+			SchemaTemplate: "CREATE TABLE T_DI14 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_di14_v ON T_DI14 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_DI14 VALUES (1, 10), (2, 20), (3, 30)",
+				"DELETE FROM T_DI14",
+			},
+			Query: "SELECT id, v FROM T_DI14 WHERE v >= 0 ORDER BY id",
+		},
 	}
 }
 
