@@ -89,6 +89,7 @@ go_test(
         "memo_fuzz_test.go",
         "memo_test.go",
         "phase2_correctness_test.go",
+        "phase2_fuzz_test.go",
         "plan_context_builder_test.go",
         "plan_context_test.go",
         "planner_batch_a_fuzz_test.go",
