@@ -16,22 +16,15 @@ setup:
   - INSERT INTO a VALUES (1)
   - INSERT INTO b VALUES (4)
 tests:
-  # Java has this; we don't. Two derived tables comma-joined errors
-  # 0A000 because our extra-sources loop only accepts AtomTableItem.
-  # Pinned as a regression guard with the current error.
+  # Two derived tables comma-joined — TODO #58 fix landed dayshift-66
+  # (extra-source parser now accepts SubqueryTableItem; dispatcher
+  # materializes each derived as a CTE before join execution).
   - query: |-
       SELECT sq2.y, sq1.x FROM
         (SELECT ida AS x FROM a) AS sq1,
         (SELECT idb AS y FROM b) AS sq2
-    error_code: "0A000"
-  # dayshift-40: derived-table-as-left-source + comma-joined real
-  # table now executes correctly. The pre-fix SubqueryTableItem
-  # branch returned early and dropped extraCrossJoins; now they're
-  # threaded into the returned selectQuery so `b` participates in
-  # the JOIN. Result: [1, 4].
-  # Note: derived-table on the RIGHT of a comma-join (the reverse
-  # shape) is still rejected at parse time (extra-source parser
-  # only accepts AtomTableItem) — pinned above at error_code 0A000.
+    rows:
+      - [4, 1]
   - query: |-
       SELECT sq.x, b.idb FROM
         (SELECT ida AS x FROM a) AS sq, b

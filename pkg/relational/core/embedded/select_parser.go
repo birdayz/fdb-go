@@ -123,6 +123,12 @@ type joinClause struct {
 	joinType  string // "INNER", "LEFT", "RIGHT"
 	alias     string
 	onExpr    antlrgen.IExpressionContext
+	// derivedQuery is set when the join's right-hand source is a
+	// subquery (`... , (SELECT ...) AS x` or `INNER JOIN (SELECT ...)
+	// AS x ON ...`). The dispatcher materializes the subquery as a
+	// CTE keyed by `alias` before the join executor runs, mirroring
+	// the first-source derived-table handling.
+	derivedQuery antlrgen.IQueryContext
 }
 
 type orderByClause struct {
@@ -744,33 +750,50 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"unsupported extra table source %T", extra)
 		}
-		atomItem, atomOk := eb.TableSourceItem().(*antlrgen.AtomTableItemContext)
-		if !atomOk {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"FROM: comma-separated sources must be plain table names, got %T",
-				eb.TableSourceItem())
-		}
-		uids := atomItem.TableName().FullId().AllUid()
-		parts := make([]string, len(uids))
-		for i, u := range uids {
-			parts[i] = functions.StripIdentifierQuotes(u.GetText())
-		}
-		tblName := strings.Join(parts, ".")
-		alias := tblName
-		// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
-		if atomItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
-		}
-		extraCrossJoins = append(extraCrossJoins, joinClause{
-			tableName: tblName,
-			joinType:  "INNER",
-			alias:     alias,
-			onExpr:    nil,
-		})
 		// Bare-source joins are not supported on extras (grammar quirk).
 		if len(eb.AllJoinPart()) > 0 {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"JOIN clauses on comma-separated FROM sources are not supported")
+		}
+		switch item := eb.TableSourceItem().(type) {
+		case *antlrgen.AtomTableItemContext:
+			uids := item.TableName().FullId().AllUid()
+			parts := make([]string, len(uids))
+			for i, u := range uids {
+				parts[i] = functions.StripIdentifierQuotes(u.GetText())
+			}
+			tblName := strings.Join(parts, ".")
+			alias := tblName
+			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName: tblName,
+				joinType:  "INNER",
+				alias:     alias,
+				onExpr:    nil,
+			})
+		case *antlrgen.SubqueryTableItemContext:
+			alias := ""
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			if alias == "" {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"derived table in FROM must have an alias")
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName:    alias,
+				joinType:     "INNER",
+				alias:        alias,
+				onExpr:       nil,
+				derivedQuery: item.Query(),
+			})
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"FROM: comma-separated sources must be plain table names, got %T",
+				eb.TableSourceItem())
 		}
 	}
 	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or

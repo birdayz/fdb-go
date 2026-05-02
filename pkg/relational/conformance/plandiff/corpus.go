@@ -4375,6 +4375,18 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, s FROM T_E6 ORDER BY id",
 		},
 		{
+			// Probe TODO #58: multi-subquery FROM list cross-engine
+			// behaviour. nightshift-65 reported Go rejects, Java accepts.
+			Name: "multi_subquery_from_list_probe",
+			SchemaTemplate: "CREATE TABLE T_MS1 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_MS2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS1 VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_MS2 VALUES (1, 100), (2, 200)",
+			},
+			Query: "SELECT s.id, t.val FROM (SELECT id FROM T_MS1) AS s, (SELECT id, val FROM T_MS2) AS t WHERE s.id = t.id ORDER BY s.id",
+		},
+		{
 			// SQL standard: backslash is NOT an escape character in
 			// standard string literals — `'a\nb'` is 4 chars `a`, `\`,
 			// `n`, `b`. Pins cross-engine agreement (TODO #61 dropped

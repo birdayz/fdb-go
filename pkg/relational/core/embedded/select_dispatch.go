@@ -160,11 +160,23 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 		return &staticRows{cols: cols, rows: [][]driver.Value{row}}, nil
 	}
 
+	// Push a CTE scope when any derived-table aliases (first source OR
+	// comma-joined / INNER-JOIN derived) need a sandboxed registry. The
+	// scope keeps inner aliases from leaking out to the enclosing query
+	// and ensures c.ctes is non-nil for the assignments below.
+	hasJoinDerived := false
+	for _, j := range sq.joins {
+		if j.derivedQuery != nil {
+			hasJoinDerived = true
+			break
+		}
+	}
+	if sq.derivedQuery != nil || hasJoinDerived {
+		defer c.pushCTEScope()()
+	}
+
 	// Execute derived table query and register it as a temporary CTE.
 	if sq.derivedQuery != nil {
-		// Push a CTE scope so the derived-table alias is visible during this
-		// query's evaluation without leaking back out to an enclosing scope.
-		defer c.pushCTEScope()()
 		cols, colTypes, rows, err := c.execQueryBodyRows(ctx, sq.derivedQuery.QueryExpressionBody())
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter,
@@ -192,6 +204,21 @@ func (c *EmbeddedConnection) execSelectQuery(ctx context.Context, sq *selectQuer
 			}
 		}
 		c.ctes[strings.ToUpper(sq.tableName)] = &cteData{cols: cols, colTypes: colTypes, rows: rows}
+	}
+
+	// Materialize comma-joined / INNER-JOINed derived sources the same
+	// way as the first source. Each carries its own alias which becomes
+	// the CTE key the join executor's scanTableToMaps already resolves.
+	for _, j := range sq.joins {
+		if j.derivedQuery == nil {
+			continue
+		}
+		jcols, jcolTypes, jrows, jerr := c.execQueryBodyRows(ctx, j.derivedQuery.QueryExpressionBody())
+		if jerr != nil {
+			return nil, api.WrapErrorf(jerr, api.ErrCodeInvalidParameter,
+				"derived table %q", j.alias)
+		}
+		c.ctes[strings.ToUpper(j.alias)] = &cteData{cols: jcols, colTypes: jcolTypes, rows: jrows}
 	}
 
 	// Check if the table name resolves to a CTE. Only route to the
