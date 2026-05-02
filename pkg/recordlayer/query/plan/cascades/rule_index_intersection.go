@@ -161,7 +161,9 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Try all pairs of candidates: check disjoint + full coverage.
+	// Try all pairs of candidates: require disjoint consumed sets.
+	// Full coverage → bare intersection.
+	// Partial coverage → Filter(residual, Intersection).
 	for i := 0; i < len(matches)-1; i++ {
 		for j := i + 1; j < len(matches); j++ {
 			mi := matches[i]
@@ -170,12 +172,12 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			if !disjointSets(mi.consumed, mj.consumed) {
 				continue
 			}
-			if len(mi.consumed)+len(mj.consumed) != len(preds) {
+
+			totalConsumed := len(mi.consumed) + len(mj.consumed)
+			if totalConsumed == 0 {
 				continue
 			}
 
-			// Build intersection: each leg is a filter with
-			// the predicates for that candidate, over the same scan.
 			legI := buildFilterLeg(scan, mi.preds)
 			legJ := buildFilterLeg(scan, mj.preds)
 
@@ -184,9 +186,28 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 
 			intersection := expressions.NewLogicalIntersectionExpression(
 				[]expressions.Quantifier{qI, qJ},
-				nil, // comparison key values — filled by downstream
+				nil,
 			)
-			call.Yield(intersection)
+
+			if totalConsumed == len(preds) {
+				call.Yield(intersection)
+			} else {
+				consumedSet := make(map[int]bool, totalConsumed)
+				for _, idx := range mi.consumed {
+					consumedSet[idx] = true
+				}
+				for _, idx := range mj.consumed {
+					consumedSet[idx] = true
+				}
+				var residual []predicates.QueryPredicate
+				for idx, p := range preds {
+					if !consumedSet[idx] {
+						residual = append(residual, p)
+					}
+				}
+				intrQ := expressions.ForEachQuantifier(call.MemoizeExpression(intersection))
+				call.Yield(expressions.NewLogicalFilterExpression(residual, intrQ))
+			}
 		}
 	}
 }

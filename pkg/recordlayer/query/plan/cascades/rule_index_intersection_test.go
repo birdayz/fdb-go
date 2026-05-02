@@ -157,9 +157,10 @@ func TestIndexIntersection_OverlappingPredicates(t *testing.T) {
 	}
 }
 
-// TestIndexIntersection_PartialCoverageNoFire verifies no intersection
-// when the two candidates together don't cover ALL predicates.
-func TestIndexIntersection_PartialCoverageNoFire(t *testing.T) {
+// TestIndexIntersection_PartialCoverage verifies that when two
+// candidates cover some but not all predicates, a filter-over-
+// intersection is produced (residual predicate wraps the intersection).
+func TestIndexIntersection_PartialCoverage(t *testing.T) {
 	t.Parallel()
 
 	a1 := values.UniqueCorrelationIdentifier()
@@ -186,7 +187,7 @@ func TestIndexIntersection_PartialCoverageNoFire(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 	// 3 predicates: status + amount + date. The two candidates cover
-	// status + amount but not date.
+	// status + amount but not date → Filter(date, Intersection).
 	filter := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
@@ -209,8 +210,18 @@ func TestIndexIntersection_PartialCoverageNoFire(t *testing.T) {
 	rule := NewIndexIntersectionRule()
 	results := FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
 
-	if len(results) != 0 {
-		t.Fatalf("expected 0 yields (partial coverage), got %d", len(results))
+	if len(results) != 1 {
+		t.Fatalf("expected 1 yield (filter over intersection), got %d", len(results))
+	}
+	// Should be a filter wrapping an intersection.
+	filterResult, ok := results[0].(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("expected LogicalFilterExpression wrapping intersection, got %T", results[0])
+	}
+	// Residual should be the DATE predicate.
+	residualPreds := filterResult.GetPredicates()
+	if len(residualPreds) != 1 {
+		t.Fatalf("expected 1 residual predicate, got %d", len(residualPreds))
 	}
 }
 
