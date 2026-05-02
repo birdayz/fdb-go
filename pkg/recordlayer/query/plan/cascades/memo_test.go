@@ -254,17 +254,48 @@ func TestMemo_ExpressionRuleCall_MemoizeExpression_WithMemo(t *testing.T) {
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 	scanRef := expressions.InitialOf(scan)
 
+	// Create a parent Reference (the one the rule fires on) that is
+	// DIFFERENT from scanRef — otherwise the self-reference guard triggers.
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	parentRef := expressions.InitialOf(filter)
+
 	m := NewMemo(nil)
-	m.RegisterReference(scanRef)
+	m.RegisterReference(parentRef)
 
-	// Simulate a rule call with the Memo.
-	call := NewExpressionRuleCallWithMemo(scanRef, nil, nil, m)
+	// Simulate a rule call on the parent Reference.
+	call := NewExpressionRuleCallWithMemo(parentRef, nil, nil, m)
 
-	// MemoizeExpression should go through the Memo.
+	// MemoizeExpression should find scanRef via the Memo.
 	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 	ref := call.MemoizeExpression(scan2)
 	if ref != scanRef {
 		t.Fatal("expected MemoizeExpression via rule call to find existing scanRef")
+	}
+}
+
+func TestMemo_ExpressionRuleCall_SelfRefGuard(t *testing.T) {
+	t.Parallel()
+	// When the Memo would return the SAME Reference the rule is
+	// yielding into, the self-reference guard creates a fresh Reference
+	// to prevent cycles.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scanRef := expressions.InitialOf(scan)
+
+	m := NewMemo(nil)
+	m.RegisterReference(scanRef)
+
+	call := NewExpressionRuleCallWithMemo(scanRef, nil, nil, m)
+	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	ref := call.MemoizeExpression(scan2)
+	// Guard prevents returning scanRef (would be a cycle).
+	if ref == scanRef {
+		t.Fatal("self-reference guard should prevent returning call.Reference")
+	}
+	if len(ref.Members()) != 1 {
+		t.Fatalf("expected fresh single-member ref, got %d members", len(ref.Members()))
 	}
 }
 

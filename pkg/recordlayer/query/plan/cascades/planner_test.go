@@ -412,3 +412,87 @@ func TestPlanner_SaturationPrunesRedundantFiring(t *testing.T) {
 		t.Fatalf("bare Scan should never grow; observed %d growth events", totalGrowth)
 	}
 }
+
+func TestPlanner_MemoPopulatedAfterExplore(t *testing.T) {
+	t.Parallel()
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	_, conv := p.Explore(rootRef)
+	if !conv {
+		t.Fatal("planner did not converge")
+	}
+	memo := p.Memo()
+	if memo == nil {
+		t.Fatal("Memo is nil after Explore")
+	}
+	if !memo.ContainsReference(rootRef) {
+		t.Fatal("root Reference not in Memo")
+	}
+	if !memo.ContainsReference(scanRef) {
+		t.Fatal("scan Reference not in Memo")
+	}
+	// The Memo should know about at least these 2 references.
+	if got := len(memo.References()); got < 2 {
+		t.Fatalf("Memo has %d references, expected at least 2", got)
+	}
+}
+
+func TestPlanner_MemoSharesSubExpressions(t *testing.T) {
+	t.Parallel()
+	// Build a tree where the PullFilterAboveSort and PushFilterThroughSort
+	// rules will independently construct sub-expressions that should be
+	// shared via the Memo.
+	//
+	// Input: Filter(P, Sort(Scan))
+	// PushFilterThroughSort yields: Sort(Filter(P, Scan)) — creates a
+	//   new Reference for Filter(P, Scan).
+	// If we then explore that, PullFilterAboveSort on Sort(Filter(P,Scan))
+	//   would yield Filter(P, Sort(Scan)) — creating a new Reference
+	//   for Sort(Scan).
+	//
+	// With the Memo, the "Sort(Scan)" sub-expression should be memoized:
+	// the original Sort(Scan) and any rule-derived Sort(Scan) share the
+	// same Reference.
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+	sortRef := expressions.InitialOf(sort)
+
+	pred := predicates.NewConstantPredicate(predicates.TriTrue)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(sortRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	p := NewPlanner(DefaultExpressionRules(), nil)
+	_, conv := p.Explore(rootRef)
+	if !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	memo := p.Memo()
+	if memo == nil {
+		t.Fatal("Memo is nil after Explore")
+	}
+
+	// After PushFilterThroughSort fires, the root Reference should have
+	// at least 2 members (original Filter + Sort alternative).
+	if got := len(rootRef.Members()); got < 2 {
+		t.Fatalf("root Reference has %d members, expected >= 2 after rule chain", got)
+	}
+
+	// The Memo should track all reachable References.
+	if got := len(memo.References()); got < 3 {
+		t.Fatalf("Memo has %d references, expected at least 3 (root+sort+scan)", got)
+	}
+}

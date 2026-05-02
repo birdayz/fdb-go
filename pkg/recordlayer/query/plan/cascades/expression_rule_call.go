@@ -94,12 +94,20 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 // Without a Memo (standalone rule testing), falls back to
 // expressions.InitialOf(expr).
 //
+// The current call's Reference (the one the rule is yielding into) is
+// excluded from reuse to prevent self-referential cycles. This mirrors
+// Java's guard: `Verify.verify(existingReference != this.root)`.
+//
 // Rules should use this instead of expressions.InitialOf when creating
 // child References for yielded expressions. This is how the Cascades
 // planner avoids redundant exploration of shared sub-trees.
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	if c.memo != nil {
-		return c.memo.MemoizeExpression(expr)
+		ref := c.memo.MemoizeExpression(expr)
+		if ref == c.Reference {
+			return expressions.InitialOf(expr)
+		}
+		return ref
 	}
 	return expressions.InitialOf(expr)
 }
