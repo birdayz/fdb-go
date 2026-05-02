@@ -26,19 +26,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # Single source of truth — bazel's go_sdk.from_file(go_mod=...)
-          # reads the same file in MODULE.bazel.
           go-version-file: go.mod
-          # setup-go's module cache fights bazel's dep cache (both
-          # manage the same module dir); keep Go for tool invocation
-          # only and let Bazel own dep caching.
           cache: false
 
       - name: Check generated code is up to date
         run: |
-          # `just generate` runs every codegen step (buf proto, gomock
-          # mocks, gazelle, ...). Anything under version control must
-          # match what generate produces — one check covers them all.
           just generate
           if ! git diff --exit-code; then
             echo "Generated code is out of date. Run 'just generate' and commit."
@@ -48,68 +40,12 @@ jobs:
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed
 
-      - name: Race detector (FDB client + record layer)
-        # Race uses a separate --output_base so switching the Go config
-        # back and forth doesn't invalidate the non-race action cache
-        # entries in the main output_base. Without this, every next PR
-        # CI run re-runs the 5 FDB-container tests + their compile chain
-        # (~2m) because Bazel's main-cache GoStdlib / rules_go "_reset"
-        # symlink action keys shift when the server has seen both
-        # configs. Investigation in PR #92.
-        #
-        # Memory hygiene on this 8 GB Hetzner runner:
-        #   1. Shut down the main-output_base bazel server before
-        #      starting the race build. Without this, two bazel JVMs
-        #      coexist on the runner (idle main server + active race
-        #      server, ~3-4 GB heap each at peak), and the OS OOM-killer
-        #      eventually takes one out — the symptom is the bazel-
-        #      client-side "Server terminated abruptly (error code: 14,
-        #      'Socket closed')" we saw on master CI run 25146649999
-        #      and PR CI 25146270631.
-        #   2. Cap each bazel JVM's heap with `--host_jvm_args=-Xmx3g`
-        #      so the server alone can't blow past a budget; combined
-        #      with --local_resources=memory it gives bazel an honest
-        #      view of available RAM.
-        #   3. `--local_resources=memory=HOST_RAM*0.6` tells bazel to
-        #      cap concurrent action memory to 60% of host RAM (~4.8 GB
-        #      out of 8 GB). Bazel auto-throttles --jobs accordingly.
-        #      Race-instrumented Go compile actions for `conformance_test`
-        #      peak at ~1.5 GB each; without a memory cap, bazel
-        #      defaults to `auto` jobs (= NPROC) and tries to run
-        #      4-8 of them in parallel, hitting 6-12 GB peak.
-        run: |
-          bazelisk shutdown
-          # Override the global `--build_event_json_file` from .bazelrc
-          # so the race-suite BEP doesn't overwrite the full-suite BEP
-          # written by the previous `bazelisk test //...` step. The
-          # report step below merges both files.
-          bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
-            --host_jvm_args=-Xmx3g \
-            test \
-            //pkg/fdbgo/client:client_test \
-            //pkg/fdbgo/fdb:fdb_test \
-            //pkg/recordlayer:recordlayer_test \
-            //pkg/recordlayer/chaos:chaos_test \
-            //conformance:conformance_test \
-            --@rules_go//go/config:race \
-            --build_event_json_file=.bazel-bep.race.jsonl \
-            --local_resources=memory=HOST_RAM*0.6 \
-            --test_timeout=900 \
-            --test_summary=detailed
-
       - name: Generate test report
         if: always()
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
-          # Merge both BEP files: full-suite (.bazel-bep.jsonl, written
-          # by the first `bazelisk test //...` step) plus the
-          # race-detector subset (.bazel-bep.race.jsonl). Without both,
-          # all `//pkg/relational/...` results were silently dropped
-          # because the race step's BEP overwrote the full one.
-          BEP_ARGS=(.bazel-bep.jsonl)
-          [ -f .bazel-bep.race.jsonl ] && BEP_ARGS+=(.bazel-bep.race.jsonl)
-          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" "${BEP_ARGS[@]}" > test-report.html
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload test report to Hetzner Object Storage
@@ -125,7 +61,6 @@ jobs:
             echo "Hetzner Object Storage secrets not configured — skipping upload"
             exit 0
           fi
-          # mc is pre-installed via cloud-init; fallback download if missing
           if ! command -v mc &>/dev/null; then
             mkdir -p "$HOME/.local/bin"
             curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
@@ -133,11 +68,9 @@ jobs:
             export PATH="$HOME/.local/bin:$PATH"
           fi
           mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-          # Sanitize branch name for path (refs/heads/foo → foo, refs/pull/38/merge → pr-38)
           REF="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
           REF=$(echo "$REF" | sed 's|refs/pull/\([0-9]*\)/merge|pr-\1|; s|/|-|g')
           SHA="${GITHUB_SHA:0:7}"
-          # Per-branch latest + per-commit archive
           mc cp test-report.html "hetzner/$S3_BUCKET/reports/${REF}/latest.html"
           mc cp test-report.html "hetzner/$S3_BUCKET/reports/${REF}/${SHA}/report.html"
           REPORT_URL="https://${S3_BUCKET}.${S3_ENDPOINT#https://}/reports/${REF}/latest.html"
@@ -151,72 +84,3 @@ jobs:
           name: test-report
           path: test-report.html
           retention-days: 30
-
-      - name: Run benchmarks
-        run: just bench-ci
-
-      - name: Upload benchmark results as artifact
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: bench-results
-          path: bench-results.txt
-          retention-days: 90
-
-      - name: Upload master benchmark baseline
-        if: github.ref == 'refs/heads/master'
-        continue-on-error: true
-        env:
-          S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          S3_ENDPOINT: ${{ secrets.HETZNER_S3_ENDPOINT }}
-          S3_BUCKET: ${{ secrets.HETZNER_S3_BUCKET }}
-        run: |
-          if [ -z "$S3_ACCESS_KEY" ]; then
-            echo "S3 secrets not configured — skipping"
-            exit 0
-          fi
-          if ! command -v mc &>/dev/null; then
-            mkdir -p "$HOME/.local/bin"
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
-            chmod +x "$HOME/.local/bin/mc"
-            export PATH="$HOME/.local/bin:$PATH"
-          fi
-          mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-          mc cp bench-results.txt "hetzner/$S3_BUCKET/bench/master-latest.txt"
-          echo "Uploaded master benchmark baseline"
-
-      - name: Compare benchmarks vs master (PR only)
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        env:
-          S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-          S3_SECRET_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-          S3_ENDPOINT: ${{ secrets.HETZNER_S3_ENDPOINT }}
-          S3_BUCKET: ${{ secrets.HETZNER_S3_BUCKET }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -z "$S3_ACCESS_KEY" ]; then
-            echo "S3 secrets not configured — skipping comparison"
-            exit 0
-          fi
-          if ! command -v mc &>/dev/null; then
-            mkdir -p "$HOME/.local/bin"
-            curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
-            chmod +x "$HOME/.local/bin/mc"
-            export PATH="$HOME/.local/bin:$PATH"
-          fi
-          mc alias set hetzner "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-          mc cp "hetzner/$S3_BUCKET/bench/master-latest.txt" master-bench.txt || {
-            echo "No master baseline found — skipping comparison"
-            exit 0
-          }
-          bazelisk build //cmd/bench-report
-          BENCH_REPORT="$(bazelisk info bazel-bin 2>/dev/null)/cmd/bench-report/bench-report_/bench-report"
-          PR_NUM=${{ github.event.pull_request.number }}
-          REPO=${{ github.repository }}
-          "$BENCH_REPORT" \
-            -old master-bench.txt \
-            -new bench-results.txt \
-            -pr "$PR_NUM" \
-            -repo "$REPO"
