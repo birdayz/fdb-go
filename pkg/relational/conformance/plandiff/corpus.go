@@ -11285,6 +11285,92 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT count(*) FROM (SELECT id FROM T_LAST7 WHERE val > 10 UNION ALL SELECT id FROM T_LAST7 WHERE val < 30) AS u",
 		},
+
+		// ===== Aggregate edges: SUM/MIN/MAX/COUNT with NULLs and emptiness =====
+		{
+			// SUM over a column whose every row is NULL — SQL three-valued
+			// logic requires SUM to return NULL (not 0). COUNT(*)
+			// already covered; this pins SUM's NULL-vs-zero semantics.
+			Name:           "sum_all_nulls_v2",
+			SchemaTemplate: "CREATE TABLE T_END1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_END1 VALUES (1, NULL)",
+				"INSERT INTO T_END1 VALUES (2, NULL)",
+				"INSERT INTO T_END1 VALUES (3, NULL)",
+			},
+			Query: "SELECT sum(v) FROM T_END1",
+		},
+		{
+			// MIN/MAX over an empty table — must return NULL (not error,
+			// not 0). Pins the empty-input fold for MIN and MAX together.
+			Name:           "min_max_empty_table",
+			SchemaTemplate: "CREATE TABLE T_END2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT min(v), max(v) FROM T_END2",
+		},
+		{
+			// COUNT(col) skips NULLs whereas COUNT(*) counts every row.
+			// Three rows, two with NULL v: COUNT(*)=3, COUNT(v)=1.
+			Name:           "count_col_vs_count_star_nulls",
+			SchemaTemplate: "CREATE TABLE T_END3 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_END3 VALUES (1, 10)",
+				"INSERT INTO T_END3 VALUES (2, NULL)",
+				"INSERT INTO T_END3 VALUES (3, NULL)",
+			},
+			Query: "SELECT count(*), count(v) FROM T_END3",
+		},
+		{
+			// BETWEEN on a DOUBLE column — exercises range predicate
+			// evaluation against floating-point values, including a row
+			// at the lower bound and one outside.
+			Name:           "between_on_double_column",
+			SchemaTemplate: "CREATE TABLE T_END4 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_END4 VALUES (1, 0.5)",
+				"INSERT INTO T_END4 VALUES (2, 1.0)",
+				"INSERT INTO T_END4 VALUES (3, 2.5)",
+				"INSERT INTO T_END4 VALUES (4, 5.5)",
+			},
+			Query: "SELECT id FROM T_END4 WHERE v BETWEEN 1.0 AND 3.0 ORDER BY id",
+		},
+		{
+			// LIMIT 0 — must return zero rows but with the same column
+			// metadata as the unlimited query. Pins the boundary case
+			// of the limit operator.
+			Name:           "select_limit_zero",
+			SchemaTemplate: "CREATE TABLE T_END5 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_END5 VALUES (1, 'a')",
+				"INSERT INTO T_END5 VALUES (2, 'b')",
+			},
+			Query: "SELECT id, name FROM T_END5 ORDER BY id LIMIT 0",
+		},
+		{
+			// INSERT VALUES with an explicit NULL in a non-PK column —
+			// pins that round-tripping a typed NULL through INSERT
+			// preserves it on read.
+			Name:           "insert_values_explicit_null",
+			SchemaTemplate: "CREATE TABLE T_END6 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_END6 VALUES (1, 'present')",
+				"INSERT INTO T_END6 VALUES (2, NULL)",
+			},
+			Query: "SELECT id, name FROM T_END6 ORDER BY id",
+		},
+		{
+			// `WHERE col <> NULL` — three-valued logic: every comparison
+			// to NULL yields UNKNOWN, so the WHERE excludes every row.
+			// Distinct from `IS NOT NULL` semantics.
+			Name:           "where_neq_null_yields_empty",
+			SchemaTemplate: "CREATE TABLE T_END7 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_END7 VALUES (1, 10)",
+				"INSERT INTO T_END7 VALUES (2, NULL)",
+				"INSERT INTO T_END7 VALUES (3, 30)",
+			},
+			Query: "SELECT id FROM T_END7 WHERE v <> NULL ORDER BY id",
+		},
 	}
 }
 
