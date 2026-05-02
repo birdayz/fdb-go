@@ -101,6 +101,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewPrimaryScanRule(),
 		NewImplementFilterRule(),
 		NewImplementIndexScanRule(),
+		NewOrderedIndexScanRule(),
 		NewImplementSortRule(),
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
