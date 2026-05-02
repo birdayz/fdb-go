@@ -4379,6 +4379,11 @@ func SeedRunCorpus() []RunQuery {
 		// (returns 2); Java drops one of them and returns 5. TODO #52's
 		// nightshift-65 diagnosis was inverted (Go is the correct side).
 		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
+		// Skipped three_way_join_shared_driver: cross-engine probe
+		// (dayshift-66) showed Go correctly applies BOTH `a.id = b.x`
+		// AND `a.id = c.y` (returns 3); Java drops one or both join
+		// predicates and returns 9 (3×3 full cross product). TODO #53
+		// inverted (4th of the shift). Pinned via Go-only sentinel.
 		{
 			// Probe TODO #58: multi-subquery FROM list cross-engine
 			// behaviour. nightshift-65 reported Go rejects, Java accepts.

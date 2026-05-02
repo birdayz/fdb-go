@@ -5891,6 +5891,48 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
 
+// TestFDB_ThreeWayJoinSharedDriverKey pins SQL-correct
+// conjunction-of-join-predicates: `SELECT count(*) FROM A a, B b, C c
+// WHERE a.id = b.x AND a.id = c.y` MUST honour both join predicates.
+// With one matching row per side, the answer is 3 (one tuple per a.id).
+// Java's fdb-relational 4.11.1.0 returns 9 (full 3×3 cross product) —
+// drops one or both predicates. TODO #53 reclassified Tier D; Go
+// is correct.
+func TestFDB_ThreeWayJoinSharedDriverKey(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_3way_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_3way_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE three_way_join_tmpl
+		CREATE TABLE A (id BIGINT, PRIMARY KEY (id))
+		CREATE TABLE B (id BIGINT, x BIGINT, PRIMARY KEY (id))
+		CREATE TABLE C (id BIGINT, y BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_3way_join/main WITH TEMPLATE three_way_join_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_3way_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO A VALUES (1), (2), (3)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, "INSERT INTO B VALUES (10, 1), (11, 2), (12, 3)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, "INSERT INTO C VALUES (20, 1), (21, 2), (22, 3)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var n int64
+	g.Expect(db.QueryRowContext(ctx,
+		"SELECT count(*) FROM A a, B b, C c WHERE a.id = b.x AND a.id = c.y").Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(int64(3)),
+		"both join predicates must apply: one tuple per a.id, not 3×3 cross product")
+}
+
 // TestFDB_PKLiteralEqInJoin pins SQL-correct AND-of-predicates: a
 // query like `SELECT count(*) FROM A a, B b WHERE a.id = 2 AND a.id =
 // b.parent` MUST apply both `a.id = 2` (constant filter) and the join
