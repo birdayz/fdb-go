@@ -72,6 +72,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewUnsortedSortElimRule(),
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
+		NewInComparisonToExplodeRule(),
 	}
 }
 
