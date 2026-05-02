@@ -8083,6 +8083,153 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_AR13 WHERE (a * 2 + 1) % 5 = 0 ORDER BY id",
 		},
+
+		// ===== BETWEEN edge cases + range NULL semantics =====
+		{
+			// Both bounds NULL: predicate evaluates to UNKNOWN for every
+			// row (val >= NULL AND val <= NULL). UNKNOWN is filtered the
+			// same as FALSE — zero rows.
+			Name:           "between_both_bounds_null",
+			SchemaTemplate: "CREATE TABLE T_BNL1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL1 VALUES (1, 5)",
+				"INSERT INTO T_BNL1 VALUES (2, 10)",
+				"INSERT INTO T_BNL1 VALUES (3, 15)",
+			},
+			Query: "SELECT id FROM T_BNL1 WHERE val BETWEEN CAST(NULL AS BIGINT) AND CAST(NULL AS BIGINT) ORDER BY id",
+		},
+		{
+			// Lower bound NULL, upper literal: (val >= NULL) is UNKNOWN
+			// for every val, so AND-shortcircuit cannot rescue any row.
+			Name:           "between_null_lower_literal_upper",
+			SchemaTemplate: "CREATE TABLE T_BNL2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL2 VALUES (1, -5)",
+				"INSERT INTO T_BNL2 VALUES (2, 5)",
+				"INSERT INTO T_BNL2 VALUES (3, 50)",
+			},
+			Query: "SELECT id FROM T_BNL2 WHERE val BETWEEN CAST(NULL AS BIGINT) AND 10 ORDER BY id",
+		},
+		{
+			// Column-side NULL: BETWEEN cannot match a NULL value
+			// (NULL >= 5 is UNKNOWN). Pins that NULL rows are excluded
+			// from any inclusive range.
+			Name:           "between_null_column_value",
+			SchemaTemplate: "CREATE TABLE T_BNL3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL3 VALUES (1, 7)",
+				"INSERT INTO T_BNL3 VALUES (2, NULL)",
+				"INSERT INTO T_BNL3 VALUES (3, 12)",
+			},
+			Query: "SELECT id FROM T_BNL3 WHERE val BETWEEN 5 AND 10 ORDER BY id",
+		},
+		{
+			// DOUBLE column with non-integer fractional bounds — pins
+			// inclusive endpoint comparison at IEEE-754 precision.
+			Name:           "between_double_fractional_bounds",
+			SchemaTemplate: "CREATE TABLE T_BNL4 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL4 VALUES (1, 0.5)",
+				"INSERT INTO T_BNL4 VALUES (2, 1.25)",
+				"INSERT INTO T_BNL4 VALUES (3, 2.75)",
+				"INSERT INTO T_BNL4 VALUES (4, 3.5)",
+			},
+			Query: "SELECT id FROM T_BNL4 WHERE v BETWEEN 1.25 AND 2.75 ORDER BY id",
+		},
+		{
+			// BETWEEN on the leading composite-PK column — pins prefix
+			// scan range bounds on the first key component.
+			Name:           "between_composite_pk_leading",
+			SchemaTemplate: "CREATE TABLE T_BNL5 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL5 VALUES (1, 10, 100)",
+				"INSERT INTO T_BNL5 VALUES (2, 20, 200)",
+				"INSERT INTO T_BNL5 VALUES (3, 30, 300)",
+				"INSERT INTO T_BNL5 VALUES (4, 40, 400)",
+			},
+			Query: "SELECT a, b, v FROM T_BNL5 WHERE a BETWEEN 2 AND 3 ORDER BY a, b",
+		},
+		{
+			// BETWEEN on a secondary-indexed (non-PK) column — pins
+			// index-scan bounds on the value side.
+			Name:           "between_indexed_non_pk",
+			SchemaTemplate: "CREATE TABLE T_BNL6 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON T_BNL6 (v)",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL6 VALUES (1, 100)",
+				"INSERT INTO T_BNL6 VALUES (2, 200)",
+				"INSERT INTO T_BNL6 VALUES (3, 300)",
+				"INSERT INTO T_BNL6 VALUES (4, 400)",
+			},
+			Query: "SELECT id, v FROM T_BNL6 WHERE v BETWEEN 150 AND 350 ORDER BY id",
+		},
+		{
+			// NOT BETWEEN combined with an equality predicate — pins
+			// AND-of-two-predicates with one being a range exclusion.
+			Name:           "not_between_and_eq",
+			SchemaTemplate: "CREATE TABLE T_BNL7 (id BIGINT, val BIGINT, region STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL7 VALUES (1, 5, 'us')",
+				"INSERT INTO T_BNL7 VALUES (2, 15, 'us')",
+				"INSERT INTO T_BNL7 VALUES (3, 25, 'eu')",
+				"INSERT INTO T_BNL7 VALUES (4, 35, 'us')",
+			},
+			Query: "SELECT id, val FROM T_BNL7 WHERE val NOT BETWEEN 10 AND 20 AND region = 'us' ORDER BY id",
+		},
+		{
+			// Two BETWEENs combined with OR — pins disjunctive range
+			// union (two non-adjacent ranges).
+			Name:           "between_or_between",
+			SchemaTemplate: "CREATE TABLE T_BNL8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNL8 VALUES (1, 7)",
+				"INSERT INTO T_BNL8 VALUES (2, 50)",
+				"INSERT INTO T_BNL8 VALUES (3, 150)",
+				"INSERT INTO T_BNL8 VALUES (4, 250)",
+				"INSERT INTO T_BNL8 VALUES (5, 500)",
+			},
+			Query: "SELECT id, val FROM T_BNL8 WHERE (val BETWEEN 5 AND 10) OR (val BETWEEN 100 AND 200) ORDER BY id",
+		},
+		// Dropped order_by_pk_asc_desc_mixed: hits TODO #43 wording
+		// divergence (Java generic Cascades msg vs Go specific wording)
+		// for unindexed mixed-direction ORDER BY on composite PK.
+		{
+			// BETWEEN producing zero rows — bounds outside any value.
+			// Pins that empty result is delivered without error.
+			Name:           "between_empty_range_with_order_by",
+			SchemaTemplate: "CREATE TABLE T_BNLA (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNLA VALUES (1, 5)",
+				"INSERT INTO T_BNLA VALUES (2, 10)",
+				"INSERT INTO T_BNLA VALUES (3, 15)",
+			},
+			Query: "SELECT id, val FROM T_BNLA WHERE val BETWEEN 1000 AND 2000 ORDER BY id",
+		},
+		{
+			// BETWEEN with negative bounds — pins signed-comparison
+			// path through the BETWEEN rewrite.
+			Name:           "between_negative_bounds",
+			SchemaTemplate: "CREATE TABLE T_BNLB (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNLB VALUES (1, -20)",
+				"INSERT INTO T_BNLB VALUES (2, -7)",
+				"INSERT INTO T_BNLB VALUES (3, 0)",
+				"INSERT INTO T_BNLB VALUES (4, 5)",
+			},
+			Query: "SELECT id, val FROM T_BNLB WHERE val BETWEEN -10 AND -5 ORDER BY id",
+		},
+		{
+			// BETWEEN spanning negative to positive zero crossing.
+			Name:           "between_negative_to_positive",
+			SchemaTemplate: "CREATE TABLE T_BNLC (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BNLC VALUES (1, -10)",
+				"INSERT INTO T_BNLC VALUES (2, -1)",
+				"INSERT INTO T_BNLC VALUES (3, 0)",
+				"INSERT INTO T_BNLC VALUES (4, 1)",
+				"INSERT INTO T_BNLC VALUES (5, 10)",
+			},
+			Query: "SELECT id, val FROM T_BNLC WHERE val BETWEEN -2 AND 2 ORDER BY id",
+		},
 	}
 }
 
