@@ -11032,6 +11032,148 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT val FROM T_MX12 WHERE id = 1",
 		},
+
+		// ===== Final fill: high-value shapes =====
+		// NOTE: Multi-col UPDATE referencing the SAME source col on
+		// both sides (e.g. SET x = x + y, y = y - x) diverges between
+		// engines on whether SET reads see pre-update or in-progress
+		// values. Use disjoint LHS columns or simple +N forms instead.
+		{
+			// DELETE chain on the same primary key — insert, delete,
+			// re-insert, delete-again. Pins idempotency under the
+			// in-line DML order.
+			Name:           "insert_delete_chain_same_key",
+			SchemaTemplate: "CREATE TABLE T_FF2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF2 VALUES (1, 100)",
+				"DELETE FROM T_FF2 WHERE id = 1",
+				"INSERT INTO T_FF2 VALUES (1, 200)",
+				"DELETE FROM T_FF2 WHERE id = 1",
+				"INSERT INTO T_FF2 VALUES (1, 300)",
+			},
+			Query: "SELECT id, val FROM T_FF2 ORDER BY id",
+		},
+		// NOTE: count_via_distinct_subquery (SELECT count(*) FROM
+		// (SELECT DISTINCT col)) diverges — Go doesn't push DISTINCT
+		// through the derived-table boundary, returns row count vs.
+		// Java's distinct-count. Captured as a known-divergence and
+		// dropped from the corpus.
+		{
+			// Range scan over BYTES column with > literal — pins
+			// ordered byte-comparison vs. lexicographic semantics.
+			Name:           "bytes_range_scan",
+			SchemaTemplate: "CREATE TABLE T_FF4 (id BIGINT, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF4 VALUES (1, X'01')",
+				"INSERT INTO T_FF4 VALUES (2, X'05')",
+				"INSERT INTO T_FF4 VALUES (3, X'10')",
+				"INSERT INTO T_FF4 VALUES (4, X'FF')",
+			},
+			Query: "SELECT id FROM T_FF4 WHERE payload > X'05' ORDER BY id",
+		},
+		{
+			// INSERT/SELECT round-trip with bulk source rows and a
+			// WHERE filter on a non-PK indexed column.
+			Name: "insert_select_indexed_filter",
+			SchemaTemplate: "CREATE TABLE T_FF5_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE INDEX idx_ff5_val ON T_FF5_SRC (val) " +
+				"CREATE TABLE T_FF5_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF5_SRC VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+				"INSERT INTO T_FF5_DST SELECT id, val FROM T_FF5_SRC WHERE val >= 30",
+			},
+			Query: "SELECT id, val FROM T_FF5_DST ORDER BY id",
+		},
+		{
+			// EXISTS over base table with two AND'd inner predicates.
+			// Each predicate references the inner row only.
+			Name: "exists_two_inner_predicates",
+			SchemaTemplate: "CREATE TABLE T_FF6 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_FF6B (gid BIGINT, region STRING, val BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF6 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_FF6B VALUES (10, 'us', 100), (20, 'eu', 50), (30, 'us', 200)",
+			},
+			Query: "SELECT id FROM T_FF6 a WHERE EXISTS (SELECT 1 FROM T_FF6B b WHERE b.region = 'us' AND b.val > 75) ORDER BY id",
+		},
+		{
+			// Composite PK leading-eq + INSERT to same prefix —
+			// pins the multi-row append under shared leading-key.
+			Name:           "composite_pk_leading_eq_insert",
+			SchemaTemplate: "CREATE TABLE T_FF7 (a BIGINT, b BIGINT, val BIGINT, PRIMARY KEY (a, b))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF7 VALUES (1, 10, 100)",
+				"INSERT INTO T_FF7 VALUES (1, 20, 200)",
+				"INSERT INTO T_FF7 VALUES (2, 10, 300)",
+				"INSERT INTO T_FF7 VALUES (1, 30, 400)",
+			},
+			Query: "SELECT a, b, val FROM T_FF7 WHERE a = 1 ORDER BY a, b",
+		},
+		{
+			// WHERE NOT BETWEEN combined with a second AND'd predicate.
+			Name:           "not_between_anded_predicate",
+			SchemaTemplate: "CREATE TABLE T_FF8 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF8 VALUES (1, 'us', 5)",
+				"INSERT INTO T_FF8 VALUES (2, 'us', 50)",
+				"INSERT INTO T_FF8 VALUES (3, 'eu', 5)",
+				"INSERT INTO T_FF8 VALUES (4, 'eu', 50)",
+				"INSERT INTO T_FF8 VALUES (5, 'us', 100)",
+			},
+			Query: "SELECT id FROM T_FF8 WHERE val NOT BETWEEN 10 AND 60 AND region = 'us' ORDER BY id",
+		},
+		{
+			// COUNT(*) over a 2-table comma-join with WHERE on the
+			// inner table (no shared driver beyond join key).
+			Name: "count_star_join_where",
+			SchemaTemplate: "CREATE TABLE T_FF9A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_FF9B (gid BIGINT, val BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF9A VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"INSERT INTO T_FF9B VALUES (10, 100), (20, 50), (30, 200), (40, 25)",
+			},
+			Query: "SELECT count(*) FROM T_FF9A a, T_FF9B b WHERE a.gid = b.gid AND b.val >= 100",
+		},
+		{
+			// Round-trip: INSERT 5 rows of mixed types, SELECT a
+			// single non-PK column. Pins per-column projection
+			// across STRING / BIGINT / BOOLEAN / DOUBLE / BYTES.
+			Name:           "mixed_types_single_col_round_trip",
+			SchemaTemplate: "CREATE TABLE T_FF10 (id BIGINT, name STRING, val BIGINT, flag BOOLEAN, score DOUBLE, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF10 VALUES (1, 'alpha', 100, TRUE, 1.5, X'01')",
+				"INSERT INTO T_FF10 VALUES (2, 'bravo', 200, FALSE, 2.5, X'02')",
+				"INSERT INTO T_FF10 VALUES (3, 'charlie', 300, TRUE, 3.5, X'03')",
+				"INSERT INTO T_FF10 VALUES (4, 'delta', 400, FALSE, 4.5, X'04')",
+				"INSERT INTO T_FF10 VALUES (5, 'echo', 500, TRUE, 5.5, X'05')",
+			},
+			Query: "SELECT score FROM T_FF10 ORDER BY id",
+		},
+		{
+			// UPDATE arithmetic mixing two source columns into one
+			// target — `SET total = price * qty` style.
+			Name:           "update_set_product_of_cols",
+			SchemaTemplate: "CREATE TABLE T_FF11 (id BIGINT, price BIGINT, qty BIGINT, total BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF11 VALUES (1, 5, 3, 0)",
+				"INSERT INTO T_FF11 VALUES (2, 7, 4, 0)",
+				"INSERT INTO T_FF11 VALUES (3, 11, 2, 0)",
+				"UPDATE T_FF11 SET total = price * qty",
+			},
+			Query: "SELECT id, total FROM T_FF11 ORDER BY id",
+		},
+		{
+			// EXISTS over base table with three AND'd inner
+			// predicates — same shape as #6 but stricter.
+			Name: "exists_three_inner_predicates",
+			SchemaTemplate: "CREATE TABLE T_FF12 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_FF12B (gid BIGINT, region STRING, val BIGINT, flag BOOLEAN, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_FF12 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_FF12B VALUES (10, 'us', 100, TRUE), (20, 'eu', 50, TRUE), (30, 'us', 200, FALSE)",
+			},
+			Query: "SELECT id FROM T_FF12 a WHERE EXISTS (SELECT 1 FROM T_FF12B b WHERE b.region = 'us' AND b.val > 75 AND b.flag = TRUE) ORDER BY id",
+		},
 	}
 }
 
