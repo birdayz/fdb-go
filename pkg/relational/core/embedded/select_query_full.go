@@ -613,7 +613,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					}
 					aggArgFDs[i] = fd
 				} else if ac.aggArg != "" {
-					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.aggArg))
+					// Strip qualifier `t.val` → `val` so a qualified
+					// aggregate argument resolves against the descriptor
+					// field name. The qualifier validity is implicit:
+					// only one source is in scope on the proto path, so
+					// any qualifier that's not garbage is the table or
+					// its alias.
+					bare := ac.aggArg
+					if dot := strings.LastIndex(bare, "."); dot >= 0 {
+						bare = bare[dot+1:]
+					}
+					fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"aggregate column %q not found in table %q", ac.aggArg, sq.tableName)

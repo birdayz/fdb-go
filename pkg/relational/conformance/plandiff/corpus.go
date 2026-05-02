@@ -9044,6 +9044,75 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_IR14 VALUES (1, 10), (2, 20)"},
 			Query:          "SELECT id, val FROM t_ir14 ORDER BY id",
 		},
+		{
+			// Mixed case alias on JOIN source — alias `MyA` should
+			// case-fold to `MYA` and resolve in the qualifier scope.
+			Name:           "ident_mixed_case_join_alias",
+			SchemaTemplate: "CREATE TABLE T_IR15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR15 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT MyA.id FROM T_IR15 AS MyA, T_IR15 AS MyB WHERE MyA.id = MyB.id ORDER BY MyA.id",
+		},
+		{
+			// Lowercase qualifier in WHERE: `where mya.val > 5`.
+			Name:           "ident_lowercase_qualifier_in_where",
+			SchemaTemplate: "CREATE TABLE T_IR16 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR16 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT mya.id FROM T_IR16 AS MyA WHERE mya.val > 15 ORDER BY mya.id",
+		},
+		{
+			// CTE name + col both with mixed case in inner and outer
+			// references. No ORDER BY (Java rejects ORDER BY in CTE
+			// scope; this test pins identifier resolution, not ordering).
+			Name:           "ident_mixed_case_cte_name_and_col",
+			SchemaTemplate: "CREATE TABLE T_IR17 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR17 VALUES (1, 10)"},
+			Query:          "WITH MyCte AS (SELECT id, val FROM T_IR17) SELECT mycte.id FROM MYCTE",
+		},
+		{
+			// Aliased projection name: `SELECT v.id AS MyId` — output
+			// column should fold to MYID per Java's normalization.
+			Name:           "ident_alias_in_projection_mixed_case",
+			SchemaTemplate: "CREATE TABLE T_IR18 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR18 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT v.id AS MyId FROM T_IR18 AS v ORDER BY v.id",
+		},
+		{
+			// Lowercase qualifier in JOIN's ON-clause.
+			Name:           "ident_lowercase_qualifier_in_on_clause",
+			SchemaTemplate: "CREATE TABLE T_IR19 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR19 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT a.id FROM T_IR19 AS A INNER JOIN T_IR19 AS B ON a.id = b.id ORDER BY a.id",
+		},
+		{
+			// Lowercase column ref in aggregate: `count(t.val)`
+			// against uppercase declaration.
+			Name:           "ident_lowercase_in_aggregate_arg",
+			SchemaTemplate: "CREATE TABLE T_IR20 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR20 VALUES (1, 10), (2, 20), (3, NULL)"},
+			Query:          "SELECT count(t.val) FROM T_IR20 AS t",
+		},
+		{
+			// Lowercase ref in nested derived alias chain.
+			Name:           "ident_lowercase_through_nested_derived",
+			SchemaTemplate: "CREATE TABLE T_IR21 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR21 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT d2.id FROM (SELECT id, val FROM (SELECT id, val FROM T_IR21) AS d1) AS d2 ORDER BY d2.id",
+		},
+		{
+			// Mixed-case index column ref.
+			Name: "ident_mixed_case_index_column",
+			SchemaTemplate: "CREATE TABLE T_IR22 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE INDEX T_IR22_BY_VAL ON T_IR22 (val)",
+			SetupSqls: []string{"INSERT INTO T_IR22 VALUES (1, 10), (2, 20)"},
+			Query:     "SELECT id FROM T_IR22 WHERE Val = 10",
+		},
+		{
+			// Two-CTE chain with mixed casing throughout.
+			Name:           "ident_mixed_case_two_cte_chain",
+			SchemaTemplate: "CREATE TABLE T_IR23 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR23 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "WITH StepOne AS (SELECT id, val FROM T_IR23 WHERE val >= 20), StepTwo AS (SELECT id FROM stepone WHERE val < 30) SELECT id FROM StepTwo",
+		},
 
 		// ===== Deeply-nested derived tables and subquery-in-FROM variations =====
 		{
