@@ -10350,6 +10350,134 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT region, dept, id, val FROM T_CPK16 WHERE region = 'eu' AND dept = 'eng' AND id > 'a' ORDER BY region, dept, id",
 		},
+
+		// ===== EXISTS / NOT EXISTS — additional shapes =====
+		{
+			// EXISTS with composite-PK lookup inside the inner subquery —
+			// the inner predicate matches BOTH PK columns of the inner
+			// table, pinning composite-PK key-construction in the
+			// correlated path.
+			Name: "exists_composite_pk_inner",
+			SchemaTemplate: "CREATE TABLE T_EX2_1 (region STRING, id BIGINT, PRIMARY KEY (region, id)) " +
+				"CREATE TABLE T_EX2_1B (region STRING, id BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_1 VALUES ('us', 1), ('us', 2), ('eu', 3)",
+				"INSERT INTO T_EX2_1B VALUES ('us', 1), ('eu', 3)",
+			},
+			Query: "SELECT region, id FROM T_EX2_1 a WHERE EXISTS (SELECT 1 FROM T_EX2_1B b WHERE b.region = a.region AND b.id = a.id) ORDER BY region, id",
+		},
+		{
+			// NOT EXISTS combined with BETWEEN on outer — pins the
+			// AND-of-range-and-anti-semijoin shape.
+			Name: "not_exists_with_between_outer",
+			SchemaTemplate: "CREATE TABLE T_EX2_2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_2B (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_2 VALUES (1, 5), (2, 15), (3, 25), (4, 35)",
+				"INSERT INTO T_EX2_2B VALUES (2)",
+			},
+			Query: "SELECT id FROM T_EX2_2 a WHERE a.v BETWEEN 10 AND 30 AND NOT EXISTS (SELECT 1 FROM T_EX2_2B b WHERE b.id = a.id) ORDER BY id",
+		},
+		{
+			// EXISTS where the correlated equality is on a STRING column
+			// — pins string-typed correlated lookup (vs. all-BIGINT).
+			Name: "exists_correlated_string",
+			SchemaTemplate: "CREATE TABLE T_EX2_3 (id BIGINT, label STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_3B (label STRING, PRIMARY KEY (label))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_3 VALUES (1, 'red'), (2, 'green'), (3, 'blue')",
+				"INSERT INTO T_EX2_3B VALUES ('red'), ('blue')",
+			},
+			Query: "SELECT id FROM T_EX2_3 a WHERE EXISTS (SELECT 1 FROM T_EX2_3B b WHERE b.label = a.label) ORDER BY id",
+		},
+		{
+			// EXISTS combined with LIKE prefix predicate on outer — pins
+			// prefix-filter + correlated semijoin together.
+			Name: "exists_with_like_outer",
+			SchemaTemplate: "CREATE TABLE T_EX2_4 (id BIGINT, name STRING, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_4B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_4 VALUES (1, 'apple', 10), (2, 'apricot', 20), (3, 'banana', 10), (4, 'avocado', 99)",
+				"INSERT INTO T_EX2_4B VALUES (10), (20)",
+			},
+			Query: "SELECT id FROM T_EX2_4 a WHERE a.name LIKE 'a%' AND EXISTS (SELECT 1 FROM T_EX2_4B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// count(*) of outer rows that satisfy a correlated EXISTS —
+			// scalar aggregate (no GROUP BY) over a semijoin result.
+			Name: "exists_count_star",
+			SchemaTemplate: "CREATE TABLE T_EX2_5 (id BIGINT, y BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_5B (x BIGINT, val BIGINT, PRIMARY KEY (x))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_5 VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_EX2_5B VALUES (10, 100), (20, 25), (30, 200)",
+			},
+			Query: "SELECT count(*) FROM T_EX2_5 t WHERE EXISTS (SELECT 1 FROM T_EX2_5B b WHERE b.x = t.y AND b.val > 50)",
+		},
+		{
+			// Two NOT EXISTS clauses ANDed against two different inner
+			// tables — pins double anti-semijoin composition.
+			Name: "two_not_exists_anded",
+			SchemaTemplate: "CREATE TABLE T_EX2_6 (id BIGINT, gid BIGINT, hid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_6B (gid BIGINT, PRIMARY KEY (gid)) " +
+				"CREATE TABLE T_EX2_6C (hid BIGINT, PRIMARY KEY (hid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_6 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400)",
+				"INSERT INTO T_EX2_6B VALUES (10), (30)",
+				"INSERT INTO T_EX2_6C VALUES (200), (300)",
+			},
+			Query: "SELECT id FROM T_EX2_6 a WHERE NOT EXISTS (SELECT 1 FROM T_EX2_6B b WHERE b.gid = a.gid) AND NOT EXISTS (SELECT 1 FROM T_EX2_6C c WHERE c.hid = a.hid) ORDER BY id",
+		},
+		{
+			// NOT EXISTS where the inner table is empty — every outer row
+			// must match (no inner row to fail-the-anti-semijoin against).
+			Name: "not_exists_empty_inner",
+			SchemaTemplate: "CREATE TABLE T_EX2_7 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_7B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_7 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id FROM T_EX2_7 a WHERE NOT EXISTS (SELECT 1 FROM T_EX2_7B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// EXISTS where the inner table has a secondary index on the
+			// correlated column — pins index-scan selection inside the
+			// correlated subquery (vs. full table scan of inner).
+			Name: "exists_indexed_inner",
+			SchemaTemplate: "CREATE TABLE T_EX2_8 (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_8B (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE INDEX idx_ex2_8b_gid ON T_EX2_8B (gid)",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_8 VALUES (1, 10), (2, 20), (3, 99)",
+				"INSERT INTO T_EX2_8B VALUES (100, 10), (101, 20), (102, 50)",
+			},
+			Query: "SELECT id FROM T_EX2_8 a WHERE EXISTS (SELECT 1 FROM T_EX2_8B b WHERE b.gid = a.gid) ORDER BY id",
+		},
+		{
+			// EXISTS with an OR'd disjunct against a plain predicate —
+			// pins semijoin-OR-predicate composition (not a conjunct).
+			Name: "exists_or_predicate",
+			SchemaTemplate: "CREATE TABLE T_EX2_9 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_9B (gid BIGINT, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_9 VALUES (1, 10, 50), (2, 20, 150), (3, 30, 25), (4, 40, 200)",
+				"INSERT INTO T_EX2_9B VALUES (10), (30)",
+			},
+			Query: "SELECT id FROM T_EX2_9 a WHERE EXISTS (SELECT 1 FROM T_EX2_9B b WHERE b.gid = a.gid) OR a.val > 100 ORDER BY id",
+		},
+		{
+			// EXISTS over composite-PK inner table where the correlation
+			// matches only the FIRST PK column — pins partial-prefix
+			// composite-PK lookup (range scan on suffix).
+			Name: "exists_composite_pk_prefix",
+			SchemaTemplate: "CREATE TABLE T_EX2_10 (id BIGINT, region STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX2_10B (region STRING, sub BIGINT, PRIMARY KEY (region, sub))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX2_10 VALUES (1, 'us'), (2, 'eu'), (3, 'ap')",
+				"INSERT INTO T_EX2_10B VALUES ('us', 1), ('us', 2), ('eu', 1)",
+			},
+			Query: "SELECT id FROM T_EX2_10 a WHERE EXISTS (SELECT 1 FROM T_EX2_10B b WHERE b.region = a.region) ORDER BY id",
+		},
 	}
 }
 
