@@ -57,7 +57,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
 - [ ] **#49** Java planner missing-binding error on `WHERE pk_col = nonpk_col`: query errors `Missing binding for __corr_q…` in Java (planner correlation machinery); Go succeeds with the SQL-correct rows. Document and skip in corpus until upstream fixes.
 - [ ] **#59** Java planner VerifyException on bare-BOOLEAN-literal in WHERE conjunct: `WHERE TRUE AND val > 5` and `WHERE FALSE OR val > 5` throw `VerifyException` in Java; Go succeeds correctly. Document; corpus skipped until upstream fixes.
-- [ ] **#40** Go-strict simple-CASE divergence: `CASE expr WHEN val1 THEN … END` (subject form) — Java's `BaseVisitor.visitCaseExpressionFunctionCall` is `visitChildren(ctx)` (broken pass-through, returns silently-wrong rows but does NOT error); Go currently rejects. Three alignment paths, none clean: (a) implement simple-CASE correctly in Go (Go-only correctness over a Java bug), (b) reproduce Java's broken behavior (awful), (c) leave the divergence and document. Recommend (a) once Java fixes upstream, OR (c) for now. Searched-CASE works correctly in both.
+- [x] **#40** Simple-CASE implemented in Go (`CASE expr WHEN val THEN … END`). Java's visitCaseExpressionFunctionCall is still broken (visitChildren no-op, always falls through to ELSE). Go correctly evaluates; corpus entry pinned as DivergenceJavaWrongRowsGoCorrect.
 
 ## Phase 2 — Cascades core machinery (sequenced)
 

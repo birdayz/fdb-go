@@ -198,13 +198,13 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 	case *antlrgen.DecimalConstantContext:
 		text := cv.DecimalLiteral().GetText()
 		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return "BIGINT"
+			return integerLiteralJDBCType(text)
 		}
 		return "DOUBLE"
 	case *antlrgen.NegativeDecimalConstantContext:
 		text := "-" + cv.DecimalLiteral().GetText()
 		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return "BIGINT"
+			return integerLiteralJDBCType(text)
 		}
 		return "DOUBLE"
 	case *antlrgen.StringConstantContext:
@@ -217,6 +217,13 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 		return "" // NULL has no type until promoted by an outer op
 	}
 	return ""
+}
+
+func integerLiteralJDBCType(text string) string {
+	if _, err := strconv.ParseInt(text, 10, 32); err == nil {
+		return "INTEGER"
+	}
+	return "BIGINT"
 }
 
 // inferFunctionCallJDBCType handles the function-call subtree:
@@ -245,7 +252,7 @@ func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protore
 func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {
-	case "COALESCE":
+	case "COALESCE", "GREATEST", "LEAST":
 		// Result type = MaximumType of all arguments. Walk each arg.
 		args := fc.FunctionArgs()
 		if args == nil {
@@ -297,33 +304,38 @@ func inferSpecificFunctionJDBCType(sf antlrgen.ISpecificFunctionContext, msgDesc
 	case *antlrgen.CaseFunctionCallContext:
 		// Searched CASE: each WHEN-clause has THEN expr; optional ELSE expr.
 		// Result type = MaximumType of all branches.
-		var resultType string
-		for _, alt := range sf.AllCaseFuncAlternative() {
-			t := inferFunctionArgJDBCType(alt.GetConsequent(), msgDesc)
-			if resultType == "" {
-				resultType = t
-			} else if t != "" {
-				resultType = jdbcTypeMax(resultType, t)
-				if resultType == "" {
-					// Non-numeric branches with different types — fall
-					// through to "" for the runner.
-					return ""
-				}
-			}
-		}
-		if elseArg := sf.GetElseArg(); elseArg != nil {
-			t := inferFunctionArgJDBCType(elseArg, msgDesc)
-			if resultType == "" {
-				resultType = t
-			} else if t != "" {
-				if max := jdbcTypeMax(resultType, t); max != "" {
-					resultType = max
-				}
-			}
-		}
-		return resultType
+		return inferCaseBranchesJDBCType(sf.AllCaseFuncAlternative(), sf.GetElseArg(), msgDesc)
+	case *antlrgen.CaseExpressionFunctionCallContext:
+		// Simple CASE: CASE expr WHEN val THEN result ... [ELSE result] END
+		return inferCaseBranchesJDBCType(sf.AllCaseFuncAlternative(), sf.GetElseArg(), msgDesc)
 	}
 	return ""
+}
+
+func inferCaseBranchesJDBCType(alts []antlrgen.ICaseFuncAlternativeContext, elseArg antlrgen.IFunctionArgContext, msgDesc protoreflect.MessageDescriptor) string {
+	var resultType string
+	for _, alt := range alts {
+		t := inferFunctionArgJDBCType(alt.GetConsequent(), msgDesc)
+		if resultType == "" {
+			resultType = t
+		} else if t != "" {
+			resultType = jdbcTypeMax(resultType, t)
+			if resultType == "" {
+				return ""
+			}
+		}
+	}
+	if elseArg != nil {
+		t := inferFunctionArgJDBCType(elseArg, msgDesc)
+		if resultType == "" {
+			resultType = t
+		} else if t != "" {
+			if max := jdbcTypeMax(resultType, t); max != "" {
+				resultType = max
+			}
+		}
+	}
+	return resultType
 }
 
 // inferFunctionArgJDBCType extracts the inner expression from a

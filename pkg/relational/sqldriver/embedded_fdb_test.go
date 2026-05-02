@@ -5984,57 +5984,43 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	g.Expect(cnt).To(gomega.Equal(int64(0)))
 }
 
-// TestFDB_SimpleCaseRejected pins that simple-CASE syntax
-// (`CASE expr WHEN val THEN ...`) is rejected by the Go embedded
-// engine, matching fdb-relational 4.11.1.0's effective non-support.
-//
-// Java's `BaseVisitor.visitCaseExpressionFunctionCall = visitChildren(ctx)`
-// is a structural no-op — the simple-CASE evaluator is not implemented,
-// so Java silently returns the wrong value (typically the ELSE branch).
-// The Go embedded engine mirrors this by NOT having a `case
-// *antlrgen.CaseExpressionFunctionCallContext` arm in the scalar-
-// function evaluator switch, so the form falls through to the default
-// arm with ErrCodeUnsupportedOperation.
-//
-// Same architectural reason in both engines: the simple-CASE evaluator
-// is not implemented. Workaround: use searched-CASE
-// (`CASE WHEN cond THEN ...`), which both engines implement correctly.
-//
-// Pinned nightshift-61 after the cross-engine harness surfaced Java's
-// silent-misexecution bug.
-func TestFDB_SimpleCaseRejected(t *testing.T) {
+func TestFDB_SimpleCaseWorks(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_simple_case_rejected")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_rejected")
+	setup := openTestDB(t, "/testdb_simple_case_works")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_works")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_rej_tmpl
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_scw_tmpl
 		CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_rejected/main WITH TEMPLATE sc_rej_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_works/main WITH TEMPLATE sc_scw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_simple_case_rejected?cluster_file=%s&schema=main", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///testdb_simple_case_works?cluster_file=%s&schema=main", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (1, 5)`)
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (1, 5), (2, 10), (3, 99)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Simple-CASE: must be rejected with ErrCodeUnsupportedOperation.
-	var got string
-	err = db.QueryRowContext(ctx,
-		`SELECT CASE val WHEN 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 1`).
-		Scan(&got)
-	g.Expect(err).To(gomega.HaveOccurred())
-	var apiErr *api.Error
-	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T (%v)", err, err)
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeUnsupportedOperation))
+	rows, err := db.QueryContext(ctx,
+		`SELECT CASE val WHEN 5 THEN 'five' WHEN 10 THEN 'ten' ELSE 'other' END FROM T ORDER BY id`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
 
-	// Searched-CASE (the workaround) still works.
+	var results []string
+	for rows.Next() {
+		var s string
+		g.Expect(rows.Scan(&s)).To(gomega.Succeed())
+		results = append(results, s)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(results).To(gomega.Equal([]string{"five", "ten", "other"}))
+
+	// Searched-CASE still works too.
 	var search string
 	g.Expect(db.QueryRowContext(ctx,
 		`SELECT CASE WHEN val = 5 THEN 'five' ELSE 'other' END FROM T WHERE id = 1`).
