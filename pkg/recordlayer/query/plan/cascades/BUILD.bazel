@@ -134,6 +134,7 @@ go_test(
         "simplifier_test.go",
         "wrap_physical_plan_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":cascades"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

@@ -28,12 +28,10 @@ func TestEndToEnd_ConvertThenOptimise(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 16); !converged {
-		t.Fatal("FixpointApply didn't converge in 16 iters")
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner didn't converge")
 	}
-	// The Reference should contain the bare-Scan member after the rules
-	// fire. Don't enforce a particular shape on .Get() (Reference's
-	// best-member contract is decided in B3+).
 	foundBareScan := false
 	for _, m := range ref.Members() {
 		if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
@@ -62,8 +60,9 @@ func TestEndToEnd_NestedFilterCollapses(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 32); !converged {
-		t.Fatal("FixpointApply didn't converge in 32 iters")
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner didn't converge")
 	}
 	foundBareScan := false
 	for _, m := range ref.Members() {
@@ -96,8 +95,9 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 32); !converged {
-		t.Fatal("FixpointApply didn't converge in 32 iters")
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner didn't converge")
 	}
 	// Look for a 1-deep Projection (over Scan) in the members.
 	foundFlat := false
@@ -121,7 +121,7 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 //
 //	Filter(TRUE, Sort([id], Filter(TRUE, Scan)))
 //
-// FixpointApply (now sub-Reference-aware) iteratively applies:
+// The Planner iteratively applies:
 //  1. PushFilterThroughSort on the outer Filter → yields a Sort-
 //     rooted alternative whose inner is Filter(TRUE, Filter(TRUE,
 //     Scan))
@@ -153,12 +153,12 @@ func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	progress, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 64)
-	if !converged {
-		t.Fatalf("FixpointApply did not converge in 64 iters — progress=%d", progress)
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner did not converge")
 	}
-	if progress == 0 {
-		t.Fatal("rule engine made no progress")
+	if len(ref.Members()) <= 1 {
+		t.Fatal("rule engine made no progress — Reference still has only the initial member")
 	}
 	// Walk the whole tree from `ref` and look for a bare Scan member
 	// somewhere — proves the rule chain reached the leaves through

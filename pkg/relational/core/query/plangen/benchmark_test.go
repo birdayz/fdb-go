@@ -57,7 +57,7 @@ func BenchmarkConvert_NestedTree(b *testing.B) {
 }
 
 // BenchmarkConvertAndOptimise measures the C1 → B5 pipeline:
-// Convert + FixpointApply over the curated default rule set on a
+// Convert + Planner.Explore over the curated default rule set on a
 // representative tree. This is the latency the SQL engine pays per
 // query plan-time today (modulo the parser).
 func BenchmarkConvertAndOptimise(b *testing.B) {
@@ -82,6 +82,7 @@ func BenchmarkConvertAndOptimise(b *testing.B) {
 			b.Fatal(err)
 		}
 		ref := expressions.InitialOf(got)
-		cascades.FixpointApply(rules, ref, 32)
+		p := cascades.NewPlanner(rules, nil)
+		p.Explore(ref)
 	}
 }

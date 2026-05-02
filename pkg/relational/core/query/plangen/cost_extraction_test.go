@@ -45,8 +45,9 @@ func TestEndToEnd_CostExtractionPicksPushedFilter(t *testing.T) {
 	}
 	ref := expressions.InitialOf(got)
 
-	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 32); !converged {
-		t.Fatal("FixpointApply did not converge in 32 iters")
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner did not converge")
 	}
 
 	if got := len(ref.Members()); got < 2 {
@@ -100,8 +101,9 @@ func TestEndToEnd_CostExtractionEliminatesNoOpFilter(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 64); !converged {
-		t.Fatal("FixpointApply did not converge in 64 iters")
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner did not converge")
 	}
 
 	best := ref.GetBest(properties.CostLess)
@@ -146,8 +148,9 @@ func TestEndToEnd_ExtractBestPlanProducesSingletonTree(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	if _, converged := cascades.FixpointApply(cascades.DefaultExpressionRules(), ref, 32); !converged {
-		t.Fatal("FixpointApply did not converge")
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, converged := p.Explore(ref); !converged {
+		t.Fatal("Planner did not converge")
 	}
 
 	extracted, err := properties.ExtractBestPlan(ref)
