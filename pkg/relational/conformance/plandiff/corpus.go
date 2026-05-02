@@ -14463,6 +14463,199 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, v FROM T_DMS_11 ORDER BY id",
 		},
+
+		// ===== Aggregate empty-table shapes =================================
+		{
+			Name:           "agg_empty_count_star_returns_zero",
+			SchemaTemplate: "CREATE TABLE T_AGG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT COUNT(*) FROM T_AGG_01",
+		},
+		{
+			Name:           "agg_empty_sum_returns_null",
+			SchemaTemplate: "CREATE TABLE T_AGG_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT SUM(v) FROM T_AGG_02",
+		},
+		{
+			Name:           "agg_empty_min_max_return_null",
+			SchemaTemplate: "CREATE TABLE T_AGG_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT MIN(v), MAX(v) FROM T_AGG_03",
+		},
+		{
+			Name:           "agg_empty_count_having_filters_out",
+			SchemaTemplate: "CREATE TABLE T_AGG_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT COUNT(*) FROM T_AGG_04 HAVING COUNT(*) > 0",
+		},
+		{
+			Name:           "agg_empty_count_having_passes",
+			SchemaTemplate: "CREATE TABLE T_AGG_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT COUNT(*) FROM T_AGG_05 HAVING COUNT(*) >= 0",
+			Divergence: &Divergence{
+				Reason:    "Java skips the implicit group on empty table when HAVING is present, returning zero rows instead of [0]. Go correctly produces the implicit group row per SQL spec.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(0)},
+				},
+			},
+		},
+		// ===== GREATEST / LEAST shapes =====================================
+		{
+			Name:           "greatest_all_nonnull",
+			SchemaTemplate: "CREATE TABLE T_GL_01 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_01 VALUES (1)"},
+			Query:          "SELECT GREATEST(1, 5, 3) FROM T_GL_01",
+		},
+		{
+			Name:           "least_all_nonnull",
+			SchemaTemplate: "CREATE TABLE T_GL_02 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_02 VALUES (1)"},
+			Query:          "SELECT LEAST(1, 5, 3) FROM T_GL_02",
+		},
+		{
+			Name:           "greatest_null_propagates",
+			SchemaTemplate: "CREATE TABLE T_GL_03 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_03 VALUES (1)"},
+			Query:          "SELECT GREATEST(1, NULL, 3) FROM T_GL_03",
+		},
+		{
+			Name:           "least_null_propagates",
+			SchemaTemplate: "CREATE TABLE T_GL_04 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_04 VALUES (1)"},
+			Query:          "SELECT LEAST(1, NULL, 3) FROM T_GL_04",
+		},
+		{
+			Name:           "greatest_int_double_promotion",
+			SchemaTemplate: "CREATE TABLE T_GL_05 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_05 VALUES (1)"},
+			Query:          "SELECT GREATEST(1, 2, 3.0, 4, 5) FROM T_GL_05",
+		},
+		{
+			Name:           "least_int_double_promotion",
+			SchemaTemplate: "CREATE TABLE T_GL_06 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_06 VALUES (1)"},
+			Query:          "SELECT LEAST(1, 2, 3.0, 4, 5) FROM T_GL_06",
+		},
+		{
+			Name:           "greatest_strings_lexicographic",
+			SchemaTemplate: "CREATE TABLE T_GL_07 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_GL_07 VALUES (1)"},
+			Query:          "SELECT GREATEST('apple', 'banana', 'cherry') FROM T_GL_07",
+		},
+		// ===== HAVING without GROUP BY (additional shapes) =================
+		{
+			Name:           "having_count_gt_on_populated",
+			SchemaTemplate: "CREATE TABLE T_HAV_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_HAV_01 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT COUNT(*) FROM T_HAV_01 HAVING COUNT(*) > 1",
+		},
+		{
+			Name:           "having_sum_gt_filters_out",
+			SchemaTemplate: "CREATE TABLE T_HAV_02 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_HAV_02 VALUES (1, 10), (2, 20)",
+			},
+			Query: "SELECT SUM(val) FROM T_HAV_02 HAVING SUM(val) > 1000",
+		},
+		{
+			Name:           "having_count_where_then_having",
+			SchemaTemplate: "CREATE TABLE T_HAV_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_HAV_03 VALUES (1, 10), (2, 20), (3, 30), (4, 1)",
+			},
+			Query: "SELECT COUNT(*) FROM T_HAV_03 WHERE val > 5 HAVING COUNT(*) = 3",
+		},
+		// ===== Aggregate expression in SELECT ==============================
+		{
+			Name:           "agg_expr_sum_plus_sum",
+			SchemaTemplate: "CREATE TABLE T_AES_01 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AES_01 VALUES (1, 5, 10), (2, 20, 3)",
+			},
+			Query: "SELECT SUM(a) + SUM(b) FROM T_AES_01",
+		},
+		{
+			Name:           "agg_expr_coalesce_sum_empty",
+			SchemaTemplate: "CREATE TABLE T_AES_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      nil,
+			Query:          "SELECT COALESCE(SUM(v), 0) FROM T_AES_02",
+			Divergence: &Divergence{
+				Reason:    "Java returns zero rows for COALESCE(SUM, 0) on empty table instead of producing the implicit aggregate row [0]. Go correctly produces the row per SQL spec.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(0)},
+				},
+			},
+		},
+		{
+			Name:           "agg_expr_case_over_count",
+			SchemaTemplate: "CREATE TABLE T_AES_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AES_03 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT CASE WHEN COUNT(*) > 2 THEN 'many' ELSE 'few' END FROM T_AES_03",
+			Divergence: &Divergence{
+				Reason:    "Java's IllegalStateException 'unable to eval an aggregation function with eval()' — upstream can't handle CASE wrapping aggregate. Go correctly evaluates post-aggregation.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"many"},
+				},
+			},
+		},
+		// ===== AVG returning DOUBLE from integer column ====================
+		{
+			Name:           "avg_int_returns_double",
+			SchemaTemplate: "CREATE TABLE T_AVG_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AVG_01 VALUES (1, 1), (2, 2), (3, 3)",
+			},
+			Query: "SELECT AVG(v) FROM T_AVG_01",
+		},
+		// ===== Bare column with aggregate → rejection ======================
+		{
+			Name:           "bare_col_with_agg_rejected",
+			SchemaTemplate: "CREATE TABLE T_BCA_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_BCA_01 VALUES (1, 10), (2, 20)",
+			},
+			Query: "SELECT id, COUNT(*) FROM T_BCA_01",
+			Divergence: &Divergence{
+				Reason:          "Both engines reject bare column with aggregate (42803) but error messages differ: Java references internal planner expression; Go uses SQL-spec wording.",
+				Direction:       DivergenceBothErrorMessagesDrift,
+				GoErrorContains: "must appear in the GROUP BY clause",
+			},
+		},
+		// ===== SUM over all-NULL column ====================================
+		{
+			Name:           "sum_all_null_returns_null",
+			SchemaTemplate: "CREATE TABLE T_SAN_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SAN_01 VALUES (1, NULL), (2, NULL), (3, NULL)",
+			},
+			Query: "SELECT SUM(v) FROM T_SAN_01",
+		},
+		// ===== GROUP BY with NULL bucket (Divergence) ======================
+		{
+			Name:           "group_by_null_bucket",
+			SchemaTemplate: "CREATE TABLE T_GBN_01 (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_GBN_01 VALUES (1, 'a', 1), (2, 'a', 2), (3, NULL, 3), (4, NULL, 4)",
+			},
+			Query: "SELECT g, COUNT(*) FROM T_GBN_01 GROUP BY g ORDER BY g",
+			Divergence: &Divergence{
+				Reason:    "Java rejects all GROUP BY forms with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+				Direction: DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{
+					{nil, float64(2)},
+					{"a", float64(2)},
+				},
+			},
+		},
 	}
 }
 

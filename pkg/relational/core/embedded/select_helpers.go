@@ -198,13 +198,13 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 	case *antlrgen.DecimalConstantContext:
 		text := cv.DecimalLiteral().GetText()
 		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return "BIGINT"
+			return integerLiteralJDBCType(text)
 		}
 		return "DOUBLE"
 	case *antlrgen.NegativeDecimalConstantContext:
 		text := "-" + cv.DecimalLiteral().GetText()
 		if _, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return "BIGINT"
+			return integerLiteralJDBCType(text)
 		}
 		return "DOUBLE"
 	case *antlrgen.StringConstantContext:
@@ -217,6 +217,13 @@ func inferConstantJDBCType(c antlrgen.IConstantContext) string {
 		return "" // NULL has no type until promoted by an outer op
 	}
 	return ""
+}
+
+func integerLiteralJDBCType(text string) string {
+	if _, err := strconv.ParseInt(text, 10, 32); err == nil {
+		return "INTEGER"
+	}
+	return "BIGINT"
 }
 
 // inferFunctionCallJDBCType handles the function-call subtree:
@@ -245,7 +252,7 @@ func inferFunctionCallJDBCType(fc antlrgen.IFunctionCallContext, msgDesc protore
 func inferScalarFunctionJDBCType(fc *antlrgen.ScalarFunctionCallContext, msgDesc protoreflect.MessageDescriptor) string {
 	name := strings.ToUpper(fc.ScalarFunctionName().GetText())
 	switch name {
-	case "COALESCE":
+	case "COALESCE", "GREATEST", "LEAST":
 		// Result type = MaximumType of all arguments. Walk each arg.
 		args := fc.FunctionArgs()
 		if args == nil {
