@@ -12494,21 +12494,13 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "WITH g AS (SELECT gid FROM T_DSC_12A) SELECT count(*) FROM g, T_DSC_12B b WHERE g.gid = b.gid",
 		},
-		{
-			// UNION ALL of two simple SELECTs (no derived-table wrap,
-			// no aggregate). Pins the bare top-level UNION ALL shape
-			// without an outer ORDER BY (which Java mishandles).
-			// Branches are inserted in id order so natural row order
-			// is deterministic across both engines.
-			Name: "union_all_two_simple_no_wrap",
-			SchemaTemplate: "CREATE TABLE T_DSC_13A (id BIGINT, PRIMARY KEY (id)) " +
-				"CREATE TABLE T_DSC_13B (id BIGINT, PRIMARY KEY (id))",
-			SetupSqls: []string{
-				"INSERT INTO T_DSC_13A VALUES (1), (2), (3)",
-				"INSERT INTO T_DSC_13B VALUES (100), (200), (300)",
-			},
-			Query: "SELECT id FROM T_DSC_13A WHERE id < 5 UNION ALL SELECT id FROM T_DSC_13B WHERE id > 10",
-		},
+		// Skipped union_all_two_simple_no_wrap (added during this shift's
+		// CTE batch, dropped same-shift): UNION ALL row order without an
+		// outer ORDER BY is non-deterministic between engines, and adding
+		// ORDER BY would hit Java's intermittent UNION-ALL-ORDER-BY bug
+		// (TODO #44 Tier D). The shape is already covered indirectly via
+		// `union_all_two_branches_disjoint_where` style entries that wrap
+		// the union in a derived table or rely on per-branch sort.
 		{
 			// Recursive CTE on a linked-list with multi-column carry
 			// (id, next, label) — pins struct-shaped recursion frame
@@ -12712,6 +12704,332 @@ func SeedRunCorpus() []RunQuery {
 				"UPDATE T_DSD_16 SET name = NULL WHERE id = 2",
 			},
 			Query: "SELECT id, name FROM T_DSD_16 ORDER BY id",
+		},
+
+		// ===== NULL handling and SQL three-valued logic =====
+		// Each entry pins a specific facet of NULL semantics. SQL's
+		// three-valued logic says =, !=, <, > vs NULL yield UNKNOWN
+		// (excluded from WHERE); IS NULL / IS DISTINCT FROM are the
+		// null-aware predicates. Aggregates ignore NULL (except
+		// COUNT(*)). NULL propagates through arithmetic.
+		{
+			// IS NULL on a BIGINT column — selects only rows where the
+			// non-PK value is NULL. Anchors the simplest null predicate.
+			Name:           "null_is_null_bigint",
+			SchemaTemplate: "CREATE TABLE T_DSN_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_01 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL)",
+			},
+			Query: "SELECT id FROM T_DSN_01 WHERE val IS NULL ORDER BY id",
+		},
+		{
+			// IS NOT NULL on a STRING column — complement of IS NULL.
+			// Confirms inverted predicate path on string nullability.
+			Name:           "null_is_not_null_string",
+			SchemaTemplate: "CREATE TABLE T_DSN_02 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_02 VALUES (1, 'alice'), (2, NULL), (3, 'carol'), (4, NULL)",
+			},
+			Query: "SELECT id, name FROM T_DSN_02 WHERE name IS NOT NULL ORDER BY id",
+		},
+		{
+			// IS NULL on a DOUBLE column — pins null predicate over a
+			// floating-point column (distinct nullability path).
+			Name:           "null_is_null_double",
+			SchemaTemplate: "CREATE TABLE T_DSN_03 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_03 VALUES (1, 1.5), (2, NULL), (3, -2.25)",
+			},
+			Query: "SELECT id FROM T_DSN_03 WHERE val IS NULL ORDER BY id",
+		},
+		{
+			// COALESCE(val, 0) — substitutes 0 for NULL bigints in
+			// projection. Pins the most common COALESCE shape.
+			Name:           "coalesce_bigint_zero_default",
+			SchemaTemplate: "CREATE TABLE T_DSN_04 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_04 VALUES (1, 100), (2, NULL), (3, 300)",
+			},
+			Query: "SELECT id, COALESCE(val, 0) FROM T_DSN_04 ORDER BY id",
+		},
+		{
+			// COALESCE on a STRING column with a literal default. Pins
+			// the string variant of the same shape (distinct type path).
+			Name:           "coalesce_string_default",
+			SchemaTemplate: "CREATE TABLE T_DSN_05 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_05 VALUES (1, 'alice'), (2, NULL), (3, 'carol')",
+			},
+			Query: "SELECT id, COALESCE(name, 'unknown') FROM T_DSN_05 ORDER BY id",
+		},
+		{
+			// NULL propagates through arithmetic: val + 1 IS NULL holds
+			// for any row where val IS NULL. Pins NULL propagation
+			// through a binary arithmetic op via IS NULL on the result.
+			Name:           "null_arith_propagation_is_null",
+			SchemaTemplate: "CREATE TABLE T_DSN_06 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_06 VALUES (1, 5), (2, NULL), (3, 7)",
+			},
+			Query: "SELECT id FROM T_DSN_06 WHERE val + 1 IS NULL ORDER BY id",
+		},
+		{
+			// IS DISTINCT FROM is null-safe inequality: NULL IS DISTINCT
+			// FROM 5 is TRUE (where val=5 IS DISTINCT FROM 5 is FALSE).
+			// Distinguishes from regular != which yields UNKNOWN for NULL.
+			Name:           "is_distinct_from_includes_null",
+			SchemaTemplate: "CREATE TABLE T_DSN_07 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_07 VALUES (1, 5), (2, NULL), (3, 7), (4, 5)",
+			},
+			Query: "SELECT id FROM T_DSN_07 WHERE val IS DISTINCT FROM 5 ORDER BY id",
+		},
+		{
+			// IS NOT DISTINCT FROM is null-safe equality: matches
+			// val=5 AND treats NULL IS NOT DISTINCT FROM NULL as TRUE.
+			// Companion to is_distinct_from_includes_null.
+			Name:           "is_not_distinct_from_value",
+			SchemaTemplate: "CREATE TABLE T_DSN_08 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_08 VALUES (1, 5), (2, NULL), (3, 7), (4, 5)",
+			},
+			Query: "SELECT id FROM T_DSN_08 WHERE val IS NOT DISTINCT FROM 5 ORDER BY id",
+		},
+		{
+			// SUM and AVG ignore NULL; COUNT(val) ignores NULL but
+			// COUNT(*) counts every row. Single aggregate row exposes
+			// all four behaviours in one query.
+			Name:           "agg_with_null_sum_count_mix",
+			SchemaTemplate: "CREATE TABLE T_DSN_09 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_09 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 60)",
+			},
+			Query: "SELECT sum(val), count(val), count(*) FROM T_DSN_09",
+		},
+		{
+			// MIN and MAX ignore NULL — return the smallest/largest
+			// non-NULL value. Distinct path from sum/count.
+			Name:           "agg_with_null_min_max",
+			SchemaTemplate: "CREATE TABLE T_DSN_10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_10 VALUES (1, 50), (2, NULL), (3, 10), (4, NULL), (5, 30)",
+			},
+			Query: "SELECT min(val), max(val) FROM T_DSN_10",
+		},
+		{
+			// COUNT(col) on an all-NULL column returns 0; SUM returns
+			// NULL (empty aggregate). Edge case for "everything NULL".
+			Name:           "agg_with_null_count_only_nulls",
+			SchemaTemplate: "CREATE TABLE T_DSN_11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_11 VALUES (1, NULL), (2, NULL), (3, NULL)",
+			},
+			Query: "SELECT count(val), count(*) FROM T_DSN_11",
+		},
+		{
+			// IN-list with a NULL element. The NULL is silently ignored
+			// for matching purposes — rows match iff val equals one of
+			// the non-NULL list members.
+			Name:           "null_in_list_with_null_element",
+			SchemaTemplate: "CREATE TABLE T_DSN_12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_12 VALUES (1, 10), (2, 20), (3, NULL), (4, 30)",
+			},
+			Query: "SELECT id FROM T_DSN_12 WHERE val IN (10, 20, NULL) ORDER BY id",
+		},
+		{
+			// COUNT(*) with WHERE val < 50 — NULL rows yield UNKNOWN
+			// from the comparison and are excluded. Pins three-valued
+			// logic at the WHERE-clause filter.
+			Name:           "null_excluded_from_lt_filter",
+			SchemaTemplate: "CREATE TABLE T_DSN_13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_13 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 100)",
+			},
+			Query: "SELECT count(*) FROM T_DSN_13 WHERE val < 50",
+		},
+		{
+			// Plain != against a literal: rows with NULL are excluded
+			// (NULL != 5 → UNKNOWN). Distinct from IS DISTINCT FROM
+			// which would include the NULL row.
+			Name:           "null_excluded_from_neq_filter",
+			SchemaTemplate: "CREATE TABLE T_DSN_14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_14 VALUES (1, 5), (2, NULL), (3, 7), (4, 5)",
+			},
+			Query: "SELECT id FROM T_DSN_14 WHERE val != 5 ORDER BY id",
+		},
+		{
+			// CASE WHEN with no ELSE returns NULL for unmatched rows.
+			// Combined with COALESCE in the projection to pin the
+			// CASE-emits-NULL-then-COALESCE-substitutes path.
+			Name:           "null_case_no_else_then_coalesce",
+			SchemaTemplate: "CREATE TABLE T_DSN_15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_15 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, COALESCE(CASE WHEN val < 25 THEN val END, -1) FROM T_DSN_15 ORDER BY id",
+		},
+		// ===== Aggregate-without-GROUP-BY shapes (TODO #39 blocks GROUP =====
+		// BY entirely in fdb-relational 4.11.1.0 — Cascades has no GROUP
+		// BY rule. These entries exercise aggregate semantics without a
+		// GROUP BY clause, treating the whole result as one implicit
+		// group.
+		{
+			// HAVING with two DIFFERENT aggregates joined by AND.
+			// Existing having_compound_predicate uses COUNT(*) twice;
+			// this pins SUM-and-COUNT mixed in one HAVING conjunction.
+			Name:           "agg_with_having_sum_and_count_and",
+			SchemaTemplate: "CREATE TABLE T_DSG_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_01 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(val), COUNT(*) FROM T_DSG_01 HAVING SUM(val) > 50 AND COUNT(*) >= 3",
+		},
+		{
+			// HAVING with two DIFFERENT aggregates joined by OR. The
+			// disjunction path is a different planner shape than AND.
+			Name:           "agg_with_having_sum_or_min",
+			SchemaTemplate: "CREATE TABLE T_DSG_02 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_02 VALUES (1, 5), (2, 10), (3, 15)",
+			},
+			Query: "SELECT SUM(val), MIN(val) FROM T_DSG_02 HAVING SUM(val) > 100 OR MIN(val) <= 5",
+		},
+		{
+			// HAVING that filters EVERYTHING — the predicate is FALSE for
+			// the implicit group. Both engines emit zero rows (not NULL,
+			// not error). Pins HAVING-rejects-the-only-group path.
+			Name:           "agg_with_having_filters_all_out",
+			SchemaTemplate: "CREATE TABLE T_DSG_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_03 VALUES (1, 5), (2, 10)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DSG_03 HAVING COUNT(*) > 1000",
+		},
+		{
+			// HAVING comparing aggregate to a NEGATIVE literal — pins
+			// signed-literal handling in the HAVING predicate.
+			Name:           "agg_with_having_neg_literal",
+			SchemaTemplate: "CREATE TABLE T_DSG_04 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_04 VALUES (1, -5), (2, -10), (3, 7)",
+			},
+			Query: "SELECT SUM(val) FROM T_DSG_04 HAVING SUM(val) < 0",
+		},
+		{
+			// HAVING with three predicates AND-chained — exercises the
+			// multi-leaf aggregate-HAVING simplifier composition.
+			Name:           "agg_with_having_three_way_and",
+			SchemaTemplate: "CREATE TABLE T_DSG_05 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_05 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT COUNT(*), SUM(val), MAX(val) FROM T_DSG_05 HAVING COUNT(*) > 0 AND SUM(val) > 50 AND MAX(val) >= 40",
+		},
+		{
+			// SUM over an arithmetic expression of a column — `SUM(v + 1)`
+			// vs SUM(v). Pins the per-row eval-then-accumulate path.
+			Name:           "agg_no_groupby_sum_arith_expr",
+			SchemaTemplate: "CREATE TABLE T_DSG_06 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_06 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(val + 1) FROM T_DSG_06",
+		},
+		{
+			// COUNT over an arithmetic expression — `COUNT(v * 2)`. Even
+			// though the expression is per-row, COUNT(expr) counts non-NULL
+			// expr results (NULL * 2 = NULL → skipped).
+			Name:           "agg_no_groupby_count_arith_expr",
+			SchemaTemplate: "CREATE TABLE T_DSG_07 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_07 VALUES (1, 5), (2, NULL), (3, 7)",
+			},
+			Query: "SELECT COUNT(val * 2) FROM T_DSG_07",
+		},
+		{
+			// Five-aggregate one-shot: COUNT, SUM, MIN, MAX, AVG over the
+			// same column. Existing sum_avg_min_max_one_query covers four;
+			// this pins the FIVE-aggregate emission shape.
+			Name:           "agg_no_groupby_five_aggregates",
+			SchemaTemplate: "CREATE TABLE T_DSG_08 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_08 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT COUNT(*), SUM(val), MIN(val), MAX(val), AVG(val) FROM T_DSG_08",
+		},
+		{
+			// COUNT(*) with WHERE BETWEEN — pins BETWEEN as a WHERE
+			// predicate that feeds an aggregate. Distinct from
+			// count_star_with_where_range (which uses < / >).
+			Name:           "agg_no_groupby_count_with_between",
+			SchemaTemplate: "CREATE TABLE T_DSG_09 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_09 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DSG_09 WHERE val BETWEEN 10 AND 30",
+		},
+		{
+			// SUM with WHERE NOT — pins NOT-predicate before aggregation.
+			Name:           "agg_no_groupby_sum_with_not",
+			SchemaTemplate: "CREATE TABLE T_DSG_10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_10 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(val) FROM T_DSG_10 WHERE NOT (val = 20)",
+		},
+		{
+			// AVG over a WHERE-filtered subset that leaves a SINGLE row.
+			// Pins the boundary between empty (NULL) and full (mean)
+			// behaviour at the smallest non-empty case.
+			Name:           "agg_no_groupby_avg_single_match",
+			SchemaTemplate: "CREATE TABLE T_DSG_11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_11 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT AVG(val) FROM T_DSG_11 WHERE id = 2",
+		},
+		{
+			// SUM(DOUBLE) over a WHERE-filtered subset producing a
+			// floating-point result. Pins DOUBLE-aggregate-with-WHERE.
+			Name:           "agg_no_groupby_sum_double_with_where",
+			SchemaTemplate: "CREATE TABLE T_DSG_12 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_12 VALUES (1, 1.5), (2, 2.25), (3, 100.0)",
+			},
+			Query: "SELECT SUM(val) FROM T_DSG_12 WHERE val < 50.0",
+		},
+		{
+			// HAVING with comparison vs LITERAL only (no column ref) —
+			// e.g. HAVING 1 = 1 always TRUE. Both engines should emit the
+			// implicit-group's COUNT result. Pins constant-HAVING-predicate.
+			Name:           "agg_with_having_const_true",
+			SchemaTemplate: "CREATE TABLE T_DSG_13 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_13 VALUES (1), (2)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DSG_13 HAVING 1 = 1",
+		},
+		{
+			// MIN+MAX over a WHERE-filtered scope producing distinct
+			// extremes. Pins MIN/MAX accumulator interaction with WHERE.
+			Name:           "agg_no_groupby_min_max_with_where",
+			SchemaTemplate: "CREATE TABLE T_DSG_14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_14 VALUES (1, 100), (2, 5), (3, 50), (4, 200), (5, 1)",
+			},
+			Query: "SELECT MIN(val), MAX(val) FROM T_DSG_14 WHERE val > 1 AND val < 200",
+		},
+		{
+			// HAVING with two aggregates over different columns — pins
+			// multi-column aggregate evaluation in the HAVING predicate.
+			Name:           "agg_with_having_two_cols",
+			SchemaTemplate: "CREATE TABLE T_DSG_15 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_15 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)",
+			},
+			Query: "SELECT SUM(a), SUM(b) FROM T_DSG_15 HAVING SUM(a) > 0 AND SUM(b) > 500",
 		},
 	}
 }
