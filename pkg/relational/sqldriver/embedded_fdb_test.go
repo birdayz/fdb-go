@@ -5968,6 +5968,60 @@ func TestFDB_PKLiteralEqInJoin(t *testing.T) {
 		"both `a.id = 2` AND `a.id = b.parent` must apply: only B rows (12,2) and (13,2) match")
 }
 
+// TestFDB_CompoundDistinctDedup pins SQL-standard compound DISTINCT
+// behaviour: `SELECT DISTINCT a, b FROM t` MUST de-duplicate by the
+// (a, b) tuple. Java's fdb-relational 4.11.1.0 fails to dedup
+// compound DISTINCT and returns all input rows; Go is correct (TODO
+// #42 reclassified Tier D).
+func TestFDB_CompoundDistinctDedup(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_compound_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_compound_distinct")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE compound_distinct_tmpl
+		CREATE TABLE T (id BIGINT, a STRING, b BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_compound_distinct/main WITH TEMPLATE compound_distinct_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_compound_distinct?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO T VALUES (1, 'x', 10), (2, 'x', 10), (3, 'y', 20), (4, 'y', 20)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT DISTINCT a, b FROM T")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type pair struct {
+		a string
+		b int64
+	}
+	var got []pair
+	for rows.Next() {
+		var a string
+		var b int64
+		g.Expect(rows.Scan(&a, &b)).To(gomega.Succeed())
+		got = append(got, pair{a, b})
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.ConsistOf(pair{"x", 10}, pair{"y", 20}),
+		"compound DISTINCT must de-duplicate by (a,b) tuple")
+
+	// Same DISTINCT through a derived table (TODO #64 same Java bug).
+	var n int64
+	g.Expect(db.QueryRowContext(ctx,
+		"SELECT count(*) FROM (SELECT DISTINCT b FROM T) AS d").Scan(&n)).
+		To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(int64(2)),
+		"DISTINCT through a derived table must dedup (b values were {10,10,20,20} → 2 distinct)")
+}
+
 // TestFDB_UnionAllOuterOrderByDeterministic pins SQL-standard
 // behaviour: a trailing `ORDER BY` after `UNION ALL` applies to the
 // COMBINED result, not just the right branch. Go honours this

@@ -4424,6 +4424,17 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_PAV VALUES (1, (2 + 3))"},
 			Query:          "SELECT id, v FROM T_PAV",
 		},
+		// Skipped compound_distinct_two_cols: cross-engine probe
+		// (dayshift-66) showed Go correctly dedups `SELECT DISTINCT a,
+		// b FROM t` (2 rows from 4 input); Java fails to dedup and
+		// returns all 4 rows. Java's compound-DISTINCT is broken on
+		// non-PK column tuples. TODO #42's diagnosis was inverted (5th
+		// of the shift — same pattern). Pinned via Go-only sentinel.
+		// Skipped count_over_distinct_derived: cross-engine probe
+		// showed Go correctly counts the distinct values through the
+		// derived table (3 from {10,20,30}); Java returns 5 (full row
+		// count). Same Java DISTINCT bug as #42. Pinned via Go-only
+		// sentinel.
 		{
 			// Probe TODO #41a: bare-BOOLEAN col in CASE WHEN.
 			Name:           "case_when_bare_bool_col_probe",
