@@ -6225,6 +6225,20 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT avg(v) FROM T_AGE8",
 		},
 		{
+			// AVG over BIGINT in a JOIN context must also promote to
+			// DOUBLE. Surfaced nightshift-65: Go reported BIGINT for the
+			// AVG result column type in this shape (TODO #54). Fix landed
+			// dayshift-66.
+			Name: "avg_bigint_returns_double_in_join",
+			SchemaTemplate: "CREATE TABLE T_AGE_J_A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AGE_J_B (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE_J_A VALUES (1), (2)",
+				"INSERT INTO T_AGE_J_B VALUES (10, 1, 100), (11, 1, 200), (12, 2, 300)",
+			},
+			Query: "SELECT avg(b.val) FROM T_AGE_J_A AS a, T_AGE_J_B AS b WHERE a.id = b.parent",
+		},
+		{
 			// SUM, AVG, MIN, MAX in one query — pins multi-aggregate
 			// projection ordering and type lattice.
 			Name:           "sum_avg_min_max_one_query",

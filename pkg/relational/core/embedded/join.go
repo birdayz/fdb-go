@@ -251,17 +251,12 @@ func (c *EmbeddedConnection) execSelectJoin(ctx context.Context, sq *selectQuery
 		// the normal column-selection and row-building blocks are skipped.
 		isAggregate := sq.countStar || len(sq.aggCols) > 0
 		if isAggregate {
-			aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, filtered)
+			aggCols, aggColTypes, aggData, aggErr := c.aggregateMapRows(ctx, sq, filtered)
 			if aggErr != nil {
 				return nil, aggErr
 			}
 			cols = aggCols
-			// Aggregates over a JOIN: COUNT/SUM/MIN/MAX over integral
-			// inputs → BIGINT; matches the proto-path heuristic.
-			colTypes = make([]string, len(aggCols))
-			for i := range colTypes {
-				colTypes[i] = "BIGINT"
-			}
+			colTypes = aggColTypes
 			data = aggData
 		} else {
 			// Determine output columns.
