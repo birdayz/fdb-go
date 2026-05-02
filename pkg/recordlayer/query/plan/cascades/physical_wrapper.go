@@ -34,6 +34,13 @@ func IsPhysicalIntersection(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// IsPhysicalFilter reports whether the given RelationalExpression is
+// a physicalFilterWrapper.
+func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFilterWrapper)
+	return ok
+}
+
 // findPhysicalPlan scans ref's members for the first physical-plan
 // expression and returns its underlying RecordQueryPlan. Returns nil
 // if no physical plan has been yielded into ref yet.
@@ -383,6 +390,20 @@ func (w *physicalFilterWrapper) HintCost(child []properties.Cost) properties.Cos
 		Cardinality: in * sel * physicalWrapperCostMultiplier,
 		CPU:         (child[0].CPU + in*properties.FilterCPU*float64(numPreds)) * physicalWrapperCostMultiplier,
 	}
+}
+
+func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
 }
 
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)

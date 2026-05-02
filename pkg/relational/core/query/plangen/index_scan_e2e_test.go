@@ -269,6 +269,67 @@ func TestEndToEnd_SortElimByIndex(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_SortElimThroughResidualFilter verifies sort elimination
+// propagates through a residual filter: Sort(DATE) over
+// Filter(status='active' AND amount>50, Scan) with index on (status,date).
+// The index consumes STATUS but AMOUNT is residual, yielding
+// PhysicalFilter(IndexScan). Sort should still be eliminated because
+// the filter preserves the index's DATE ordering.
+func TestEndToEnd_SortElimThroughResidualFilter(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(50)),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+		filterQ,
+	)
+	ref := expressions.InitialOf(sort)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status_date",
+			columns:     []string{"status", "date"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// Sort should be eliminated — the physicalFilterWrapper wrapping
+	// the index scan preserves DATE ordering.
+	foundPhysicalAtTop := false
+	for _, m := range ref.Members() {
+		if cascades.IsPhysicalIndexScan(m) || cascades.IsPhysicalFilter(m) {
+			foundPhysicalAtTop = true
+			break
+		}
+	}
+	if !foundPhysicalAtTop {
+		t.Fatal("sort should be eliminated through residual filter; physical plan should appear at top")
+	}
+}
+
 // TestEndToEnd_InExplodeIndexScan tests the IN-to-explode + index scan
 // pipeline: Filter(status IN ['a','b'], Scan) -> Union(IndexScan(=a), IndexScan(=b)).
 func TestEndToEnd_InExplodeIndexScan(t *testing.T) {
