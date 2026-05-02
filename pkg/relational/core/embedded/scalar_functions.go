@@ -339,13 +339,16 @@ func evalSpecificFunctionCore(
 		if err != nil {
 			return nil, err
 		}
-		for _, alt := range c.AllCaseFuncAlternative() {
-			whenVal, err := eval(alt.GetCondition().Expression())
-			if err != nil {
-				return nil, err
-			}
-			if valuesEqual(operand, whenVal) {
-				return eval(alt.GetConsequent().Expression())
+		// SQL spec: NULL never matches in simple CASE (NULL = NULL is UNKNOWN).
+		if operand != nil {
+			for _, alt := range c.AllCaseFuncAlternative() {
+				whenVal, err := eval(alt.GetCondition().Expression())
+				if err != nil {
+					return nil, err
+				}
+				if whenVal != nil && valuesEqual(operand, whenVal) {
+					return eval(alt.GetConsequent().Expression())
+				}
 			}
 		}
 		if c.GetElseArg() != nil {
