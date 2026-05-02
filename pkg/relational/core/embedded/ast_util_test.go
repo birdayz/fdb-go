@@ -6,13 +6,15 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 )
 
-// TestStripIdentifierQuotes pins the contract for unwrapping
-// double-quoted or backtick-quoted identifiers. Both forms strip
-// matching pairs only (mismatched / unmatched / empty / single-char
-// inputs pass through). The helper is the canonical step before
-// case-folding and dictionary lookup, so a regression here would
-// surface as ambiguous-column / undefined-column SQL errors at
-// runtime.
+// TestStripIdentifierQuotes pins the SQL identifier normalization
+// contract: quoted forms (`"…"` or backticks) strip the surrounding
+// pair and preserve case; unquoted forms fold to upper case (mirrors
+// Java SemanticAnalyzer.normalizeString with case-sensitive=false,
+// the default). Mismatched / unmatched / empty / single-char inputs
+// fold (with no quote-strip) since they're treated as unquoted
+// identifier text. The helper is the canonical step before catalog
+// lookup, so a regression here would surface as ambiguous-column or
+// undefined-column SQL errors at runtime.
 func TestStripIdentifierQuotes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -20,19 +22,19 @@ func TestStripIdentifierQuotes(t *testing.T) {
 	}{
 		{`"hello"`, "hello"},
 		{"`hello`", "hello"},
-		{"plain", "plain"},
+		{"plain", "PLAIN"},
 		{"", ""},
 		{`"a"`, "a"},
-		// Mismatched pairs pass through unchanged.
-		{`"hello`, `"hello`},
-		{`hello"`, `hello"`},
-		{"`hello", "`hello"},
-		// Single character: no quote wrap possible.
+		// Mismatched pairs are unquoted text — fold to upper.
+		{`"hello`, `"HELLO`},
+		{`hello"`, `HELLO"`},
+		{"`hello", "`HELLO"},
+		// Single character: no quote wrap possible — folds to upper.
 		{`"`, `"`},
 		{"`", "`"},
-		// Mixed quote styles aren't a pair.
-		{"`hello\"", "`hello\""},
-		{"\"hello`", "\"hello`"},
+		// Mixed quote styles aren't a pair — treated as unquoted, fold.
+		{"`hello\"", "`HELLO\""},
+		{"\"hello`", "\"HELLO`"},
 		// Internal quotes are preserved (no unescaping at this layer).
 		{`"a"b"`, `a"b`},
 		// Backtick variant similarly.

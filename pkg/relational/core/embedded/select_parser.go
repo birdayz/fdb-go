@@ -371,8 +371,12 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		return functions.FullIdToName(a.FullColumnName().FullId()), nil
 	case *antlrgen.FunctionCallExpressionAtomContext:
-		// Aggregate function in ORDER BY — return the canonical output name
-		// (e.g. COUNT(*), SUM(col)) so it can be matched against the SELECT list.
+		// Aggregate function in ORDER BY / HAVING — reuse extractAwfFields
+		// so the canonical output name matches what aggCols registration
+		// produces (column-ref args fold via FullIdToName; bare-expression
+		// args use GetText). Without sharing the helper the two sides
+		// drift on case-folding and the colIdx lookup misses on shapes
+		// like `ORDER BY SUM(v)`.
 		agg, aggok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 		if !aggok {
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -383,21 +387,11 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"%s: unsupported aggregate %T", context, agg.AggregateWindowedFunction())
 		}
-		switch {
-		case awf.COUNT() != nil && awf.STAR() != nil:
-			return "COUNT(*)", nil
-		case awf.COUNT() != nil && awf.FunctionArg() != nil:
-			return "COUNT(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.SUM() != nil && awf.FunctionArg() != nil:
-			return "SUM(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.MIN() != nil && awf.FunctionArg() != nil:
-			return "MIN(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.MAX() != nil && awf.FunctionArg() != nil:
-			return "MAX(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.AVG() != nil && awf.FunctionArg() != nil:
-			return "AVG(" + awf.FunctionArg().GetText() + ")", nil
+		_, _, _, outName, _, ok := extractAwfFields(awf)
+		if !ok {
+			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
 		}
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
+		return outName, nil
 	default:
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"%s must be a column name, got expression atom %T", context, pred.ExpressionAtom())

@@ -21,41 +21,41 @@ tests:
   # SELECT with a named column now projects to only that column
   # (dayshift-37 fix). Pre-fix the INFORMATION_SCHEMA route dropped
   # the SELECT list entirely and returned every system-table column.
-  # CREATE TABLE preserves identifier case — both names come back
-  # lowercase here because the DDL was lowercase.
+  # Unquoted identifiers fold to upper case (SQL standard), so the
+  # DDL-created tables are stored as EMP_SYSTEST and DEPT_SYSTEST.
   - query: |
       SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"
-      WHERE TABLE_NAME IN ('emp_systest', 'dept_systest')
+      WHERE TABLE_NAME IN ('EMP_SYSTEST', 'DEPT_SYSTEST')
       ORDER BY TABLE_NAME
     rows:
-      - ['dept_systest']
-      - ['emp_systest']
+      - ['DEPT_SYSTEST']
+      - ['EMP_SYSTEST']
 
-  # Exact-match WHERE on a preserved-case TABLE_NAME.
+  # Exact-match WHERE on the upper-folded TABLE_NAME.
   - query: |
       SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"
-      WHERE TABLE_NAME = 'emp_systest'
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
     rows:
-      - ['emp_systest']
+      - ['EMP_SYSTEST']
 
   # COLUMNS: join via TABLE_NAME; project just the column name.
   - query: |
       SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS"
-      WHERE TABLE_NAME = 'emp_systest'
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
       ORDER BY ORDINAL_POSITION
     rows:
-      - ['id']
-      - ['name']
+      - ['ID']
+      - ['NAME']
 
   # Aliased projection.
   - query: |
       SELECT TABLE_NAME AS t_name FROM "INFORMATION_SCHEMA"."TABLES"
-      WHERE TABLE_NAME = 'emp_systest'
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
     rows:
-      - ['emp_systest']
+      - ['EMP_SYSTEST']
 
   # Column not in the schema — clear error (42703).
   - query: |
       SELECT NOT_A_COLUMN FROM "INFORMATION_SCHEMA"."TABLES"
-      WHERE TABLE_NAME = 'emp_systest'
+      WHERE TABLE_NAME = 'EMP_SYSTEST'
     error_code: "42703"

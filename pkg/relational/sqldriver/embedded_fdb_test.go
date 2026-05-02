@@ -830,7 +830,7 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 		tbl, _ := vals[2].(string)
 		// Filter to this test's database only — other parallel tests may also
 		// have an "Employee" table in a different database.
-		if dbCatalog != "/testdb_is_columns" || tbl != "Employee" {
+		if dbCatalog != "/testdb_is_columns" || tbl != "EMPLOYEE" {
 			continue
 		}
 		ordinal, _ := vals[4].(int64)
@@ -846,13 +846,13 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 	g.Expect(colRows).To(gomega.HaveLen(2))
 
 	// Verify emp_id: NOT NULL, BIGINT (CodeLong).
-	g.Expect(colRows[0].colName).To(gomega.Equal("emp_id"))
+	g.Expect(colRows[0].colName).To(gomega.Equal("EMP_ID"))
 	g.Expect(colRows[0].ordinal).To(gomega.Equal(int64(1)))
 	g.Expect(colRows[0].nullable).To(gomega.Equal("NO"))
 	g.Expect(colRows[0].dataType).To(gomega.Equal("LONG"))
 
 	// Verify name: nullable STRING (CodeString).
-	g.Expect(colRows[1].colName).To(gomega.Equal("name"))
+	g.Expect(colRows[1].colName).To(gomega.Equal("NAME"))
 	g.Expect(colRows[1].ordinal).To(gomega.Equal(int64(2)))
 	g.Expect(colRows[1].nullable).To(gomega.Equal("YES"))
 	g.Expect(colRows[1].dataType).To(gomega.Equal("STRING"))
@@ -1009,13 +1009,13 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	for _, r := range idxRows {
 		byName[r.indexName] = r
 	}
-	g.Expect(byName).To(gomega.HaveKey("by_name"))
-	g.Expect(byName["by_name"].tableName).To(gomega.Equal("Product"))
-	g.Expect(byName["by_name"].isUnique).To(gomega.Equal("NO"))
+	g.Expect(byName).To(gomega.HaveKey("BY_NAME"))
+	g.Expect(byName["BY_NAME"].tableName).To(gomega.Equal("PRODUCT"))
+	g.Expect(byName["BY_NAME"].isUnique).To(gomega.Equal("NO"))
 
-	g.Expect(byName).To(gomega.HaveKey("by_id"))
-	g.Expect(byName["by_id"].tableName).To(gomega.Equal("Product"))
-	g.Expect(byName["by_id"].isUnique).To(gomega.Equal("YES"))
+	g.Expect(byName).To(gomega.HaveKey("BY_ID"))
+	g.Expect(byName["BY_ID"].tableName).To(gomega.Equal("PRODUCT"))
+	g.Expect(byName["BY_ID"].isUnique).To(gomega.Equal("YES"))
 }
 
 func TestFDB_SelectColumnProjection(t *testing.T) {
@@ -1153,7 +1153,7 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 	// serialization rejects the message with RecordSerializationError.
 	_, err = db.ExecContext(ctx, "INSERT INTO Rec (val) VALUES ('no-pk')")
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("rec_id"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("REC_ID"))
 }
 
 // TestFDB_SelectWhereTypeMismatch verifies that comparing a BIGINT column
@@ -1281,7 +1281,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
 	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("val"))
+	g.Expect(apiErr.Message).To(gomega.ContainSubstring("VAL"))
 	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
 }
 
