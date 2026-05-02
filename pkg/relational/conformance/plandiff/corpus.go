@@ -7922,6 +7922,167 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT count(*) FROM T_JJS a, T_JJT b WHERE a.k IS NOT DISTINCT FROM b.k",
 		},
+
+		// ===== Arithmetic in predicates and projection =====
+		// Pin operator precedence, mixed integer/float arithmetic, and
+		// computed comparisons across both engines. These probes lock the
+		// associativity and type-promotion behaviour the planner relies on.
+		{
+			// Parenthesised arithmetic in WHERE — pins (a+b)*2 grouping.
+			Name:           "arith_paren_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR1 VALUES (1, 10, 20)",
+				"INSERT INTO T_AR1 VALUES (2, 40, 30)",
+				"INSERT INTO T_AR1 VALUES (3, 5, 5)",
+			},
+			Query: "SELECT id FROM T_AR1 WHERE (a + b) * 2 > 100 ORDER BY id",
+		},
+		{
+			// No-parens precedence — must bind as a + (b*2). Row id=1 has
+			// a=10,b=10 -> 30 (excluded); id=2 has 10+30*2=70 (included);
+			// id=3 has 90+50*2=190 (included). Pins * binds tighter than +.
+			Name:           "arith_precedence_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR2 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR2 VALUES (1, 10, 10)",
+				"INSERT INTO T_AR2 VALUES (2, 10, 30)",
+				"INSERT INTO T_AR2 VALUES (3, 90, 50)",
+			},
+			Query: "SELECT id FROM T_AR2 WHERE a + b * 2 > 50 ORDER BY id",
+		},
+		{
+			// Three-term sum predicate — left-to-right associativity.
+			Name:           "arith_three_term_sum_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR3 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR3 VALUES (1, 10, 20, 30)",
+				"INSERT INTO T_AR3 VALUES (2, 5, 5, 5)",
+				"INSERT INTO T_AR3 VALUES (3, 100, -50, 10)",
+			},
+			Query: "SELECT id FROM T_AR3 WHERE a + b + c > 50 ORDER BY id",
+		},
+		{
+			// Integer column multiplied by DOUBLE literal in WHERE — pins
+			// type-promotion to DOUBLE for the comparison.
+			Name:           "arith_mixed_int_double_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR4 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR4 VALUES (1, 5)",
+				"INSERT INTO T_AR4 VALUES (2, 7)",
+				"INSERT INTO T_AR4 VALUES (3, 20)",
+			},
+			Query: "SELECT id FROM T_AR4 WHERE a * 1.5 > 10 ORDER BY id",
+		},
+		{
+			// Modulo operator (%) in WHERE — distinct from MOD function form
+			// (which Java rejects). Selects multiples of 3.
+			Name:           "arith_modulo_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR5 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR5 VALUES (1, 3)",
+				"INSERT INTO T_AR5 VALUES (2, 5)",
+				"INSERT INTO T_AR5 VALUES (3, 9)",
+				"INSERT INTO T_AR5 VALUES (4, 10)",
+			},
+			Query: "SELECT id FROM T_AR5 WHERE a % 3 = 0 ORDER BY id",
+		},
+		{
+			// Integer division (truncating) in WHERE. id=1: 5/2=2 (excluded);
+			// id=2: 12/2=6 (included); id=3: 11/2=5 (excluded — truncates).
+			Name:           "arith_int_division_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR6 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR6 VALUES (1, 5)",
+				"INSERT INTO T_AR6 VALUES (2, 12)",
+				"INSERT INTO T_AR6 VALUES (3, 11)",
+			},
+			Query: "SELECT id FROM T_AR6 WHERE a / 2 > 5 ORDER BY id",
+		},
+		{
+			// DOUBLE division in WHERE — divisor is DOUBLE literal so the
+			// quotient is DOUBLE. id=2: 11/2.0=5.5 NOT > 5.5 (excluded);
+			// id=3: 12/2.0=6.0 (included).
+			Name:           "arith_double_division_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR7 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR7 VALUES (1, 5)",
+				"INSERT INTO T_AR7 VALUES (2, 11)",
+				"INSERT INTO T_AR7 VALUES (3, 12)",
+			},
+			Query: "SELECT id FROM T_AR7 WHERE a / 2.0 > 5.5 ORDER BY id",
+		},
+		{
+			// Subtraction predicate — straightforward two-column compare.
+			Name:           "arith_subtraction_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR8 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR8 VALUES (1, 10, 5)",
+				"INSERT INTO T_AR8 VALUES (2, 5, 10)",
+				"INSERT INTO T_AR8 VALUES (3, 7, 7)",
+			},
+			Query: "SELECT id FROM T_AR8 WHERE a - b > 0 ORDER BY id",
+		},
+		{
+			// Arithmetic on both sides of a comparison — pins the planner
+			// doesn't fold one side into a constant prematurely.
+			Name:           "arith_both_sides_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR9 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR9 VALUES (1, 5, 10)",
+				"INSERT INTO T_AR9 VALUES (2, 10, 5)",
+				"INSERT INTO T_AR9 VALUES (3, 5, 5)",
+			},
+			Query: "SELECT id FROM T_AR9 WHERE a + 1 > b - 1 ORDER BY id",
+		},
+		{
+			// Unary negation in projection — pins the unary-minus operator
+			// renders as the same Value tree on both engines.
+			Name:           "arith_negation_projection",
+			SchemaTemplate: "CREATE TABLE T_AR10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR10 VALUES (1, 5)",
+				"INSERT INTO T_AR10 VALUES (2, -3)",
+				"INSERT INTO T_AR10 VALUES (3, 0)",
+			},
+			Query: "SELECT id, -val FROM T_AR10 ORDER BY id",
+		},
+		{
+			// BIGINT * DOUBLE literal in projection — type-promotes to
+			// DOUBLE. Pins promotion lattice in projection (vs. predicate).
+			Name:           "arith_int_times_double_projection",
+			SchemaTemplate: "CREATE TABLE T_AR11 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR11 VALUES (1, 4)",
+				"INSERT INTO T_AR11 VALUES (2, 7)",
+			},
+			Query: "SELECT id, a * 1.5 FROM T_AR11 ORDER BY id",
+		},
+		{
+			// Three-term sum in projection — pins associativity in select
+			// list (companion to arith_three_term_sum_predicate).
+			Name:           "arith_three_term_sum_projection",
+			SchemaTemplate: "CREATE TABLE T_AR12 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR12 VALUES (1, 1, 2, 3)",
+				"INSERT INTO T_AR12 VALUES (2, 10, 20, 30)",
+			},
+			Query: "SELECT id, a + b + c FROM T_AR12 ORDER BY id",
+		},
+		{
+			// Modular arithmetic chain: (a*2+1) % 5 = 0. id=1: 2*2+1=5,
+			// 5%5=0 (included); id=2: 4*2+1=9, 9%5=4 (excluded); id=3:
+			// 7*2+1=15, 15%5=0 (included). Pins chained-arithmetic +
+			// modulo precedence.
+			Name:           "arith_modular_chain_predicate",
+			SchemaTemplate: "CREATE TABLE T_AR13 (id BIGINT, a BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AR13 VALUES (1, 2)",
+				"INSERT INTO T_AR13 VALUES (2, 4)",
+				"INSERT INTO T_AR13 VALUES (3, 7)",
+			},
+			Query: "SELECT id FROM T_AR13 WHERE (a * 2 + 1) % 5 = 0 ORDER BY id",
+		},
 	}
 }
 
