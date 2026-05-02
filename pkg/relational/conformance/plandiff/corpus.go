@@ -8230,6 +8230,191 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_BNLC WHERE val BETWEEN -2 AND 2 ORDER BY id",
 		},
+
+		// ===== Aggregate + JOIN interactions =====
+		{
+			// COUNT(*) over a comma-join with multiple AND predicates
+			// on the right table. Pins filter+join interaction order.
+			Name: "count_join_multi_and_rhs",
+			SchemaTemplate: "CREATE TABLE T_AJ1 (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ2 (id BIGINT, parent BIGINT, val BIGINT, region STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ1 VALUES (1, 'a')",
+				"INSERT INTO T_AJ1 VALUES (2, 'b')",
+				"INSERT INTO T_AJ2 VALUES (10, 1, 100, 'us')",
+				"INSERT INTO T_AJ2 VALUES (11, 1, 50, 'us')",
+				"INSERT INTO T_AJ2 VALUES (12, 2, 200, 'eu')",
+				"INSERT INTO T_AJ2 VALUES (13, 2, 25, 'eu')",
+			},
+			Query: "SELECT count(*) FROM T_AJ1 a, T_AJ2 b WHERE a.id = b.parent AND b.val > 30 AND b.region = 'us'",
+		},
+		{
+			// SUM aggregate pulled from one side of a comma-join.
+			Name: "sum_join_rhs_val",
+			SchemaTemplate: "CREATE TABLE T_AJ3 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ4 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ3 VALUES (1)",
+				"INSERT INTO T_AJ3 VALUES (2)",
+				"INSERT INTO T_AJ4 VALUES (10, 1, 100)",
+				"INSERT INTO T_AJ4 VALUES (11, 1, 50)",
+				"INSERT INTO T_AJ4 VALUES (12, 2, 200)",
+			},
+			Query: "SELECT sum(b.val) FROM T_AJ3 a, T_AJ4 b WHERE a.id = b.parent",
+		},
+		{
+			// MIN, MAX over JOIN.
+			Name: "min_max_join_rhs",
+			SchemaTemplate: "CREATE TABLE T_AJ7 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ8 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ7 VALUES (1)",
+				"INSERT INTO T_AJ7 VALUES (2)",
+				"INSERT INTO T_AJ8 VALUES (10, 1, 100)",
+				"INSERT INTO T_AJ8 VALUES (11, 1, 25)",
+				"INSERT INTO T_AJ8 VALUES (12, 2, 200)",
+				"INSERT INTO T_AJ8 VALUES (13, 2, 75)",
+			},
+			Query: "SELECT min(b.val), max(b.val) FROM T_AJ7 a, T_AJ8 b WHERE a.id = b.parent",
+		},
+		{
+			// SUM, COUNT combined over a JOIN — pins multi-aggregate
+			// column ordering and joint computation. AVG over JOIN
+			// is dropped: Java reports DOUBLE, Go reports BIGINT
+			// (real Go bug, must not pin via corpus until fixed).
+			Name: "sum_count_join",
+			SchemaTemplate: "CREATE TABLE T_AJ9 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ10 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ9 VALUES (1)",
+				"INSERT INTO T_AJ9 VALUES (2)",
+				"INSERT INTO T_AJ10 VALUES (10, 1, 100)",
+				"INSERT INTO T_AJ10 VALUES (11, 1, 50)",
+				"INSERT INTO T_AJ10 VALUES (12, 2, 200)",
+			},
+			Query: "SELECT sum(b.val), count(*) FROM T_AJ9 a, T_AJ10 b WHERE a.id = b.parent",
+		},
+		{
+			// COUNT(*) over JOIN where one side has no rows. Both
+			// engines must emit a single row with count = 0.
+			Name: "count_join_empty_rhs",
+			SchemaTemplate: "CREATE TABLE T_AJ11 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ12 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ11 VALUES (1)",
+				"INSERT INTO T_AJ11 VALUES (2)",
+			},
+			Query: "SELECT count(*) FROM T_AJ11 a, T_AJ12 b WHERE a.id = b.parent",
+		},
+		{
+			// COUNT(*) over JOIN where the match group multiplies —
+			// each LHS row matches multiple RHS rows; count returns
+			// the total cross-product within match groups.
+			Name: "count_join_duplicates_within_group",
+			SchemaTemplate: "CREATE TABLE T_AJ13 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ14 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ13 VALUES (1)",
+				"INSERT INTO T_AJ13 VALUES (2)",
+				"INSERT INTO T_AJ14 VALUES (10, 1)",
+				"INSERT INTO T_AJ14 VALUES (11, 1)",
+				"INSERT INTO T_AJ14 VALUES (12, 1)",
+				"INSERT INTO T_AJ14 VALUES (20, 2)",
+				"INSERT INTO T_AJ14 VALUES (21, 2)",
+			},
+			Query: "SELECT count(*) FROM T_AJ13 a, T_AJ14 b WHERE a.id = b.parent",
+		},
+		{
+			// SUM over JOIN with an additional WHERE predicate that
+			// filters the joined result.
+			Name: "sum_join_with_filter",
+			SchemaTemplate: "CREATE TABLE T_AJ15 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ16 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ15 VALUES (1)",
+				"INSERT INTO T_AJ15 VALUES (2)",
+				"INSERT INTO T_AJ16 VALUES (10, 1, 100)",
+				"INSERT INTO T_AJ16 VALUES (11, 1, 50)",
+				"INSERT INTO T_AJ16 VALUES (12, 2, 200)",
+				"INSERT INTO T_AJ16 VALUES (13, 2, 25)",
+			},
+			Query: "SELECT sum(b.val) FROM T_AJ15 a, T_AJ16 b WHERE a.id = b.parent AND b.val > 40",
+		},
+		{
+			// COUNT(*) over a derived-table joined to a base table.
+			// Pins planner shape: derived subquery on LHS, table on
+			// RHS, equi-join on derived-projected column.
+			Name: "count_derived_join_table",
+			SchemaTemplate: "CREATE TABLE T_AJ17 (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ18 (id BIGINT, gid BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ17 VALUES (1, 100, 200)",
+				"INSERT INTO T_AJ17 VALUES (2, 100, 50)",
+				"INSERT INTO T_AJ17 VALUES (3, 200, 300)",
+				"INSERT INTO T_AJ18 VALUES (10, 100, 'x')",
+				"INSERT INTO T_AJ18 VALUES (11, 200, 'y')",
+			},
+			Query: "SELECT count(*) FROM (SELECT id, gid FROM T_AJ17 WHERE val > 100) AS d, T_AJ18 b WHERE d.gid = b.gid",
+		},
+		{
+			// Aggregate over a self-join (alias same table twice).
+			Name:           "count_self_join_alias",
+			SchemaTemplate: "CREATE TABLE T_AJ19 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ19 VALUES (1, 0)",
+				"INSERT INTO T_AJ19 VALUES (2, 1)",
+				"INSERT INTO T_AJ19 VALUES (3, 1)",
+				"INSERT INTO T_AJ19 VALUES (4, 2)",
+			},
+			Query: "SELECT count(*) FROM T_AJ19 AS c, T_AJ19 AS p WHERE c.parent = p.id",
+		},
+		{
+			// COUNT(*) over a composite-PK table joined to a non-
+			// composite-PK table. Pins multi-column PK semantics.
+			Name: "count_composite_pk_join_simple",
+			SchemaTemplate: "CREATE TABLE T_AJ20 (a BIGINT, b BIGINT, fid BIGINT, PRIMARY KEY (a, b)) " +
+				"CREATE TABLE T_AJ21 (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ20 VALUES (1, 1, 100)",
+				"INSERT INTO T_AJ20 VALUES (1, 2, 200)",
+				"INSERT INTO T_AJ20 VALUES (2, 1, 100)",
+				"INSERT INTO T_AJ21 VALUES (100, 'x')",
+				"INSERT INTO T_AJ21 VALUES (200, 'y')",
+			},
+			Query: "SELECT count(*) FROM T_AJ20 c, T_AJ21 s WHERE c.fid = s.id",
+		},
+		{
+			// SUM over JOIN where RHS has no matching rows for any
+			// LHS row — SUM must return NULL (single output row).
+			Name: "sum_join_no_matches",
+			SchemaTemplate: "CREATE TABLE T_AJ22 (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AJ23 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ22 VALUES (1)",
+				"INSERT INTO T_AJ22 VALUES (2)",
+				"INSERT INTO T_AJ23 VALUES (10, 99, 100)",
+				"INSERT INTO T_AJ23 VALUES (11, 99, 50)",
+			},
+			Query: "SELECT sum(b.val) FROM T_AJ22 a, T_AJ23 b WHERE a.id = b.parent",
+		},
+		{
+			// COUNT(*) over a 3-way chain join with distinct join
+			// columns per pair (a.b_id=b.b_id, b.c_id=c.c_id) — NOT
+			// the shared-driver pattern (#53).
+			Name: "count_three_way_chain_join",
+			SchemaTemplate: "CREATE TABLE T_AJ24 (a_id BIGINT, b_id BIGINT, PRIMARY KEY (a_id)) " +
+				"CREATE TABLE T_AJ25 (b_id BIGINT, c_id BIGINT, PRIMARY KEY (b_id)) " +
+				"CREATE TABLE T_AJ26 (c_id BIGINT, name STRING, PRIMARY KEY (c_id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AJ24 VALUES (1, 10)",
+				"INSERT INTO T_AJ24 VALUES (2, 20)",
+				"INSERT INTO T_AJ25 VALUES (10, 100)",
+				"INSERT INTO T_AJ25 VALUES (20, 200)",
+				"INSERT INTO T_AJ26 VALUES (100, 'x')",
+				"INSERT INTO T_AJ26 VALUES (200, 'y')",
+			},
+			Query: "SELECT count(*) FROM T_AJ24 a, T_AJ25 b, T_AJ26 c WHERE a.b_id = b.b_id AND b.c_id = c.c_id",
+		},
 	}
 }
 
