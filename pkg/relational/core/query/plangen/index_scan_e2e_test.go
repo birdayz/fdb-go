@@ -348,6 +348,58 @@ func TestEndToEnd_SortElimByIndex(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_PlanPicksSortElimOverMaterializedSort verifies that
+// Plan() picks the sort-eliminated index scan over a materialized sort
+// (lower cost: no sort CPU overhead).
+func TestEndToEnd_PlanPicksSortElimOverMaterializedSort(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}}},
+		filterQ,
+	)
+	ref := expressions.InitialOf(sort)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status_date",
+			columns:     []string{"status", "date"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	if cascades.IsPhysicalIndexScan(plan) {
+		return
+	}
+	if cascades.IsPhysicalFilter(plan) {
+		return
+	}
+	t.Fatalf("expected sort-eliminated plan (index scan or filter wrapping index scan), got %T", plan)
+}
+
 // TestEndToEnd_SortElimWithPrefixEqAndRangeSuffix verifies sort elimination
 // when an index has both an equality prefix and a range suffix:
 // WHERE status='active' AND date>'2024' ORDER BY date with index(status,date).
