@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // FuzzPlanner_WithBatchA_NoPanic pins that the Planner with the
@@ -69,6 +71,90 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 		// Reference).
 		if err == nil && plan == nil {
 			t.Fatal("Plan succeeded but plan is nil — invariant break")
+		}
+	})
+}
+
+// FuzzPlanner_WithIndexCandidates_NoPanic exercises the full planner
+// (Default + BatchA rules) with actual MatchCandidates so that
+// ImplementIndexScanRule, IndexIntersectionRule, OrderedIndexScanRule,
+// and SortOverOrderedElimRule all fire during the same planning run.
+// Catches panics in the index-rule interaction paths that nil-PlanContext
+// targets can't reach.
+func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
+	f.Add(byte(2), byte(3), byte(1), byte(0))
+	f.Add(byte(0), byte(0), byte(0), byte(0))
+	f.Add(byte(5), byte(5), byte(3), byte(255))
+
+	colPool := []string{"A", "B", "C", "D", "STATUS", "AMOUNT", "DATE"}
+
+	f.Fuzz(func(t *testing.T, numPreds, numCands, numSort, seed byte) {
+		nPreds := int(numPreds%4) + 1
+		nCands := int(numCands%3) + 1
+		nSort := int(numSort % 3)
+
+		var candidates []MatchCandidate
+		for c := 0; c < nCands; c++ {
+			nCols := int(seed+byte(c*7))%3 + 1
+			cols := make([]string, nCols)
+			aliases := make([]values.CorrelationIdentifier, nCols)
+			for i := range cols {
+				cols[i] = colPool[(int(seed)+c*3+i)%len(colPool)]
+				aliases[i] = values.UniqueCorrelationIdentifier()
+			}
+			candidates = append(candidates, NewValueIndexScanMatchCandidate(
+				"idx_"+cols[0],
+				[]string{"T"},
+				cols,
+				aliases,
+				values.UnknownType,
+				seed%5 == 0,
+			))
+		}
+		ctx := &indexTestPlanContext{candidates: candidates}
+
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		q := expressions.ForEachQuantifier(scanRef)
+
+		preds := make([]predicates.QueryPredicate, nPreds)
+		for i := range preds {
+			col := colPool[(int(seed)+i)%len(colPool)]
+			preds[i] = predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: col, Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i+1)),
+			)
+		}
+
+		filter := expressions.NewLogicalFilterExpression(preds, q)
+		var topRef *expressions.Reference
+
+		if nSort > 0 {
+			filterRef := expressions.InitialOf(filter)
+			filterQ := expressions.ForEachQuantifier(filterRef)
+			sortKeys := make([]expressions.SortKey, nSort)
+			for i := range sortKeys {
+				col := colPool[(int(seed)+i*2)%len(colPool)]
+				sortKeys[i] = expressions.SortKey{
+					Value: &values.FieldValue{Field: col, Typ: values.UnknownType},
+				}
+			}
+			sort := expressions.NewLogicalSortExpression(sortKeys, filterQ)
+			topRef = expressions.InitialOf(sort)
+		} else {
+			topRef = expressions.InitialOf(filter)
+		}
+
+		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+		p := NewPlanner(rules, ctx)
+		p.MaxTasks = 50_000
+
+		plan, _, err := p.Plan(topRef)
+		if err != nil && err != ErrPlannerCapHit {
+			t.Fatalf("Plan: unexpected err %v", err)
+		}
+		if err == nil && plan == nil {
+			t.Fatal("Plan succeeded but plan is nil")
 		}
 	})
 }
