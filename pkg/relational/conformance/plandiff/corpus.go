@@ -10775,6 +10775,107 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_LK12 WHERE s LIKE 'a%b%' ORDER BY id",
 		},
+
+		// ===== ORDER BY DESC + reverse scans + indexed-col ORDER BY shapes =====
+		{
+			// ORDER BY indexed STRING col DESC — pins reverse-scan over a
+			// secondary STRING index (lex-descending).
+			Name:           "order_by_indexed_string_desc",
+			SchemaTemplate: "CREATE TABLE T_OBR1 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_obr1_name ON T_OBR1 (name)",
+			SetupSqls:      []string{"INSERT INTO T_OBR1 VALUES (1, 'alice'), (2, 'carol'), (3, 'bob')"},
+			Query:          "SELECT id, name FROM T_OBR1 ORDER BY name DESC",
+		},
+		{
+			// ORDER BY indexed BIGINT col DESC + WHERE on PK — exercises
+			// PK-equality filter combined with reverse-scan ordering on a
+			// secondary index.
+			Name:           "order_by_indexed_bigint_desc_pk_eq",
+			SchemaTemplate: "CREATE TABLE T_OBR2 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_obr2_v ON T_OBR2 (v)",
+			SetupSqls:      []string{"INSERT INTO T_OBR2 VALUES (1, 100), (2, 200), (3, 300)"},
+			Query:          "SELECT id, v FROM T_OBR2 WHERE id = 2 ORDER BY v DESC",
+		},
+		{
+			// ORDER BY indexed col over comma-join — pins reverse-scan
+			// ordering when the ORDER BY column lives on the right-hand
+			// table of a JOIN.
+			Name: "order_by_indexed_col_join_desc",
+			SchemaTemplate: "CREATE TABLE T_OBR3A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_OBR3B (gid BIGINT, score BIGINT, PRIMARY KEY (gid)) CREATE INDEX idx_obr3b_score ON T_OBR3B (score)",
+			SetupSqls: []string{
+				"INSERT INTO T_OBR3A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_OBR3B VALUES (10, 50), (20, 150), (30, 250)",
+			},
+			Query: "SELECT a.id, b.score FROM T_OBR3A a, T_OBR3B b WHERE a.gid = b.gid ORDER BY b.gid DESC",
+		},
+		{
+			// ORDER BY composite-PK trailing col DESC after leading-eq —
+			// exercises range-scan over the trailing PK col with reverse
+			// ordering, after the leading col is pinned by equality.
+			Name:           "order_by_composite_pk_trailing_desc",
+			SchemaTemplate: "CREATE TABLE T_OBR4 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls:      []string{"INSERT INTO T_OBR4 VALUES ('us', 1, 'a'), ('us', 2, 'b'), ('us', 3, 'c'), ('eu', 1, 'd')"},
+			Query:          "SELECT region, id, name FROM T_OBR4 WHERE region = 'us' ORDER BY id DESC",
+		},
+		{
+			// ORDER BY indexed col with trailing-comparison filter —
+			// LIMIT itself is rejected (#4) so we use a comparison filter
+			// to bound the scan instead.
+			Name:           "order_by_indexed_col_with_trailing_cmp",
+			SchemaTemplate: "CREATE TABLE T_OBR5 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_obr5_v ON T_OBR5 (v)",
+			SetupSqls:      []string{"INSERT INTO T_OBR5 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500)"},
+			Query:          "SELECT id, v FROM T_OBR5 WHERE v < 400 ORDER BY v DESC",
+		},
+		{
+			// ORDER BY PK after DELETE-some — pins the post-DELETE row
+			// order: deleted PKs disappear from the scan, surviving rows
+			// stay in PK order.
+			Name:           "order_by_pk_after_delete_some",
+			SchemaTemplate: "CREATE TABLE T_OBR6 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_OBR6 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+				"DELETE FROM T_OBR6 WHERE id = 2",
+				"DELETE FROM T_OBR6 WHERE id = 4",
+			},
+			Query: "SELECT id, val FROM T_OBR6 ORDER BY id",
+		},
+		{
+			// ORDER BY indexed col with NULL values present — pins
+			// NULL-ordering position (NULLs FIRST or LAST) on a reverse
+			// scan over a nullable indexed column.
+			Name:           "order_by_indexed_col_with_nulls_desc",
+			SchemaTemplate: "CREATE TABLE T_OBR7 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_obr7_v ON T_OBR7 (v)",
+			SetupSqls:      []string{"INSERT INTO T_OBR7 VALUES (1, 100), (2, NULL), (3, 200), (4, NULL)"},
+			Query:          "SELECT id, v FROM T_OBR7 ORDER BY v DESC",
+		},
+		{
+			// ORDER BY composite-PK both ASC explicit — pins the
+			// explicit-ASC parser path (vs the implicit-ASC default) and
+			// confirms it produces identical row order to natural-PK scan.
+			Name:           "order_by_composite_pk_both_asc_explicit",
+			SchemaTemplate: "CREATE TABLE T_OBR8 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls:      []string{"INSERT INTO T_OBR8 VALUES ('us', 2, 'b'), ('us', 1, 'a'), ('eu', 1, 'c'), ('eu', 2, 'd')"},
+			Query:          "SELECT region, id, name FROM T_OBR8 ORDER BY region ASC, id ASC",
+		},
+		{
+			// ORDER BY PK with multi-AND filter on indexed cols — pins
+			// the AND-chain filter composition on indexed columns
+			// combined with PK-ordered output.
+			Name:           "order_by_pk_multi_and_indexed",
+			SchemaTemplate: "CREATE TABLE T_OBR9 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_obr9_a ON T_OBR9 (a) CREATE INDEX idx_obr9_b ON T_OBR9 (b)",
+			SetupSqls:      []string{"INSERT INTO T_OBR9 VALUES (1, 1, 100), (2, 2, 200), (3, 1, 300), (4, 2, 400), (5, 1, 100)"},
+			Query:          "SELECT id, a, b FROM T_OBR9 WHERE a = 1 AND b > 50 ORDER BY id",
+		},
+		{
+			// ORDER BY composite-PK both DESC explicit — companion to
+			// _both_asc_explicit; pins reverse-scan order over a
+			// composite PK. Java may reject mixed-direction multi-col
+			// ORDER BY (Cascades single-col-only), but same-direction
+			// multi-col (both DESC) historically planned.
+			Name:           "order_by_composite_pk_both_desc_explicit",
+			SchemaTemplate: "CREATE TABLE T_OBR10 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls:      []string{"INSERT INTO T_OBR10 VALUES ('us', 2, 'b'), ('us', 1, 'a'), ('eu', 1, 'c'), ('eu', 2, 'd')"},
+			Query:          "SELECT region, id, name FROM T_OBR10 ORDER BY region DESC, id DESC",
+		},
 	}
 }
 
