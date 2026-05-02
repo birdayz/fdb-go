@@ -6,14 +6,16 @@ import (
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
-// StripIdentifierQuotes removes surrounding double-quote or backtick
-// pairs from an identifier's raw parse text. Used before comparing
-// identifier names.
+// StripIdentifierQuotes normalizes an identifier's raw parse text to
+// its canonical lookup form: quoted identifiers are stripped of their
+// surrounding `"` or backticks and otherwise preserved case-for-case;
+// unquoted identifiers are folded to upper case. Mirrors Java's
+// SemanticAnalyzer.normalizeString (case-sensitive=false default).
 func StripIdentifierQuotes(s string) string {
 	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
 		return s[1 : len(s)-1]
 	}
-	return s
+	return strings.ToUpper(s)
 }
 
 // FullIdToName converts a FullId parse-tree node to a dot-separated,

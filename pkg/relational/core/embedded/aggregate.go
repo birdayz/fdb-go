@@ -48,7 +48,7 @@ func requireMinMaxNumeric(v driver.Value) error {
 		"unable to encapsulate aggregate operation due to type mismatch(es)")
 }
 
-func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, data [][]driver.Value, err error) {
+func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQuery, filtered []map[string]driver.Value) (cols []string, colTypes []string, data [][]driver.Value, err error) {
 	// DISTINCT aggregates are intentionally rejected — Java alignment.
 	// fdb-relational 4.11.1.0's parser visitor NPEs on every aggregate
 	// with DISTINCT (`AggregateWindowedFunctionContext.ALL().getText()`
@@ -63,7 +63,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	// principle: doesn't work in Java → doesn't work in Go.
 	for _, ac := range sq.aggCols {
 		if ac.aggDistinct {
-			return nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			return nil, nil, nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"DISTINCT aggregate %s is not supported", ac.aggFunc)
 		}
 	}
@@ -77,13 +77,13 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		if sq.havingExpr != nil {
 			keep, hErr := evalHaving(ctx, c, map[string]driver.Value{"COUNT(*)": count}, sq.havingExpr)
 			if hErr != nil {
-				return nil, nil, hErr
+				return nil, nil, nil, hErr
 			}
 			if !keep {
-				return []string{countStarOutName(sq)}, nil, nil
+				return []string{countStarOutName(sq)}, []string{"BIGINT"}, nil, nil
 			}
 		}
-		return []string{countStarOutName(sq)}, [][]driver.Value{{count}}, nil
+		return []string{countStarOutName(sq)}, []string{"BIGINT"}, [][]driver.Value{{count}}, nil
 	}
 
 	// Map-path SQL §7.10 GR1 pre-check: every `groupCol` in sq.aggCols
@@ -129,7 +129,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			}
 			if _, defined := filtered[0][ac.groupCol]; defined {
-				return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
+				return nil, nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 					"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 					ac.groupCol)
 			}
@@ -150,7 +150,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 					continue
 				}
 			}
-			return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+			return nil, nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found", ac.aggArg)
 		}
 		// outExpr entries (post-aggregation projection expressions like
@@ -190,7 +190,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				_, definedQual := filtered[0][ref]
 				_, definedBare := filtered[0][bare]
 				if definedQual || definedBare {
-					return nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeGroupingError,
 						"column %q must appear in the GROUP BY clause or be used in an aggregate function",
 						ref)
 				}
@@ -227,14 +227,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			if gi < len(sq.groupByExprs) && sq.groupByExprs[gi] != nil {
 				v, evalErr := evalExprOnMap(ctx, c, row, sq.groupByExprs[gi])
 				if evalErr != nil {
-					return nil, nil, evalErr
+					return nil, nil, nil, evalErr
 				}
 				gVals[gi] = v
 				continue
 			}
 			if v, ok := row[gcol]; ok {
 				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-					return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 						"GROUP BY column reference %q is ambiguous", m.Col)
 				}
 				gVals[gi] = v
@@ -246,7 +246,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				// group-key value.
 				v := row[gcol[dot+1:]]
 				if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-					return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 						"GROUP BY column reference %q is ambiguous", m.Col)
 				}
 				gVals[gi] = v
@@ -286,7 +286,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			case ac.aggExpr != nil:
 				v, evalErr := evalExprOnMap(ctx, c, row, ac.aggExpr)
 				if evalErr != nil {
-					return nil, nil, evalErr
+					return nil, nil, nil, evalErr
 				}
 				colVal = v
 			case ac.aggArg != "":
@@ -301,7 +301,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				v, ok := row[ac.aggArg]
 				if ok {
 					if m, isAmb := v.(ambiguousColumnMarker); isAmb {
-						return nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						return nil, nil, nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"aggregate argument %q is ambiguous", m.Col)
 					}
 					colVal = v
@@ -324,7 +324,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			case "SUM", "AVG":
 				fv, ok := functions.ToFloat64(colVal)
 				if !ok {
-					return nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+					return nil, nil, nil, api.NewErrorf(api.ErrCodeInvalidParameter,
 						"unable to encapsulate aggregate operation due to type mismatch(es)")
 				}
 				if ac.aggFunc == "SUM" {
@@ -336,7 +336,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 						// .
 						r, ok := functions.AddInt64Checked(gs.sumsI[i], iv)
 						if !ok {
-							return nil, nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
+							return nil, nil, nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 								"long overflow")
 						}
 						gs.sumsI[i] = r
@@ -349,14 +349,14 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 				}
 			case "MIN":
 				if err := requireMinMaxNumeric(colVal); err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				if gs.mins[i] == nil || functions.CompareValues(colVal, gs.mins[i]) < 0 {
 					gs.mins[i] = colVal
 				}
 			case "MAX":
 				if err := requireMinMaxNumeric(colVal); err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				if gs.maxes[i] == nil || functions.CompareValues(colVal, gs.maxes[i]) > 0 {
 					gs.maxes[i] = colVal
@@ -430,8 +430,19 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		}
 	}
 	cols = make([]string, len(emitIdx))
+	colTypes = make([]string, len(emitIdx))
 	for out, i := range emitIdx {
-		cols[out] = sq.aggCols[i].outName
+		ac := sq.aggCols[i]
+		cols[out] = ac.outName
+		// JOIN / CTE multi-source: no single msgDesc to consult, so
+		// SUM/MIN/MAX over a column ref falls back to BIGINT (matches
+		// the previous JOIN-path heuristic). COUNT → BIGINT and
+		// AVG → DOUBLE land correctly without msgDesc.
+		t := aggregateResultJDBCType(ac, nil)
+		if t == "" {
+			t = "BIGINT"
+		}
+		colTypes[out] = t
 	}
 	_ = visibleCount // surfaced via stripAggregateSortOnly()
 	for _, key := range groupOrder {
@@ -523,7 +534,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 			}
 			v, evalErr := evalExprOnMap(ctx, c, rowMap, ac.outExpr)
 			if evalErr != nil {
-				return nil, nil, evalErr
+				return nil, nil, nil, evalErr
 			}
 			fullVals[i] = v
 			rowMap[ac.outName] = v
@@ -531,7 +542,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		if sq.havingExpr != nil {
 			ok, hErr := evalHaving(ctx, c, rowMap, sq.havingExpr)
 			if hErr != nil {
-				return nil, nil, hErr
+				return nil, nil, nil, hErr
 			}
 			if !ok {
 				continue
@@ -543,7 +554,7 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 		}
 		data = append(data, rowVals)
 	}
-	return cols, data, nil
+	return cols, colTypes, data, nil
 }
 
 // stripAggregateSortOnly removes trailing sort-only columns added by

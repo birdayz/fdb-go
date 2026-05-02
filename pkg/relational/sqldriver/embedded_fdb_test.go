@@ -830,7 +830,7 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 		tbl, _ := vals[2].(string)
 		// Filter to this test's database only — other parallel tests may also
 		// have an "Employee" table in a different database.
-		if dbCatalog != "/testdb_is_columns" || tbl != "Employee" {
+		if dbCatalog != "/testdb_is_columns" || tbl != "EMPLOYEE" {
 			continue
 		}
 		ordinal, _ := vals[4].(int64)
@@ -846,13 +846,13 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 	g.Expect(colRows).To(gomega.HaveLen(2))
 
 	// Verify emp_id: NOT NULL, BIGINT (CodeLong).
-	g.Expect(colRows[0].colName).To(gomega.Equal("emp_id"))
+	g.Expect(colRows[0].colName).To(gomega.Equal("EMP_ID"))
 	g.Expect(colRows[0].ordinal).To(gomega.Equal(int64(1)))
 	g.Expect(colRows[0].nullable).To(gomega.Equal("NO"))
 	g.Expect(colRows[0].dataType).To(gomega.Equal("LONG"))
 
 	// Verify name: nullable STRING (CodeString).
-	g.Expect(colRows[1].colName).To(gomega.Equal("name"))
+	g.Expect(colRows[1].colName).To(gomega.Equal("NAME"))
 	g.Expect(colRows[1].ordinal).To(gomega.Equal(int64(2)))
 	g.Expect(colRows[1].nullable).To(gomega.Equal("YES"))
 	g.Expect(colRows[1].dataType).To(gomega.Equal("STRING"))
@@ -1009,13 +1009,13 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	for _, r := range idxRows {
 		byName[r.indexName] = r
 	}
-	g.Expect(byName).To(gomega.HaveKey("by_name"))
-	g.Expect(byName["by_name"].tableName).To(gomega.Equal("Product"))
-	g.Expect(byName["by_name"].isUnique).To(gomega.Equal("NO"))
+	g.Expect(byName).To(gomega.HaveKey("BY_NAME"))
+	g.Expect(byName["BY_NAME"].tableName).To(gomega.Equal("PRODUCT"))
+	g.Expect(byName["BY_NAME"].isUnique).To(gomega.Equal("NO"))
 
-	g.Expect(byName).To(gomega.HaveKey("by_id"))
-	g.Expect(byName["by_id"].tableName).To(gomega.Equal("Product"))
-	g.Expect(byName["by_id"].isUnique).To(gomega.Equal("YES"))
+	g.Expect(byName).To(gomega.HaveKey("BY_ID"))
+	g.Expect(byName["BY_ID"].tableName).To(gomega.Equal("PRODUCT"))
+	g.Expect(byName["BY_ID"].isUnique).To(gomega.Equal("YES"))
 }
 
 func TestFDB_SelectColumnProjection(t *testing.T) {
@@ -1153,7 +1153,7 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 	// serialization rejects the message with RecordSerializationError.
 	_, err = db.ExecContext(ctx, "INSERT INTO Rec (val) VALUES ('no-pk')")
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("rec_id"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("REC_ID"))
 }
 
 // TestFDB_SelectWhereTypeMismatch verifies that comparing a BIGINT column
@@ -1281,8 +1281,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
 	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("val"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+	g.Expect(apiErr.Message).To(gomega.Equal("Cascades planner could not plan query"))
 }
 
 // TestFDB_SelectOrderByRejectionExpression pins the rejection contract
@@ -1325,8 +1324,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue(), "error %T is not *api.Error: %v", err, err)
 	g.Expect(string(apiErr.Code)).To(gomega.Equal("0AF01"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("arbitrary expression"))
-	g.Expect(apiErr.Message).To(gomega.ContainSubstring("Add an index"))
+	g.Expect(apiErr.Message).To(gomega.Equal("Cascades planner could not plan query"))
 }
 
 func TestFDB_SelectOrderByDesc(t *testing.T) {
@@ -5455,20 +5453,21 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, status, priority) VALUES (3, 'open', 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// CASE in WHERE: keep rows where (CASE status=open THEN priority<3 ELSE priority>50 END).
+	// Java alignment (TODO #41b): WHERE on a CASE expression is
+	// rejected at planning time with byte-equal `expected BooleanValue
+	// but got PickValue`. Go follows. Use AND/OR for the same logic
+	// (`WHERE (status = 'open' AND priority < 3) OR (status <> 'open'
+	// AND priority > 50)`).
 	rows, err := db.QueryContext(ctx, `
 		SELECT id FROM T WHERE CASE WHEN status = 'open' THEN priority < 3 ELSE priority > 50 END
 		ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected rejection of CASE in WHERE; got success")
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.Equal([]int64{2, 3})) // id=2 closed+100>50, id=3 open+1<3
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Message).To(gomega.Equal("expected BooleanValue but got PickValue"))
 }
 
 // TestFDB_InsertMultiRowWithExpressions pins INSERT VALUES with row
@@ -5874,21 +5873,19 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, status, priority) VALUES (3, 'open', 1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Same semantics as TestFDB_CaseInWhere but routed through the map path via a CTE.
+	// Java alignment (TODO #41b): the WHERE-on-CASE rejection fires at
+	// every WHERE entry point including the CTE-routed map path.
 	rows, err := db.QueryContext(ctx, `
 		WITH c AS (SELECT id, status, priority FROM T)
 		SELECT id FROM c WHERE CASE WHEN status = 'open' THEN priority < 3 ELSE priority > 50 END
 		ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
-		ids = append(ids, id)
+	if err == nil {
+		_ = rows.Close()
+		t.Fatal("expected rejection of CASE in WHERE; got success")
 	}
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
+	var apiErr *api.Error
+	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
+	g.Expect(apiErr.Message).To(gomega.Equal("expected BooleanValue but got PickValue"))
 }
 
 func TestFDB_NullPropagationInFunctions(t *testing.T) {

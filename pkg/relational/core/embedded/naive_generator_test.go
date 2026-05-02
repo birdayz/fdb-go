@@ -36,8 +36,8 @@ func helperPlan(t *testing.T, sql string) interface {
 func TestNaiveGenerator_Explain_SelectStar(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "SELECT * FROM t")
-	if got := p.Explain(); got != "Scan(t)" {
-		t.Fatalf("got %q, want Scan(t)", got)
+	if got := p.Explain(); got != "Scan(T)" {
+		t.Fatalf("got %q, want Scan(T)", got)
 	}
 	if p.IsUpdate() {
 		t.Fatal("SELECT should not be an update plan")
@@ -54,10 +54,10 @@ func TestNaiveGenerator_Explain_SelectWhere(t *testing.T) {
 	got := p.Explain()
 	// Composition: Project → Sort → Filter → Scan.
 	for _, want := range []string{
-		"Project(id, name)",
-		"Sort(id ASC)",
+		"Project(ID, NAME)",
+		"Sort(ID ASC)",
 		"Filter(active = TRUE)",
-		"Scan(users)",
+		"Scan(USERS)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
@@ -69,7 +69,7 @@ func TestNaiveGenerator_Explain_JoinWithWhere(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "SELECT a.id FROM a INNER JOIN b ON a.id = b.a_id WHERE a.active = TRUE")
 	got := p.Explain()
-	for _, want := range []string{"Project(a.id)", "Filter(a.active = TRUE)", "InnerJoin(on a.id = b.a_id)", "Scan(a)", "Scan(b)"} {
+	for _, want := range []string{"Project(A.ID)", "Filter(a.active = TRUE)", "InnerJoin(on a.id = b.a_id)", "Scan(A)", "Scan(B)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -80,7 +80,7 @@ func TestNaiveGenerator_Explain_Delete(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "DELETE FROM t WHERE id > 5")
 	got := p.Explain()
-	for _, want := range []string{"Delete(t)", "Filter(id > 5)", "Scan(t)"} {
+	for _, want := range []string{"Delete(T)", "Filter(id > 5)", "Scan(T)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -94,7 +94,7 @@ func TestNaiveGenerator_Explain_Update(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "UPDATE users SET active = FALSE WHERE id = 5")
 	got := p.Explain()
-	for _, want := range []string{"Update(users SET active=FALSE)", "Filter(id = 5)", "Scan(users)"} {
+	for _, want := range []string{"Update(USERS SET ACTIVE=FALSE)", "Filter(id = 5)", "Scan(USERS)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -104,8 +104,8 @@ func TestNaiveGenerator_Explain_Update(t *testing.T) {
 func TestNaiveGenerator_Explain_Insert(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "INSERT INTO t (id, name) VALUES (1, 'a')")
-	if got := p.Explain(); !strings.Contains(got, "Insert(t(id, name))") {
-		t.Fatalf("got %q, want Insert(t(id, name))", got)
+	if got := p.Explain(); !strings.Contains(got, "Insert(T(ID, NAME))") {
+		t.Fatalf("got %q, want Insert(T(ID, NAME))", got)
 	}
 }
 
@@ -116,8 +116,8 @@ func TestNaiveGenerator_Explain_UnionAll(t *testing.T) {
 	if !strings.Contains(got, "UnionAll") {
 		t.Fatalf("got %q, want UnionAll", got)
 	}
-	if !strings.Contains(got, "Scan(a)") || !strings.Contains(got, "Scan(b)") {
-		t.Fatalf("got %q, want Scan(a) and Scan(b)", got)
+	if !strings.Contains(got, "Scan(A)") || !strings.Contains(got, "Scan(B)") {
+		t.Fatalf("got %q, want Scan(A) and Scan(B)", got)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestNaiveGenerator_Explain_ExplainSelect(t *testing.T) {
 	if !strings.HasPrefix(got, "EXPLAIN: ") {
 		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
 	}
-	if !strings.Contains(got, "Scan(t)") {
-		t.Fatalf("got %q, want inner Scan(t)", got)
+	if !strings.Contains(got, "Scan(T)") {
+		t.Fatalf("got %q, want inner Scan(T)", got)
 	}
 	if p.IsUpdate() {
 		t.Fatal("EXPLAIN should not be an update plan (returns rows)")
@@ -164,7 +164,7 @@ func TestNaiveGenerator_Explain_ExplainSelectWithWhere(t *testing.T) {
 	t.Parallel()
 	p := helperPlan(t, "EXPLAIN SELECT id FROM users WHERE active = TRUE")
 	got := p.Explain()
-	for _, want := range []string{"EXPLAIN: ", "Filter(active = TRUE)", "Scan(users)"} {
+	for _, want := range []string{"EXPLAIN: ", "Filter(active = TRUE)", "Scan(USERS)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("got %q, missing %q", got, want)
 		}
@@ -207,8 +207,8 @@ func TestNaiveGenerator_Explain_ExplainDelete(t *testing.T) {
 	if !strings.HasPrefix(got, "EXPLAIN: ") {
 		t.Fatalf("got %q, want EXPLAIN:-prefix", got)
 	}
-	if !strings.Contains(got, "Delete(orders") {
-		t.Fatalf("got %q, want inner Delete(orders)", got)
+	if !strings.Contains(got, "Delete(ORDERS") {
+		t.Fatalf("got %q, want inner Delete(ORDERS)", got)
 	}
 }
 
@@ -499,7 +499,7 @@ func TestNaiveGenerator_Explain_ExplainUnion(t *testing.T) {
 	if !strings.HasPrefix(got, "EXPLAIN: ") {
 		t.Fatalf("got %q, want EXPLAIN: prefix", got)
 	}
-	for _, want := range []string{"Scan(a)", "Scan(b)"} {
+	for _, want := range []string{"Scan(A)", "Scan(B)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("got %q, missing %q (UNION inner)", got, want)
 		}
@@ -519,7 +519,7 @@ func TestNaiveGenerator_Explain_ExplainCTE(t *testing.T) {
 	if !strings.HasPrefix(got, "EXPLAIN: ") {
 		t.Fatalf("got %q, want EXPLAIN: prefix", got)
 	}
-	for _, want := range []string{"users", "active_users"} {
+	for _, want := range []string{"USERS", "ACTIVE_USERS"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("got %q, missing %q (CTE producer/consumer reference)", got, want)
 		}

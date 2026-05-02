@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"database/sql/driver"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -131,6 +132,19 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 
 			cloned := proto.Clone(rec.Record)
 			clonedRefl := cloned.ProtoReflect()
+			// SQL standard: every SET right-hand side reads the row's
+			// PRE-UPDATE state. Evaluate all RHS expressions first
+			// against the original (unmodified) record, then apply all
+			// assignments in a second pass. Pre-fix Go evaluated each
+			// RHS against the in-progress `cloned`, so `UPDATE t SET
+			// x = x + y, y = y - x` read the already-updated x in the
+			// second SET.
+			type pendingUpdate struct {
+				fd      protoreflect.FieldDescriptor
+				colName string
+				val     driver.Value
+			}
+			pending := make([]pendingUpdate, 0, len(updatedElems))
 			for _, elem := range updatedElems {
 				colName := functions.FullIdToName(elem.FullColumnName().FullId())
 				fd := msgDesc.Fields().ByName(protoreflect.Name(colName))
@@ -142,18 +156,21 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"Attempting to query non existing column %s", strings.ToUpper(colName))
 				}
-				val, evalErr := evalExpr(ctx, c, cloned, elem.Expression())
+				val, evalErr := evalExpr(ctx, c, rec.Record, elem.Expression())
 				if evalErr != nil {
 					return nil, evalErr
 				}
-				if val == nil {
+				pending = append(pending, pendingUpdate{fd: fd, colName: colName, val: val})
+			}
+			for _, p := range pending {
+				if p.val == nil {
 					// UPDATE SET col = NULL on a NOT NULL column must reject
 					// with ErrCodeNotNullViolation (23502), matching Java.
-					if fd.Cardinality() == protoreflect.Required {
+					if p.fd.Cardinality() == protoreflect.Required {
 						return nil, api.NewErrorf(api.ErrCodeNotNullViolation,
-							"NULL value in column %q violates NOT NULL constraint", colName)
+							"NULL value in column %q violates NOT NULL constraint", p.colName)
 					}
-					clonedRefl.Clear(fd)
+					clonedRefl.Clear(p.fd)
 					continue
 				}
 				// Java alignment : UPDATE on a PK column
@@ -161,15 +178,15 @@ func (c *EmbeddedConnection) execUpdate(ctx context.Context, upd antlrgen.IUpdat
 				// 'record does not exist' (Java's RecordDoesNotExist
 				// from the in-place save lookup). NULL case already
 				// handled above (NotNullViolation, more specific).
-				if _, isPK := pkSet[colName]; isPK {
+				if _, isPK := pkSet[p.colName]; isPK {
 					return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 						"record does not exist")
 				}
-				protoVal, convErr := functions.ConvertToProtoValue(fd, val)
+				protoVal, convErr := functions.ConvertToProtoValue(p.fd, p.val)
 				if convErr != nil {
 					return nil, convErr
 				}
-				clonedRefl.Set(fd, protoVal)
+				clonedRefl.Set(p.fd, protoVal)
 			}
 			// UPDATE legitimately overwrites an existing record, so no
 			// existence check — but secondary UNIQUE indexes can still

@@ -613,7 +613,17 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					}
 					aggArgFDs[i] = fd
 				} else if ac.aggArg != "" {
-					fd := msgDesc.Fields().ByName(protoreflect.Name(ac.aggArg))
+					// Strip qualifier `t.val` → `val` so a qualified
+					// aggregate argument resolves against the descriptor
+					// field name. The qualifier validity is implicit:
+					// only one source is in scope on the proto path, so
+					// any qualifier that's not garbage is the table or
+					// its alias.
+					bare := ac.aggArg
+					if dot := strings.LastIndex(bare, "."); dot >= 0 {
+						bare = bare[dot+1:]
+					}
+					fd := msgDesc.Fields().ByName(protoreflect.Name(bare))
 					if fd == nil {
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 							"aggregate column %q not found in table %q", ac.aggArg, sq.tableName)
@@ -1305,9 +1315,15 @@ func (c *EmbeddedConnection) execSelectQueryFull(ctx context.Context, sq *select
 					detail = "arbitrary expression"
 				}
 			}
+			// Java-aligned wording (TODO #43): fdb-relational's Cascades
+			// planner emits the generic `Cascades planner could not plan
+			// query` whenever no rule produces a plan; ORDER BY without
+			// a satisfying index is one such case. Match the message
+			// byte-equal so the cross-engine harness can pin rejection.
+			// Detail is preserved in Context for debuggability.
+			_ = detail
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedSort,
-				"ORDER BY %s cannot be satisfied by any scan strategy; no index produces rows in the requested order. Add an index on the ORDER BY column(s) to make the query plannable",
-				detail)
+				"Cascades planner could not plan query")
 		}
 		if !satisfiable {
 			// Aggregate path only — small result set, sort in-memory.

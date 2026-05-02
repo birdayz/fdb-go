@@ -260,6 +260,82 @@ var _ = Describe("RunSql Harness", func() {
 				javaResult := javaR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 				goResult := goR.RunWithSetup(ctx, rq.SchemaTemplate, rq.SetupSqls, rq.Query)
 
+				// Divergence path: when an entry carries a Divergence
+				// annotation, assert Go's behaviour against the embedded
+				// expectation but do NOT pin Java's actual behaviour.
+				// Lets us keep documented Java upstream bugs (NPEs,
+				// dedup failures, etc.) inside the corpus while still
+				// catching Go-side regressions.
+				if rq.Divergence != nil {
+					div := rq.Divergence
+					switch div.Direction {
+					case plandiff.DivergenceJavaErrorsGoCorrect:
+						Expect(javaResult.Err).To(HaveOccurred(),
+							"corpus entry %q: marked %s but Java succeeded — upstream may be fixed; revisit annotation\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
+							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+					case plandiff.DivergenceJavaWrongRowsGoCorrect:
+						Expect(javaResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s expects Java to succeed (with wrong rows)\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
+							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						// Stale-annotation guard: if Java has silently
+						// started returning the same rows as Go, the
+						// upstream bug may be fixed and the annotation
+						// should be re-audited / removed. Symmetric with
+						// the JavaErrorsGoCorrect "Java succeeded" guard.
+						// For intermittent Java bugs use
+						// DivergenceJavaIntermittentGoCorrect, which
+						// skips this guard.
+						Expect(javaResult.Rows.Rows).NotTo(Equal(div.GoExpectedRows),
+							"corpus entry %q: marked %s but Java now matches Go's expected rows — upstream may be fixed; revisit annotation\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+					case plandiff.DivergenceJavaIntermittentGoCorrect:
+						Expect(javaResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s expects Java to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s requires Go to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Rows.Rows).To(Equal(div.GoExpectedRows),
+							"corpus entry %q: Go rows regressed under %s\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+					case plandiff.DivergenceBothErrorMessagesDrift:
+						Expect(javaResult.Err).To(HaveOccurred(),
+							"corpus entry %q: %s expects Java to error\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err).To(HaveOccurred(),
+							"corpus entry %q: %s expects Go to error\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err.Error()).To(ContainSubstring(div.GoErrorContains),
+							"corpus entry %q: Go error wording regressed under %s\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+					case plandiff.DivergenceJavaSucceedsGoRejects:
+						Expect(javaResult.Err).NotTo(HaveOccurred(),
+							"corpus entry %q: %s expects Java to succeed\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err).To(HaveOccurred(),
+							"corpus entry %q: %s requires Go to error\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+						Expect(goResult.Err.Error()).To(ContainSubstring(div.GoErrorContains),
+							"corpus entry %q: Go error wording regressed under %s\n  Reason: %s",
+							rq.Name, div.Direction, div.Reason)
+					default:
+						Fail(fmt.Sprintf("corpus entry %q: unknown divergence direction %q", rq.Name, div.Direction))
+					}
+					return
+				}
+
 				if javaResult.Err != nil {
 					// Java errored → Go must error with a byte-equal
 					// core message. Both engines unwrap to a typed

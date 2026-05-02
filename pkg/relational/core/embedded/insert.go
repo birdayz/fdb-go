@@ -102,6 +102,14 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 
 	// Handle INSERT INTO ... SELECT (insertStatementValueSelect).
 	if selCtx, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueSelectContext); ok {
+		// Java alignment (TODO #55): fdb-relational rejects any
+		// INSERT…(cols) SELECT shape — `setting column ordering for
+		// insert with select is not supported`. Plain `INSERT INTO t
+		// SELECT …` (no column list) is accepted by both engines.
+		if len(explicitCols) > 0 {
+			return 0, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"setting column ordering for insert with select is not supported")
+		}
 		return c.execInsertSelect(ctx, tableName, explicitCols, selCtx.QueryExpressionBody())
 	}
 
@@ -181,6 +189,19 @@ func (c *EmbeddedConnection) execInsert(ctx context.Context, ins antlrgen.IInser
 				fd := msgDesc.Fields().ByName(protoreflect.Name(col))
 				if fd == nil {
 					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in table %q", col, tableName)
+				}
+				// Java alignment (TODO #60): a parenthesized expression
+				// at a row-constructor slot — `INSERT INTO t VALUES (1,
+				// (2+3))` — is treated as a single-element record
+				// constructor; Java rejects with byte-equal `expected
+				// Record but got Primitive`. Detect the structural
+				// shape (PredicatedExpression wrapping a
+				// RecordConstructorExpressionAtom) and reject.
+				if pred, ok := exprs[i].Expression().(*antlrgen.PredicatedExpressionContext); ok && pred.Predicate() == nil {
+					if _, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
+						return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+							"expected Record but got Primitive")
+					}
 				}
 				val, evalErr := evalExpr(ctx, c, nil, exprs[i].Expression())
 				if evalErr != nil {

@@ -70,6 +70,20 @@ func rejectTopLevelParenthesizedWhere(expr antlrgen.IExpressionContext) error {
 		return api.NewError(api.ErrCodeInvalidParameter,
 			"expected BooleanValue but got RecordConstructorValue")
 	}
+	// Java alignment (TODO #41b): WHERE on a CASE expression that
+	// returns a boolean (`WHERE CASE WHEN cond THEN TRUE … END`)
+	// is rejected by fdb-relational with `expected BooleanValue but
+	// got PickValue` — the planner's top-level Assert.castUnchecked
+	// to BooleanValue rejects PickValue (the IR node for CASE) the
+	// same way it rejects RecordConstructorValue. Match byte-equal.
+	if fc, isFC := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext); isFC {
+		if sf, isSpec := fc.FunctionCall().(*antlrgen.SpecificFunctionCallContext); isSpec {
+			if _, isCase := sf.SpecificFunction().(*antlrgen.CaseFunctionCallContext); isCase {
+				return api.NewError(api.ErrCodeInvalidParameter,
+					"expected BooleanValue but got PickValue")
+			}
+		}
+	}
 	return nil
 }
 

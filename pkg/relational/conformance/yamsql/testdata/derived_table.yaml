@@ -39,12 +39,21 @@ tests:
     rows:
       - [30]
 
-  # Derived-table-as-extra-FROM-source is NOT yet supported — the
-  # comma-join path only accepts plain table items beyond the first
-  # source. Order matters: `(SELECT ...) AS a, t AS b` works (first
-  # source may be any TableSourceItem), but `t, (SELECT ...) AS x`
-  # is rejected with SQLSTATE 0A000. Pinned with the expected error
-  # so the limitation is visible and flips the moment it's lifted.
+  # Derived-table-as-extra-FROM-source: TODO #58 fix landed
+  # dayshift-66. The comma-join path now accepts SubqueryTableItem
+  # for any extra source; the dispatcher materializes each derived
+  # as a CTE before the join executor runs. `t, (SELECT … ) AS x`
+  # cross-joins t (5 rows) with the 2-row derived → 10-row product.
   - query: |
-      SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x
-    error_code: "0A000"
+      SELECT t.id FROM t, (SELECT id FROM t WHERE id <= 2) AS x ORDER BY t.id
+    rows:
+      - [1]
+      - [1]
+      - [2]
+      - [2]
+      - [3]
+      - [3]
+      - [4]
+      - [4]
+      - [5]
+      - [5]

@@ -107,7 +107,7 @@ func TestBuildLogicalPlanWithCatalog_NilMetaData(t *testing.T) {
 	if filter.Predicate != nil {
 		t.Fatal("expected Predicate nil when md is nil")
 	}
-	if want := "Filter(id > 5)\n  Scan(t)"; op.Explain("") != want {
+	if want := "Filter(id > 5)\n  Scan(T)"; op.Explain("") != want {
 		t.Fatalf("Explain: got %q, want %q", op.Explain(""), want)
 	}
 }
@@ -127,7 +127,7 @@ func TestBuildLogicalPlanWithCatalog_UnknownTable(t *testing.T) {
 	if filter.Predicate != nil {
 		t.Fatal("expected Predicate nil on catalog miss")
 	}
-	if want := "Filter(id > 5)\n  Scan(NoSuchTable)"; op.Explain("") != want {
+	if want := "Filter(id > 5)\n  Scan(NOSUCHTABLE)"; op.Explain("") != want {
 		t.Fatalf("Explain: got %q, want %q", op.Explain(""), want)
 	}
 }

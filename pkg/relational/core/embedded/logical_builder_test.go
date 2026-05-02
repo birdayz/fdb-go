@@ -37,7 +37,7 @@ func TestBuildLogicalPlan_SimpleSelectStar(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
-	if got, want := op.Explain(""), "Scan(t)"; got != want {
+	if got, want := op.Explain(""), "Scan(T)"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -49,7 +49,7 @@ func TestBuildLogicalPlan_SelectStarWhere(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
-	want := "Filter(id > 5)\n  Scan(t)"
+	want := "Filter(id > 5)\n  Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -68,7 +68,7 @@ func TestBuildLogicalPlan_SelectColsOrder(t *testing.T) {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
 	// Project at top (projCols set), then Sort, then Scan.
-	want := "Project(id, name)\n  Sort(id DESC)\n    Scan(t)"
+	want := "Project(ID, NAME)\n  Sort(ID DESC)\n    Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -82,7 +82,7 @@ func TestBuildLogicalPlan_CountStar(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Aggregate(group=[], agg=[COUNT(*)])\n  Scan(t)"
+	want := "Aggregate(group=[], agg=[COUNT(*)])\n  Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -97,8 +97,8 @@ func TestBuildLogicalPlan_GroupBySum(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	// Project wraps the aggregate; keys list reflects the GROUP BY.
-	if got := op.Explain(""); !strings.Contains(got, "Aggregate(group=[dept], agg=[SUM(v)") {
-		t.Fatalf("got %q, want Aggregate(group=[dept], agg=[SUM(v)...])", got)
+	if got := op.Explain(""); !strings.Contains(got, "Aggregate(group=[DEPT], agg=[SUM(V)") {
+		t.Fatalf("got %q, want Aggregate(group=[DEPT], agg=[SUM(V)...])", got)
 	}
 }
 
@@ -123,10 +123,10 @@ func TestBuildLogicalPlan_InnerJoin(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Project(a.id)\n" +
+	want := "Project(A.ID)\n" +
 		"  InnerJoin(on a.id = b.a_id)\n" +
-		"    Scan(a)\n" +
-		"    Scan(b)"
+		"    Scan(A)\n" +
+		"    Scan(B)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -141,8 +141,8 @@ func TestBuildLogicalPlan_LeftJoin(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	want := "LeftJoin(on a.id = b.a_id)\n" +
-		"  Scan(a)\n" +
-		"  Scan(b)"
+		"  Scan(A)\n" +
+		"  Scan(B)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -157,8 +157,8 @@ func TestBuildLogicalPlan_RightJoin(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	want := "RightJoin(on a.id = b.a_id)\n" +
-		"  Scan(a)\n" +
-		"  Scan(b)"
+		"  Scan(A)\n" +
+		"  Scan(B)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -175,9 +175,9 @@ func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 	// Left-nested: ((a JOIN b) JOIN c)
 	want := "InnerJoin(on b.id = c.b_id)\n" +
 		"  InnerJoin(on a.id = b.a_id)\n" +
-		"    Scan(a)\n" +
-		"    Scan(b)\n" +
-		"  Scan(c)"
+		"    Scan(A)\n" +
+		"    Scan(B)\n" +
+		"  Scan(C)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -232,7 +232,7 @@ func TestBuildLogicalPlan_CTE(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	got := op.Explain("")
-	for _, want := range []string{"CTE(active_users)", "Filter(active = TRUE)", "Scan(users)", "Scan(active_users)"} {
+	for _, want := range []string{"CTE(ACTIVE_USERS)", "Filter(active = TRUE)", "Scan(USERS)", "Scan(ACTIVE_USERS)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("explain %q missing %q", got, want)
 		}
@@ -252,7 +252,7 @@ func TestBuildLogicalPlan_RecursiveCTE(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	if !strings.Contains(op.Explain(""), "RecursiveCTE(tree)") {
+	if !strings.Contains(op.Explain(""), "RecursiveCTE(TREE)") {
 		t.Fatalf("expected RecursiveCTE, got %q", op.Explain(""))
 	}
 }
@@ -273,8 +273,8 @@ func TestBuildLogicalPlan_MultiCTE(t *testing.T) {
 	}
 	// First CTE (`a`) is the outer wrap; second CTE (`b`) nests inside.
 	got := op.Explain("")
-	if strings.Index(got, "CTE(a)") > strings.Index(got, "CTE(b)") {
-		t.Fatalf("expected CTE(a) before CTE(b), got %q", got)
+	if strings.Index(got, "CTE(A)") > strings.Index(got, "CTE(B)") {
+		t.Fatalf("expected CTE(A) before CTE(B), got %q", got)
 	}
 }
 
@@ -291,7 +291,7 @@ func TestBuildLogicalPlan_UnionAll(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "UnionAll\n  Project(id)\n    Scan(a)\n  Project(id)\n    Scan(b)"
+	want := "UnionAll\n  Project(ID)\n    Scan(A)\n  Project(ID)\n    Scan(B)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -352,8 +352,8 @@ func TestBuildLogicalPlan_DerivedTable(t *testing.T) {
 	// Outer Project wraps the inner plan (which is Project on Filter
 	// on Scan). Seed: LogicalDerived doesn't exist yet; inner tree
 	// surfaces directly.
-	if got := op.Explain(""); !strings.Contains(got, "Scan(t)") || !strings.Contains(got, "Filter(id > 5)") {
-		t.Fatalf("got %q, expected inner plan to contain Scan(t) and Filter(id > 5)", got)
+	if got := op.Explain(""); !strings.Contains(got, "Scan(T)") || !strings.Contains(got, "Filter(id > 5)") {
+		t.Fatalf("got %q, expected inner plan to contain Scan(T) and Filter(id > 5)", got)
 	}
 }
 
@@ -365,7 +365,7 @@ func TestBuildLogicalPlan_AliasedTable(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil LogicalOperator")
 	}
-	want := "Scan(t AS tbl)"
+	want := "Scan(T AS TBL)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -424,7 +424,7 @@ func TestBuildLogicalPlan_Delete(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Delete(t)\n  Filter(id > 5)\n    Scan(t)"
+	want := "Delete(T)\n  Filter(id > 5)\n    Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -436,7 +436,7 @@ func TestBuildLogicalPlan_DeleteNoWhere(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Delete(t)\n  Scan(t)"
+	want := "Delete(T)\n  Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -448,7 +448,7 @@ func TestBuildLogicalPlan_Update(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Update(t SET v=v+1)\n  Filter(id = 5)\n    Scan(t)"
+	want := "Update(T SET V=v+1)\n  Filter(id = 5)\n    Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -460,7 +460,7 @@ func TestBuildLogicalPlan_UpdateMultipleSets(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Update(t SET v=1, name='x')\n  Scan(t)"
+	want := "Update(T SET V=1, NAME='x')\n  Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -488,7 +488,7 @@ func TestBuildLogicalPlan_InsertValues(t *testing.T) {
 		t.Fatal("expected non-nil")
 	}
 	// VALUES form: no Source subtree at the logical level.
-	want := "Insert(t(id, v))"
+	want := "Insert(T(ID, V))"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -500,7 +500,7 @@ func TestBuildLogicalPlan_InsertValuesNoColumnList(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Insert(t)"
+	want := "Insert(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -512,7 +512,7 @@ func TestBuildLogicalPlan_InsertSelect(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Insert(t(id))\n  Project(id)\n    Filter(id > 5)\n      Scan(src)"
+	want := "Insert(T(ID))\n  Project(ID)\n    Filter(id > 5)\n      Scan(SRC)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

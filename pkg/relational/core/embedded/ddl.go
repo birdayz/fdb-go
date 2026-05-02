@@ -9,6 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
@@ -115,7 +116,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		if td == nil {
 			continue
 		}
-		tableName := td.Uid().GetText()
+		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
 		cols, pkCols, err := parseTableDefinition(td)
 		if err != nil {
 			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
@@ -153,13 +154,13 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.Builder) error {
 	switch def := idxDef.(type) {
 	case *antlrgen.IndexOnSourceDefinitionContext:
-		indexName := def.GetIndexName().GetText()
-		tableName := def.GetSource().GetText()
+		indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+		tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
 		unique := def.UNIQUE() != nil
 		var cols []string
 		if cl := def.IndexColumnList(); cl != nil {
 			for _, spec := range cl.AllIndexColumnSpec() {
-				cols = append(cols, spec.GetColumnName().GetText())
+				cols = append(cols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
 			}
 		}
 		if len(cols) == 0 {
@@ -181,7 +182,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 	var pkCols []string
 
 	for i, colDef := range td.AllColumnDefinition() {
-		colName := colDef.Uid().GetText()
+		colName := functions.StripIdentifierQuotes(colDef.Uid().GetText())
 		ct := colDef.ColumnType()
 		if ct == nil {
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
@@ -205,7 +206,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 
 	if pkDef := td.PrimaryKeyDefinition(); pkDef != nil {
 		for _, fullID := range pkDef.FullIdList().AllFullId() {
-			pkCols = append(pkCols, fullID.GetText())
+			pkCols = append(pkCols, functions.FullIdToName(fullID))
 		}
 	}
 

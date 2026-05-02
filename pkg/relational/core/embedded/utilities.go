@@ -171,39 +171,49 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 	return b.String(), nil
 }
 
+// parseDecimalLiteralValue mirrors Java's literal-token parsing rules:
+// integer-shape text (no '.', no exponent — DECIMAL_LITERAL) goes to
+// int64; on overflow, error byte-equal with Java's
+// `NumberFormatException: For input string: "<text>"`. Float-shape text
+// (REAL_LITERAL — has '.' or exponent) parses to float64.
+func parseDecimalLiteralValue(text string) (any, error) {
+	isFloatShape := strings.ContainsAny(text, ".eE")
+	if !isFloatShape {
+		iv, err := strconv.ParseInt(text, 10, 64)
+		if err == nil {
+			return iv, nil
+		}
+		// Java's lexer emits the literal as a Long token; Long.parseLong
+		// throws NumberFormatException for any token that overflows long.
+		// The conformance harness compares the deepest cause message,
+		// which is the NumberFormatException's `For input string: "<text>"`.
+		// Match byte-equal (no exception class prefix).
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
+			"For input string: %q", text)
+	}
+	fv, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		// strconv.ParseFloat returns (±Inf, ErrRange) on magnitude
+		// overflow — treat as 22003 NUMERIC_VALUE_OUT_OF_RANGE. Any
+		// other parse error is a malformed literal → 22023.
+		if errors.Is(err, strconv.ErrRange) {
+			return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "decimal literal %q overflows float64", text)
+		}
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
+	}
+	return fv, nil
+}
+
 // evalConstant evaluates a constant parse-tree node to a Go value.
 // Returns nil for NULL.
 func evalConstant(c antlrgen.IConstantContext) (any, error) {
 	switch cv := c.(type) {
 	case *antlrgen.DecimalConstantContext:
 		text := cv.DecimalLiteral().GetText()
-		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return iv, nil
-		}
-		fv, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			// strconv.ParseFloat returns (±Inf, ErrRange) on magnitude
-			// overflow — treat as 22003 NUMERIC_VALUE_OUT_OF_RANGE. Any
-			// other parse error is a malformed literal → 22023.
-			if errors.Is(err, strconv.ErrRange) {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "decimal literal %q overflows float64", text)
-			}
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-		}
-		return fv, nil
+		return parseDecimalLiteralValue(text)
 	case *antlrgen.NegativeDecimalConstantContext:
 		text := "-" + cv.DecimalLiteral().GetText()
-		if iv, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return iv, nil
-		}
-		fv, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			if errors.Is(err, strconv.ErrRange) {
-				return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "decimal literal %q overflows float64", text)
-			}
-			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-		}
-		return fv, nil
+		return parseDecimalLiteralValue(text)
 	case *antlrgen.StringConstantContext:
 		raw := cv.StringLiteral().GetText()
 		if len(raw) >= 2 {

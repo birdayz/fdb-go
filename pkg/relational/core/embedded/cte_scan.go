@@ -85,17 +85,12 @@ func (c *EmbeddedConnection) execSelectFromCTE(ctx context.Context, sq *selectQu
 	}
 
 	if len(sq.aggCols) > 0 || sq.countStar {
-		aggCols, aggData, aggErr := c.aggregateMapRows(ctx, sq, mapRows)
+		aggCols, aggColTypes, aggData, aggErr := c.aggregateMapRows(ctx, sq, mapRows)
 		if aggErr != nil {
 			return nil, aggErr
 		}
 		colNames = aggCols
-		// Aggregates over a CTE: COUNT/SUM/MIN/MAX of integral or
-		// inferred-numeric → BIGINT; matches the proto-path heuristic.
-		colTypes = make([]string, len(aggCols))
-		for i := range colTypes {
-			colTypes[i] = "BIGINT"
-		}
+		colTypes = aggColTypes
 		outRows = aggData
 	} else if sq.projCols == nil {
 		// SELECT * — emit all CTE columns in definition order.

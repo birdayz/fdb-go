@@ -458,12 +458,12 @@ func TestOrderByDedup_CaseInsensitive(t *testing.T) {
 		{
 			name:     "different cols no dedup",
 			sql:      "SELECT id, name FROM t ORDER BY id, name",
-			wantCols: []string{"id", "name"},
+			wantCols: []string{"ID", "NAME"},
 		},
 		{
 			name:     "qualified vs bare — NOT deduped (alias resolution is later)",
 			sql:      "SELECT t.id, t.id FROM t AS t ORDER BY t.id, id",
-			wantCols: []string{"t.id", "id"},
+			wantCols: []string{"T.ID", "ID"},
 		},
 		{
 			name:    "qualified same-case is a dup",

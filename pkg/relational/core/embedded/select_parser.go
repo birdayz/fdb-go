@@ -123,6 +123,12 @@ type joinClause struct {
 	joinType  string // "INNER", "LEFT", "RIGHT"
 	alias     string
 	onExpr    antlrgen.IExpressionContext
+	// derivedQuery is set when the join's right-hand source is a
+	// subquery (`... , (SELECT ...) AS x` or `INNER JOIN (SELECT ...)
+	// AS x ON ...`). The dispatcher materializes the subquery as a
+	// CTE keyed by `alias` before the join executor runs, mirroring
+	// the first-source derived-table handling.
+	derivedQuery antlrgen.IQueryContext
 }
 
 type orderByClause struct {
@@ -371,8 +377,12 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 	case *antlrgen.FullColumnNameExpressionAtomContext:
 		return functions.FullIdToName(a.FullColumnName().FullId()), nil
 	case *antlrgen.FunctionCallExpressionAtomContext:
-		// Aggregate function in ORDER BY — return the canonical output name
-		// (e.g. COUNT(*), SUM(col)) so it can be matched against the SELECT list.
+		// Aggregate function in ORDER BY / HAVING — reuse extractAwfFields
+		// so the canonical output name matches what aggCols registration
+		// produces (column-ref args fold via FullIdToName; bare-expression
+		// args use GetText). Without sharing the helper the two sides
+		// drift on case-folding and the colIdx lookup misses on shapes
+		// like `ORDER BY SUM(v)`.
 		agg, aggok := a.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
 		if !aggok {
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -383,21 +393,11 @@ func columnNameFromExpr(expr antlrgen.IExpressionContext, context string) (strin
 			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"%s: unsupported aggregate %T", context, agg.AggregateWindowedFunction())
 		}
-		switch {
-		case awf.COUNT() != nil && awf.STAR() != nil:
-			return "COUNT(*)", nil
-		case awf.COUNT() != nil && awf.FunctionArg() != nil:
-			return "COUNT(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.SUM() != nil && awf.FunctionArg() != nil:
-			return "SUM(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.MIN() != nil && awf.FunctionArg() != nil:
-			return "MIN(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.MAX() != nil && awf.FunctionArg() != nil:
-			return "MAX(" + awf.FunctionArg().GetText() + ")", nil
-		case awf.AVG() != nil && awf.FunctionArg() != nil:
-			return "AVG(" + awf.FunctionArg().GetText() + ")", nil
+		_, _, _, outName, _, ok := extractAwfFields(awf)
+		if !ok {
+			return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
 		}
-		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s: unsupported aggregate function", context)
+		return outName, nil
 	default:
 		return "", api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"%s must be a column name, got expression atom %T", context, pred.ExpressionAtom())
@@ -750,33 +750,50 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"unsupported extra table source %T", extra)
 		}
-		atomItem, atomOk := eb.TableSourceItem().(*antlrgen.AtomTableItemContext)
-		if !atomOk {
-			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"FROM: comma-separated sources must be plain table names, got %T",
-				eb.TableSourceItem())
-		}
-		uids := atomItem.TableName().FullId().AllUid()
-		parts := make([]string, len(uids))
-		for i, u := range uids {
-			parts[i] = functions.StripIdentifierQuotes(u.GetText())
-		}
-		tblName := strings.Join(parts, ".")
-		alias := tblName
-		// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
-		if atomItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
-		}
-		extraCrossJoins = append(extraCrossJoins, joinClause{
-			tableName: tblName,
-			joinType:  "INNER",
-			alias:     alias,
-			onExpr:    nil,
-		})
 		// Bare-source joins are not supported on extras (grammar quirk).
 		if len(eb.AllJoinPart()) > 0 {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 				"JOIN clauses on comma-separated FROM sources are not supported")
+		}
+		switch item := eb.TableSourceItem().(type) {
+		case *antlrgen.AtomTableItemContext:
+			uids := item.TableName().FullId().AllUid()
+			parts := make([]string, len(uids))
+			for i, u := range uids {
+				parts[i] = functions.StripIdentifierQuotes(u.GetText())
+			}
+			tblName := strings.Join(parts, ".")
+			alias := tblName
+			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName: tblName,
+				joinType:  "INNER",
+				alias:     alias,
+				onExpr:    nil,
+			})
+		case *antlrgen.SubqueryTableItemContext:
+			alias := ""
+			if item.GetAlias() != nil {
+				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+			}
+			if alias == "" {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+					"derived table in FROM must have an alias")
+			}
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName:    alias,
+				joinType:     "INNER",
+				alias:        alias,
+				onExpr:       nil,
+				derivedQuery: item.Query(),
+			})
+		default:
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"FROM: comma-separated sources must be plain table names, got %T",
+				eb.TableSourceItem())
 		}
 	}
 	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
@@ -849,7 +866,15 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		if atomItem.GetAlias() != nil {
 			aliasRaw := atomItem.GetAlias().GetText()
 			aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
-			isQuoted := aliasRaw != aliasTxt
+			// Structural quote-detection: post-case-fold,
+			// `aliasRaw != aliasTxt` is also true whenever the
+			// raw alias has any lowercase character (the helper
+			// upper-cases unquoted text). Use a structural check
+			// so a lowercased alias `from a hello` doesn't get
+			// classified as quoted.
+			isQuoted := len(aliasRaw) >= 2 &&
+				((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
+					(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
 			if atomItem.AS() == nil && !isQuoted {
 				up := strings.ToUpper(aliasTxt)
 				if up == "LEFT" || up == "RIGHT" {

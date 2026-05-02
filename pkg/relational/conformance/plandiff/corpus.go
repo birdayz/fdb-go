@@ -1,6 +1,7 @@
 package plandiff
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
@@ -34,6 +35,13 @@ type RunQuery struct {
 	SetupSqls      []string
 	Query          string
 	SchemaTemplate string
+	// Divergence, when non-nil, marks this entry as a known
+	// cross-engine divergence rather than a parity assertion. The
+	// harness asserts Go's behaviour against the embedded
+	// expectation but does NOT pin Java's actual behaviour — Java
+	// may evolve (upstream fix), regress, or stay buggy without
+	// breaking our test surface. See `divergence.go`.
+	Divergence *Divergence
 }
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
@@ -4043,11 +4051,38 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT id, val FROM T_DML12 WHERE val > 100 ORDER BY id",
 		},
 		// ===== UNION ALL + composite-PK extended =====
-		// Dropped union_all_two_branches_disjoint_where and
-		// union_all_two_branches_multi_col_projection: Go does not
-		// honor `ORDER BY id` on the outer UNION ALL — flakily
-		// returns interleaved branches in non-deterministic order.
-		// Tracked as TODO #44; restore once fixed.
+		{
+			// TODO #44: trailing ORDER BY on UNION ALL applies to the
+			// combined result per SQL standard. Go honours this
+			// deterministically; Java intermittently returns
+			// interleaved branch order. Pinned as a Divergence —
+			// asserts Go's sorted output but ignores Java's actual
+			// rows.
+			Name:           "union_all_two_branches_disjoint_where",
+			SchemaTemplate: "CREATE TABLE T_UO1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_UO1 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id FROM T_UO1 WHERE v < 20 UNION ALL SELECT id FROM T_UO1 WHERE v >= 20 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Java intermittently fails to apply outer ORDER BY on UNION ALL — sometimes returns interleaved branch order, sometimes correctly sorted. Go's behaviour is deterministic and SQL-correct.",
+				Direction: DivergenceJavaIntermittentGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)}, {float64(2)}, {float64(3)},
+				},
+			},
+		},
+		{
+			Name:           "union_all_two_branches_multi_col_projection",
+			SchemaTemplate: "CREATE TABLE T_UO2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_UO2 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT id, v FROM T_UO2 WHERE v < 20 UNION ALL SELECT id, v FROM T_UO2 WHERE v >= 20 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Same Java intermittent UNION-ALL ORDER BY bug as union_all_two_branches_disjoint_where; multi-col projection variant.",
+				Direction: DivergenceJavaIntermittentGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(10)}, {float64(2), float64(20)}, {float64(3), float64(30)},
+				},
+			},
+		},
 		{
 			Name:           "composite_pk_leading_eq_full_row_projection",
 			SchemaTemplate: "CREATE TABLE T_PK1 (a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (a, b))",
@@ -4371,10 +4406,240 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, s FROM T_E6 ORDER BY id",
 		},
 		{
+			// TODO #52: Java drops one of two ANDed predicates when the
+			// non-join predicate is on the PK (`a.id = 2 AND a.id =
+			// b.parent`). Go applies both correctly. Cross-engine
+			// probe (dayshift-66) showed: Go=2, Java=5.
+			Name: "pk_literal_eq_in_join",
+			SchemaTemplate: "CREATE TABLE T_PKL_A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_PKL_B (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_PKL_A VALUES (1), (2), (3)",
+				"INSERT INTO T_PKL_B VALUES (10, 1), (11, 1), (12, 2), (13, 2), (14, 3)",
+			},
+			Query: "SELECT count(*) FROM T_PKL_A a, T_PKL_B b WHERE a.id = 2 AND a.id = b.parent",
+			Divergence: &Divergence{
+				Reason:    "Java drops one of `a.id = 2 AND a.id = b.parent` and returns 5; Go applies both predicates correctly and returns 2 (only B rows (12,2) and (13,2) match).",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(2)},
+				},
+			},
+		},
+		{
+			// Probe TODO #43: ORDER BY rejection wording for unindexed
+			// expression. Both engines reject; wording differs.
+			Name:           "order_by_arith_unindexed_probe",
+			SchemaTemplate: "CREATE TABLE T_OBA (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_OBA VALUES (1, 1, 2), (2, 2, 1)"},
+			Query:          "SELECT id FROM T_OBA ORDER BY a + b",
+		},
+		// Skipped int32_overflow_insert: wording alignment for INT32
+		// overflow on INSERT (TODO #62) — needs INSERT-as-test-query
+		// support which Go's plandiff harness lacks (only SELECT/SHOW
+		// pass through to the query runner). Documented at the call
+		// site; revisit when the harness gains DML-query routing.
+		// Skipped not_null_scalar: Java's fdb-relational rejects
+		// `STRING NOT NULL` (or any scalar NOT NULL except ARRAY) at
+		// schema-create time with "NOT NULL is only allowed for ARRAY
+		// column type"; Go follows SQL standard and accepts. Aligning
+		// Go to Java's restriction would invalidate dozens of existing
+		// schemas across the test surface — Java's behaviour is the
+		// non-standard side (TODO #50 reclassified Tier D).
+		// Skipped reserved_keyword_col: both engines reject `count` as
+		// column name with a syntax error that echoes the offending
+		// CREATE TABLE fragment. Java's harness wraps the auto-generated
+		// schema-template name in double quotes; Go's doesn't. Pure
+		// cosmetic drift in error formatting; aligning would require
+		// duplicating Java's name-quoting heuristic. Out of scope
+		// (TODO #51 reclassified low-value Tier D).
+		{
+			// Probe TODO #55: INSERT … (cols) SELECT shape.
+			Name: "insert_cols_select_probe",
+			SchemaTemplate: "CREATE TABLE T_ICS_S (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_ICS_D (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ICS_S VALUES (1, 100)",
+				"INSERT INTO T_ICS_D (val, id) SELECT id, val FROM T_ICS_S",
+			},
+			Query: "SELECT id, val FROM T_ICS_D",
+		},
+		{
+			// Probe TODO #60: parenthesized arithmetic in row constructor.
+			Name:           "paren_arithmetic_in_values_probe",
+			SchemaTemplate: "CREATE TABLE T_PAV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_PAV VALUES (1, (2 + 3))"},
+			Query:          "SELECT id, v FROM T_PAV",
+		},
+		{
+			// TODO #42: compound `SELECT DISTINCT a, b FROM t`. Java
+			// fails to dedup on column tuples and returns all 4 rows;
+			// Go correctly returns 2 deduped rows.
+			Name:           "compound_distinct_two_cols",
+			SchemaTemplate: "CREATE TABLE T_CD (id BIGINT, a STRING, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CD VALUES (1, 'x', 10), (2, 'x', 10), (3, 'y', 20), (4, 'y', 20)",
+			},
+			Query: "SELECT DISTINCT a, b FROM T_CD",
+			Divergence: &Divergence{
+				Reason:    "Java's compound-DISTINCT pipeline drops the dedup step on column tuples and returns all rows. Go correctly de-duplicates by the (a,b) tuple.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{"x", float64(10)}, {"y", float64(20)},
+				},
+			},
+		},
+		{
+			// TODO #64: count over derived (SELECT DISTINCT col). Java
+			// returns full row count; Go correctly counts distinct.
+			Name:           "count_over_distinct_derived",
+			SchemaTemplate: "CREATE TABLE T_CDD (id BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_CDD VALUES (1, 10), (2, 10), (3, 20), (4, 20), (5, 30)",
+			},
+			Query: "SELECT count(*) FROM (SELECT DISTINCT c FROM T_CDD) AS d",
+			Divergence: &Divergence{
+				Reason:    "Same Java DISTINCT bug as #42, surfaced through a derived table — Java fails to push DISTINCT and returns full row count (5); Go correctly returns 3 ({10,20,30}).",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(3)},
+				},
+			},
+		},
+		{
+			// Probe TODO #41a: bare-BOOLEAN col in CASE WHEN.
+			Name:           "case_when_bare_bool_col_probe",
+			SchemaTemplate: "CREATE TABLE T_CB (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CB VALUES (1, TRUE), (2, FALSE)"},
+			Query:          "SELECT id, CASE WHEN flag THEN 'on' ELSE 'off' END FROM T_CB ORDER BY id",
+		},
+		{
+			// Probe TODO #41b: WHERE CASE WHEN cond THEN TRUE END.
+			Name:           "where_case_returns_bool_probe",
+			SchemaTemplate: "CREATE TABLE T_WC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_WC VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM T_WC WHERE CASE WHEN v > 15 THEN TRUE ELSE FALSE END",
+		},
+		{
+			// Probe TODO #47: CAST BIGINT AS BOOLEAN.
+			Name:           "cast_bigint_to_boolean_probe",
+			SchemaTemplate: "CREATE TABLE T_CBB (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_CBB VALUES (1, 0), (2, 1)"},
+			Query:          "SELECT id, CAST(v AS BOOLEAN) FROM T_CBB ORDER BY id",
+		},
+		{
+			// Probe TODO #46: BIGINT literal beyond int64 range
+			// (99999999999999999999 > 2^63-1) in WHERE.
+			Name:           "bigint_literal_overflow_probe",
+			SchemaTemplate: "CREATE TABLE T_BLO (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_BLO VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM T_BLO WHERE v < 99999999999999999999 ORDER BY id",
+		},
+		{
+			// Probe TODO #63: multi-column UPDATE with self-ref SET.
+			// Pre-fix Go reads in-progress (already-updated) value of y
+			// when computing x's new value; SQL standard says all RHS
+			// reads happen pre-update.
+			Name:           "update_multi_col_self_ref_probe",
+			SchemaTemplate: "CREATE TABLE T_UMC (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMC VALUES (1, 100, 80)",
+				"UPDATE T_UMC SET x = x + y, y = y - x",
+			},
+			Query: "SELECT id, x, y FROM T_UMC ORDER BY id",
+		},
+		{
+			// Probe TODO #45: EXISTS over CTE drops inner predicate.
+			// Outer WITH big = rows of T_EX_B with val>50 (gid 200, 300).
+			// Outer SELECT count over A WHERE EXISTS … FROM big …
+			//   - a.gid=100 → no big with gid=100 → false
+			//   - a.gid=200 → big has (200) → true
+			//   - a.gid=300 → big has (300) → true
+			// → expected count = 2.
+			Name: "exists_over_cte_outer_with_probe",
+			SchemaTemplate: "CREATE TABLE T_EX_A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_EX_B (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_EX_A VALUES (1, 100), (2, 200), (3, 300)",
+				"INSERT INTO T_EX_B VALUES (10, 100, 30), (11, 200, 60), (12, 300, 70)",
+			},
+			Query: "WITH big AS (SELECT id, gid, val FROM T_EX_B WHERE val > 50) SELECT count(*) FROM T_EX_A a WHERE EXISTS (SELECT 1 FROM big WHERE big.gid = a.gid)",
+		},
+		{
+			// TODO #53: 3-way join with shared driver key. Java returns
+			// full 3×3 cross product (9); Go correctly applies both
+			// join predicates (3).
+			Name: "three_way_join_shared_driver",
+			SchemaTemplate: "CREATE TABLE T_3J_A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_3J_B (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_3J_C (id BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_3J_A VALUES (1), (2), (3)",
+				"INSERT INTO T_3J_B VALUES (10, 1), (11, 2), (12, 3)",
+				"INSERT INTO T_3J_C VALUES (20, 1), (21, 2), (22, 3)",
+			},
+			Query: "SELECT count(*) FROM T_3J_A a, T_3J_B b, T_3J_C c WHERE a.id = b.x AND a.id = c.y",
+			Divergence: &Divergence{
+				Reason:    "Java drops one or both join predicates in 3-way fan-out and returns the full 3×3 cross product (9); Go applies both predicates (each B and C side has one matching row per a.id) and returns 3.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(3)},
+				},
+			},
+		},
+		{
+			// Probe TODO #58: multi-subquery FROM list cross-engine
+			// behaviour. nightshift-65 reported Go rejects, Java accepts.
+			Name: "multi_subquery_from_list_probe",
+			SchemaTemplate: "CREATE TABLE T_MS1 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_MS2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS1 VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_MS2 VALUES (1, 100), (2, 200)",
+			},
+			Query: "SELECT s.id, t.val FROM (SELECT id FROM T_MS1) AS s, (SELECT id, val FROM T_MS2) AS t WHERE s.id = t.id ORDER BY s.id",
+		},
+		{
+			// SQL standard: backslash is NOT an escape character in
+			// standard string literals — `'a\nb'` is 4 chars `a`, `\`,
+			// `n`, `b`. Pins cross-engine agreement (TODO #61 dropped
+			// dayshift-66 — divergence didn't reproduce).
+			Name:           "string_literal_backslash_n_not_escaped",
+			SchemaTemplate: "CREATE TABLE T_E_BS (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{`INSERT INTO T_E_BS VALUES (1, 'a\nb'), (2, 'no escape')`},
+			Query:          "SELECT id, s FROM T_E_BS ORDER BY id",
+		},
+		{
+			// Same family — double-backslash also passes through as 2
+			// literal backslashes per SQL standard.
+			Name:           "string_literal_double_backslash_not_escaped",
+			SchemaTemplate: "CREATE TABLE T_E_BS2 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{`INSERT INTO T_E_BS2 VALUES (1, 'x\\y')`},
+			Query:          "SELECT id, s FROM T_E_BS2 ORDER BY id",
+		},
+		{
 			Name:           "double_negative_zero",
 			SchemaTemplate: "CREATE TABLE T_E7 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_E7 VALUES (1, 0.0), (2, -0.0)"},
 			Query:          "SELECT id, v FROM T_E7 ORDER BY id",
+		},
+		{
+			// TODO #48: IEEE 754 says `-0.0 == +0.0` is TRUE so
+			// `WHERE v >= 0.0` MUST keep the -0.0 row. Go honours
+			// this; Java drops the row.
+			Name:           "double_negative_zero_ge_predicate",
+			SchemaTemplate: "CREATE TABLE T_E7B (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_E7B VALUES (1, 0.0), (2, -0.0), (3, 1.5), (4, -1.5)"},
+			Query:          "SELECT id, v FROM T_E7B WHERE v >= 0.0 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Java drops the -0.0 row from `v >= 0.0` despite IEEE 754 saying -0.0 == +0.0; Go correctly keeps it.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1), float64(0)},
+					{float64(2), math.Copysign(0, -1)},
+					{float64(3), float64(1.5)},
+				},
+			},
 		},
 		{
 			Name:           "bigint_max_minus_one",
@@ -4792,6 +5057,39 @@ func SeedRunCorpus() []RunQuery {
 		},
 
 		// ===== UPDATE edge cases =====
+		{
+			// Multi-column UPDATE with self-cross-referenced SET — pins
+			// SQL-standard pre-update RHS reads (TODO #63 fix landed
+			// dayshift-66). x and y both read pre-update values.
+			Name:           "update_multi_col_swap",
+			SchemaTemplate: "CREATE TABLE T_UMS (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMS VALUES (1, 100, 80)",
+				"UPDATE T_UMS SET x = x + y, y = y - x",
+			},
+			Query: "SELECT id, x, y FROM T_UMS",
+		},
+		{
+			// Triple-column UPDATE with all RHS reading pre-update values.
+			Name:           "update_three_col_self_ref",
+			SchemaTemplate: "CREATE TABLE T_UMS3 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UMS3 VALUES (1, 1, 2, 3)",
+				"UPDATE T_UMS3 SET a = b + c, b = a + c, c = a + b",
+			},
+			Query: "SELECT id, a, b, c FROM T_UMS3",
+		},
+		{
+			// UPDATE with WHERE predicate using lowercase column ref
+			// against uppercase declaration.
+			Name:           "update_where_lowercase_ref",
+			SchemaTemplate: "CREATE TABLE T_ULR (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_ULR VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_ULR SET val = val * 10 WHERE val > 15",
+			},
+			Query: "SELECT id, val FROM T_ULR ORDER BY id",
+		},
 		{
 			// UPDATE with predicate referencing NEW logic — UPDATE
 			// SET val = val + 1 WHERE val < 50 — only some rows match.
@@ -6216,6 +6514,20 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AGE8 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AGE8 VALUES (1, 1), (2, 2)"},
 			Query:          "SELECT avg(v) FROM T_AGE8",
+		},
+		{
+			// AVG over BIGINT in a JOIN context must also promote to
+			// DOUBLE. Surfaced nightshift-65: Go reported BIGINT for the
+			// AVG result column type in this shape (TODO #54). Fix landed
+			// dayshift-66.
+			Name: "avg_bigint_returns_double_in_join",
+			SchemaTemplate: "CREATE TABLE T_AGE_J_A (id BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_AGE_J_B (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_AGE_J_A VALUES (1), (2)",
+				"INSERT INTO T_AGE_J_B VALUES (10, 1, 100), (11, 1, 200), (12, 2, 300)",
+			},
+			Query: "SELECT avg(b.val) FROM T_AGE_J_A AS a, T_AGE_J_B AS b WHERE a.id = b.parent",
 		},
 		{
 			// SUM, AVG, MIN, MAX in one query — pins multi-aggregate
@@ -8192,9 +8504,17 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_BNL8 WHERE (val BETWEEN 5 AND 10) OR (val BETWEEN 100 AND 200) ORDER BY id",
 		},
-		// Dropped order_by_pk_asc_desc_mixed: hits TODO #43 wording
-		// divergence (Java generic Cascades msg vs Go specific wording)
-		// for unindexed mixed-direction ORDER BY on composite PK.
+		{
+			// Mixed-direction ORDER BY on composite PK is rejected by
+			// both engines (Cascades planner can't satisfy ASC+DESC
+			// prefix from any natural-order scan). TODO #43 fix landed
+			// dayshift-66 — Go's wording now matches Java's
+			// `Cascades planner could not plan query`.
+			Name:           "order_by_pk_asc_desc_mixed_rejected",
+			SchemaTemplate: "CREATE TABLE T_OBM (a BIGINT, b BIGINT, val BIGINT, PRIMARY KEY (a, b))",
+			SetupSqls:      []string{"INSERT INTO T_OBM VALUES (1, 1, 10), (1, 2, 20)"},
+			Query:          "SELECT a, b FROM T_OBM ORDER BY a ASC, b DESC",
+		},
 		{
 			// BETWEEN producing zero rows — bounds outside any value.
 			// Pins that empty result is delivered without error.
@@ -8744,11 +9064,23 @@ func SeedRunCorpus() []RunQuery {
 
 		// ===== Identifier resolution: case sensitivity, qualified column refs,
 		// alias visibility, table-name vs column-name resolution =====
-		// Dropped ident_lowercase_table_ref: Java case-folds table
-		// names (`SELECT FROM t_ir1` resolves to T_IR1); Go does not
-		// (errors `Unknown table T_IR1`). Real Go divergence (#56).
-		// Dropped ident_uppercase_col_ref: same #56 family — Go
-		// fails to case-fold column-name references.
+		{
+			// Lowercase table reference against an uppercase-declared
+			// table — pins SQL-spec case folding of unquoted identifiers
+			// (TODO #56 fix landed dayshift-66).
+			Name:           "ident_lowercase_table_ref",
+			SchemaTemplate: "CREATE TABLE T_IR1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR1 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id FROM t_ir1 ORDER BY id",
+		},
+		{
+			// Uppercase column reference against a lowercase-declared
+			// column — same #56 fix, opposite direction.
+			Name:           "ident_uppercase_col_ref",
+			SchemaTemplate: "CREATE TABLE T_IR2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR2 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT ID, VAL FROM T_IR2 ORDER BY ID",
+		},
 		{
 			// Alias in projection: SELECT a.id, a.val FROM t AS a —
 			// pins that the alias replaces the table name as qualifier.
@@ -8817,9 +9149,16 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "WITH x AS (SELECT id FROM T_IR10A), y AS (SELECT id FROM T_IR10B) SELECT count(*) FROM x, y WHERE x.id = y.id",
 		},
-		// Dropped ident_quoted_lowercase_col: Java parses
-		// double-quoted "ID" as a case-preserving identifier; Go
-		// rejects. Quoted-identifier handling divergence (#57).
+		{
+			// Double-quoted identifier matches the (already folded)
+			// canonical column name. Both engines: CREATE TABLE folds
+			// `id` to `ID` in the catalog, then `"ID"` preserves case
+			// and resolves directly. Pins TODO #57 fix landed dayshift-66.
+			Name:           "ident_quoted_canonical_col",
+			SchemaTemplate: "CREATE TABLE T_IR11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR11 VALUES (1, 10), (2, 20)"},
+			Query:          `SELECT "ID" FROM T_IR11 ORDER BY "ID"`,
+		},
 		{
 			// Column qualified by table name (no alias) — pins that
 			// the bare table name is itself a usable qualifier.
@@ -8836,8 +9175,84 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_IR13 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT a.id FROM T_IR13 AS a, T_IR13 AS b WHERE a.id < b.id ORDER BY a.id",
 		},
-		// Dropped ident_lowercase_both_table_and_col: same #56 — Go
-		// fails to case-fold lowercase table reference.
+		{
+			// Lowercase reference for BOTH table AND column — exercises
+			// the case-fold fix from end to end (TODO #56 fix landed
+			// dayshift-66).
+			Name:           "ident_lowercase_both_table_and_col",
+			SchemaTemplate: "CREATE TABLE T_IR14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR14 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT id, val FROM t_ir14 ORDER BY id",
+		},
+		{
+			// Mixed case alias on JOIN source — alias `MyA` should
+			// case-fold to `MYA` and resolve in the qualifier scope.
+			Name:           "ident_mixed_case_join_alias",
+			SchemaTemplate: "CREATE TABLE T_IR15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR15 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT MyA.id FROM T_IR15 AS MyA, T_IR15 AS MyB WHERE MyA.id = MyB.id ORDER BY MyA.id",
+		},
+		{
+			// Lowercase qualifier in WHERE: `where mya.val > 5`.
+			Name:           "ident_lowercase_qualifier_in_where",
+			SchemaTemplate: "CREATE TABLE T_IR16 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR16 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "SELECT mya.id FROM T_IR16 AS MyA WHERE mya.val > 15 ORDER BY mya.id",
+		},
+		{
+			// CTE name + col both with mixed case in inner and outer
+			// references. No ORDER BY (Java rejects ORDER BY in CTE
+			// scope; this test pins identifier resolution, not ordering).
+			Name:           "ident_mixed_case_cte_name_and_col",
+			SchemaTemplate: "CREATE TABLE T_IR17 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR17 VALUES (1, 10)"},
+			Query:          "WITH MyCte AS (SELECT id, val FROM T_IR17) SELECT mycte.id FROM MYCTE",
+		},
+		{
+			// Aliased projection name: `SELECT v.id AS MyId` — output
+			// column should fold to MYID per Java's normalization.
+			Name:           "ident_alias_in_projection_mixed_case",
+			SchemaTemplate: "CREATE TABLE T_IR18 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR18 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT v.id AS MyId FROM T_IR18 AS v ORDER BY v.id",
+		},
+		{
+			// Lowercase qualifier in JOIN's ON-clause.
+			Name:           "ident_lowercase_qualifier_in_on_clause",
+			SchemaTemplate: "CREATE TABLE T_IR19 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR19 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT a.id FROM T_IR19 AS A INNER JOIN T_IR19 AS B ON a.id = b.id ORDER BY a.id",
+		},
+		{
+			// Lowercase column ref in aggregate: `count(t.val)`
+			// against uppercase declaration.
+			Name:           "ident_lowercase_in_aggregate_arg",
+			SchemaTemplate: "CREATE TABLE T_IR20 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR20 VALUES (1, 10), (2, 20), (3, NULL)"},
+			Query:          "SELECT count(t.val) FROM T_IR20 AS t",
+		},
+		{
+			// Lowercase ref in nested derived alias chain.
+			Name:           "ident_lowercase_through_nested_derived",
+			SchemaTemplate: "CREATE TABLE T_IR21 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR21 VALUES (1, 10), (2, 20)"},
+			Query:          "SELECT d2.id FROM (SELECT id, val FROM (SELECT id, val FROM T_IR21) AS d1) AS d2 ORDER BY d2.id",
+		},
+		{
+			// Mixed-case index column ref.
+			Name: "ident_mixed_case_index_column",
+			SchemaTemplate: "CREATE TABLE T_IR22 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE INDEX T_IR22_BY_VAL ON T_IR22 (val)",
+			SetupSqls: []string{"INSERT INTO T_IR22 VALUES (1, 10), (2, 20)"},
+			Query:     "SELECT id FROM T_IR22 WHERE Val = 10",
+		},
+		{
+			// Two-CTE chain with mixed casing throughout.
+			Name:           "ident_mixed_case_two_cte_chain",
+			SchemaTemplate: "CREATE TABLE T_IR23 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_IR23 VALUES (1, 10), (2, 20), (3, 30)"},
+			Query:          "WITH StepOne AS (SELECT id, val FROM T_IR23 WHERE val >= 20), StepTwo AS (SELECT id FROM stepone WHERE val < 30) SELECT id FROM StepTwo",
+		},
 
 		// ===== Deeply-nested derived tables and subquery-in-FROM variations =====
 		{
@@ -11370,6 +11785,1694 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_END7 VALUES (3, 30)",
 			},
 			Query: "SELECT id FROM T_END7 WHERE v <> NULL ORDER BY id",
+		},
+
+		// ===== dayshift-66 batch =====
+		// Mixed predicate combinations.
+		{
+			// BETWEEN + IN + IS NOT NULL composed with AND — pins
+			// predicate stacking with three different shapes in one WHERE.
+			Name:           "mixed_pred_between_in_isnotnull",
+			SchemaTemplate: "CREATE TABLE T_DS66_01 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_01 VALUES (1, 'us', 50)",
+				"INSERT INTO T_DS66_01 VALUES (2, 'us', 150)",
+				"INSERT INTO T_DS66_01 VALUES (3, 'eu', 250)",
+				"INSERT INTO T_DS66_01 VALUES (4, 'eu', NULL)",
+				"INSERT INTO T_DS66_01 VALUES (5, 'asia', 100)",
+			},
+			Query: "SELECT id, region, val FROM T_DS66_01 WHERE val BETWEEN 50 AND 200 AND region IN ('us', 'eu') AND val IS NOT NULL ORDER BY id",
+		},
+		{
+			// IS NULL OR (BETWEEN AND arithmetic) — disjunction crossing
+			// a NULL predicate with a numeric range and an arithmetic
+			// comparison.
+			Name:           "mixed_pred_null_or_between_arith",
+			SchemaTemplate: "CREATE TABLE T_DS66_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_02 VALUES (1, 10)",
+				"INSERT INTO T_DS66_02 VALUES (2, 25)",
+				"INSERT INTO T_DS66_02 VALUES (3, NULL)",
+				"INSERT INTO T_DS66_02 VALUES (4, 100)",
+				"INSERT INTO T_DS66_02 VALUES (5, 1000)",
+			},
+			Query: "SELECT id, v FROM T_DS66_02 WHERE v IS NULL OR (v BETWEEN 20 AND 200 AND v + 5 > 50) ORDER BY id",
+		},
+		{
+			// NOT (IN list) AND IS NOT NULL — negated set membership
+			// composed with NULL exclusion.
+			Name:           "mixed_pred_not_in_and_notnull",
+			SchemaTemplate: "CREATE TABLE T_DS66_03 (id BIGINT, code STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_03 VALUES (1, 'a')",
+				"INSERT INTO T_DS66_03 VALUES (2, 'b')",
+				"INSERT INTO T_DS66_03 VALUES (3, 'c')",
+				"INSERT INTO T_DS66_03 VALUES (4, NULL)",
+				"INSERT INTO T_DS66_03 VALUES (5, 'd')",
+			},
+			Query: "SELECT id, code FROM T_DS66_03 WHERE NOT (code IN ('a', 'b')) AND code IS NOT NULL ORDER BY id",
+		},
+
+		// Composite-PK shapes.
+		{
+			// Composite PK (region, id, sub) — partial-prefix range:
+			// region equality + id BETWEEN. Pins range scan over the
+			// second PK column.
+			Name:           "composite_pk_partial_prefix_range",
+			SchemaTemplate: "CREATE TABLE T_DS66_04 (region STRING, id BIGINT, sub BIGINT, v BIGINT, PRIMARY KEY (region, id, sub))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_04 VALUES ('us', 1, 1, 100)",
+				"INSERT INTO T_DS66_04 VALUES ('us', 2, 1, 200)",
+				"INSERT INTO T_DS66_04 VALUES ('us', 3, 1, 300)",
+				"INSERT INTO T_DS66_04 VALUES ('us', 5, 1, 500)",
+				"INSERT INTO T_DS66_04 VALUES ('eu', 2, 1, 999)",
+			},
+			Query: "SELECT region, id, sub, v FROM T_DS66_04 WHERE region = 'us' AND id BETWEEN 2 AND 4 ORDER BY region, id, sub",
+		},
+		{
+			// Composite PK with full prefix scan — region eq, projecting
+			// all four columns. Pins ordered iteration within a region.
+			Name:           "composite_pk_full_prefix_scan",
+			SchemaTemplate: "CREATE TABLE T_DS66_05 (region STRING, id BIGINT, payload STRING, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_05 VALUES ('us', 3, 'c')",
+				"INSERT INTO T_DS66_05 VALUES ('us', 1, 'a')",
+				"INSERT INTO T_DS66_05 VALUES ('us', 2, 'b')",
+				"INSERT INTO T_DS66_05 VALUES ('eu', 1, 'x')",
+			},
+			Query: "SELECT region, id, payload FROM T_DS66_05 WHERE region = 'us' ORDER BY region, id",
+		},
+
+		// DML interaction shapes.
+		{
+			// DELETE WHERE with a BETWEEN range, then SELECT verifies
+			// the surviving rows.
+			Name:           "dml_delete_between_then_select",
+			SchemaTemplate: "CREATE TABLE T_DS66_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_06 VALUES (1, 10)",
+				"INSERT INTO T_DS66_06 VALUES (2, 20)",
+				"INSERT INTO T_DS66_06 VALUES (3, 30)",
+				"INSERT INTO T_DS66_06 VALUES (4, 40)",
+				"INSERT INTO T_DS66_06 VALUES (5, 50)",
+				"DELETE FROM T_DS66_06 WHERE v BETWEEN 20 AND 40",
+			},
+			Query: "SELECT id, v FROM T_DS66_06 ORDER BY id",
+		},
+		{
+			// UPDATE arithmetic on a filtered subset, then SELECT
+			// verifies the updated rows + untouched rows.
+			Name:           "dml_update_arith_then_select",
+			SchemaTemplate: "CREATE TABLE T_DS66_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_07 VALUES (1, 100)",
+				"INSERT INTO T_DS66_07 VALUES (2, 200)",
+				"INSERT INTO T_DS66_07 VALUES (3, 300)",
+				"UPDATE T_DS66_07 SET v = v * 10 WHERE id <= 2",
+			},
+			Query: "SELECT id, v FROM T_DS66_07 ORDER BY id",
+		},
+		{
+			// DELETE with IN-list filter on PK, then SELECT.
+			Name:           "dml_delete_in_list_then_select",
+			SchemaTemplate: "CREATE TABLE T_DS66_08 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_08 VALUES (1, 'a')",
+				"INSERT INTO T_DS66_08 VALUES (2, 'b')",
+				"INSERT INTO T_DS66_08 VALUES (3, 'c')",
+				"INSERT INTO T_DS66_08 VALUES (4, 'd')",
+				"DELETE FROM T_DS66_08 WHERE id IN (2, 4)",
+			},
+			Query: "SELECT id, name FROM T_DS66_08 ORDER BY id",
+		},
+
+		// INSERT VALUES shapes.
+		{
+			// INSERT VALUES with negative integers — pins signed-encoding
+			// round-trip for BIGINT.
+			Name:           "insert_values_negative_bigint",
+			SchemaTemplate: "CREATE TABLE T_DS66_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_09 VALUES (1, -100)",
+				"INSERT INTO T_DS66_09 VALUES (2, -1)",
+				"INSERT INTO T_DS66_09 VALUES (3, 0)",
+				"INSERT INTO T_DS66_09 VALUES (4, 1)",
+				"INSERT INTO T_DS66_09 VALUES (5, -9999999999)",
+			},
+			Query: "SELECT id, v FROM T_DS66_09 ORDER BY id",
+		},
+		{
+			// INSERT VALUES mixing types, with NULL in nullable cols
+			// across multiple rows.
+			Name:           "insert_values_mixed_types_with_nulls",
+			SchemaTemplate: "CREATE TABLE T_DS66_10 (id BIGINT, name STRING, score DOUBLE, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_10 VALUES (1, 'alice', 3.14, TRUE)",
+				"INSERT INTO T_DS66_10 VALUES (2, NULL, -2.5, FALSE)",
+				"INSERT INTO T_DS66_10 VALUES (3, 'bob', NULL, NULL)",
+				"INSERT INTO T_DS66_10 VALUES (4, '', 0.0, TRUE)",
+			},
+			Query: "SELECT id, name, score, flag FROM T_DS66_10 ORDER BY id",
+		},
+
+		// LIKE pattern variations.
+		{
+			// Leading wildcard — '%foo' matches any suffix == 'foo'.
+			Name:           "like_leading_wildcard",
+			SchemaTemplate: "CREATE TABLE T_DS66_11 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_11 VALUES (1, 'foobar')",
+				"INSERT INTO T_DS66_11 VALUES (2, 'barfoo')",
+				"INSERT INTO T_DS66_11 VALUES (3, 'foo')",
+				"INSERT INTO T_DS66_11 VALUES (4, 'baz')",
+			},
+			Query: "SELECT id, s FROM T_DS66_11 WHERE s LIKE '%foo' ORDER BY id",
+		},
+		{
+			// Trailing wildcard with single-char wildcard — '_a%'
+			// pins both '_' and '%' meta-character handling in one pattern.
+			Name:           "like_underscore_and_percent",
+			SchemaTemplate: "CREATE TABLE T_DS66_12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_12 VALUES (1, 'cat')",
+				"INSERT INTO T_DS66_12 VALUES (2, 'bat')",
+				"INSERT INTO T_DS66_12 VALUES (3, 'dad')",
+				"INSERT INTO T_DS66_12 VALUES (4, 'cab')",
+				"INSERT INTO T_DS66_12 VALUES (5, 'aaa')",
+			},
+			Query: "SELECT id, s FROM T_DS66_12 WHERE s LIKE '_a%' ORDER BY id",
+		},
+		{
+			// Wildcard on both sides — substring containment.
+			Name:           "like_substring_containment",
+			SchemaTemplate: "CREATE TABLE T_DS66_13 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_13 VALUES (1, 'hello world')",
+				"INSERT INTO T_DS66_13 VALUES (2, 'world peace')",
+				"INSERT INTO T_DS66_13 VALUES (3, 'underworld')",
+				"INSERT INTO T_DS66_13 VALUES (4, 'hi there')",
+			},
+			Query: "SELECT id, s FROM T_DS66_13 WHERE s LIKE '%world%' ORDER BY id",
+		},
+		{
+			// LIKE with no wildcards — degenerates to equality.
+			Name:           "like_no_wildcards_equals",
+			SchemaTemplate: "CREATE TABLE T_DS66_14 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_14 VALUES (1, 'exact')",
+				"INSERT INTO T_DS66_14 VALUES (2, 'exactly')",
+				"INSERT INTO T_DS66_14 VALUES (3, 'not')",
+			},
+			Query: "SELECT id, s FROM T_DS66_14 WHERE s LIKE 'exact' ORDER BY id",
+		},
+
+		// COUNT/SUM/MIN/MAX over filtered subsets.
+		{
+			// COUNT(*) over a BETWEEN-filtered subset.
+			Name:           "count_star_over_between_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_15 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_15 VALUES (1, 5)",
+				"INSERT INTO T_DS66_15 VALUES (2, 15)",
+				"INSERT INTO T_DS66_15 VALUES (3, 25)",
+				"INSERT INTO T_DS66_15 VALUES (4, 35)",
+				"INSERT INTO T_DS66_15 VALUES (5, 50)",
+			},
+			Query: "SELECT count(*) FROM T_DS66_15 WHERE v BETWEEN 10 AND 40",
+		},
+		{
+			// SUM over IN-filtered subset.
+			Name:           "sum_over_in_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_16 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_16 VALUES (1, 100)",
+				"INSERT INTO T_DS66_16 VALUES (2, 200)",
+				"INSERT INTO T_DS66_16 VALUES (3, 300)",
+				"INSERT INTO T_DS66_16 VALUES (4, 400)",
+			},
+			Query: "SELECT sum(v) FROM T_DS66_16 WHERE id IN (1, 3, 4)",
+		},
+		{
+			// MIN and MAX over IS NOT NULL subset.
+			Name:           "min_max_over_notnull_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_17 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_17 VALUES (1, 50)",
+				"INSERT INTO T_DS66_17 VALUES (2, NULL)",
+				"INSERT INTO T_DS66_17 VALUES (3, 10)",
+				"INSERT INTO T_DS66_17 VALUES (4, 100)",
+				"INSERT INTO T_DS66_17 VALUES (5, NULL)",
+			},
+			Query: "SELECT min(v), max(v) FROM T_DS66_17 WHERE v IS NOT NULL",
+		},
+		{
+			// COUNT over a LIKE-filtered subset.
+			Name:           "count_over_like_subset",
+			SchemaTemplate: "CREATE TABLE T_DS66_18 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_18 VALUES (1, 'apple')",
+				"INSERT INTO T_DS66_18 VALUES (2, 'apricot')",
+				"INSERT INTO T_DS66_18 VALUES (3, 'banana')",
+				"INSERT INTO T_DS66_18 VALUES (4, 'avocado')",
+			},
+			Query: "SELECT count(*) FROM T_DS66_18 WHERE s LIKE 'a%'",
+		},
+
+		// Nested CTE chains.
+		{
+			// Two-level CTE chain — c1 then c2 references c1.
+			Name:           "nested_cte_two_levels",
+			SchemaTemplate: "CREATE TABLE T_DS66_19 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_19 VALUES (1, 10)",
+				"INSERT INTO T_DS66_19 VALUES (2, 20)",
+				"INSERT INTO T_DS66_19 VALUES (3, 30)",
+				"INSERT INTO T_DS66_19 VALUES (4, 40)",
+			},
+			Query: "WITH c1 AS (SELECT id, v FROM T_DS66_19 WHERE v >= 20), c2 AS (SELECT id, v FROM c1 WHERE v <= 30) SELECT count(*) FROM c2",
+		},
+		{
+			// Three-level CTE chain — c1 -> c2 -> c3 with predicate
+			// pushed at each level.
+			Name:           "nested_cte_three_levels",
+			SchemaTemplate: "CREATE TABLE T_DS66_20 (id BIGINT, v BIGINT, region STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DS66_20 VALUES (1, 100, 'us')",
+				"INSERT INTO T_DS66_20 VALUES (2, 200, 'us')",
+				"INSERT INTO T_DS66_20 VALUES (3, 300, 'eu')",
+				"INSERT INTO T_DS66_20 VALUES (4, 400, 'us')",
+				"INSERT INTO T_DS66_20 VALUES (5, 50, 'us')",
+			},
+			Query: "WITH c1 AS (SELECT id, v, region FROM T_DS66_20 WHERE region = 'us'), c2 AS (SELECT id, v FROM c1 WHERE v >= 100), c3 AS (SELECT id FROM c2 WHERE v < 400) SELECT count(*) FROM c3",
+		},
+
+		// String / numeric / bytes / bool / UUID edge cases.
+		// Empty string vs NULL: counting empty-string rows must
+		// exclude NULL — pins 3VL semantics for `s = ''`.
+		{
+			Name:           "string_edge_empty_vs_null_count",
+			SchemaTemplate: "CREATE TABLE T_DSE_01 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_01 VALUES (1, '')",
+				"INSERT INTO T_DSE_01 VALUES (2, '')",
+				"INSERT INTO T_DSE_01 VALUES (3, NULL)",
+				"INSERT INTO T_DSE_01 VALUES (4, 'x')",
+			},
+			Query: "SELECT count(*) FROM T_DSE_01 WHERE s = ''",
+		},
+		// Multi-byte/unicode strict-less-than — pins UTF-8 byte
+		// ordering when 'café' is compared to 'cafe' (e-acute > e).
+		{
+			Name:           "string_edge_unicode_inequality",
+			SchemaTemplate: "CREATE TABLE T_DSE_02 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_02 VALUES (1, 'cafe')",
+				"INSERT INTO T_DSE_02 VALUES (2, 'café')",
+				"INSERT INTO T_DSE_02 VALUES (3, 'zebra')",
+			},
+			Query: "SELECT id, s FROM T_DSE_02 WHERE s < 'café' ORDER BY id",
+		},
+		// String <= comparison — inclusive upper bound, lexicographic.
+		{
+			Name:           "string_edge_lex_lte",
+			SchemaTemplate: "CREATE TABLE T_DSE_03 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_03 VALUES (1, 'apple')",
+				"INSERT INTO T_DSE_03 VALUES (2, 'banana')",
+				"INSERT INTO T_DSE_03 VALUES (3, 'cherry')",
+				"INSERT INTO T_DSE_03 VALUES (4, 'date')",
+			},
+			Query: "SELECT id, s FROM T_DSE_03 WHERE s <= 'cherry' ORDER BY id",
+		},
+		// BIGINT max boundary — pins int64 max round-trip.
+		{
+			Name:           "numeric_edge_bigint_max",
+			SchemaTemplate: "CREATE TABLE T_DSE_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_04 VALUES (1, 9223372036854775807)",
+				"INSERT INTO T_DSE_04 VALUES (2, 0)",
+				"INSERT INTO T_DSE_04 VALUES (3, 1)",
+			},
+			Query: "SELECT id, v FROM T_DSE_04 ORDER BY id",
+		},
+		// BIGINT min boundary — pins int64 min round-trip with the
+		// minus-literal arithmetic path.
+		{
+			Name:           "numeric_edge_bigint_min",
+			SchemaTemplate: "CREATE TABLE T_DSE_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_05 VALUES (1, -9223372036854775807)",
+				"INSERT INTO T_DSE_05 VALUES (2, 0)",
+				"INSERT INTO T_DSE_05 VALUES (3, 9223372036854775807)",
+			},
+			Query: "SELECT id, v FROM T_DSE_05 WHERE v < 0 ORDER BY id",
+		},
+		// BETWEEN with full int64 range — must include all rows.
+		{
+			Name:           "numeric_edge_bigint_between_full_range",
+			SchemaTemplate: "CREATE TABLE T_DSE_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_06 VALUES (1, -9223372036854775807)",
+				"INSERT INTO T_DSE_06 VALUES (2, 0)",
+				"INSERT INTO T_DSE_06 VALUES (3, 9223372036854775807)",
+			},
+			Query: "SELECT count(*) FROM T_DSE_06 WHERE v BETWEEN -9223372036854775807 AND 9223372036854775807",
+		},
+		// DOUBLE finite extremes — comparison and ordering with
+		// large-magnitude finite values, no Inf/NaN.
+		{
+			Name:           "numeric_edge_double_finite_extremes",
+			SchemaTemplate: "CREATE TABLE T_DSE_07 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_07 VALUES (1, 1.5)",
+				"INSERT INTO T_DSE_07 VALUES (2, -1000000.25)",
+				"INSERT INTO T_DSE_07 VALUES (3, 1000000.5)",
+				"INSERT INTO T_DSE_07 VALUES (4, 0.0001)",
+			},
+			Query: "SELECT id, v FROM T_DSE_07 WHERE v > 1.0 ORDER BY id",
+		},
+		// Integer + double mixed arithmetic in projection — pins
+		// the implicit BIGINT-to-DOUBLE promotion.
+		{
+			Name:           "numeric_edge_int_double_mix",
+			SchemaTemplate: "CREATE TABLE T_DSE_08 (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_08 VALUES (1, 3, 0.5)",
+				"INSERT INTO T_DSE_08 VALUES (2, 10, 2.25)",
+			},
+			Query: "SELECT id, n + d FROM T_DSE_08 ORDER BY id",
+		},
+		// Division producing a fraction — DOUBLE / DOUBLE.
+		{
+			Name:           "numeric_edge_double_division_fraction",
+			SchemaTemplate: "CREATE TABLE T_DSE_09 (id BIGINT, a DOUBLE, b DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_09 VALUES (1, 7.0, 2.0)",
+				"INSERT INTO T_DSE_09 VALUES (2, 1.0, 4.0)",
+			},
+			Query: "SELECT id, a / b FROM T_DSE_09 ORDER BY id",
+		},
+		// BYTES strict-less-than — pins lexicographic byte ordering
+		// for raw byte arrays.
+		{
+			Name:           "bytes_compare_lt",
+			SchemaTemplate: "CREATE TABLE T_DSE_10 (id BIGINT, b BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_10 VALUES (1, X'00')",
+				"INSERT INTO T_DSE_10 VALUES (2, X'7f')",
+				"INSERT INTO T_DSE_10 VALUES (3, X'ff')",
+			},
+			Query: "SELECT id FROM T_DSE_10 WHERE b < X'80' ORDER BY id",
+		},
+		// BYTES BETWEEN — inclusive on both ends, byte order.
+		{
+			Name:           "bytes_compare_between",
+			SchemaTemplate: "CREATE TABLE T_DSE_11 (id BIGINT, b BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_11 VALUES (1, X'01')",
+				"INSERT INTO T_DSE_11 VALUES (2, X'10')",
+				"INSERT INTO T_DSE_11 VALUES (3, X'80')",
+				"INSERT INTO T_DSE_11 VALUES (4, X'ff')",
+			},
+			Query: "SELECT id FROM T_DSE_11 WHERE b BETWEEN X'10' AND X'80' ORDER BY id",
+		},
+		// BOOLEAN `= FALSE` — pins explicit FALSE comparison
+		// (distinct from `WHERE NOT flag` and bare `WHERE flag`).
+		{
+			Name:           "bool_eq_false",
+			SchemaTemplate: "CREATE TABLE T_DSE_12 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_12 VALUES (1, TRUE)",
+				"INSERT INTO T_DSE_12 VALUES (2, FALSE)",
+				"INSERT INTO T_DSE_12 VALUES (3, FALSE)",
+			},
+			Query: "SELECT id FROM T_DSE_12 WHERE flag = FALSE ORDER BY id",
+		},
+		// BOOLEAN comparison with a NULL row — `flag = TRUE`
+		// excludes NULL via 3VL.
+		{
+			Name:           "bool_eq_excludes_null",
+			SchemaTemplate: "CREATE TABLE T_DSE_13 (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_13 VALUES (1, TRUE)",
+				"INSERT INTO T_DSE_13 VALUES (2, FALSE)",
+				"INSERT INTO T_DSE_13 VALUES (3, NULL)",
+			},
+			Query: "SELECT count(*) FROM T_DSE_13 WHERE flag = TRUE",
+		},
+		// UUID equality across multiple rows — pins matching by
+		// UUID byte content not by row position.
+		{
+			Name:           "uuid_eq_multi_row",
+			SchemaTemplate: "CREATE TABLE T_DSE_14 (id BIGINT, key UUID, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_14 VALUES (1, CAST('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' AS UUID))",
+				"INSERT INTO T_DSE_14 VALUES (2, CAST('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' AS UUID))",
+				"INSERT INTO T_DSE_14 VALUES (3, CAST('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' AS UUID))",
+			},
+			Query: "SELECT id FROM T_DSE_14 WHERE key = CAST('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' AS UUID) ORDER BY id",
+		},
+		// String >= comparison — inclusive lower bound, returns the
+		// boundary row.
+		{
+			Name:           "string_edge_lex_gte",
+			SchemaTemplate: "CREATE TABLE T_DSE_15 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSE_15 VALUES (1, 'apple')",
+				"INSERT INTO T_DSE_15 VALUES (2, 'banana')",
+				"INSERT INTO T_DSE_15 VALUES (3, 'cherry')",
+			},
+			Query: "SELECT id, s FROM T_DSE_15 WHERE s >= 'banana' ORDER BY id",
+		},
+
+		// ===== DayShift JOIN shape diversity (T_DSJ_01..T_DSJ_15) =====
+		{
+			// INNER JOIN ON single-key (non-PK on right) — pins the
+			// explicit JOIN syntax for the simplest "many children point
+			// at one parent" shape, projecting from both sides.
+			Name: "join_inner_on_single_key",
+			SchemaTemplate: "CREATE TABLE T_DSJ_01A (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_01B (cid BIGINT, parent BIGINT, label STRING, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_01A VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')",
+				"INSERT INTO T_DSJ_01B VALUES (10, 1, 'x'), (11, 2, 'y'), (12, 1, 'z')",
+			},
+			Query: "SELECT a.name, b.label FROM T_DSJ_01A a INNER JOIN T_DSJ_01B b ON a.id = b.parent ORDER BY b.cid",
+		},
+		{
+			// INNER JOIN ON + WHERE filter on the right side — pins the
+			// filter-on-inner-side path with explicit JOIN syntax.
+			Name: "join_inner_on_with_where_right",
+			SchemaTemplate: "CREATE TABLE T_DSJ_02A (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_02B (cid BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_02A VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+				"INSERT INTO T_DSJ_02B VALUES (10, 1, 50), (11, 1, 200), (12, 2, 100), (13, 3, 300)",
+			},
+			Query: "SELECT a.name, b.val FROM T_DSJ_02A a INNER JOIN T_DSJ_02B b ON a.id = b.parent WHERE b.val > 75 ORDER BY b.cid",
+		},
+		{
+			// INNER JOIN ON + WHERE filter on the LEFT side — pins
+			// filter-on-outer-side with explicit JOIN syntax.
+			Name: "join_inner_on_with_where_left",
+			SchemaTemplate: "CREATE TABLE T_DSJ_03A (id BIGINT, region STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_03B (cid BIGINT, parent BIGINT, label STRING, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_03A VALUES (1, 'us'), (2, 'eu'), (3, 'us')",
+				"INSERT INTO T_DSJ_03B VALUES (10, 1, 'x'), (11, 2, 'y'), (12, 3, 'z')",
+			},
+			Query: "SELECT a.id, b.label FROM T_DSJ_03A a INNER JOIN T_DSJ_03B b ON a.id = b.parent WHERE a.region = 'us' ORDER BY b.cid",
+		},
+		{
+			// Multi-key INNER JOIN ON with composite predicate
+			// `ON a.k1 = b.k1 AND a.k2 = b.k2` over composite PKs on
+			// both sides.
+			Name: "join_multi_key_inner",
+			SchemaTemplate: "CREATE TABLE T_DSJ_04A (k1 STRING, k2 BIGINT, val BIGINT, PRIMARY KEY (k1, k2)) " +
+				"CREATE TABLE T_DSJ_04B (k1 STRING, k2 BIGINT, score BIGINT, PRIMARY KEY (k1, k2))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_04A VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 300)",
+				"INSERT INTO T_DSJ_04B VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 1, 30), ('eu', 2, 99)",
+			},
+			Query: "SELECT a.k1, a.k2, a.val, b.score FROM T_DSJ_04A a INNER JOIN T_DSJ_04B b ON a.k1 = b.k1 AND a.k2 = b.k2 ORDER BY a.k1, a.k2",
+		},
+		{
+			// Comma-join with WHERE-as-join-predicate (alternative
+			// INNER JOIN form). Same row set as `join_inner_on_single_key`
+			// — pins the comma form against the explicit form.
+			Name: "join_comma_where_predicate",
+			SchemaTemplate: "CREATE TABLE T_DSJ_05A (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_05B (cid BIGINT, parent BIGINT, label STRING, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_05A VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')",
+				"INSERT INTO T_DSJ_05B VALUES (10, 1, 'x'), (11, 2, 'y'), (12, 1, 'z')",
+			},
+			Query: "SELECT a.name, b.label FROM T_DSJ_05A a, T_DSJ_05B b WHERE a.id = b.parent ORDER BY b.cid",
+		},
+		{
+			// 1x1 INNER JOIN — both sides have exactly one matching row.
+			// Pins single-pair output cardinality of the join.
+			Name: "join_1x1_single_row_match",
+			SchemaTemplate: "CREATE TABLE T_DSJ_06A (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_06B (id BIGINT, parent BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_06A VALUES (1, 'only')",
+				"INSERT INTO T_DSJ_06B VALUES (100, 1, 'tag')",
+			},
+			Query: "SELECT a.name, b.label FROM T_DSJ_06A a, T_DSJ_06B b WHERE a.id = b.parent ORDER BY b.id",
+		},
+		{
+			// 1xN one-to-many — single row on left matched by many rows
+			// on right. Pins fanout cardinality for the matched group.
+			Name: "join_1xN_one_to_many",
+			SchemaTemplate: "CREATE TABLE T_DSJ_07A (id BIGINT, name STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_07B (cid BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_07A VALUES (1, 'parent')",
+				"INSERT INTO T_DSJ_07B VALUES (10, 1, 100), (11, 1, 200), (12, 1, 300), (13, 1, 400)",
+			},
+			Query: "SELECT a.name, b.val FROM T_DSJ_07A a, T_DSJ_07B b WHERE a.id = b.parent ORDER BY b.cid",
+		},
+		{
+			// Nx1 many-to-one — many left rows match a single right row.
+			// Pins the mirror of the one-to-many fanout.
+			Name: "join_Nx1_many_to_one",
+			SchemaTemplate: "CREATE TABLE T_DSJ_08A (id BIGINT, gid BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_08B (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_08A VALUES (1, 10, 100), (2, 10, 200), (3, 10, 300), (4, 10, 400)",
+				"INSERT INTO T_DSJ_08B VALUES (10, 'shared')",
+			},
+			Query: "SELECT a.id, a.val, b.label FROM T_DSJ_08A a, T_DSJ_08B b WHERE a.gid = b.gid ORDER BY a.id",
+		},
+		{
+			// NxN many-to-many within a key group — m left rows × n
+			// right rows for the matched gid yields m*n output rows.
+			// Pins cross-product cardinality inside a matched bucket.
+			Name: "join_NxN_within_group",
+			SchemaTemplate: "CREATE TABLE T_DSJ_09A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_09B (id BIGINT, gid BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_09A VALUES (1, 10), (2, 10), (3, 10)",
+				"INSERT INTO T_DSJ_09B VALUES (100, 10), (101, 10), (102, 10)",
+			},
+			Query: "SELECT count(*) FROM T_DSJ_09A a, T_DSJ_09B b WHERE a.gid = b.gid",
+		},
+		{
+			// Self-join via aliases with strict-less predicate
+			// `x.id < y.id` — generates ordered pairs (i, j) with i < j.
+			// Pins self-aliased range predicate. count(*) form because
+			// Java's Cascades planner can't plan ORDER BY on a non-EQ
+			// self-join (UnableToPlanException).
+			Name:           "join_self_alias_lt",
+			SchemaTemplate: "CREATE TABLE T_DSJ_10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_10 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT count(*) FROM T_DSJ_10 x, T_DSJ_10 y WHERE x.id < y.id",
+		},
+		{
+			// Self-join via aliases with not-equal predicate. Pins the
+			// non-equality self-join shape (excludes identity pairs).
+			Name:           "join_self_alias_neq",
+			SchemaTemplate: "CREATE TABLE T_DSJ_11 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_11 VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+			},
+			Query: "SELECT count(*) FROM T_DSJ_11 x, T_DSJ_11 y WHERE x.id <> y.id",
+		},
+		{
+			// 3-table chain with composite-PK middle table. Outer keys
+			// chain via two single-column EQ predicates, but the middle
+			// table's PK is composite. Pins compound-key plan slot in a
+			// chain join (NOT the 3-way shared-driver shape Java drops).
+			Name: "join_three_chain_composite_middle",
+			SchemaTemplate: "CREATE TABLE T_DSJ_12A (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_12B (k1 BIGINT, k2 BIGINT, c BIGINT, PRIMARY KEY (k1, k2)) " +
+				"CREATE TABLE T_DSJ_12C (id BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_12A VALUES (1, 10), (2, 20)",
+				"INSERT INTO T_DSJ_12B VALUES (10, 1, 100), (20, 1, 200)",
+				"INSERT INTO T_DSJ_12C VALUES (100, 'foo'), (200, 'bar')",
+			},
+			Query: "SELECT a.id, c.label FROM T_DSJ_12A a, T_DSJ_12B b, T_DSJ_12C c WHERE a.x = b.k1 AND b.c = c.id ORDER BY a.id",
+		},
+		{
+			// INNER JOIN ON with WHERE filtering BOTH sides — pins the
+			// composition of independent-side predicates around an EQ
+			// join via explicit JOIN syntax.
+			Name: "join_inner_on_filter_both_sides",
+			SchemaTemplate: "CREATE TABLE T_DSJ_13A (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_13B (cid BIGINT, parent BIGINT, score BIGINT, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_13A VALUES (1, 'us', 50), (2, 'eu', 100), (3, 'us', 200)",
+				"INSERT INTO T_DSJ_13B VALUES (10, 1, 5), (11, 2, 50), (12, 3, 500), (13, 3, 25)",
+			},
+			Query: "SELECT a.id, b.score FROM T_DSJ_13A a INNER JOIN T_DSJ_13B b ON a.id = b.parent WHERE a.region = 'us' AND b.score > 10 ORDER BY b.cid",
+		},
+		{
+			// Comma-join multi-key over composite PKs on both sides
+			// (mirror of `join_multi_key_inner` but in comma form). Pins
+			// equivalence between explicit-JOIN-ON multi-key and
+			// comma-WHERE multi-key.
+			Name: "join_comma_multi_key",
+			SchemaTemplate: "CREATE TABLE T_DSJ_14A (k1 STRING, k2 BIGINT, val BIGINT, PRIMARY KEY (k1, k2)) " +
+				"CREATE TABLE T_DSJ_14B (k1 STRING, k2 BIGINT, score BIGINT, PRIMARY KEY (k1, k2))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_14A VALUES ('us', 1, 100), ('us', 2, 200), ('eu', 1, 300)",
+				"INSERT INTO T_DSJ_14B VALUES ('us', 1, 10), ('us', 2, 20), ('eu', 2, 99)",
+			},
+			Query: "SELECT a.k1, a.k2, a.val, b.score FROM T_DSJ_14A a, T_DSJ_14B b WHERE a.k1 = b.k1 AND a.k2 = b.k2 ORDER BY a.k1, a.k2",
+		},
+		{
+			// Comma-join across a string-typed key column. Pins
+			// non-integer EQ join predicate.
+			Name: "join_comma_string_key",
+			SchemaTemplate: "CREATE TABLE T_DSJ_15A (id BIGINT, code STRING, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSJ_15B (cid BIGINT, code STRING, label STRING, PRIMARY KEY (cid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSJ_15A VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')",
+				"INSERT INTO T_DSJ_15B VALUES (10, 'alpha', 'A1'), (11, 'beta', 'B1'), (12, 'alpha', 'A2'), (13, 'delta', 'D1')",
+			},
+			Query: "SELECT a.id, b.label FROM T_DSJ_15A a, T_DSJ_15B b WHERE a.code = b.code ORDER BY b.cid",
+		},
+		// ===== CTE + UNION ALL extended shapes (DSC family) =====
+		{
+			// Single non-recursive CTE then SELECT id (not count) with
+			// post-CTE WHERE on a column carried through the CTE
+			// projection. Distinct from `cte_basic_count` (count) and
+			// `cte_filtered_then_filtered` (region filter) — this exits
+			// the CTE with a non-aggregate row-projecting outer SELECT.
+			// No outer ORDER BY: Java's parser binds a trailing ORDER BY
+			// to the WITH expression body's inner subquery, which it
+			// rejects. Both engines produce rows in PK scan order over
+			// the single underlying table, so omitting ORDER BY is safe.
+			Name:           "cte_select_ids_outer_filter",
+			SchemaTemplate: "CREATE TABLE T_DSC_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_01 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+			},
+			Query: "WITH x AS (SELECT id, val FROM T_DSC_01) SELECT id FROM x WHERE val > 25",
+		},
+		{
+			// Two non-recursive CTEs joined via comma-WHERE in the
+			// outer SELECT. Distinct from `with_cte_join_count` (CTE
+			// joined to a base table) — both sides here are CTEs.
+			Name: "cte_two_ctes_comma_join_count",
+			SchemaTemplate: "CREATE TABLE T_DSC_02A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSC_02B (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_02A VALUES (1, 10), (2, 20), (3, 10), (4, 30)",
+				"INSERT INTO T_DSC_02B VALUES (10, 'a'), (20, 'b'), (30, 'c')",
+			},
+			Query: "WITH ax AS (SELECT id, gid FROM T_DSC_02A), bx AS (SELECT gid, label FROM T_DSC_02B) SELECT count(*) FROM ax, bx WHERE ax.gid = bx.gid",
+		},
+		{
+			// Single CTE referenced twice in outer self-join. Distinct
+			// from `cte_used_twice_self_join` — that one uses a
+			// parent-child column; here the CTE projects (id, val) and
+			// the self-join is on val equality (different join key
+			// shape).
+			Name:           "cte_referenced_twice_val_self_join",
+			SchemaTemplate: "CREATE TABLE T_DSC_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_03 VALUES (1, 10), (2, 20), (3, 10), (4, 30), (5, 20)",
+			},
+			Query: "WITH x AS (SELECT id, val FROM T_DSC_03) SELECT count(*) FROM x AS a, x AS b WHERE a.val = b.val AND a.id < b.id",
+		},
+		{
+			// Non-recursive CTE narrowing projection from 3 columns to
+			// 2, then SUM the carried column. Distinct from
+			// `cte_aggregate_then_filter` (count + filter) — this uses
+			// SUM as the aggregate.
+			Name:           "cte_projection_narrow_then_sum",
+			SchemaTemplate: "CREATE TABLE T_DSC_04 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_04 VALUES (1, 'us', 10), (2, 'us', 20), (3, 'eu', 30), (4, 'us', 40), (5, 'eu', 50)",
+			},
+			Query: "WITH us AS (SELECT id, val FROM T_DSC_04 WHERE region = 'us') SELECT sum(val) FROM us",
+		},
+		{
+			// Two-branch UNION ALL with disjoint WHERE on the same
+			// table, wrapped in a derived table and counted. Distinct
+			// from `union_all_with_dupes` (overlapping WHERE) — this
+			// is strictly disjoint.
+			Name:           "union_all_disjoint_wheres_count",
+			SchemaTemplate: "CREATE TABLE T_DSC_05 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_05 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_DSC_05 WHERE val < 20 UNION ALL SELECT id FROM T_DSC_05 WHERE val > 30) AS u",
+		},
+		{
+			// Three-branch UNION ALL across the same table with
+			// distinct WHERE filters, MAX over the union. Distinct
+			// from `union_all_three_branches_sum` (3 separate tables)
+			// — this is single-table, three filters, MAX.
+			Name:           "union_all_three_branches_same_table_max",
+			SchemaTemplate: "CREATE TABLE T_DSC_06 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_06 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500)",
+			},
+			Query: "SELECT max(val) FROM (SELECT val FROM T_DSC_06 WHERE val < 150 UNION ALL SELECT val FROM T_DSC_06 WHERE val BETWEEN 200 AND 350 UNION ALL SELECT val FROM T_DSC_06 WHERE val > 400) AS u",
+		},
+		{
+			// UNION ALL feeding into a CTE — outer aggregates the CTE.
+			// Distinct from `union_all_of_two_ctes_count` (two CTEs
+			// UNION ALL'd, then counted) — here the UNION ALL is
+			// inside the CTE body, then the CTE itself is the outer
+			// aggregation source.
+			Name: "union_all_in_cte_body_count",
+			SchemaTemplate: "CREATE TABLE T_DSC_07A (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSC_07B (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_07A VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_DSC_07B VALUES (10, 100), (11, 200), (12, 300), (13, 400)",
+			},
+			Query: "WITH u AS (SELECT id FROM T_DSC_07A UNION ALL SELECT id FROM T_DSC_07B) SELECT count(*) FROM u",
+		},
+		{
+			// Recursive CTE counting bounded depth via id < N — pins
+			// recursion termination on the recursive-side WHERE.
+			// Distinct from `recursive_cte_depth_counter` (which
+			// generates n+1 from a synthetic seed) — this walks a
+			// real parent-child table with a depth bound.
+			Name:           "recursive_cte_depth_bounded_walk",
+			SchemaTemplate: "CREATE TABLE T_DSC_08 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_08 VALUES (1, -1), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent FROM T_DSC_08 WHERE id = 1 UNION ALL SELECT t.id, t.parent FROM r, T_DSC_08 AS t WHERE t.parent = r.id AND t.id <= 4) SELECT count(*) FROM r",
+		},
+		{
+			// Recursive CTE on a wider parent-child tree counting
+			// descendants — distinct from `recursive_cte_tree_descendants`
+			// by tree shape (this one has a longer fan-out branch and
+			// 9 nodes vs 6).
+			Name:           "recursive_cte_wide_tree_count",
+			SchemaTemplate: "CREATE TABLE T_DSC_09 (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_09 VALUES (1, -1), (2, 1), (3, 1), (4, 1), (5, 2), (6, 2), (7, 3), (8, 5), (9, 7)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent FROM T_DSC_09 WHERE id = 1 UNION ALL SELECT t.id, t.parent FROM r, T_DSC_09 AS t WHERE t.parent = r.id) SELECT count(*) FROM r",
+		},
+		{
+			// Recursive CTE summing a value column carried through the
+			// recursion frame. Distinct from existing recursive_cte_*
+			// (all use count(*)) — this exercises SUM across a
+			// recursive walk.
+			Name:           "recursive_cte_sum_val_along_walk",
+			SchemaTemplate: "CREATE TABLE T_DSC_10 (id BIGINT, parent BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_10 VALUES (1, -1, 100), (2, 1, 50), (3, 1, 75), (4, 2, 25), (5, 3, 200)",
+			},
+			Query: "WITH RECURSIVE r AS (SELECT id, parent, val FROM T_DSC_10 WHERE id = 1 UNION ALL SELECT t.id, t.parent, t.val FROM r, T_DSC_10 AS t WHERE t.parent = r.id) SELECT sum(val) FROM r",
+		},
+		{
+			// Three-CTE chain where each step feeds the next, with the
+			// outer SELECT applying an additional WHERE on top. Pins
+			// CTE-chain + outer-filter composition.
+			Name:           "cte_three_chain_outer_filter",
+			SchemaTemplate: "CREATE TABLE T_DSC_11 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_11 VALUES (1, 'us', 10), (2, 'us', 50), (3, 'us', 200), (4, 'eu', 100), (5, 'us', 500), (6, 'us', 75)",
+			},
+			Query: "WITH a AS (SELECT id, region, val FROM T_DSC_11 WHERE region = 'us'), b AS (SELECT id, val FROM a WHERE val >= 50), c AS (SELECT id, val FROM b) SELECT count(*) FROM c WHERE val < 300",
+		},
+		{
+			// CTE comma-joined to a base table where the CTE narrows
+			// projection (single-column id). Pins narrow-projection
+			// CTE × base-table join. Distinct from `cte_in_join_with_filter`
+			// — that CTE keeps val in projection; here val is dropped.
+			Name: "cte_narrow_projection_join_base",
+			SchemaTemplate: "CREATE TABLE T_DSC_12A (id BIGINT, gid BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSC_12B (gid BIGINT, label STRING, PRIMARY KEY (gid))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_12A VALUES (1, 10), (2, 20), (3, 10), (4, 40)",
+				"INSERT INTO T_DSC_12B VALUES (10, 'x'), (20, 'y'), (30, 'z'), (40, 'w')",
+			},
+			Query: "WITH g AS (SELECT gid FROM T_DSC_12A) SELECT count(*) FROM g, T_DSC_12B b WHERE g.gid = b.gid",
+		},
+		// Skipped union_all_two_simple_no_wrap (added during this shift's
+		// CTE batch, dropped same-shift): UNION ALL row order without an
+		// outer ORDER BY is non-deterministic between engines, and adding
+		// ORDER BY would hit Java's intermittent UNION-ALL-ORDER-BY bug
+		// (TODO #44 Tier D). The shape is already covered indirectly via
+		// `union_all_two_branches_disjoint_where` style entries that wrap
+		// the union in a derived table or rely on per-branch sort.
+		{
+			// Recursive CTE on a linked-list with multi-column carry
+			// (id, next, label) — pins struct-shaped recursion frame
+			// with a STRING column, distinct from `recursive_cte_multi_column`
+			// which carries only BIGINTs.
+			Name:           "recursive_cte_string_carry_walk",
+			SchemaTemplate: "CREATE TABLE T_DSC_14 (id BIGINT, next BIGINT, label STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_14 VALUES (1, 2, 'a'), (2, 3, 'b'), (3, 4, 'c'), (4, -1, 'd')",
+			},
+			Query: "WITH RECURSIVE walk AS (SELECT id, next, label FROM T_DSC_14 WHERE id = 1 UNION ALL SELECT t.id, t.next, t.label FROM walk, T_DSC_14 AS t WHERE t.id = walk.next) SELECT count(*) FROM walk",
+		},
+		{
+			// Single CTE with WHERE-narrowed body, then outer
+			// projection re-narrows further before counting. Pins the
+			// `WITH x AS (SELECT ...) SELECT count(*) FROM x WHERE ...`
+			// shape distinctly: CTE has its own WHERE, outer has its
+			// own WHERE on a different column.
+			Name:           "cte_double_narrow_count",
+			SchemaTemplate: "CREATE TABLE T_DSC_15 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSC_15 VALUES (1, 'us', 10), (2, 'eu', 100), (3, 'us', 50), (4, 'us', 200), (5, 'eu', 25), (6, 'us', 300)",
+			},
+			Query: "WITH us AS (SELECT id, region, val FROM T_DSC_15 WHERE region = 'us') SELECT count(*) FROM us WHERE val BETWEEN 40 AND 250",
+		},
+
+		// ===== DML patterns (DSD family) — INSERT / UPDATE / DELETE =====
+		{
+			// 5-row INSERT VALUES — pins multi-row INSERT batch shape
+			// past the existing 3-row coverage.
+			Name:           "dml_insert_5_rows_one_values",
+			SchemaTemplate: "CREATE TABLE T_DSD_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DSD_01 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+			Query:          "SELECT id, val FROM T_DSD_01 ORDER BY id",
+		},
+		{
+			// 6-row INSERT VALUES with mixed BIGINT/STRING/BOOLEAN —
+			// pins multi-row VALUES across distinct primitive types.
+			Name:           "dml_insert_6_rows_mixed_types",
+			SchemaTemplate: "CREATE TABLE T_DSD_02 (id BIGINT, name STRING, flag BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_02 VALUES (1, 'a', TRUE), (2, 'b', FALSE), (3, 'c', TRUE), (4, 'd', FALSE), (5, 'e', TRUE), (6, 'f', FALSE)",
+			},
+			Query: "SELECT id, name, flag FROM T_DSD_02 ORDER BY id",
+		},
+		{
+			// Bare arithmetic in VALUES row constructor (no parens) —
+			// pins addition + subtraction inline. Parenthesized arith
+			// `(5+3)` is rejected by both engines (swingshift-64 #60);
+			// this form must continue to work.
+			Name:           "dml_insert_arith_addsub",
+			SchemaTemplate: "CREATE TABLE T_DSD_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DSD_03 VALUES (1, 5 + 3), (2, 100 - 25), (3, 7 + 7 + 7)"},
+			Query:          "SELECT id, val FROM T_DSD_03 ORDER BY id",
+		},
+		{
+			// Bare arithmetic in VALUES — multiplication / division /
+			// modulo. Pins non-additive arith ops at row-constructor slot.
+			Name:           "dml_insert_arith_muldivmod",
+			SchemaTemplate: "CREATE TABLE T_DSD_04 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DSD_04 VALUES (1, 6 * 7), (2, 100 / 4), (3, 17 % 5)"},
+			Query:          "SELECT id, val FROM T_DSD_04 ORDER BY id",
+		},
+		{
+			// Bare INSERT INTO t SELECT ... FROM s — no filter, full
+			// copy. Explicit-column-list form is rejected (swingshift-64
+			// #55); the bare projection list must still work.
+			Name: "dml_insert_select_bare_full_copy",
+			SchemaTemplate: "CREATE TABLE T_DSD_05_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSD_05_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_05_SRC VALUES (1, 100), (2, 200), (3, 300)",
+				"INSERT INTO T_DSD_05_DST SELECT id, val FROM T_DSD_05_SRC",
+			},
+			Query: "SELECT id, val FROM T_DSD_05_DST ORDER BY id",
+		},
+		{
+			// Bare INSERT INTO t SELECT ... with arithmetic on a
+			// projected column — pins computed-column INSERT-from-SELECT.
+			Name: "dml_insert_select_with_arith_projection",
+			SchemaTemplate: "CREATE TABLE T_DSD_06_SRC (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_DSD_06_DST (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_06_SRC VALUES (1, 10), (2, 20), (3, 30)",
+				"INSERT INTO T_DSD_06_DST SELECT id, val * 2 FROM T_DSD_06_SRC",
+			},
+			Query: "SELECT id, val FROM T_DSD_06_DST ORDER BY id",
+		},
+		{
+			// UPDATE WHERE id = K, single row matches. Pins the simplest
+			// EQ-on-PK update path.
+			Name:           "dml_update_single_row_pk_eq",
+			SchemaTemplate: "CREATE TABLE T_DSD_07 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_07 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_DSD_07 SET val = 999 WHERE id = 2",
+			},
+			Query: "SELECT id, val FROM T_DSD_07 ORDER BY id",
+		},
+		{
+			// UPDATE WHERE val < K — multi-row match on a non-PK
+			// predicate. Pins range-predicate UPDATE rewriting many rows.
+			Name:           "dml_update_multi_row_range_predicate",
+			SchemaTemplate: "CREATE TABLE T_DSD_08 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_08 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)",
+				"UPDATE T_DSD_08 SET val = 0 WHERE val < 30",
+			},
+			Query: "SELECT id, val FROM T_DSD_08 ORDER BY id",
+		},
+		{
+			// UPDATE SET val = val * 2 WHERE id <= K — pins
+			// arithmetic-RHS combined with PK range filter. (Tried
+			// `WHERE id IN (...)` first; trips a Java VerifyException
+			// for UPDATE — upstream quirk. Range form is the safe
+			// equivalent.)
+			Name:           "dml_update_double_via_pk_range",
+			SchemaTemplate: "CREATE TABLE T_DSD_09 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_09 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"UPDATE T_DSD_09 SET val = val * 2 WHERE id <= 3",
+			},
+			Query: "SELECT id, val FROM T_DSD_09 ORDER BY id",
+		},
+		{
+			// UPDATE SET val = val - K WHERE val > T — pins arithmetic
+			// subtract-RHS with a value-filter on the same column.
+			Name:           "dml_update_subtract_with_value_filter",
+			SchemaTemplate: "CREATE TABLE T_DSD_10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_10 VALUES (1, 25), (2, 60), (3, 100), (4, 5)",
+				"UPDATE T_DSD_10 SET val = val - 10 WHERE val > 50",
+			},
+			Query: "SELECT id, val FROM T_DSD_10 ORDER BY id",
+		},
+		{
+			// DELETE with compound AND predicate over two non-PK columns.
+			// Pins multi-condition DELETE filter.
+			Name:           "dml_delete_compound_and",
+			SchemaTemplate: "CREATE TABLE T_DSD_11 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_11 VALUES (1, 'us', 10), (2, 'us', 100), (3, 'eu', 100), (4, 'us', 50)",
+				"DELETE FROM T_DSD_11 WHERE region = 'us' AND val >= 50",
+			},
+			Query: "SELECT id, region, val FROM T_DSD_11 ORDER BY id",
+		},
+		{
+			// DELETE with compound OR predicate — pins the disjunction
+			// path (different planner shape vs AND).
+			Name:           "dml_delete_compound_or",
+			SchemaTemplate: "CREATE TABLE T_DSD_12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+				"DELETE FROM T_DSD_12 WHERE id = 1 OR val = 30",
+			},
+			Query: "SELECT id, val FROM T_DSD_12 ORDER BY id",
+		},
+		{
+			// DELETE WHERE val BETWEEN A AND B — pins BETWEEN as a
+			// DELETE filter (range scan path).
+			Name:           "dml_delete_between_range",
+			SchemaTemplate: "CREATE TABLE T_DSD_13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_13 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)",
+				"DELETE FROM T_DSD_13 WHERE val BETWEEN 10 AND 30",
+			},
+			Query: "SELECT id, val FROM T_DSD_13 ORDER BY id",
+		},
+		{
+			// INSERT a fresh row at the same PK after DELETE — pins
+			// "delete then re-insert at same PK" path. Distinct from a
+			// PK-conflict scenario (which would error); this exercises
+			// the legitimate reuse case.
+			Name:           "dml_insert_after_delete_same_pk",
+			SchemaTemplate: "CREATE TABLE T_DSD_14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_14 VALUES (1, 100), (2, 200), (3, 300)",
+				"DELETE FROM T_DSD_14 WHERE id = 2",
+				"INSERT INTO T_DSD_14 VALUES (2, 999)",
+			},
+			Query: "SELECT id, val FROM T_DSD_14 ORDER BY id",
+		},
+		{
+			// UPDATE that matches no rows — pins the no-op zero-row
+			// path. Post-state must equal pre-state byte-equal.
+			Name:           "dml_update_no_op_zero_match",
+			SchemaTemplate: "CREATE TABLE T_DSD_15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_15 VALUES (1, 10), (2, 20)",
+				"UPDATE T_DSD_15 SET val = 9999 WHERE id = 99999",
+			},
+			Query: "SELECT id, val FROM T_DSD_15 ORDER BY id",
+		},
+		{
+			// UPDATE SET col = NULL — pins clearing a nullable column
+			// via UPDATE (distinct from INSERT-with-NULL).
+			Name:           "dml_update_set_to_null",
+			SchemaTemplate: "CREATE TABLE T_DSD_16 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSD_16 VALUES (1, 'alice'), (2, 'bob'), (3, 'carol')",
+				"UPDATE T_DSD_16 SET name = NULL WHERE id = 2",
+			},
+			Query: "SELECT id, name FROM T_DSD_16 ORDER BY id",
+		},
+
+		// ===== NULL handling and SQL three-valued logic =====
+		// Each entry pins a specific facet of NULL semantics. SQL's
+		// three-valued logic says =, !=, <, > vs NULL yield UNKNOWN
+		// (excluded from WHERE); IS NULL / IS DISTINCT FROM are the
+		// null-aware predicates. Aggregates ignore NULL (except
+		// COUNT(*)). NULL propagates through arithmetic.
+		{
+			// IS NULL on a BIGINT column — selects only rows where the
+			// non-PK value is NULL. Anchors the simplest null predicate.
+			Name:           "null_is_null_bigint",
+			SchemaTemplate: "CREATE TABLE T_DSN_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_01 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL)",
+			},
+			Query: "SELECT id FROM T_DSN_01 WHERE val IS NULL ORDER BY id",
+		},
+		{
+			// IS NOT NULL on a STRING column — complement of IS NULL.
+			// Confirms inverted predicate path on string nullability.
+			Name:           "null_is_not_null_string",
+			SchemaTemplate: "CREATE TABLE T_DSN_02 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_02 VALUES (1, 'alice'), (2, NULL), (3, 'carol'), (4, NULL)",
+			},
+			Query: "SELECT id, name FROM T_DSN_02 WHERE name IS NOT NULL ORDER BY id",
+		},
+		{
+			// IS NULL on a DOUBLE column — pins null predicate over a
+			// floating-point column (distinct nullability path).
+			Name:           "null_is_null_double",
+			SchemaTemplate: "CREATE TABLE T_DSN_03 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_03 VALUES (1, 1.5), (2, NULL), (3, -2.25)",
+			},
+			Query: "SELECT id FROM T_DSN_03 WHERE val IS NULL ORDER BY id",
+		},
+		{
+			// COALESCE(val, 0) — substitutes 0 for NULL bigints in
+			// projection. Pins the most common COALESCE shape.
+			Name:           "coalesce_bigint_zero_default",
+			SchemaTemplate: "CREATE TABLE T_DSN_04 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_04 VALUES (1, 100), (2, NULL), (3, 300)",
+			},
+			Query: "SELECT id, COALESCE(val, 0) FROM T_DSN_04 ORDER BY id",
+		},
+		{
+			// COALESCE on a STRING column with a literal default. Pins
+			// the string variant of the same shape (distinct type path).
+			Name:           "coalesce_string_default",
+			SchemaTemplate: "CREATE TABLE T_DSN_05 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_05 VALUES (1, 'alice'), (2, NULL), (3, 'carol')",
+			},
+			Query: "SELECT id, COALESCE(name, 'unknown') FROM T_DSN_05 ORDER BY id",
+		},
+		{
+			// NULL propagates through arithmetic: val + 1 IS NULL holds
+			// for any row where val IS NULL. Pins NULL propagation
+			// through a binary arithmetic op via IS NULL on the result.
+			Name:           "null_arith_propagation_is_null",
+			SchemaTemplate: "CREATE TABLE T_DSN_06 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_06 VALUES (1, 5), (2, NULL), (3, 7)",
+			},
+			Query: "SELECT id FROM T_DSN_06 WHERE val + 1 IS NULL ORDER BY id",
+		},
+		{
+			// IS DISTINCT FROM is null-safe inequality: NULL IS DISTINCT
+			// FROM 5 is TRUE (where val=5 IS DISTINCT FROM 5 is FALSE).
+			// Distinguishes from regular != which yields UNKNOWN for NULL.
+			Name:           "is_distinct_from_includes_null",
+			SchemaTemplate: "CREATE TABLE T_DSN_07 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_07 VALUES (1, 5), (2, NULL), (3, 7), (4, 5)",
+			},
+			Query: "SELECT id FROM T_DSN_07 WHERE val IS DISTINCT FROM 5 ORDER BY id",
+		},
+		{
+			// IS NOT DISTINCT FROM is null-safe equality: matches
+			// val=5 AND treats NULL IS NOT DISTINCT FROM NULL as TRUE.
+			// Companion to is_distinct_from_includes_null.
+			Name:           "is_not_distinct_from_value",
+			SchemaTemplate: "CREATE TABLE T_DSN_08 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_08 VALUES (1, 5), (2, NULL), (3, 7), (4, 5)",
+			},
+			Query: "SELECT id FROM T_DSN_08 WHERE val IS NOT DISTINCT FROM 5 ORDER BY id",
+		},
+		{
+			// SUM and AVG ignore NULL; COUNT(val) ignores NULL but
+			// COUNT(*) counts every row. Single aggregate row exposes
+			// all four behaviours in one query.
+			Name:           "agg_with_null_sum_count_mix",
+			SchemaTemplate: "CREATE TABLE T_DSN_09 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_09 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 60)",
+			},
+			Query: "SELECT sum(val), count(val), count(*) FROM T_DSN_09",
+		},
+		{
+			// MIN and MAX ignore NULL — return the smallest/largest
+			// non-NULL value. Distinct path from sum/count.
+			Name:           "agg_with_null_min_max",
+			SchemaTemplate: "CREATE TABLE T_DSN_10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_10 VALUES (1, 50), (2, NULL), (3, 10), (4, NULL), (5, 30)",
+			},
+			Query: "SELECT min(val), max(val) FROM T_DSN_10",
+		},
+		{
+			// COUNT(col) on an all-NULL column returns 0; SUM returns
+			// NULL (empty aggregate). Edge case for "everything NULL".
+			Name:           "agg_with_null_count_only_nulls",
+			SchemaTemplate: "CREATE TABLE T_DSN_11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_11 VALUES (1, NULL), (2, NULL), (3, NULL)",
+			},
+			Query: "SELECT count(val), count(*) FROM T_DSN_11",
+		},
+		{
+			// IN-list with a NULL element. The NULL is silently ignored
+			// for matching purposes — rows match iff val equals one of
+			// the non-NULL list members.
+			Name:           "null_in_list_with_null_element",
+			SchemaTemplate: "CREATE TABLE T_DSN_12 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_12 VALUES (1, 10), (2, 20), (3, NULL), (4, 30)",
+			},
+			Query: "SELECT id FROM T_DSN_12 WHERE val IN (10, 20, NULL) ORDER BY id",
+		},
+		{
+			// COUNT(*) with WHERE val < 50 — NULL rows yield UNKNOWN
+			// from the comparison and are excluded. Pins three-valued
+			// logic at the WHERE-clause filter.
+			Name:           "null_excluded_from_lt_filter",
+			SchemaTemplate: "CREATE TABLE T_DSN_13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_13 VALUES (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 100)",
+			},
+			Query: "SELECT count(*) FROM T_DSN_13 WHERE val < 50",
+		},
+		{
+			// Plain != against a literal: rows with NULL are excluded
+			// (NULL != 5 → UNKNOWN). Distinct from IS DISTINCT FROM
+			// which would include the NULL row.
+			Name:           "null_excluded_from_neq_filter",
+			SchemaTemplate: "CREATE TABLE T_DSN_14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_14 VALUES (1, 5), (2, NULL), (3, 7), (4, 5)",
+			},
+			Query: "SELECT id FROM T_DSN_14 WHERE val != 5 ORDER BY id",
+		},
+		{
+			// CASE WHEN with no ELSE returns NULL for unmatched rows.
+			// Combined with COALESCE in the projection to pin the
+			// CASE-emits-NULL-then-COALESCE-substitutes path.
+			Name:           "null_case_no_else_then_coalesce",
+			SchemaTemplate: "CREATE TABLE T_DSN_15 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSN_15 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT id, COALESCE(CASE WHEN val < 25 THEN val END, -1) FROM T_DSN_15 ORDER BY id",
+		},
+		// ===== Aggregate-without-GROUP-BY shapes (TODO #39 blocks GROUP =====
+		// BY entirely in fdb-relational 4.11.1.0 — Cascades has no GROUP
+		// BY rule. These entries exercise aggregate semantics without a
+		// GROUP BY clause, treating the whole result as one implicit
+		// group.
+		{
+			// HAVING with two DIFFERENT aggregates joined by AND.
+			// Existing having_compound_predicate uses COUNT(*) twice;
+			// this pins SUM-and-COUNT mixed in one HAVING conjunction.
+			Name:           "agg_with_having_sum_and_count_and",
+			SchemaTemplate: "CREATE TABLE T_DSG_01 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_01 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(val), COUNT(*) FROM T_DSG_01 HAVING SUM(val) > 50 AND COUNT(*) >= 3",
+		},
+		{
+			// HAVING with two DIFFERENT aggregates joined by OR. The
+			// disjunction path is a different planner shape than AND.
+			Name:           "agg_with_having_sum_or_min",
+			SchemaTemplate: "CREATE TABLE T_DSG_02 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_02 VALUES (1, 5), (2, 10), (3, 15)",
+			},
+			Query: "SELECT SUM(val), MIN(val) FROM T_DSG_02 HAVING SUM(val) > 100 OR MIN(val) <= 5",
+		},
+		{
+			// HAVING that filters EVERYTHING — the predicate is FALSE for
+			// the implicit group. Both engines emit zero rows (not NULL,
+			// not error). Pins HAVING-rejects-the-only-group path.
+			Name:           "agg_with_having_filters_all_out",
+			SchemaTemplate: "CREATE TABLE T_DSG_03 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_03 VALUES (1, 5), (2, 10)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DSG_03 HAVING COUNT(*) > 1000",
+		},
+		{
+			// HAVING comparing aggregate to a NEGATIVE literal — pins
+			// signed-literal handling in the HAVING predicate.
+			Name:           "agg_with_having_neg_literal",
+			SchemaTemplate: "CREATE TABLE T_DSG_04 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_04 VALUES (1, -5), (2, -10), (3, 7)",
+			},
+			Query: "SELECT SUM(val) FROM T_DSG_04 HAVING SUM(val) < 0",
+		},
+		{
+			// HAVING with three predicates AND-chained — exercises the
+			// multi-leaf aggregate-HAVING simplifier composition.
+			Name:           "agg_with_having_three_way_and",
+			SchemaTemplate: "CREATE TABLE T_DSG_05 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_05 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT COUNT(*), SUM(val), MAX(val) FROM T_DSG_05 HAVING COUNT(*) > 0 AND SUM(val) > 50 AND MAX(val) >= 40",
+		},
+		{
+			// SUM over an arithmetic expression of a column — `SUM(v + 1)`
+			// vs SUM(v). Pins the per-row eval-then-accumulate path.
+			Name:           "agg_no_groupby_sum_arith_expr",
+			SchemaTemplate: "CREATE TABLE T_DSG_06 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_06 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(val + 1) FROM T_DSG_06",
+		},
+		{
+			// COUNT over an arithmetic expression — `COUNT(v * 2)`. Even
+			// though the expression is per-row, COUNT(expr) counts non-NULL
+			// expr results (NULL * 2 = NULL → skipped).
+			Name:           "agg_no_groupby_count_arith_expr",
+			SchemaTemplate: "CREATE TABLE T_DSG_07 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_07 VALUES (1, 5), (2, NULL), (3, 7)",
+			},
+			Query: "SELECT COUNT(val * 2) FROM T_DSG_07",
+		},
+		{
+			// Five-aggregate one-shot: COUNT, SUM, MIN, MAX, AVG over the
+			// same column. Existing sum_avg_min_max_one_query covers four;
+			// this pins the FIVE-aggregate emission shape.
+			Name:           "agg_no_groupby_five_aggregates",
+			SchemaTemplate: "CREATE TABLE T_DSG_08 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_08 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT COUNT(*), SUM(val), MIN(val), MAX(val), AVG(val) FROM T_DSG_08",
+		},
+		{
+			// COUNT(*) with WHERE BETWEEN — pins BETWEEN as a WHERE
+			// predicate that feeds an aggregate. Distinct from
+			// count_star_with_where_range (which uses < / >).
+			Name:           "agg_no_groupby_count_with_between",
+			SchemaTemplate: "CREATE TABLE T_DSG_09 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_09 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DSG_09 WHERE val BETWEEN 10 AND 30",
+		},
+		{
+			// SUM with WHERE NOT — pins NOT-predicate before aggregation.
+			Name:           "agg_no_groupby_sum_with_not",
+			SchemaTemplate: "CREATE TABLE T_DSG_10 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_10 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT SUM(val) FROM T_DSG_10 WHERE NOT (val = 20)",
+		},
+		{
+			// AVG over a WHERE-filtered subset that leaves a SINGLE row.
+			// Pins the boundary between empty (NULL) and full (mean)
+			// behaviour at the smallest non-empty case.
+			Name:           "agg_no_groupby_avg_single_match",
+			SchemaTemplate: "CREATE TABLE T_DSG_11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_11 VALUES (1, 10), (2, 20), (3, 30)",
+			},
+			Query: "SELECT AVG(val) FROM T_DSG_11 WHERE id = 2",
+		},
+		{
+			// SUM(DOUBLE) over a WHERE-filtered subset producing a
+			// floating-point result. Pins DOUBLE-aggregate-with-WHERE.
+			Name:           "agg_no_groupby_sum_double_with_where",
+			SchemaTemplate: "CREATE TABLE T_DSG_12 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_12 VALUES (1, 1.5), (2, 2.25), (3, 100.0)",
+			},
+			Query: "SELECT SUM(val) FROM T_DSG_12 WHERE val < 50.0",
+		},
+		{
+			// HAVING with comparison vs LITERAL only (no column ref) —
+			// e.g. HAVING 1 = 1 always TRUE. Both engines should emit the
+			// implicit-group's COUNT result. Pins constant-HAVING-predicate.
+			Name:           "agg_with_having_const_true",
+			SchemaTemplate: "CREATE TABLE T_DSG_13 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_13 VALUES (1), (2)",
+			},
+			Query: "SELECT COUNT(*) FROM T_DSG_13 HAVING 1 = 1",
+		},
+		{
+			// MIN+MAX over a WHERE-filtered scope producing distinct
+			// extremes. Pins MIN/MAX accumulator interaction with WHERE.
+			Name:           "agg_no_groupby_min_max_with_where",
+			SchemaTemplate: "CREATE TABLE T_DSG_14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_14 VALUES (1, 100), (2, 5), (3, 50), (4, 200), (5, 1)",
+			},
+			Query: "SELECT MIN(val), MAX(val) FROM T_DSG_14 WHERE val > 1 AND val < 200",
+		},
+		{
+			// HAVING with two aggregates over different columns — pins
+			// multi-column aggregate evaluation in the HAVING predicate.
+			Name:           "agg_with_having_two_cols",
+			SchemaTemplate: "CREATE TABLE T_DSG_15 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DSG_15 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)",
+			},
+			Query: "SELECT SUM(a), SUM(b) FROM T_DSG_15 HAVING SUM(a) > 0 AND SUM(b) > 500",
+		},
+
+		// ===== Secondary-index pushdown shapes (DSI family) =====
+		// These pin the planner's secondary-index pickups: equality
+		// probe, range scan, composite-prefix matching, IN-list, COUNT
+		// over an indexed range, covering-index leaf access, and the
+		// filter-residual interaction with non-indexed columns.
+		{
+			// Single-column secondary index + equality WHERE — the
+			// canonical pushdown shape (eq probe, single result row).
+			Name:           "idx_pushdown_eq_single_col",
+			SchemaTemplate: "CREATE TABLE T_DSI_01 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi01_val ON T_DSI_01 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_01 VALUES (1, 10), (2, 50), (3, 100), (4, 50), (5, 200)",
+			},
+			Query: "SELECT id FROM T_DSI_01 WHERE val = 50 ORDER BY id",
+		},
+		{
+			// Single-column secondary index + BETWEEN range WHERE —
+			// pins inclusive-range scan via index.
+			Name:           "idx_pushdown_between_range",
+			SchemaTemplate: "CREATE TABLE T_DSI_02 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi02_val ON T_DSI_02 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_02 VALUES (1, 5), (2, 25), (3, 50), (4, 75), (5, 100), (6, 150)",
+			},
+			Query: "SELECT id, val FROM T_DSI_02 WHERE val BETWEEN 25 AND 100 ORDER BY id",
+		},
+		{
+			// Composite secondary index + WHERE on full prefix (both
+			// indexed columns equality-bound). Pins full composite probe.
+			Name:           "idx_composite_full_prefix_eq",
+			SchemaTemplate: "CREATE TABLE T_DSI_03 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_composite_dsi03_ab ON T_DSI_03 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_03 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 10), (4, 2, 20), (5, 3, 30)",
+			},
+			Query: "SELECT id FROM T_DSI_03 WHERE a = 1 AND b = 20 ORDER BY id",
+		},
+		{
+			// Composite secondary index + WHERE on partial prefix
+			// (leading column only). Pins composite-leading-prefix probe.
+			Name:           "idx_composite_partial_prefix",
+			SchemaTemplate: "CREATE TABLE T_DSI_04 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_composite_dsi04_ab ON T_DSI_04 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_04 VALUES (1, 1, 10), (2, 1, 20), (3, 1, 30), (4, 2, 10), (5, 3, 30)",
+			},
+			Query: "SELECT id, a, b FROM T_DSI_04 WHERE a = 1 ORDER BY id",
+		},
+		{
+			// Composite secondary index + ORDER BY matching full
+			// composite key. Pins ordering-satisfaction via composite idx.
+			Name:           "idx_composite_order_by_indexed_cols",
+			SchemaTemplate: "CREATE TABLE T_DSI_05 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_composite_dsi05_ab ON T_DSI_05 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_05 VALUES (1, 2, 20), (2, 1, 30), (3, 1, 10), (4, 3, 5), (5, 2, 10)",
+			},
+			Query: "SELECT id, a, b FROM T_DSI_05 WHERE a = 2 ORDER BY a, b",
+		},
+
+		// ===== Type promotion + CAST shapes (DST family) =====
+		// New shapes targeting promotion sites NOT already pinned by the
+		// existing cast_/implicit_promote_/type_mismatch_ entries
+		// (different operators, comparison shapes, IN/BETWEEN/ORDER BY
+		// integration, and BOOLEAN-axis mismatch).
+		{
+			// BIGINT col − DOUBLE col → DOUBLE result column. Companion
+			// to existing arithmetic_mixed_bigint_double which uses '+';
+			// this pins subtract's promotion separately.
+			Name:           "type_promote_bigint_minus_double",
+			SchemaTemplate: "CREATE TABLE T_DST_01 (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_01 VALUES (1, 10, 1.5), (2, 20, 0.25)",
+			},
+			Query: "SELECT id, a - b FROM T_DST_01 ORDER BY id",
+		},
+		{
+			// BIGINT col * DOUBLE col → DOUBLE. Pins multiply's
+			// promotion path (separate codepath from + and -).
+			Name:           "type_promote_bigint_times_double",
+			SchemaTemplate: "CREATE TABLE T_DST_02 (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_02 VALUES (1, 4, 2.5), (2, 10, 0.1)",
+			},
+			Query: "SELECT id, a * b FROM T_DST_02 ORDER BY id",
+		},
+		{
+			// BIGINT col / DOUBLE col → DOUBLE. Pins divide's promotion
+			// (always emits DOUBLE, not BIGINT-truncated, when one
+			// operand is DOUBLE).
+			Name:           "type_promote_bigint_div_double",
+			SchemaTemplate: "CREATE TABLE T_DST_03 (id BIGINT, a BIGINT, b DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_03 VALUES (1, 10, 4.0), (2, 7, 2.0)",
+			},
+			Query: "SELECT id, a / b FROM T_DST_03 ORDER BY id",
+		},
+		{
+			// BIGINT col − BIGINT col → BIGINT (no promotion). Pins
+			// same-type subtract stays in BIGINT — distinct from the
+			// promoted DOUBLE result of T_DST_01.
+			Name:           "type_promote_bigint_minus_bigint_stays_bigint",
+			SchemaTemplate: "CREATE TABLE T_DST_04 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_04 VALUES (1, 100, 7), (2, 50, 50)",
+			},
+			Query: "SELECT id, a - b FROM T_DST_04 ORDER BY id",
+		},
+		{
+			// `WHERE bigint_col = 5.0` — equality (not >=) with DOUBLE
+			// literal exactly representable as integer. Pins both
+			// engines promote and match the integer-valued row. Distinct
+			// from existing implicit_promote_bigint_ge_double (>=) and
+			// bigint_compared_to_double_literal (>).
+			Name:           "type_promote_bigint_eq_double_literal",
+			SchemaTemplate: "CREATE TABLE T_DST_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_05 VALUES (1, 5), (2, 10), (3, 5)",
+			},
+			Query: "SELECT id FROM T_DST_05 WHERE v = 5.0 ORDER BY id",
+		},
+		{
+			// `WHERE bigint_col = 5.5` — equality with non-integer
+			// DOUBLE literal. After promotion no BIGINT row equals 5.5
+			// exactly, so result is empty. Pins fractional-literal
+			// promotion semantics.
+			Name:           "type_promote_bigint_eq_fractional_double_empty",
+			SchemaTemplate: "CREATE TABLE T_DST_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_06 VALUES (1, 5), (2, 6), (3, 7)",
+			},
+			Query: "SELECT id FROM T_DST_06 WHERE v = 5.5 ORDER BY id",
+		},
+		{
+			// BIGINT col IN (DOUBLE literals) — IN-list with DOUBLE
+			// items. Both engines must promote and match integer-valued
+			// rows (1 and 3) but skip the v=2 row.
+			Name:           "type_promote_bigint_in_double_list",
+			SchemaTemplate: "CREATE TABLE T_DST_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_07 VALUES (1, 1), (2, 2), (3, 3)",
+			},
+			Query: "SELECT id FROM T_DST_07 WHERE v IN (1.0, 3.0) ORDER BY id",
+		},
+		{
+			// BIGINT col BETWEEN DOUBLE bounds — fractional bounds via
+			// DOUBLE-promoted comparison. Rows with v in [1.5, 4.5]
+			// should match v=2,3,4.
+			Name:           "type_promote_bigint_between_double_bounds",
+			SchemaTemplate: "CREATE TABLE T_DST_08 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_08 VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)",
+			},
+			Query: "SELECT id FROM T_DST_08 WHERE v BETWEEN 1.5 AND 4.5 ORDER BY id",
+		},
+		{
+			// CAST string with explicit decimal point '3.14' to DOUBLE.
+			// Companion to cast_string_to_bigint — pins the
+			// fractional-string parse path through Double.parseDouble.
+			Name:           "cast_string_decimal_to_double",
+			SchemaTemplate: "CREATE TABLE T_DST_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_09 VALUES (1, '3.14'), (2, '-2.5'), (3, '0.0')",
+			},
+			Query: "SELECT id, CAST(s AS DOUBLE) FROM T_DST_09 ORDER BY id",
+		},
+		{
+			// CAST string '0.0' to BIGINT. Probes whether the parser
+			// routes through Long.parseLong (which rejects '0.0') or
+			// through Double then to BIGINT. Both engines must agree on
+			// the rejection-or-truncation outcome.
+			Name:           "cast_string_decimal_zero_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_DST_10 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DST_10 VALUES (1)"},
+			Query:          "SELECT id, CAST('0.0' AS BIGINT) FROM T_DST_10",
+		},
+		{
+			// CAST DOUBLE-typed column to BIGINT in a WHERE predicate —
+			// pins truncated-value comparison. Rows with floor(v)>=2
+			// should match (v=2.7, v=3.1).
+			Name:           "cast_double_col_to_bigint_in_where",
+			SchemaTemplate: "CREATE TABLE T_DST_11 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_11 VALUES (1, 0.5), (2, 1.9), (3, 2.7), (4, 3.1)",
+			},
+			Query: "SELECT id FROM T_DST_11 WHERE CAST(v AS BIGINT) >= 2 ORDER BY id",
+		},
+		{
+			// CAST in projection used inside arithmetic expression —
+			// `CAST(s AS BIGINT) + 100`. Pins CAST node interacts with
+			// the arithmetic-promotion machinery in the projection path
+			// (vs the WHERE path covered by cast_string_to_bigint_in_where).
+			Name:           "cast_string_to_bigint_in_arith_proj",
+			SchemaTemplate: "CREATE TABLE T_DST_12 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_12 VALUES (1, '5'), (2, '10')",
+			},
+			Query: "SELECT id, CAST(s AS BIGINT) + 100 FROM T_DST_12 ORDER BY id",
+		},
+		{
+			// CAST as ORDER BY key — `ORDER BY CAST(s AS BIGINT)` sorts
+			// numerically, not lexicographically. '2' < '10' as BIGINT
+			// but '10' < '2' as STRING. Pins CAST-in-ORDER-BY.
+			Name:           "cast_string_to_bigint_in_order_by",
+			SchemaTemplate: "CREATE TABLE T_DST_13 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_DST_13 VALUES (1, '10'), (2, '2'), (3, '100')",
+			},
+			Query: "SELECT id, s FROM T_DST_13 ORDER BY CAST(s AS BIGINT)",
+		},
+		{
+			// `WHERE str_col = 5` — STRING column compared against
+			// BIGINT literal. Both engines must reject with the
+			// "operands of a comparison operator are not compatible"
+			// shape. Distinct from the existing type_mismatch_compare
+			// (which uses '>') — pins '=' through the same rejection
+			// path.
+			Name:           "type_mismatch_string_eq_int",
+			SchemaTemplate: "CREATE TABLE T_DST_14 (id BIGINT, s STRING, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DST_14 VALUES (1, 'x')"},
+			Query:          "SELECT id FROM T_DST_14 WHERE s = 5",
+		},
+		{
+			// `WHERE bool_col = 1` — BOOLEAN column compared against
+			// INTEGER literal. Both engines should reject (no implicit
+			// boolean ↔ integer coercion). Pins boolean-int mismatch
+			// surface on a third axis (string, numeric, boolean).
+			Name:           "type_mismatch_boolean_eq_int",
+			SchemaTemplate: "CREATE TABLE T_DST_15 (id BIGINT, b BOOLEAN, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_DST_15 VALUES (1, TRUE)"},
+			Query:          "SELECT id FROM T_DST_15 WHERE b = 1",
+		},
+
+		// ===== Secondary-index pushdown shapes (DSI family, batch 2) =====
+		// Continuation of DSI_01..05 above. Pin multi-index choice,
+		// IN-list probe, arithmetic-on-indexed (non-pushable),
+		// COUNT(*)-over-index-range, and covering-index leaf access.
+		{
+			// Two single-column indexes on the same table; query
+			// filters on the first column. Pins planner choosing the
+			// matching single-col index over the other.
+			Name:           "idx_pushdown_multi_idx_picks_a",
+			SchemaTemplate: "CREATE TABLE T_DSI_06 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi06_a ON T_DSI_06 (a) CREATE INDEX idx_pushdown_dsi06_b ON T_DSI_06 (b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_06 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 20, 400)",
+			},
+			Query: "SELECT id, a, b FROM T_DSI_06 WHERE a = 20 ORDER BY id",
+		},
+		{
+			// Two single-column indexes; same setup but predicate on
+			// the OTHER column. Pins planner picks the other index
+			// symmetrically.
+			Name:           "idx_pushdown_multi_idx_picks_b",
+			SchemaTemplate: "CREATE TABLE T_DSI_07 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi07_a ON T_DSI_07 (a) CREATE INDEX idx_pushdown_dsi07_b ON T_DSI_07 (b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_07 VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 200)",
+			},
+			Query: "SELECT id, a, b FROM T_DSI_07 WHERE b = 200 ORDER BY id",
+		},
+		{
+			// Single-column secondary index + IN-list filter — pins
+			// multi-point index probe (different shape from BETWEEN).
+			Name:           "idx_pushdown_in_list",
+			SchemaTemplate: "CREATE TABLE T_DSI_08 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi08_val ON T_DSI_08 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_08 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)",
+			},
+			Query: "SELECT id, val FROM T_DSI_08 WHERE val IN (20, 40, 50) ORDER BY id",
+		},
+		{
+			// Index col + arithmetic in WHERE (`val + 1 = K`) — usually
+			// NOT pushable as a sargable index probe; planner should
+			// fall back to scan + residual filter. Result must still
+			// match Java byte-equal.
+			Name:           "idx_pushdown_arith_on_indexed_col",
+			SchemaTemplate: "CREATE TABLE T_DSI_09 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi09_val ON T_DSI_09 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_09 VALUES (1, 9), (2, 19), (3, 29), (4, 39)",
+			},
+			Query: "SELECT id, val FROM T_DSI_09 WHERE val + 1 = 20 ORDER BY id",
+		},
+		{
+			// COUNT(*) + WHERE on indexed column with > range — pins
+			// aggregate-over-index-range path (counting through index
+			// without fetching rows).
+			Name:           "idx_pushdown_count_with_range",
+			SchemaTemplate: "CREATE TABLE T_DSI_10 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi10_val ON T_DSI_10 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_10 VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45), (6, 55)",
+			},
+			Query: "SELECT count(*) FROM T_DSI_10 WHERE val > 20",
+		},
+		{
+			// COUNT(*) + WHERE eq on indexed column — single-point
+			// count via index. Companion to count_with_range.
+			Name:           "idx_pushdown_count_with_eq",
+			SchemaTemplate: "CREATE TABLE T_DSI_11 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi11_val ON T_DSI_11 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_11 VALUES (1, 100), (2, 200), (3, 100), (4, 100), (5, 300)",
+			},
+			Query: "SELECT count(*) FROM T_DSI_11 WHERE val = 100",
+		},
+		{
+			// Covering single-column index — query projects only the
+			// indexed column (no PK or other-column reference). Pins
+			// covered-index leaf access without record fetch.
+			Name:           "idx_covering_single_col_proj",
+			SchemaTemplate: "CREATE TABLE T_DSI_12 (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_covering_dsi12_val ON T_DSI_12 (val)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_12 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
+			},
+			Query: "SELECT val FROM T_DSI_12 WHERE val >= 20 ORDER BY val",
+		},
+		{
+			// Covering composite index — projection lists exactly the
+			// indexed cols, no PK. Pins composite covered-index access
+			// (different shape from compidx_covered_proj which orders
+			// by indexed cols too).
+			Name:           "idx_covering_composite_proj",
+			SchemaTemplate: "CREATE TABLE T_DSI_13 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_covering_dsi13_ab ON T_DSI_13 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_13 VALUES (1, 1, 100), (2, 1, 200), (3, 2, 100), (4, 2, 200), (5, 3, 50)",
+			},
+			Query: "SELECT a, b FROM T_DSI_13 WHERE a = 2 ORDER BY a, b",
+		},
+		{
+			// String single-column secondary index + equality — pins
+			// STRING-typed index probe (companion to BIGINT eq above).
+			Name:           "idx_pushdown_string_eq",
+			SchemaTemplate: "CREATE TABLE T_DSI_14 (id BIGINT, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_pushdown_dsi14_name ON T_DSI_14 (name)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_14 VALUES (1, 'alice'), (2, 'bob'), (3, 'carol'), (4, 'bob')",
+			},
+			Query: "SELECT id, name FROM T_DSI_14 WHERE name = 'bob' ORDER BY id",
+		},
+		{
+			// Composite secondary index + WHERE eq on leading col +
+			// range on trailing col. Pins (eq-prefix, range-suffix)
+			// composite-index probe — the canonical "2nd-col range"
+			// shape. Distinct from full-prefix-eq (DSI_03).
+			Name:           "idx_composite_leading_eq_trailing_range",
+			SchemaTemplate: "CREATE TABLE T_DSI_15 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_composite_dsi15_ab ON T_DSI_15 (a, b)",
+			SetupSqls: []string{
+				"INSERT INTO T_DSI_15 VALUES (1, 1, 5), (2, 1, 15), (3, 1, 25), (4, 2, 5), (5, 2, 25)",
+			},
+			Query: "SELECT id, a, b FROM T_DSI_15 WHERE a = 1 AND b >= 10 ORDER BY id",
 		},
 	}
 }
