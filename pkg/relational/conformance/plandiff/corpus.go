@@ -11174,6 +11174,117 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_FF12 a WHERE EXISTS (SELECT 1 FROM T_FF12B b WHERE b.region = 'us' AND b.val > 75 AND b.flag = TRUE) ORDER BY id",
 		},
+
+		// ===== COUNT/SUM over filtered indexed shape =====
+		{
+			// SUM over a WHERE-filtered range; pins aggregate-with-filter
+			// pushdown ordering. All three rows match.
+			Name:           "sum_with_range_filter",
+			SchemaTemplate: "CREATE TABLE T_LAST1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST1 VALUES (1, 10)",
+				"INSERT INTO T_LAST1 VALUES (2, 20)",
+				"INSERT INTO T_LAST1 VALUES (3, 30)",
+				"INSERT INTO T_LAST1 VALUES (4, 40)",
+				"INSERT INTO T_LAST1 VALUES (5, 50)",
+			},
+			Query: "SELECT sum(val), count(*) FROM T_LAST1 WHERE id BETWEEN 2 AND 4",
+		},
+
+		// ===== BETWEEN combined with IN list =====
+		{
+			// BETWEEN on PK plus IN-list on a non-PK column. Pins both
+			// engines apply combined predicates identically.
+			Name:           "between_and_in_list",
+			SchemaTemplate: "CREATE TABLE T_LAST2 (id BIGINT, code BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST2 VALUES (1, 100)",
+				"INSERT INTO T_LAST2 VALUES (2, 200)",
+				"INSERT INTO T_LAST2 VALUES (3, 300)",
+				"INSERT INTO T_LAST2 VALUES (4, 400)",
+				"INSERT INTO T_LAST2 VALUES (5, 500)",
+			},
+			Query: "SELECT id, code FROM T_LAST2 WHERE id BETWEEN 1 AND 4 AND code IN (200, 400) ORDER BY id",
+		},
+
+		// ===== ORDER BY indexed PK with NULL filter =====
+		{
+			// IS NOT NULL filter on a non-PK column, ordered by PK.
+			// Pins Kleene + ORDER-BY-on-PK shape.
+			Name:           "is_not_null_order_by_pk",
+			SchemaTemplate: "CREATE TABLE T_LAST3 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST3 VALUES (1, 'a')",
+				"INSERT INTO T_LAST3 VALUES (2, NULL)",
+				"INSERT INTO T_LAST3 VALUES (3, 'c')",
+				"INSERT INTO T_LAST3 VALUES (4, NULL)",
+				"INSERT INTO T_LAST3 VALUES (5, 'e')",
+			},
+			Query: "SELECT id, name FROM T_LAST3 WHERE name IS NOT NULL ORDER BY id",
+		},
+
+		// ===== INSERT/SELECT round-trip with edge BIGINT values =====
+		{
+			// Insert min/max/zero/-1; SELECT confirms identity round-trip
+			// for BIGINT extremes within fdb-relational's representable
+			// range.
+			Name:           "bigint_edge_values_roundtrip",
+			SchemaTemplate: "CREATE TABLE T_LAST4 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST4 VALUES (1, 0)",
+				"INSERT INTO T_LAST4 VALUES (2, -1)",
+				"INSERT INTO T_LAST4 VALUES (3, 1)",
+				"INSERT INTO T_LAST4 VALUES (4, 9223372036854775807)",
+				"INSERT INTO T_LAST4 VALUES (5, -9223372036854775808)",
+			},
+			Query: "SELECT id, v FROM T_LAST4 ORDER BY id",
+		},
+
+		// ===== UPDATE with arithmetic on a different column =====
+		{
+			// SET val = other + 1: arithmetic across distinct cols (not
+			// self-cross-ref). Pins UPDATE-from-other-col.
+			Name:           "update_arith_from_other_col",
+			SchemaTemplate: "CREATE TABLE T_LAST5 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST5 VALUES (1, 10, 0)",
+				"INSERT INTO T_LAST5 VALUES (2, 20, 0)",
+				"INSERT INTO T_LAST5 VALUES (3, 30, 0)",
+				"UPDATE T_LAST5 SET b = a + 1",
+			},
+			Query: "SELECT id, a, b FROM T_LAST5 ORDER BY id",
+		},
+
+		// ===== DELETE with composite-PK filter =====
+		{
+			// DELETE filtered on the composite-PK leading column. Pins
+			// composite-PK delete semantics.
+			Name:           "delete_composite_pk_leading_filter",
+			SchemaTemplate: "CREATE TABLE T_LAST6 (region STRING, id BIGINT, name STRING, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST6 VALUES ('us', 1, 'a')",
+				"INSERT INTO T_LAST6 VALUES ('us', 2, 'b')",
+				"INSERT INTO T_LAST6 VALUES ('eu', 1, 'c')",
+				"INSERT INTO T_LAST6 VALUES ('eu', 2, 'd')",
+				"DELETE FROM T_LAST6 WHERE region = 'us'",
+			},
+			Query: "SELECT region, id, name FROM T_LAST6 ORDER BY region, id",
+		},
+
+		// ===== COUNT over UNION ALL (no outer ORDER BY) =====
+		{
+			// Wrap UNION ALL in a derived table and COUNT it. Pins
+			// UNION-ALL row-count semantics without outer ORDER BY
+			// (which Java rejects, #44).
+			Name:           "count_over_union_all_derived",
+			SchemaTemplate: "CREATE TABLE T_LAST7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_LAST7 VALUES (1, 10)",
+				"INSERT INTO T_LAST7 VALUES (2, 20)",
+				"INSERT INTO T_LAST7 VALUES (3, 30)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_LAST7 WHERE val > 10 UNION ALL SELECT id FROM T_LAST7 WHERE val < 30) AS u",
+		},
 	}
 }
 
