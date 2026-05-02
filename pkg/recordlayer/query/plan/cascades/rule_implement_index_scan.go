@@ -81,6 +81,7 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		colToIdx := buildColumnIndex(colNames)
 
 		bindings := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+		poisoned := make(map[values.CorrelationIdentifier]bool)
 		var consumed []int
 
 		for i, p := range preds {
@@ -97,12 +98,17 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 				continue
 			}
 			alias := aliases[colIdx]
+			if poisoned[alias] {
+				continue
+			}
 			cr := bindings[alias]
 			if cr == nil {
 				cr = predicates.EmptyComparisonRange()
 			}
 			res := cr.Merge(&cp.Comparison)
 			if !res.Ok {
+				delete(bindings, alias)
+				poisoned[alias] = true
 				continue
 			}
 			bindings[alias] = res.Range

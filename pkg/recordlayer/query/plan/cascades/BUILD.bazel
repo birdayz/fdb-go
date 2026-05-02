@@ -104,6 +104,7 @@ go_test(
         "rule_filter_merge_test.go",
         "rule_implement_distinct_test.go",
         "rule_implement_filter_test.go",
+        "rule_implement_index_scan_correctness_test.go",
         "rule_implement_index_scan_test.go",
         "rule_implement_insert_test.go",
         "rule_implement_intersection_test.go",
