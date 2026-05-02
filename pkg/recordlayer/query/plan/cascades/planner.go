@@ -44,6 +44,7 @@ type Planner struct {
 	stack []Task
 	rules []ExpressionRule
 	ctx   PlanContext
+	memo  *Memo
 
 	// exploreCount[ref] = member count at last ApplyRules pass on
 	// `ref`. ApplyRulesTask short-circuits when count hasn't grown.
@@ -98,10 +99,17 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 	return &Planner{
 		rules:        rules,
 		ctx:          ctx,
+		memo:         nil, // initialized lazily on first Explore call
 		exploreCount: make(map[*expressions.Reference]int),
 		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
 		MaxTasks:     100_000,
 	}
+}
+
+// Memo returns the planner's Memo structure. Available after Explore
+// has been called (returns nil before that).
+func (p *Planner) Memo() *Memo {
+	return p.memo
 }
 
 // BestMember returns the OPTIMIZE-chosen best member for `ref`,
@@ -196,6 +204,9 @@ func (e plannerErr) Error() string { return string(e) }
 func (p *Planner) Explore(rootRef *expressions.Reference) (tasksRun int, converged bool) {
 	if rootRef == nil {
 		return 0, true
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
 	}
 	p.push(&ExploreReferenceTask{Ref: rootRef})
 	for len(p.stack) > 0 {
@@ -332,10 +343,18 @@ func (t *ApplyRulesTask) Run(p *Planner) {
 	}
 
 	for _, rule := range p.rules {
-		FireExpressionRule(rule, t.Ref)
+		FireExpressionRuleWithMemo(rule, t.Ref, p.ctx, p.memo)
 	}
 	afterCount := len(t.Ref.Members())
 	grew := afterCount - beforeCount
+
+	// Update Memo index for newly-added members.
+	if grew > 0 && p.memo != nil {
+		members := t.Ref.Members()
+		for _, m := range members[beforeCount:] {
+			p.memo.AddExpression(t.Ref, m)
+		}
+	}
 
 	if p.events != nil {
 		p.events.OnApplyRules(t.Ref, grew)
