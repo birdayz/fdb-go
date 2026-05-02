@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -93,7 +95,7 @@ func (r *ImplementIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			if !ok {
 				continue
 			}
-			colIdx, found := colToIdx[fv.Field]
+			colIdx, found := colToIdx[strings.ToUpper(fv.Field)]
 			if !found {
 				continue
 			}
@@ -164,11 +166,11 @@ func recordTypesOverlap(a, b []string) bool {
 	return false
 }
 
-// buildColumnIndex maps column name → positional index.
+// buildColumnIndex maps column name (upper-cased) → positional index.
 func buildColumnIndex(cols []string) map[string]int {
 	m := make(map[string]int, len(cols))
 	for i, c := range cols {
-		m[c] = i
+		m[strings.ToUpper(c)] = i
 	}
 	return m
 }

@@ -484,3 +484,41 @@ func TestIndexScan_CostComparison(t *testing.T) {
 		t.Fatalf("planner should produce an index scan wrapper; members=%d", len(ref.Members()))
 	}
 }
+
+// TestIndexScan_CaseInsensitiveColumnMatch verifies that the index
+// rule matches predicates to index columns case-insensitively.
+func TestIndexScan_CaseInsensitiveColumnMatch(t *testing.T) {
+	t.Parallel()
+
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"status"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+		},
+		q,
+	)
+	filterRef := expressions.InitialOf(filter)
+
+	rule := NewImplementIndexScanRule()
+	results := FireExpressionRuleWithMemo(rule, filterRef, ctx, nil)
+
+	if len(results) == 0 {
+		t.Fatal("expected index scan yield — case-insensitive column match should work")
+	}
+}

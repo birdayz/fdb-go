@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"strings"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -102,7 +104,7 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			if !ok {
 				continue
 			}
-			colIdx, found := colToIdx[fv.Field]
+			colIdx, found := colToIdx[strings.ToUpper(fv.Field)]
 			if !found {
 				continue
 			}
@@ -134,7 +136,7 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		for _, idx := range consumed {
 			cp := preds[idx].(*predicates.ComparisonPredicate)
 			fv := cp.Operand.(*values.FieldValue)
-			colIdx := colToIdx[fv.Field]
+			colIdx := colToIdx[strings.ToUpper(fv.Field)]
 			alias := aliases[colIdx]
 			if _, ok := prefix[alias]; ok {
 				inPrefix = append(inPrefix, idx)
