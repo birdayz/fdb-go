@@ -7592,6 +7592,177 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, v FROM T_DI14 WHERE v >= 0 ORDER BY id",
 		},
+
+		// ===== Mixed-schema tables — many columns, mixed types =====
+		// Pins byte-for-byte cross-engine equivalence on rich row
+		// shapes: many columns of different type families, NULLable +
+		// NOT NULL combinations, composite primary keys, and SELECT-*
+		// vs subset-projection round-trips.
+		{
+			// 6-column row covering every primitive type family
+			// (BIGINT, STRING, DOUBLE, BOOLEAN, BYTES, UUID).
+			// SELECT * round-trip — pins column-metadata ordering and
+			// per-type value encoding for the full row.
+			Name: "mixed_six_type_families_star",
+			SchemaTemplate: "CREATE TABLE T_MS1 (id BIGINT, name STRING, val DOUBLE, " +
+				"flag BOOLEAN, payload BYTES, key UUID, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS1 VALUES (1, 'alice', 1.5, TRUE, X'cafe', " +
+					"CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_MS1 VALUES (2, 'bob', -2.25, FALSE, X'beef', " +
+					"CAST('22222222-2222-2222-2222-222222222222' AS UUID))",
+			},
+			Query: "SELECT * FROM T_MS1 ORDER BY id",
+		},
+		{
+			// Same 6-type-family table, projection of a 3-col subset
+			// in a non-declaration order — pins projection ordering
+			// independent of declared column order.
+			Name: "mixed_six_type_families_subset_reordered",
+			SchemaTemplate: "CREATE TABLE T_MS2 (id BIGINT, name STRING, val DOUBLE, " +
+				"flag BOOLEAN, payload BYTES, key UUID, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS2 VALUES (1, 'alice', 1.5, TRUE, X'cafe', " +
+					"CAST('11111111-1111-1111-1111-111111111111' AS UUID))",
+				"INSERT INTO T_MS2 VALUES (2, 'bob', -2.25, FALSE, X'beef', " +
+					"CAST('22222222-2222-2222-2222-222222222222' AS UUID))",
+			},
+			Query: "SELECT key, name, val FROM T_MS2 ORDER BY id",
+		},
+		{
+			// 10-BIGINT-column table; project 3 non-adjacent columns.
+			// Pins that the projection list selects the right columns
+			// (not, e.g., positional drift) when the table is wide.
+			Name: "wide_ten_bigint_project_three",
+			SchemaTemplate: "CREATE TABLE T_MS3 (id BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, " +
+				"c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS3 VALUES (1, 10, 20, 30, 40, 50, 60, 70, 80, 90)",
+				"INSERT INTO T_MS3 VALUES (2, 11, 21, 31, 41, 51, 61, 71, 81, 91)",
+			},
+			Query: "SELECT c1, c5, c9 FROM T_MS3 ORDER BY id",
+		},
+		{
+			// Wide table, filter on first non-PK col, project last col
+			// only — pins predicate evaluation against a column far
+			// from the projected one.
+			Name: "wide_filter_first_project_last",
+			SchemaTemplate: "CREATE TABLE T_MS4 (id BIGINT, c1 BIGINT, c2 BIGINT, c3 BIGINT, " +
+				"c4 BIGINT, c5 BIGINT, c6 BIGINT, c7 BIGINT, c8 BIGINT, c9 BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS4 VALUES (1, 10, 20, 30, 40, 50, 60, 70, 80, 90)",
+				"INSERT INTO T_MS4 VALUES (2, 11, 21, 31, 41, 51, 61, 71, 81, 91)",
+				"INSERT INTO T_MS4 VALUES (3, 10, 22, 32, 42, 52, 62, 72, 82, 92)",
+			},
+			Query: "SELECT c9 FROM T_MS4 WHERE c1 = 10 ORDER BY id",
+		},
+		{
+			// Wide table mixed types — filter on STRING, project DOUBLE
+			// + BOOLEAN. Pins type-dispatch on filter vs projection
+			// when the columns differ in type family.
+			Name: "wide_mixed_filter_string_project_double_bool",
+			SchemaTemplate: "CREATE TABLE T_MS5 (id BIGINT, name STRING, val DOUBLE, " +
+				"flag BOOLEAN, n BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS5 VALUES (1, 'alpha', 1.5, TRUE, 100)",
+				"INSERT INTO T_MS5 VALUES (2, 'beta', -2.5, FALSE, 200)",
+				"INSERT INTO T_MS5 VALUES (3, 'alpha', 3.5, FALSE, 300)",
+			},
+			Query: "SELECT val, flag FROM T_MS5 WHERE name = 'alpha' ORDER BY id",
+		},
+		{
+			// Three NULL columns in a single row, mixed with non-NULL
+			// rows. IS NULL filter on one column — pins NULL semantics
+			// in a wide-row context.
+			Name: "wide_three_nulls_is_null_filter",
+			SchemaTemplate: "CREATE TABLE T_MS6 (id BIGINT, a STRING, b DOUBLE, c BOOLEAN, " +
+				"d BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS6 VALUES (1, 'x', 1.5, TRUE, 10)",
+				"INSERT INTO T_MS6 VALUES (2, NULL, NULL, NULL, 20)",
+				"INSERT INTO T_MS6 VALUES (3, 'y', NULL, FALSE, 30)",
+			},
+			Query: "SELECT id, a, b, c FROM T_MS6 WHERE b IS NULL ORDER BY id",
+		},
+		{
+			// IS NOT NULL on a wide-row mixed-type column — companion
+			// to mixed_three_nulls_is_null_filter.
+			Name: "wide_mixed_is_not_null_filter",
+			SchemaTemplate: "CREATE TABLE T_MS7 (id BIGINT, a STRING, b DOUBLE, c BOOLEAN, " +
+				"d BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS7 VALUES (1, 'x', 1.5, TRUE, 10)",
+				"INSERT INTO T_MS7 VALUES (2, NULL, NULL, NULL, 20)",
+				"INSERT INTO T_MS7 VALUES (3, 'y', NULL, FALSE, 30)",
+			},
+			Query: "SELECT id, a, c FROM T_MS7 WHERE a IS NOT NULL ORDER BY id",
+		},
+		{
+			// 3-component composite PK, leading-eq filter — all three
+			// PK cols are returned; pins prefix-scan plan choice.
+			Name: "composite_pk_three_comp_leading_eq",
+			SchemaTemplate: "CREATE TABLE T_MS9 (region STRING, tenant BIGINT, id BIGINT, " +
+				"val BIGINT, PRIMARY KEY (region, tenant, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS9 VALUES ('us', 1, 10, 100)",
+				"INSERT INTO T_MS9 VALUES ('us', 1, 20, 200)",
+				"INSERT INTO T_MS9 VALUES ('us', 2, 10, 300)",
+				"INSERT INTO T_MS9 VALUES ('eu', 1, 10, 400)",
+			},
+			Query: "SELECT region, tenant, id, val FROM T_MS9 WHERE region = 'us' " +
+				"ORDER BY region, tenant, id",
+		},
+		{
+			// 3-component composite PK, all-eq filter — single-row
+			// point read by full composite key.
+			Name: "composite_pk_three_comp_full_eq",
+			SchemaTemplate: "CREATE TABLE T_MS10 (region STRING, tenant BIGINT, id BIGINT, " +
+				"val BIGINT, PRIMARY KEY (region, tenant, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS10 VALUES ('us', 1, 10, 100)",
+				"INSERT INTO T_MS10 VALUES ('us', 1, 20, 200)",
+				"INSERT INTO T_MS10 VALUES ('us', 2, 10, 300)",
+			},
+			Query: "SELECT val FROM T_MS10 WHERE region = 'us' AND tenant = 1 AND id = 20",
+		},
+		{
+			// PK-only table (single column, BIGINT PK) — minimum
+			// row shape; pins zero-payload scan.
+			Name:           "pk_only_single_col",
+			SchemaTemplate: "CREATE TABLE T_MS11 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS11 VALUES (3)",
+				"INSERT INTO T_MS11 VALUES (1)",
+				"INSERT INTO T_MS11 VALUES (2)",
+			},
+			Query: "SELECT id FROM T_MS11 ORDER BY id",
+		},
+		{
+			// Arithmetic across 3 BIGINT columns — pins synthetic
+			// projection naming (`_0`) and per-row arithmetic.
+			Name: "computed_arith_across_three_cols",
+			SchemaTemplate: "CREATE TABLE T_MS12 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, " +
+				"PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS12 VALUES (1, 1, 2, 3)",
+				"INSERT INTO T_MS12 VALUES (2, 10, 20, 30)",
+				"INSERT INTO T_MS12 VALUES (3, -1, -2, -3)",
+			},
+			Query: "SELECT a + b + c FROM T_MS12 ORDER BY id",
+		},
+		{
+			// COUNT(*) on a wide mixed-type table — pins aggregate
+			// behaviour independent of row shape.
+			Name: "wide_mixed_count_star",
+			SchemaTemplate: "CREATE TABLE T_MS13 (id BIGINT, name STRING, val DOUBLE, " +
+				"flag BOOLEAN, payload BYTES, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_MS13 VALUES (1, 'a', 1.5, TRUE, X'01')",
+				"INSERT INTO T_MS13 VALUES (2, 'b', 2.5, FALSE, X'02')",
+				"INSERT INTO T_MS13 VALUES (3, NULL, NULL, NULL, NULL)",
+			},
+			Query: "SELECT count(*) FROM T_MS13",
+		},
 	}
 }
 
