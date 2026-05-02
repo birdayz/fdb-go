@@ -62,7 +62,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 ## Phase 2 — Cascades core machinery (sequenced)
 
 - [x] **#10** B3 full Memo: cross-Reference equivalence-class merging, partial-match propagation, cost-driven extraction. Gates everything below. (~2 shifts) — **landed nightshift-68**. Memo struct with topology-based cross-Reference lookup (leaf hash + parent-intersection for non-leaf), integrated into Planner (lazy init in Explore, AddExpression on growth), all 22 rules use call.MemoizeExpression, self-reference cycle guard, OptimizeReferenceTask + ExtractBestPlanFromSelector for cost-driven extraction. 14 unit tests + 2 fuzz targets (MemoConsistency, MemoizeInvariant) + 3 benchmarks.
-- [ ] **#11** B6 planner driver: per-rule task granularity (TransformTask / ImplementTask split). Retire FixpointApply legacy callers. Gate: #10. (~1 shift)
+- [x] **#11** B6 planner driver: per-rule task granularity (TransformTask / ImplementTask split). Retire FixpointApply legacy callers. Gate: #10. (~1 shift) — **Done, nightshift-68.** TransformReferenceTask + SaturationCheckTask replace monolithic ApplyRulesTask; Memo determinism fix (leafRefs slice + ordered candidates); FuzzPlanner_Determinism verified 5.8M execs; plangen end-to-end tests + benchmark migrated to Planner. FixpointApply retained for per-rule unit tests and convergence fuzzing (correct uses).
 - [ ] **#12** B5 Batch A: index rules — `MergeFetchIntoCoveringIndex`, `IndexEquality`, `IndexRange`, `InComparisonToExplode` + IndexAccessHint / MatchCandidate ports. Covers swingshift-44's 11-branch pushdown chain. Gate: #10. (~2 shifts)
 - [ ] **#13** B7 correctness tests for Phase 2 rules. Interleave with #12. Gate: #12. (~1 shift)
 
