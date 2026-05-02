@@ -1,6 +1,9 @@
 package plandiff
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
 // (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
@@ -9728,7 +9731,161 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT sum(val) FROM (SELECT val FROM T_UA25 WHERE val >= 10 UNION ALL SELECT val FROM T_UA25 WHERE val >= 20) AS u",
 		},
+
+		// ===== INSERT VALUES with rich row constructors =====
+		{
+			// Multiple rows in a single VALUES list, each with a
+			// distinct arithmetic expression — pins constant folding
+			// across rows.
+			Name:           "iv_arith_multi_row",
+			SchemaTemplate: "CREATE TABLE T_IV1 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV1 VALUES (1, 5 + 3), (2, 10 * 2), (3, 100 - 1), (4, 20 / 4)",
+			},
+			Query: "SELECT id, val FROM T_IV1 ORDER BY id",
+		},
+		{
+			// CAST expression inside VALUES — string literal coerced
+			// to BIGINT at INSERT time.
+			Name:           "iv_cast_string_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_IV2 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV2 VALUES (1, CAST('5' AS BIGINT))",
+				"INSERT INTO T_IV2 VALUES (2, CAST('42' AS BIGINT))",
+			},
+			Query: "SELECT id, val FROM T_IV2 ORDER BY id",
+		},
+		{
+			// COALESCE inside VALUES — first-non-null evaluation at
+			// INSERT time.
+			Name:           "iv_coalesce_value",
+			SchemaTemplate: "CREATE TABLE T_IV3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV3 VALUES (1, COALESCE(NULL, 10))",
+				"INSERT INTO T_IV3 VALUES (2, COALESCE(NULL, NULL, 20))",
+				"INSERT INTO T_IV3 VALUES (3, COALESCE(7, NULL))",
+			},
+			Query: "SELECT id, val FROM T_IV3 ORDER BY id",
+		},
+		{
+			// Negative integer literals as VALUES — signed BIGINT
+			// preservation in non-PK column.
+			Name:           "iv_negative_literals",
+			SchemaTemplate: "CREATE TABLE T_IV4 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV4 VALUES (1, -5), (2, -100), (3, -9223372036854775807)",
+			},
+			Query: "SELECT id, val FROM T_IV4 ORDER BY id",
+		},
+		{
+			// DOUBLE column gets a mix of integer and fractional
+			// literals — auto-promotion of integer literal to DOUBLE.
+			Name:           "iv_mixed_int_float_into_double",
+			SchemaTemplate: "CREATE TABLE T_IV5 (id BIGINT, val DOUBLE, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV5 VALUES (1, 1.0), (2, 2.5), (3, 10), (4, -3.14)",
+			},
+			Query: "SELECT id, val FROM T_IV5 ORDER BY id",
+		},
+		{
+			// Empty STRING literal as VALUES element — distinct
+			// from NULL.
+			Name:           "iv_empty_string_value",
+			SchemaTemplate: "CREATE TABLE T_IV6 (id BIGINT, name STRING, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV6 VALUES (1, ''), (2, 'x'), (3, '')",
+			},
+			Query: "SELECT id, name FROM T_IV6 ORDER BY id",
+		},
+		{
+			// 10-row INSERT in a single VALUES list — pins multi-row
+			// statement parsing + execution.
+			Name:           "iv_ten_rows_one_stmt",
+			SchemaTemplate: "CREATE TABLE T_IV7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV7 VALUES " +
+					"(1, 10), (2, 20), (3, 30), (4, 40), (5, 50), " +
+					"(6, 60), (7, 70), (8, 80), (9, 90), (10, 100)",
+			},
+			Query: "SELECT id, val FROM T_IV7 ORDER BY id",
+		},
+		{
+			// 50-row INSERT stress — pins parser/executor scaling on
+			// long VALUES lists.
+			Name:           "iv_fifty_rows_one_stmt",
+			SchemaTemplate: "CREATE TABLE T_IV8 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV8 VALUES " + iv8Rows(),
+			},
+			Query: "SELECT id, val FROM T_IV8 ORDER BY id",
+		},
+		{
+			// INSERT followed by an UPDATE whose SET uses arithmetic
+			// over the existing column — pins INSERT-then-UPDATE
+			// semantics and arithmetic-on-stored-value.
+			Name:           "iv_insert_then_update_arith",
+			SchemaTemplate: "CREATE TABLE T_IV9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV9 VALUES (1, 10), (2, 20), (3, 30)",
+				"UPDATE T_IV9 SET val = val + 5 WHERE id = 2",
+			},
+			Query: "SELECT id, val FROM T_IV9 ORDER BY id",
+		},
+		{
+			// Different rows have NULL vs concrete in the same VALUES
+			// list — pins per-row NULL handling.
+			Name:           "iv_mixed_null_per_row",
+			SchemaTemplate: "CREATE TABLE T_IV10 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV10 VALUES " +
+					"(1, 'a', 10), " +
+					"(2, NULL, 20), " +
+					"(3, 'c', NULL), " +
+					"(4, NULL, NULL)",
+			},
+			Query: "SELECT id, name, val FROM T_IV10 ORDER BY id",
+		},
+		{
+			// All non-PK columns NULL across every row — pins the
+			// fully-NULL row case.
+			Name:           "iv_all_null_non_pk",
+			SchemaTemplate: "CREATE TABLE T_IV11 (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV11 VALUES (1, NULL, NULL), (2, NULL, NULL)",
+			},
+			Query: "SELECT id, name, val FROM T_IV11 ORDER BY id",
+		},
+		{
+			// CAST DOUBLE literal to BIGINT inside VALUES — narrowing
+			// cast applied at INSERT time.
+			Name:           "iv_cast_double_to_bigint",
+			SchemaTemplate: "CREATE TABLE T_IV13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV13 VALUES (1, CAST(5.0 AS BIGINT)), (2, CAST(-7.0 AS BIGINT))",
+			},
+			Query: "SELECT id, val FROM T_IV13 ORDER BY id",
+		},
+		{
+			// COALESCE wrapping a CAST inside VALUES — composes two
+			// expression evaluators in the row constructor.
+			Name:           "iv_coalesce_wrapping_cast",
+			SchemaTemplate: "CREATE TABLE T_IV14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_IV14 VALUES (1, COALESCE(NULL, CAST('99' AS BIGINT)))",
+			},
+			Query: "SELECT id, val FROM T_IV14 ORDER BY id",
+		},
 	}
+}
+
+// iv8Rows builds a 50-row VALUES tail "(1, 10), (2, 20), ..., (50, 500)".
+func iv8Rows() string {
+	parts := make([]string, 50)
+	for i := 0; i < 50; i++ {
+		n := i + 1
+		parts[i] = "(" + strconv.Itoa(n) + ", " + strconv.Itoa(n*10) + ")"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // SeedCorpus is the small RFC-022 §4.-1 baseline set: 35 queries
