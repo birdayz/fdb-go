@@ -5891,6 +5891,44 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{2, 3}))
 }
 
+// TestFDB_PKLiteralEqInJoin pins SQL-correct AND-of-predicates: a
+// query like `SELECT count(*) FROM A a, B b WHERE a.id = 2 AND a.id =
+// b.parent` MUST apply both `a.id = 2` (constant filter) and the join
+// predicate. Java's fdb-relational 4.11.1.0 drops one of them and
+// over-counts (TODO #52 reclassified Tier D); Go is correct. Pinned
+// as a Go-only positive sentinel.
+func TestFDB_PKLiteralEqInJoin(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_pk_literal_eq_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_pk_literal_eq_join")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE pk_literal_eq_join_tmpl
+		CREATE TABLE A (id BIGINT, PRIMARY KEY (id))
+		CREATE TABLE B (id BIGINT, parent BIGINT, PRIMARY KEY (id))`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_pk_literal_eq_join/main WITH TEMPLATE pk_literal_eq_join_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_pk_literal_eq_join?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO A VALUES (1), (2), (3)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = db.ExecContext(ctx, "INSERT INTO B VALUES (10, 1), (11, 1), (12, 2), (13, 2), (14, 3)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var n int64
+	g.Expect(db.QueryRowContext(ctx,
+		"SELECT count(*) FROM A a, B b WHERE a.id = 2 AND a.id = b.parent").Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(int64(2)),
+		"both `a.id = 2` AND `a.id = b.parent` must apply: only B rows (12,2) and (13,2) match")
+}
+
 // TestFDB_UnionAllOuterOrderByDeterministic pins SQL-standard
 // behaviour: a trailing `ORDER BY` after `UNION ALL` applies to the
 // COMBINED result, not just the right branch. Go honours this

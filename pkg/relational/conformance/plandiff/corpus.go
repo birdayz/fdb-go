@@ -4374,6 +4374,11 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_E6 VALUES (1, 'line1\nline2'), (2, 'col1\tcol2')"},
 			Query:          "SELECT id, s FROM T_E6 ORDER BY id",
 		},
+		// Skipped pk_literal_eq_in_join: cross-engine probe (dayshift-66)
+		// showed Go correctly applies BOTH `a.id = 2` AND `a.id = b.parent`
+		// (returns 2); Java drops one of them and returns 5. TODO #52's
+		// nightshift-65 diagnosis was inverted (Go is the correct side).
+		// Pinned via Go-only sentinel TestFDB_PKLiteralEqInJoin.
 		{
 			// Probe TODO #58: multi-subquery FROM list cross-engine
 			// behaviour. nightshift-65 reported Go rejects, Java accepts.
