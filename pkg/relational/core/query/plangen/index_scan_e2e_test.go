@@ -148,6 +148,75 @@ func TestEndToEnd_IndexScanThroughSort(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_IndexIntersection tests the intersection pipeline:
+// Filter(status='active' AND amount=50, Scan) with separate indexes on
+// status and amount -> explores Intersection(IndexScan(status), IndexScan(amount)).
+func TestEndToEnd_IndexIntersection(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	q := expressions.ForEachQuantifier(scanRef)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "AMOUNT", Typ: values.TypeInt},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(50)),
+			),
+		},
+		q,
+	)
+	ref := expressions.InitialOf(filter)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Order$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"Order"},
+		},
+		e2eIndexDef{
+			name:        "Order$amount",
+			columns:     []string{"amount"},
+			recordTypes: []string{"Order"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	foundIntersection := false
+	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+		if r == nil || visited[r] {
+			return
+		}
+		visited[r] = true
+		for _, m := range r.Members() {
+			if cascades.IsPhysicalIntersection(m) {
+				foundIntersection = true
+				return
+			}
+			for _, qq := range m.GetQuantifiers() {
+				walk(qq.GetRangesOver(), visited)
+				if foundIntersection {
+					return
+				}
+			}
+		}
+	}
+	walk(ref, map[*expressions.Reference]bool{})
+	if !foundIntersection {
+		t.Fatalf("planner did not produce a physical intersection; top has %d members", len(ref.Members()))
+	}
+}
+
 // TestEndToEnd_InExplodeIndexScan tests the IN-to-explode + index scan
 // pipeline: Filter(status IN ['a','b'], Scan) -> Union(IndexScan(=a), IndexScan(=b)).
 func TestEndToEnd_InExplodeIndexScan(t *testing.T) {
