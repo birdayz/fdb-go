@@ -9563,6 +9563,171 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_PE12 WHERE 1 = 0 AND val = 10 ORDER BY id",
 		},
+
+		// ===== UNION ALL — additional shapes (no outer ORDER BY) =====
+		{
+			// 3-branch UNION ALL across 3 separate tables, count over
+			// the derived UNION ALL.
+			Name: "union_all_three_branches_count",
+			SchemaTemplate: "CREATE TABLE T_UA1 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA2 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA3 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA1 VALUES (1, 10)",
+				"INSERT INTO T_UA1 VALUES (2, 20)",
+				"INSERT INTO T_UA2 VALUES (3, 30)",
+				"INSERT INTO T_UA3 VALUES (4, 40)",
+				"INSERT INTO T_UA3 VALUES (5, 50)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UA1 UNION ALL SELECT id FROM T_UA2 UNION ALL SELECT id FROM T_UA3) AS u",
+		},
+		{
+			// UNION ALL where each branch has its own WHERE filter, then
+			// count. Branches partition disjoint rows.
+			Name: "union_all_branch_wheres_count",
+			SchemaTemplate: "CREATE TABLE T_UA4 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA5 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA4 VALUES (1, 10)",
+				"INSERT INTO T_UA4 VALUES (2, 200)",
+				"INSERT INTO T_UA5 VALUES (3, 30)",
+				"INSERT INTO T_UA5 VALUES (4, 400)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UA4 WHERE val > 100 UNION ALL SELECT id FROM T_UA5 WHERE val < 100) AS u",
+		},
+		{
+			// Both branches deliberately overlap (same WHERE selecting
+			// the same rows from each table) → UNION ALL preserves
+			// duplicates, count = 2 × matching rows.
+			Name: "union_all_overlapping_dupes_count",
+			SchemaTemplate: "CREATE TABLE T_UA6 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA7 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA6 VALUES (1, 100)",
+				"INSERT INTO T_UA6 VALUES (2, 200)",
+				"INSERT INTO T_UA7 VALUES (3, 100)",
+				"INSERT INTO T_UA7 VALUES (4, 200)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UA6 WHERE val >= 100 UNION ALL SELECT id FROM T_UA7 WHERE val >= 100) AS u",
+		},
+		{
+			// SUM(val) over UNION ALL — aggregate other than count.
+			Name: "union_all_sum_over_subquery",
+			SchemaTemplate: "CREATE TABLE T_UA8 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA9 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA8 VALUES (1, 100)",
+				"INSERT INTO T_UA8 VALUES (2, 200)",
+				"INSERT INTO T_UA9 VALUES (3, 300)",
+			},
+			Query: "SELECT sum(val) FROM (SELECT val FROM T_UA8 UNION ALL SELECT val FROM T_UA9) AS u",
+		},
+		{
+			// MIN(val) over UNION ALL.
+			Name: "union_all_min_over_subquery",
+			SchemaTemplate: "CREATE TABLE T_UA10 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA10 VALUES (1, 50)",
+				"INSERT INTO T_UA10 VALUES (2, 200)",
+				"INSERT INTO T_UA11 VALUES (3, 25)",
+				"INSERT INTO T_UA11 VALUES (4, 300)",
+			},
+			Query: "SELECT min(val) FROM (SELECT val FROM T_UA10 UNION ALL SELECT val FROM T_UA11) AS u",
+		},
+		{
+			// MAX(val) over UNION ALL.
+			Name: "union_all_max_over_subquery",
+			SchemaTemplate: "CREATE TABLE T_UA12 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA13 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA12 VALUES (1, 50)",
+				"INSERT INTO T_UA12 VALUES (2, 200)",
+				"INSERT INTO T_UA13 VALUES (3, 25)",
+				"INSERT INTO T_UA13 VALUES (4, 999)",
+			},
+			Query: "SELECT max(val) FROM (SELECT val FROM T_UA12 UNION ALL SELECT val FROM T_UA13) AS u",
+		},
+		{
+			// UNION ALL of two CTEs. Pins CTE-as-UNION-branch shape.
+			Name:           "union_all_of_two_ctes_count",
+			SchemaTemplate: "CREATE TABLE T_UA14 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA14 VALUES (1, 10)",
+				"INSERT INTO T_UA14 VALUES (2, 200)",
+				"INSERT INTO T_UA14 VALUES (3, 300)",
+			},
+			Query: "WITH lo AS (SELECT id FROM T_UA14 WHERE val < 100), hi AS (SELECT id FROM T_UA14 WHERE val >= 100) SELECT count(*) FROM (SELECT id FROM lo UNION ALL SELECT id FROM hi) AS u",
+		},
+		{
+			// UNION ALL where one branch is a base table scan and the
+			// other is a derived (subquery) table. Pins mixed-source
+			// branches.
+			Name: "union_all_base_and_derived_count",
+			SchemaTemplate: "CREATE TABLE T_UA15 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA16 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA15 VALUES (1, 100)",
+				"INSERT INTO T_UA15 VALUES (2, 200)",
+				"INSERT INTO T_UA16 VALUES (3, 300)",
+				"INSERT INTO T_UA16 VALUES (4, 400)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id FROM T_UA15 UNION ALL SELECT id FROM (SELECT id FROM T_UA16 WHERE val > 350) AS d) AS u",
+		},
+		{
+			// Outer query filter on top of UNION ALL.
+			Name: "union_all_outer_where_filter_count",
+			SchemaTemplate: "CREATE TABLE T_UA17 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA18 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA17 VALUES (1, 10)",
+				"INSERT INTO T_UA17 VALUES (2, 20)",
+				"INSERT INTO T_UA18 VALUES (3, 30)",
+				"INSERT INTO T_UA18 VALUES (4, 40)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id, val FROM T_UA17 UNION ALL SELECT id, val FROM T_UA18) AS u WHERE u.val > 15",
+		},
+		{
+			// 3-branch UNION ALL with outer WHERE filter on val.
+			Name: "union_all_three_branches_outer_where_count",
+			SchemaTemplate: "CREATE TABLE T_UA19 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA20 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA21 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA19 VALUES (1, 50)",
+				"INSERT INTO T_UA19 VALUES (2, 150)",
+				"INSERT INTO T_UA20 VALUES (3, 75)",
+				"INSERT INTO T_UA20 VALUES (4, 250)",
+				"INSERT INTO T_UA21 VALUES (5, 125)",
+			},
+			Query: "SELECT count(*) FROM (SELECT id, val FROM T_UA19 UNION ALL SELECT id, val FROM T_UA20 UNION ALL SELECT id, val FROM T_UA21) AS u WHERE u.val > 100",
+		},
+		{
+			// SUM over a 3-branch UNION ALL.
+			Name: "union_all_three_branches_sum",
+			SchemaTemplate: "CREATE TABLE T_UA22 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA23 (id BIGINT, val BIGINT, PRIMARY KEY (id)) " +
+				"CREATE TABLE T_UA24 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA22 VALUES (1, 10)",
+				"INSERT INTO T_UA23 VALUES (2, 20)",
+				"INSERT INTO T_UA24 VALUES (3, 30)",
+			},
+			Query: "SELECT sum(val) FROM (SELECT val FROM T_UA22 UNION ALL SELECT val FROM T_UA23 UNION ALL SELECT val FROM T_UA24) AS u",
+		},
+		{
+			// UNION ALL of two branches with overlapping WHERE that
+			// produce duplicates of the same id values, then SUM(val).
+			// Pins SUM correctness across UNION ALL with dupes.
+			Name:           "union_all_dupes_sum",
+			SchemaTemplate: "CREATE TABLE T_UA25 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_UA25 VALUES (1, 10)",
+				"INSERT INTO T_UA25 VALUES (2, 20)",
+				"INSERT INTO T_UA25 VALUES (3, 30)",
+			},
+			Query: "SELECT sum(val) FROM (SELECT val FROM T_UA25 WHERE val >= 10 UNION ALL SELECT val FROM T_UA25 WHERE val >= 20) AS u",
+		},
 	}
 }
 
