@@ -172,6 +172,75 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 
 var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 
+// physicalIndexScanWrapper adapts a `*plans.RecordQueryIndexPlan` to
+// the RelationalExpression interface. Same leaf shape as
+// physicalScanWrapper — index scans have no children in the Memo.
+type physicalIndexScanWrapper struct {
+	plan *plans.RecordQueryIndexPlan
+}
+
+func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }
+func (w *physicalIndexScanWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
+func (w *physicalIndexScanWrapper) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+}
+
+func (w *physicalIndexScanWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
+func (w *physicalIndexScanWrapper) CanCorrelate() bool                       { return false }
+func (w *physicalIndexScanWrapper) ChildrenAsSet() bool                      { return false }
+
+func (w *physicalIndexScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+func (w *physicalIndexScanWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalIndexScanWrapper)
+	if !ok {
+		return false
+	}
+	return plans.Equals(w.plan, o.plan)
+}
+
+func (w *physicalIndexScanWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physindexscanwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 0 {
+		return nil, fmt.Errorf("physicalIndexScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
+	}
+	return w, nil
+}
+
+// HintCost: index scans are cheaper than full table scans because
+// they read a subset of records. Apply a selectivity multiplier on
+// top of the physical-wrapper discount.
+func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
+	base := properties.LeafScanCardinality * physicalWrapperCostMultiplier
+	if w.plan != nil {
+		numBound := 0
+		for _, cr := range w.plan.GetScanComparisons() {
+			if !cr.IsEmpty() {
+				numBound++
+			}
+		}
+		sel := 1.0
+		for i := 0; i < numBound; i++ {
+			sel *= properties.FilterSelectivity
+		}
+		base *= sel
+	}
+	return properties.Cost{Cardinality: base, CPU: 0}
+}
+
+var _ expressions.RelationalExpression = (*physicalIndexScanWrapper)(nil)
+
 // physicalFilterWrapper adapts a `*plans.RecordQueryFilterPlan` to
 // the RelationalExpression interface. The wrapped plan has a single
 // inner — exposed as a single Quantifier ranging over a fresh
