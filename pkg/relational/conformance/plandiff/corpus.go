@@ -9116,6 +9116,188 @@ func SeedRunCorpus() []RunQuery {
 		// it tries to bind a column to itself in the WHERE clause,
 		// whereas Go succeeds. Until that planner asymmetry is fixed,
 		// these probes can't be pinned to a shared error message.
+
+		// ===== Scan strategies — PK / composite / index / scan elimination =====
+		{
+			// Composite-PK leading-eq + trailing strict-greater-than range.
+			// Cascades emits a single key-range scan with prefix region='us'
+			// and id-range (5, +inf). No filter remains above the scan.
+			Name:           "scn_compeq_id_gt",
+			SchemaTemplate: "CREATE TABLE T_SCN1 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN1 VALUES ('us', 3, 30)",
+				"INSERT INTO T_SCN1 VALUES ('us', 6, 60)",
+				"INSERT INTO T_SCN1 VALUES ('us', 9, 90)",
+				"INSERT INTO T_SCN1 VALUES ('eu', 7, 70)",
+			},
+			Query: "SELECT id, val FROM T_SCN1 WHERE region = 'us' AND id > 5 ORDER BY region, id",
+		},
+		{
+			// Composite-PK leading-eq + trailing strict-less-than range.
+			// Mirror of scn_compeq_id_gt with (-inf, 50) trailing bound.
+			Name:           "scn_compeq_id_lt",
+			SchemaTemplate: "CREATE TABLE T_SCN2 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN2 VALUES ('us', 10, 100)",
+				"INSERT INTO T_SCN2 VALUES ('us', 40, 400)",
+				"INSERT INTO T_SCN2 VALUES ('us', 80, 800)",
+				"INSERT INTO T_SCN2 VALUES ('eu', 20, 999)",
+			},
+			Query: "SELECT id, val FROM T_SCN2 WHERE region = 'us' AND id < 50 ORDER BY region, id",
+		},
+		{
+			// Composite-PK leading-eq + trailing BETWEEN — closed range
+			// rewritten by the planner to id >= lo AND id <= hi.
+			Name:           "scn_compeq_id_between",
+			SchemaTemplate: "CREATE TABLE T_SCN3 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN3 VALUES ('us', 1, 10)",
+				"INSERT INTO T_SCN3 VALUES ('us', 5, 50)",
+				"INSERT INTO T_SCN3 VALUES ('us', 10, 100)",
+				"INSERT INTO T_SCN3 VALUES ('us', 15, 150)",
+				"INSERT INTO T_SCN3 VALUES ('eu', 5, 999)",
+			},
+			Query: "SELECT id, val FROM T_SCN3 WHERE region = 'us' AND id BETWEEN 1 AND 10 ORDER BY region, id",
+		},
+		{
+			// Composite-PK leading-eq + ORDER BY trailing DESC — Cascades
+			// picks a reverse PK scan rather than a sort above the scan.
+			Name:           "scn_compeq_id_desc",
+			SchemaTemplate: "CREATE TABLE T_SCN4 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN4 VALUES ('us', 1, 10)",
+				"INSERT INTO T_SCN4 VALUES ('us', 2, 20)",
+				"INSERT INTO T_SCN4 VALUES ('us', 3, 30)",
+				"INSERT INTO T_SCN4 VALUES ('eu', 9, 999)",
+			},
+			Query: "SELECT id, val FROM T_SCN4 WHERE region = 'us' ORDER BY region DESC, id DESC",
+		},
+		{
+			// Three-component PK with two leading EQ — trailing column free
+			// to range. Pins the planner's prefix-equality detection on
+			// non-PK-suffix columns.
+			Name:           "scn_compeq3_two_eq",
+			SchemaTemplate: "CREATE TABLE T_SCN5 (a BIGINT, b BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN5 VALUES (1, 2, 100, 11)",
+				"INSERT INTO T_SCN5 VALUES (1, 2, 200, 22)",
+				"INSERT INTO T_SCN5 VALUES (1, 3, 100, 33)",
+				"INSERT INTO T_SCN5 VALUES (2, 2, 100, 44)",
+			},
+			Query: "SELECT a, b, c, v FROM T_SCN5 WHERE a = 1 AND b = 2 ORDER BY a, b, c",
+		},
+		{
+			// Three-component PK all-eq + payload projection — single-row
+			// PK lookup with a non-PK column in the SELECT list.
+			Name:           "scn_compeq3_all_eq_payload",
+			SchemaTemplate: "CREATE TABLE T_SCN6 (a BIGINT, b BIGINT, c BIGINT, payload STRING, PRIMARY KEY (a, b, c))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN6 VALUES (1, 2, 3, 'alpha')",
+				"INSERT INTO T_SCN6 VALUES (1, 2, 4, 'beta')",
+				"INSERT INTO T_SCN6 VALUES (2, 2, 3, 'gamma')",
+			},
+			Query: "SELECT payload FROM T_SCN6 WHERE a = 1 AND b = 2 AND c = 3",
+		},
+		{
+			// Index-only covering forward scan — SELECT projects only the
+			// indexed column, no payload fetch required. ORDER BY indexed
+			// column means the planner can use the index's natural order.
+			Name:           "scn_idxonly_forward",
+			SchemaTemplate: "CREATE TABLE T_SCN7 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn7_v ON T_SCN7 (v)",
+			SetupSqls:      []string{"INSERT INTO T_SCN7 VALUES (1, 300), (2, 100), (3, 200), (4, 50)"},
+			Query:          "SELECT v FROM T_SCN7 ORDER BY v",
+		},
+		{
+			// Index-only covering reverse scan — same projection but
+			// ORDER BY v DESC. Cascades emits a reverse index scan.
+			Name:           "scn_idxonly_reverse",
+			SchemaTemplate: "CREATE TABLE T_SCN8 (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn8_v ON T_SCN8 (v)",
+			SetupSqls:      []string{"INSERT INTO T_SCN8 VALUES (1, 300), (2, 100), (3, 200), (4, 50)"},
+			Query:          "SELECT v FROM T_SCN8 ORDER BY v DESC",
+		},
+		{
+			// Composite index (v, payload) with range on leading column.
+			// Pins index-prefix range scan when only the leading index
+			// column is constrained.
+			Name:           "scn_compidx_range_leading",
+			SchemaTemplate: "CREATE TABLE T_SCN9 (id BIGINT, v BIGINT, payload BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn9_vp ON T_SCN9 (v, payload)",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN9 VALUES (1, 50, 1)",
+				"INSERT INTO T_SCN9 VALUES (2, 100, 2)",
+				"INSERT INTO T_SCN9 VALUES (3, 500, 3)",
+				"INSERT INTO T_SCN9 VALUES (4, 999, 4)",
+				"INSERT INTO T_SCN9 VALUES (5, 1500, 5)",
+			},
+			Query: "SELECT id, v, payload FROM T_SCN9 WHERE v >= 100 AND v < 1000 ORDER BY id",
+		},
+		{
+			// Filter on a column that has no index — forces a full PK scan
+			// with a residual filter above. Pins the no-applicable-index
+			// fallback path.
+			Name:           "scn_full_table_filter",
+			SchemaTemplate: "CREATE TABLE T_SCN10 (id BIGINT, indexed_col BIGINT, unindexed_col BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn10_ic ON T_SCN10 (indexed_col)",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN10 VALUES (1, 10, 100)",
+				"INSERT INTO T_SCN10 VALUES (2, 20, 200)",
+				"INSERT INTO T_SCN10 VALUES (3, 30, 100)",
+				"INSERT INTO T_SCN10 VALUES (4, 40, 200)",
+			},
+			Query: "SELECT id, indexed_col, unindexed_col FROM T_SCN10 WHERE unindexed_col = 200 ORDER BY id",
+		},
+		{
+			// Empty-after-intersection range — both predicates conjoined
+			// produce an empty scan range (id > 100 AND id < 50). Pins the
+			// scan-elimination shape where the planner must still emit a
+			// well-formed plan that returns zero rows.
+			Name:           "scn_pk_range_empty",
+			SchemaTemplate: "CREATE TABLE T_SCN11 (id BIGINT, val BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_SCN11 VALUES (1, 10), (50, 500), (100, 1000), (200, 2000)"},
+			Query:          "SELECT id, val FROM T_SCN11 WHERE id > 100 AND id < 50 ORDER BY id",
+		},
+		{
+			// Composite index covering range scan — projection touches only
+			// indexed columns, so no payload fetch is required and the
+			// scan is pure index-only.
+			Name:           "scn_compidx_covering_range",
+			SchemaTemplate: "CREATE TABLE T_SCN12 (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_scn12_vw ON T_SCN12 (v, w)",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN12 VALUES (1, 10, 100)",
+				"INSERT INTO T_SCN12 VALUES (2, 20, 200)",
+				"INSERT INTO T_SCN12 VALUES (3, 30, 300)",
+				"INSERT INTO T_SCN12 VALUES (4, 40, 400)",
+			},
+			Query: "SELECT v, w FROM T_SCN12 WHERE v >= 20 AND v <= 30 ORDER BY v",
+		},
+		{
+			// Composite-PK leading-eq + trailing closed range (>= AND <=).
+			// Distinct from scn_compeq_id_between in spelling: BETWEEN may
+			// rewrite to inclusive bounds, while explicit >=/<= pins that
+			// the planner sees the canonical form.
+			Name:           "scn_compeq_id_ge_le",
+			SchemaTemplate: "CREATE TABLE T_SCN13 (region STRING, id BIGINT, val BIGINT, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN13 VALUES ('us', 1, 10)",
+				"INSERT INTO T_SCN13 VALUES ('us', 5, 50)",
+				"INSERT INTO T_SCN13 VALUES ('us', 10, 100)",
+				"INSERT INTO T_SCN13 VALUES ('us', 20, 200)",
+				"INSERT INTO T_SCN13 VALUES ('eu', 5, 999)",
+			},
+			Query: "SELECT id, val FROM T_SCN13 WHERE region = 'us' AND id >= 5 AND id <= 15 ORDER BY region, id",
+		},
+		{
+			// Composite-PK leading-eq + payload projection only — the
+			// scan emits only non-PK columns. Pins the projection layer
+			// above a key-range scan.
+			Name:           "scn_compeq_payload_only",
+			SchemaTemplate: "CREATE TABLE T_SCN14 (region STRING, id BIGINT, payload STRING, PRIMARY KEY (region, id))",
+			SetupSqls: []string{
+				"INSERT INTO T_SCN14 VALUES ('us', 1, 'a')",
+				"INSERT INTO T_SCN14 VALUES ('us', 2, 'b')",
+				"INSERT INTO T_SCN14 VALUES ('us', 3, 'c')",
+				"INSERT INTO T_SCN14 VALUES ('eu', 1, 'z')",
+			},
+			Query: "SELECT payload FROM T_SCN14 WHERE region = 'us' ORDER BY region, id",
+		},
 	}
 }
 
