@@ -158,7 +158,7 @@ func recordTypesOverlap(a, b []string) bool {
 	}
 	for _, ta := range a {
 		for _, tb := range b {
-			if ta == tb {
+			if strings.EqualFold(ta, tb) {
 				return true
 			}
 		}
