@@ -52,7 +52,13 @@ func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (
 	if stats == nil {
 		stats = DefaultStatistics{}
 	}
-	best := ref.GetBest(CostLessWith(stats))
+	less := CostLessWith(stats)
+	var best expressions.RelationalExpression
+	if finals := ref.FinalMembers(); len(finals) > 0 {
+		best = bestFrom(finals, less)
+	} else {
+		best = ref.GetBest(less)
+	}
 	if best == nil {
 		return nil, nil
 	}
