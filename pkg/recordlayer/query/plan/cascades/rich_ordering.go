@@ -450,11 +450,9 @@ const (
 	OrderingMergeIntersection
 )
 
-// ConcatOrderings concatenates two orderings: the result contains
-// all keys from `outer` followed by all keys from `inner` that are
-// not already in `outer`. Binding maps are merged. Used by
-// ImplementInJoinRule to combine the IN-source ordering with the
-// inner plan's ordering.
+// ConcatOrderings concatenates two orderings using proper partial-order
+// semantics. The maximum elements of the left ordering become dependencies
+// of the minimum elements of the right ordering (for non-fixed keys).
 func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	bm := make(map[values.Value][]OrderingBinding, len(outer.bindingMap)+len(inner.bindingMap))
 	for k, v := range outer.bindingMap {
@@ -479,7 +477,32 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 		}
 	}
 
-	return NewRichOrdering(bm, keys, outer.distinct || inner.distinct)
+	deps := combinatorics.NewSetMultimap[string]()
+	for _, entry := range outer.orderingSet.DependencyMap().Entries() {
+		deps.Put(entry.Key, entry.Value)
+	}
+	for _, entry := range inner.orderingSet.DependencyMap().Entries() {
+		deps.Put(entry.Key, entry.Value)
+	}
+
+	leftMax := outer.orderingSet.DualOrder().EligibleSet().EligibleElements()
+	rightMin := inner.orderingSet.EligibleSet().EligibleElements()
+
+	for lm := range leftMax {
+		lv := outer.keyLookup[lm]
+		if lv != nil && AreAllBindingsFixed(outer.bindingMap[lv]) {
+			continue
+		}
+		for rm := range rightMin {
+			rv := inner.keyLookup[rm]
+			if rv != nil && AreAllBindingsFixed(inner.bindingMap[rv]) {
+				continue
+			}
+			deps.Put(rm, lm)
+		}
+	}
+
+	return NewRichOrderingWithDeps(bm, keys, deps, outer.distinct || inner.distinct)
 }
 
 // CreateUnionOrdering creates a RichOrdering from a single provided
