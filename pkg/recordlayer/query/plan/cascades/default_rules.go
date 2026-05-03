@@ -76,6 +76,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewIntersectionSingletonElimRule(),
 		NewInComparisonToExplodeRule(),
 		NewIndexIntersectionRule(),
+		NewLimitMergeRule(),
+		NewPushLimitThroughProjectionRule(),
 	}
 }
 
