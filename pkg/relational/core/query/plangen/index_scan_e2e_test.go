@@ -2238,6 +2238,43 @@ func TestEndToEnd_ArithmeticInProjectToPlan(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_ComplexQueryPipeline(t *testing.T) {
+	t.Parallel()
+	// SELECT x + 1, y FROM Orders WHERE status = 'active' ORDER BY x LIMIT 10
+	scan := logical.NewScan("Orders", "")
+	filt := logical.NewFilter(scan, "status = 'active'")
+	proj := logical.NewProject(filt, []string{"x + 1", "y"}, []string{"", ""})
+	sorted := logical.NewSort(proj, []logical.SortKey{{Expr: "x", Dir: logical.SortAsc}})
+	lim := logical.NewLimit(sorted, 10, 0)
+
+	expr, err := plangen.Convert(lim)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Limit") {
+		t.Fatalf("expected Limit in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Sort") {
+		t.Fatalf("expected Sort in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Filter") {
+		t.Fatalf("expected Filter in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Scan") {
+		t.Fatalf("expected Scan in plan, got: %s", explain)
+	}
+}
+
 func TestEndToEnd_SortProjectScanPipeline(t *testing.T) {
 	t.Parallel()
 	proj := logical.NewProject(
