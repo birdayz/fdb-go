@@ -32,14 +32,15 @@
 //   - LogicalAggregate → GroupByExpression; parses GROUP BY keys +
 //     aggregate-function text (COUNT/SUM/MIN/MAX/AVG on bare columns)
 //   - LogicalLimit → LogicalLimitExpression (limit + offset)
+//   - LogicalJoin (INNER/CROSS with OnPredicate or no ON) →
+//     SelectExpression with two ForEach quantifiers
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject / LogicalSort / LogicalUpdate with arithmetic,
 //     function calls, qualified column refs (`t.c`), exponent-form
 //     numeric literals (`1.5E10`), or escaped string literals
 //     (`'it”s'`) — all gated on text→Value parsing
-//   - LogicalJoin — maps to SelectExpression with multiple
-//     Quantifiers; needs predicate placement work
+//   - LogicalJoin with LEFT/RIGHT kind and text-only ON
 //   - LogicalInsert without Source (VALUES literal) — needs a
 //     synthetic LogicalValues source operator
 //   - LogicalValues / LogicalCTE / LogicalDDL — no equivalent
@@ -94,6 +95,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertAggregate(o)
 	case *logical.LogicalLimit:
 		return convertLimit(o)
+	case *logical.LogicalJoin:
+		return convertJoin(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -521,6 +524,42 @@ func convertLimit(l *logical.LogicalLimit) (expressions.RelationalExpression, er
 	}
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 	return expressions.NewLogicalLimitExpression(l.Limit, l.Offset, q), nil
+}
+
+// convertJoin builds a SelectExpression from a LogicalJoin.
+// Supports: CROSS JOIN (no predicate), INNER JOIN with structured
+// OnPredicate. LEFT/RIGHT joins and text-only ON are unsupported.
+func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, error) {
+	if j.Kind != logical.JoinInner && j.OnPredicate == nil && j.OnText == "" {
+		return nil, fmt.Errorf("%w: LogicalJoin kind %v without structured predicate", ErrUnsupported, j.Kind)
+	}
+	if j.Kind != logical.JoinInner && j.OnPredicate == nil {
+		return nil, fmt.Errorf("%w: LogicalJoin kind %v with text-only ON", ErrUnsupported, j.Kind)
+	}
+
+	left, err := Convert(j.Left)
+	if err != nil {
+		return nil, fmt.Errorf("join left: %w", err)
+	}
+	right, err := Convert(j.Right)
+	if err != nil {
+		return nil, fmt.Errorf("join right: %w", err)
+	}
+
+	qL := expressions.ForEachQuantifier(expressions.InitialOf(left))
+	qR := expressions.ForEachQuantifier(expressions.InitialOf(right))
+
+	var preds []predicates.QueryPredicate
+	if j.OnPredicate != nil {
+		p, ok := j.OnPredicate.(predicates.QueryPredicate)
+		if !ok {
+			return nil, fmt.Errorf("%w: LogicalJoin OnPredicate is not a QueryPredicate (%T)", ErrUnsupported, j.OnPredicate)
+		}
+		preds = []predicates.QueryPredicate{p}
+	}
+
+	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	return expressions.NewSelectExpression(rv, []expressions.Quantifier{qL, qR}, preds), nil
 }
 
 // parseAggregateText parses "FUNC(operand)" aggregate text into an

@@ -752,8 +752,8 @@ func TestConvert_DeeplyNested_ProjectSortFilterScan(t *testing.T) {
 // at every level so callers using errors.Is can detect it.
 func TestConvert_RecursionPropagatesErrUnsupported(t *testing.T) {
 	t.Parallel()
-	// LogicalJoin is currently unsupported.
-	inner := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "")
+	// LEFT JOIN with text-only ON is unsupported.
+	inner := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	outer := logical.NewFilterWithPredicate(inner, pT, "TRUE")
 	_, err := plangen.Convert(outer)
@@ -1044,4 +1044,60 @@ func TestConvert_LimitOverSort(t *testing.T) {
 		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
 	}
 	_ = lim
+}
+
+func TestConvert_Join_CrossJoin(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", expr)
+	}
+	if len(sel.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(sel.GetQuantifiers()))
+	}
+	if len(sel.GetPredicates()) != 0 {
+		t.Fatalf("expected 0 predicates (cross join), got %d", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_InnerWithPredicate(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "a_id", Typ: values.TypeInt},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+	src := logical.NewJoinWithPredicate(
+		logical.NewScan("A", ""),
+		logical.NewScan("B", ""),
+		logical.JoinInner,
+		pred,
+	)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", expr)
+	}
+	if len(sel.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(sel.GetQuantifiers()))
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_LeftJoinTextOnly_Unsupported(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
 }

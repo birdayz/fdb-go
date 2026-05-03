@@ -234,16 +234,24 @@ func (k JoinKind) String() string {
 
 // LogicalJoin combines two children. Empty OnText means "no ON
 // condition" (comma cross-join form — the outer WHERE provides the
-// predicate).
+// predicate). OnPredicate is the optional structured form (used by
+// the catalog-aware walker); when non-nil, it takes precedence over
+// OnText for Cascades lowering.
 type LogicalJoin struct {
-	Left   LogicalOperator
-	Right  LogicalOperator
-	Kind   JoinKind
-	OnText string
+	Left        LogicalOperator
+	Right       LogicalOperator
+	Kind        JoinKind
+	OnText      string
+	OnPredicate any // predicates.QueryPredicate when set
 }
 
 func NewJoin(left, right LogicalOperator, kind JoinKind, on string) *LogicalJoin {
 	return &LogicalJoin{Left: left, Right: right, Kind: kind, OnText: on}
+}
+
+// NewJoinWithPredicate builds a LogicalJoin with a structured ON predicate.
+func NewJoinWithPredicate(left, right LogicalOperator, kind JoinKind, pred any) *LogicalJoin {
+	return &LogicalJoin{Left: left, Right: right, Kind: kind, OnPredicate: pred}
 }
 
 func (j *LogicalJoin) Children() []LogicalOperator {
