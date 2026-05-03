@@ -13,6 +13,7 @@ import (
 type PlanPartition struct {
 	partitionProps properties.PropertyMap
 	exprProps      map[expressions.RelationalExpression]properties.PropertyMap
+	orderedExprs   []expressions.RelationalExpression
 }
 
 // NewPlanPartition creates a partition from property maps.
@@ -28,6 +29,9 @@ func NewPlanPartition(
 
 // GetExpressions returns the wrapper expressions in this partition.
 func (p *PlanPartition) GetExpressions() []expressions.RelationalExpression {
+	if len(p.orderedExprs) > 0 {
+		return p.orderedExprs
+	}
 	result := make([]expressions.RelationalExpression, 0, len(p.exprProps))
 	for e := range p.exprProps {
 		result = append(result, e)
@@ -35,15 +39,22 @@ func (p *PlanPartition) GetExpressions() []expressions.RelationalExpression {
 	return result
 }
 
-// GetPlans returns the underlying RecordQueryPlans from the wrapper expressions.
+// GetPlans returns the underlying RecordQueryPlans, in the same order
+// as GetExpressions. plans[i] corresponds to exprs[i].
 func (p *PlanPartition) GetPlans() []plans.RecordQueryPlan {
-	result := make([]plans.RecordQueryPlan, 0, len(p.exprProps))
-	for e := range p.exprProps {
+	exprs := p.GetExpressions()
+	result := make([]plans.RecordQueryPlan, 0, len(exprs))
+	for _, e := range exprs {
 		if ph, ok := e.(physicalPlanExpression); ok {
 			result = append(result, ph.GetRecordQueryPlan())
 		}
 	}
 	return result
+}
+
+func (p *PlanPartition) addExpression(e expressions.RelationalExpression, props properties.PropertyMap) {
+	p.exprProps[e] = props
+	p.orderedExprs = append(p.orderedExprs, e)
 }
 
 // GetPartitionPropertyValue returns the partitioning property value.
@@ -95,19 +106,19 @@ func toPlanPartitionsFallback(ref *expressions.Reference) []*PlanPartition {
 	if len(members) == 0 {
 		members = ref.AllMembers()
 	}
-	exprProps := make(map[expressions.RelationalExpression]properties.PropertyMap)
+	p := &PlanPartition{
+		partitionProps: properties.PropertyMap{},
+		exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
+	}
 	for _, m := range members {
 		if ph, ok := m.(physicalPlanExpression); ok {
-			exprProps[m] = computeWrapperProperties(ph)
+			p.addExpression(m, computeWrapperProperties(ph))
 		}
 	}
-	if len(exprProps) == 0 {
+	if len(p.exprProps) == 0 {
 		return nil
 	}
-	return []*PlanPartition{{
-		partitionProps: properties.PropertyMap{},
-		exprProps:      exprProps,
-	}}
+	return []*PlanPartition{p}
 }
 
 func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
@@ -136,7 +147,7 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 			}
 			groups[key] = part
 		}
-		part.exprProps[expr] = props
+		part.addExpression(expr, props)
 	}
 
 	result := make([]*PlanPartition, 0, len(groups))
@@ -158,8 +169,8 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 			exprProps:      make(map[expressions.RelationalExpression]properties.PropertyMap),
 		}
 		for _, p := range partitions {
-			for e, props := range p.exprProps {
-				merged.exprProps[e] = props
+			for _, e := range p.GetExpressions() {
+				merged.addExpression(e, p.exprProps[e])
 			}
 		}
 		return []*PlanPartition{merged}
@@ -191,8 +202,8 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 			groups[key] = existing
 			order = append(order, key)
 		}
-		for e, props := range p.exprProps {
-			existing.exprProps[e] = props
+		for _, e := range p.GetExpressions() {
+			existing.addExpression(e, p.exprProps[e])
 		}
 	}
 
