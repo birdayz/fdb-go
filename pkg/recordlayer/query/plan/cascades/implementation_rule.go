@@ -75,7 +75,11 @@ func (c *ImplementationRuleCall) MemoizeFinalExpressionsFromOther(
 	source *expressions.Reference,
 	exprs []expressions.RelationalExpression,
 ) *expressions.Reference {
-	return expressions.NewFinalReference(exprs)
+	ref := expressions.NewFinalReference(exprs)
+	if source != nil {
+		ref.SetPlanProperties(source.GetPlanProperties())
+	}
+	return ref
 }
 
 // MemoizeFinalExpression creates a new Reference with a single final
