@@ -965,3 +965,123 @@ func assertEq(t *testing.T, got, want any) {
 		t.Errorf("got %v (%T), want %v (%T)", got, got, want, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Benchmarks
+// ---------------------------------------------------------------------------
+
+func BenchmarkCompareValues_Int64(b *testing.B) {
+	for b.Loop() {
+		_ = CompareValues(int64(42), int64(99))
+	}
+}
+
+func BenchmarkCompareValues_Float64(b *testing.B) {
+	for b.Loop() {
+		_ = CompareValues(float64(3.14), float64(2.71))
+	}
+}
+
+func BenchmarkCompareValues_MixedNumeric(b *testing.B) {
+	for b.Loop() {
+		_ = CompareValues(int64(42), float64(42.0))
+	}
+}
+
+func BenchmarkCompareValues_String(b *testing.B) {
+	for b.Loop() {
+		_ = CompareValues("hello world", "hello xorld")
+	}
+}
+
+func BenchmarkCompareValues_Bytes(b *testing.B) {
+	a := []byte("hello world this is test data")
+	c := []byte("hello world this is test datb")
+	for b.Loop() {
+		_ = CompareValues(a, c)
+	}
+}
+
+func BenchmarkCompareValues_NilLeft(b *testing.B) {
+	for b.Loop() {
+		_ = CompareValues(nil, int64(1))
+	}
+}
+
+func BenchmarkIsTruthy_Int64(b *testing.B) {
+	for b.Loop() {
+		_ = IsTruthy(int64(1))
+	}
+}
+
+func BenchmarkIsTruthy_Nil(b *testing.B) {
+	for b.Loop() {
+		_ = IsTruthy(nil)
+	}
+}
+
+func BenchmarkIsTruthy_String(b *testing.B) {
+	for b.Loop() {
+		_ = IsTruthy("hello")
+	}
+}
+
+func BenchmarkCastValue_IntToString(b *testing.B) {
+	for b.Loop() {
+		_, _ = CastValue(int64(42), "STRING")
+	}
+}
+
+func BenchmarkCastValue_StringToInt(b *testing.B) {
+	for b.Loop() {
+		_, _ = CastValue("42", "BIGINT")
+	}
+}
+
+func BenchmarkCastValue_FloatToInt(b *testing.B) {
+	for b.Loop() {
+		_, _ = CastValue(float64(42.7), "INTEGER")
+	}
+}
+
+func BenchmarkApplyMathOp_IntAdd(b *testing.B) {
+	for b.Loop() {
+		_, _ = ApplyMathOp(int64(100), int64(200), "+")
+	}
+}
+
+func BenchmarkApplyMathOp_FloatMul(b *testing.B) {
+	for b.Loop() {
+		_, _ = ApplyMathOp(float64(3.14), float64(2.71), "*")
+	}
+}
+
+func BenchmarkApplyMathOp_IntMod(b *testing.B) {
+	for b.Loop() {
+		_, _ = ApplyMathOp(int64(100), int64(7), "%")
+	}
+}
+
+func BenchmarkLikeMatch_Simple(b *testing.B) {
+	for b.Loop() {
+		_ = LikeMatch("hello", "hello", -1)
+	}
+}
+
+func BenchmarkLikeMatch_Percent(b *testing.B) {
+	for b.Loop() {
+		_ = LikeMatch("hel%", "hello world", -1)
+	}
+}
+
+func BenchmarkLikeMatch_Complex(b *testing.B) {
+	for b.Loop() {
+		_ = LikeMatch("%or%", "hello world this is a longer string", -1)
+	}
+}
+
+func BenchmarkStripStringLiteralQuotes(b *testing.B) {
+	for b.Loop() {
+		_ = StripStringLiteralQuotes("'it''s a test'")
+	}
+}

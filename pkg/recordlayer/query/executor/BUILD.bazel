@@ -26,6 +26,7 @@ go_library(
 go_test(
     name = "executor_test",
     srcs = [
+        "bench_proto_test.go",
         "executor_integration_test.go",
         "executor_test.go",
         "resultset_test.go",
@@ -44,5 +45,6 @@ go_test(
         "//pkg/relational/api",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
