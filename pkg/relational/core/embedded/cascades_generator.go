@@ -2,14 +2,27 @@ package embedded
 
 import (
 	"context"
+	"database/sql/driver"
+	"io"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
+)
+
+// QueryEngine selects which query engine to use.
+type QueryEngine int
+
+const (
+	// QueryEngineNaive uses the naive executor (default).
+	QueryEngineNaive QueryEngine = iota
+	// QueryEngineCascades routes SELECT through the Cascades planner.
+	QueryEngineCascades
 )
 
 // cascadesGenerator routes SELECT queries through the Cascades planner
@@ -96,24 +109,60 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules())
 
-	plan, _, err := planner.Plan(p.ref)
-	if err != nil || plan == nil {
-		if p.naive != nil {
-			return p.naive.Execute(ctx)
-		}
-		return query.Result{}, err
+	bestExpr, _, err := planner.Plan(p.ref)
+	if err != nil || bestExpr == nil {
+		return p.fallback(ctx)
 	}
 
-	ph, ok := plan.(interface{ GetRecordQueryPlan() any })
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
 	if !ok {
-		if p.naive != nil {
-			return p.naive.Execute(ctx)
-		}
-		return query.Result{}, nil
+		return p.fallback(ctx)
 	}
 
-	_ = ph
-	_ = executor.ExecutePlan
+	physicalPlan := ph.GetRecordQueryPlan()
+	if physicalPlan == nil {
+		return p.fallback(ctx)
+	}
+
+	c := p.conn
+	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if ssErr != nil {
+		return p.fallback(ctx)
+	}
+
+	var rows driver.Rows
+	_, txErr := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, storeErr := recordlayer.NewStoreBuilder().
+			SetContext(rctx).
+			SetSubspace(ss).
+			SetMetaDataProvider(c.cachedMetaData()).
+			Open()
+		if storeErr != nil {
+			return nil, storeErr
+		}
+
+		evalCtx := executor.EmptyEvaluationContext()
+		cursor, execErr := executor.ExecutePlan(ctx, physicalPlan, store, evalCtx, nil,
+			recordlayer.DefaultExecuteProperties())
+		if execErr != nil {
+			return nil, execErr
+		}
+
+		rs := executor.NewRecordLayerResultSet(ctx, cursor, nil)
+		rows = newCascadesRows(rs)
+		return nil, nil
+	})
+	if txErr != nil {
+		return p.fallback(ctx)
+	}
+
+	return query.Result{Rows: rows}, nil
+}
+
+func (p *cascadesPlan) fallback(ctx context.Context) (query.Result, error) {
 	if p.naive != nil {
 		return p.naive.Execute(ctx)
 	}
@@ -125,4 +174,43 @@ func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanConte
 		return cascades.EmptyPlanContext()
 	}
 	return cascades.EmptyPlanContext()
+}
+
+// cascadesRows wraps a RecordLayerResultSet as driver.Rows.
+type cascadesRows struct {
+	rs *executor.RecordLayerResultSet
+}
+
+func newCascadesRows(rs *executor.RecordLayerResultSet) *cascadesRows {
+	return &cascadesRows{rs: rs}
+}
+
+func (r *cascadesRows) Columns() []string {
+	md := r.rs.MetaData()
+	cols := make([]string, md.ColumnCount())
+	for i := range cols {
+		cols[i], _ = md.ColumnName(i + 1)
+	}
+	return cols
+}
+
+func (r *cascadesRows) Close() error {
+	return r.rs.Close()
+}
+
+func (r *cascadesRows) Next(dest []driver.Value) error {
+	if !r.rs.Next() {
+		if err := r.rs.Err(); err != nil {
+			return err
+		}
+		return io.EOF
+	}
+	for i := range dest {
+		v, err := r.rs.Object(i + 1)
+		if err != nil {
+			return err
+		}
+		dest[i] = v
+	}
+	return nil
 }
