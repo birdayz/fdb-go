@@ -2272,3 +2272,235 @@ func TestFieldFromDatum_CaseInsensitive(t *testing.T) {
 		t.Fatalf("expected 100, got %v (case-insensitive lookup via ToUpper)", v)
 	}
 }
+
+// ----- EvaluationContext (additional coverage) ------------------------------
+
+func TestEmptyEvaluationContext_NoBindings(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext()
+	if ec == nil {
+		t.Fatal("expected non-nil context")
+	}
+	_, ok := ec.GetBinding(values.NamedCorrelationIdentifier("anything"))
+	if ok {
+		t.Fatal("empty context should have no bindings")
+	}
+}
+
+func TestEvaluationContext_WithParams(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext()
+	ec2 := ec.WithParams([]any{int64(10), "hello"})
+
+	v, ok := ec2.BindParameter(1, "")
+	if !ok || v != int64(10) {
+		t.Fatalf("param 1: got %v, %v, want 10, true", v, ok)
+	}
+	v, ok = ec2.BindParameter(2, "")
+	if !ok || v != "hello" {
+		t.Fatalf("param 2: got %v, %v, want hello, true", v, ok)
+	}
+
+	_, ok = ec.BindParameter(1, "")
+	if ok {
+		t.Fatal("original context should not have params")
+	}
+}
+
+func TestEvaluationContext_BindParameter_Bounds(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext().WithParams([]any{int64(1)})
+
+	_, ok := ec.BindParameter(0, "")
+	if ok {
+		t.Fatal("ordinal 0 should fail (1-based)")
+	}
+	_, ok = ec.BindParameter(2, "")
+	if ok {
+		t.Fatal("ordinal 2 should fail (only 1 param)")
+	}
+	_, ok = ec.BindParameter(-1, "")
+	if ok {
+		t.Fatal("negative ordinal should fail")
+	}
+}
+
+func TestEvaluationContext_WithBinding_DoesNotMutateParent(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext()
+	id1 := values.NamedCorrelationIdentifier("a")
+	id2 := values.NamedCorrelationIdentifier("b")
+	ec1 := ec.WithBinding(id1, "val1")
+	ec2 := ec1.WithBinding(id2, "val2")
+
+	if _, ok := ec1.GetBinding(id2); ok {
+		t.Fatal("ec1 should not see ec2's binding")
+	}
+	if v, ok := ec2.GetBinding(id1); !ok || v != "val1" {
+		t.Fatal("ec2 should inherit ec1's bindings")
+	}
+}
+
+func TestEvaluationContext_WithParams_CopiesBindings(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext()
+	id := values.NamedCorrelationIdentifier("x")
+	ec = ec.WithBinding(id, "kept")
+	ec2 := ec.WithParams([]any{int64(42)})
+
+	v, ok := ec2.GetBinding(id)
+	if !ok || v != "kept" {
+		t.Fatal("WithParams should preserve existing bindings")
+	}
+	v, ok = ec2.BindParameter(1, "")
+	if !ok || v != int64(42) {
+		t.Fatal("WithParams should set params")
+	}
+}
+
+func TestEvaluationContext_RowContext(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext().WithParams([]any{int64(99)})
+	datum := map[string]any{"col": "hello"}
+	rc := ec.RowContext(datum)
+	if rc.Datum["col"] != "hello" {
+		t.Fatal("RowContext should pass through datum")
+	}
+	v, ok := rc.Binder.BindParameter(1, "")
+	if !ok || v != int64(99) {
+		t.Fatal("RowContext's binder should use the EvalContext's params")
+	}
+}
+
+// ----- TempTable (additional coverage) --------------------------------------
+
+func TestTempTable_AddAndGetList(t *testing.T) {
+	t.Parallel()
+	tt := NewTempTable()
+	tt.Add(QueryResult{Datum: int64(1)})
+	tt.Add(QueryResult{Datum: int64(2)})
+
+	list := tt.GetList()
+	if len(list) != 2 {
+		t.Fatalf("expected 2, got %d", len(list))
+	}
+	if list[0].Datum != int64(1) || list[1].Datum != int64(2) {
+		t.Errorf("unexpected contents: %v %v", list[0].Datum, list[1].Datum)
+	}
+}
+
+func TestTempTable_GetListReturnsSnapshot(t *testing.T) {
+	t.Parallel()
+	tt := NewTempTable()
+	tt.Add(QueryResult{Datum: int64(1)})
+	snap := tt.GetList()
+	tt.Add(QueryResult{Datum: int64(2)})
+
+	if len(snap) != 1 {
+		t.Fatal("snapshot should not grow when new items added")
+	}
+	if len(tt.GetList()) != 2 {
+		t.Fatal("temp table should now have 2 items")
+	}
+}
+
+func TestTempTable_EmptyList(t *testing.T) {
+	t.Parallel()
+	tt := NewTempTable()
+	list := tt.GetList()
+	if len(list) != 0 {
+		t.Fatal("new temp table should be empty")
+	}
+}
+
+func TestEvaluationContext_GetOrCreateTempTable(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext()
+	id := values.NamedCorrelationIdentifier("tt1")
+	tt1 := ec.GetOrCreateTempTable(id)
+	tt1.Add(QueryResult{Datum: int64(1)})
+
+	tt2 := ec.GetOrCreateTempTable(id)
+	if len(tt2.GetList()) != 1 {
+		t.Fatal("second GetOrCreateTempTable should return same instance")
+	}
+}
+
+func TestEvaluationContext_GetOrCreateTempTable_DistinctIDs(t *testing.T) {
+	t.Parallel()
+	ec := EmptyEvaluationContext()
+	id1 := values.NamedCorrelationIdentifier("tt1")
+	id2 := values.NamedCorrelationIdentifier("tt2")
+
+	tt1 := ec.GetOrCreateTempTable(id1)
+	tt1.Add(QueryResult{Datum: int64(1)})
+
+	tt2 := ec.GetOrCreateTempTable(id2)
+	if len(tt2.GetList()) != 0 {
+		t.Fatal("different IDs should create distinct temp tables")
+	}
+}
+
+// ----- goToProtoValue (enum — extends existing int/string/bool/float/double/bytes tests) ---
+
+func TestGoToProtoValue_EnumField(t *testing.T) {
+	t.Parallel()
+	msg := &gen.TypedRecord{}
+	fd := msg.ProtoReflect().Descriptor().Fields().ByName("val_enum")
+	pv, err := goToProtoValue(fd, int64(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(pv.Enum()) != 2 {
+		t.Fatalf("expected enum 2, got %d", pv.Enum())
+	}
+}
+
+// ----- sortByKeys (multi-key — extends existing single-key tests) -----------
+
+func TestSortByKeys_MultipleKeys(t *testing.T) {
+	t.Parallel()
+	items := []QueryResult{
+		{Datum: map[string]any{"A": int64(2), "B": int64(1)}},
+		{Datum: map[string]any{"A": int64(1), "B": int64(2)}},
+		{Datum: map[string]any{"A": int64(1), "B": int64(1)}},
+	}
+	sortByKeys(items, []string{"A", "B"}, []bool{false, false})
+
+	d0 := items[0].Datum.(map[string]any)
+	d1 := items[1].Datum.(map[string]any)
+	d2 := items[2].Datum.(map[string]any)
+	if d0["A"] != int64(1) || d0["B"] != int64(1) {
+		t.Errorf("row 0: got A=%v B=%v, want 1,1", d0["A"], d0["B"])
+	}
+	if d1["A"] != int64(1) || d1["B"] != int64(2) {
+		t.Errorf("row 1: got A=%v B=%v, want 1,2", d1["A"], d1["B"])
+	}
+	if d2["A"] != int64(2) {
+		t.Errorf("row 2: got A=%v, want 2", d2["A"])
+	}
+}
+
+// ----- CollectAll (multi-item — extends existing empty test) ----------------
+
+func TestCollectAll_MultipleItems(t *testing.T) {
+	t.Parallel()
+	items := []QueryResult{
+		{Datum: int64(1)},
+		{Datum: int64(2)},
+		{Datum: int64(3)},
+	}
+	cursor := recordlayer.FromList(items)
+	results, err := CollectAll(context.Background(), cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3, got %d", len(results))
+	}
+	for i, r := range results {
+		if r.Datum != int64(i+1) {
+			t.Errorf("item %d: got %v, want %d", i, r.Datum, i+1)
+		}
+	}
+}
