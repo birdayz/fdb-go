@@ -62,6 +62,20 @@ func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// ExplainPhysicalPlan returns the Explain() string for a physical-plan
+// expression, or empty string if the expression is not a physical plan.
+func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
+	ph, ok := expr.(physicalPlanExpression)
+	if !ok {
+		return ""
+	}
+	p := ph.GetRecordQueryPlan()
+	if p == nil {
+		return ""
+	}
+	return p.Explain()
+}
+
 // PhysicalIndexScanName returns the index name if expr is a
 // physicalIndexScanWrapper, empty string otherwise.
 func PhysicalIndexScanName(expr expressions.RelationalExpression) string {

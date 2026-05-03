@@ -1,6 +1,7 @@
 package plangen_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
@@ -1176,6 +1177,65 @@ func TestEndToEnd_InExplodeWithGroupBy(t *testing.T) {
 	if !cascades.IsPhysicalStreamingAgg(plan) && !cascades.IsPhysicalHashAgg(plan) {
 		t.Fatalf("expected aggregation plan (streaming or hash), got %T", plan)
 	}
+}
+
+// TestEndToEnd_AggregationExplainOutput verifies the Explain() output
+// for a streaming aggregation plan over an ordered index scan.
+func TestEndToEnd_AggregationExplainOutput(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		}, scanQ)
+	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		sortQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// Extract the physical plan's Explain.
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if explain == "" {
+		t.Fatalf("ExplainPhysicalPlan returned empty for %T", plan)
+	}
+
+	// Should contain "StreamingAgg" and "IndexScan".
+	if !strings.Contains(explain, "StreamingAgg") {
+		t.Fatalf("Explain should contain StreamingAgg, got: %s", explain)
+	}
+	if !strings.Contains(explain, "IndexScan") {
+		t.Fatalf("Explain should contain IndexScan, got: %s", explain)
+	}
+	t.Logf("Explain: %s", explain)
 }
 
 // TestEndToEnd_FilterPushedThroughGroupBy verifies the planner pushes a
