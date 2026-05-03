@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
@@ -50,6 +51,18 @@ func (r *PrimaryScanRule) Matcher() matching.BindingMatcher { return r.matcher }
 func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	scan := matching.Get[*expressions.FullUnorderedScanExpression](call.Bindings, r.matcher)
 	plan := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), false)
+
+	if call.Context != nil && len(scan.GetRecordTypes()) == 1 {
+		pkCols := call.Context.GetPrimaryKeyColumns(scan.GetRecordTypes()[0])
+		if len(pkCols) > 0 {
+			pkVals := make([]values.Value, len(pkCols))
+			for i, col := range pkCols {
+				pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+			}
+			plan = plan.WithPrimaryKey(pkVals)
+		}
+	}
+
 	call.Yield(&physicalScanWrapper{plan: plan})
 }
 
