@@ -448,3 +448,338 @@ func TestIntegration_IndexScan(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestIntegration_UpdatePlan tests updating records via the executor.
+func TestIntegration_UpdatePlan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(601), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(602), Price: proto.Int32(200)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "ORDER_ID"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonEquals,
+						Operand: values.LiteralValue(int64(601)),
+					},
+				),
+			},
+			scan,
+		)
+		update := plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
+			{FieldPath: "PRICE", NewValue: values.LiteralValue(int64(999))},
+		})
+
+		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("update returned %d results, want 1", len(results))
+		}
+
+		rec, err := s.LoadRecord(tuple.Tuple{int64(601)})
+		if err != nil {
+			t.Fatalf("LoadRecord: %v", err)
+		}
+		if rec == nil {
+			t.Fatal("record not found after update")
+		}
+		updated := rec.Record.(*gen.Order)
+		if updated.GetPrice() != 999 {
+			t.Errorf("price after update = %d, want 999", updated.GetPrice())
+		}
+
+		untouched, err := s.LoadRecord(tuple.Tuple{int64(602)})
+		if err != nil {
+			t.Fatalf("LoadRecord: %v", err)
+		}
+		if untouched == nil {
+			t.Fatal("untouched record not found")
+		}
+		other := untouched.Record.(*gen.Order)
+		if other.GetPrice() != 200 {
+			t.Errorf("untouched order price = %d, want 200", other.GetPrice())
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ScanDatum_Shape verifies that scan datum maps contain
+// the correct keys and values from proto deserialization.
+func TestIntegration_ScanDatum_Shape(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(701), Price: proto.Int32(42)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+
+		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("scan returned %d results, want 1", len(results))
+		}
+
+		datum := results[0].Datum.(map[string]any)
+		if datum["ORDER_ID"] != int64(701) {
+			t.Errorf("ORDER_ID = %v, want 701", datum["ORDER_ID"])
+		}
+		if datum["PRICE"] != int64(42) {
+			t.Errorf("PRICE = %v, want 42", datum["PRICE"])
+		}
+		if _, exists := datum["FLOWER"]; exists {
+			t.Errorf("FLOWER should not be in datum for unset field")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_IndexScan_Equality tests index scan with equality match.
+func TestIntegration_IndexScan_Equality(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(901), Price: proto.Int32(77)},
+		&gen.Order{OrderId: proto.Int64(902), Price: proto.Int32(88)},
+		&gen.Order{OrderId: proto.Int64(903), Price: proto.Int32(77)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		eqRange := predicates.EmptyComparisonRange()
+		comp := &predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: values.LiteralValue(int64(77)),
+		}
+		res := eqRange.Merge(comp)
+		if !res.Ok {
+			t.Fatal("merge failed")
+		}
+
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			"order_price_idx",
+			[]*predicates.ComparisonRange{res.Range},
+			[]string{"Order"},
+			nil,
+			false,
+		)
+
+		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("index equality scan returned %d results, want 2 (price == 77)", len(results))
+		}
+		for _, r := range results {
+			price := r.Datum.(map[string]any)["PRICE"].(int64)
+			if price != 77 {
+				t.Errorf("index scan returned price=%d, want 77", price)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_IndexScan_BoundedRange tests index scan with both lower and upper bounds.
+func TestIntegration_IndexScan_BoundedRange(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(1001), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(1002), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(1003), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(1004), Price: proto.Int32(150)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		cr := predicates.EmptyComparisonRange()
+		lowRes := cr.Merge(&predicates.Comparison{
+			Type:    predicates.ComparisonGreaterThanEq,
+			Operand: values.LiteralValue(int64(50)),
+		})
+		if !lowRes.Ok {
+			t.Fatal("merge low failed")
+		}
+		highRes := lowRes.Range.Merge(&predicates.Comparison{
+			Type:    predicates.ComparisonLessThan,
+			Operand: values.LiteralValue(int64(150)),
+		})
+		if !highRes.Ok {
+			t.Fatal("merge high failed")
+		}
+
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			"order_price_idx",
+			[]*predicates.ComparisonRange{highRes.Range},
+			[]string{"Order"},
+			nil,
+			false,
+		)
+
+		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("bounded range scan returned %d results, want 2 (50 <= price < 150)", len(results))
+		}
+		for _, r := range results {
+			price := r.Datum.(map[string]any)["PRICE"].(int64)
+			if price < 50 || price >= 150 {
+				t.Errorf("price=%d outside [50, 150)", price)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_FilterSortLimit_Pipeline tests a realistic pipeline:
+// scan → filter → sort → limit.
+func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(1101), Price: proto.Int32(500)},
+		&gen.Order{OrderId: proto.Int64(1102), Price: proto.Int32(300)},
+		&gen.Order{OrderId: proto.Int64(1103), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(1104), Price: proto.Int32(400)},
+		&gen.Order{OrderId: proto.Int64(1105), Price: proto.Int32(200)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "PRICE"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonGreaterThan,
+						Operand: values.LiteralValue(int64(150)),
+					},
+				),
+			},
+			scan,
+		)
+		sorted := plans.NewRecordQuerySortPlan(
+			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: true}},
+			filter,
+		)
+		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 0)
+
+		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("pipeline returned %d results, want 2 (top-2 by price DESC where price > 150)", len(results))
+		}
+
+		p1 := results[0].Datum.(map[string]any)["PRICE"].(int64)
+		p2 := results[1].Datum.(map[string]any)["PRICE"].(int64)
+		if p1 != 500 || p2 != 400 {
+			t.Errorf("prices = [%d, %d], want [500, 400]", p1, p2)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
