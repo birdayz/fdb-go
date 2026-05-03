@@ -156,7 +156,8 @@ func DMLImplementationRules() []ExpressionRule {
 // specific rules fire before it for expressions they recognize.
 func DefaultImplementationRules() []ImplementationRule {
 	return []ImplementationRule{
-		// NewImplementSimpleSelectRule(), // WIP: temporarily disabled, missing predicates.IsTautology
+		NewImplementSimpleSelectRule(),
+		NewImplementDistinctUnionRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
 		NewFinalizeExpressionsRule(),
