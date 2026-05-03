@@ -110,12 +110,20 @@ func convertScan(s *logical.LogicalScan) expressions.RelationalExpression {
 }
 
 // convertFilter builds a LogicalFilterExpression over the recursively-
-// converted child. Requires LogicalFilter.Predicate to be non-nil
-// (the cascades QueryPredicate form); LogicalFilters built from the
-// non-catalog-aware text path return ErrUnsupported.
+// converted child. Uses structured Predicate when available; falls back
+// to text-based comparison parsing for simple "col op value" predicates.
 func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, error) {
-	if f.Predicate == nil {
-		return nil, fmt.Errorf("%w: LogicalFilter without QueryPredicate (text-only path)", ErrUnsupported)
+	var pred predicates.QueryPredicate
+	if f.Predicate != nil {
+		pred = f.Predicate
+	} else if f.PredicateText != "" {
+		p, ok := tryParseSimpleComparison(f.PredicateText)
+		if !ok {
+			return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, f.PredicateText)
+		}
+		pred = p
+	} else {
+		return nil, fmt.Errorf("%w: LogicalFilter without predicate", ErrUnsupported)
 	}
 	inner, err := Convert(f.Input)
 	if err != nil {
@@ -123,7 +131,7 @@ func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, 
 	}
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 	return expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{f.Predicate}, q,
+		[]predicates.QueryPredicate{pred}, q,
 	), nil
 }
 

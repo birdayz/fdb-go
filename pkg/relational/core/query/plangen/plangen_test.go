@@ -80,10 +80,26 @@ func TestConvert_FilterOverScan(t *testing.T) {
 	}
 }
 
-func TestConvert_FilterTextOnly_Unsupported(t *testing.T) {
+func TestConvert_FilterTextSimple(t *testing.T) {
 	t.Parallel()
-	// Text-only filter (no QueryPredicate) is the legacy non-catalog path.
 	src := logical.NewFilter(logical.NewScan("Order", ""), "x > 5")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
+	t.Parallel()
+	// Complex expression with function call can't be lowered
+	src := logical.NewFilter(logical.NewScan("Order", ""), "UPPER(name) = 'FOO'")
 	_, err := plangen.Convert(src)
 	if !errors.Is(err, plangen.ErrUnsupported) {
 		t.Fatalf("got %v, want ErrUnsupported", err)
