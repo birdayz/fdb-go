@@ -55,7 +55,7 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 		newBindings[k] = v
 	}
 	newBindings[id] = val
-	return &EvaluationContext{bindings: newBindings}
+	return &EvaluationContext{bindings: newBindings, params: ec.params}
 }
 
 // GetBinding retrieves a correlation binding.
@@ -65,8 +65,10 @@ func (ec *EvaluationContext) GetBinding(id values.CorrelationIdentifier) (any, b
 }
 
 // GetOrCreateTempTable returns the TempTable at the given alias,
-// creating one if it doesn't exist. Mirrors Java's pattern where
-// TempTable is stored as a binding and lazily created.
+// creating one if it doesn't exist. Mutates ec.bindings directly
+// (intentional — temp tables are shared mutable state across the
+// execution, not copy-on-write like WithBinding). Callers must
+// ensure this is called on the root context, not on a WithBinding copy.
 func (ec *EvaluationContext) GetOrCreateTempTable(id values.CorrelationIdentifier) *TempTable {
 	if v, ok := ec.bindings[id]; ok {
 		if tt, ok := v.(*TempTable); ok {

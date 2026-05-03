@@ -1222,7 +1222,9 @@ func executeRecursiveDfsJoin(
 	var results []QueryResult
 
 	for _, root := range rootRows {
-		dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results)
+		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results); err != nil {
+			return nil, err
+		}
 	}
 
 	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
@@ -1237,7 +1239,7 @@ func dfsVisit(
 	preorder bool,
 	props recordlayer.ExecuteProperties,
 	results *[]QueryResult,
-) {
+) error {
 	if preorder {
 		*results = append(*results, node)
 	}
@@ -1245,28 +1247,24 @@ func dfsVisit(
 	childCtx := evalCtx.WithBinding(p.GetPriorCorrelation(), node.Datum)
 	childCursor, err := ExecutePlan(ctx, p.GetChild(), store, childCtx, nil, props.ClearSkipAndLimit())
 	if err != nil {
-		if preorder {
-			return
-		}
-		*results = append(*results, node)
-		return
+		return fmt.Errorf("recursive DFS child plan: %w", err)
 	}
 
 	children, err := CollectAll(ctx, childCursor)
 	if err != nil {
-		if !preorder {
-			*results = append(*results, node)
-		}
-		return
+		return fmt.Errorf("recursive DFS collect children: %w", err)
 	}
 
 	for _, child := range children {
-		dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results)
+		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results); err != nil {
+			return err
+		}
 	}
 
 	if !preorder {
 		*results = append(*results, node)
 	}
+	return nil
 }
 
 // applySkipLimit wraps a cursor with skip/limit only when the values
@@ -1398,29 +1396,49 @@ func compareAny(a, b any) int {
 	}
 	switch av := a.(type) {
 	case int64:
-		bv, ok := b.(int64)
-		if !ok {
+		switch bv := b.(type) {
+		case int64:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		case float64:
+			fa := float64(av)
+			if fa < bv {
+				return -1
+			}
+			if fa > bv {
+				return 1
+			}
+			return 0
+		default:
 			return 0
 		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-		return 0
 	case float64:
-		bv, ok := b.(float64)
-		if !ok {
+		switch bv := b.(type) {
+		case float64:
+			if av < bv {
+				return -1
+			}
+			if av > bv {
+				return 1
+			}
+			return 0
+		case int64:
+			fb := float64(bv)
+			if av < fb {
+				return -1
+			}
+			if av > fb {
+				return 1
+			}
+			return 0
+		default:
 			return 0
 		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-		return 0
 	case string:
 		bv, ok := b.(string)
 		if !ok {
