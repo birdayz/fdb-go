@@ -91,6 +91,12 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 	combos := CrossProduct(legPartitions)
 
 	for _, requestedOrdering := range requestedOrderings {
+		for _, q := range unionQs {
+			if ref := q.GetRangesOver(); ref != nil {
+				call.PushConstraint(ref, []*RequestedOrdering{requestedOrdering})
+			}
+		}
+
 		for _, combo := range combos {
 			r.tryYieldPlan(call, unionQs, combo, requestedOrdering)
 		}

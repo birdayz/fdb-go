@@ -109,6 +109,12 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		if !isSimpleResult {
+			// Java rebases resultValue when predicates were applied
+			// (AliasMap.ofAliases(oldAlias, newQuant.getAlias())) because
+			// the filter creates a new quantifier. Without Value.Rebase,
+			// the map plan's result value still references the original
+			// inner alias. This is safe as long as the executor resolves
+			// field references by name rather than by alias identity.
 			mapPlan := plans.NewRecordQueryMapPlan(currentPlan, resultValue)
 			mapWrapper := NewPhysicalMapWrapper(mapPlan, currentQuant)
 			call.YieldFinalExpression(mapWrapper)
