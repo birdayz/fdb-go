@@ -18,6 +18,13 @@ go_library(
 
 go_test(
     name = "query_test",
-    srcs = ["plan_test.go"],
+    srcs = [
+        "cascades_translator_test.go",
+        "plan_test.go",
+    ],
     embed = [":query"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/relational/core/query/logical",
+    ],
 )
