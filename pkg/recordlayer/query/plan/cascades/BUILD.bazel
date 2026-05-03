@@ -115,6 +115,7 @@ go_test(
         "planner_agg_fuzz_test.go",
         "planner_batch_a_fuzz_test.go",
         "planner_fuzz_test.go",
+        "planner_limit_fuzz_test.go",
         "planner_test.go",
         "predicate_matchers_test.go",
         "predicate_simplify_fuzz_test.go",
