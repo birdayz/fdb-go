@@ -21,9 +21,10 @@ import (
 // continuation, scan-comparison thunk. Those land when consumers
 // (Batch A index rules) need them.
 type RecordQueryScanPlan struct {
-	recordTypes []string
-	flowedType  values.Type
-	reverse     bool
+	recordTypes    []string
+	flowedType     values.Type
+	reverse        bool
+	primaryKeyVals []values.Value
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -39,6 +40,21 @@ func NewRecordQueryScanPlan(recordTypes []string, flowedType values.Type, revers
 		reverse:     reverse,
 	}
 }
+
+// WithPrimaryKey returns a copy of the scan plan with PK values set.
+func (p *RecordQueryScanPlan) WithPrimaryKey(pk []values.Value) *RecordQueryScanPlan {
+	copied := make([]values.Value, len(pk))
+	copy(copied, pk)
+	return &RecordQueryScanPlan{
+		recordTypes:    p.recordTypes,
+		flowedType:     p.flowedType,
+		reverse:        p.reverse,
+		primaryKeyVals: copied,
+	}
+}
+
+// GetPrimaryKeyValues returns the primary key values, or nil if not set.
+func (p *RecordQueryScanPlan) GetPrimaryKeyValues() []values.Value { return p.primaryKeyVals }
 
 // GetRecordTypes returns the canonical record-type-name list.
 func (p *RecordQueryScanPlan) GetRecordTypes() []string { return p.recordTypes }

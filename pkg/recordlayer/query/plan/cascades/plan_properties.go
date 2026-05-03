@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
@@ -166,8 +167,68 @@ func storedRecordAllChildren(children []plans.RecordQueryPlan) bool {
 	return len(children) > 0
 }
 
-func computePrimaryKey(_ plans.RecordQueryPlan) any {
-	return nil
+func computePrimaryKey(plan plans.RecordQueryPlan) any {
+	switch p := plan.(type) {
+	case *plans.RecordQueryScanPlan:
+		if pk := p.GetPrimaryKeyValues(); pk != nil {
+			return pk
+		}
+		return nil
+	case *plans.RecordQueryIndexPlan:
+		return nil
+	case *plans.RecordQueryFilterPlan,
+		*plans.RecordQueryPredicatesFilterPlan,
+		*plans.RecordQuerySortPlan,
+		*plans.RecordQueryTypeFilterPlan,
+		*plans.RecordQueryLimitPlan,
+		*plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryMapPlan,
+		*plans.RecordQueryDistinctPlan,
+		*plans.RecordQueryInJoinPlan,
+		*plans.RecordQueryDeletePlan:
+		return pkFromChildren(plan.GetChildren())
+	case *plans.RecordQueryUnionPlan,
+		*plans.RecordQueryMergeSortUnionPlan,
+		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryUnorderedUnionPlan:
+		return commonPKFromChildren(plan.GetChildren())
+	default:
+		return nil
+	}
+}
+
+func pkFromChildren(children []plans.RecordQueryPlan) any {
+	if len(children) != 1 {
+		return nil
+	}
+	return computePrimaryKey(children[0])
+}
+
+func commonPKFromChildren(children []plans.RecordQueryPlan) any {
+	if len(children) == 0 {
+		return nil
+	}
+	first := computePrimaryKey(children[0])
+	if first == nil {
+		return nil
+	}
+	firstPK := first.([]values.Value)
+	for _, c := range children[1:] {
+		childPK := computePrimaryKey(c)
+		if childPK == nil {
+			return nil
+		}
+		pk := childPK.([]values.Value)
+		if len(pk) != len(firstPK) {
+			return nil
+		}
+		for i := range pk {
+			if !valuesEqual(pk[i], firstPK[i]) {
+				return nil
+			}
+		}
+	}
+	return firstPK
 }
 
 func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
