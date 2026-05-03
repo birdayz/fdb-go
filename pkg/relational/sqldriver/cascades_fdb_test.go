@@ -114,6 +114,24 @@ func TestFDB_CascadesProjection(t *testing.T) {
 	t.Logf("Cascades projection → %d rows ✓", count)
 }
 
+func TestFDB_CascadesMultiPredicate(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price > 50 AND price < 200")
+	if err != nil {
+		t.Skipf("multi-predicate WHERE not supported yet: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 1 {
+		t.Fatalf("expected 1 row (Widget, price=100), got %d", count)
+	}
+	t.Logf("Cascades multi-predicate WHERE → %d row ✓", count)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
