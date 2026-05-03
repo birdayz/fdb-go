@@ -17,6 +17,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -37,6 +38,8 @@ func ExecutePlan(
 	switch p := plan.(type) {
 	case *plans.RecordQueryScanPlan:
 		return executeScan(ctx, p, store, continuation, props)
+	case *plans.RecordQueryIndexPlan:
+		return executeIndexScan(ctx, p, store, continuation, props)
 	case *plans.RecordQueryTypeFilterPlan:
 		return executeTypeFilter(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryFilterPlan:
@@ -83,6 +86,181 @@ func executeScan(
 	cursor := recordlayer.MapCursor(inner, FromStoredRecord)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
+
+func executeIndexScan(
+	ctx context.Context,
+	p *plans.RecordQueryIndexPlan,
+	store *recordlayer.FDBRecordStore,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	idx := store.GetMetaData().GetIndex(p.GetIndexName())
+	if idx == nil {
+		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
+	}
+	maintainer, err := store.GetIndexMaintainer(idx)
+	if err != nil {
+		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
+	}
+
+	scanRange, err := scanComparisonsToTupleRange(p.GetScanComparisons())
+	if err != nil {
+		return nil, fmt.Errorf("executor: building scan range for %q: %w", p.GetIndexName(), err)
+	}
+
+	scanProps := recordlayer.ScanProperties{
+		ExecuteProperties: props.ClearSkipAndLimit(),
+		Reverse:           p.IsReverse(),
+	}
+
+	indexCursor := maintainer.Scan(scanRange, continuation, scanProps)
+
+	resultCursor := &indexFetchCursor{
+		inner: indexCursor,
+		store: store,
+	}
+
+	return applySkipLimit(resultCursor, props.Skip, props.ReturnedRowLimit), nil
+}
+
+func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange) (recordlayer.TupleRange, error) {
+	if len(comparisons) == 0 {
+		return recordlayer.TupleRangeAllOf(nil), nil
+	}
+
+	var prefix tuple.Tuple
+	for _, cr := range comparisons {
+		if !cr.IsEquality() {
+			break
+		}
+		comp := cr.GetEqualityComparison()
+		val := comp.Operand.Evaluate(nil)
+		prefix = append(prefix, val)
+	}
+
+	eqCount := len(prefix)
+	if eqCount >= len(comparisons) {
+		return recordlayer.TupleRangeAllOf(prefix), nil
+	}
+
+	nextRange := comparisons[eqCount]
+	if nextRange.IsEmpty() {
+		return recordlayer.TupleRangeAllOf(prefix), nil
+	}
+
+	if !nextRange.IsInequality() {
+		return recordlayer.TupleRangeAllOf(prefix), nil
+	}
+
+	var lowEndpoint, highEndpoint recordlayer.EndpointType
+	var lowItem, highItem any
+	hasLow := false
+	hasHigh := false
+
+	if len(prefix) == 0 {
+		lowEndpoint = recordlayer.EndpointTypeTreeStart
+		highEndpoint = recordlayer.EndpointTypeTreeEnd
+	} else {
+		lowEndpoint = recordlayer.EndpointTypeRangeInclusive
+		highEndpoint = recordlayer.EndpointTypeRangeInclusive
+	}
+
+	for _, ineq := range nextRange.GetInequalityComparisons() {
+		comparand := ineq.Operand.Evaluate(nil)
+		switch ineq.Type {
+		case predicates.ComparisonGreaterThan:
+			lowItem = comparand
+			lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+			hasLow = true
+		case predicates.ComparisonGreaterThanEq:
+			lowItem = comparand
+			lowEndpoint = recordlayer.EndpointTypeRangeInclusive
+			hasLow = true
+		case predicates.ComparisonLessThan:
+			highItem = comparand
+			highEndpoint = recordlayer.EndpointTypeRangeExclusive
+			hasHigh = true
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				hasLow = true
+			}
+		case predicates.ComparisonLessThanOrEq:
+			highItem = comparand
+			highEndpoint = recordlayer.EndpointTypeRangeInclusive
+			hasHigh = true
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				hasLow = true
+			}
+		case predicates.ComparisonIsNotNull:
+			if !hasLow {
+				lowEndpoint = recordlayer.EndpointTypeRangeExclusive
+				hasLow = true
+			}
+		}
+	}
+
+	var low, high tuple.Tuple
+	if hasLow && lowItem != nil {
+		low = append(append(tuple.Tuple{}, prefix...), lowItem)
+	} else if len(prefix) > 0 {
+		low = prefix
+	}
+	if hasHigh && highItem != nil {
+		high = append(append(tuple.Tuple{}, prefix...), highItem)
+	} else if len(prefix) > 0 {
+		high = prefix
+	}
+
+	return recordlayer.TupleRange{
+		Low:          low,
+		High:         high,
+		LowEndpoint:  lowEndpoint,
+		HighEndpoint: highEndpoint,
+	}, nil
+}
+
+type indexFetchCursor struct {
+	inner  recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	store  *recordlayer.FDBRecordStore
+	closed bool
+}
+
+func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	for {
+		result, err := c.inner.OnNext(ctx)
+		if err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+		if !result.HasNext() {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+		}
+
+		entry := result.GetValue()
+		pk := entry.PrimaryKey()
+		if pk == nil {
+			continue
+		}
+
+		rec, err := c.store.LoadRecord(pk)
+		if err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), fmt.Errorf("executor: loading record for index entry pk %v: %w", pk, err)
+		}
+		if rec == nil {
+			continue
+		}
+
+		qr := FromStoredRecord(rec)
+		return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+	}
+}
+
+func (c *indexFetchCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *indexFetchCursor) IsClosed() bool { return c.closed }
 
 func executeTypeFilter(
 	ctx context.Context,

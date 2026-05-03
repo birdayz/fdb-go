@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
@@ -481,6 +482,173 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 	row := results[0].Datum.(map[string]any)
 	if row["constant"] != "result" {
 		t.Errorf("composite pipeline result = %v, want 'result'", row["constant"])
+	}
+}
+
+func TestScanComparisonsToTupleRange_Empty(t *testing.T) {
+	t.Parallel()
+	r, err := scanComparisonsToTupleRange(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Low != nil || r.High != nil {
+		t.Fatalf("empty comparisons should give ALL range, got low=%v high=%v", r.Low, r.High)
+	}
+}
+
+func TestScanComparisonsToTupleRange_EqualityOnly(t *testing.T) {
+	t.Parallel()
+	eq1 := predicates.EmptyComparisonRange()
+	res := eq1.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("alice")})
+	if !res.Ok {
+		t.Fatal("merge failed")
+	}
+
+	eq2 := predicates.EmptyComparisonRange()
+	res2 := eq2.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(42))})
+	if !res2.Ok {
+		t.Fatal("merge2 failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res2.Range})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantPrefix := tuple.Tuple{"alice", int64(42)}
+	if len(r.Low) != len(wantPrefix) {
+		t.Fatalf("low=%v, want prefix %v", r.Low, wantPrefix)
+	}
+	for i, v := range wantPrefix {
+		if r.Low[i] != v {
+			t.Fatalf("low[%d]=%v, want %v", i, r.Low[i], v)
+		}
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("lowEndpoint=%v, want RangeInclusive", r.LowEndpoint)
+	}
+}
+
+func TestScanComparisonsToTupleRange_EqualityPlusInequality(t *testing.T) {
+	t.Parallel()
+
+	eq := predicates.EmptyComparisonRange()
+	res := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("users")})
+	if !res.Ok {
+		t.Fatal("merge eq failed")
+	}
+
+	ineq := predicates.EmptyComparisonRange()
+	gt := &predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))}
+	res2 := ineq.Merge(gt)
+	if !res2.Ok {
+		t.Fatal("merge gt failed")
+	}
+	lt := &predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: values.LiteralValue(int64(100))}
+	res3 := res2.Range.Merge(lt)
+	if !res3.Ok {
+		t.Fatal("merge lt failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res3.Range})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 2 || r.Low[0] != "users" || r.Low[1] != int64(10) {
+		t.Fatalf("low=%v, want [users, 10]", r.Low)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("lowEndpoint=%v, want RangeExclusive", r.LowEndpoint)
+	}
+	if len(r.High) != 2 || r.High[0] != "users" || r.High[1] != int64(100) {
+		t.Fatalf("high=%v, want [users, 100]", r.High)
+	}
+	if r.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("highEndpoint=%v, want RangeExclusive", r.HighEndpoint)
+	}
+}
+
+func TestScanComparisonsToTupleRange_InequalityOnly(t *testing.T) {
+	t.Parallel()
+
+	ineq := predicates.EmptyComparisonRange()
+	gte := &predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(5))}
+	res := ineq.Merge(gte)
+	if !res.Ok {
+		t.Fatal("merge gte failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 1 || r.Low[0] != int64(5) {
+		t.Fatalf("low=%v, want [5]", r.Low)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("lowEndpoint=%v, want RangeInclusive (>=)", r.LowEndpoint)
+	}
+	if r.High != nil {
+		t.Fatalf("high=%v, want nil (no upper bound)", r.High)
+	}
+	if r.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
+		t.Fatalf("highEndpoint=%v, want TreeEnd", r.HighEndpoint)
+	}
+}
+
+func TestScanComparisonsToTupleRange_EmptyRangeStops(t *testing.T) {
+	t.Parallel()
+
+	eq := predicates.EmptyComparisonRange()
+	res := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
+	if !res.Ok {
+		t.Fatal("merge failed")
+	}
+
+	empty := predicates.EmptyComparisonRange()
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantPrefix := tuple.Tuple{"x"}
+	if len(r.Low) != 1 || r.Low[0] != "x" {
+		t.Fatalf("low=%v, want prefix %v", r.Low, wantPrefix)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("lowEndpoint=%v, want RangeInclusive (prefix scan)", r.LowEndpoint)
+	}
+}
+
+func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
+	t.Parallel()
+
+	ineq := predicates.EmptyComparisonRange()
+	lt := &predicates.Comparison{Type: predicates.ComparisonLessThanOrEq, Operand: values.LiteralValue(int64(50))}
+	res := ineq.Merge(lt)
+	if !res.Ok {
+		t.Fatal("merge lte failed")
+	}
+
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if r.Low != nil {
+		t.Fatalf("low=%v, want nil (no lower bound but has exclusion mark)", r.Low)
+	}
+	if r.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("lowEndpoint=%v, want RangeExclusive (Java convention for LT-only)", r.LowEndpoint)
+	}
+	if len(r.High) != 1 || r.High[0] != int64(50) {
+		t.Fatalf("high=%v, want [50]", r.High)
+	}
+	if r.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("highEndpoint=%v, want RangeInclusive (<=)", r.HighEndpoint)
 	}
 }
 

@@ -25,6 +25,7 @@ go_test(
     srcs = ["executor_test.go"],
     embed = [":executor"],
     deps = [
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
