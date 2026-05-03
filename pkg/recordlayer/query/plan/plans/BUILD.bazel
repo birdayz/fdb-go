@@ -10,6 +10,7 @@ go_library(
         "index_scan.go",
         "insert.go",
         "intersection.go",
+        "nested_loop_join.go",
         "plan.go",
         "scan.go",
         "sort.go",
