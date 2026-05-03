@@ -508,3 +508,206 @@ func TestImplementRecursiveDfsJoin_PlanOutput(t *testing.T) {
 	}
 	t.Logf("RecursiveDfsJoin Explain: %s", explain)
 }
+
+// --- ImplementRecursiveLevelUnionRule ---
+
+// buildLevelUnionTree is a helper that builds a RecursiveUnionExpression
+// tree with the given strategy and returns the top-level reference plus
+// the inner references needed for pre-implementing inner plans.
+func buildLevelUnionTree(
+	strategy expressions.TraversalStrategy,
+) (topRef *expressions.Reference, initialScanRef, initialRef, recursiveScanRef, recursiveRef *expressions.Reference) {
+	scanAlias := values.UniqueCorrelationIdentifier()
+	insertAlias := values.UniqueCorrelationIdentifier()
+
+	initScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
+	initialScanRef = expressions.InitialOf(initScan)
+	initInsert := expressions.NewTempTableInsertExpression(
+		expressions.ForEachQuantifier(initialScanRef),
+		insertAlias, true,
+	)
+	initialRef = expressions.InitialOf(initInsert)
+
+	recScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
+	recursiveScanRef = expressions.InitialOf(recScan)
+	recInsert := expressions.NewTempTableInsertExpression(
+		expressions.ForEachQuantifier(recursiveScanRef),
+		insertAlias, false,
+	)
+	recursiveRef = expressions.InitialOf(recInsert)
+
+	recUnion := expressions.NewRecursiveUnionExpression(
+		expressions.ForEachQuantifier(initialRef),
+		expressions.ForEachQuantifier(recursiveRef),
+		scanAlias, insertAlias, strategy,
+	)
+	topRef = expressions.InitialOf(recUnion)
+	return
+}
+
+func implementInnerCTEPlans(initialScanRef, initialRef, recursiveScanRef, recursiveRef *expressions.Reference) {
+	FireExpressionRule(NewPrimaryScanRule(), initialScanRef)
+	FireExpressionRule(NewImplementTempTableInsertRule(), initialRef)
+	FireExpressionRule(NewPrimaryScanRule(), recursiveScanRef)
+	FireExpressionRule(NewImplementTempTableInsertRule(), recursiveRef)
+}
+
+func TestImplementRecursiveLevelUnion_TraversalLevel_Fires(t *testing.T) {
+	t.Parallel()
+
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalLevel)
+	implementInnerCTEPlans(isr, ir, rsr, rr)
+
+	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d, want 1", len(yielded))
+	}
+
+	if !IsPhysicalRecursiveLevelUnion(yielded[0]) {
+		t.Fatalf("yield = %T, want *physicalRecursiveLevelUnionWrapper", yielded[0])
+	}
+
+	wrap := yielded[0].(*physicalRecursiveLevelUnionWrapper)
+	plan, ok := wrap.GetRecordQueryPlan().(*plans.RecordQueryRecursiveLevelUnionPlan)
+	if !ok {
+		t.Fatalf("GetRecordQueryPlan() = %T, want *RecordQueryRecursiveLevelUnionPlan", wrap.GetRecordQueryPlan())
+	}
+	if plan.GetInitialState() == nil || plan.GetRecursiveState() == nil {
+		t.Fatal("plan legs should not be nil")
+	}
+}
+
+func TestImplementRecursiveLevelUnion_TraversalAny_Fires(t *testing.T) {
+	t.Parallel()
+
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalAny)
+	implementInnerCTEPlans(isr, ir, rsr, rr)
+
+	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d for TraversalAny, want 1", len(yielded))
+	}
+	if !IsPhysicalRecursiveLevelUnion(yielded[0]) {
+		t.Fatalf("yield = %T, want *physicalRecursiveLevelUnionWrapper", yielded[0])
+	}
+}
+
+func TestImplementRecursiveLevelUnion_TraversalPreorder_DoesNotFire(t *testing.T) {
+	t.Parallel()
+
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalPreorder)
+	implementInnerCTEPlans(isr, ir, rsr, rr)
+
+	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(yielded) != 0 {
+		t.Fatalf("ImplementRecursiveLevelUnionRule should NOT fire for TraversalPreorder; yielded %d", len(yielded))
+	}
+}
+
+func TestImplementRecursiveLevelUnion_TraversalPostorder_DoesNotFire(t *testing.T) {
+	t.Parallel()
+
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalPostorder)
+	implementInnerCTEPlans(isr, ir, rsr, rr)
+
+	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(yielded) != 0 {
+		t.Fatalf("ImplementRecursiveLevelUnionRule should NOT fire for TraversalPostorder; yielded %d", len(yielded))
+	}
+}
+
+func TestImplementRecursiveLevelUnion_NoFireWithoutPhysicalInner(t *testing.T) {
+	t.Parallel()
+
+	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
+	// Do NOT implement inner plans.
+	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	if len(yielded) != 0 {
+		t.Fatalf("ImplementRecursiveLevelUnionRule fired without physical inners; yielded %d", len(yielded))
+	}
+}
+
+func TestImplementRecursiveLevelUnion_ViaPlanner(t *testing.T) {
+	t.Parallel()
+
+	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, EmptyPlanContext())
+	if _, conv := p.Explore(topRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	foundLevel := false
+	for _, m := range topRef.Members() {
+		if IsPhysicalRecursiveLevelUnion(m) {
+			foundLevel = true
+			break
+		}
+	}
+	if !foundLevel {
+		t.Fatal("planner did not produce a physical RecursiveLevelUnion member")
+	}
+}
+
+func TestImplementRecursiveLevelUnion_PlanOutput(t *testing.T) {
+	t.Parallel()
+
+	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, EmptyPlanContext())
+	if _, conv := p.Explore(topRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	var wrap *physicalRecursiveLevelUnionWrapper
+	for _, m := range topRef.Members() {
+		if w, ok := m.(*physicalRecursiveLevelUnionWrapper); ok {
+			wrap = w
+			break
+		}
+	}
+	if wrap == nil {
+		t.Fatal("no physicalRecursiveLevelUnionWrapper found")
+	}
+
+	rqp := wrap.GetRecordQueryPlan()
+	if rqp == nil {
+		t.Fatal("GetRecordQueryPlan() returned nil")
+	}
+	explain := ExplainPhysicalPlan(wrap)
+	if explain == "" {
+		t.Fatal("ExplainPhysicalPlan returned empty")
+	}
+	t.Logf("RecursiveLevelUnion Explain: %s", explain)
+}
+
+func TestImplementRecursiveLevelUnion_BothRulesFire_TraversalAny(t *testing.T) {
+	t.Parallel()
+
+	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalAny)
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, EmptyPlanContext())
+	if _, conv := p.Explore(topRef); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	foundDfs := false
+	foundLevel := false
+	for _, m := range topRef.Members() {
+		if IsPhysicalRecursiveDfsJoin(m) {
+			foundDfs = true
+		}
+		if IsPhysicalRecursiveLevelUnion(m) {
+			foundLevel = true
+		}
+	}
+	if !foundDfs {
+		t.Fatal("TraversalAny should produce a DFS alternative")
+	}
+	if !foundLevel {
+		t.Fatal("TraversalAny should produce a LevelUnion alternative")
+	}
+}

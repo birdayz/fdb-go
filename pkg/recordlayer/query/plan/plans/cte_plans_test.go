@@ -423,6 +423,158 @@ func TestRecursiveDfsJoinPlan_Explain_Postorder(t *testing.T) {
 	}
 }
 
+// --- RecordQueryRecursiveLevelUnionPlan ---
+
+func TestRecursiveLevelUnionPlan_Construction(t *testing.T) {
+	t.Parallel()
+	init := NewRecordQueryScanPlan([]string{"Init"}, values.UnknownType, false)
+	rec := NewRecordQueryScanPlan([]string{"Rec"}, values.UnknownType, false)
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+	p := NewRecordQueryRecursiveLevelUnionPlan(init, rec, scanAlias, insertAlias)
+	if p.GetInitialState() != init {
+		t.Fatal("GetInitialState mismatch")
+	}
+	if p.GetRecursiveState() != rec {
+		t.Fatal("GetRecursiveState mismatch")
+	}
+	if p.GetTempTableScanAlias() != scanAlias {
+		t.Fatal("GetTempTableScanAlias mismatch")
+	}
+	if p.GetTempTableInsertAlias() != insertAlias {
+		t.Fatal("GetTempTableInsertAlias mismatch")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_GetChildren(t *testing.T) {
+	t.Parallel()
+	init := NewRecordQueryScanPlan([]string{"I"}, values.UnknownType, false)
+	rec := NewRecordQueryScanPlan([]string{"R"}, values.UnknownType, false)
+	p := NewRecordQueryRecursiveLevelUnionPlan(init, rec,
+		values.NamedCorrelationIdentifier("s"),
+		values.NamedCorrelationIdentifier("i"))
+	cs := p.GetChildren()
+	if len(cs) != 2 {
+		t.Fatalf("GetChildren() len = %d, want 2", len(cs))
+	}
+	if cs[0] != init || cs[1] != rec {
+		t.Fatal("children order mismatch")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_GetResultType(t *testing.T) {
+	t.Parallel()
+	p := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("s"),
+		values.NamedCorrelationIdentifier("i"))
+	if !values.UnknownType.Equals(p.GetResultType()) {
+		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+	}
+}
+
+func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_Same(t *testing.T) {
+	t.Parallel()
+	sa := values.NamedCorrelationIdentifier("scan")
+	ia := values.NamedCorrelationIdentifier("insert")
+	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, ia)
+	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, ia)
+	if !a.EqualsWithoutChildren(b) {
+		t.Fatal("same aliases should be equal")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_DifferentScanAlias(t *testing.T) {
+	t.Parallel()
+	ia := values.NamedCorrelationIdentifier("insert")
+	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, values.NamedCorrelationIdentifier("s1"), ia)
+	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, values.NamedCorrelationIdentifier("s2"), ia)
+	if a.EqualsWithoutChildren(b) {
+		t.Fatal("different scan alias should not be equal")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_DifferentInsertAlias(t *testing.T) {
+	t.Parallel()
+	sa := values.NamedCorrelationIdentifier("scan")
+	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, values.NamedCorrelationIdentifier("i1"))
+	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, values.NamedCorrelationIdentifier("i2"))
+	if a.EqualsWithoutChildren(b) {
+		t.Fatal("different insert alias should not be equal")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
+	t.Parallel()
+	p := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("s"),
+		values.NamedCorrelationIdentifier("i"))
+	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	if p.EqualsWithoutChildren(scan) {
+		t.Fatal("should not equal a different plan type")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_HashCodeWithoutChildren_Same(t *testing.T) {
+	t.Parallel()
+	sa := values.NamedCorrelationIdentifier("scan")
+	ia := values.NamedCorrelationIdentifier("insert")
+	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, ia)
+	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil, sa, ia)
+	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
+		t.Fatal("same aliases should produce same hash")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_HashCodeWithoutChildren_Different(t *testing.T) {
+	t.Parallel()
+	a := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("s1"),
+		values.NamedCorrelationIdentifier("i1"))
+	b := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("s2"),
+		values.NamedCorrelationIdentifier("i2"))
+	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
+		t.Fatal("different aliases should (very likely) produce different hashes")
+	}
+}
+
+func TestRecursiveLevelUnionPlan_HashCodeWithoutChildren_Consistent(t *testing.T) {
+	t.Parallel()
+	p := NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("s"),
+		values.NamedCorrelationIdentifier("i"))
+	h1 := p.HashCodeWithoutChildren()
+	h2 := p.HashCodeWithoutChildren()
+	if h1 != h2 {
+		t.Fatalf("hash non-deterministic: %d vs %d", h1, h2)
+	}
+}
+
+func TestRecursiveLevelUnionPlan_Explain(t *testing.T) {
+	t.Parallel()
+	init := NewRecordQueryScanPlan([]string{"I"}, values.UnknownType, false)
+	rec := NewRecordQueryScanPlan([]string{"R"}, values.UnknownType, false)
+	p := NewRecordQueryRecursiveLevelUnionPlan(init, rec,
+		values.NamedCorrelationIdentifier("sc"),
+		values.NamedCorrelationIdentifier("ins"))
+	exp := p.Explain()
+	if !strings.Contains(exp, "RecursiveLevelUnion") {
+		t.Fatalf("Explain = %q, want 'RecursiveLevelUnion'", exp)
+	}
+	if !strings.Contains(exp, "Scan(I)") {
+		t.Fatalf("Explain = %q, want 'Scan(I)'", exp)
+	}
+	if !strings.Contains(exp, "Scan(R)") {
+		t.Fatalf("Explain = %q, want 'Scan(R)'", exp)
+	}
+	if !strings.Contains(exp, "scan=sc") {
+		t.Fatalf("Explain = %q, want 'scan=sc'", exp)
+	}
+	if !strings.Contains(exp, "insert=ins") {
+		t.Fatalf("Explain = %q, want 'insert=ins'", exp)
+	}
+}
+
 // --- Cross-type discrimination ---
 
 func TestCTEPlan_DistinctHashes(t *testing.T) {
