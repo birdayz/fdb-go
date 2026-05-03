@@ -107,12 +107,28 @@ func (p *cascadesPlan) Explain() string {
 	if p.physicalExplain != "" {
 		return p.physicalExplain
 	}
-	return p.explain
+	// Run the planner to get the physical plan without executing.
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	planCtx := buildCascadesPlanContext(p.md)
+	planner := cascades.NewPlanner(rules, planCtx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	bestExpr, _, err := planner.Plan(p.ref)
+	if err != nil || bestExpr == nil {
+		return p.explain
+	}
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		return p.explain
+	}
+	physPlan := ph.GetRecordQueryPlan()
+	if physPlan == nil {
+		return p.explain
+	}
+	return physPlan.Explain()
 }
-
-// PhysicalPlanExplain returns the Explain string of the physical plan
-// chosen by the optimizer. Empty until Execute is called.
-func (p *cascadesPlan) PhysicalPlanExplain() string { return p.physicalExplain }
 
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
