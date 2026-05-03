@@ -113,6 +113,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementStreamingAggregationRule(),
 		NewImplementHashAggregationRule(),
 		NewStreamingAggFromIndexRule(),
+		NewAggregateDataAccessRule(),
 	}
 }
 

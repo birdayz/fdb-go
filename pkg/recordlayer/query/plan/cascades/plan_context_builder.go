@@ -47,6 +47,13 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 	return &builtPlanContext{candidates: candidates}
 }
 
+// NewPlanContextFromMatchCandidates builds a PlanContext from pre-built
+// MatchCandidates. Use this when you have a mix of ValueIndexScan and
+// AggregateIndex candidates.
+func NewPlanContextFromMatchCandidates(candidates []MatchCandidate) PlanContext {
+	return &builtPlanContext{candidates: candidates}
+}
+
 type builtPlanContext struct {
 	candidates []MatchCandidate
 }

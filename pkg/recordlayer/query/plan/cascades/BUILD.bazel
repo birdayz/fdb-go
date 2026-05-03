@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "cascades",
     srcs = [
+        "aggregate_index_candidate.go",
         "default_rules.go",
         "expression_matcher.go",
         "expression_rule_call.go",
@@ -16,6 +17,7 @@ go_library(
         "plan_context_builder.go",
         "planner.go",
         "rule.go",
+        "rule_aggregate_data_access.go",
         "rule_demorgan.go",
         "rule_distinct_merge.go",
         "rule_distinct_over_groupby_elim.go",
@@ -108,6 +110,7 @@ go_test(
         "planner_test.go",
         "predicate_matchers_test.go",
         "predicate_simplify_fuzz_test.go",
+        "rule_aggregate_data_access_test.go",
         "rule_demorgan_test.go",
         "rule_distinct_merge_test.go",
         "rule_distinct_over_groupby_elim_test.go",

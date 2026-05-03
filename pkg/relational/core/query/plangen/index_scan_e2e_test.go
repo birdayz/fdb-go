@@ -1616,6 +1616,52 @@ func TestEndToEnd_FullAggPipeline(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_AggregateIndexDirectAccess verifies that the planner uses
+// an aggregate index (SUM) to directly satisfy a GROUP BY query without
+// any runtime aggregation.
+func TestEndToEnd_AggregateIndexDirectAccess(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromMatchCandidates([]cascades.MatchCandidate{
+		cascades.NewAggregateIndexMatchCandidate(
+			"Orders$sum_amount_by_region",
+			[]string{"Orders"},
+			[]string{"region"},
+			expressions.AggSum,
+			"amount",
+		),
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// The aggregate index scan should win — it's the cheapest possible
+	// plan (single point lookup per group, no runtime aggregation).
+	if !cascades.IsPhysicalIndexScan(plan) {
+		t.Fatalf("expected index scan from aggregate index, got %T", plan)
+	}
+}
+
 // TestEndToEnd_DistinctOverGroupByEliminated verifies that DISTINCT over
 // GROUP BY is eliminated by the planner (GROUP BY already deduplicates).
 func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
