@@ -3122,3 +3122,300 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(19001), Quantity: proto.Int32(1), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(19002), Quantity: proto.Int32(1), Price: proto.Int32(200)},
+		&gen.Order{OrderId: proto.Int64(19003), Quantity: proto.Int32(2), Price: proto.Int32(300)},
+		&gen.Order{OrderId: proto.Int64(19004), Quantity: proto.Int32(2), Price: proto.Int32(400)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "QUANTITY"}, Reverse: false},
+		}, scan)
+		agg := plans.NewRecordQueryStreamingAggregationPlan(
+			sort,
+			[]values.Value{&values.FieldValue{Field: "QUANTITY", Typ: values.TypeInt}},
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}},
+				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "PRICE", Typ: values.TypeInt}},
+			},
+		)
+
+		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("streaming agg returned %d rows, want 2", len(results))
+		}
+
+		qtyCounts := map[int64]int64{}
+		qtySums := map[int64]float64{}
+		for _, r := range results {
+			d := r.Datum.(map[string]any)
+			qty, ok := d["QUANTITY"].(int64)
+			if !ok {
+				t.Fatalf("QUANTITY type = %T (value = %v), datum keys = %v", d["QUANTITY"], d["QUANTITY"], d)
+			}
+			cnt := d["COUNT(CONSTANT)"].(int64)
+			sum := d["SUM(PRICE)"].(float64)
+			qtyCounts[qty] = cnt
+			qtySums[qty] = sum
+		}
+		if qtyCounts[1] != 2 || qtyCounts[2] != 2 {
+			t.Errorf("counts: %v", qtyCounts)
+		}
+		if qtySums[1] != 300.0 || qtySums[2] != 700.0 {
+			t.Errorf("sums: %v", qtySums)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegration_ProjectionOverJoin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(19101), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(19102), Price: proto.Int32(75)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		nlj := plans.NewRecordQueryNestedLoopJoinPlan(scan1, scan2, nil, plans.JoinInner)
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{
+				&values.FieldValue{Field: "ORDER_ID", Typ: values.TypeInt},
+				&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+			},
+			nlj,
+		)
+
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 4 {
+			t.Fatalf("projection over cross join: %d rows, want 4 (2×2)", len(results))
+		}
+		for _, r := range results {
+			d := r.Datum.(map[string]any)
+			if _, ok := d["ORDER_ID"]; !ok {
+				t.Fatalf("missing ORDER_ID in projected datum: %v", d)
+			}
+			if _, ok := d["PRICE"]; !ok {
+				t.Fatalf("missing PRICE in projected datum: %v", d)
+			}
+			if _, ok := d["QUANTITY"]; ok {
+				t.Fatalf("QUANTITY should be projected out: %v", d)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegration_SortPlan_Reverse(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(19201), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(19202), Price: proto.Int32(30)},
+		&gen.Order{OrderId: proto.Int64(19203), Price: proto.Int32(20)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "PRICE"}, Reverse: true},
+		}, scan)
+
+		cursor, err := ExecutePlan(ctx, sort, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("sort returned %d rows, want 3", len(results))
+		}
+		prices := make([]int64, len(results))
+		for i, r := range results {
+			d := r.Datum.(map[string]any)
+			prices[i] = d["PRICE"].(int64)
+		}
+		if prices[0] != int64(30) || prices[1] != int64(20) || prices[2] != int64(10) {
+			t.Errorf("expected [30 20 10], got %v", prices)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(19301), Price: proto.Int32(50), Quantity: proto.Int32(1)},
+		&gen.Order{OrderId: proto.Int64(19302), Price: proto.Int32(150), Quantity: proto.Int32(1)},
+		&gen.Order{OrderId: proto.Int64(19303), Price: proto.Int32(50), Quantity: proto.Int32(2)},
+		&gen.Order{OrderId: proto.Int64(19304), Price: proto.Int32(150), Quantity: proto.Int32(2)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		pricePred := predicates.NewComparisonPredicate(
+			&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
+		)
+		qtyPred := predicates.NewComparisonPredicate(
+			&values.FieldValue{Field: "QUANTITY", Typ: values.TypeInt},
+			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+		)
+		andPred := predicates.NewAnd(pricePred, qtyPred)
+		filter := plans.NewRecordQueryFilterPlan([]predicates.QueryPredicate{andPred}, scan)
+
+		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("compound filter returned %d rows, want 1 (PRICE>100 AND QUANTITY=1)", len(results))
+		}
+		d := results[0].Datum.(map[string]any)
+		if d["ORDER_ID"] != int64(19302) {
+			t.Errorf("ORDER_ID = %v, want 19302", d["ORDER_ID"])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegration_LimitOverSort(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(19401), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(19402), Price: proto.Int32(200)},
+		&gen.Order{OrderId: proto.Int64(19403), Price: proto.Int32(300)},
+		&gen.Order{OrderId: proto.Int64(19404), Price: proto.Int32(400)},
+		&gen.Order{OrderId: proto.Int64(19405), Price: proto.Int32(500)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		sort := plans.NewRecordQuerySortPlan([]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "PRICE"}, Reverse: true},
+		}, scan)
+		limit := plans.NewRecordQueryLimitPlan(sort, int64(3), int64(0))
+
+		cursor, err := ExecutePlan(ctx, limit, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("limit over sort returned %d rows, want 3", len(results))
+		}
+		prices := []int64{}
+		for _, r := range results {
+			d := r.Datum.(map[string]any)
+			prices = append(prices, d["PRICE"].(int64))
+		}
+		if prices[0] != 500 || prices[1] != 400 || prices[2] != 300 {
+			t.Errorf("expected top-3 DESC [500 400 300], got %v", prices)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
