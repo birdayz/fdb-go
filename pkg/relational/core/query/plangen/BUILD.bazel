@@ -20,6 +20,7 @@ go_test(
         "cost_extraction_test.go",
         "index_scan_e2e_test.go",
         "optimize_test.go",
+        "plangen_fuzz_test.go",
         "plangen_test.go",
     ],
     deps = [

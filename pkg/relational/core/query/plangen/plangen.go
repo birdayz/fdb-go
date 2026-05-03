@@ -363,6 +363,47 @@ func eqAsciiFold(a, b string) bool {
 	return true
 }
 
+// indexFoldASCII finds the first occurrence of needle (which MUST be
+// all-ASCII) in haystack, comparing case-insensitively for ASCII letters.
+// Safe on arbitrary byte sequences — no ToUpper length-change hazard.
+func indexFoldASCII(haystack, needle string) int {
+	nLen := len(needle)
+	if nLen == 0 {
+		return 0
+	}
+	if len(haystack) < nLen {
+		return -1
+	}
+	for i := 0; i <= len(haystack)-nLen; i++ {
+		match := true
+		for j := 0; j < nLen; j++ {
+			ha, nb := haystack[i+j], needle[j]
+			if ha >= 'A' && ha <= 'Z' {
+				ha += 'a' - 'A'
+			}
+			if nb >= 'A' && nb <= 'Z' {
+				nb += 'a' - 'A'
+			}
+			if ha != nb {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+// hasSuffixFoldASCII checks if s ends with suffix (ASCII case-insensitive).
+func hasSuffixFoldASCII(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	return eqAsciiFold(s[len(s)-len(suffix):], suffix)
+}
+
 // tryParseInt64 returns (n, true) if s is a signed integer literal
 // matching the regex `^[+-]?\d+$`, else (0, false). Implemented
 // without strconv to avoid pulling that import + to allow tighter
@@ -623,17 +664,15 @@ func parseAndChain(s, orig string) ([]predicates.QueryPredicate, error) {
 // splitOnOR splits a predicate string on " OR " (case-insensitive).
 // Does NOT handle parentheses.
 func splitOnOR(s string) []string {
-	upper := strings.ToUpper(s)
 	var parts []string
 	for {
-		idx := strings.Index(upper, " OR ")
+		idx := indexFoldASCII(s, " OR ")
 		if idx < 0 {
 			parts = append(parts, strings.TrimSpace(s))
 			break
 		}
 		parts = append(parts, strings.TrimSpace(s[:idx]))
 		s = s[idx+4:]
-		upper = upper[idx+4:]
 	}
 	return parts
 }
@@ -654,6 +693,9 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 		return p, true
 	}
 	if p, ok := tryParseIn(s); ok {
+		return p, true
+	}
+	if p, ok := tryParseLike(s); ok {
 		return p, true
 	}
 	lhs, op, rhs, ok := splitComparison(s)
@@ -680,17 +722,15 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 // would incorrectly split. The caller is responsible for only feeding
 // simple conjunctive predicates.
 func splitOnAND(s string) []string {
-	upper := strings.ToUpper(s)
 	var parts []string
 	for {
-		idx := strings.Index(upper, " AND ")
+		idx := indexFoldASCII(s, " AND ")
 		if idx < 0 {
 			parts = append(parts, strings.TrimSpace(s))
 			break
 		}
 		parts = append(parts, strings.TrimSpace(s[:idx]))
 		s = s[idx+5:]
-		upper = upper[idx+5:]
 	}
 	return parts
 }
@@ -716,15 +756,13 @@ func splitComparison(s string) (string, string, string, bool) {
 
 // tryParseBetween handles "col BETWEEN low AND high" → col >= low AND col <= high.
 func tryParseBetween(s string) (predicates.QueryPredicate, bool) {
-	upper := strings.ToUpper(s)
-	betIdx := strings.Index(upper, " BETWEEN ")
+	betIdx := indexFoldASCII(s, " BETWEEN ")
 	if betIdx < 0 {
 		return nil, false
 	}
 	col := strings.TrimSpace(s[:betIdx])
 	rest := s[betIdx+len(" BETWEEN "):]
-	restUpper := strings.ToUpper(rest)
-	andIdx := strings.Index(restUpper, " AND ")
+	andIdx := indexFoldASCII(rest, " AND ")
 	if andIdx < 0 {
 		return nil, false
 	}
@@ -745,8 +783,7 @@ func tryParseBetween(s string) (predicates.QueryPredicate, bool) {
 
 // tryParseIsNull handles "col IS NULL" and "col IS NOT NULL" patterns.
 func tryParseIsNull(s string) (predicates.QueryPredicate, bool) {
-	upper := strings.ToUpper(s)
-	if strings.HasSuffix(upper, " IS NOT NULL") {
+	if hasSuffixFoldASCII(s, " IS NOT NULL") {
 		col := strings.TrimSpace(s[:len(s)-len(" IS NOT NULL")])
 		v, ok := lowerSimpleScalarText(col)
 		if !ok {
@@ -756,7 +793,7 @@ func tryParseIsNull(s string) (predicates.QueryPredicate, bool) {
 			v, predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 		), true
 	}
-	if strings.HasSuffix(upper, " IS NULL") {
+	if hasSuffixFoldASCII(s, " IS NULL") {
 		col := strings.TrimSpace(s[:len(s)-len(" IS NULL")])
 		v, ok := lowerSimpleScalarText(col)
 		if !ok {
@@ -771,16 +808,14 @@ func tryParseIsNull(s string) (predicates.QueryPredicate, bool) {
 
 // tryParseIn handles "col IN (v1, v2, ...)" and "col NOT IN (v1, v2, ...)".
 func tryParseIn(s string) (predicates.QueryPredicate, bool) {
-	upper := strings.ToUpper(s)
-
 	var col, listStr string
 	var negate bool
 
-	if idx := strings.Index(upper, " NOT IN "); idx >= 0 {
+	if idx := indexFoldASCII(s, " NOT IN "); idx >= 0 {
 		col = strings.TrimSpace(s[:idx])
 		listStr = strings.TrimSpace(s[idx+len(" NOT IN "):])
 		negate = true
-	} else if idx := strings.Index(upper, " IN "); idx >= 0 {
+	} else if idx := indexFoldASCII(s, " IN "); idx >= 0 {
 		col = strings.TrimSpace(s[:idx])
 		listStr = strings.TrimSpace(s[idx+len(" IN "):])
 	} else {
@@ -849,6 +884,65 @@ func splitInList(s string) []string {
 		parts = append(parts, rest)
 	}
 	return parts
+}
+
+// tryParseLike handles "col LIKE 'pattern'" and "col NOT LIKE 'pattern'"
+// with optional ESCAPE clause.
+func tryParseLike(s string) (predicates.QueryPredicate, bool) {
+	var col, rest string
+	var negate bool
+
+	if idx := indexFoldASCII(s, " NOT LIKE "); idx >= 0 {
+		col = strings.TrimSpace(s[:idx])
+		rest = strings.TrimSpace(s[idx+len(" NOT LIKE "):])
+		negate = true
+	} else if idx := indexFoldASCII(s, " LIKE "); idx >= 0 {
+		col = strings.TrimSpace(s[:idx])
+		rest = strings.TrimSpace(s[idx+len(" LIKE "):])
+	} else {
+		return nil, false
+	}
+
+	colVal, ok := lowerSimpleScalarText(col)
+	if !ok {
+		return nil, false
+	}
+
+	var pattern string
+	var escape rune
+	if escIdx := indexFoldASCII(rest, " ESCAPE "); escIdx >= 0 {
+		patternPart := strings.TrimSpace(rest[:escIdx])
+		escapePart := strings.TrimSpace(rest[escIdx+len(" ESCAPE "):])
+		if len(patternPart) < 2 || patternPart[0] != '\'' || patternPart[len(patternPart)-1] != '\'' {
+			return nil, false
+		}
+		pattern = patternPart[1 : len(patternPart)-1]
+		if len(escapePart) < 2 || escapePart[0] != '\'' || escapePart[len(escapePart)-1] != '\'' {
+			return nil, false
+		}
+		escBody := escapePart[1 : len(escapePart)-1]
+		runes := []rune(escBody)
+		if len(runes) != 1 {
+			return nil, false
+		}
+		escape = runes[0]
+	} else {
+		if len(rest) < 2 || rest[0] != '\'' || rest[len(rest)-1] != '\'' {
+			return nil, false
+		}
+		pattern = rest[1 : len(rest)-1]
+	}
+
+	patternVal := &values.ConstantValue{Value: pattern, Typ: values.TypeUnknown}
+	pred := predicates.NewComparisonPredicate(colVal, predicates.Comparison{
+		Type:    predicates.ComparisonLike,
+		Operand: patternVal,
+		Escape:  escape,
+	})
+	if negate {
+		return predicates.NewNot(pred), true
+	}
+	return pred, true
 }
 
 func textToCompOp(op string) predicates.ComparisonType {

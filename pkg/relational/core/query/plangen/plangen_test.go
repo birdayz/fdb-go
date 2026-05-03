@@ -290,6 +290,64 @@ func TestConvert_FilterTextORWithAND(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextLike(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "name LIKE '%foo%'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonLike {
+		t.Fatalf("type = %v, want ComparisonLike", cp.Comparison.Type)
+	}
+	cv := cp.Comparison.Operand.(*values.ConstantValue)
+	if cv.Value != "%foo%" {
+		t.Fatalf("pattern = %v, want %%foo%%", cv.Value)
+	}
+}
+
+func TestConvert_FilterTextNotLike(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "name NOT LIKE 'test%'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *NotPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextLikeWithEscape(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "name LIKE 'a\\%b' ESCAPE '\\'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Escape != '\\' {
+		t.Fatalf("escape = %c, want \\", cp.Comparison.Escape)
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered
