@@ -41,6 +41,27 @@ func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// IsPhysicalInsert reports whether the given RelationalExpression is
+// a physicalInsertWrapper.
+func IsPhysicalInsert(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInsertWrapper)
+	return ok
+}
+
+// IsPhysicalDelete reports whether the given RelationalExpression is
+// a physicalDeleteWrapper.
+func IsPhysicalDelete(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalDeleteWrapper)
+	return ok
+}
+
+// IsPhysicalUpdate reports whether the given RelationalExpression is
+// a physicalUpdateWrapper.
+func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalUpdateWrapper)
+	return ok
+}
+
 // PhysicalIndexScanName returns the index name if expr is a
 // physicalIndexScanWrapper, empty string otherwise.
 func PhysicalIndexScanName(expr expressions.RelationalExpression) string {

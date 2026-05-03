@@ -1001,6 +1001,125 @@ func TestEndToEnd_StreamingAggDirectFromOrderedIndex(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_StreamingAggMultiColumnIndex verifies streaming agg fires
+// with a multi-column GROUP BY matching a composite index: GROUP BY (a, b)
+// with index on (a, b) should use streaming.
+func TestEndToEnd_StreamingAggMultiColumnIndex(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "country", Typ: values.UnknownType}},
+			{Value: &values.FieldValue{Field: "city", Typ: values.UnknownType}},
+		}, scanQ)
+	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{
+			&values.FieldValue{Field: "country", Typ: values.UnknownType},
+			&values.FieldValue{Field: "city", Typ: values.UnknownType},
+		},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "revenue", Typ: values.UnknownType}},
+		},
+		sortQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "T$country_city",
+			columns:     []string{"country", "city"},
+			recordTypes: []string{"T"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg with composite index, got %T", plan)
+	}
+}
+
+// TestEndToEnd_DeletePlan verifies Plan() produces a physical plan for
+// DELETE FROM T WHERE status='inactive' using DMLImplementationRules.
+func TestEndToEnd_DeletePlan(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "status", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "inactive"),
+			),
+		}, scanQ)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+
+	del := expressions.NewDeleteExpression(filterQ, "T")
+	ref := expressions.InitialOf(del)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	if !cascades.IsPhysicalDelete(plan) {
+		t.Fatalf("expected physical delete plan, got %T", plan)
+	}
+}
+
+// TestEndToEnd_InsertPlan verifies Plan() produces a physical plan for
+// INSERT INTO T SELECT ... using DMLImplementationRules.
+func TestEndToEnd_InsertPlan(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Source"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	ins := expressions.NewInsertExpression(scanQ, "Target", values.UnknownType)
+	ref := expressions.InitialOf(ins)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	if !cascades.IsPhysicalInsert(plan) {
+		t.Fatalf("expected physical insert plan, got %T", plan)
+	}
+}
+
 // TestEndToEnd_FilterPushedThroughGroupBy verifies the planner pushes a
 // filter (on a grouping key) below GROUP BY and uses an index scan for it.
 func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
