@@ -45,8 +45,7 @@ func TestImplementHashAgg_CostHigherThanStreaming(t *testing.T) {
 	t.Parallel()
 
 	// With ordered input, both streaming and hash agg fire.
-	// Streaming agg should be cheaper (lower CPU) due to the
-	// HashAggExtraCPU multiplier.
+	// Streaming agg should be cheaper (lower per-row CPU).
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)

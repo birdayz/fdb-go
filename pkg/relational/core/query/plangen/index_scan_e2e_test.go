@@ -817,3 +817,90 @@ func TestEndToEnd_AggregateFromLogicalOperator(t *testing.T) {
 		t.Fatal("full pipeline from LogicalAggregate did not produce streaming aggregation")
 	}
 }
+
+// TestEndToEnd_PlanPicksStreamingAggOverHash verifies that Plan()
+// (cost-driven extraction) picks streaming aggregation over hash
+// aggregation when an ordered index scan exists for the grouping keys.
+func TestEndToEnd_PlanPicksStreamingAggOverHash(t *testing.T) {
+	t.Parallel()
+
+	// Sort(region) over Scan with index on (region) → ordered index scan.
+	// GroupBy(region, COUNT(id)) should then pick streaming agg (cheaper).
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	sortExpr := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		}, scanQ)
+	sortRef := expressions.InitialOf(sortExpr)
+	sortQ := expressions.ForEachQuantifier(sortRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		sortQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// The best plan should be a streaming aggregation (cheaper than hash).
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg as best plan, got %T — cost model may prefer hash agg incorrectly", plan)
+	}
+}
+
+// TestEndToEnd_PlanPicksHashAggWhenNoOrdering verifies that Plan()
+// picks hash aggregation when no ordered access path exists.
+func TestEndToEnd_PlanPicksHashAggWhenNoOrdering(t *testing.T) {
+	t.Parallel()
+
+	// GroupBy(region, COUNT(id)) over plain Scan — no sort, no index.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// Without ordering, only hash agg is available.
+	if !cascades.IsPhysicalHashAgg(plan) {
+		t.Fatalf("expected hash agg as best plan (no ordered access path), got %T", plan)
+	}
+}

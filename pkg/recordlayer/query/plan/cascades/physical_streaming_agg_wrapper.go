@@ -75,8 +75,8 @@ func (w *physicalStreamingAggWrapper) WithChildren(qs []expressions.Quantifier) 
 }
 
 // HintCost: streaming aggregation is cheap — one pass over sorted
-// input, output cardinality reduced by DistinctSelectivity. Slightly
-// more CPU per row than distinct (aggregate computation).
+// input, output cardinality reduced by DistinctSelectivity. Cheaper
+// than hash because no hash table is built (O(1) memory per group).
 func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
@@ -84,7 +84,7 @@ func (w *physicalStreamingAggWrapper) HintCost(child []properties.Cost) properti
 	in := child[0].Cardinality
 	return properties.Cost{
 		Cardinality: in * properties.DistinctSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (child[0].CPU + in*properties.DistinctCPU*1.2) * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.DistinctCPU*0.8) * physicalWrapperCostMultiplier,
 	}
 }
 

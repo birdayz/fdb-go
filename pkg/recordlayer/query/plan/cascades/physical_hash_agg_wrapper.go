@@ -70,12 +70,6 @@ func (w *physicalHashAggWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	return &physicalHashAggWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
-// HintCost: hash aggregation is more expensive than streaming because
-// it builds an in-memory hash table. The memory cost is modeled as
-// extra CPU per output group (HashAggExtraCPU). Cardinality is same
-// as streaming (DistinctSelectivity of input).
-const HashAggExtraCPU = 1.5
-
 func (w *physicalHashAggWrapper) HintCost(child []properties.Cost) properties.Cost {
 	if len(child) == 0 {
 		return properties.Cost{}
@@ -84,7 +78,7 @@ func (w *physicalHashAggWrapper) HintCost(child []properties.Cost) properties.Co
 	outCard := in * properties.DistinctSelectivity * physicalWrapperCostMultiplier
 	return properties.Cost{
 		Cardinality: outCard,
-		CPU:         (child[0].CPU + in*properties.DistinctCPU*HashAggExtraCPU) * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + in*properties.DistinctCPU) * physicalWrapperCostMultiplier,
 	}
 }
 
