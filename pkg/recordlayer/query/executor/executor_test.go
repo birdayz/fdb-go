@@ -496,6 +496,50 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 	}
 }
 
+func TestProjection_MultiColumnFieldValue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{
+			map[string]any{"A": int64(1), "B": "hello", "C": true},
+		},
+		Typ: values.UnknownType,
+	})
+
+	projected := plans.NewRecordQueryProjectionPlan(
+		[]values.Value{
+			&values.FieldValue{Field: "A", Typ: values.UnknownType},
+			&values.FieldValue{Field: "B", Typ: values.UnknownType},
+		},
+		inner,
+	)
+
+	cursor, err := ExecutePlan(ctx, projected, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	datum := results[0].Datum.(map[string]any)
+	if datum["A"] != int64(1) {
+		t.Errorf("A = %v, want 1", datum["A"])
+	}
+	if datum["B"] != "hello" {
+		t.Errorf("B = %v, want 'hello'", datum["B"])
+	}
+	if _, hasC := datum["C"]; hasC {
+		t.Error("C should not be in projected result")
+	}
+}
+
 func TestScanComparisonsToTupleRange_Empty(t *testing.T) {
 	t.Parallel()
 	r, err := scanComparisonsToTupleRange(nil, nil)

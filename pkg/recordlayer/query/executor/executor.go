@@ -428,7 +428,7 @@ func executeProjection(
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		projected := make(map[string]any, len(projections))
 		for _, proj := range projections {
-			projected[proj.Name()] = proj.Evaluate(qr.Datum)
+			projected[projectionColumnName(proj)] = proj.Evaluate(qr.Datum)
 		}
 		return QueryResult{
 			Datum:      projected,
@@ -1348,6 +1348,13 @@ func sortByKeys(items []QueryResult, keys []string, directions []bool) {
 		}
 		return false
 	})
+}
+
+func projectionColumnName(v values.Value) string {
+	if fv, ok := v.(*values.FieldValue); ok {
+		return fv.Field
+	}
+	return v.Name()
 }
 
 func fieldFromDatum(datum any, key string) any {
