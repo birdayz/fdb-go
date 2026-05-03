@@ -752,8 +752,8 @@ func TestConvert_DeeplyNested_ProjectSortFilterScan(t *testing.T) {
 // at every level so callers using errors.Is can detect it.
 func TestConvert_RecursionPropagatesErrUnsupported(t *testing.T) {
 	t.Parallel()
-	// LogicalLimit is currently unsupported.
-	inner := logical.NewLimit(logical.NewScan("Order", ""), 10, 0)
+	// LogicalJoin is currently unsupported.
+	inner := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "")
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	outer := logical.NewFilterWithPredicate(inner, pT, "TRUE")
 	_, err := plangen.Convert(outer)
@@ -991,4 +991,57 @@ func TestConvert_Aggregate_ComplexGroupKey(t *testing.T) {
 	if !errors.Is(err, plangen.ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported for complex group key, got %v", err)
 	}
+}
+
+func TestConvert_Limit(t *testing.T) {
+	t.Parallel()
+	src := logical.NewLimit(logical.NewScan("T", ""), 10, 0)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	if lim.GetLimit() != 10 {
+		t.Fatalf("limit = %d, want 10", lim.GetLimit())
+	}
+	if lim.GetOffset() != 0 {
+		t.Fatalf("offset = %d, want 0", lim.GetOffset())
+	}
+}
+
+func TestConvert_LimitWithOffset(t *testing.T) {
+	t.Parallel()
+	src := logical.NewLimit(logical.NewScan("T", ""), 5, 20)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	if lim.GetLimit() != 5 {
+		t.Fatalf("limit = %d, want 5", lim.GetLimit())
+	}
+	if lim.GetOffset() != 20 {
+		t.Fatalf("offset = %d, want 20", lim.GetOffset())
+	}
+}
+
+func TestConvert_LimitOverSort(t *testing.T) {
+	t.Parallel()
+	sorted := logical.NewSort(logical.NewScan("T", ""), []logical.SortKey{{Expr: "name", Dir: logical.SortAsc}})
+	src := logical.NewLimit(sorted, 10, 0)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	_ = lim
 }

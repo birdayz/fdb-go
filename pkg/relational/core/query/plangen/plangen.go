@@ -31,13 +31,13 @@
 //     each SET right-hand side.
 //   - LogicalAggregate → GroupByExpression; parses GROUP BY keys +
 //     aggregate-function text (COUNT/SUM/MIN/MAX/AVG on bare columns)
+//   - LogicalLimit → LogicalLimitExpression (limit + offset)
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject / LogicalSort / LogicalUpdate with arithmetic,
 //     function calls, qualified column refs (`t.c`), exponent-form
 //     numeric literals (`1.5E10`), or escaped string literals
 //     (`'it”s'`) — all gated on text→Value parsing
-//   - LogicalLimit — no RelationalExpression equivalent yet
 //   - LogicalJoin — maps to SelectExpression with multiple
 //     Quantifiers; needs predicate placement work
 //   - LogicalInsert without Source (VALUES literal) — needs a
@@ -92,6 +92,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertUpdate(o)
 	case *logical.LogicalAggregate:
 		return convertAggregate(o)
+	case *logical.LogicalLimit:
+		return convertLimit(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -508,6 +510,17 @@ func convertAggregate(a *logical.LogicalAggregate) (expressions.RelationalExpres
 	}
 
 	return expressions.NewGroupByExpression(groupingKeys, aggSpecs, q), nil
+}
+
+// convertLimit builds a LogicalLimitExpression for the recursively-
+// converted child.
+func convertLimit(l *logical.LogicalLimit) (expressions.RelationalExpression, error) {
+	inner, err := Convert(l.Input)
+	if err != nil {
+		return nil, fmt.Errorf("limit input: %w", err)
+	}
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	return expressions.NewLogicalLimitExpression(l.Limit, l.Offset, q), nil
 }
 
 // parseAggregateText parses "FUNC(operand)" aggregate text into an
