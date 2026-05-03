@@ -163,3 +163,38 @@ func TestImplementSimpleSelectRule_NilInnerRef(t *testing.T) {
 		t.Fatalf("should yield nothing for nil inner ref, got %d", len(results))
 	}
 }
+
+func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	sw := &physicalScanWrapper{plan: scan}
+
+	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	pm := NewPlanPropertiesMap()
+	pm.Add(sw)
+	innerRef.SetPlanProperties(pm)
+
+	q := expressions.ExistentialQuantifier(innerRef)
+	sel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(q.GetAlias()),
+		[]expressions.Quantifier{q},
+		nil,
+	)
+
+	outerRef := expressions.InitialOf(sel)
+	results := FireImplementationRule(NewImplementSimpleSelectRule(), outerRef)
+	if len(results) == 0 {
+		t.Fatal("should yield for Existential quantifier")
+	}
+
+	found := false
+	for _, r := range results {
+		if _, ok := r.(*physicalFirstOrDefaultWrapper); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("Existential quantifier should produce FirstOrDefault wrapper")
+	}
+}

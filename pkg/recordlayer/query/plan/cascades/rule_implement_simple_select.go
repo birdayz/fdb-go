@@ -55,7 +55,9 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			continue
 		}
 
-		if len(queryPredicates) == 0 && isSimpleResult {
+		needsQuantifierWrap := innerQuantifier.Kind() == expressions.QuantifierExistential
+
+		if len(queryPredicates) == 0 && isSimpleResult && !needsQuantifierWrap {
 			for _, expr := range innerExprs {
 				call.YieldFinalExpression(expr)
 			}
@@ -70,6 +72,18 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 		currentQuant := expressions.NewPhysicalQuantifier(currentRef)
 		currentPlan := innerPlans[0]
+
+		if innerQuantifier.Kind() == expressions.QuantifierExistential {
+			fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(currentPlan, values.NewNullValue(values.UnknownType))
+			fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan, currentQuant)
+			if len(queryPredicates) == 0 && isSimpleResult {
+				call.YieldFinalExpression(fodWrapper)
+				continue
+			}
+			fodRef := call.MemoizeFinalExpression(fodWrapper)
+			currentQuant = expressions.NewPhysicalQuantifier(fodRef)
+			currentPlan = fodPlan
+		}
 
 		if len(queryPredicates) > 0 {
 			filterPlan := plans.NewRecordQueryPredicatesFilterPlan(currentPlan, queryPredicates)
