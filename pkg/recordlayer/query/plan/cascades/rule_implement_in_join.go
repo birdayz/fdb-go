@@ -12,8 +12,14 @@ import (
 // chain of RecordQueryInJoinPlans. Each explode becomes one IN-source;
 // the inner plan is executed once per combination of IN values.
 //
-// Ports Java's ImplementInJoinRule (simplified — no ordering-aware
-// source selection, no sorted IN-source variants).
+// Ports Java's ImplementInJoinRule. The rule creates InJoin plans in
+// quantifier order (last explode = innermost). Java's full version
+// does ordering-aware source selection by matching explode aliases to
+// the inner plan's ordering bindings (via Ordering.Binding's
+// comparison correlation tracking) — that requires the full
+// Comparison.getCorrelatedTo() infrastructure which is not yet ported.
+// The current behavior is functionally correct (produces correct
+// results) but doesn't exploit ordering for optimal IN-source nesting.
 type ImplementInJoinRule struct {
 	matcher matching.BindingMatcher
 }

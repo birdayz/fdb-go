@@ -11,8 +11,12 @@ import (
 // as a RecordQueryInUnionPlan — the inner plan is executed once per
 // IN value and results are merge-sorted by comparison keys.
 //
-// Ports Java's ImplementInUnionRule (simplified — no ordering-aware
-// source selection).
+// Ports Java's ImplementInUnionRule. Same ordering-aware gap as
+// ImplementInJoinRule — the rule creates InUnion plans without
+// ordering-aware binding adjustment. Java's full version adjusts
+// bindings that reference explode aliases to promote them from
+// fixed to directional sort orders, enabling merge-sorted output.
+// This requires Comparison.getCorrelatedTo() correlation tracking.
 type ImplementInUnionRule struct {
 	matcher matching.BindingMatcher
 }
