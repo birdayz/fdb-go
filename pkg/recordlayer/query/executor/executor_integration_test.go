@@ -1060,3 +1060,602 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func insertCustomers(t *testing.T, store *recordlayer.FDBRecordStore, customers ...*gen.Customer) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range customers {
+			if _, err := s.SaveRecord(c); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("insert customers: %v", err)
+	}
+}
+
+// TestIntegration_ProjectionPlan tests projecting specific columns from scan results.
+func TestIntegration_ProjectionPlan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(6001), Price: proto.Int32(111)},
+		&gen.Order{OrderId: proto.Int64(6002), Price: proto.Int32(222)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{
+				&values.FieldValue{Field: "PRICE"},
+			},
+			scan,
+		)
+
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("projection returned %d results, want 2", len(results))
+		}
+
+		for _, r := range results {
+			datum := r.Datum.(map[string]any)
+			if _, exists := datum["PRICE"]; !exists {
+				t.Error("projected datum should contain PRICE")
+			}
+			if _, exists := datum["ORDER_ID"]; exists {
+				t.Error("projected datum should NOT contain ORDER_ID")
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ProjectionPlan_MultiColumn tests multi-column projection.
+func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(6101), Price: proto.Int32(50)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{
+				&values.FieldValue{Field: "ORDER_ID"},
+				&values.FieldValue{Field: "PRICE"},
+			},
+			scan,
+		)
+
+		cursor, err := ExecutePlan(ctx, proj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("got %d results, want 1", len(results))
+		}
+
+		datum := results[0].Datum.(map[string]any)
+		if datum["ORDER_ID"] != int64(6101) {
+			t.Errorf("ORDER_ID = %v, want 6101", datum["ORDER_ID"])
+		}
+		if datum["PRICE"] != int64(50) {
+			t.Errorf("PRICE = %v, want 50", datum["PRICE"])
+		}
+		if len(datum) != 2 {
+			t.Errorf("datum has %d keys, want exactly 2 (ORDER_ID, PRICE)", len(datum))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_DistinctPlan tests deduplication by primary key.
+func TestIntegration_DistinctPlan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(7001), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(7002), Price: proto.Int32(200)},
+		&gen.Order{OrderId: proto.Int64(7003), Price: proto.Int32(300)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		distinct := plans.NewRecordQueryDistinctPlan(scan)
+
+		cursor, err := ExecutePlan(ctx, distinct, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("distinct returned %d results, want 3 (all unique PKs)", len(results))
+		}
+
+		seen := make(map[string]struct{})
+		for _, r := range results {
+			key := string(r.PrimaryKey.Pack())
+			if _, dup := seen[key]; dup {
+				t.Errorf("duplicate PK in distinct results: %v", r.PrimaryKey)
+			}
+			seen[key] = struct{}{}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ParameterBinding_Filter tests filter with prepared-statement
+// parameter against real FDB records.
+func TestIntegration_ParameterBinding_Filter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(8001), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(8002), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(8003), Price: proto.Int32(90)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "PRICE"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonGreaterThan,
+						Operand: values.NewParameterValue(1),
+					},
+				),
+			},
+			scan,
+		)
+
+		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(40)})
+		cursor, err := ExecutePlan(ctx, filter, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("parameter filter returned %d results, want 2 (price > 40)", len(results))
+		}
+		for _, r := range results {
+			price := r.Datum.(map[string]any)["PRICE"].(int64)
+			if price <= 40 {
+				t.Errorf("price=%d should be > 40", price)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ParameterBinding_IndexScan tests index scan with a parameter
+// in the comparison range.
+func TestIntegration_ParameterBinding_IndexScan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(8101), Price: proto.Int32(25)},
+		&gen.Order{OrderId: proto.Int64(8102), Price: proto.Int32(75)},
+		&gen.Order{OrderId: proto.Int64(8103), Price: proto.Int32(125)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		cr := predicates.EmptyComparisonRange()
+		res := cr.Merge(&predicates.Comparison{
+			Type:    predicates.ComparisonGreaterThanEq,
+			Operand: values.NewParameterValue(1),
+		})
+		if !res.Ok {
+			t.Fatal("merge failed")
+		}
+
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			"order_price_idx",
+			[]*predicates.ComparisonRange{res.Range},
+			[]string{"Order"},
+			nil,
+			false,
+		)
+
+		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(50)})
+		cursor, err := ExecutePlan(ctx, indexPlan, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("param index scan returned %d results, want 2 (price >= 50)", len(results))
+		}
+		for _, r := range results {
+			price := r.Datum.(map[string]any)["PRICE"].(int64)
+			if price < 50 {
+				t.Errorf("price=%d, should be >= 50", price)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_NestedLoopJoin_CrossJoin tests a cross join between
+// Orders and Customers (no join predicate).
+func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(9001), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(9002), Price: proto.Int32(20)},
+	)
+	insertCustomers(t, store,
+		&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Alice")},
+		&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Bob")},
+		&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("Carol")},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		outerScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		innerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
+		nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+			outerScan, innerScan,
+			nil,
+			plans.JoinInner,
+		)
+
+		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 6 {
+			t.Fatalf("cross join returned %d results, want 6 (2 orders × 3 customers)", len(results))
+		}
+
+		for _, r := range results {
+			datum := r.Datum.(map[string]any)
+			if datum["ORDER_ID"] == nil {
+				t.Error("ORDER_ID missing from joined row")
+			}
+			if datum["CUSTOMER_ID"] == nil {
+				t.Error("CUSTOMER_ID missing from joined row")
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_NestedLoopJoin_WithPredicate tests NLJ with a filter predicate
+// on the outer table's PRICE column.
+func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(9101), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&gen.Order{OrderId: proto.Int64(9102), Price: proto.Int32(200), Quantity: proto.Int32(10)},
+	)
+	insertCustomers(t, store,
+		&gen.Customer{CustomerId: proto.Int64(19101), Name: proto.String("Dan")},
+		&gen.Customer{CustomerId: proto.Int64(19102), Name: proto.String("Eve")},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		outerScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		innerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
+
+		nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+			outerScan, innerScan,
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "QUANTITY"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonEquals,
+						Operand: values.LiteralValue(int64(5)),
+					},
+				),
+			},
+			plans.JoinInner,
+		)
+
+		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("predicate join returned %d results, want 2 (quantity=5 order × 2 customers)", len(results))
+		}
+		for _, r := range results {
+			datum := r.Datum.(map[string]any)
+			if datum["ORDER_ID"] != int64(9101) {
+				t.Errorf("ORDER_ID = %v, want 9101 (quantity=5)", datum["ORDER_ID"])
+			}
+			if datum["CUSTOMER_ID"] == nil {
+				t.Error("CUSTOMER_ID missing from joined row")
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_NestedLoopJoin_LeftOuter tests left outer join — unmatched
+// outer rows are preserved.
+func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(9201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&gen.Order{OrderId: proto.Int64(9202), Price: proto.Int32(200), Quantity: proto.Int32(10)},
+	)
+	insertCustomers(t, store,
+		&gen.Customer{CustomerId: proto.Int64(19201), Name: proto.String("Frank")},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		outerScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		innerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
+
+		nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+			outerScan, innerScan,
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "QUANTITY"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonEquals,
+						Operand: values.LiteralValue(int64(5)),
+					},
+				),
+			},
+			plans.JoinLeftOuter,
+		)
+
+		cursor, err := ExecutePlan(ctx, nlj, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("left outer join returned %d results, want 2 (1 matched + 1 unmatched)", len(results))
+		}
+
+		matchedFound := false
+		unmatchedFound := false
+		for _, r := range results {
+			datum := r.Datum.(map[string]any)
+			orderID := datum["ORDER_ID"].(int64)
+			if orderID == 9201 {
+				if datum["CUSTOMER_ID"] == nil {
+					t.Error("matched row should have CUSTOMER_ID from inner")
+				}
+				matchedFound = true
+			} else if orderID == 9202 {
+				unmatchedFound = true
+			}
+		}
+		if !matchedFound {
+			t.Error("expected matched row (order 9201 quantity=5)")
+		}
+		if !unmatchedFound {
+			t.Error("expected unmatched outer row (order 9202 quantity=10)")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_UpdatePlan_WithParameter tests UPDATE with a parameterized
+// SET value against real FDB.
+func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(8201), Price: proto.Int32(100)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "ORDER_ID"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonEquals,
+						Operand: values.LiteralValue(int64(8201)),
+					},
+				),
+			},
+			scan,
+		)
+		update := plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
+			{FieldPath: "PRICE", NewValue: values.NewParameterValue(1)},
+		})
+
+		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(777)})
+		cursor, err := ExecutePlan(ctx, update, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("update returned %d results, want 1", len(results))
+		}
+
+		rec, err := s.LoadRecord(tuple.Tuple{int64(8201)})
+		if err != nil {
+			t.Fatalf("LoadRecord: %v", err)
+		}
+		if rec == nil {
+			t.Fatal("record not found after update")
+		}
+		updated := rec.Record.(*gen.Order)
+		if updated.GetPrice() != 777 {
+			t.Errorf("price after param update = %d, want 777", updated.GetPrice())
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
