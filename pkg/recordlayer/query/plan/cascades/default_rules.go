@@ -49,6 +49,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushFilterThroughSortRule(),
 		NewPushFilterThroughUnionRule(),
 		NewPushFilterThroughIntersectionRule(),
+		NewPushFilterThroughGroupByRule(),
 		NewPushFilterThroughProjectionRule(),
 		NewDistinctMergeRule(),
 		NewDistinctOverSortElimRule(),
