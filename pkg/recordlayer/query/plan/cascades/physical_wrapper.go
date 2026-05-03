@@ -62,6 +62,61 @@ func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// IsPhysicalPredicatesFilter reports whether the given expression is
+// a physicalPredicatesFilterWrapper.
+func IsPhysicalPredicatesFilter(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalPredicatesFilterWrapper)
+	return ok
+}
+
+// IsPhysicalMap reports whether the given expression is a physicalMapWrapper.
+func IsPhysicalMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalMapWrapper)
+	return ok
+}
+
+// IsPhysicalFirstOrDefault reports whether the given expression is
+// a physicalFirstOrDefaultWrapper.
+func IsPhysicalFirstOrDefault(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFirstOrDefaultWrapper)
+	return ok
+}
+
+// IsPhysicalDefaultOnEmpty reports whether the given expression is
+// a physicalDefaultOnEmptyWrapper.
+func IsPhysicalDefaultOnEmpty(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalDefaultOnEmptyWrapper)
+	return ok
+}
+
+// IsPhysicalUnorderedUnion reports whether the given expression is
+// a physicalUnorderedUnionWrapper.
+func IsPhysicalUnorderedUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalUnorderedUnionWrapper)
+	return ok
+}
+
+// IsPhysicalMergeSortUnion reports whether the given expression is
+// a physicalMergeSortUnionWrapper.
+func IsPhysicalMergeSortUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalMergeSortUnionWrapper)
+	return ok
+}
+
+// IsPhysicalInJoin reports whether the given expression is
+// a physicalInJoinWrapper.
+func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInJoinWrapper)
+	return ok
+}
+
+// IsPhysicalInUnion reports whether the given expression is
+// a physicalInUnionWrapper.
+func IsPhysicalInUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInUnionWrapper)
+	return ok
+}
+
 // ExplainPhysicalPlan returns the Explain() string for a physical-plan
 // expression, or empty string if the expression is not a physical plan.
 func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
