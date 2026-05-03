@@ -31,6 +31,16 @@ func (s ProvidedSortOrder) IsAnyDescending() bool {
 	return s == ProvidedSortOrderDescending || s == ProvidedSortOrderDescendingNullsLast
 }
 
+func (s ProvidedSortOrder) ToRequestedSortOrder() RequestedSortOrder {
+	if s.IsDirectional() {
+		if s.IsAnyDescending() {
+			return RequestedSortOrderDescending
+		}
+		return RequestedSortOrderAscending
+	}
+	return RequestedSortOrderAny
+}
+
 // ProvidedOrderingPart is a (Value, ProvidedSortOrder) pair for a
 // provided ordering element.
 type ProvidedOrderingPart struct {

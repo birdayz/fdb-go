@@ -313,6 +313,101 @@ func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
 	return results
 }
 
+// SatisfiesGroupingValues checks whether the given set of values can
+// form a valid prefix of some topological ordering of this ordering set.
+func (o *RichOrdering) SatisfiesGroupingValues(groupingValues map[string]struct{}) bool {
+	if len(groupingValues) == 0 {
+		return true
+	}
+	if o.orderingSet.Size() < len(groupingValues) {
+		return false
+	}
+	for gv := range groupingValues {
+		bindings := o.bindingMapForExplain(gv)
+		if bindings == nil {
+			return false
+		}
+		if AreAllBindingsFixed(bindings) && HasMultipleFixedBindings(bindings) {
+			return false
+		}
+	}
+
+	filtered := o.orderingSet.FilterElements(func(s string) bool {
+		_, ok := groupingValues[s]
+		return ok
+	})
+	iter := combinatorics.TopologicalOrderPermutations(filtered)
+	for {
+		perm := iter.Next()
+		if perm == nil {
+			break
+		}
+		if len(perm) >= len(groupingValues) {
+			prefixOK := true
+			for i := 0; i < len(groupingValues); i++ {
+				if _, ok := groupingValues[perm[i]]; !ok {
+					prefixOK = false
+					break
+				}
+			}
+			if prefixOK {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// EnumerateCompatibleRequestedOrderings enumerates all valid orderings
+// of the full ordering set that are compatible with the requested
+// ordering prefix. Each result is a full-length sequence of
+// RequestedOrderingParts (one per key in the ordering set).
+func (o *RichOrdering) EnumerateCompatibleRequestedOrderings(
+	requested *RequestedOrdering,
+) [][]RequestedOrderingPart {
+	parts := requested.GetParts()
+	for _, part := range parts {
+		bindings := o.bindingMapForExplain(values.ExplainValue(part.Value))
+		if bindings == nil {
+			return nil
+		}
+		if !SortOrderOf(bindings).IsCompatibleWithRequestedSortOrder(part.SortOrder) {
+			return nil
+		}
+	}
+
+	requestedKeys := make([]string, len(parts))
+	for i, part := range parts {
+		requestedKeys[i] = values.ExplainValue(part.Value)
+	}
+
+	iter := combinatorics.SatisfyingPermutations(
+		o.orderingSet,
+		requestedKeys,
+		func(_ []string) int { return len(parts) },
+	)
+
+	var results [][]RequestedOrderingPart
+	for {
+		perm := iter.Next()
+		if perm == nil {
+			break
+		}
+		reqParts := make([]RequestedOrderingPart, len(perm))
+		for i, k := range perm {
+			v := o.keyLookup[k]
+			bindings := o.bindingMap[v]
+			if AreAllBindingsFixed(bindings) {
+				reqParts[i] = RequestedOrderingPart{Value: v, SortOrder: RequestedSortOrderAny}
+			} else {
+				reqParts[i] = RequestedOrderingPart{Value: v, SortOrder: SortOrderOf(bindings).ToRequestedSortOrder()}
+			}
+		}
+		results = append(results, reqParts)
+	}
+	return results
+}
+
 // DirectionalOrderingParts creates ProvidedOrderingParts from a key
 // sequence with sort directions from the binding map. Fixed keys get
 // the provided fixedOrder direction.
