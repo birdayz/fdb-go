@@ -46,7 +46,7 @@ func ExtractBestPlan(ref *expressions.Reference) (expressions.RelationalExpressi
 // Pass nil for stats to use DefaultStatistics (equivalent to
 // ExtractBestPlan).
 func ExtractBestPlanWith(ref *expressions.Reference, stats StatisticsProvider) (expressions.RelationalExpression, error) {
-	if ref == nil || len(ref.Members()) == 0 {
+	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
 	if stats == nil {
@@ -88,7 +88,7 @@ type BestMemberSelector interface {
 // Pass nil sel to fall back to ExtractBestPlanWith(ref, stats)
 // (no selector path).
 func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelector, stats StatisticsProvider) (expressions.RelationalExpression, error) {
-	if ref == nil || len(ref.Members()) == 0 {
+	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
 	if stats == nil {
@@ -97,6 +97,8 @@ func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelec
 	var best expressions.RelationalExpression
 	if sel != nil && sel.HasBestMember(ref) {
 		best = sel.BestMember(ref)
+	} else if finals := ref.FinalMembers(); len(finals) > 0 {
+		best = bestFrom(finals, CostLessWith(stats))
 	} else {
 		best = ref.GetBest(CostLessWith(stats))
 	}
@@ -128,6 +130,19 @@ func rebuildExpressionFromSelector(e expressions.RelationalExpression, sel BestM
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
 	return rebuildWithFreshChildren(e, freshChildren)
+}
+
+func bestFrom(members []expressions.RelationalExpression, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
+	if len(members) == 0 {
+		return nil
+	}
+	best := members[0]
+	for _, m := range members[1:] {
+		if less(m, best) {
+			best = m
+		}
+	}
+	return best
 }
 
 // rebuildExpression returns a fresh RelationalExpression of the same

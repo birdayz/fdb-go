@@ -94,25 +94,7 @@ func (m *logicalUnionMatcher) BindMatches(outer *matching.PlannerBindings, in an
 }
 
 // crossProductPartitions returns the Cartesian product of per-child
-// partition lists. For N children each with M partitions, returns
-// M^N combinations. For the simple case (one partition per child),
-// returns a single combination.
+// partition lists. Delegates to the generic CrossProduct.
 func crossProductPartitions(childPartitions [][]*PlanPartition) [][]*PlanPartition {
-	if len(childPartitions) == 0 {
-		return nil
-	}
-	result := [][]*PlanPartition{{}}
-	for _, parts := range childPartitions {
-		var next [][]*PlanPartition
-		for _, existing := range result {
-			for _, p := range parts {
-				combo := make([]*PlanPartition, len(existing)+1)
-				copy(combo, existing)
-				combo[len(existing)] = p
-				next = append(next, combo)
-			}
-		}
-		result = next
-	}
-	return result
+	return CrossProduct(childPartitions)
 }
