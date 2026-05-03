@@ -438,6 +438,48 @@ func TestCompareAny_NilHandling(t *testing.T) {
 	}
 }
 
+func TestCompareAny_Float64(t *testing.T) {
+	t.Parallel()
+	if compareAny(float64(1.5), float64(2.5)) >= 0 {
+		t.Fatal("1.5 should be < 2.5")
+	}
+	if compareAny(float64(2.5), float64(1.5)) <= 0 {
+		t.Fatal("2.5 should be > 1.5")
+	}
+	if compareAny(float64(3.14), float64(3.14)) != 0 {
+		t.Fatal("3.14 should equal 3.14")
+	}
+}
+
+func TestCompareAny_Bool(t *testing.T) {
+	t.Parallel()
+	if compareAny(false, true) >= 0 {
+		t.Fatal("false should be < true")
+	}
+	if compareAny(true, false) <= 0 {
+		t.Fatal("true should be > false")
+	}
+	if compareAny(true, true) != 0 {
+		t.Fatal("true should equal true")
+	}
+	if compareAny(false, false) != 0 {
+		t.Fatal("false should equal false")
+	}
+}
+
+func TestCompareAny_MixedTypes(t *testing.T) {
+	t.Parallel()
+	if compareAny(int64(1), "hello") != 0 {
+		t.Fatal("mismatched types should return 0")
+	}
+	if compareAny(float64(1.0), int64(1)) != 0 {
+		t.Fatal("float64 vs int64 should return 0 (no cross-type)")
+	}
+	if compareAny(true, int64(1)) != 0 {
+		t.Fatal("bool vs int64 should return 0")
+	}
+}
+
 func TestSortByKeys(t *testing.T) {
 	t.Parallel()
 
@@ -2177,5 +2219,56 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 	)
 	if passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
 		t.Fatal("non-matching predicate should fail")
+	}
+}
+
+// --- projectionColumnName unit tests ---
+
+func TestProjectionColumnName_FieldValue(t *testing.T) {
+	t.Parallel()
+	fv := &values.FieldValue{Field: "MY_COL", Typ: values.TypeString}
+	if got := projectionColumnName(fv); got != "MY_COL" {
+		t.Fatalf("expected MY_COL, got %s", got)
+	}
+}
+
+func TestProjectionColumnName_NonFieldValue(t *testing.T) {
+	t.Parallel()
+	cv := &values.ConstantValue{Value: int64(42), Typ: values.TypeInt}
+	if got := projectionColumnName(cv); got != cv.Name() {
+		t.Fatalf("expected %s, got %s", cv.Name(), got)
+	}
+}
+
+// --- fieldFromDatum unit tests ---
+
+func TestFieldFromDatum_MapFound(t *testing.T) {
+	t.Parallel()
+	datum := map[string]any{"NAME": "alice", "AGE": int64(30)}
+	if v := fieldFromDatum(datum, "name"); v != "alice" {
+		t.Fatalf("expected alice, got %v", v)
+	}
+}
+
+func TestFieldFromDatum_MapNotFound(t *testing.T) {
+	t.Parallel()
+	datum := map[string]any{"NAME": "alice"}
+	if v := fieldFromDatum(datum, "MISSING"); v != nil {
+		t.Fatalf("expected nil, got %v", v)
+	}
+}
+
+func TestFieldFromDatum_NonMap(t *testing.T) {
+	t.Parallel()
+	if v := fieldFromDatum("not-a-map", "NAME"); v != nil {
+		t.Fatalf("expected nil for non-map, got %v", v)
+	}
+}
+
+func TestFieldFromDatum_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	datum := map[string]any{"PRICE": int64(100)}
+	if v := fieldFromDatum(datum, "price"); v != int64(100) {
+		t.Fatalf("expected 100, got %v (case-insensitive lookup via ToUpper)", v)
 	}
 }
