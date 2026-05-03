@@ -81,6 +81,61 @@ func TestPlanChoice_MultiColumnIndexPrefix(t *testing.T) {
 	}
 }
 
+func TestPlanChoice_NoIndexForNonMatchingColumn(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	// WHERE total > 500 — no index on "total"
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "TOTAL", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(500)),
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	// Index on (customer_id) — NOT on total
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "idx_customer",
+			columns:     []string{"CUSTOMER_ID"},
+			recordTypes: []string{"Order"},
+			unique:      false,
+		},
+	})
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	bestExpr, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if bestExpr == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		t.Fatalf("expected planExtractor, got %T", bestExpr)
+	}
+
+	physicalPlan := ph.GetRecordQueryPlan()
+
+	// Should NOT be an IndexScan since no index covers the "TOTAL" column
+	if _, ok := physicalPlan.(*plans.RecordQueryIndexPlan); ok {
+		t.Fatal("optimizer should NOT choose IndexScan when predicate doesn't match any index column")
+	}
+	t.Logf("✓ Optimizer correctly chose full scan + filter (no matching index): %T", physicalPlan)
+}
+
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 	t.Parallel()
 
