@@ -76,7 +76,8 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
-	case *plans.RecordQueryDefaultOnEmptyPlan:
+	case *plans.RecordQueryDefaultOnEmptyPlan,
+		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnionPlan,
@@ -131,6 +132,10 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 	case *plans.RecordQueryFirstOrDefaultPlan,
 		*plans.RecordQueryDefaultOnEmptyPlan:
 		return false
+	case *plans.RecordQueryInJoinPlan:
+		return storedRecordFromChildren(plan.GetChildren())
+	case *plans.RecordQueryInUnionPlan:
+		return storedRecordFromChildren(plan.GetChildren())
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryUnorderedUnionPlan,
