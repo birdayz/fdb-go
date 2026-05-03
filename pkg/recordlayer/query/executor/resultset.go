@@ -241,11 +241,8 @@ func toLong(v any) (int64, error) {
 		return int64(n), nil
 	case float64:
 		return int64(n), nil
-	case bool:
-		if n {
-			return 1, nil
-		}
-		return 0, nil
+	case float32:
+		return int64(n), nil
 	default:
 		return 0, api.NewError(api.ErrCodeCannotConvertType,
 			fmt.Sprintf("cannot convert %T to LONG", v))
@@ -262,6 +259,10 @@ func toFloat32(v any) (float32, error) {
 	case float64:
 		return float32(n), nil
 	case int64:
+		return float32(n), nil
+	case int32:
+		return float32(n), nil
+	case int:
 		return float32(n), nil
 	default:
 		return 0, api.NewError(api.ErrCodeCannotConvertType,
@@ -280,6 +281,10 @@ func toFloat64Coerce(v any) (float64, error) {
 		return float64(n), nil
 	case int64:
 		return float64(n), nil
+	case int32:
+		return float64(n), nil
+	case int:
+		return float64(n), nil
 	default:
 		return 0, api.NewError(api.ErrCodeCannotConvertType,
 			fmt.Sprintf("cannot convert %T to DOUBLE", v))
@@ -293,8 +298,6 @@ func toBool(v any) (bool, error) {
 	switch b := v.(type) {
 	case bool:
 		return b, nil
-	case int64:
-		return b != 0, nil
 	default:
 		return false, api.NewError(api.ErrCodeCannotConvertType,
 			fmt.Sprintf("cannot convert %T to BOOLEAN", v))
