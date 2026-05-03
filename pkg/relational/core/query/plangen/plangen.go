@@ -719,6 +719,9 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	if p, ok := tryParseStartsWith(s); ok {
 		return p, true
 	}
+	if p, ok := tryParseDistinctFrom(s); ok {
+		return p, true
+	}
 	lhs, op, rhs, ok := splitComparison(s)
 	if !ok {
 		return nil, false
@@ -994,6 +997,44 @@ func tryParseStartsWith(s string) (predicates.QueryPredicate, bool) {
 		Type:    predicates.ComparisonStartsWith,
 		Operand: prefixVal,
 	}), true
+}
+
+// tryParseDistinctFrom handles "col IS DISTINCT FROM val" and
+// "col IS NOT DISTINCT FROM val" (null-safe inequality/equality).
+func tryParseDistinctFrom(s string) (predicates.QueryPredicate, bool) {
+	if idx := indexFoldASCII(s, " IS NOT DISTINCT FROM "); idx >= 0 {
+		col := strings.TrimSpace(s[:idx])
+		val := strings.TrimSpace(s[idx+len(" IS NOT DISTINCT FROM "):])
+		colVal, ok := lowerSimpleScalarText(col)
+		if !ok {
+			return nil, false
+		}
+		rhsVal, ok := lowerSimpleScalarText(val)
+		if !ok {
+			return nil, false
+		}
+		return predicates.NewComparisonPredicate(colVal, predicates.Comparison{
+			Type:    predicates.ComparisonNotDistinctFrom,
+			Operand: rhsVal,
+		}), true
+	}
+	if idx := indexFoldASCII(s, " IS DISTINCT FROM "); idx >= 0 {
+		col := strings.TrimSpace(s[:idx])
+		val := strings.TrimSpace(s[idx+len(" IS DISTINCT FROM "):])
+		colVal, ok := lowerSimpleScalarText(col)
+		if !ok {
+			return nil, false
+		}
+		rhsVal, ok := lowerSimpleScalarText(val)
+		if !ok {
+			return nil, false
+		}
+		return predicates.NewComparisonPredicate(colVal, predicates.Comparison{
+			Type:    predicates.ComparisonIsDistinctFrom,
+			Operand: rhsVal,
+		}), true
+	}
+	return nil, false
 }
 
 func textToCompOp(op string) predicates.ComparisonType {

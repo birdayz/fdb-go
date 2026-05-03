@@ -410,6 +410,40 @@ func TestConvert_FilterTextStartsWith(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextIsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "x IS DISTINCT FROM 5")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIsDistinctFrom {
+		t.Fatalf("type = %v, want ComparisonIsDistinctFrom", cp.Comparison.Type)
+	}
+}
+
+func TestConvert_FilterTextIsNotDistinctFrom(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "x IS NOT DISTINCT FROM NULL")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonNotDistinctFrom {
+		t.Fatalf("type = %v, want ComparisonNotDistinctFrom", cp.Comparison.Type)
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered
