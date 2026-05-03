@@ -110,11 +110,7 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 		unionPlan := plans.NewRecordQueryMergeSortUnionPlan(
 			childPlans, comparisonKeys, false, true)
-		wrapper := NewPhysicalUnorderedUnionWrapper(
-			plans.NewRecordQueryUnorderedUnionPlan(childPlans),
-			newQuantifiers,
-		)
-		_ = unionPlan
+		wrapper := NewPhysicalMergeSortUnionWrapper(unionPlan, newQuantifiers)
 		call.YieldFinalExpression(wrapper)
 	}
 }

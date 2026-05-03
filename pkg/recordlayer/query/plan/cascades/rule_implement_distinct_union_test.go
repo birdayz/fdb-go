@@ -83,6 +83,17 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("should fire when union legs have PK and stored records")
 	}
+
+	found := false
+	for _, r := range results {
+		if _, ok := r.(*physicalMergeSortUnionWrapper); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("should yield physicalMergeSortUnionWrapper")
+	}
 }
 
 func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
