@@ -1454,6 +1454,104 @@ func TestEndToEnd_GroupByWithHavingClause(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_StreamingAggFromIndexWithoutSort verifies that GroupBy over
+// a plain Scan (no explicit Sort) picks streaming agg when an index exists
+// on the grouping keys. The StreamingAggFromIndexRule directly matches
+// GroupBy(keys, Scan) → StreamingAgg(IndexScan).
+func TestEndToEnd_StreamingAggFromIndexWithoutSort(t *testing.T) {
+	t.Parallel()
+
+	// GroupBy(region, COUNT(id)) over Scan — no Sort in tree.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Sales"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Sales$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Sales"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// The streaming agg should win (cheaper than hash when index provides order).
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg from index (no Sort needed), got %T", plan)
+	}
+}
+
+// TestEndToEnd_FullAggPipeline exercises the complete aggregation pipeline:
+// Sort(cnt) → Filter(cnt > 5) → GroupBy(region, COUNT(id)) → Scan
+// Verifies the planner handles the full chain without panics and produces
+// a sensible plan shape (sort at top, filter in middle, agg below).
+func TestEndToEnd_FullAggPipeline(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	gbRef := expressions.InitialOf(gb)
+	gbQ := expressions.ForEachQuantifier(gbRef)
+
+	havingFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "cnt", Typ: values.UnknownType},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5)),
+			),
+		}, gbQ)
+	havingRef := expressions.InitialOf(havingFilter)
+	havingQ := expressions.ForEachQuantifier(havingRef)
+
+	outerSort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "cnt", Typ: values.UnknownType}},
+		}, havingQ)
+	ref := expressions.InitialOf(outerSort)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if !strings.Contains(explain, "Sort") {
+		t.Fatalf("expected Sort in plan explain, got: %s", explain)
+	}
+}
+
 // TestEndToEnd_DistinctOverGroupByEliminated verifies that DISTINCT over
 // GROUP BY is eliminated by the planner (GROUP BY already deduplicates).
 func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {

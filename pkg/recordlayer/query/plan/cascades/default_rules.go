@@ -112,6 +112,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewSortOverOrderedElimRule(),
 		NewImplementStreamingAggregationRule(),
 		NewImplementHashAggregationRule(),
+		NewStreamingAggFromIndexRule(),
 	}
 }
 
