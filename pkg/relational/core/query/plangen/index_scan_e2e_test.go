@@ -2037,6 +2037,38 @@ func TestEndToEnd_TextBasedJoinToPlan(t *testing.T) {
 	t.Logf("Explain: %s", explain)
 }
 
+func TestEndToEnd_TextBasedInListToPlan(t *testing.T) {
+	t.Parallel()
+
+	// SELECT * FROM Orders WHERE status IN ('active', 'shipped', 'pending')
+	src := logical.NewFilter(logical.NewScan("Orders", ""), "status IN ('active', 'shipped', 'pending')")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	// InExplode should kick in — producing a UnionAll of index scans
+	if !strings.Contains(explain, "Union") && !strings.Contains(explain, "IndexScan") && !strings.Contains(explain, "Filter") {
+		t.Fatalf("expected Union/IndexScan/Filter in plan, got: %s", explain)
+	}
+}
+
 func TestEndToEnd_LimitMergeEndToEnd(t *testing.T) {
 	t.Parallel()
 

@@ -163,6 +163,85 @@ func TestConvert_FilterTextIsNotNull(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextIn(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "status IN ('active', 'pending')")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonIn {
+		t.Fatalf("comparison type = %v, want ComparisonIn", cp.Comparison.Type)
+	}
+	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("RHS is %T, want *ConstantValue", cp.Comparison.Operand)
+	}
+	list, ok := cv.Value.([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("IN list = %v, want 2-element list", cv.Value)
+	}
+	if list[0] != "active" || list[1] != "pending" {
+		t.Fatalf("IN list values = %v, want [active pending]", list)
+	}
+}
+
+func TestConvert_FilterTextNotIn(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "id NOT IN (1, 2, 3)")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *NotPredicate wrapping ComparisonIn", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextInNumeric(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "age IN (18, 21, 65)")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	cv := cp.Comparison.Operand.(*values.ConstantValue)
+	list := cv.Value.([]any)
+	if len(list) != 3 {
+		t.Fatalf("IN list len = %d, want 3", len(list))
+	}
+	if list[0] != int64(18) || list[1] != int64(21) || list[2] != int64(65) {
+		t.Fatalf("IN list = %v, want [18 21 65]", list)
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered

@@ -598,6 +598,9 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	if p, ok := tryParseBetween(s); ok {
 		return p, true
 	}
+	if p, ok := tryParseIn(s); ok {
+		return p, true
+	}
 	lhs, op, rhs, ok := splitComparison(s)
 	if !ok {
 		return nil, false
@@ -709,6 +712,88 @@ func tryParseIsNull(s string) (predicates.QueryPredicate, bool) {
 		), true
 	}
 	return nil, false
+}
+
+// tryParseIn handles "col IN (v1, v2, ...)" and "col NOT IN (v1, v2, ...)".
+func tryParseIn(s string) (predicates.QueryPredicate, bool) {
+	upper := strings.ToUpper(s)
+
+	var col, listStr string
+	var negate bool
+
+	if idx := strings.Index(upper, " NOT IN "); idx >= 0 {
+		col = strings.TrimSpace(s[:idx])
+		listStr = strings.TrimSpace(s[idx+len(" NOT IN "):])
+		negate = true
+	} else if idx := strings.Index(upper, " IN "); idx >= 0 {
+		col = strings.TrimSpace(s[:idx])
+		listStr = strings.TrimSpace(s[idx+len(" IN "):])
+	} else {
+		return nil, false
+	}
+
+	if len(listStr) < 2 || listStr[0] != '(' || listStr[len(listStr)-1] != ')' {
+		return nil, false
+	}
+	inner := listStr[1 : len(listStr)-1]
+
+	colVal, ok := lowerSimpleScalarText(col)
+	if !ok {
+		return nil, false
+	}
+
+	elements := splitInList(inner)
+	if len(elements) == 0 {
+		return nil, false
+	}
+
+	list := make([]any, 0, len(elements))
+	for _, elem := range elements {
+		v, ok := lowerSimpleScalarText(elem)
+		if !ok {
+			return nil, false
+		}
+		lit, ok := values.EvaluateConstant(v)
+		if !ok {
+			return nil, false
+		}
+		list = append(list, lit)
+	}
+
+	pred := predicates.NewComparisonPredicate(colVal, predicates.Comparison{
+		Type:    predicates.ComparisonIn,
+		Operand: &values.ConstantValue{Value: list, Typ: values.TypeUnknown},
+	})
+	if negate {
+		return predicates.NewNot(pred), true
+	}
+	return pred, true
+}
+
+// splitInList splits a comma-separated list respecting single-quoted strings.
+func splitInList(s string) []string {
+	var parts []string
+	var buf strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\'' {
+			inQuote = !inQuote
+			buf.WriteByte(ch)
+		} else if ch == ',' && !inQuote {
+			part := strings.TrimSpace(buf.String())
+			if part != "" {
+				parts = append(parts, part)
+			}
+			buf.Reset()
+		} else {
+			buf.WriteByte(ch)
+		}
+	}
+	if rest := strings.TrimSpace(buf.String()); rest != "" {
+		parts = append(parts, rest)
+	}
+	return parts
 }
 
 func textToCompOp(op string) predicates.ComparisonType {
