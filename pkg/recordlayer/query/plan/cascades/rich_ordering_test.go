@@ -391,6 +391,54 @@ func TestDirectionalOrderingParts_Basic(t *testing.T) {
 	}
 }
 
+func TestConcatOrderings_DistinctnessPropagates(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	outer := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{a}, true,
+	)
+	inner := EmptyOrdering()
+	result := ConcatOrderings(outer, inner)
+	if !result.IsDistinct() {
+		t.Fatal("concat should propagate outer's distinct=true")
+	}
+}
+
+func TestCreateUnionOrdering_DeepCopy(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{a}, true,
+	)
+	u := CreateUnionOrdering(o)
+	if !u.IsDistinct() {
+		t.Fatal("union copy should preserve distinct")
+	}
+	if len(u.GetKeys()) != 1 {
+		t.Fatal("union copy should preserve keys")
+	}
+}
+
+func TestMergeOrderings_DisjointKeys(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o1 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{a}, false,
+	)
+	o2 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{b: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{b}, false,
+	)
+	merged := MergeOrderings(o1, o2)
+	if len(merged.GetKeys()) != 0 {
+		t.Fatalf("disjoint keys should produce empty merge, got %d keys", len(merged.GetKeys()))
+	}
+}
+
 func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")
