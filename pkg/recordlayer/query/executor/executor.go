@@ -1244,7 +1244,9 @@ func dfsVisit(
 		*results = append(*results, node)
 	}
 
-	childCtx := evalCtx.WithBinding(p.GetPriorCorrelation(), node.Datum)
+	singleRow := NewTempTable()
+	singleRow.Add(node)
+	childCtx := evalCtx.WithBinding(p.GetPriorCorrelation(), singleRow)
 	childCursor, err := ExecutePlan(ctx, p.GetChild(), store, childCtx, nil, props.ClearSkipAndLimit())
 	if err != nil {
 		return fmt.Errorf("recursive DFS child plan: %w", err)
