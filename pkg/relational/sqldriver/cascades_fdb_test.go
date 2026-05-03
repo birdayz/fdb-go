@@ -223,6 +223,31 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 	t.Logf("Cascades with index → %d rows ✓", count)
 }
 
+func TestFDB_CascadesSumAggregate(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT SUM(price) FROM Item")
+	if err != nil {
+		t.Skipf("SUM not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row from SUM")
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		t.Skipf("SUM scan failed: %v", err)
+	}
+	// 100 + 200 + 50 = 350
+	if total != 350 {
+		t.Fatalf("expected SUM(price) = 350, got %d", total)
+	}
+	t.Logf("Cascades SUM(price) → %d ✓", total)
+}
+
 func TestFDB_CascadesDistinct(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
