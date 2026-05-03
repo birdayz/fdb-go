@@ -188,6 +188,7 @@ go_test(
         "rule_implement_explode_test.go",
         "rule_implement_filter_test.go",
         "rule_implement_hash_agg_test.go",
+        "rule_implement_in_join_ordering_test.go",
         "rule_implement_in_join_test.go",
         "rule_implement_in_union_test.go",
         "rule_implement_index_scan_correctness_test.go",
