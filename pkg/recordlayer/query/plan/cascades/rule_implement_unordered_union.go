@@ -71,7 +71,7 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		if len(childPlans) < 2 {
-			return
+			continue
 		}
 
 		unionPlan := plans.NewRecordQueryUnorderedUnionPlan(childPlans)

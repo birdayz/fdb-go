@@ -103,14 +103,16 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 			innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap)
 
 		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+		currentPlan := plans.RecordQueryPlan(innerPlans[0])
 
 		for i := len(orderedSources) - 1; i >= 0; i-- {
 			source := orderedSources[i]
 			inJoinPlan := plans.NewRecordQueryInJoinPlan(
-				innerPlans[0], source.bindingName, source.sorted, source.reverse)
+				currentPlan, source.bindingName, source.sorted, source.reverse)
 			wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
 				expressions.NewPhysicalQuantifier(currentRef))
 			currentRef = call.MemoizeFinalExpression(wrapper)
+			currentPlan = inJoinPlan
 		}
 
 		for _, m := range currentRef.FinalMembers() {

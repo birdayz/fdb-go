@@ -116,12 +116,23 @@ func (r *ImplementDistinctUnionRule) tryYieldPlan(
 
 	orderings := make([]*RichOrdering, len(combo))
 	for i, partition := range combo {
-		o := partition.GetOrdering()
-		bm := make(map[values.Value][]OrderingBinding)
-		for _, k := range o.Keys {
-			bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+		exprs := partition.GetExpressions()
+		var ro *RichOrdering
+		for _, expr := range exprs {
+			if ph, ok := expr.(physicalPlanExpression); ok {
+				ro = computeWrapperRichOrdering(ph)
+				break
+			}
 		}
-		orderings[i] = NewRichOrdering(bm, o.Keys, false)
+		if ro == nil {
+			o := partition.GetOrdering()
+			bm := make(map[values.Value][]OrderingBinding)
+			for _, k := range o.Keys {
+				bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+			}
+			ro = NewRichOrdering(bm, o.Keys, false)
+		}
+		orderings[i] = ro
 	}
 
 	var mergedOrdering *RichOrdering
