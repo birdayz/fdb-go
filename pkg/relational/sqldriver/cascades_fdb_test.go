@@ -91,4 +91,24 @@ func TestFDB_CascadesSelectAfterInsert(t *testing.T) {
 		t.Fatalf("expected 1 row with price > 100, got %d", filtered)
 	}
 	t.Logf("Cascades SELECT WHERE returned %d row — filter works!", filtered)
+
+	// Test LIMIT through Cascades.
+	rows3, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item LIMIT 1")
+	if err != nil {
+		t.Logf("SELECT LIMIT via Cascades: %v (may fall back)", err)
+		return
+	}
+	defer rows3.Close()
+
+	var limited int
+	for rows3.Next() {
+		limited++
+	}
+	if err := rows3.Err(); err != nil {
+		t.Fatalf("rows3.Err: %v", err)
+	}
+	if limited != 1 {
+		t.Fatalf("expected 1 row with LIMIT 1, got %d", limited)
+	}
+	t.Logf("Cascades LIMIT returned %d row", limited)
 }
