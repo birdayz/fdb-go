@@ -55,7 +55,7 @@ func (r *PushFilterThroughProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), p.GetInner())
-	pushedQ := expressions.ForEachQuantifier(expressions.InitialOf(pushed))
+	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
 	call.Yield(expressions.NewLogicalProjectionExpression(p.GetProjectedValues(), pushedQ))
 }
 

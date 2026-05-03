@@ -49,10 +49,12 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushFilterThroughSortRule(),
 		NewPushFilterThroughUnionRule(),
 		NewPushFilterThroughIntersectionRule(),
+		NewPushFilterThroughGroupByRule(),
 		NewPushFilterThroughProjectionRule(),
 		NewDistinctMergeRule(),
 		NewDistinctOverSortElimRule(),
 		NewDistinctOverUnionDedupRule(),
+		NewDistinctOverGroupByElimRule(),
 		NewPullFilterAboveDistinctRule(),
 		NewTypeFilterMergeRule(),
 		NewTypeFilterRedundantOverScanRule(),
@@ -72,6 +74,13 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewUnsortedSortElimRule(),
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
+		NewInComparisonToExplodeRule(),
+		NewIndexIntersectionRule(),
+		NewLimitMergeRule(),
+		NewPushLimitThroughProjectionRule(),
+		NewPushLimitThroughUnionRule(),
+		NewNoOpLimitElimRule(),
+		NewZeroLimitRule(),
 	}
 }
 
@@ -97,12 +106,23 @@ func DefaultExpressionRules() []ExpressionRule {
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
+		NewImplementValuesRule(),
+		NewImplementProjectionRule(),
 		NewImplementFilterRule(),
+		NewImplementIndexScanRule(),
+		NewOrderedIndexScanRule(),
 		NewImplementSortRule(),
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),
+		NewSortOverOrderedElimRule(),
+		NewImplementStreamingAggregationRule(),
+		NewImplementHashAggregationRule(),
+		NewStreamingAggFromIndexRule(),
+		NewAggregateDataAccessRule(),
+		NewImplementNestedLoopJoinRule(),
+		NewImplementLimitRule(),
 	}
 }
 

@@ -1,5 +1,11 @@
 package cascades
 
+import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+)
+
 // PlanContext is the planner's context object — passed to every
 // CascadesRule.OnMatch invocation, holds the static metadata about a
 // record store the rule needs (planner config, available match
@@ -45,14 +51,54 @@ func DefaultPlannerConfiguration() PlannerConfiguration {
 	return PlannerConfiguration{}
 }
 
-// MatchCandidate is the placeholder for a per-index match candidate
-// — name plus a hook the rule machinery calls to test if the candidate
-// applies. Concrete impls land alongside the index-pushdown rules
-// (B5 Batch A).
+// MatchCandidate represents a scan candidate — typically a secondary
+// index or the primary-key scan. During the EXPLORE phase, the
+// planner matches query predicates against each candidate's sargable
+// parameters; during OPTIMIZE it converts successful matches into
+// physical index-scan plans.
+//
+// Ports the core surface of Java's
+// `com.apple.foundationdb.record.query.plan.cascades.MatchCandidate`.
 type MatchCandidate interface {
 	// CandidateName returns the candidate's identifier (typically the
-	// index name).
+	// index name, or "primary" for the PK scan).
 	CandidateName() string
+
+	// GetColumnNames returns the ordered column-name list (one per
+	// index key column, parallel to GetSargableAliases). Used by rules
+	// to match ComparisonPredicate field references against the index's
+	// key columns.
+	GetColumnNames() []string
+
+	// GetSargableAliases returns the ordered list of parameter
+	// identifiers (one per index key column, left-to-right) that can
+	// be bound by predicate matching. The order determines the index
+	// key prefix discipline: N equality-bound parameters followed by
+	// at most one inequality-bound parameter form a valid scan prefix.
+	GetSargableAliases() []values.CorrelationIdentifier
+
+	// GetRecordTypes returns which record types this candidate covers.
+	GetRecordTypes() []string
+
+	// IsUnique reports whether the candidate's key uniquely identifies
+	// a record (unique index or primary key).
+	IsUnique() bool
+
+	// ComputeBoundParameterPrefixMap computes the valid index-scan
+	// prefix from a parameter→ComparisonRange binding map. Returns the
+	// longest prefix of sargable parameters that satisfies the index
+	// scan discipline (N equalities + optional trailing inequality).
+	ComputeBoundParameterPrefixMap(
+		bindings map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	) map[values.CorrelationIdentifier]*predicates.ComparisonRange
+
+	// ToScanPlan converts a successful match into a physical index
+	// scan plan. Called with the prefix map from
+	// ComputeBoundParameterPrefixMap + reverse flag.
+	ToScanPlan(
+		prefixMap map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+		reverse bool,
+	) plans.RecordQueryPlan
 }
 
 // emptyPlanContext is the no-info PlanContext singleton — used by

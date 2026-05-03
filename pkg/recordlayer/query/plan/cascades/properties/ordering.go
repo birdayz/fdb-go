@@ -97,28 +97,49 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		// rationale as Distinct. The PK comparison drops duplicates
 		// without reordering surviving rows.
 		return inheritFromInner(v.GetInner())
+	case *expressions.LogicalLimitExpression:
+		return inheritFromInner(v.GetInner())
+	case *expressions.GroupByExpression:
+		// GroupBy does not preserve input ordering — output is one row
+		// per group, in implementation-defined order.
+		return Ordering{IsKnown: false}
+	default:
+		if hinter, ok := e.(OrderingHinter); ok {
+			return hinter.HintOrdering()
+		}
 	}
-	// Default: no known ordering (FullUnorderedScan / Union /
-	// Intersection).
 	return Ordering{IsKnown: false}
 }
 
-// inheritFromInner returns the ordering of the first member of
-// inner's Reference (matching the Cost-walk's first-member policy).
+// inheritFromInner returns the best ordering from any member of the
+// inner Reference. A filter/projection/type-filter preserves the
+// ordering of its child — and after planner exploration, the
+// ordering-providing physical alternative may not be the first member.
 func inheritFromInner(inner expressions.Quantifier) Ordering {
 	ref := inner.GetRangesOver()
 	if ref == nil {
 		return Ordering{}
 	}
-	first := ref.Get()
-	if first == nil {
-		return Ordering{}
+	for _, m := range ref.Members() {
+		o := EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
 	}
-	return EstimateOrdering(first)
+	return Ordering{}
 }
 
 // IsOrdered reports whether the expression has a known output order.
 // Convenience wrapper over EstimateOrdering.
 func IsOrdered(e expressions.RelationalExpression) bool {
 	return EstimateOrdering(e).IsKnown
+}
+
+// OrderingHinter is the optional interface a RelationalExpression
+// implements to advertise its output ordering. Used by physical
+// wrappers (e.g. index scan) to declare that their output is ordered
+// by specific keys without the ordering property needing to know
+// every concrete wrapper type.
+type OrderingHinter interface {
+	HintOrdering() Ordering
 }

@@ -43,7 +43,7 @@ func (r *PullFilterAboveProjectionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	pulled := expressions.NewLogicalProjectionExpression(p.GetProjectedValues(), f.GetInner())
-	pulledQ := expressions.ForEachQuantifier(expressions.InitialOf(pulled))
+	pulledQ := expressions.ForEachQuantifier(call.MemoizeExpression(pulled))
 	call.Yield(expressions.NewLogicalFilterExpression(f.GetPredicates(), pulledQ))
 }
 

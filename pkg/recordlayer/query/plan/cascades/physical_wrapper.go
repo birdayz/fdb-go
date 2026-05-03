@@ -11,6 +11,113 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// physicalPlanExpression is implemented by all physical-plan wrapper
+// types. Lets implement rules discover physical plans in a Reference
+// with a single interface assertion instead of per-type switches.
+type physicalPlanExpression interface {
+	expressions.RelationalExpression
+	GetRecordQueryPlan() plans.RecordQueryPlan
+}
+
+// IsPhysicalIndexScan reports whether the given RelationalExpression is
+// a physicalIndexScanWrapper. Exported so external test packages can
+// identify index scan plans without depending on the unexported type.
+func IsPhysicalIndexScan(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalIndexScanWrapper)
+	return ok
+}
+
+// IsPhysicalIntersection reports whether the given RelationalExpression
+// is a physicalIntersectionWrapper.
+func IsPhysicalIntersection(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalIntersectionWrapper)
+	return ok
+}
+
+// IsPhysicalFilter reports whether the given RelationalExpression is
+// a physicalFilterWrapper.
+func IsPhysicalFilter(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFilterWrapper)
+	return ok
+}
+
+// IsPhysicalInsert reports whether the given RelationalExpression is
+// a physicalInsertWrapper.
+func IsPhysicalInsert(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInsertWrapper)
+	return ok
+}
+
+// IsPhysicalDelete reports whether the given RelationalExpression is
+// a physicalDeleteWrapper.
+func IsPhysicalDelete(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalDeleteWrapper)
+	return ok
+}
+
+// IsPhysicalUpdate reports whether the given RelationalExpression is
+// a physicalUpdateWrapper.
+func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalUpdateWrapper)
+	return ok
+}
+
+// ExplainPhysicalPlan returns the Explain() string for a physical-plan
+// expression, or empty string if the expression is not a physical plan.
+func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
+	ph, ok := expr.(physicalPlanExpression)
+	if !ok {
+		return ""
+	}
+	p := ph.GetRecordQueryPlan()
+	if p == nil {
+		return ""
+	}
+	return p.Explain()
+}
+
+// PhysicalIndexScanName returns the index name if expr is a
+// physicalIndexScanWrapper, empty string otherwise.
+func PhysicalIndexScanName(expr expressions.RelationalExpression) string {
+	w, ok := expr.(*physicalIndexScanWrapper)
+	if !ok {
+		return ""
+	}
+	return w.plan.GetIndexName()
+}
+
+// findPhysicalPlan scans ref's members for the first physical-plan
+// expression and returns its underlying RecordQueryPlan. Returns nil
+// if no physical plan has been yielded into ref yet.
+func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
+	if ref == nil {
+		return nil
+	}
+	for _, m := range ref.Members() {
+		if ph, ok := m.(physicalPlanExpression); ok {
+			return ph.GetRecordQueryPlan()
+		}
+	}
+	return nil
+}
+
+// findPhysicalExpr scans ref's members for the first physical-plan
+// expression and returns it as a RelationalExpression. Used by
+// implement rules to obtain the existing wrapper (already memoized
+// in the inner Reference by a prior implement-rule fire) without
+// re-wrapping from scratch.
+func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpression {
+	if ref == nil {
+		return nil
+	}
+	for _, m := range ref.Members() {
+		if _, ok := m.(physicalPlanExpression); ok {
+			return m
+		}
+	}
+	return nil
+}
+
 // writeHash64 writes a uint64 to the FNV hasher in big-endian
 // byte order. Shared by all four wrapper types' HashCodeWithoutChildren
 // implementations.
@@ -55,6 +162,9 @@ type physicalScanWrapper struct {
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalScanWrapper) GetPlan() *plans.RecordQueryScanPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalScanWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns a fresh QuantifiedObjectValue whose Type is
 // the plan's flowed Type. Mirrors FullUnorderedScanExpression's
@@ -129,6 +239,112 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 
 var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 
+// physicalIndexScanWrapper adapts a `*plans.RecordQueryIndexPlan` to
+// the RelationalExpression interface. Same leaf shape as
+// physicalScanWrapper — index scans have no children in the Memo.
+type physicalIndexScanWrapper struct {
+	plan        *plans.RecordQueryIndexPlan
+	columnNames []string // index column names for ordering property
+	unique      bool
+}
+
+func (w *physicalIndexScanWrapper) GetPlan() *plans.RecordQueryIndexPlan      { return w.plan }
+func (w *physicalIndexScanWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
+func (w *physicalIndexScanWrapper) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+}
+
+func (w *physicalIndexScanWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
+func (w *physicalIndexScanWrapper) CanCorrelate() bool                       { return false }
+func (w *physicalIndexScanWrapper) ChildrenAsSet() bool                      { return false }
+
+func (w *physicalIndexScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+func (w *physicalIndexScanWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalIndexScanWrapper)
+	if !ok {
+		return false
+	}
+	return plans.Equals(w.plan, o.plan)
+}
+
+func (w *physicalIndexScanWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physindexscanwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+func (w *physicalIndexScanWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 0 {
+		return nil, fmt.Errorf("physicalIndexScanWrapper.WithChildren: expected 0 children, got %d", len(qs))
+	}
+	return w, nil
+}
+
+// HintOrdering: an index scan produces rows in index-key order for
+// the non-equality-bound suffix columns. E.g. index(a, b, c) with
+// a = 1 produces output sorted by (b, c).
+func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
+	if w.plan == nil || len(w.columnNames) == 0 {
+		return properties.Ordering{}
+	}
+	comps := w.plan.GetScanComparisons()
+	firstNonEq := 0
+	for i, cr := range comps {
+		if cr.IsEquality() {
+			firstNonEq = i + 1
+		} else {
+			break
+		}
+	}
+	if firstNonEq >= len(w.columnNames) {
+		return properties.Ordering{IsKnown: true}
+	}
+	keys := make([]values.Value, 0, len(w.columnNames)-firstNonEq)
+	for i := firstNonEq; i < len(w.columnNames); i++ {
+		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys}
+}
+
+// HintCost: index scans are cheaper than full table scans because
+// they read a subset of records. Apply a selectivity multiplier on
+// top of the physical-wrapper discount. Unique indexes with all
+// columns equality-bound return cardinality=1 (point lookup).
+func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
+	base := properties.LeafScanCardinality * physicalWrapperCostMultiplier
+	if w.plan != nil {
+		comps := w.plan.GetScanComparisons()
+		numBound := 0
+		allEquality := true
+		for _, cr := range comps {
+			if !cr.IsEmpty() {
+				numBound++
+				if !cr.IsEquality() {
+					allEquality = false
+				}
+			}
+		}
+		if w.unique && allEquality && numBound == len(w.columnNames) {
+			return properties.Cost{Cardinality: physicalWrapperCostMultiplier, CPU: 0}
+		}
+		sel := 1.0
+		for i := 0; i < numBound; i++ {
+			sel *= properties.FilterSelectivity
+		}
+		base *= sel
+	}
+	return properties.Cost{Cardinality: base, CPU: 0}
+}
+
+var _ expressions.RelationalExpression = (*physicalIndexScanWrapper)(nil)
+
 // physicalFilterWrapper adapts a `*plans.RecordQueryFilterPlan` to
 // the RelationalExpression interface. The wrapped plan has a single
 // inner — exposed as a single Quantifier ranging over a fresh
@@ -152,6 +368,9 @@ func NewPhysicalFilterWrapper(plan *plans.RecordQueryFilterPlan, innerQuant expr
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalFilterWrapper) GetPlan() *plans.RecordQueryFilterPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalFilterWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value
 // — filter doesn't reshape rows.
@@ -228,6 +447,20 @@ func (w *physicalFilterWrapper) HintCost(child []properties.Cost) properties.Cos
 	}
 }
 
+func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
 
 // physicalSortWrapper adapts a `*plans.RecordQuerySortPlan` to the
@@ -246,6 +479,9 @@ func NewPhysicalSortWrapper(plan *plans.RecordQuerySortPlan, innerQuant expressi
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalSortWrapper) GetPlan() *plans.RecordQuerySortPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalSortWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value
 // — sort doesn't reshape rows.
@@ -318,6 +554,21 @@ func (w *physicalSortWrapper) HintCost(child []properties.Cost) properties.Cost 
 	}
 }
 
+func (w *physicalSortWrapper) HintOrdering() properties.Ordering {
+	if w.plan == nil {
+		return properties.Ordering{}
+	}
+	sortKeys := w.plan.GetSortKeys()
+	if len(sortKeys) == 0 {
+		return properties.Ordering{}
+	}
+	keys := make([]values.Value, len(sortKeys))
+	for i, sk := range sortKeys {
+		keys[i] = sk.Value
+	}
+	return properties.Ordering{IsKnown: true, Keys: keys}
+}
+
 var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)
 
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
@@ -334,6 +585,9 @@ func NewPhysicalDistinctWrapper(plan *plans.RecordQueryDistinctPlan, innerQuant 
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalDistinctWrapper) GetPlan() *plans.RecordQueryDistinctPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalDistinctWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalDistinctWrapper) GetResultValue() values.Value {
@@ -396,6 +650,20 @@ func (w *physicalDistinctWrapper) HintCost(child []properties.Cost) properties.C
 	}
 }
 
+func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
 
 // physicalTypeFilterWrapper adapts a `*plans.RecordQueryTypeFilterPlan`
@@ -412,6 +680,9 @@ func NewPhysicalTypeFilterWrapper(plan *plans.RecordQueryTypeFilterPlan, innerQu
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalTypeFilterWrapper) GetPlan() *plans.RecordQueryTypeFilterPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalTypeFilterWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalTypeFilterWrapper) GetResultValue() values.Value {
@@ -474,6 +745,20 @@ func (w *physicalTypeFilterWrapper) HintCost(child []properties.Cost) properties
 	}
 }
 
+func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)
 
 // physicalInsertWrapper adapts a `*plans.RecordQueryInsertPlan` to
@@ -491,6 +776,9 @@ func NewPhysicalInsertWrapper(plan *plans.RecordQueryInsertPlan, innerQuant expr
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalInsertWrapper) GetPlan() *plans.RecordQueryInsertPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalInsertWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalInsertWrapper) GetResultValue() values.Value {
@@ -571,6 +859,9 @@ func NewPhysicalDeleteWrapper(plan *plans.RecordQueryDeletePlan, innerQuant expr
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalDeleteWrapper) GetPlan() *plans.RecordQueryDeletePlan { return w.plan }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalDeleteWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalDeleteWrapper) GetResultValue() values.Value {
 	return w.innerQuant.GetFlowedObjectValue()
@@ -647,6 +938,9 @@ func NewPhysicalUpdateWrapper(plan *plans.RecordQueryUpdatePlan, innerQuant expr
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalUpdateWrapper) GetPlan() *plans.RecordQueryUpdatePlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalUpdateWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the inner Quantifier's flowed object value.
 func (w *physicalUpdateWrapper) GetResultValue() values.Value {
@@ -727,6 +1021,9 @@ func NewPhysicalUnionWrapper(plan *plans.RecordQueryUnionPlan, innerQuants []exp
 
 // GetPlan exposes the wrapped physical plan.
 func (w *physicalUnionWrapper) GetPlan() *plans.RecordQueryUnionPlan { return w.plan }
+
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalUnionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
 
 // GetResultValue returns the first inner's flowed object value.
 // Java's RecordQueryUnionPlan emits rows compatible with all
@@ -816,6 +1113,9 @@ func (w *physicalIntersectionWrapper) GetPlan() *plans.RecordQueryIntersectionPl
 	return w.plan
 }
 
+// GetRecordQueryPlan implements physicalPlanExpression.
+func (w *physicalIntersectionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
 // GetResultValue returns the first inner's flowed object value —
 // intersection emits rows compatible with all children.
 func (w *physicalIntersectionWrapper) GetResultValue() values.Value {
@@ -893,3 +1193,142 @@ func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost) properti
 }
 
 var _ expressions.RelationalExpression = (*physicalIntersectionWrapper)(nil)
+
+// --- Projection wrapper -----------------------------------------------
+
+type physicalProjectionWrapper struct {
+	plan       *plans.RecordQueryProjectionPlan
+	innerQuant expressions.Quantifier
+}
+
+func NewPhysicalProjectionWrapper(plan *plans.RecordQueryProjectionPlan, innerQuant expressions.Quantifier) *physicalProjectionWrapper {
+	return &physicalProjectionWrapper{plan: plan, innerQuant: innerQuant}
+}
+
+func (w *physicalProjectionWrapper) GetPlan() *plans.RecordQueryProjectionPlan { return w.plan }
+
+func (w *physicalProjectionWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
+func (w *physicalProjectionWrapper) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+}
+
+func (w *physicalProjectionWrapper) GetQuantifiers() []expressions.Quantifier {
+	return []expressions.Quantifier{w.innerQuant}
+}
+
+func (w *physicalProjectionWrapper) CanCorrelate() bool { return false }
+
+func (w *physicalProjectionWrapper) ChildrenAsSet() bool { return false }
+
+func (w *physicalProjectionWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+func (w *physicalProjectionWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalProjectionWrapper)
+	if !ok {
+		return false
+	}
+	return w.plan.EqualsWithoutChildren(o.plan)
+}
+
+func (w *physicalProjectionWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physprojwrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+func (w *physicalProjectionWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 1 {
+		return nil, fmt.Errorf("physicalProjectionWrapper.WithChildren: expected 1 child, got %d", len(qs))
+	}
+	return &physicalProjectionWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+func (w *physicalProjectionWrapper) HintCost(child []properties.Cost) properties.Cost {
+	if len(child) == 0 {
+		return properties.Cost{}
+	}
+	return properties.Cost{
+		Cardinality: child[0].Cardinality * physicalWrapperCostMultiplier,
+		CPU:         (child[0].CPU + child[0].Cardinality*0.01) * physicalWrapperCostMultiplier,
+	}
+}
+
+func (w *physicalProjectionWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
+var _ expressions.RelationalExpression = (*physicalProjectionWrapper)(nil)
+
+// --- Values wrapper ---------------------------------------------------
+
+type physicalValuesWrapper struct {
+	plan *plans.RecordQueryValuesPlan
+}
+
+func NewPhysicalValuesWrapper(plan *plans.RecordQueryValuesPlan) *physicalValuesWrapper {
+	return &physicalValuesWrapper{plan: plan}
+}
+
+func (w *physicalValuesWrapper) GetPlan() *plans.RecordQueryValuesPlan { return w.plan }
+
+func (w *physicalValuesWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
+func (w *physicalValuesWrapper) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+}
+
+func (w *physicalValuesWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
+
+func (w *physicalValuesWrapper) CanCorrelate() bool { return false }
+
+func (w *physicalValuesWrapper) ChildrenAsSet() bool { return false }
+
+func (w *physicalValuesWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+func (w *physicalValuesWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalValuesWrapper)
+	if !ok {
+		return false
+	}
+	return plans.Equals(w.plan, o.plan)
+}
+
+func (w *physicalValuesWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physvalueswrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 0 {
+		return nil, fmt.Errorf("physicalValuesWrapper.WithChildren: expected 0 children, got %d", len(qs))
+	}
+	return w, nil
+}
+
+func (w *physicalValuesWrapper) HintCost(_ []properties.Cost) properties.Cost {
+	return properties.Cost{Cardinality: 1, CPU: 0}
+}
+
+var _ expressions.RelationalExpression = (*physicalValuesWrapper)(nil)

@@ -55,7 +55,7 @@ func (r *PullCommonFilterAboveIntersectionRule) OnMatch(call *ExpressionRuleCall
 		newQs = append(newQs, f.GetInner())
 	}
 	newX := expressions.NewLogicalIntersectionExpression(newQs, x.GetComparisonKeyValues())
-	newXQ := expressions.ForEachQuantifier(expressions.InitialOf(newX))
+	newXQ := expressions.ForEachQuantifier(call.MemoizeExpression(newX))
 	call.Yield(expressions.NewLogicalFilterExpression(commonPreds, newXQ))
 }
 

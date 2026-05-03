@@ -42,7 +42,7 @@ func (r *PushFilterThroughSortRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), s.GetInner())
-	pushedQ := expressions.ForEachQuantifier(expressions.InitialOf(pushed))
+	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
 	call.Yield(expressions.NewLogicalSortExpression(s.GetSortKeys(), pushedQ))
 }
 

@@ -1,6 +1,12 @@
 package cascades
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+)
 
 func TestEmptyPlanContext_NotNil(t *testing.T) {
 	t.Parallel()
@@ -30,7 +36,22 @@ func TestDefaultPlannerConfiguration_ZeroFields(t *testing.T) {
 // with a richer one when a rule needs it.
 type stubMatchCandidate struct{ name string }
 
-func (s stubMatchCandidate) CandidateName() string { return s.name }
+func (s stubMatchCandidate) CandidateName() string                              { return s.name }
+func (s stubMatchCandidate) GetColumnNames() []string                           { return nil }
+func (s stubMatchCandidate) GetSargableAliases() []values.CorrelationIdentifier { return nil }
+func (s stubMatchCandidate) GetRecordTypes() []string                           { return nil }
+func (s stubMatchCandidate) IsUnique() bool                                     { return false }
+func (s stubMatchCandidate) ComputeBoundParameterPrefixMap(
+	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	return nil
+}
+
+func (s stubMatchCandidate) ToScanPlan(
+	_ map[values.CorrelationIdentifier]*predicates.ComparisonRange, _ bool,
+) plans.RecordQueryPlan {
+	return nil
+}
 
 func TestMatchCandidate_Interface(t *testing.T) {
 	t.Parallel()

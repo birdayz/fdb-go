@@ -60,12 +60,24 @@ type ExpressionRule interface {
 // (Phase 4.6); this helper exists so the seed has a testable entry
 // point — same pattern as FireRule for predicate/value rules.
 func FireExpressionRule(rule ExpressionRule, ref *expressions.Reference) []expressions.RelationalExpression {
+	return FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+}
+
+// FireExpressionRuleWithMemo is like FireExpressionRule but passes a
+// PlanContext and Memo to the rule call, enabling cross-Reference
+// memoization when running inside the Planner.
+func FireExpressionRuleWithMemo(rule ExpressionRule, ref *expressions.Reference, ctx PlanContext, memo *Memo) []expressions.RelationalExpression {
 	matcher := rule.Matcher()
 	var all []expressions.RelationalExpression
 	for _, member := range ref.Members() {
 		matches := matcher.BindMatches(matching.NewBindings(), member)
 		for _, b := range matches {
-			call := NewExpressionRuleCall(ref, b, EmptyPlanContext())
+			var call *ExpressionRuleCall
+			if memo != nil {
+				call = NewExpressionRuleCallWithMemo(ref, b, ctx, memo)
+			} else {
+				call = NewExpressionRuleCall(ref, b, ctx)
+			}
 			rule.OnMatch(call)
 			all = append(all, call.Yielded()...)
 		}

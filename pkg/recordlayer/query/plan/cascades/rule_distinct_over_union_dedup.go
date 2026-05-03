@@ -57,7 +57,7 @@ func (r *DistinctOverUnionDedupRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	newUnion := expressions.NewLogicalUnionExpression(deduped)
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(newUnion))
+	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(newUnion))
 	call.Yield(expressions.NewLogicalDistinctExpression(innerQ))
 }
 

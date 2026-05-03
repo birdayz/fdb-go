@@ -472,3 +472,163 @@ func BenchmarkBestRefCost(b *testing.B) {
 		_ = ref.GetBest(properties.CostLess)
 	}
 }
+
+func BenchmarkMemo_MemoizeExpression_LeafHit(b *testing.B) {
+	m := NewMemo(nil)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	m.MemoizeExpression(scan)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		m.MemoizeExpression(s)
+	}
+}
+
+func BenchmarkMemo_MemoizeExpression_NonLeafHit(b *testing.B) {
+	m := NewMemo(nil)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := m.MemoizeExpression(scan)
+	pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
+	filter := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+	m.MemoizeExpression(filter)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+		m.MemoizeExpression(f)
+	}
+}
+
+func BenchmarkPlanner_ExploreWithMemo(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		sort := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(scanRef))
+		sortRef := expressions.InitialOf(sort)
+		pred := predicates.NewConstantPredicate(predicates.TriTrue)
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{pred},
+			expressions.ForEachQuantifier(sortRef),
+		)
+		rootRef := expressions.InitialOf(filter)
+		p := NewPlanner(DefaultExpressionRules(), nil)
+		p.Explore(rootRef)
+	}
+}
+
+func BenchmarkPlanner_PlanWithIndexCandidates(b *testing.B) {
+	a1 := values.UniqueCorrelationIdentifier()
+	a2 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"T$a_b",
+		[]string{"T"},
+		[]string{"A", "B"},
+		[]values.CorrelationIdentifier{a1, a2},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		q := expressions.ForEachQuantifier(scanRef)
+		filter := expressions.NewLogicalFilterExpression(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "A", Typ: values.TypeInt},
+					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+				),
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "B", Typ: values.TypeInt},
+					predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
+				),
+			},
+			q,
+		)
+		filterRef := expressions.InitialOf(filter)
+		filterQ := expressions.ForEachQuantifier(filterRef)
+		sort := expressions.NewLogicalSortExpression(
+			[]expressions.SortKey{{Value: &values.FieldValue{Field: "B", Typ: values.UnknownType}}},
+			filterQ,
+		)
+		ref := expressions.InitialOf(sort)
+
+		p := NewPlanner(rules, ctx)
+		p.Plan(ref)
+	}
+}
+
+func BenchmarkPlanner_PlanAggregation(b *testing.B) {
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"T$region",
+		[]string{"T"},
+		[]string{"region"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		sort := expressions.NewLogicalSortExpression(
+			[]expressions.SortKey{{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}}},
+			scanQ,
+		)
+		sortRef := expressions.InitialOf(sort)
+		sortQ := expressions.ForEachQuantifier(sortRef)
+		gb := expressions.NewGroupByExpression(
+			[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			},
+			sortQ,
+		)
+		ref := expressions.InitialOf(gb)
+
+		p := NewPlanner(rules, ctx)
+		p.Plan(ref)
+	}
+}
+
+func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"T$region",
+		[]string{"T"},
+		[]string{"region"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		gb := expressions.NewGroupByExpression(
+			[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			},
+			scanQ,
+		)
+		ref := expressions.InitialOf(gb)
+
+		p := NewPlanner(rules, ctx)
+		p.Plan(ref)
+	}
+}

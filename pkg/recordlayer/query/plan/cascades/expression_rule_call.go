@@ -21,8 +21,13 @@ import (
 //   - Reference: the memo group whose member fired the rule. Yields
 //     append to this Reference; the dedup happens via Reference.Insert.
 //   - Context: the PlanContext (planner config + match candidates).
+//   - Memo: the Memo for cross-Reference memoization (nil when running
+//     outside the Planner, e.g. in standalone tests).
 //   - Yield(expr): insert a new equivalent expression into the
 //     Reference.
+//   - MemoizeExpression(expr): find-or-create a Reference for a
+//     sub-expression via the Memo. Falls back to InitialOf when no
+//     Memo is present.
 //   - Yielded(): the list of expressions yielded so far. Tests + the
 //     planner's traversal driver consume this.
 //
@@ -33,6 +38,7 @@ type ExpressionRuleCall struct {
 	Bindings    *matching.PlannerBindings
 	Reference   *expressions.Reference
 	Context     PlanContext
+	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
 }
 
@@ -47,6 +53,20 @@ func NewExpressionRuleCall(ref *expressions.Reference, bindings *matching.Planne
 		Bindings:  bindings,
 		Reference: ref,
 		Context:   ctx,
+	}
+}
+
+// NewExpressionRuleCallWithMemo builds a rule-call with a Memo for
+// cross-Reference memoization. Used by the Planner's ApplyRulesTask.
+func NewExpressionRuleCallWithMemo(ref *expressions.Reference, bindings *matching.PlannerBindings, ctx PlanContext, memo *Memo) *ExpressionRuleCall {
+	if ctx == nil {
+		ctx = EmptyPlanContext()
+	}
+	return &ExpressionRuleCall{
+		Bindings:  bindings,
+		Reference: ref,
+		Context:   ctx,
+		memo:      memo,
 	}
 }
 
@@ -65,6 +85,31 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 	inserted := c.Reference.Insert(expr)
 	c.yieldedExps = append(c.yieldedExps, expr)
 	return inserted
+}
+
+// MemoizeExpression finds or creates a Reference for a sub-expression.
+// When a Memo is present (running inside the Planner), this checks if
+// an existing Reference already holds a structurally-equivalent
+// expression and returns it — enabling cross-Reference sharing.
+// Without a Memo (standalone rule testing), falls back to
+// expressions.InitialOf(expr).
+//
+// The current call's Reference (the one the rule is yielding into) is
+// excluded from reuse to prevent self-referential cycles. This mirrors
+// Java's guard: `Verify.verify(existingReference != this.root)`.
+//
+// Rules should use this instead of expressions.InitialOf when creating
+// child References for yielded expressions. This is how the Cascades
+// planner avoids redundant exploration of shared sub-trees.
+func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
+	if c.memo != nil {
+		ref := c.memo.MemoizeExpression(expr)
+		if ref == c.Reference {
+			return expressions.InitialOf(expr)
+		}
+		return ref
+	}
+	return expressions.InitialOf(expr)
 }
 
 // Yielded returns the expressions the rule has yielded so far,

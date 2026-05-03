@@ -5,7 +5,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 )
 
-// Planner is the task-stack driven cascades planner — Track B6 seed.
+// Planner is the task-stack driven cascades planner — Track B6.
 //
 // Replaces FixpointApply's "fire every rule on every Reference each
 // pass" approach with a task-stack driver that:
@@ -13,46 +13,44 @@ import (
 //   - Explores the expression DAG bottom-up: leaves fire rules first,
 //     ancestors after.
 //   - Tracks per-Reference saturation: a Reference whose member count
-//     hasn't changed since last ApplyRules pass is NOT re-fired.
-//     This avoids the O(N*passes) wasted work in FixpointApply.
+//     hasn't changed since the last rule-firing round is NOT re-fired.
+//   - Fires rules individually (per-rule task granularity): each rule
+//     gets its own TransformReferenceTask, enabling per-rule events,
+//     staleness detection, and future rule-priority scheduling.
 //   - Exposes event hooks for diagnostic output without changing the
 //     core driver.
 //
 // The Java equivalent is `CascadesPlanner` — task-stack with EXPLORE
-// and OPTIMIZE phases. The seed implements EXPLORE only; OPTIMIZE is
-// `properties.ExtractBestPlan` (already shipped) which the planner
-// invokes after exploration converges.
+// and OPTIMIZE phases. This implements both: EXPLORE drives the
+// task-stack to convergence; OPTIMIZE extracts the cheapest member at
+// every reachable Reference via properties.ExtractBestPlanFromSelector.
 //
 // Convergence: same contract as FixpointApply. A saturated Reference
 // has stable member count; the stack drains; planner returns. Hard
 // cap (MaxTasks) prevents pathological non-termination from
 // rule-yielding-fresh-members loops; default 100_000.
 //
-// The seed planner is single-threaded. Multi-threaded exploration
-// (Java's planner is also single-threaded) is a future concern.
+// The planner is single-threaded (Java's is too).
 type Planner struct {
 	// stack MUST be LIFO. The bottom-up exploration invariant —
 	// children-before-parent — depends on stack-pop returning the
-	// most-recently-pushed Task. ExploreReferenceTask pushes
-	// ApplyRulesTask BEFORE per-member ExploreExpressionTask; LIFO
-	// pop order means ExploreExpressionTask (and the children it
-	// pushes) runs FIRST, descending to leaves; ApplyRulesTask
-	// fires last on already-explored children. Switching to FIFO
-	// (queue) would reverse this and the guard-retry pattern in
-	// the Implement* rules ("inner not yet physical → skip") would
-	// stop working.
+	// most-recently-pushed Task. ExploreReferenceTask pushes the
+	// SaturationCheckTask FIRST (deepest), then per-rule
+	// TransformReferenceTasks, then per-member ExploreExpressionTasks
+	// (topmost). LIFO pop order: ExploreExpression runs first
+	// (descends to leaves), then rules fire, then saturation check.
 	stack []Task
 	rules []ExpressionRule
 	ctx   PlanContext
+	memo  *Memo
 
-	// exploreCount[ref] = member count at last ApplyRules pass on
-	// `ref`. ApplyRulesTask short-circuits when count hasn't grown.
+	// exploreCount[ref] = member count at last saturation check on
+	// `ref`. SaturationCheckTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
 
 	// bestMember[ref] = the cheapest member chosen by the OPTIMIZE
-	// phase. Populated by OptimizeReferenceTask after ApplyRules
-	// reports no growth (Reference is saturated). Available via
-	// BestMember(ref) after Explore returns.
+	// phase. Populated by OptimizeReferenceTask after saturation.
+	// Available via BestMember(ref) after Explore returns.
 	bestMember map[*expressions.Reference]expressions.RelationalExpression
 
 	// MaxTasks caps the total tasks executed before the planner
@@ -78,8 +76,13 @@ type PlannerEventHandler interface {
 	// OnExploreExpression fires before an expression's children are
 	// pushed onto the task stack.
 	OnExploreExpression(e expressions.RelationalExpression)
-	// OnApplyRules fires when ApplyRulesTask runs; `grew` is the
-	// number of members added during this pass.
+	// OnTransformRule fires after a single rule has been applied to a
+	// Reference. `yielded` is the number of new members the rule
+	// produced (0 if no match or all yields were duplicates).
+	OnTransformRule(ref *expressions.Reference, rule ExpressionRule, yielded int)
+	// OnApplyRules fires at the saturation-check boundary after all
+	// per-rule tasks for a Reference have completed. `grew` is the
+	// total growth since the round started.
 	OnApplyRules(ref *expressions.Reference, grew int)
 	// OnOptimizeReference fires when OptimizeReferenceTask picks the
 	// best member for a Reference. `best` is the chosen member;
@@ -98,10 +101,17 @@ func NewPlanner(rules []ExpressionRule, ctx PlanContext) *Planner {
 	return &Planner{
 		rules:        rules,
 		ctx:          ctx,
+		memo:         nil, // initialized lazily on first Explore call
 		exploreCount: make(map[*expressions.Reference]int),
 		bestMember:   make(map[*expressions.Reference]expressions.RelationalExpression),
 		MaxTasks:     100_000,
 	}
+}
+
+// Memo returns the planner's Memo structure. Available after Explore
+// has been called (returns nil before that).
+func (p *Planner) Memo() *Memo {
+	return p.memo
 }
 
 // BestMember returns the OPTIMIZE-chosen best member for `ref`,
@@ -197,6 +207,9 @@ func (p *Planner) Explore(rootRef *expressions.Reference) (tasksRun int, converg
 	if rootRef == nil {
 		return 0, true
 	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
 	p.push(&ExploreReferenceTask{Ref: rootRef})
 	for len(p.stack) > 0 {
 		if p.tasksRun >= p.MaxTasks {
@@ -229,19 +242,22 @@ type Task interface {
 	Run(p *Planner)
 }
 
-// ExploreReferenceTask explores a Reference: schedules ApplyRules on
-// the Reference (to fire after children) and ExploreExpression on
-// each member (which descend into children first).
+// ExploreReferenceTask explores a Reference: schedules per-rule
+// TransformReferenceTasks and per-member ExploreExpressionTasks.
 //
-// Bottom-up ordering invariant: ApplyRulesTask is pushed BEFORE
-// per-member ExploreExpressionTask. LIFO stack means ExploreExpression
-// runs first, descending to the leaves; ApplyRules fires last, on
-// already-explored children.
+// Push order (LIFO execution = reverse of push order):
+//  1. SaturationCheckTask (pushed first → fires LAST)
+//  2. TransformReferenceTask per rule (in reverse → fire in order)
+//  3. ExploreExpressionTask per member (pushed last → fire FIRST)
+//
+// This ensures bottom-up exploration: children are explored before
+// rules fire at this level; saturation is checked after all rules.
 type ExploreReferenceTask struct {
 	Ref *expressions.Reference
 }
 
-// Run pushes ApplyRulesTask + per-member ExploreExpressionTask.
+// Run pushes per-rule TransformReferenceTasks + per-member
+// ExploreExpressionTasks + a SaturationCheckTask sentinel.
 func (t *ExploreReferenceTask) Run(p *Planner) {
 	if t.Ref == nil {
 		return
@@ -249,12 +265,27 @@ func (t *ExploreReferenceTask) Run(p *Planner) {
 	if p.events != nil {
 		p.events.OnExploreReference(t.Ref)
 	}
-	// Push ApplyRules first → fires AFTER children (LIFO).
-	p.push(&ApplyRulesTask{Ref: t.Ref})
-	// Push per-member ExploreExpressionTask → fire BEFORE ApplyRules.
-	// Snapshot members at task-spawn time so subsequently-yielded
-	// members get re-explored via the post-ApplyRules ExploreReference
-	// re-push (not via this snapshot).
+	beforeCount := len(t.Ref.Members())
+
+	// Early saturation check: if the count hasn't moved since the
+	// last fully-saturated pass, skip the whole round.
+	if last, seen := p.exploreCount[t.Ref]; seen && last == beforeCount {
+		if p.events != nil {
+			p.events.OnApplyRules(t.Ref, 0)
+		}
+		return
+	}
+
+	// Push SaturationCheckTask first → fires LAST (deepest on stack).
+	p.push(&SaturationCheckTask{Ref: t.Ref, BeforeCount: beforeCount})
+
+	// Push per-rule TransformReferenceTasks in REVERSE order so they
+	// fire in FORWARD rule order (LIFO pop reverses push order).
+	for i := len(p.rules) - 1; i >= 0; i-- {
+		p.push(&TransformReferenceTask{Ref: t.Ref, Rule: p.rules[i]})
+	}
+
+	// Push per-member ExploreExpressionTask last → fires FIRST.
 	for _, m := range t.Ref.Members() {
 		p.push(&ExploreExpressionTask{Expr: m})
 	}
@@ -281,80 +312,73 @@ func (t *ExploreExpressionTask) Run(p *Planner) {
 	}
 }
 
-// ApplyRulesTask fires every rule in the planner's rule set against
-// the given Reference. New yields go into the Reference via
-// Reference.Insert (dedup'd). If any rule grew the member set,
-// re-pushes ExploreReferenceTask for re-exploration of the new
-// shapes.
+// TransformReferenceTask fires a single rule against all members of
+// a Reference. Per-rule granularity enables per-rule events and is
+// the foundation for rule-priority scheduling.
 //
-// Saturation: if the Reference's member count is the same as the
-// last ApplyRules pass on it, this task is a no-op. Avoids re-firing
-// rules on saturated References.
-type ApplyRulesTask struct {
-	Ref *expressions.Reference
+// Mirrors Java's `TransformExpression` task: one rule, one (group,
+// expression) pair. Our variant fires one rule against all members
+// of the Reference (same observable behavior as the old monolithic
+// ApplyRulesTask, just split into N tasks for N rules).
+type TransformReferenceTask struct {
+	Ref  *expressions.Reference
+	Rule ExpressionRule
 }
 
-// Run fires every rule on every member; on growth, re-pushes
-// ExploreReferenceTask.
-//
-// Saturation semantics: a Reference is saturated when ApplyRules
-// fired on its current member set and no new yields were produced.
-// We mark saturation by recording the post-fire count in
-// exploreCount[ref]. The next ApplyRules pass on `ref` short-circuits
-// only if the recorded count matches the current count (i.e. nothing
-// has been added since saturation).
-//
-// Critical correctness contract: when a fire GROWS the member set,
-// we MUST NOT mark the Reference saturated — rules need to fire
-// again on the new members. Setting exploreCount to the post-grow
-// count would cause the next pass to short-circuit, missing rules
-// that match the freshly-added shapes. The fuzzer caught this:
-// FuzzPlanner_Confluence reproduced an input where FixpointApply's
-// 4 members became Planner's 3 because a post-grow saturation
-// stamp prevented the fourth member from being yielded.
-//
-// Fix: only set exploreCount when grew == 0 (saturation reached).
-// On growth, leave exploreCount unchanged and re-push
-// ExploreReferenceTask so rules fire again on the larger set.
-func (t *ApplyRulesTask) Run(p *Planner) {
-	if t.Ref == nil {
+// Run fires the rule against all current members of the Reference.
+func (t *TransformReferenceTask) Run(p *Planner) {
+	if t.Ref == nil || t.Rule == nil {
 		return
 	}
 	beforeCount := len(t.Ref.Members())
+	FireExpressionRuleWithMemo(t.Rule, t.Ref, p.ctx, p.memo)
+	yielded := len(t.Ref.Members()) - beforeCount
+	if p.events != nil {
+		p.events.OnTransformRule(t.Ref, t.Rule, yielded)
+	}
+}
 
-	// Saturation: if the member count hasn't moved since the last
-	// fully-saturated ApplyRules pass, skip — no new shapes to match on.
-	if last, seen := p.exploreCount[t.Ref]; seen && last == beforeCount {
-		if p.events != nil {
-			p.events.OnApplyRules(t.Ref, 0)
-		}
+// SaturationCheckTask is the post-rule-firing sentinel that detects
+// whether a Reference grew during the current round. Fires after all
+// per-rule TransformReferenceTasks for this Reference have completed.
+//
+// Growth → re-push ExploreReferenceTask (re-explore new shapes).
+// No growth → mark saturated, push OptimizeReferenceTask.
+//
+// Critical correctness contract: on growth, do NOT mark saturated.
+// Rules need to fire again on the new members. The fuzzer
+// (FuzzPlanner_Confluence) validates this property.
+type SaturationCheckTask struct {
+	Ref         *expressions.Reference
+	BeforeCount int
+}
+
+// Run checks for growth and either re-explores or saturates.
+func (t *SaturationCheckTask) Run(p *Planner) {
+	if t.Ref == nil {
 		return
 	}
-
-	for _, rule := range p.rules {
-		FireExpressionRule(rule, t.Ref)
-	}
 	afterCount := len(t.Ref.Members())
-	grew := afterCount - beforeCount
+	grew := afterCount - t.BeforeCount
+
+	// Update Memo index for newly-added members.
+	if grew > 0 && p.memo != nil {
+		members := t.Ref.Members()
+		for _, m := range members[t.BeforeCount:] {
+			p.memo.AddExpression(t.Ref, m)
+		}
+	}
 
 	if p.events != nil {
 		p.events.OnApplyRules(t.Ref, grew)
 	}
 
 	if grew > 0 {
-		// New members may have new sub-References; re-explore so
-		// rules at THIS Reference get to see the freshly-yielded
-		// shapes' children too. Do NOT mark saturated — the next
-		// ApplyRules pass must run rules on the now-larger set to
-		// catch any rules that match the freshly-added shapes.
 		p.push(&ExploreReferenceTask{Ref: t.Ref})
 		return
 	}
 	// No growth — Reference is saturated under the current rule set.
-	// Stamp the count so future ApplyRules passes short-circuit.
 	p.exploreCount[t.Ref] = afterCount
-	// Schedule OPTIMIZE for this Reference. The OptimizeReferenceTask
-	// picks the best member by cost.
 	p.push(&OptimizeReferenceTask{Ref: t.Ref})
 }
 

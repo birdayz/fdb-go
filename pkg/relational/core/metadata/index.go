@@ -49,3 +49,28 @@ func (i *RecordLayerIndex) Accept(v api.Visitor) { v.VisitIndex(i) }
 // Underlying exposes the record-layer Index for callers that need
 // access to its root expression, options, version metadata, etc.
 func (i *RecordLayerIndex) Underlying() *recordlayer.Index { return i.underlying }
+
+// IndexName returns the index name. Satisfies cascades.IndexDef.
+func (i *RecordLayerIndex) IndexName() string { return i.underlying.Name }
+
+// IndexColumnNames returns the field names from the index's root key
+// expression. Satisfies cascades.IndexDef.
+func (i *RecordLayerIndex) IndexColumnNames() []string {
+	if i.underlying.RootExpression == nil {
+		return nil
+	}
+	return i.underlying.RootExpression.FieldNames()
+}
+
+// IndexRecordTypes returns the owning record type. Satisfies
+// cascades.IndexDef.
+func (i *RecordLayerIndex) IndexRecordTypes() []string {
+	if i.tableName == "" {
+		return nil
+	}
+	return []string{i.tableName}
+}
+
+// IndexIsUnique returns whether the index enforces uniqueness.
+// Satisfies cascades.IndexDef.
+func (i *RecordLayerIndex) IndexIsUnique() bool { return i.underlying.IsUnique() }

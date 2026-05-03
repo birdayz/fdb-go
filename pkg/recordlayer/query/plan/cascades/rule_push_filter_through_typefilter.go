@@ -46,7 +46,7 @@ func (r *PushFilterThroughTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), tf.GetInner())
-	pushedQ := expressions.ForEachQuantifier(expressions.InitialOf(pushed))
+	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
 	call.Yield(expressions.NewLogicalTypeFilterExpression(tf.GetRecordTypes(), pushedQ))
 }
 

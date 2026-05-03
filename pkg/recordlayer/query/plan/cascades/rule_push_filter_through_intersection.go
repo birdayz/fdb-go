@@ -58,7 +58,7 @@ func (r *PushFilterThroughIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 	pushed := make([]expressions.Quantifier, 0, len(children))
 	for _, child := range children {
 		fc := expressions.NewLogicalFilterExpression(f.GetPredicates(), child)
-		pushed = append(pushed, expressions.ForEachQuantifier(expressions.InitialOf(fc)))
+		pushed = append(pushed, expressions.ForEachQuantifier(call.MemoizeExpression(fc)))
 	}
 	call.Yield(expressions.NewLogicalIntersectionExpression(pushed, x.GetComparisonKeyValues()))
 }

@@ -59,7 +59,7 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 	if depth >= 3 || len(b) == 0 {
 		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	}
-	op := b[start%len(b)] % 9
+	op := b[start%len(b)] % 10
 	switch op {
 	case 0:
 		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -109,6 +109,16 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		qr := expressions.ForEachQuantifier(expressions.InitialOf(right))
 		keys := []values.Value{&values.FieldValue{Field: "k", Typ: values.UnknownType}}
 		return expressions.NewLogicalIntersectionExpression([]expressions.Quantifier{ql, qr}, keys)
+	case 8:
+		// GroupBy over a random child — exercises GroupByExpression
+		// integration with cost model and ordering property.
+		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
+		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+		return expressions.NewGroupByExpression(
+			[]values.Value{&values.FieldValue{Field: "g", Typ: values.UnknownType}},
+			[]expressions.AggregateSpec{{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "x", Typ: values.UnknownType}}},
+			q,
+		)
 	default:
 		// UnsortedSort over a random child.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)

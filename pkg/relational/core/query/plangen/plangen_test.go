@@ -80,13 +80,495 @@ func TestConvert_FilterOverScan(t *testing.T) {
 	}
 }
 
-func TestConvert_FilterTextOnly_Unsupported(t *testing.T) {
+func TestConvert_FilterTextSimple(t *testing.T) {
 	t.Parallel()
-	// Text-only filter (no QueryPredicate) is the legacy non-catalog path.
 	src := logical.NewFilter(logical.NewScan("Order", ""), "x > 5")
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextDottedRef(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "t.id = o.customer_id")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	lhs, ok := cp.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("LHS is %T, want *FieldValue", cp.Operand)
+	}
+	if lhs.Field != "t.id" {
+		t.Fatalf("LHS field = %q, want %q", lhs.Field, "t.id")
+	}
+	rhs, ok := cp.Comparison.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("RHS is %T, want *FieldValue", cp.Comparison.Operand)
+	}
+	if rhs.Field != "o.customer_id" {
+		t.Fatalf("RHS field = %q, want %q", rhs.Field, "o.customer_id")
+	}
+}
+
+func TestConvert_FilterTextAND(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("Order", ""), "status = 'active' AND amount > 100")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 2 {
+		t.Fatalf("predicate count = %d, want 2 (one per AND conjunct)", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextBetween(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "age BETWEEN 18 AND 65")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	// BETWEEN expands to an AND predicate which the filter splits into conjuncts
+	// BUT since parseSingleComparison returns a single AndPredicate for BETWEEN,
+	// the filter layer sees it as 1 predicate.
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1 (BETWEEN as single AndPredicate)", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextIsNull(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "deleted_at IS NULL")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextIsNotNull(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "email IS NOT NULL")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextIn(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "status IN ('active', 'pending')")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonIn {
+		t.Fatalf("comparison type = %v, want ComparisonIn", cp.Comparison.Type)
+	}
+	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
+	if !ok {
+		t.Fatalf("RHS is %T, want *ConstantValue", cp.Comparison.Operand)
+	}
+	list, ok := cv.Value.([]any)
+	if !ok || len(list) != 2 {
+		t.Fatalf("IN list = %v, want 2-element list", cv.Value)
+	}
+	if list[0] != "active" || list[1] != "pending" {
+		t.Fatalf("IN list values = %v, want [active pending]", list)
+	}
+}
+
+func TestConvert_FilterTextNotIn(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "id NOT IN (1, 2, 3)")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *NotPredicate wrapping ComparisonIn", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextInNumeric(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "age IN (18, 21, 65)")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	cv := cp.Comparison.Operand.(*values.ConstantValue)
+	list := cv.Value.([]any)
+	if len(list) != 3 {
+		t.Fatalf("IN list len = %d, want 3", len(list))
+	}
+	if list[0] != int64(18) || list[1] != int64(21) || list[2] != int64(65) {
+		t.Fatalf("IN list = %v, want [18 21 65]", list)
+	}
+}
+
+func TestConvert_FilterTextOR(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "status = 'active' OR status = 'pending'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1 (single OrPredicate)", len(f.GetPredicates()))
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.OrPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *OrPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextORWithAND(t *testing.T) {
+	t.Parallel()
+	// a = 1 AND b = 2 OR c = 3 → OR(AND(a=1, b=2), c=3)
+	src := logical.NewFilter(logical.NewScan("T", ""), "a = 1 AND b = 2 OR c = 3")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1 (single OrPredicate)", len(f.GetPredicates()))
+	}
+	or, ok := f.GetPredicates()[0].(*predicates.OrPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *OrPredicate", f.GetPredicates()[0])
+	}
+	if len(or.SubPredicates) != 2 {
+		t.Fatalf("OR branches = %d, want 2", len(or.SubPredicates))
+	}
+	_, ok = or.SubPredicates[0].(*predicates.AndPredicate)
+	if !ok {
+		t.Fatalf("OR branch 0 is %T, want *AndPredicate", or.SubPredicates[0])
+	}
+}
+
+func TestConvert_FilterTextLike(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "name LIKE '%foo%'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonLike {
+		t.Fatalf("type = %v, want ComparisonLike", cp.Comparison.Type)
+	}
+	cv := cp.Comparison.Operand.(*values.ConstantValue)
+	if cv.Value != "%foo%" {
+		t.Fatalf("pattern = %v, want %%foo%%", cv.Value)
+	}
+}
+
+func TestConvert_FilterTextNotLike(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "name NOT LIKE 'test%'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *NotPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextLikeWithEscape(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "name LIKE 'a\\%b' ESCAPE '\\'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Escape != '\\' {
+		t.Fatalf("escape = %c, want \\", cp.Comparison.Escape)
+	}
+}
+
+func TestConvert_FilterTextStartsWith(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "STARTS_WITH(name, 'abc')")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonStartsWith {
+		t.Fatalf("type = %v, want ComparisonStartsWith", cp.Comparison.Type)
+	}
+	lhs, ok := cp.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("LHS is %T, want *FieldValue", cp.Operand)
+	}
+	if lhs.Field != "name" {
+		t.Fatalf("LHS = %q, want %q", lhs.Field, "name")
+	}
+	rhs := cp.Comparison.Operand.(*values.ConstantValue)
+	if rhs.Value != "abc" {
+		t.Fatalf("RHS = %v, want %q", rhs.Value, "abc")
+	}
+}
+
+func TestConvert_FilterTextIsDistinctFrom(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "x IS DISTINCT FROM 5")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonIsDistinctFrom {
+		t.Fatalf("type = %v, want ComparisonIsDistinctFrom", cp.Comparison.Type)
+	}
+}
+
+func TestConvert_FilterTextIsNotDistinctFrom(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "x IS NOT DISTINCT FROM NULL")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if cp.Comparison.Type != predicates.ComparisonNotDistinctFrom {
+		t.Fatalf("type = %v, want ComparisonNotDistinctFrom", cp.Comparison.Type)
+	}
+}
+
+func TestConvert_FilterTextParenthesized(t *testing.T) {
+	t.Parallel()
+	// (a = 1 OR b = 2) AND c = 3 → AND(OR(a=1, b=2), c=3) as two predicates in the filter
+	src := logical.NewFilter(logical.NewScan("T", ""), "(a = 1 OR b = 2) AND c = 3")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	preds := f.GetPredicates()
+	if len(preds) != 2 {
+		t.Fatalf("predicate count = %d, want 2", len(preds))
+	}
+	_, ok = preds[0].(*predicates.OrPredicate)
+	if !ok {
+		t.Fatalf("preds[0] is %T, want *OrPredicate", preds[0])
+	}
+	_, ok = preds[1].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("preds[1] is %T, want *ComparisonPredicate", preds[1])
+	}
+}
+
+func TestConvert_FilterTextNestedParens(t *testing.T) {
+	t.Parallel()
+	// Nested parens: ((x = 1)) → just x = 1
+	src := logical.NewFilter(logical.NewScan("T", ""), "((x = 1))")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextParenProtectsAND(t *testing.T) {
+	t.Parallel()
+	// BETWEEN inside parens should not be split by outer AND
+	src := logical.NewFilter(logical.NewScan("T", ""), "(x BETWEEN 1 AND 10) AND y = 5")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	preds := f.GetPredicates()
+	if len(preds) != 2 {
+		t.Fatalf("predicate count = %d, want 2", len(preds))
+	}
+}
+
+func TestConvert_FilterTextNOTExpression(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "NOT (x = 1 OR y = 2)")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *NotPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextNOTSimple(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "NOT x = 1")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	np, ok := f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *NotPredicate", f.GetPredicates()[0])
+	}
+	_, ok = np.Child.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("inner is %T, want *ComparisonPredicate", np.Child)
+	}
+}
+
+func TestConvert_FilterTextFunctionInPredicate(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("Order", ""), "UPPER(name) = 'FOO'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	filt := got.(*expressions.LogicalFilterExpression)
+	preds := filt.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("preds = %d, want 1", len(preds))
+	}
+	cmp, ok := preds[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *ComparisonPredicate", preds[0])
+	}
+	fn, ok := cmp.Operand.(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("Operand is %T, want *ScalarFunctionValue", cmp.Operand)
+	}
+	if fn.FuncName != "UPPER" {
+		t.Fatalf("fn = %q, want UPPER", fn.FuncName)
 	}
 }
 
@@ -168,6 +650,76 @@ func TestConvert_Insert_NoSource_Unsupported(t *testing.T) {
 	}
 }
 
+func TestConvert_Values_Basic(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues([]string{"42", "'hello'", "TRUE"}, []string{"id", "msg", "flag"})
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ve, ok := got.(*expressions.LogicalValuesExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalValuesExpression", got)
+	}
+	cols := ve.GetColumns()
+	if len(cols) != 3 {
+		t.Fatalf("columns = %d, want 3", len(cols))
+	}
+	c0, ok := cols[0].(*values.ConstantValue)
+	if !ok || c0.Value != int64(42) {
+		t.Fatalf("col[0] = %v (%T), want ConstantValue(42)", cols[0], cols[0])
+	}
+	c1, ok := cols[1].(*values.ConstantValue)
+	if !ok || c1.Value != "hello" {
+		t.Fatalf("col[1] = %v (%T), want ConstantValue(\"hello\")", cols[1], cols[1])
+	}
+	c2, ok := cols[2].(*values.ConstantValue)
+	if !ok || c2.Value != true {
+		t.Fatalf("col[2] = %v (%T), want ConstantValue(true)", cols[2], cols[2])
+	}
+}
+
+func TestConvert_Values_FunctionCall(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues([]string{"UPPER('abc')", "1 + 2"}, nil)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ve := got.(*expressions.LogicalValuesExpression)
+	cols := ve.GetColumns()
+	if len(cols) != 2 {
+		t.Fatalf("columns = %d, want 2", len(cols))
+	}
+	fn, ok := cols[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("col[0] is %T, want *ScalarFunctionValue", cols[0])
+	}
+	if fn.FuncName != "UPPER" {
+		t.Fatalf("fn = %q, want UPPER", fn.FuncName)
+	}
+	arith, ok := cols[1].(*values.ArithmeticValue)
+	if !ok {
+		t.Fatalf("col[1] is %T, want *ArithmeticValue", cols[1])
+	}
+	if arith.Op != values.OpAdd {
+		t.Fatalf("op = %v, want OpAdd", arith.Op)
+	}
+}
+
+func TestConvert_Values_Empty(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues(nil, nil)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ve := got.(*expressions.LogicalValuesExpression)
+	if len(ve.GetColumns()) != 0 {
+		t.Fatalf("columns = %d, want 0", len(ve.GetColumns()))
+	}
+}
+
 func TestConvert_Project_BareColumns(t *testing.T) {
 	t.Parallel()
 	src := logical.NewProject(
@@ -202,17 +754,145 @@ func TestConvert_Project_BareColumns(t *testing.T) {
 	}
 }
 
-func TestConvert_Project_ExpressionUnsupported(t *testing.T) {
+func TestConvert_Project_ArithmeticExpression(t *testing.T) {
 	t.Parallel()
-	// "id + 10" is not a bare column → unsupported.
 	src := logical.NewProject(
 		logical.NewScan("Order", ""),
 		[]string{"id", "id + 10"},
 		[]string{"", ""},
 	)
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (expression projection not yet wired)", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	if len(proj.GetProjectedValues()) != 2 {
+		t.Fatalf("projected values = %d, want 2", len(proj.GetProjectedValues()))
+	}
+	arith, ok := proj.GetProjectedValues()[1].(*values.ArithmeticValue)
+	if !ok {
+		t.Fatalf("proj[1] is %T, want *ArithmeticValue", proj.GetProjectedValues()[1])
+	}
+	if arith.Op != values.OpAdd {
+		t.Fatalf("op = %v, want OpAdd", arith.Op)
+	}
+}
+
+func TestConvert_Project_FunctionCall(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"UPPER(name)", "LENGTH(name)", "COALESCE(a, b)"},
+		[]string{"", "", ""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	if len(proj.GetProjectedValues()) != 3 {
+		t.Fatalf("projected values = %d, want 3", len(proj.GetProjectedValues()))
+	}
+	fn0, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if fn0.FuncName != "UPPER" {
+		t.Fatalf("fn0.FuncName = %q, want UPPER", fn0.FuncName)
+	}
+	if len(fn0.Args) != 1 {
+		t.Fatalf("fn0 args = %d, want 1", len(fn0.Args))
+	}
+	fn2, ok := proj.GetProjectedValues()[2].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[2] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[2])
+	}
+	if fn2.FuncName != "COALESCE" {
+		t.Fatalf("fn2.FuncName = %q, want COALESCE", fn2.FuncName)
+	}
+	if len(fn2.Args) != 2 {
+		t.Fatalf("fn2 args = %d, want 2", len(fn2.Args))
+	}
+}
+
+func TestConvert_Project_NestedFunctionCall(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"UPPER(LOWER(name))"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	outer, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if outer.FuncName != "UPPER" {
+		t.Fatalf("outer = %q, want UPPER", outer.FuncName)
+	}
+	inner, ok := outer.Args[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("inner is %T, want *ScalarFunctionValue", outer.Args[0])
+	}
+	if inner.FuncName != "LOWER" {
+		t.Fatalf("inner = %q, want LOWER", inner.FuncName)
+	}
+}
+
+func TestConvert_Project_FunctionWithArithmetic(t *testing.T) {
+	t.Parallel()
+	// ABS(x - 1) — function call wrapping arithmetic
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"ABS(x - 1)"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	fn, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if fn.FuncName != "ABS" {
+		t.Fatalf("fn = %q, want ABS", fn.FuncName)
+	}
+	arith, ok := fn.Args[0].(*values.ArithmeticValue)
+	if !ok {
+		t.Fatalf("arg is %T, want *ArithmeticValue", fn.Args[0])
+	}
+	if arith.Op != values.OpSub {
+		t.Fatalf("op = %v, want OpSub", arith.Op)
+	}
+}
+
+func TestConvert_Project_ZeroArgFunction(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"NOW()"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	fn, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if fn.FuncName != "NOW" {
+		t.Fatalf("fn = %q, want NOW", fn.FuncName)
+	}
+	if len(fn.Args) != 0 {
+		t.Fatalf("args = %d, want 0", len(fn.Args))
 	}
 }
 
@@ -368,17 +1048,30 @@ func TestConvert_Project_FloatExponentUnsupported(t *testing.T) {
 	}
 }
 
-func TestConvert_Project_QualifiedUnsupported(t *testing.T) {
+func TestConvert_Project_QualifiedRef(t *testing.T) {
 	t.Parallel()
-	// "Order.id" has a dot → unsupported (qualified-column needs scope).
 	src := logical.NewProject(
 		logical.NewScan("Order", ""),
 		[]string{"Order.id"},
 		[]string{""},
 	)
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (qualified-column not yet wired)", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj, ok := got.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalProjectionExpression", got)
+	}
+	if len(proj.GetProjectedValues()) != 1 {
+		t.Fatalf("projection count = %d, want 1", len(proj.GetProjectedValues()))
+	}
+	fv, ok := proj.GetProjectedValues()[0].(*values.FieldValue)
+	if !ok {
+		t.Fatalf("projection[0] is %T, want *FieldValue", proj.GetProjectedValues()[0])
+	}
+	if fv.Field != "Order.id" {
+		t.Fatalf("field = %q, want %q", fv.Field, "Order.id")
 	}
 }
 
@@ -554,15 +1247,15 @@ func TestConvert_Update_LiteralRHS(t *testing.T) {
 	}
 }
 
-func TestConvert_Sort_ExpressionUnsupported(t *testing.T) {
+func TestConvert_Sort_ArithmeticKey(t *testing.T) {
 	t.Parallel()
 	src := logical.NewSort(
 		logical.NewScan("Order", ""),
 		[]logical.SortKey{{Expr: "id + 10", Dir: logical.SortAsc}},
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (expression sort key not yet wired)", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
@@ -629,10 +1322,8 @@ func TestConvert_Update_MultipleSetsBareColumn(t *testing.T) {
 	}
 }
 
-func TestConvert_Update_OneRHSExpression_Unsupported(t *testing.T) {
+func TestConvert_Update_ArithmeticRHS(t *testing.T) {
 	t.Parallel()
-	// UPDATE Order SET name = altname, status = altstatus + 1 — second RHS
-	// has arithmetic → ErrUnsupported (no partial conversion).
 	src := logical.NewUpdate(
 		"Order",
 		[]logical.Assignment{
@@ -642,12 +1333,12 @@ func TestConvert_Update_OneRHSExpression_Unsupported(t *testing.T) {
 		logical.NewScan("Order", ""),
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (one RHS is non-bare)", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
-func TestConvert_Update_ExpressionRHS_Unsupported(t *testing.T) {
+func TestConvert_Update_IncrementRHS(t *testing.T) {
 	t.Parallel()
 	src := logical.NewUpdate(
 		"Order",
@@ -655,8 +1346,8 @@ func TestConvert_Update_ExpressionRHS_Unsupported(t *testing.T) {
 		logical.NewScan("Order", ""),
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
@@ -752,8 +1443,8 @@ func TestConvert_DeeplyNested_ProjectSortFilterScan(t *testing.T) {
 // at every level so callers using errors.Is can detect it.
 func TestConvert_RecursionPropagatesErrUnsupported(t *testing.T) {
 	t.Parallel()
-	// LogicalLimit is currently unsupported.
-	inner := logical.NewLimit(logical.NewScan("Order", ""), 10, 0)
+	// LEFT JOIN with text-only ON is unsupported.
+	inner := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	outer := logical.NewFilterWithPredicate(inner, pT, "TRUE")
 	_, err := plangen.Convert(outer)
@@ -801,7 +1492,7 @@ func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalO
 		if depth >= maxDepth {
 			return logical.NewScan(name1, name2)
 		}
-		switch s % 10 {
+		switch s % 11 {
 		case 0:
 			return logical.NewScan(name1, name2)
 		case 1:
@@ -839,9 +1530,9 @@ func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalO
 				build(depth+1, s>>3),
 			)
 		case 9:
-			// LogicalLimit is unsupported — exercises the default
-			// ErrUnsupported branch + propagation through ancestors.
 			return logical.NewLimit(build(depth+1, s>>3), int64(s%100), int64((s>>5)%50))
+		case 10:
+			return logical.NewValues([]string{name1, name2}, nil)
 		}
 		return nil
 	}
@@ -849,4 +1540,301 @@ func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalO
 		return nil // exercise the nil-input path occasionally
 	}
 	return build(0, seed)
+}
+
+func TestConvert_Aggregate_Basic(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("Orders", ""),
+		[]string{"customer_id"},
+		[]string{"COUNT(id)", "SUM(amount)"},
+		[]string{"cnt", "total"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	gb, ok := got.(*expressions.GroupByExpression)
+	if !ok {
+		t.Fatalf("got %T, want *GroupByExpression", got)
+	}
+	if len(gb.GetGroupingKeys()) != 1 {
+		t.Fatalf("grouping keys = %d, want 1", len(gb.GetGroupingKeys()))
+	}
+	if values.ExplainValue(gb.GetGroupingKeys()[0]) != "customer_id" {
+		t.Fatalf("grouping key = %q, want customer_id", values.ExplainValue(gb.GetGroupingKeys()[0]))
+	}
+	aggs := gb.GetAggregates()
+	if len(aggs) != 2 {
+		t.Fatalf("aggregates = %d, want 2", len(aggs))
+	}
+	if aggs[0].Function != expressions.AggCount {
+		t.Fatalf("agg[0].Function = %d, want AggCount", aggs[0].Function)
+	}
+	if values.ExplainValue(aggs[0].Operand) != "id" {
+		t.Fatalf("agg[0].Operand = %q, want id", values.ExplainValue(aggs[0].Operand))
+	}
+	if aggs[1].Function != expressions.AggSum {
+		t.Fatalf("agg[1].Function = %d, want AggSum", aggs[1].Function)
+	}
+}
+
+func TestConvert_Aggregate_CountStar(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		nil, // no grouping keys = global aggregate
+		[]string{"COUNT(*)"},
+		[]string{"total"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	gb := got.(*expressions.GroupByExpression)
+	if len(gb.GetGroupingKeys()) != 0 {
+		t.Fatalf("grouping keys = %d, want 0", len(gb.GetGroupingKeys()))
+	}
+	if len(gb.GetAggregates()) != 1 {
+		t.Fatalf("aggregates = %d, want 1", len(gb.GetAggregates()))
+	}
+	if gb.GetAggregates()[0].Function != expressions.AggCount {
+		t.Fatal("expected COUNT function")
+	}
+	if values.ExplainValue(gb.GetAggregates()[0].Operand) != "*" {
+		t.Fatalf("expected * operand, got %q", values.ExplainValue(gb.GetAggregates()[0].Operand))
+	}
+}
+
+func TestConvert_Aggregate_AllFunctions(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		[]string{"g"},
+		[]string{"COUNT(a)", "SUM(b)", "MIN(c)", "MAX(d)", "AVG(e)"},
+		nil,
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	gb := got.(*expressions.GroupByExpression)
+	aggs := gb.GetAggregates()
+	if len(aggs) != 5 {
+		t.Fatalf("aggregates = %d, want 5", len(aggs))
+	}
+	expected := []expressions.AggregateFunction{
+		expressions.AggCount, expressions.AggSum,
+		expressions.AggMin, expressions.AggMax, expressions.AggAvg,
+	}
+	for i, exp := range expected {
+		if aggs[i].Function != exp {
+			t.Fatalf("aggs[%d].Function = %d, want %d", i, aggs[i].Function, exp)
+		}
+	}
+}
+
+func TestConvert_Aggregate_UnsupportedFunction(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		nil,
+		[]string{"MEDIAN(x)"},
+		nil,
+		"",
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+func TestConvert_Aggregate_ArithmeticOperand(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		nil,
+		[]string{"SUM(a + b)"},
+		nil,
+		"",
+	)
+	_, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+}
+
+func TestConvert_Aggregate_ArithmeticGroupKey(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		[]string{"a + b"},
+		[]string{"COUNT(x)"},
+		nil,
+		"",
+	)
+	_, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+}
+
+func TestConvert_Limit(t *testing.T) {
+	t.Parallel()
+	src := logical.NewLimit(logical.NewScan("T", ""), 10, 0)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	if lim.GetLimit() != 10 {
+		t.Fatalf("limit = %d, want 10", lim.GetLimit())
+	}
+	if lim.GetOffset() != 0 {
+		t.Fatalf("offset = %d, want 0", lim.GetOffset())
+	}
+}
+
+func TestConvert_LimitWithOffset(t *testing.T) {
+	t.Parallel()
+	src := logical.NewLimit(logical.NewScan("T", ""), 5, 20)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	if lim.GetLimit() != 5 {
+		t.Fatalf("limit = %d, want 5", lim.GetLimit())
+	}
+	if lim.GetOffset() != 20 {
+		t.Fatalf("offset = %d, want 20", lim.GetOffset())
+	}
+}
+
+func TestConvert_LimitOverSort(t *testing.T) {
+	t.Parallel()
+	sorted := logical.NewSort(logical.NewScan("T", ""), []logical.SortKey{{Expr: "name", Dir: logical.SortAsc}})
+	src := logical.NewLimit(sorted, 10, 0)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	_ = lim
+}
+
+func TestConvert_Join_CrossJoin(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", expr)
+	}
+	if len(sel.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(sel.GetQuantifiers()))
+	}
+	if len(sel.GetPredicates()) != 0 {
+		t.Fatalf("expected 0 predicates (cross join), got %d", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_InnerWithPredicate(t *testing.T) {
+	t.Parallel()
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "a_id", Typ: values.TypeInt},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+	src := logical.NewJoinWithPredicate(
+		logical.NewScan("A", ""),
+		logical.NewScan("B", ""),
+		logical.JoinInner,
+		pred,
+	)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", expr)
+	}
+	if len(sel.GetQuantifiers()) != 2 {
+		t.Fatalf("expected 2 quantifiers, got %d", len(sel.GetQuantifiers()))
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_InnerWithTextPredicate(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "id = aid")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", expr)
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_LeftJoinNoStructuredPred_Unsupported(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+func TestConvert_Join_DottedRefTextPredicate(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "a.id = b.aid")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := got.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("got %T, want *SelectExpression", got)
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_MultiPredicateText(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "a.id = b.aid AND a.status = 'active'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := got.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("got %T, want *SelectExpression", got)
+	}
+	if len(sel.GetPredicates()) != 2 {
+		t.Fatalf("predicate count = %d, want 2", len(sel.GetPredicates()))
+	}
 }

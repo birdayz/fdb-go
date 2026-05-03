@@ -53,7 +53,7 @@ func (r *PushTypeFilterBelowFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// Quantifier so the Filter wrapping has the same Reference
 	// pointer as the inner of f.
 	pushed := expressions.NewLogicalTypeFilterExpression(tf.GetRecordTypes(), f.GetInner())
-	pushedQ := expressions.ForEachQuantifier(expressions.InitialOf(pushed))
+	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
 	call.Yield(expressions.NewLogicalFilterExpression(f.GetPredicates(), pushedQ))
 }
 
