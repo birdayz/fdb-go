@@ -11,8 +11,9 @@ package expressions
 // into finalMembers. AllMembers() returns the union for code that
 // doesn't care about the distinction (matcher, cost extraction).
 type Reference struct {
-	members      []RelationalExpression
-	finalMembers []RelationalExpression
+	members        []RelationalExpression
+	finalMembers   []RelationalExpression
+	planProperties any // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 }
 
 // InitialOf returns a Reference holding the single expression e as its
@@ -175,6 +176,12 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	r.members = append(r.members, e)
 	return true
 }
+
+// GetPlanProperties returns the planner-phase property map stored on this Reference.
+func (r *Reference) GetPlanProperties() any { return r.planProperties }
+
+// SetPlanProperties sets the planner-phase property map on this Reference.
+func (r *Reference) SetPlanProperties(m any) { r.planProperties = m }
 
 // sameChildReferences returns true if a and b have the same
 // Quantifier count AND every Quantifier's Reference is the same

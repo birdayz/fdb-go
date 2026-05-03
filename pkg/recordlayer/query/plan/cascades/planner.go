@@ -236,6 +236,8 @@ func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*express
 	for _, rule := range p.implementationRules {
 		FireImplementationRule(rule, ref)
 	}
+
+	computeRefPlanProperties(ref)
 }
 
 // Explore drives the task-stack until convergence (no rule yields a

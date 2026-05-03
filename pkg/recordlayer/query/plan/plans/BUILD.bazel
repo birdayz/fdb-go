@@ -25,6 +25,7 @@ go_library(
         "temp_table_scan.go",
         "typefilter.go",
         "union.go",
+        "unordered_union.go",
         "update.go",
         "values.go",
     ],

@@ -105,6 +105,17 @@ func NamedExistentialQuantifier(alias values.CorrelationIdentifier, rangesOver *
 	}
 }
 
+// NewPhysicalQuantifier builds a Physical quantifier ranging over the
+// given Reference, with a freshly-allocated unique alias. Used in the
+// PLANNING phase when ImplementationRules create physical plan wrappers.
+func NewPhysicalQuantifier(rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:       QuantifierPhysical,
+		alias:      values.UniqueCorrelationIdentifier(),
+		rangesOver: rangesOver,
+	}
+}
+
 // RebuildQuantifier creates a new Quantifier with the same kind and
 // alias but ranging over a different Reference. Used by
 // FinalizeExpressionsRule to point quantifiers at disentangled child
