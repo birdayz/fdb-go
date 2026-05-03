@@ -24,15 +24,19 @@ type ImplementationRule interface {
 //
 // Ports Java's ImplementationCascadesRuleCall.
 type ImplementationRuleCall struct {
-	Bindings    *matching.PlannerBindings
-	Reference   *expressions.Reference
-	Constraints *ConstraintMap
-	yielded     []expressions.RelationalExpression
+	Bindings       *matching.PlannerBindings
+	Reference      *expressions.Reference
+	Constraints    *ConstraintMap
+	yielded        []expressions.RelationalExpression
+	constraintOnly bool
 }
 
 // Yield records a final expression to be inserted into the
 // Reference's final members after the rule completes.
 func (c *ImplementationRuleCall) Yield(expr expressions.RelationalExpression) {
+	if c.constraintOnly {
+		return
+	}
 	c.yielded = append(c.yielded, expr)
 }
 
