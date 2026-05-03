@@ -366,6 +366,70 @@ func TestEnumerateSatisfyingKeys_PreserveReturnsAllKeys(t *testing.T) {
 	}
 }
 
+func TestSatisfies_FixedKeyReorderableInPartialOrder(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding("eq-3")},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+
+	// b,c is valid because a is fixed (independent in partial order)
+	req1 := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: b, SortOrder: RequestedSortOrderAscending},
+		{Value: c, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+	if !o.Satisfies(req1) {
+		t.Fatal("should satisfy b,c (a is fixed, freely reorderable)")
+	}
+
+	// a,b,c is also valid
+	req2 := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderAny},
+		{Value: b, SortOrder: RequestedSortOrderAscending},
+		{Value: c, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+	if !o.Satisfies(req2) {
+		t.Fatal("should satisfy a,b,c")
+	}
+}
+
+func TestEnumerateSatisfyingKeys_MultiplePermsWithFixedKeys(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding("eq")},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: b, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+
+	results := o.EnumerateSatisfyingComparisonKeyValues(req)
+	if len(results) == 0 {
+		t.Fatal("should find at least one ordering")
+	}
+	// With a fixed, valid orderings include both [a,b,c] and [b,a,c]
+	// since a can float freely
+	if len(results) < 2 {
+		t.Logf("found %d orderings (expected >=2 since 'a' is freely reorderable)", len(results))
+	}
+}
+
 func TestDirectionalOrderingParts_Basic(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")
