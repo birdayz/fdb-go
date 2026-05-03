@@ -6,6 +6,7 @@ go_library(
         "aggregate_index_candidate.go",
         "default_rules.go",
         "expression_matcher.go",
+        "expression_partition.go",
         "expression_rule_call.go",
         "fixpoint.go",
         "implementation_rule.go",
