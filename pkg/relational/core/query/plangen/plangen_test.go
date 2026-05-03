@@ -669,17 +669,27 @@ func TestConvert_Project_BareColumns(t *testing.T) {
 	}
 }
 
-func TestConvert_Project_ExpressionUnsupported(t *testing.T) {
+func TestConvert_Project_ArithmeticExpression(t *testing.T) {
 	t.Parallel()
-	// "id + 10" is not a bare column → unsupported.
 	src := logical.NewProject(
 		logical.NewScan("Order", ""),
 		[]string{"id", "id + 10"},
 		[]string{"", ""},
 	)
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (expression projection not yet wired)", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	if len(proj.GetProjectedValues()) != 2 {
+		t.Fatalf("projected values = %d, want 2", len(proj.GetProjectedValues()))
+	}
+	arith, ok := proj.GetProjectedValues()[1].(*values.ArithmeticValue)
+	if !ok {
+		t.Fatalf("proj[1] is %T, want *ArithmeticValue", proj.GetProjectedValues()[1])
+	}
+	if arith.Op != values.OpAdd {
+		t.Fatalf("op = %v, want OpAdd", arith.Op)
 	}
 }
 
@@ -1034,15 +1044,15 @@ func TestConvert_Update_LiteralRHS(t *testing.T) {
 	}
 }
 
-func TestConvert_Sort_ExpressionUnsupported(t *testing.T) {
+func TestConvert_Sort_ArithmeticKey(t *testing.T) {
 	t.Parallel()
 	src := logical.NewSort(
 		logical.NewScan("Order", ""),
 		[]logical.SortKey{{Expr: "id + 10", Dir: logical.SortAsc}},
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (expression sort key not yet wired)", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
@@ -1109,10 +1119,8 @@ func TestConvert_Update_MultipleSetsBareColumn(t *testing.T) {
 	}
 }
 
-func TestConvert_Update_OneRHSExpression_Unsupported(t *testing.T) {
+func TestConvert_Update_ArithmeticRHS(t *testing.T) {
 	t.Parallel()
-	// UPDATE Order SET name = altname, status = altstatus + 1 — second RHS
-	// has arithmetic → ErrUnsupported (no partial conversion).
 	src := logical.NewUpdate(
 		"Order",
 		[]logical.Assignment{
@@ -1122,12 +1130,12 @@ func TestConvert_Update_OneRHSExpression_Unsupported(t *testing.T) {
 		logical.NewScan("Order", ""),
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (one RHS is non-bare)", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
-func TestConvert_Update_ExpressionRHS_Unsupported(t *testing.T) {
+func TestConvert_Update_IncrementRHS(t *testing.T) {
 	t.Parallel()
 	src := logical.NewUpdate(
 		"Order",
@@ -1135,8 +1143,8 @@ func TestConvert_Update_ExpressionRHS_Unsupported(t *testing.T) {
 		logical.NewScan("Order", ""),
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
@@ -1441,9 +1449,8 @@ func TestConvert_Aggregate_UnsupportedFunction(t *testing.T) {
 	}
 }
 
-func TestConvert_Aggregate_ComplexOperand(t *testing.T) {
+func TestConvert_Aggregate_ArithmeticOperand(t *testing.T) {
 	t.Parallel()
-	// SUM(a + b) is too complex for the simple text parser.
 	src := logical.NewAggregate(
 		logical.NewScan("T", ""),
 		nil,
@@ -1452,14 +1459,13 @@ func TestConvert_Aggregate_ComplexOperand(t *testing.T) {
 		"",
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("expected ErrUnsupported for complex operand, got %v", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 
-func TestConvert_Aggregate_ComplexGroupKey(t *testing.T) {
+func TestConvert_Aggregate_ArithmeticGroupKey(t *testing.T) {
 	t.Parallel()
-	// GROUP BY (a + b) is too complex for the simple text lowering.
 	src := logical.NewAggregate(
 		logical.NewScan("T", ""),
 		[]string{"a + b"},
@@ -1468,8 +1474,8 @@ func TestConvert_Aggregate_ComplexGroupKey(t *testing.T) {
 		"",
 	)
 	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("expected ErrUnsupported for complex group key, got %v", err)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 

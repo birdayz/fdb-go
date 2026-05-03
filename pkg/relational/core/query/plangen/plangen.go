@@ -340,7 +340,150 @@ func lowerSimpleScalarText(s string) (values.Value, bool) {
 	if v, ok := tryParseFloat64(s); ok {
 		return &values.ConstantValue{Value: v, Typ: values.TypeUnknown}, true
 	}
+	if v, ok := tryParseArithmetic(s); ok {
+		return v, true
+	}
 	return nil, false
+}
+
+// tryParseArithmetic parses binary arithmetic expressions with correct
+// precedence: + - (low), * / % (high). Supports parenthesized sub-
+// expressions. Returns (ArithmeticValue, true) on success.
+func tryParseArithmetic(s string) (values.Value, bool) {
+	return parseAdditive(s)
+}
+
+func parseAdditive(s string) (values.Value, bool) {
+	idx, op := findBinaryOp(s, []byte{'+', '-'})
+	if idx < 0 {
+		return parseMultiplicative(s)
+	}
+	lhs, ok := parseAdditive(s[:idx])
+	if !ok {
+		return nil, false
+	}
+	rhs, ok := parseMultiplicative(strings.TrimSpace(s[idx+1:]))
+	if !ok {
+		return nil, false
+	}
+	var aop values.ArithmeticOp
+	if op == '+' {
+		aop = values.OpAdd
+	} else {
+		aop = values.OpSub
+	}
+	return &values.ArithmeticValue{Op: aop, Left: lhs, Right: rhs}, true
+}
+
+func parseMultiplicative(s string) (values.Value, bool) {
+	idx, op := findBinaryOp(s, []byte{'*', '/', '%'})
+	if idx < 0 {
+		return parseAtom(s)
+	}
+	lhs, ok := parseMultiplicative(s[:idx])
+	if !ok {
+		return nil, false
+	}
+	rhs, ok := parseAtom(strings.TrimSpace(s[idx+1:]))
+	if !ok {
+		return nil, false
+	}
+	var aop values.ArithmeticOp
+	switch op {
+	case '*':
+		aop = values.OpMul
+	case '/':
+		aop = values.OpDiv
+	case '%':
+		aop = values.OpMod
+	}
+	return &values.ArithmeticValue{Op: aop, Left: lhs, Right: rhs}, true
+}
+
+func parseAtom(s string) (values.Value, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	if s[0] == '(' && isBalancedParens(s) {
+		return tryParseArithmetic(s[1 : len(s)-1])
+	}
+	return lowerAtomicScalar(s)
+}
+
+// lowerAtomicScalar is lowerSimpleScalarText minus arithmetic recursion.
+func lowerAtomicScalar(s string) (values.Value, bool) {
+	if s == "" {
+		return nil, false
+	}
+	if eqAsciiFold(s, "NULL") {
+		return &values.NullValue{Typ: values.TypeUnknown}, true
+	}
+	if eqAsciiFold(s, "TRUE") {
+		return &values.ConstantValue{Value: true, Typ: values.TypeUnknown}, true
+	}
+	if eqAsciiFold(s, "FALSE") {
+		return &values.ConstantValue{Value: false, Typ: values.TypeUnknown}, true
+	}
+	if isBareColumn(s) {
+		return &values.FieldValue{Field: s, Typ: values.UnknownType}, true
+	}
+	if isDottedRef(s) {
+		return &values.FieldValue{Field: s, Typ: values.UnknownType}, true
+	}
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		body := s[1 : len(s)-1]
+		for _, r := range body {
+			if r == '\'' {
+				return nil, false
+			}
+		}
+		return &values.ConstantValue{Value: body, Typ: values.TypeUnknown}, true
+	}
+	if v, ok := tryParseInt64(s); ok {
+		return &values.ConstantValue{Value: v, Typ: values.TypeUnknown}, true
+	}
+	if v, ok := tryParseFloat64(s); ok {
+		return &values.ConstantValue{Value: v, Typ: values.TypeUnknown}, true
+	}
+	return nil, false
+}
+
+// findBinaryOp finds the LAST occurrence (right-most for left-associativity)
+// of any of the given operator bytes at paren-depth 0. Returns the index
+// and the operator byte, or (-1, 0) if not found.
+func findBinaryOp(s string, ops []byte) (int, byte) {
+	depth := 0
+	bestIdx := -1
+	var bestOp byte
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '\'':
+			i++
+			for i < len(s) && s[i] != '\'' {
+				i++
+			}
+		default:
+			if depth == 0 {
+				for _, op := range ops {
+					if s[i] == op {
+						bestIdx = i
+						bestOp = op
+					}
+				}
+			}
+		}
+	}
+	if bestIdx <= 0 || bestIdx >= len(s)-1 {
+		return -1, 0
+	}
+	return bestIdx, bestOp
 }
 
 // eqAsciiFold compares two strings case-insensitively using only
