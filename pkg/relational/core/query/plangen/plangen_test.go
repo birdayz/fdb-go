@@ -444,6 +444,71 @@ func TestConvert_FilterTextIsNotDistinctFrom(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextParenthesized(t *testing.T) {
+	t.Parallel()
+	// (a = 1 OR b = 2) AND c = 3 → AND(OR(a=1, b=2), c=3) as two predicates in the filter
+	src := logical.NewFilter(logical.NewScan("T", ""), "(a = 1 OR b = 2) AND c = 3")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	preds := f.GetPredicates()
+	if len(preds) != 2 {
+		t.Fatalf("predicate count = %d, want 2", len(preds))
+	}
+	_, ok = preds[0].(*predicates.OrPredicate)
+	if !ok {
+		t.Fatalf("preds[0] is %T, want *OrPredicate", preds[0])
+	}
+	_, ok = preds[1].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("preds[1] is %T, want *ComparisonPredicate", preds[1])
+	}
+}
+
+func TestConvert_FilterTextNestedParens(t *testing.T) {
+	t.Parallel()
+	// Nested parens: ((x = 1)) → just x = 1
+	src := logical.NewFilter(logical.NewScan("T", ""), "((x = 1))")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextParenProtectsAND(t *testing.T) {
+	t.Parallel()
+	// BETWEEN inside parens should not be split by outer AND
+	src := logical.NewFilter(logical.NewScan("T", ""), "(x BETWEEN 1 AND 10) AND y = 5")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	preds := f.GetPredicates()
+	if len(preds) != 2 {
+		t.Fatalf("predicate count = %d, want 2", len(preds))
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered

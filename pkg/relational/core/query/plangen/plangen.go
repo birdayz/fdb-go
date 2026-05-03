@@ -519,6 +519,26 @@ func tryParseFloat64(s string) (float64, bool) {
 // punctuation — letters/digits/underscore only, starting with a
 // letter or underscore. The sql parser preserves casing, so we
 // don't normalise here. Empty string is rejected.
+// isBalancedParens returns true if s starts with '(' and the matching
+// ')' is at the very end (i.e., the outer parens wrap the entire string).
+func isBalancedParens(s string) bool {
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return false
+	}
+	depth := 0
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == '(' {
+			depth++
+		} else if s[i] == ')' {
+			depth--
+		}
+		if depth == 0 {
+			return false
+		}
+	}
+	return depth == 1
+}
+
 func isBareColumn(s string) bool {
 	if s == "" {
 		return false
@@ -679,19 +699,37 @@ func parseAndChain(s, orig string) ([]predicates.QueryPredicate, error) {
 	return preds, nil
 }
 
-// splitOnOR splits a predicate string on " OR " (case-insensitive).
-// Does NOT handle parentheses.
+// splitOnOR splits a predicate string on " OR " (case-insensitive),
+// respecting parentheses — keywords inside (...) are not split on.
 func splitOnOR(s string) []string {
+	return splitOnKeyword(s, " OR ", 4)
+}
+
+// splitOnKeyword splits s on the given keyword (must be case-insensitive
+// ASCII), skipping occurrences inside parentheses. kwLen is len(keyword).
+func splitOnKeyword(s, keyword string, kwLen int) []string {
 	var parts []string
-	for {
-		idx := indexFoldASCII(s, " OR ")
-		if idx < 0 {
-			parts = append(parts, strings.TrimSpace(s))
-			break
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 && i+kwLen <= len(s) {
+				if eqAsciiFold(s[i:i+kwLen], keyword) {
+					parts = append(parts, strings.TrimSpace(s[start:i]))
+					i += kwLen - 1
+					start = i + 1
+				}
+			}
 		}
-		parts = append(parts, strings.TrimSpace(s[:idx]))
-		s = s[idx+4:]
 	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
 	return parts
 }
 
@@ -704,6 +742,20 @@ func tryParseSimpleComparison(s string) (predicates.QueryPredicate, bool) {
 
 func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	if s[0] == '(' && isBalancedParens(s) {
+		inner := strings.TrimSpace(s[1 : len(s)-1])
+		preds, err := parsePredicateText(inner)
+		if err != nil {
+			return nil, false
+		}
+		if len(preds) == 1 {
+			return preds[0], true
+		}
+		return predicates.NewAnd(preds...), true
+	}
 	if p, ok := tryParseIsNull(s); ok {
 		return p, true
 	}
@@ -741,22 +793,10 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	), true
 }
 
-// splitOnAND splits a predicate string on " AND " (case-insensitive).
-// Returns the parts. Does NOT handle parentheses — "a = 1 AND (b = 2 OR c = 3)"
-// would incorrectly split. The caller is responsible for only feeding
-// simple conjunctive predicates.
+// splitOnAND splits a predicate string on " AND " (case-insensitive),
+// respecting parentheses — keywords inside (...) are not split on.
 func splitOnAND(s string) []string {
-	var parts []string
-	for {
-		idx := indexFoldASCII(s, " AND ")
-		if idx < 0 {
-			parts = append(parts, strings.TrimSpace(s))
-			break
-		}
-		parts = append(parts, strings.TrimSpace(s[:idx]))
-		s = s[idx+5:]
-	}
-	return parts
+	return splitOnKeyword(s, " AND ", 5)
 }
 
 // splitComparison splits "lhs op rhs" into parts. Returns the
