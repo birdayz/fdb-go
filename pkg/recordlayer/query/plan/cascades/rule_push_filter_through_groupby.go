@@ -9,21 +9,21 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// PushFilterThroughGroupByRule pushes a LogicalFilter below a
-// GroupByExpression when ALL predicates reference only the grouping
-// keys.
+// PushFilterThroughGroupByRule pushes predicates from a LogicalFilter
+// below a GroupByExpression when those predicates reference only the
+// grouping keys. Supports partial pushdown: pushable predicates move
+// below GroupBy; residual predicates stay as a filter above.
 //
-//	Filter(P, GroupBy(keys, aggs, X))  →  GroupBy(keys, aggs, Filter(P, X))
+//	Filter([P1, P2], GroupBy(keys, aggs, X))
+//	  → Filter([P2], GroupBy(keys, aggs, Filter([P1], X)))  [P1 on keys, P2 not]
+//	  → GroupBy(keys, aggs, Filter([P1, P2], X))            [all on keys]
 //
-// Soundness: if P references only grouping-key columns, filtering
-// before aggregation produces the same groups — rows eliminated by P
-// wouldn't contribute to any group that survives P.
+// Soundness: if a predicate references only grouping-key columns,
+// filtering before aggregation produces the same groups — rows
+// eliminated by the predicate wouldn't contribute to any group that
+// survives it.
 //
-// Only fires when EVERY predicate can be pushed. Partial pushdown
-// (splitting pushed vs. residual predicates) is a future extension.
-//
-// Java equivalent: PushPredicateThroughGroupByRule — pushes comparison
-// predicates that reference grouping keys.
+// Java equivalent: PushPredicateThroughGroupByRule.
 type PushFilterThroughGroupByRule struct {
 	matcher matching.BindingMatcher
 }
@@ -49,15 +49,28 @@ func (r *PushFilterThroughGroupByRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	var pushable, residual []predicates.QueryPredicate
 	for _, p := range f.GetPredicates() {
-		if !predicateReferencesOnlyKeys(p, groupKeySet) {
-			return
+		if predicateReferencesOnlyKeys(p, groupKeySet) {
+			pushable = append(pushable, p)
+		} else {
+			residual = append(residual, p)
 		}
 	}
+	if len(pushable) == 0 {
+		return
+	}
 
-	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), gb.GetInner())
+	pushed := expressions.NewLogicalFilterExpression(pushable, gb.GetInner())
 	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
-	call.Yield(expressions.NewGroupByExpression(gb.GetGroupingKeys(), gb.GetAggregates(), pushedQ))
+	newGB := expressions.NewGroupByExpression(gb.GetGroupingKeys(), gb.GetAggregates(), pushedQ)
+
+	if len(residual) == 0 {
+		call.Yield(newGB)
+	} else {
+		gbQ := expressions.ForEachQuantifier(call.MemoizeExpression(newGB))
+		call.Yield(expressions.NewLogicalFilterExpression(residual, gbQ))
+	}
 }
 
 func buildGroupKeySet(keys []values.Value) map[string]struct{} {
