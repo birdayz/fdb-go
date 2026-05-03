@@ -2238,6 +2238,66 @@ func TestEndToEnd_ArithmeticInProjectToPlan(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_SortProjectScanPipeline(t *testing.T) {
+	t.Parallel()
+	proj := logical.NewProject(
+		logical.NewScan("Orders", ""),
+		[]string{"id", "total * 100"},
+		[]string{"", ""},
+	)
+	sorted := logical.NewSort(proj, []logical.SortKey{{Expr: "id", Dir: logical.SortAsc}})
+	expr, err := plangen.Convert(sorted)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Sort") {
+		t.Fatalf("expected Sort in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Scan") {
+		t.Fatalf("expected Scan in plan, got: %s", explain)
+	}
+}
+
+func TestEndToEnd_ProjectionMergeThenImplement(t *testing.T) {
+	t.Parallel()
+	inner := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"x", "y", "z"},
+		[]string{"", "", ""},
+	)
+	outer := logical.NewProject(inner, []string{"x", "y"}, []string{"", ""})
+	expr, err := plangen.Convert(outer)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Project") {
+		t.Fatalf("expected Project in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Scan") {
+		t.Fatalf("expected Scan in plan, got: %s", explain)
+	}
+}
+
 func TestEndToEnd_ValuesToPlan(t *testing.T) {
 	t.Parallel()
 	src := logical.NewValues([]string{"42", "'hello'", "TRUE"}, nil)
