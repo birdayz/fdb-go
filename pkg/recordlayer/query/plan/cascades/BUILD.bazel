@@ -115,6 +115,7 @@ go_test(
         "expression_rule_call_test.go",
         "fixpoint_fuzz_test.go",
         "fixpoint_test.go",
+        "fuzz_cte_test.go",
         "match_candidate_index_test.go",
         "memo_fuzz_test.go",
         "memo_test.go",
