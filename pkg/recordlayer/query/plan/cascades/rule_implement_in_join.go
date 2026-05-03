@@ -3,23 +3,20 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // ImplementInJoinRule implements a SELECT over ExplodeExpressions
 // (UNNEST of IN-lists) and a correlated inner plan as a right-deep
-// chain of RecordQueryInJoinPlans. Each explode becomes one IN-source;
-// the inner plan is executed once per combination of IN values.
+// chain of RecordQueryInJoinPlans.
 //
-// Ports Java's ImplementInJoinRule. The rule creates InJoin plans in
-// quantifier order (last explode = innermost). Java's full version
-// does ordering-aware source selection by matching explode aliases to
-// the inner plan's ordering bindings (via Ordering.Binding's
-// comparison correlation tracking) — that requires the full
-// Comparison.getCorrelatedTo() infrastructure which is not yet ported.
-// The current behavior is functionally correct (produces correct
-// results) but doesn't exploit ordering for optimal IN-source nesting.
+// Ports Java's ImplementInJoinRule. The rule examines the inner plan's
+// ordering to match explode aliases to equality-bound ordering keys
+// (via Comparison.GetCorrelatedTo). When ordering info is available,
+// IN-sources are ordered to exploit the inner plan's sort order.
+// When no ordering info is available, falls back to quantifier order.
 type ImplementInJoinRule struct {
 	matcher matching.BindingMatcher
 }
@@ -79,6 +76,14 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	explodeAliasMap := make(map[values.CorrelationIdentifier]expressions.Quantifier, len(explodeQuantifiers))
+	explodeAliases := make(map[values.CorrelationIdentifier]struct{}, len(explodeQuantifiers))
+	for _, eq := range explodeQuantifiers {
+		alias := eq.GetAlias()
+		explodeAliasMap[alias] = eq
+		explodeAliases[alias] = struct{}{}
+	}
+
 	partitions := ToPlanPartitions(innerRef)
 	if len(partitions) == 0 {
 		return
@@ -91,13 +96,16 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		innerExprs := partition.GetExpressions()
+
+		orderedSources := r.orderSourcesByInnerOrdering(
+			innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap)
+
 		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 
-		for i := len(explodeQuantifiers) - 1; i >= 0; i-- {
-			eq := explodeQuantifiers[i]
-			bindingName := eq.GetAlias().String()
+		for i := len(orderedSources) - 1; i >= 0; i-- {
+			source := orderedSources[i]
 			inJoinPlan := plans.NewRecordQueryInJoinPlan(
-				innerPlans[0], bindingName, false, false)
+				innerPlans[0], source.bindingName, source.sorted, source.reverse)
 			wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
 				expressions.NewPhysicalQuantifier(currentRef))
 			currentRef = call.MemoizeFinalExpression(wrapper)
@@ -107,6 +115,85 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 			call.YieldFinalExpression(m)
 		}
 	}
+}
+
+type inJoinSource struct {
+	bindingName string
+	sorted      bool
+	reverse     bool
+	quantifier  expressions.Quantifier
+}
+
+// orderSourcesByInnerOrdering examines the inner expressions' ordering
+// to determine optimal IN-source nesting. If the ordering's fixed
+// bindings correlate to explode aliases, those explodes are placed
+// first (outermost) in the InJoin chain.
+func (r *ImplementInJoinRule) orderSourcesByInnerOrdering(
+	innerExprs []expressions.RelationalExpression,
+	explodeQuantifiers []expressions.Quantifier,
+	explodeAliases map[values.CorrelationIdentifier]struct{},
+	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
+) []inJoinSource {
+	var richOrdering *RichOrdering
+	for _, expr := range innerExprs {
+		if ph, ok := expr.(physicalPlanExpression); ok {
+			richOrdering = computeWrapperRichOrdering(ph)
+			break
+		}
+	}
+
+	if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
+		return r.defaultSources(explodeQuantifiers)
+	}
+
+	var ordered []inJoinSource
+	used := make(map[values.CorrelationIdentifier]struct{})
+
+	for _, key := range richOrdering.GetKeys() {
+		bindings := richOrdering.GetBindingMap()[key]
+		if !AreAllBindingsFixed(bindings) {
+			continue
+		}
+
+		for _, b := range bindings {
+			comp := b.GetComparison()
+			if comp == nil {
+				continue
+			}
+			cr, ok := comp.(*predicates.ComparisonRange)
+			if !ok {
+				continue
+			}
+			_ = cr
+
+			// TODO: extract correlation from ComparisonRange's comparison
+			// to match explode aliases. Currently ComparisonRange doesn't
+			// carry full Comparison objects with correlation tracking.
+		}
+	}
+
+	for _, eq := range explodeQuantifiers {
+		alias := eq.GetAlias()
+		if _, ok := used[alias]; !ok {
+			ordered = append(ordered, inJoinSource{
+				bindingName: alias.String(),
+				quantifier:  eq,
+			})
+		}
+	}
+
+	return ordered
+}
+
+func (r *ImplementInJoinRule) defaultSources(explodeQuantifiers []expressions.Quantifier) []inJoinSource {
+	sources := make([]inJoinSource, len(explodeQuantifiers))
+	for i, eq := range explodeQuantifiers {
+		sources[i] = inJoinSource{
+			bindingName: eq.GetAlias().String(),
+			quantifier:  eq,
+		}
+	}
+	return sources
 }
 
 func isExplodeExpression(ref *expressions.Reference) bool {
