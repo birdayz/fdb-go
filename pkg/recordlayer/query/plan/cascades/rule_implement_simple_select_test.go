@@ -233,3 +233,31 @@ func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
 		t.Fatal("nullOnEmpty ForEach should produce DefaultOnEmpty wrapper")
 	}
 }
+
+func TestImplementSimpleSelectRule_TautologyPredicatesFiltered(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	sw := &physicalScanWrapper{plan: scan}
+
+	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	pm := NewPlanPropertiesMap()
+	pm.Add(sw)
+	innerRef.SetPlanProperties(pm)
+
+	q := expressions.ForEachQuantifier(innerRef)
+	tautology := predicates.NewConstantPredicate(predicates.TriTrue)
+	sel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(q.GetAlias()),
+		[]expressions.Quantifier{q},
+		[]predicates.QueryPredicate{tautology},
+	)
+
+	outerRef := expressions.InitialOf(sel)
+	results := FireImplementationRule(NewImplementSimpleSelectRule(), outerRef)
+	if len(results) == 0 {
+		t.Fatal("should yield when tautology is the only predicate")
+	}
+	if _, ok := results[0].(*physicalScanWrapper); !ok {
+		t.Fatalf("tautology-only predicate should pass through to scan, got %T", results[0])
+	}
+}
