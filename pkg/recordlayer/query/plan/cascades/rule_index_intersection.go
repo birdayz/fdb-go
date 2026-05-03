@@ -180,8 +180,8 @@ func (r *IndexIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 				continue
 			}
 
-			legI := buildFilterLeg(scan, mi.preds)
-			legJ := buildFilterLeg(scan, mj.preds)
+			legI := buildFilterLeg(call, scan, mi.preds)
+			legJ := buildFilterLeg(call, scan, mj.preds)
 
 			qI := expressions.ForEachQuantifier(call.MemoizeExpression(legI))
 			qJ := expressions.ForEachQuantifier(call.MemoizeExpression(legJ))
@@ -260,7 +260,7 @@ func (r *IndexIntersectionRule) chooseK(
 
 		legs := make([]expressions.Quantifier, k)
 		for i, idx := range chosen {
-			leg := buildFilterLeg(scan, matches[idx].preds)
+			leg := buildFilterLeg(call, scan, matches[idx].preds)
 			legs[i] = expressions.ForEachQuantifier(call.MemoizeExpression(leg))
 		}
 
@@ -292,13 +292,11 @@ func (r *IndexIntersectionRule) chooseK(
 	}
 }
 
-// buildFilterLeg creates a LogicalFilterExpression over a fresh copy
-// of the scan expression.
-func buildFilterLeg(scan *expressions.FullUnorderedScanExpression, preds []predicates.QueryPredicate) expressions.RelationalExpression {
+func buildFilterLeg(call *ExpressionRuleCall, scan *expressions.FullUnorderedScanExpression, preds []predicates.QueryPredicate) expressions.RelationalExpression {
 	freshScan := expressions.NewFullUnorderedScanExpression(
 		scan.GetRecordTypes(), scan.GetFlowedType(),
 	)
-	scanRef := expressions.InitialOf(freshScan)
+	scanRef := call.MemoizeExpression(freshScan)
 	q := expressions.ForEachQuantifier(scanRef)
 	return expressions.NewLogicalFilterExpression(preds, q)
 }

@@ -1,6 +1,9 @@
 package expressions
 
 import (
+	"encoding/binary"
+	"hash/fnv"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -90,15 +93,20 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 }
 
 func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
-	h := uint64(0x6770_6279) // "gpby"
+	h := fnv.New64a()
+	h.Write([]byte("grpby|"))
 	for _, k := range e.groupingKeys {
-		h ^= uint64(len(values.ExplainValue(k))) * 31
+		h.Write([]byte(values.ExplainValue(k)))
+		h.Write([]byte("|"))
 	}
 	for _, a := range e.aggregates {
-		h ^= uint64(a.Function) * 37
-		h ^= uint64(len(values.ExplainValue(a.Operand))) * 41
+		var b [8]byte
+		binary.BigEndian.PutUint64(b[:], uint64(a.Function))
+		h.Write(b[:])
+		h.Write([]byte(values.ExplainValue(a.Operand)))
+		h.Write([]byte("|"))
 	}
-	return h
+	return h.Sum64()
 }
 
 var _ RelationalExpression = (*GroupByExpression)(nil)

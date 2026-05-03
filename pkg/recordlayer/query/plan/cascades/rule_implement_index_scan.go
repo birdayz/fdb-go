@@ -189,7 +189,7 @@ func residualPredicates(
 	for _, idx := range consumed {
 		cp := preds[idx].(*predicates.ComparisonPredicate)
 		fv := cp.Operand.(*values.FieldValue)
-		colIdx := colToIdx[fv.Field]
+		colIdx := colToIdx[strings.ToUpper(fv.Field)]
 		alias := aliases[colIdx]
 		if _, inPrefix := prefix[alias]; inPrefix {
 			consumedInPrefix[idx] = true
