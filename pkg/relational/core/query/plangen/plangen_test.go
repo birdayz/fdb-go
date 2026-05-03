@@ -547,13 +547,28 @@ func TestConvert_FilterTextNOTSimple(t *testing.T) {
 	}
 }
 
-func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
+func TestConvert_FilterTextFunctionInPredicate(t *testing.T) {
 	t.Parallel()
-	// Complex expression with function call can't be lowered
 	src := logical.NewFilter(logical.NewScan("Order", ""), "UPPER(name) = 'FOO'")
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	filt := got.(*expressions.LogicalFilterExpression)
+	preds := filt.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("preds = %d, want 1", len(preds))
+	}
+	cmp, ok := preds[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *ComparisonPredicate", preds[0])
+	}
+	fn, ok := cmp.Operand.(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("Operand is %T, want *ScalarFunctionValue", cmp.Operand)
+	}
+	if fn.FuncName != "UPPER" {
+		t.Fatalf("fn = %q, want UPPER", fn.FuncName)
 	}
 }
 
@@ -635,6 +650,76 @@ func TestConvert_Insert_NoSource_Unsupported(t *testing.T) {
 	}
 }
 
+func TestConvert_Values_Basic(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues([]string{"42", "'hello'", "TRUE"}, []string{"id", "msg", "flag"})
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ve, ok := got.(*expressions.LogicalValuesExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalValuesExpression", got)
+	}
+	cols := ve.GetColumns()
+	if len(cols) != 3 {
+		t.Fatalf("columns = %d, want 3", len(cols))
+	}
+	c0, ok := cols[0].(*values.ConstantValue)
+	if !ok || c0.Value != int64(42) {
+		t.Fatalf("col[0] = %v (%T), want ConstantValue(42)", cols[0], cols[0])
+	}
+	c1, ok := cols[1].(*values.ConstantValue)
+	if !ok || c1.Value != "hello" {
+		t.Fatalf("col[1] = %v (%T), want ConstantValue(\"hello\")", cols[1], cols[1])
+	}
+	c2, ok := cols[2].(*values.ConstantValue)
+	if !ok || c2.Value != true {
+		t.Fatalf("col[2] = %v (%T), want ConstantValue(true)", cols[2], cols[2])
+	}
+}
+
+func TestConvert_Values_FunctionCall(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues([]string{"UPPER('abc')", "1 + 2"}, nil)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ve := got.(*expressions.LogicalValuesExpression)
+	cols := ve.GetColumns()
+	if len(cols) != 2 {
+		t.Fatalf("columns = %d, want 2", len(cols))
+	}
+	fn, ok := cols[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("col[0] is %T, want *ScalarFunctionValue", cols[0])
+	}
+	if fn.FuncName != "UPPER" {
+		t.Fatalf("fn = %q, want UPPER", fn.FuncName)
+	}
+	arith, ok := cols[1].(*values.ArithmeticValue)
+	if !ok {
+		t.Fatalf("col[1] is %T, want *ArithmeticValue", cols[1])
+	}
+	if arith.Op != values.OpAdd {
+		t.Fatalf("op = %v, want OpAdd", arith.Op)
+	}
+}
+
+func TestConvert_Values_Empty(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues(nil, nil)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ve := got.(*expressions.LogicalValuesExpression)
+	if len(ve.GetColumns()) != 0 {
+		t.Fatalf("columns = %d, want 0", len(ve.GetColumns()))
+	}
+}
+
 func TestConvert_Project_BareColumns(t *testing.T) {
 	t.Parallel()
 	src := logical.NewProject(
@@ -690,6 +775,124 @@ func TestConvert_Project_ArithmeticExpression(t *testing.T) {
 	}
 	if arith.Op != values.OpAdd {
 		t.Fatalf("op = %v, want OpAdd", arith.Op)
+	}
+}
+
+func TestConvert_Project_FunctionCall(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"UPPER(name)", "LENGTH(name)", "COALESCE(a, b)"},
+		[]string{"", "", ""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	if len(proj.GetProjectedValues()) != 3 {
+		t.Fatalf("projected values = %d, want 3", len(proj.GetProjectedValues()))
+	}
+	fn0, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if fn0.FuncName != "UPPER" {
+		t.Fatalf("fn0.FuncName = %q, want UPPER", fn0.FuncName)
+	}
+	if len(fn0.Args) != 1 {
+		t.Fatalf("fn0 args = %d, want 1", len(fn0.Args))
+	}
+	fn2, ok := proj.GetProjectedValues()[2].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[2] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[2])
+	}
+	if fn2.FuncName != "COALESCE" {
+		t.Fatalf("fn2.FuncName = %q, want COALESCE", fn2.FuncName)
+	}
+	if len(fn2.Args) != 2 {
+		t.Fatalf("fn2 args = %d, want 2", len(fn2.Args))
+	}
+}
+
+func TestConvert_Project_NestedFunctionCall(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"UPPER(LOWER(name))"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	outer, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if outer.FuncName != "UPPER" {
+		t.Fatalf("outer = %q, want UPPER", outer.FuncName)
+	}
+	inner, ok := outer.Args[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("inner is %T, want *ScalarFunctionValue", outer.Args[0])
+	}
+	if inner.FuncName != "LOWER" {
+		t.Fatalf("inner = %q, want LOWER", inner.FuncName)
+	}
+}
+
+func TestConvert_Project_FunctionWithArithmetic(t *testing.T) {
+	t.Parallel()
+	// ABS(x - 1) — function call wrapping arithmetic
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"ABS(x - 1)"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	fn, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if fn.FuncName != "ABS" {
+		t.Fatalf("fn = %q, want ABS", fn.FuncName)
+	}
+	arith, ok := fn.Args[0].(*values.ArithmeticValue)
+	if !ok {
+		t.Fatalf("arg is %T, want *ArithmeticValue", fn.Args[0])
+	}
+	if arith.Op != values.OpSub {
+		t.Fatalf("op = %v, want OpSub", arith.Op)
+	}
+}
+
+func TestConvert_Project_ZeroArgFunction(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"NOW()"},
+		[]string{""},
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj := got.(*expressions.LogicalProjectionExpression)
+	fn, ok := proj.GetProjectedValues()[0].(*values.ScalarFunctionValue)
+	if !ok {
+		t.Fatalf("proj[0] is %T, want *ScalarFunctionValue", proj.GetProjectedValues()[0])
+	}
+	if fn.FuncName != "NOW" {
+		t.Fatalf("fn = %q, want NOW", fn.FuncName)
+	}
+	if len(fn.Args) != 0 {
+		t.Fatalf("args = %d, want 0", len(fn.Args))
 	}
 }
 

@@ -37,14 +37,12 @@
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject / LogicalSort / LogicalUpdate with arithmetic,
-//     function calls, qualified column refs (`t.c`), exponent-form
-//     numeric literals (`1.5E10`), or escaped string literals
-//     (`'it”s'`) — all gated on text→Value parsing
+//     exponent-form numeric literals (`1.5E10`) or escaped string
+//     literals (`'it”s'`)
 //   - LogicalJoin with LEFT/RIGHT kind and text-only ON
 //   - LogicalInsert without Source (VALUES literal) — needs a
 //     synthetic LogicalValues source operator
-//   - LogicalValues / LogicalCTE / LogicalDDL — no equivalent
-//   - LogicalFilter with PredicateText only (no QueryPredicate)
+//   - LogicalCTE / LogicalDDL — no equivalent
 package plangen
 
 import (
@@ -97,6 +95,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertLimit(o)
 	case *logical.LogicalJoin:
 		return convertJoin(o)
+	case *logical.LogicalValues:
+		return convertValues(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -185,18 +185,18 @@ func convertInsert(i *logical.LogicalInsert) (expressions.RelationalExpression, 
 	return expressions.NewInsertExpression(q, i.Table, values.UnknownType), nil
 }
 
-// convertProject builds a LogicalProjectionExpression for the
-// recursively-converted child. Each projection entry is lowered via
-// lowerSimpleScalarText, which currently handles bare column names
-// (→ FieldValue) and simple literal forms (integer / float / boolean
-// / NULL / single-quoted string → ConstantValue / NullValue).
-// Anything more (arithmetic, function call, scalar subquery, dotted
-// reference) returns ErrUnsupported until a text→Value parser is
-// threaded through.
-//
-// Aliases are dropped — the projection's column-naming is decided
-// by the upstream catalog walker; the projection list captures
-// only the value flow.
+func convertValues(v *logical.LogicalValues) (expressions.RelationalExpression, error) {
+	cols := make([]values.Value, len(v.Rows))
+	for i, text := range v.Rows {
+		val, ok := lowerSimpleScalarText(text)
+		if !ok {
+			return nil, fmt.Errorf("%w: VALUES column %d: %q", ErrUnsupported, i, text)
+		}
+		cols[i] = val
+	}
+	return expressions.NewLogicalValuesExpression(cols), nil
+}
+
 func convertProject(p *logical.LogicalProject) (expressions.RelationalExpression, error) {
 	projected := make([]values.Value, len(p.Projections))
 	for i, pj := range p.Projections {
@@ -405,10 +405,80 @@ func parseAtom(s string) (values.Value, bool) {
 	if s == "" {
 		return nil, false
 	}
+	if v, ok := tryParseFunctionCall(s); ok {
+		return v, true
+	}
 	if s[0] == '(' && isBalancedParens(s) {
 		return tryParseArithmetic(s[1 : len(s)-1])
 	}
 	return lowerAtomicScalar(s)
+}
+
+// tryParseFunctionCall detects IDENT(arg1, arg2, ...) and returns a
+// ScalarFunctionValue. Arguments are recursively parsed as full scalar
+// expressions (supporting arithmetic, nested function calls, etc.).
+func tryParseFunctionCall(s string) (values.Value, bool) {
+	parenIdx := strings.IndexByte(s, '(')
+	if parenIdx < 1 || s[len(s)-1] != ')' {
+		return nil, false
+	}
+	name := s[:parenIdx]
+	if !isBareColumn(name) {
+		return nil, false
+	}
+	inner := s[parenIdx+1 : len(s)-1]
+	args, ok := splitFunctionArgs(inner)
+	if !ok {
+		return nil, false
+	}
+	parsedArgs := make([]values.Value, 0, len(args))
+	for _, arg := range args {
+		v, ok := tryParseArithmetic(strings.TrimSpace(arg))
+		if !ok {
+			return nil, false
+		}
+		parsedArgs = append(parsedArgs, v)
+	}
+	return values.NewScalarFunctionValue(name, values.TypeUnknown, parsedArgs...), true
+}
+
+// splitFunctionArgs splits a comma-separated argument list respecting
+// parentheses and quoted strings. Returns the arg slices and true on
+// success. An empty inner string yields a zero-length slice (zero-arg fn).
+func splitFunctionArgs(s string) ([]string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, true
+	}
+	var args []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return nil, false
+			}
+		case '\'':
+			i++
+			for i < len(s) && s[i] != '\'' {
+				i++
+			}
+		case ',':
+			if depth == 0 {
+				args = append(args, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if depth != 0 {
+		return nil, false
+	}
+	args = append(args, s[start:])
+	return args, true
 }
 
 // lowerAtomicScalar is lowerSimpleScalarText minus arithmetic recursion.

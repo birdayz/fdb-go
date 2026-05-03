@@ -19,6 +19,7 @@ go_library(
         "logical_type_filter.go",
         "logical_union.go",
         "logical_unique.go",
+        "logical_values.go",
         "quantifier.go",
         "reference.go",
         "select.go",

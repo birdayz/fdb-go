@@ -77,7 +77,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
 ## Phase 4 — Query Executor (integration phase, sequential)
 
-- [ ] **#20** C1 PlanGenerator complete — full text→Value parser threading (arithmetic, function calls, exponent, escapes), LogicalValues equivalent. (~0.5 shift) — Text predicate parser now covers: comparison ops (=, !=, <>, <, >, <=, >=), AND/OR with correct precedence, BETWEEN, IN/NOT IN, LIKE/NOT LIKE with ESCAPE, IS [NOT] NULL, IS [NOT] DISTINCT FROM, STARTS_WITH(), NOT prefix, parenthesized expressions, dotted-ref column references (table.col). PushLimitThroughUnionRule also landed. Remaining: arithmetic text→Value (a+b, a*b), function-call text→Value (UPPER(x)), LogicalValues operator.
+- [ ] **#20** C1 PlanGenerator complete — full text→Value parser threading (arithmetic, function calls, exponent, escapes), LogicalValues equivalent. (~0.5 shift) — Arithmetic done (+-*/%  with correct precedence + parens). Remaining: function-call text→Value (UPPER(x), LOWER(x), COALESCE(a,b)), LogicalValues operator.
 - [ ] **#21** **C2 QueryExecutor — execute `RecordQueryPlan` against `FDBRecordStore`, return `RecordCursor`. Eliminates today's ad-hoc executor. SINGLE HIGHEST-LEVERAGE SHIFT.** Gate: #11, #12, #20. (~2 shifts; prototype 1-shift spike first)
 - [ ] **#22** C3 RecordLayerResultSet — wraps cursor, implements `api.ResultSet`. Gate: #21. (~1 shift)
 - [ ] **#23** C4 Continuation support — match Java encoding. Gate: #22. (~1 shift)
