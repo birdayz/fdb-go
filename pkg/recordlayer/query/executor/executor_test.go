@@ -12,6 +12,16 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+type unsupportedTestPlan struct{}
+
+func (p *unsupportedTestPlan) GetResultType() values.Type           { return values.UnknownType }
+func (p *unsupportedTestPlan) GetChildren() []plans.RecordQueryPlan { return nil }
+func (p *unsupportedTestPlan) EqualsWithoutChildren(plans.RecordQueryPlan) bool {
+	return false
+}
+func (p *unsupportedTestPlan) HashCodeWithoutChildren() uint64 { return 0 }
+func (p *unsupportedTestPlan) Explain() string                 { return "unsupported" }
+
 func TestExecuteValues_SingleRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -333,8 +343,7 @@ func TestExecuteUnsupportedPlan_ReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
-		values.NamedCorrelationIdentifier("s"), values.NamedCorrelationIdentifier("i"))
+	plan := &unsupportedTestPlan{}
 	_, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err == nil {
 		t.Fatal("expected error for unsupported plan type")
@@ -1109,5 +1118,130 @@ func TestSortByKeys_Descending(t *testing.T) {
 	}
 	if ages[0] != 35 || ages[1] != 30 || ages[2] != 25 {
 		t.Fatalf("sort by age DESC = %v, want [35 30 25]", ages)
+	}
+}
+
+func TestRecursiveLevelUnion_SingleLevel(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+
+	initial := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		}),
+		insertAlias, false,
+	)
+	recursive := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(nil),
+		insertAlias, false,
+	)
+
+	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+}
+
+func TestRecursiveLevelUnion_EmptyRecursive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	scanAlias := values.NamedCorrelationIdentifier("scan")
+	insertAlias := values.NamedCorrelationIdentifier("insert")
+
+	initial := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: "root", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
+		}),
+		insertAlias, false,
+	)
+
+	recursive := plans.NewRecordQueryTempTableInsertPlan(
+		plans.NewRecordQueryExplodePlan(nil),
+		insertAlias, false,
+	)
+
+	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(initial, recursive, scanAlias, insertAlias)
+
+	evalCtx := EmptyEvaluationContext()
+	cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (initial only, recursive produces nothing)", len(results))
+	}
+}
+
+func TestRecursiveDfsJoin_Preorder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	root := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: "A", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
+	})
+	child := plans.NewRecordQueryExplodePlan(nil)
+
+	prior := values.NamedCorrelationIdentifier("prior")
+	plan := plans.NewRecordQueryRecursiveDfsJoinPlan(root, child, prior, plans.DfsPreorder)
+
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (leaf node with no children)", len(results))
+	}
+}
+
+func TestRecursiveDfsJoin_Postorder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	root := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: "A", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
+	})
+	child := plans.NewRecordQueryExplodePlan(nil)
+
+	prior := values.NamedCorrelationIdentifier("prior")
+	plan := plans.NewRecordQueryRecursiveDfsJoinPlan(root, child, prior, plans.DfsPostorder)
+
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (leaf node with no children)", len(results))
 	}
 }

@@ -81,6 +81,10 @@ func ExecutePlan(
 		return executeTableFunction(p, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
+	case *plans.RecordQueryRecursiveLevelUnionPlan:
+		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryRecursiveDfsJoinPlan:
+		return executeRecursiveDfsJoin(ctx, p, store, evalCtx, continuation, props)
 	default:
 		return nil, fmt.Errorf("executor: unsupported plan type %T", plan)
 	}
@@ -1096,6 +1100,141 @@ func executeValues(p *plans.RecordQueryValuesPlan) (recordlayer.RecordCursor[Que
 		row[col.Name()] = col.Evaluate(nil)
 	}
 	return recordlayer.FromList([]QueryResult{{Datum: row}}), nil
+}
+
+// executeRecursiveLevelUnion implements level-order (BFS) recursive
+// CTE execution. Two temp tables ping-pong between read and write
+// roles: the initial plan seeds level 0 into the insert table, then
+// buffers flip and the recursive plan reads from scan and writes to
+// insert, repeating until a level produces zero rows.
+// Mirrors Java's RecordQueryRecursiveLevelUnionPlan.executePlan.
+func executeRecursiveLevelUnion(
+	ctx context.Context,
+	p *plans.RecordQueryRecursiveLevelUnionPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	scanAlias := p.GetTempTableScanAlias()
+	insertAlias := p.GetTempTableInsertAlias()
+
+	scanTable := NewTempTable()
+	insertTable := NewTempTable()
+
+	levelCtx := evalCtx.WithBinding(scanAlias, scanTable)
+	levelCtx = levelCtx.WithBinding(insertAlias, insertTable)
+
+	initialCursor, err := ExecutePlan(ctx, p.GetInitialState(), store, levelCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, fmt.Errorf("executor: recursive level union initial: %w", err)
+	}
+
+	var allResults []QueryResult
+	items, err := CollectAll(ctx, initialCursor)
+	if err != nil {
+		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
+	}
+	allResults = append(allResults, items...)
+
+	for {
+		if len(insertTable.GetList()) == 0 {
+			break
+		}
+
+		scanTable, insertTable = insertTable, scanTable
+		insertTable.Clear()
+
+		levelCtx = evalCtx.WithBinding(scanAlias, scanTable)
+		levelCtx = levelCtx.WithBinding(insertAlias, insertTable)
+
+		recursiveCursor, err := ExecutePlan(ctx, p.GetRecursiveState(), store, levelCtx, nil, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, fmt.Errorf("executor: recursive level union recursive: %w", err)
+		}
+		items, err := CollectAll(ctx, recursiveCursor)
+		if err != nil {
+			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
+		}
+		allResults = append(allResults, items...)
+	}
+
+	return applySkipLimit(recordlayer.FromList(allResults), props.Skip, props.ReturnedRowLimit), nil
+}
+
+// executeRecursiveDfsJoin implements depth-first recursive CTE
+// execution. The root plan seeds the traversal; for each row, the
+// child plan is re-evaluated with the prior row bound via
+// priorCorrelation. Supports PREORDER (emit parent then children)
+// and POSTORDER (emit children then parent).
+// Mirrors Java's RecordQueryRecursiveDfsJoinPlan.executePlan.
+func executeRecursiveDfsJoin(
+	ctx context.Context,
+	p *plans.RecordQueryRecursiveDfsJoinPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	rootCursor, err := ExecutePlan(ctx, p.GetRoot(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, fmt.Errorf("executor: recursive dfs join root: %w", err)
+	}
+
+	rootRows, err := CollectAll(ctx, rootCursor)
+	if err != nil {
+		return nil, fmt.Errorf("executor: recursive dfs join root collect: %w", err)
+	}
+
+	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
+	var results []QueryResult
+
+	for _, root := range rootRows {
+		dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results)
+	}
+
+	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func dfsVisit(
+	ctx context.Context,
+	node QueryResult,
+	p *plans.RecordQueryRecursiveDfsJoinPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	preorder bool,
+	props recordlayer.ExecuteProperties,
+	results *[]QueryResult,
+) {
+	if preorder {
+		*results = append(*results, node)
+	}
+
+	childCtx := evalCtx.WithBinding(p.GetPriorCorrelation(), node.Datum)
+	childCursor, err := ExecutePlan(ctx, p.GetChild(), store, childCtx, nil, props.ClearSkipAndLimit())
+	if err != nil {
+		if preorder {
+			return
+		}
+		*results = append(*results, node)
+		return
+	}
+
+	children, err := CollectAll(ctx, childCursor)
+	if err != nil {
+		if !preorder {
+			*results = append(*results, node)
+		}
+		return
+	}
+
+	for _, child := range children {
+		dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results)
+	}
+
+	if !preorder {
+		*results = append(*results, node)
+	}
 }
 
 // applySkipLimit wraps a cursor with skip/limit only when the values
