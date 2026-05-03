@@ -91,8 +91,10 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		innerExprs := partition.GetExpressions()
 		newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 
-		call.YieldFinalExpression(NewPhysicalInJoinWrapper(
-			plans.NewRecordQueryInJoinPlan(innerPlans[0], bindingNames[0], false, false),
+		inUnionPlan := plans.NewRecordQueryInUnionPlan(
+			innerPlans[0], bindingNames, nil, false)
+		call.YieldFinalExpression(NewPhysicalInUnionWrapper(
+			inUnionPlan,
 			expressions.NewPhysicalQuantifier(newRef),
 		))
 	}

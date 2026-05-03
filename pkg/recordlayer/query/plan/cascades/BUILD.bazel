@@ -18,6 +18,7 @@ go_library(
         "physical_explode_wrapper.go",
         "physical_hash_agg_wrapper.go",
         "physical_in_join_wrapper.go",
+        "physical_in_union_wrapper.go",
         "physical_limit_wrapper.go",
         "physical_map_wrapper.go",
         "physical_merge_sort_union_wrapper.go",
