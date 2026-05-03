@@ -6,6 +6,7 @@ go_library(
         "delete.go",
         "distinct.go",
         "filter.go",
+        "hash_aggregation.go",
         "index_scan.go",
         "insert.go",
         "intersection.go",
