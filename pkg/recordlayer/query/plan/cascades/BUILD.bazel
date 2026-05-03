@@ -160,6 +160,7 @@ go_test(
         "predicate_matchers_test.go",
         "predicate_simplify_fuzz_test.go",
         "requested_ordering_test.go",
+        "rich_ordering_fuzz_test.go",
         "rich_ordering_test.go",
         "rule_aggregate_data_access_test.go",
         "rule_demorgan_test.go",
