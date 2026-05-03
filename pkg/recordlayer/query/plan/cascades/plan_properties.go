@@ -185,6 +185,8 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryInJoinPlan,
+		*plans.RecordQueryInUnionPlan,
+		*plans.RecordQueryFirstOrDefaultPlan,
 		*plans.RecordQueryDeletePlan:
 		return pkFromChildren(plan.GetChildren())
 	case *plans.RecordQueryUnionPlan,
