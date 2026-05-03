@@ -188,7 +188,43 @@ func (c *metadataPlanContext) GetPlannerConfiguration() cascades.PlannerConfigur
 }
 
 func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
-	return nil
+	if c.md == nil {
+		return nil
+	}
+	allIndexes := c.md.GetAllIndexes()
+	if len(allIndexes) == 0 {
+		return nil
+	}
+	defs := make([]cascades.IndexDef, 0, len(allIndexes))
+	for _, idx := range allIndexes {
+		if idx.RootExpression == nil {
+			continue
+		}
+		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
+	}
+	if len(defs) == 0 {
+		return nil
+	}
+	ctx := cascades.NewPlanContextFromIndexDefs(defs)
+	return ctx.GetMatchCandidates()
+}
+
+type metadataIndexDef struct {
+	idx *recordlayer.Index
+	md  *recordlayer.RecordMetaData
+}
+
+func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
+func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
+func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.Type == "value" && false }
+
+func (d *metadataIndexDef) IndexRecordTypes() []string {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	names := make([]string, len(rts))
+	for i, rt := range rts {
+		names[i] = rt.Name
+	}
+	return names
 }
 
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
