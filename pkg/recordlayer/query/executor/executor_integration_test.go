@@ -2885,3 +2885,240 @@ func TestIntegration_DeletePlan_AllRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestIntegration_TypeFilter_MixedRecordTypes stores both Order and
+// TypedRecord in the same subspace and verifies that TypeFilter
+// correctly separates them during scan.
+func TestIntegration_TypeFilter_MixedRecordTypes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(18001), Price: proto.Int32(100)}); err != nil {
+			return nil, err
+		}
+		if _, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(18002), Price: proto.Int32(200)}); err != nil {
+			return nil, err
+		}
+		if _, err := s.SaveRecord(&gen.TypedRecord{Id: proto.Int64(28001), ValString: proto.String("hello")}); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("insert mixed records: %v", err)
+	}
+
+	_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order", "TypedRecord"}, nil, false)
+		typeFilter := plans.NewRecordQueryTypeFilterPlan([]string{"Order"}, scan)
+
+		cursor, err := ExecutePlan(ctx, typeFilter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("TypeFilter(Order) returned %d results, want 2", len(results))
+		}
+		for _, r := range results {
+			d := r.Datum.(map[string]any)
+			if _, ok := d["ORDER_ID"]; !ok {
+				t.Errorf("expected ORDER_ID in type-filtered result, got %v", d)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ScanPlan_UnsetFieldsOmitted verifies that proto
+// fields not set on a record are omitted from the datum map
+// (protoToMap only includes set fields).
+func TestIntegration_ScanPlan_UnsetFieldsOmitted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(18101), Price: proto.Int32(50)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+
+		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("scan returned %d results, want 1", len(results))
+		}
+
+		d := results[0].Datum.(map[string]any)
+		if d["ORDER_ID"] != int64(18101) {
+			t.Errorf("ORDER_ID = %v, want 18101", d["ORDER_ID"])
+		}
+		if d["PRICE"] != int64(50) {
+			t.Errorf("PRICE = %v, want 50", d["PRICE"])
+		}
+		if _, ok := d["QUANTITY"]; ok {
+			t.Error("QUANTITY was not set but appears in datum")
+		}
+		if _, ok := d["CUSTOMER_ID"]; ok {
+			t.Error("CUSTOMER_ID was not set but appears in datum")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_FilterPlan_IsNull tests filtering for records where
+// an optional field IS NULL (not set). A field missing from the datum
+// map evaluates to nil; equality comparison with nil should not match.
+func TestIntegration_FilterPlan_IsNull(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(18201), Price: proto.Int32(100), Quantity: proto.Int32(5)},
+		&gen.Order{OrderId: proto.Int64(18202), Price: proto.Int32(200)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "QUANTITY"},
+					predicates.Comparison{Type: predicates.ComparisonIsNull},
+				),
+			},
+			scan,
+		)
+
+		cursor, err := ExecutePlan(ctx, filter, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("IS NULL filter returned %d results, want 1", len(results))
+		}
+		d := results[0].Datum.(map[string]any)
+		if d["ORDER_ID"] != int64(18202) {
+			t.Errorf("ORDER_ID = %v, want 18202", d["ORDER_ID"])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_Aggregation_AVG verifies AVG computation including
+// floating-point result.
+func TestIntegration_Aggregation_AVG(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(18301), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(18302), Price: proto.Int32(20)},
+		&gen.Order{OrderId: proto.Int64(18303), Price: proto.Int32(30)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		agg := plans.NewRecordQueryHashAggregationPlan(
+			scan,
+			nil,
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggAvg, Operand: &values.FieldValue{Field: "PRICE"}},
+			},
+		)
+
+		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("aggregation returned %d rows, want 1", len(results))
+		}
+		d := results[0].Datum.(map[string]any)
+		avg, ok := d["AVG(PRICE)"].(float64)
+		if !ok {
+			t.Fatalf("AVG(PRICE) type = %T, want float64", d["AVG(PRICE)"])
+		}
+		if avg != 20.0 {
+			t.Errorf("AVG(PRICE) = %v, want 20.0", avg)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
