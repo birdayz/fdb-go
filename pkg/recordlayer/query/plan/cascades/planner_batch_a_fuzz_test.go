@@ -85,6 +85,7 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 	f.Add(byte(2), byte(3), byte(1), byte(0))
 	f.Add(byte(0), byte(0), byte(0), byte(0))
 	f.Add(byte(5), byte(5), byte(3), byte(255))
+	f.Add(byte(2), byte(1), byte(0), byte(128)) // GroupBy path (seed >= 128)
 
 	colPool := []string{"A", "B", "C", "D", "STATUS", "AMOUNT", "DATE"}
 
@@ -143,6 +144,27 @@ func FuzzPlanner_WithIndexCandidates_NoPanic(f *testing.F) {
 			topRef = expressions.InitialOf(sort)
 		} else {
 			topRef = expressions.InitialOf(filter)
+		}
+
+		// Optionally wrap with GroupBy (seed >= 128 triggers agg path).
+		if seed >= 128 {
+			topQ := expressions.ForEachQuantifier(topRef)
+			nGroupKeys := int(seed%3) + 1
+			groupKeys := make([]values.Value, nGroupKeys)
+			for i := range groupKeys {
+				groupKeys[i] = &values.FieldValue{
+					Field: colPool[(int(seed)+i*5)%len(colPool)],
+					Typ:   values.UnknownType,
+				}
+			}
+			gb := expressions.NewGroupByExpression(
+				groupKeys,
+				[]expressions.AggregateSpec{
+					{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+				},
+				topQ,
+			)
+			topRef = expressions.InitialOf(gb)
 		}
 
 		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
