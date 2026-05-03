@@ -2157,6 +2157,33 @@ func TestEndToEnd_LimitOverUnionPushesDown(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_InsertValuesToPlan(t *testing.T) {
+	t.Parallel()
+	vals := logical.NewValues([]string{"1", "'Alice'"}, nil)
+	src := logical.NewInsert("Users", []string{"id", "name"}, vals)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.DMLImplementationRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil expression")
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Insert") {
+		t.Fatalf("expected Insert in plan, got: %q (type %T)", explain, plan)
+	}
+}
+
 func TestEndToEnd_ValuesToPlan(t *testing.T) {
 	t.Parallel()
 	src := logical.NewValues([]string{"42", "'hello'", "TRUE"}, nil)
