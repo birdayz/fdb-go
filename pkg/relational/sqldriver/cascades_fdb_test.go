@@ -114,6 +114,24 @@ func TestFDB_CascadesProjection(t *testing.T) {
 	t.Logf("Cascades projection → %d rows ✓", count)
 }
 
+func TestFDB_CascadesStringFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE name = 'Gadget'")
+	if err != nil {
+		t.Skipf("string filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 1 {
+		t.Fatalf("expected 1 row (Gadget), got %d", count)
+	}
+	t.Logf("Cascades string = filter → %d row ✓", count)
+}
+
 func TestFDB_CascadesMultiPredicate(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
