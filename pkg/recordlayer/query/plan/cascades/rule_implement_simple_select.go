@@ -78,7 +78,7 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		}
 
 		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-		currentQuant := expressions.NewPhysicalQuantifier(currentRef)
+		currentQuant := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), currentRef)
 		currentPlan := innerPlans[0]
 
 		if innerQuantifier.Kind() == expressions.QuantifierExistential {

@@ -129,6 +129,17 @@ func NewPhysicalQuantifier(rangesOver *Reference) Quantifier {
 	}
 }
 
+// NamedPhysicalQuantifier builds a Physical quantifier with a specific
+// alias. Used when the alias must match the inner quantifier's alias
+// so predicates/projections continue to resolve correctly.
+func NamedPhysicalQuantifier(alias values.CorrelationIdentifier, rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:       QuantifierPhysical,
+		alias:      alias,
+		rangesOver: rangesOver,
+	}
+}
+
 // RebuildQuantifier creates a new Quantifier with the same kind and
 // alias but ranging over a different Reference. Used by
 // FinalizeExpressionsRule to point quantifiers at disentangled child
