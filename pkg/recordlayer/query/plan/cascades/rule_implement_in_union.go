@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
@@ -11,12 +12,10 @@ import (
 // as a RecordQueryInUnionPlan — the inner plan is executed once per
 // IN value and results are merge-sorted by comparison keys.
 //
-// Ports Java's ImplementInUnionRule. Same ordering-aware gap as
-// ImplementInJoinRule — the rule creates InUnion plans without
-// ordering-aware binding adjustment. Java's full version adjusts
-// bindings that reference explode aliases to promote them from
-// fixed to directional sort orders, enabling merge-sorted output.
-// This requires Comparison.getCorrelatedTo() correlation tracking.
+// Ports Java's ImplementInUnionRule. The rule adjusts the inner plan's
+// ordering bindings: fixed bindings referencing explode aliases are
+// promoted to directional (sorted) bindings, enabling merge-sorted
+// output. Comparison keys are derived from the adjusted ordering.
 type ImplementInUnionRule struct {
 	matcher matching.BindingMatcher
 }
@@ -76,9 +75,9 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	partitions := ToPlanPartitions(innerRef)
-	if len(partitions) == 0 {
-		return
+	explodeAliases := make(map[values.CorrelationIdentifier]struct{}, len(explodeQuantifiers))
+	for _, eq := range explodeQuantifiers {
+		explodeAliases[eq.GetAlias()] = struct{}{}
 	}
 
 	bindingNames := make([]string, len(explodeQuantifiers))
@@ -86,22 +85,148 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		bindingNames[i] = eq.GetAlias().String()
 	}
 
+	partitions := ToPlanPartitions(innerRef)
+	if len(partitions) == 0 {
+		return
+	}
+
+	requestedOrderings := call.GetRequestedOrderings()
+	if len(requestedOrderings) == 0 {
+		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+	}
+
 	for _, partition := range partitions {
 		innerPlans := partition.GetPlans()
 		if len(innerPlans) == 0 {
 			continue
 		}
-
 		innerExprs := partition.GetExpressions()
-		newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 
-		inUnionPlan := plans.NewRecordQueryInUnionPlan(
-			innerPlans[0], bindingNames, nil, false)
-		call.YieldFinalExpression(NewPhysicalInUnionWrapper(
-			inUnionPlan,
-			expressions.NewPhysicalQuantifier(newRef),
-		))
+		var richOrdering *RichOrdering
+		for _, expr := range innerExprs {
+			if ph, ok := expr.(physicalPlanExpression); ok {
+				richOrdering = computeWrapperRichOrdering(ph)
+				break
+			}
+		}
+
+		for _, requestedOrdering := range requestedOrderings {
+			if requestedOrdering.IsPreserve() {
+				continue
+			}
+
+			adjustedOrdering := adjustBindingsForInUnion(
+				richOrdering, explodeAliases, requestedOrdering)
+			if adjustedOrdering == nil {
+				continue
+			}
+
+			satisfyingKeys := adjustedOrdering.EnumerateSatisfyingComparisonKeyValues(requestedOrdering)
+			for _, comparisonKeyValues := range satisfyingKeys {
+				comparisonParts := adjustedOrdering.DirectionalOrderingParts(
+					comparisonKeyValues, requestedOrdering, ProvidedSortOrderFixed)
+				isReverse := ResolveComparisonDirection(comparisonParts)
+				comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
+
+				comparisonKeys := make([]values.Value, len(comparisonParts))
+				for i, p := range comparisonParts {
+					comparisonKeys[i] = p.Value
+				}
+
+				newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+				inUnionPlan := plans.NewRecordQueryInUnionPlan(
+					innerPlans[0], bindingNames, comparisonKeys, isReverse)
+				call.YieldFinalExpression(NewPhysicalInUnionWrapper(
+					inUnionPlan,
+					expressions.NewPhysicalQuantifier(newRef),
+				))
+			}
+		}
+
+		if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
+			newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+			inUnionPlan := plans.NewRecordQueryInUnionPlan(
+				innerPlans[0], bindingNames, nil, false)
+			call.YieldFinalExpression(NewPhysicalInUnionWrapper(
+				inUnionPlan,
+				expressions.NewPhysicalQuantifier(newRef),
+			))
+		}
 	}
+}
+
+// adjustBindingsForInUnion adjusts the inner ordering's bindings:
+// fixed bindings whose comparison references an explode alias are
+// promoted to directional (sorted) bindings. This enables the InUnion
+// to merge-sort output by those keys.
+func adjustBindingsForInUnion(
+	ordering *RichOrdering,
+	explodeAliases map[values.CorrelationIdentifier]struct{},
+	requestedOrdering *RequestedOrdering,
+) *RichOrdering {
+	if ordering == nil || len(ordering.GetKeys()) == 0 {
+		return nil
+	}
+
+	reqMap := requestedOrdering.GetValueRequestedSortOrderMap()
+	adjustedBM := make(map[values.Value][]OrderingBinding, len(ordering.GetBindingMap()))
+
+	for val, bindings := range ordering.GetBindingMap() {
+		sortOrder := SortOrderOf(bindings)
+		if sortOrder.IsDirectional() {
+			adjustedBM[val] = []OrderingBinding{SortedBinding(sortOrder)}
+			continue
+		}
+
+		if !AreAllBindingsFixed(bindings) || HasMultipleFixedBindings(bindings) {
+			adjustedBM[val] = bindings
+			continue
+		}
+
+		b := SingleFixedBinding(bindings)
+		comp := b.GetComparison()
+		if comp == nil {
+			adjustedBM[val] = bindings
+			continue
+		}
+
+		cr, ok := comp.(*predicates.ComparisonRange)
+		if !ok {
+			adjustedBM[val] = bindings
+			continue
+		}
+		eqComp := cr.GetEqualityComparison()
+		if eqComp == nil {
+			adjustedBM[val] = bindings
+			continue
+		}
+
+		correlated := eqComp.GetCorrelatedTo()
+		isExplodeCorrelated := false
+		for alias := range correlated {
+			if _, ok := explodeAliases[alias]; ok {
+				isExplodeCorrelated = true
+				break
+			}
+		}
+
+		if !isExplodeCorrelated {
+			adjustedBM[val] = bindings
+			continue
+		}
+
+		if reqSort, ok := reqMap[val]; ok && reqSort.IsDirectional() {
+			if reqSort == RequestedSortOrderAscending {
+				adjustedBM[val] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+			} else {
+				adjustedBM[val] = []OrderingBinding{SortedBinding(ProvidedSortOrderDescending)}
+			}
+		} else {
+			adjustedBM[val] = []OrderingBinding{ChooseBinding()}
+		}
+	}
+
+	return NewRichOrdering(adjustedBM, ordering.GetKeys(), ordering.IsDistinct())
 }
 
 var _ ImplementationRule = (*ImplementInUnionRule)(nil)
