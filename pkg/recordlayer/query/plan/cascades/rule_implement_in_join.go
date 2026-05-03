@@ -92,6 +92,11 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	requestedOrderings := call.GetRequestedOrderings()
+	if len(requestedOrderings) == 0 {
+		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+	}
+
 	for _, partition := range partitions {
 		innerPlans := partition.GetPlans()
 		if len(innerPlans) == 0 {
@@ -100,25 +105,28 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 
 		innerExprs := partition.GetExpressions()
 
-		allOrderings := r.enumerateSourceOrderings(
-			innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap)
+		for _, requestedOrdering := range requestedOrderings {
+			allOrderings := r.enumerateSourceOrderingsForRequestedOrdering(
+				innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap,
+				requestedOrdering)
 
-		for _, orderedSources := range allOrderings {
-			currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-			currentPlan := plans.RecordQueryPlan(innerPlans[0])
+			for _, orderedSources := range allOrderings {
+				currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+				currentPlan := plans.RecordQueryPlan(innerPlans[0])
 
-			for i := len(orderedSources) - 1; i >= 0; i-- {
-				source := orderedSources[i]
-				inJoinPlan := plans.NewRecordQueryInJoinPlan(
-					currentPlan, source.bindingName, source.sorted, source.reverse)
-				wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
-					expressions.NewPhysicalQuantifier(currentRef))
-				currentRef = call.MemoizeFinalExpression(wrapper)
-				currentPlan = inJoinPlan
-			}
+				for i := len(orderedSources) - 1; i >= 0; i-- {
+					source := orderedSources[i]
+					inJoinPlan := plans.NewRecordQueryInJoinPlan(
+						currentPlan, source.bindingName, source.sorted, source.reverse)
+					wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
+						expressions.NewPhysicalQuantifier(currentRef))
+					currentRef = call.MemoizeFinalExpression(wrapper)
+					currentPlan = inJoinPlan
+				}
 
-			for _, m := range currentRef.FinalMembers() {
-				call.YieldFinalExpression(m)
+				for _, m := range currentRef.FinalMembers() {
+					call.YieldFinalExpression(m)
+				}
 			}
 		}
 	}
@@ -131,14 +139,19 @@ type inJoinSource struct {
 	quantifier  expressions.Quantifier
 }
 
-// enumerateSourceOrderings returns all valid source orderings.
-// The prefix (ordering-correlated sources) is fixed; the remaining
-// sources are permuted using TopologicalSort.Permutations.
-func (r *ImplementInJoinRule) enumerateSourceOrderings(
+// enumerateSourceOrderingsForRequestedOrdering walks the requested
+// ordering parts and matches them against the inner ordering's fixed
+// bindings. Explode aliases correlated to fixed bindings become sorted
+// IN-sources in the prefix. Non-explode fixed bindings are skipped.
+// Remaining sources are permuted.
+//
+// Ports Java's ImplementInJoinRule.enumerateInSourcesForRequestedOrdering.
+func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 	innerExprs []expressions.RelationalExpression,
 	explodeQuantifiers []expressions.Quantifier,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
 	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
+	requestedOrdering *RequestedOrdering,
 ) [][]inJoinSource {
 	var richOrdering *RichOrdering
 	for _, expr := range innerExprs {
@@ -152,6 +165,90 @@ func (r *ImplementInJoinRule) enumerateSourceOrderings(
 		return r.enumerateDefaultSources(explodeQuantifiers)
 	}
 
+	if requestedOrdering.IsPreserve() || requestedOrdering.Size() == 0 {
+		return r.buildSourcesFromProvided(richOrdering, explodeQuantifiers, explodeAliases, explodeAliasMap)
+	}
+
+	var prefix []inJoinSource
+	available := make(map[values.CorrelationIdentifier]struct{})
+	for k, v := range explodeAliases {
+		available[k] = v
+	}
+
+	reqParts := requestedOrdering.GetParts()
+	for i := 0; i < len(reqParts) && len(available) > 0; i++ {
+		part := reqParts[i]
+		bindings := richOrdering.GetBindingMap()[part.Value]
+		if len(bindings) == 0 {
+			return nil
+		}
+
+		sortOrder := SortOrderOf(bindings)
+		if sortOrder.IsDirectional() {
+			return nil
+		}
+
+		var correlatedAlias values.CorrelationIdentifier
+		found := false
+		for _, b := range bindings {
+			comp := b.GetComparison()
+			if comp == nil {
+				continue
+			}
+			cr, ok := comp.(*predicates.ComparisonRange)
+			if !ok {
+				continue
+			}
+			eqComp := cr.GetEqualityComparison()
+			if eqComp == nil {
+				continue
+			}
+			correlated := eqComp.GetCorrelatedTo()
+			if len(correlated) != 1 {
+				continue
+			}
+			for alias := range correlated {
+				if _, isExplode := explodeAliases[alias]; isExplode {
+					correlatedAlias = alias
+					found = true
+				}
+			}
+		}
+
+		if !found {
+			continue
+		}
+
+		if _, ok := available[correlatedAlias]; !ok {
+			return nil
+		}
+
+		sorted := true
+		reverse := false
+		if part.SortOrder == RequestedSortOrderDescending {
+			reverse = true
+		}
+
+		prefix = append(prefix, inJoinSource{
+			bindingName: correlatedAlias.String(),
+			sorted:      sorted,
+			reverse:     reverse,
+			quantifier:  explodeAliasMap[correlatedAlias],
+		})
+		delete(available, correlatedAlias)
+	}
+
+	return r.appendRemaining(prefix, explodeQuantifiers, available)
+}
+
+// buildSourcesFromProvided walks the provided ordering (fallback when no
+// requested ordering is given).
+func (r *ImplementInJoinRule) buildSourcesFromProvided(
+	richOrdering *RichOrdering,
+	explodeQuantifiers []expressions.Quantifier,
+	explodeAliases map[values.CorrelationIdentifier]struct{},
+	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
+) [][]inJoinSource {
 	var prefix []inJoinSource
 	used := make(map[values.CorrelationIdentifier]struct{})
 
@@ -160,7 +257,6 @@ func (r *ImplementInJoinRule) enumerateSourceOrderings(
 		if !AreAllBindingsFixed(bindings) {
 			continue
 		}
-
 		for _, b := range bindings {
 			comp := b.GetComparison()
 			if comp == nil {
@@ -185,21 +281,35 @@ func (r *ImplementInJoinRule) enumerateSourceOrderings(
 				if _, alreadyUsed := used[alias]; alreadyUsed {
 					continue
 				}
-				eq := explodeAliasMap[alias]
 				prefix = append(prefix, inJoinSource{
 					bindingName: alias.String(),
 					sorted:      true,
-					quantifier:  eq,
+					quantifier:  explodeAliasMap[alias],
 				})
 				used[alias] = struct{}{}
 			}
 		}
 	}
 
-	var remaining []inJoinSource
+	available := make(map[values.CorrelationIdentifier]struct{})
 	for _, eq := range explodeQuantifiers {
 		alias := eq.GetAlias()
 		if _, ok := used[alias]; !ok {
+			available[alias] = struct{}{}
+		}
+	}
+	return r.appendRemaining(prefix, explodeQuantifiers, available)
+}
+
+func (r *ImplementInJoinRule) appendRemaining(
+	prefix []inJoinSource,
+	explodeQuantifiers []expressions.Quantifier,
+	available map[values.CorrelationIdentifier]struct{},
+) [][]inJoinSource {
+	var remaining []inJoinSource
+	for _, eq := range explodeQuantifiers {
+		alias := eq.GetAlias()
+		if _, ok := available[alias]; ok {
 			remaining = append(remaining, inJoinSource{
 				bindingName: alias.String(),
 				quantifier:  eq,
