@@ -73,6 +73,12 @@ func ExecutePlan(
 		return executeInsert(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryUpdatePlan:
 		return executeUpdate(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryTempTableScanPlan:
+		return executeTempTableScan(p, evalCtx, props)
+	case *plans.RecordQueryTempTableInsertPlan:
+		return executeTempTableInsert(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryTableFunctionPlan:
+		return executeTableFunction(p, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
 	default:
@@ -997,6 +1003,64 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		}
 	}
 	return protoreflect.Value{}, fmt.Errorf("cannot convert %T to proto field kind %v", v, fd.Kind())
+}
+
+func executeTempTableScan(
+	p *plans.RecordQueryTempTableScanPlan,
+	evalCtx *EvaluationContext,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias())
+	items := tt.GetList()
+	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func executeTempTableInsert(
+	ctx context.Context,
+	p *plans.RecordQueryTempTableInsertPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias())
+
+	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
+		tt.Add(qr)
+		return qr
+	})
+	return mapped, nil
+}
+
+func executeTableFunction(
+	p *plans.RecordQueryTableFunctionPlan,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	sv := p.GetStreamValue()
+	if sv == nil {
+		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
+	}
+	result := sv.Evaluate(nil)
+	if result == nil {
+		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
+	}
+	list, ok := result.([]any)
+	if !ok {
+		return applySkipLimit(
+			recordlayer.FromList([]QueryResult{{Datum: result}}),
+			props.Skip, props.ReturnedRowLimit,
+		), nil
+	}
+	items := make([]QueryResult, len(list))
+	for i, elem := range list {
+		items[i] = QueryResult{Datum: elem}
+	}
+	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeExplode(

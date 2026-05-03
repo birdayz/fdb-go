@@ -333,7 +333,8 @@ func TestExecuteUnsupportedPlan_ReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryTempTableScanPlan(values.NamedCorrelationIdentifier("tmp"))
+	plan := plans.NewRecordQueryRecursiveLevelUnionPlan(nil, nil,
+		values.NamedCorrelationIdentifier("s"), values.NamedCorrelationIdentifier("i"))
 	_, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err == nil {
 		t.Fatal("expected error for unsupported plan type")
@@ -928,6 +929,166 @@ func TestExecuteExplode_Nil(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("got %d results, want 0 (nil collection)", len(results))
+	}
+}
+
+func TestExecuteTempTable_InsertAndScan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	evalCtx := EmptyEvaluationContext()
+	alias := values.NamedCorrelationIdentifier("cte1")
+
+	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	insertPlan := plans.NewRecordQueryTempTableInsertPlan(inner, alias, false)
+	cursor, err := ExecutePlan(ctx, insertPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	inserted, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("insert collect: %v", err)
+	}
+	if len(inserted) != 1 {
+		t.Fatalf("insert returned %d rows, want 1", len(inserted))
+	}
+
+	scanPlan := plans.NewRecordQueryTempTableScanPlan(alias)
+	cursor2, err := ExecutePlan(ctx, scanPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	scanned, err := CollectAll(ctx, cursor2)
+	if err != nil {
+		t.Fatalf("scan collect: %v", err)
+	}
+	if len(scanned) != 1 {
+		t.Fatalf("scan returned %d rows, want 1", len(scanned))
+	}
+	row := scanned[0].Datum.(map[string]any)
+	if row["constant"] != int64(42) {
+		t.Errorf("scanned value = %v, want 42", row["constant"])
+	}
+}
+
+func TestExecuteTempTable_EmptyScan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	evalCtx := EmptyEvaluationContext()
+	alias := values.NamedCorrelationIdentifier("empty_tt")
+
+	scanPlan := plans.NewRecordQueryTempTableScanPlan(alias)
+	cursor, err := ExecutePlan(ctx, scanPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestExecuteTempTable_MultipleInserts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	evalCtx := EmptyEvaluationContext()
+	alias := values.NamedCorrelationIdentifier("multi")
+
+	for _, val := range []int64{1, 2, 3} {
+		inner := plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: val, Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		})
+		insertPlan := plans.NewRecordQueryTempTableInsertPlan(inner, alias, false)
+		cursor, err := ExecutePlan(ctx, insertPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("insert %d: %v", val, err)
+		}
+		_, err = CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("collect %d: %v", val, err)
+		}
+	}
+
+	scanPlan := plans.NewRecordQueryTempTableScanPlan(alias)
+	cursor, err := ExecutePlan(ctx, scanPlan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+}
+
+func TestExecuteTableFunction_StreamValue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	plan := plans.NewRecordQueryTableFunctionPlan(
+		&values.ConstantValue{Value: []any{int64(10), int64(20)}, Typ: values.UnknownType},
+	)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].Datum != int64(10) || results[1].Datum != int64(20) {
+		t.Errorf("results = %v, %v, want 10, 20", results[0].Datum, results[1].Datum)
+	}
+}
+
+func TestExecuteTableFunction_Nil(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	plan := plans.NewRecordQueryTableFunctionPlan(nil)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestTempTable_ClearAndReuse(t *testing.T) {
+	t.Parallel()
+
+	tt := NewTempTable()
+	tt.Add(QueryResult{Datum: int64(1)})
+	tt.Add(QueryResult{Datum: int64(2)})
+
+	if len(tt.GetList()) != 2 {
+		t.Fatalf("got %d items, want 2", len(tt.GetList()))
+	}
+
+	tt.Clear()
+	if len(tt.GetList()) != 0 {
+		t.Fatalf("after clear, got %d items, want 0", len(tt.GetList()))
+	}
+
+	tt.Add(QueryResult{Datum: int64(3)})
+	if len(tt.GetList()) != 1 {
+		t.Fatalf("after re-add, got %d items, want 1", len(tt.GetList()))
 	}
 }
 
