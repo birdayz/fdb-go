@@ -687,3 +687,133 @@ func TestEndToEnd_CompoundIndexBeatsIntersection(t *testing.T) {
 		t.Fatalf("expected compound index (Order$status_amount), got %q — planner chose intersection or single-column index instead", indexName)
 	}
 }
+
+// TestEndToEnd_StreamingAggOverSortedIndex verifies:
+// GroupBy(region, COUNT(id)) over Sort(region) over Scan with index on
+// (region) → streaming aggregation over the ordered index scan.
+func TestEndToEnd_StreamingAggOverSortedIndex(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	// Sort by region — the OrderedIndexScanRule will eliminate this
+	// in favor of an index scan ordered by region.
+	sortExpr := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		}, scanQ)
+	sortRef := expressions.InitialOf(sortExpr)
+	sortQ := expressions.ForEachQuantifier(sortRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		sortQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// Walk for streaming aggregation.
+	foundStreamingAgg := false
+	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+		if r == nil || visited[r] {
+			return
+		}
+		visited[r] = true
+		for _, m := range r.Members() {
+			if cascades.IsPhysicalStreamingAgg(m) {
+				foundStreamingAgg = true
+				return
+			}
+			for _, qq := range m.GetQuantifiers() {
+				walk(qq.GetRangesOver(), visited)
+				if foundStreamingAgg {
+					return
+				}
+			}
+		}
+	}
+	walk(ref, map[*expressions.Reference]bool{})
+	if !foundStreamingAgg {
+		t.Fatal("planner did not produce a streaming aggregation — expected GroupBy over ordered index scan")
+	}
+}
+
+// TestEndToEnd_AggregateFromLogicalOperator exercises the full pipeline
+// from LogicalAggregate → GroupByExpression → streaming agg plan.
+func TestEndToEnd_AggregateFromLogicalOperator(t *testing.T) {
+	t.Parallel()
+
+	src := logical.NewAggregate(
+		logical.NewSort(
+			logical.NewScan("Orders", ""),
+			[]logical.SortKey{{Expr: "region", Dir: logical.SortAsc}},
+		),
+		[]string{"region"},
+		[]string{"COUNT(id)"},
+		[]string{"cnt"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(got)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	foundStreamingAgg := false
+	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+		if r == nil || visited[r] {
+			return
+		}
+		visited[r] = true
+		for _, m := range r.Members() {
+			if cascades.IsPhysicalStreamingAgg(m) {
+				foundStreamingAgg = true
+				return
+			}
+			for _, qq := range m.GetQuantifiers() {
+				walk(qq.GetRangesOver(), visited)
+				if foundStreamingAgg {
+					return
+				}
+			}
+		}
+	}
+	walk(ref, map[*expressions.Reference]bool{})
+	if !foundStreamingAgg {
+		t.Fatal("full pipeline from LogicalAggregate did not produce streaming aggregation")
+	}
+}

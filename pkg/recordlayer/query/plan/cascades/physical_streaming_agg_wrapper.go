@@ -10,6 +10,13 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
+// IsPhysicalStreamingAgg reports whether the given RelationalExpression
+// is a physicalStreamingAggWrapper.
+func IsPhysicalStreamingAgg(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalStreamingAggWrapper)
+	return ok
+}
+
 // physicalStreamingAggWrapper adapts a
 // *plans.RecordQueryStreamingAggregationPlan to the
 // RelationalExpression interface. Single inner Quantifier — same
