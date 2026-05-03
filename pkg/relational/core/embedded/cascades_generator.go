@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"io"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
@@ -13,6 +14,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // QueryEngine selects which query engine to use.
@@ -151,7 +153,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 			return nil, execErr
 		}
 
-		rs := executor.NewRecordLayerResultSet(ctx, cursor, nil)
+		cols := deriveColumnsFromPlan(physicalPlan, p.md)
+		rs := executor.NewRecordLayerResultSet(ctx, cursor, cols)
 		rows = newCascadesRows(rs)
 		return nil, nil
 	})
@@ -197,6 +200,51 @@ func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 		return nil
 	}
 	return rt.PrimaryKey.FieldNames()
+}
+
+func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	if md == nil {
+		return nil
+	}
+	scan, ok := plan.(*plans.RecordQueryScanPlan)
+	if !ok || len(scan.GetRecordTypes()) == 0 {
+		return nil
+	}
+	rt := md.GetRecordType(scan.GetRecordTypes()[0])
+	if rt == nil || rt.Descriptor == nil {
+		return nil
+	}
+	fields := rt.Descriptor.Fields()
+	cols := make([]executor.ColumnDef, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		cols[i] = executor.ColumnDef{
+			Name:     strings.ToUpper(string(fd.Name())),
+			TypeName: protoKindToTypeName(fd.Kind()),
+		}
+	}
+	return cols
+}
+
+func protoKindToTypeName(k protoreflect.Kind) string {
+	switch k {
+	case protoreflect.BoolKind:
+		return "BOOLEAN"
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return "INTEGER"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "BIGINT"
+	case protoreflect.FloatKind:
+		return "FLOAT"
+	case protoreflect.DoubleKind:
+		return "DOUBLE"
+	case protoreflect.StringKind:
+		return "STRING"
+	case protoreflect.BytesKind:
+		return "BYTES"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 // cascadesRows wraps a RecordLayerResultSet as driver.Rows.
