@@ -305,3 +305,86 @@ func TestExplain_DeepTree(t *testing.T) {
 		t.Fatalf("Deep tree:\n  got:\n%s\n  want:\n%s", got, want)
 	}
 }
+
+func TestSortDir_String(t *testing.T) {
+	t.Parallel()
+	if SortAsc.String() != "ASC" {
+		t.Errorf("SortAsc.String() = %q, want ASC", SortAsc.String())
+	}
+	if SortDesc.String() != "DESC" {
+		t.Errorf("SortDesc.String() = %q, want DESC", SortDesc.String())
+	}
+}
+
+func TestJoinKind_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		kind JoinKind
+		want string
+	}{
+		{JoinInner, "InnerJoin"},
+		{JoinLeft, "LeftJoin"},
+		{JoinRight, "RightJoin"},
+	}
+	for _, tc := range cases {
+		if got := tc.kind.String(); got != tc.want {
+			t.Errorf("JoinKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
+
+func TestUnion_Children_CopiesSlice(t *testing.T) {
+	t.Parallel()
+	a := NewScan("a", "")
+	b := NewScan("b", "")
+	u := NewUnion([]LogicalOperator{a, b}, false)
+	kids := u.Children()
+	kids[0] = nil
+	if u.Inputs[0] == nil {
+		t.Error("Children() must return a copy, not the original slice")
+	}
+}
+
+func TestScan_ExplainWithIndent(t *testing.T) {
+	t.Parallel()
+	s := NewScan("tbl", "")
+	got := s.Explain("    ")
+	if got != "    Scan(tbl)" {
+		t.Errorf("got %q, want %q", got, "    Scan(tbl)")
+	}
+}
+
+func TestJoinWithPredicate(t *testing.T) {
+	t.Parallel()
+	j := NewJoinWithPredicate(NewScan("a", ""), NewScan("b", ""), JoinLeft, "fake-pred")
+	if j.OnPredicate != "fake-pred" {
+		t.Errorf("OnPredicate = %v, want fake-pred", j.OnPredicate)
+	}
+	if j.Kind != JoinLeft {
+		t.Errorf("Kind = %v, want JoinLeft", j.Kind)
+	}
+}
+
+func BenchmarkExplain_Scan(b *testing.B) {
+	s := NewScan("Order", "o")
+	for b.Loop() {
+		_ = s.Explain("")
+	}
+}
+
+func BenchmarkExplain_DeepTree(b *testing.B) {
+	tree := NewProject(
+		NewSort(
+			NewFilter(
+				NewJoin(NewScan("a", ""), NewScan("b", ""), JoinInner, "a.id=b.id"),
+				"b.x > 0",
+			),
+			[]SortKey{{Expr: "a.name", Dir: SortAsc}},
+		),
+		[]string{"a.name", "b.x"},
+		[]string{"", ""},
+	)
+	for b.Loop() {
+		_ = tree.Explain("")
+	}
+}
