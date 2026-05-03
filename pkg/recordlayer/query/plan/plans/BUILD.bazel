@@ -38,6 +38,7 @@ go_test(
     name = "plans_test",
     srcs = [
         "coverage_test.go",
+        "cte_plans_test.go",
         "plan_test.go",
     ],
     embed = [":plans"],

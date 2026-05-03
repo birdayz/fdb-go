@@ -45,6 +45,7 @@ go_test(
         "alias_map_test.go",
         "benchmark_test.go",
         "correlation_test.go",
+        "cte_expressions_test.go",
         "dml_test.go",
         "explode_test.go",
         "expression_test.go",
