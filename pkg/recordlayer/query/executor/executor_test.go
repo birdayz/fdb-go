@@ -1564,3 +1564,338 @@ func TestGoToProtoValue_Bytes(t *testing.T) {
 		t.Errorf("got %v, want [1 2 3]", got)
 	}
 }
+
+// --- scanComparisonsToTupleRange unit tests ---
+
+func eqRange(val any) *predicates.ComparisonRange {
+	r := predicates.EmptyComparisonRange()
+	c := predicates.NewLiteralComparison(predicates.ComparisonEquals, val)
+	res := r.Merge(&c)
+	if !res.Ok {
+		panic("merge failed for equality")
+	}
+	return res.Range
+}
+
+func ineqRange(comps ...predicates.Comparison) *predicates.ComparisonRange {
+	r := predicates.EmptyComparisonRange()
+	for i := range comps {
+		res := r.Merge(&comps[i])
+		if !res.Ok {
+			panic("merge failed for inequality")
+		}
+		r = res.Range
+	}
+	return r
+}
+
+func TestScanComparisons_Empty(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange(nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart || tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
+		t.Fatalf("expected TupleRangeAll, got low=%d high=%d", tr.LowEndpoint, tr.HighEndpoint)
+	}
+	if tr.Low != nil || tr.High != nil {
+		t.Fatalf("expected nil tuples, got low=%v high=%v", tr.Low, tr.High)
+	}
+}
+
+func TestScanComparisons_EmptySlice(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeTreeStart || tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
+		t.Fatalf("expected TupleRangeAll, got low=%d high=%d", tr.LowEndpoint, tr.HighEndpoint)
+	}
+}
+
+func TestScanComparisons_SingleEquality(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{eqRange("alice")}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive || tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected inclusive/inclusive, got low=%d high=%d", tr.LowEndpoint, tr.HighEndpoint)
+	}
+	if len(tr.Low) != 1 || tr.Low[0] != "alice" {
+		t.Fatalf("expected low=[alice], got %v", tr.Low)
+	}
+	if len(tr.High) != 1 || tr.High[0] != "alice" {
+		t.Fatalf("expected high=[alice], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_MultiEquality(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		eqRange("alice"),
+		eqRange(int64(42)),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tr.Low) != 2 || tr.Low[0] != "alice" || tr.Low[1] != int64(42) {
+		t.Fatalf("expected low=[alice 42], got %v", tr.Low)
+	}
+	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(42) {
+		t.Fatalf("expected high=[alice 42], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_EqualityThenEmpty(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		eqRange("alice"),
+		predicates.EmptyComparisonRange(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tr.Low) != 1 || tr.Low[0] != "alice" {
+		t.Fatalf("expected prefix [alice], got low=%v", tr.Low)
+	}
+}
+
+func TestScanComparisons_GreaterThanNoPrefix(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
+		t.Fatalf("expected high TreeEnd, got %d", tr.HighEndpoint)
+	}
+	if len(tr.Low) != 1 || tr.Low[0] != int64(10) {
+		t.Fatalf("expected low=[10], got %v", tr.Low)
+	}
+	if tr.High != nil {
+		t.Fatalf("expected nil high, got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_GreaterThanOrEqNoPrefix(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected low inclusive, got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
+		t.Fatalf("expected high TreeEnd, got %d", tr.HighEndpoint)
+	}
+	if len(tr.Low) != 1 || tr.Low[0] != int64(10) {
+		t.Fatalf("expected low=[10], got %v", tr.Low)
+	}
+}
+
+func TestScanComparisons_LessThanNoPrefix(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive (no-prefix LT sets low exclusive), got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)
+	}
+	if tr.Low != nil {
+		t.Fatalf("expected nil low, got %v", tr.Low)
+	}
+	if len(tr.High) != 1 || tr.High[0] != int64(50) {
+		t.Fatalf("expected high=[50], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_LessThanOrEqNoPrefix(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive (LTE without prior low sets low exclusive), got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected high inclusive, got %d", tr.HighEndpoint)
+	}
+	if tr.Low != nil {
+		t.Fatalf("expected nil low, got %v", tr.Low)
+	}
+	if len(tr.High) != 1 || tr.High[0] != int64(50) {
+		t.Fatalf("expected high=[50], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_BetweenGTAndLT(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(
+			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
+			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50)),
+		),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)
+	}
+	if len(tr.Low) != 1 || tr.Low[0] != int64(10) {
+		t.Fatalf("expected low=[10], got %v", tr.Low)
+	}
+	if len(tr.High) != 1 || tr.High[0] != int64(50) {
+		t.Fatalf("expected high=[50], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_BetweenGTEAndLTE(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(
+			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10)),
+			predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50)),
+		),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected low inclusive, got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected high inclusive, got %d", tr.HighEndpoint)
+	}
+}
+
+func TestScanComparisons_EqualityPrefixThenGT(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		eqRange("alice"),
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive, got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected high inclusive (prefix default), got %d", tr.HighEndpoint)
+	}
+	if len(tr.Low) != 2 || tr.Low[0] != "alice" || tr.Low[1] != int64(10) {
+		t.Fatalf("expected low=[alice 10], got %v", tr.Low)
+	}
+	if len(tr.High) != 1 || tr.High[0] != "alice" {
+		t.Fatalf("expected high=[alice] (prefix only), got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_EqualityPrefixThenLT(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		eqRange("alice"),
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(50))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive (LT sets low exclusive when no prior low), got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected high exclusive, got %d", tr.HighEndpoint)
+	}
+	if len(tr.Low) != 1 || tr.Low[0] != "alice" {
+		t.Fatalf("expected low=[alice] (prefix only), got %v", tr.Low)
+	}
+	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(50) {
+		t.Fatalf("expected high=[alice 50], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_EqualityPrefixThenBetween(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		eqRange("alice"),
+		ineqRange(
+			predicates.NewLiteralComparison(predicates.ComparisonGreaterThanEq, int64(10)),
+			predicates.NewLiteralComparison(predicates.ComparisonLessThanOrEq, int64(50)),
+		),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected low inclusive, got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
+		t.Fatalf("expected high inclusive, got %d", tr.HighEndpoint)
+	}
+	if len(tr.Low) != 2 || tr.Low[0] != "alice" || tr.Low[1] != int64(10) {
+		t.Fatalf("expected low=[alice 10], got %v", tr.Low)
+	}
+	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(50) {
+		t.Fatalf("expected high=[alice 50], got %v", tr.High)
+	}
+}
+
+func TestScanComparisons_IsNotNullNoPrefix(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		ineqRange(predicates.Comparison{Type: predicates.ComparisonIsNotNull}),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tr.LowEndpoint != recordlayer.EndpointTypeRangeExclusive {
+		t.Fatalf("expected low exclusive (IS NOT NULL sets low exclusive), got %d", tr.LowEndpoint)
+	}
+	if tr.HighEndpoint != recordlayer.EndpointTypeTreeEnd {
+		t.Fatalf("expected high TreeEnd, got %d", tr.HighEndpoint)
+	}
+	if tr.Low != nil {
+		t.Fatalf("expected nil low tuple (no comparand), got %v", tr.Low)
+	}
+}
+
+func TestScanComparisons_MultiEqualityThenInequality(t *testing.T) {
+	t.Parallel()
+	tr, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{
+		eqRange("alice"),
+		eqRange(int64(1)),
+		ineqRange(predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, float64(3.14))),
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tr.Low) != 3 || tr.Low[0] != "alice" || tr.Low[1] != int64(1) || tr.Low[2] != float64(3.14) {
+		t.Fatalf("expected low=[alice 1 3.14], got %v", tr.Low)
+	}
+	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(1) {
+		t.Fatalf("expected high=[alice 1] (prefix only), got %v", tr.High)
+	}
+}

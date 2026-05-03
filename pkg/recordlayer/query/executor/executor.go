@@ -193,7 +193,10 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 	}
 
 	for _, ineq := range nextRange.GetInequalityComparisons() {
-		comparand := ineq.Operand.Evaluate(binder)
+		var comparand any
+		if ineq.Operand != nil {
+			comparand = ineq.Operand.Evaluate(binder)
+		}
 		switch ineq.Type {
 		case predicates.ComparisonGreaterThan:
 			lowItem = comparand
