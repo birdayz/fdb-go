@@ -159,6 +159,7 @@ go_test(
         "plan_context_test.go",
         "plan_properties_test.go",
         "planner_agg_fuzz_test.go",
+        "planner_all_impl_rules_test.go",
         "planner_batch_a_fuzz_test.go",
         "planner_constraint_test.go",
         "planner_fuzz_test.go",
