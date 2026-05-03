@@ -2,6 +2,9 @@ package executor
 
 import (
 	"context"
+	"fmt"
+	"math"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -1897,5 +1900,282 @@ func TestScanComparisons_MultiEqualityThenInequality(t *testing.T) {
 	}
 	if len(tr.High) != 2 || tr.High[0] != "alice" || tr.High[1] != int64(1) {
 		t.Fatalf("expected high=[alice 1] (prefix only), got %v", tr.High)
+	}
+}
+
+// --- mergeRows unit tests ---
+
+func TestMergeRows_BothMaps(t *testing.T) {
+	t.Parallel()
+	outer := QueryResult{
+		Datum:      map[string]any{"A": 1, "B": 2},
+		PrimaryKey: tuple.Tuple{int64(1)},
+	}
+	inner := QueryResult{
+		Datum:      map[string]any{"C": 3, "D": 4},
+		PrimaryKey: tuple.Tuple{int64(2)},
+	}
+	merged := mergeRows(outer, inner)
+	m := merged.Datum.(map[string]any)
+	if m["A"] != 1 || m["B"] != 2 || m["C"] != 3 || m["D"] != 4 {
+		t.Fatalf("unexpected merged datum: %v", m)
+	}
+	if merged.PrimaryKey[0] != int64(1) {
+		t.Fatalf("PrimaryKey should come from outer, got %v", merged.PrimaryKey)
+	}
+}
+
+func TestMergeRows_InnerOverridesOuter(t *testing.T) {
+	t.Parallel()
+	outer := QueryResult{Datum: map[string]any{"K": "outer"}}
+	inner := QueryResult{Datum: map[string]any{"K": "inner"}}
+	merged := mergeRows(outer, inner)
+	m := merged.Datum.(map[string]any)
+	if m["K"] != "inner" {
+		t.Fatalf("inner should override outer on key conflict, got %v", m["K"])
+	}
+}
+
+func TestMergeRows_NonMapDatum(t *testing.T) {
+	t.Parallel()
+	outer := QueryResult{Datum: "string-datum", PrimaryKey: tuple.Tuple{int64(1)}}
+	inner := QueryResult{Datum: map[string]any{"C": 3}}
+	merged := mergeRows(outer, inner)
+	if merged.Datum != "string-datum" {
+		t.Fatalf("expected outer datum passthrough, got %v", merged.Datum)
+	}
+}
+
+// --- toFloat64 unit tests ---
+
+func TestToFloat64_Int64(t *testing.T) {
+	t.Parallel()
+	if v := toFloat64(int64(42)); v != 42.0 {
+		t.Fatalf("expected 42.0, got %v", v)
+	}
+}
+
+func TestToFloat64_Float64(t *testing.T) {
+	t.Parallel()
+	if v := toFloat64(float64(3.14)); v != 3.14 {
+		t.Fatalf("expected 3.14, got %v", v)
+	}
+}
+
+func TestToFloat64_Int(t *testing.T) {
+	t.Parallel()
+	if v := toFloat64(int(7)); v != 7.0 {
+		t.Fatalf("expected 7.0, got %v", v)
+	}
+}
+
+func TestToFloat64_Int32(t *testing.T) {
+	t.Parallel()
+	if v := toFloat64(int32(100)); v != 100.0 {
+		t.Fatalf("expected 100.0, got %v", v)
+	}
+}
+
+func TestToFloat64_Unsupported(t *testing.T) {
+	t.Parallel()
+	v := toFloat64("hello")
+	if !math.IsNaN(v) {
+		t.Fatalf("expected NaN for string, got %v", v)
+	}
+}
+
+func TestToFloat64_Nil(t *testing.T) {
+	t.Parallel()
+	v := toFloat64(nil)
+	if !math.IsNaN(v) {
+		t.Fatalf("expected NaN for nil, got %v", v)
+	}
+}
+
+// --- aggKeyName unit tests ---
+
+func TestAggKeyName_FieldValue(t *testing.T) {
+	t.Parallel()
+	fv := &values.FieldValue{Field: "status", Typ: values.TypeString}
+	if got := aggKeyName(fv); got != "STATUS" {
+		t.Fatalf("expected STATUS, got %s", got)
+	}
+}
+
+func TestAggKeyName_NonFieldValue(t *testing.T) {
+	t.Parallel()
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.TypeInt}
+	got := aggKeyName(cv)
+	if got != strings.ToUpper(cv.Name()) {
+		t.Fatalf("expected %s, got %s", strings.ToUpper(cv.Name()), got)
+	}
+}
+
+// --- aggResultName unit tests ---
+
+func TestAggResultName_Count(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{
+		Function: expressions.AggCount,
+		Operand:  &values.FieldValue{Field: "id", Typ: values.TypeInt},
+	}
+	if got := aggResultName(agg); got != "COUNT(ID)" {
+		t.Fatalf("expected COUNT(ID), got %s", got)
+	}
+}
+
+func TestAggResultName_Sum(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{
+		Function: expressions.AggSum,
+		Operand:  &values.FieldValue{Field: "price", Typ: values.TypeInt},
+	}
+	if got := aggResultName(agg); got != "SUM(PRICE)" {
+		t.Fatalf("expected SUM(PRICE), got %s", got)
+	}
+}
+
+func TestAggResultName_Min(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{
+		Function: expressions.AggMin,
+		Operand:  &values.FieldValue{Field: "price", Typ: values.TypeInt},
+	}
+	if got := aggResultName(agg); got != "MIN(PRICE)" {
+		t.Fatalf("expected MIN(PRICE), got %s", got)
+	}
+}
+
+func TestAggResultName_Max(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{
+		Function: expressions.AggMax,
+		Operand:  &values.FieldValue{Field: "price", Typ: values.TypeInt},
+	}
+	if got := aggResultName(agg); got != "MAX(PRICE)" {
+		t.Fatalf("expected MAX(PRICE), got %s", got)
+	}
+}
+
+func TestAggResultName_Avg(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{
+		Function: expressions.AggAvg,
+		Operand:  &values.FieldValue{Field: "price", Typ: values.TypeInt},
+	}
+	if got := aggResultName(agg); got != "AVG(PRICE)" {
+		t.Fatalf("expected AVG(PRICE), got %s", got)
+	}
+}
+
+func TestAggResultName_NilOperand(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{Function: expressions.AggCount}
+	if got := aggResultName(agg); got != "COUNT(?)" {
+		t.Fatalf("expected COUNT(?), got %s", got)
+	}
+}
+
+func TestAggResultName_UnknownFunction(t *testing.T) {
+	t.Parallel()
+	agg := expressions.AggregateSpec{
+		Function: expressions.AggregateFunction(99),
+		Operand:  &values.FieldValue{Field: "x", Typ: values.TypeInt},
+	}
+	if got := aggResultName(agg); got != "AGG(X)" {
+		t.Fatalf("expected AGG(X), got %s", got)
+	}
+}
+
+// --- distinctKey unit tests ---
+
+func TestDistinctKey_WithPrimaryKey(t *testing.T) {
+	t.Parallel()
+	pk := tuple.Tuple{int64(42)}
+	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"A": 1}}
+	key := distinctKey(qr)
+	expected := string(pk.Pack())
+	if key != expected {
+		t.Fatalf("expected packed PK, got %q", key)
+	}
+}
+
+func TestDistinctKey_NilPrimaryKey(t *testing.T) {
+	t.Parallel()
+	qr := QueryResult{Datum: map[string]any{"A": 1}}
+	key := distinctKey(qr)
+	expected := fmt.Sprintf("%v", qr.Datum)
+	if key != expected {
+		t.Fatalf("expected datum string, got %q", key)
+	}
+}
+
+// --- intersectionKey unit tests ---
+
+func TestIntersectionKey_NoKeyVals_WithPK(t *testing.T) {
+	t.Parallel()
+	pk := tuple.Tuple{int64(7)}
+	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"X": 1}}
+	key := intersectionKey(qr, nil)
+	expected := string(pk.Pack())
+	if key != expected {
+		t.Fatalf("expected packed PK, got %q", key)
+	}
+}
+
+func TestIntersectionKey_NoKeyVals_NoPK(t *testing.T) {
+	t.Parallel()
+	qr := QueryResult{Datum: map[string]any{"X": 1}}
+	key := intersectionKey(qr, nil)
+	expected := fmt.Sprintf("%v", qr.Datum)
+	if key != expected {
+		t.Fatalf("expected datum string, got %q", key)
+	}
+}
+
+func TestIntersectionKey_WithKeyVals(t *testing.T) {
+	t.Parallel()
+	qr := QueryResult{Datum: map[string]any{"NAME": "alice", "AGE": int64(30)}}
+	keyVals := []values.Value{
+		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
+		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
+	}
+	key := intersectionKey(qr, keyVals)
+	if key != "alice|30|" {
+		t.Fatalf("expected 'alice|30|', got %q", key)
+	}
+}
+
+// --- passesJoinPredicates unit tests ---
+
+func TestPassesJoinPredicates_Empty(t *testing.T) {
+	t.Parallel()
+	qr := QueryResult{Datum: map[string]any{"A": 1}}
+	if !passesJoinPredicates(qr, nil, EmptyEvaluationContext()) {
+		t.Fatal("empty predicates should pass")
+	}
+}
+
+func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
+	t.Parallel()
+	qr := QueryResult{Datum: map[string]any{"PRICE": int64(100)}}
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
+	)
+	if !passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
+		t.Fatal("matching predicate should pass")
+	}
+}
+
+func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
+	t.Parallel()
+	qr := QueryResult{Datum: map[string]any{"PRICE": int64(100)}}
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
+	)
+	if passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
+		t.Fatal("non-matching predicate should fail")
 	}
 }
