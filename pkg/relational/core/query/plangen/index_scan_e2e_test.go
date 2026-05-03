@@ -2209,7 +2209,7 @@ func TestEndToEnd_FunctionCallInFilterToPlan(t *testing.T) {
 	}
 }
 
-func TestEndToEnd_ArithmeticInProjectNoPanic(t *testing.T) {
+func TestEndToEnd_ArithmeticInProjectToPlan(t *testing.T) {
 	t.Parallel()
 	src := logical.NewProject(
 		logical.NewScan("T", ""),
@@ -2224,8 +2224,18 @@ func TestEndToEnd_ArithmeticInProjectNoPanic(t *testing.T) {
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
 	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
-	plan, _, _ := p.Plan(ref)
-	_ = plan
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Project") {
+		t.Fatalf("expected Project in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Scan") {
+		t.Fatalf("expected Scan in plan, got: %s", explain)
+	}
 }
 
 func TestEndToEnd_ValuesToPlan(t *testing.T) {
