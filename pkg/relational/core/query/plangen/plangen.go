@@ -112,16 +112,21 @@ func convertScan(s *logical.LogicalScan) expressions.RelationalExpression {
 // convertFilter builds a LogicalFilterExpression over the recursively-
 // converted child. Uses structured Predicate when available; falls back
 // to text-based comparison parsing for simple "col op value" predicates.
+// AND-chained text predicates produce multiple entries in the filter's
+// predicate list (equivalent to multiple WHERE conjuncts).
 func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, error) {
-	var pred predicates.QueryPredicate
+	var preds []predicates.QueryPredicate
 	if f.Predicate != nil {
-		pred = f.Predicate
+		preds = []predicates.QueryPredicate{f.Predicate}
 	} else if f.PredicateText != "" {
-		p, ok := tryParseSimpleComparison(f.PredicateText)
-		if !ok {
-			return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, f.PredicateText)
+		parts := splitOnAND(f.PredicateText)
+		for _, part := range parts {
+			p, ok := parseSingleComparison(part)
+			if !ok {
+				return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, f.PredicateText)
+			}
+			preds = append(preds, p)
 		}
-		pred = p
 	} else {
 		return nil, fmt.Errorf("%w: LogicalFilter without predicate", ErrUnsupported)
 	}
@@ -131,7 +136,7 @@ func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, 
 	}
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 	return expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{pred}, q,
+		preds, q,
 	), nil
 }
 
@@ -576,7 +581,12 @@ func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, erro
 
 // tryParseSimpleComparison parses "lhs op rhs" into a ComparisonPredicate.
 // Supports: = != <> < > <= >= with bare column or simple literal operands.
+// For AND-chained predicates in filters, use splitOnAND + parseSingleComparison.
 func tryParseSimpleComparison(s string) (predicates.QueryPredicate, bool) {
+	return parseSingleComparison(s)
+}
+
+func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	s = strings.TrimSpace(s)
 	lhs, op, rhs, ok := splitComparison(s)
 	if !ok {
@@ -595,6 +605,26 @@ func tryParseSimpleComparison(s string) (predicates.QueryPredicate, bool) {
 		lhsVal,
 		predicates.Comparison{Type: compOp, Operand: rhsVal},
 	), true
+}
+
+// splitOnAND splits a predicate string on " AND " (case-insensitive).
+// Returns the parts. Does NOT handle parentheses — "a = 1 AND (b = 2 OR c = 3)"
+// would incorrectly split. The caller is responsible for only feeding
+// simple conjunctive predicates.
+func splitOnAND(s string) []string {
+	upper := strings.ToUpper(s)
+	var parts []string
+	for {
+		idx := strings.Index(upper, " AND ")
+		if idx < 0 {
+			parts = append(parts, strings.TrimSpace(s))
+			break
+		}
+		parts = append(parts, strings.TrimSpace(s[:idx]))
+		s = s[idx+5:]
+		upper = upper[idx+5:]
+	}
+	return parts
 }
 
 // splitComparison splits "lhs op rhs" into parts. Returns the

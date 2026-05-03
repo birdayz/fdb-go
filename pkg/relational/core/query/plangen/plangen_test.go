@@ -96,6 +96,22 @@ func TestConvert_FilterTextSimple(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextAND(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("Order", ""), "status = 'active' AND amount > 100")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 2 {
+		t.Fatalf("predicate count = %d, want 2 (one per AND conjunct)", len(f.GetPredicates()))
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered
