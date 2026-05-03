@@ -242,6 +242,54 @@ func TestConvert_FilterTextInNumeric(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextOR(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "status = 'active' OR status = 'pending'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1 (single OrPredicate)", len(f.GetPredicates()))
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.OrPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *OrPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextORWithAND(t *testing.T) {
+	t.Parallel()
+	// a = 1 AND b = 2 OR c = 3 → OR(AND(a=1, b=2), c=3)
+	src := logical.NewFilter(logical.NewScan("T", ""), "a = 1 AND b = 2 OR c = 3")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1 (single OrPredicate)", len(f.GetPredicates()))
+	}
+	or, ok := f.GetPredicates()[0].(*predicates.OrPredicate)
+	if !ok {
+		t.Fatalf("predicate[0] is %T, want *OrPredicate", f.GetPredicates()[0])
+	}
+	if len(or.SubPredicates) != 2 {
+		t.Fatalf("OR branches = %d, want 2", len(or.SubPredicates))
+	}
+	_, ok = or.SubPredicates[0].(*predicates.AndPredicate)
+	if !ok {
+		t.Fatalf("OR branch 0 is %T, want *AndPredicate", or.SubPredicates[0])
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered

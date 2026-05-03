@@ -119,18 +119,11 @@ func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, 
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
 	} else if f.PredicateText != "" {
-		if p, ok := parseSingleComparison(f.PredicateText); ok {
-			preds = []predicates.QueryPredicate{p}
-		} else {
-			parts := splitOnAND(f.PredicateText)
-			for _, part := range parts {
-				p, ok := parseSingleComparison(part)
-				if !ok {
-					return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, f.PredicateText)
-				}
-				preds = append(preds, p)
-			}
+		parsed, err := parsePredicateText(f.PredicateText)
+		if err != nil {
+			return nil, err
 		}
+		preds = parsed
 	} else {
 		return nil, fmt.Errorf("%w: LogicalFilter without predicate", ErrUnsupported)
 	}
@@ -581,6 +574,68 @@ func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, erro
 
 	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
 	return expressions.NewSelectExpression(rv, []expressions.Quantifier{qL, qR}, preds), nil
+}
+
+// parsePredicateText parses a full predicate expression respecting SQL
+// precedence: OR has lower precedence than AND. Returns a slice of
+// predicates — for pure AND chains the slice has one entry per conjunct
+// (matching the LogicalFilterExpression's implicit AND semantics); for
+// expressions containing OR, returns a single OrPredicate in the slice.
+func parsePredicateText(s string) ([]predicates.QueryPredicate, error) {
+	orBranches := splitOnOR(s)
+	if len(orBranches) == 1 {
+		return parseAndChain(orBranches[0], s)
+	}
+	var ors []predicates.QueryPredicate
+	for _, branch := range orBranches {
+		preds, err := parseAndChain(branch, s)
+		if err != nil {
+			return nil, err
+		}
+		if len(preds) == 1 {
+			ors = append(ors, preds[0])
+		} else {
+			ors = append(ors, predicates.NewAnd(preds...))
+		}
+	}
+	return []predicates.QueryPredicate{predicates.NewOr(ors...)}, nil
+}
+
+func parseAndChain(s, orig string) ([]predicates.QueryPredicate, error) {
+	if p, ok := parseSingleComparison(s); ok {
+		return []predicates.QueryPredicate{p}, nil
+	}
+	parts := splitOnAND(s)
+	if len(parts) == 1 {
+		return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, orig)
+	}
+	var preds []predicates.QueryPredicate
+	for _, part := range parts {
+		p, ok := parseSingleComparison(part)
+		if !ok {
+			return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, orig)
+		}
+		preds = append(preds, p)
+	}
+	return preds, nil
+}
+
+// splitOnOR splits a predicate string on " OR " (case-insensitive).
+// Does NOT handle parentheses.
+func splitOnOR(s string) []string {
+	upper := strings.ToUpper(s)
+	var parts []string
+	for {
+		idx := strings.Index(upper, " OR ")
+		if idx < 0 {
+			parts = append(parts, strings.TrimSpace(s))
+			break
+		}
+		parts = append(parts, strings.TrimSpace(s[:idx]))
+		s = s[idx+4:]
+		upper = upper[idx+4:]
+	}
+	return parts
 }
 
 // tryParseSimpleComparison parses "lhs op rhs" into a ComparisonPredicate.
