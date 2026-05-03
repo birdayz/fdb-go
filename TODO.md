@@ -105,3 +105,28 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [x] **#38** CI test report drops `//pkg/relational/...` results — **landed swingshift-64**. Root cause: `.bazelrc:18` global `--build_event_json_file=.bazel-bep.jsonl` was getting overwritten by the second `bazelisk test` invocation (race-detector subset, no relational tests). Fix: race step now writes to `.bazel-bep.race.jsonl` (overrides the global flag); `cmd/test-report` accepts multiple positional BEP file args and concatenates target lists; CI workflow passes both BEPs to the report generator. Single-arg default unchanged for local use.
 - [ ] **#39** Go-only GROUP BY clause — **broader than initially scoped**: empirical re-probe via subagent batch (swingshift-64) found Java rejects ALL GROUP BY forms, not just the non-projected form. Even canonical `SELECT g, COUNT(*) FROM t GROUP BY g` (grouping column IS in projection) triggers `UnableToPlanException: Cascades planner could not plan query`. Cascades 4.11.1.0 has no GROUP BY rule at all. Aligning Go would require rejecting all GROUP BY clauses at parse time with byte-equal "Cascades planner could not plan query"; ~10-20 yamsql files use GROUP BY and would need wholesale rewrite (often there's no clean rewrite — GROUP BY is the test's focus). Recommend leave as Go-only-correctness for now; revisit when Java adds GROUP BY support upstream. (~2 shifts if pursued)
 _(Items #40-#64 moved to Phase 1.5 above. #41 and #40 were originally Phase 6 surface-divergence finds; recategorized so future shifts stop importing-by-numeric-order.)_
+
+## Divergences (swingshift-70 audit)
+
+Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
+
+### CRITICAL — correctness/completeness gaps
+
+- [ ] **#66** InJoinRule missing `enumerateInSourcesForRequestedOrdering` (Java 170 LOC). Go version ignores requested ordering when selecting IN-source nesting order. Cannot match inner plan ordering to requested orderings. Needs TopologicalSort permutations + ordering satisfaction check. Gate: #67.
+- [ ] **#67** Ordering: PartiallyOrderedSet infrastructure. Go uses linear key sequence; Java uses a full dependency graph (`DependencyMap` as `SetMultimap<Value, Value>`). Required by: TopologicalSort enumeration, grouping value satisfaction, ordering merge, InJoinRule source enumeration. (~2 shifts)
+- [ ] **#68** Ordering: full merge algorithm. Go's `MergeOrderings` does simple key-by-key intersection. Java's merge (800+ LOC) uses UNION/INTERSECTION operators with binding combination across the PartiallyOrderedSet. Gate: #67.
+
+### HIGH — optimization quality gaps
+
+- [ ] **#69** DistinctUnionRule: cross-product skip optimization. Java's `partitionsCrossProductIterator.skip(merge.size())` prunes impossible branches early (O(n*k)). Go evaluates all combos (O(n^k)). Performance-only for queries with many union legs.
+- [ ] **#70** InJoinRule: permutation generation for remaining explodes. Java uses `TopologicalSort.permutations()` to explore all valid orderings. Go appends remaining sequentially. Gate: #67.
+- [ ] **#71** Ordering: missing `enumerateCompatibleRequestedOrderings`. Java enumerates all topologically valid orderings compatible with a request. Go returns a single linear sequence. Gate: #67.
+
+### MEDIUM — feature completeness gaps
+
+- [ ] **#72** Ordering: missing `pullUp`/`pushDown`/`translateCorrelations`. Java translates orderings through value hierarchies and correlation rebasing. Required for proper constraint propagation through complex plan trees.
+- [ ] **#73** Ordering: missing `SetOperationsOrdering` subclass. Java has specialized semantics for UNION/INTERSECTION orderings (multiple fixed bindings interpreted as OR/AND).
+- [ ] **#74** DistinctUnionRule: missing `removeCommonEqualityBoundParts` filtering before constraint push. Reduces redundant exploration.
+- [ ] **#75** InJoinRule: missing `isSupportedExplodeValue()` validation. Go could attempt invalid IN-sources.
+- [ ] **#76** Executor: InJoin/InUnion don't iterate IN-values (delegate to inner). MergeSortUnion delegates to concat (no merge-sort cursor).
+- [ ] **#77** InUnionRule: missing `attemptFailedInJoinAsUnionMaxSize` planner configuration parameter.
