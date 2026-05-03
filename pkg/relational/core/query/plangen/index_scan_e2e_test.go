@@ -1855,6 +1855,41 @@ func TestEndToEnd_LimitOverSortUsesOrderedIndex(t *testing.T) {
 	t.Logf("Explain: %s", explain)
 }
 
+func TestEndToEnd_JoinFromLogicalOperator(t *testing.T) {
+	t.Parallel()
+
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "dept_id", Typ: values.TypeInt},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+	src := logical.NewJoinWithPredicate(
+		logical.NewScan("Employees", ""),
+		logical.NewScan("Departments", ""),
+		logical.JoinInner,
+		pred,
+	)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalNestedLoopJoin(plan) {
+		t.Fatalf("expected NLJ, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if !strings.Contains(explain, "NestedLoopJoin") {
+		t.Fatalf("explain should mention NestedLoopJoin, got: %s", explain)
+	}
+	t.Logf("Explain: %s", explain)
+}
+
 func TestEndToEnd_LimitFromLogicalOperator(t *testing.T) {
 	t.Parallel()
 
