@@ -425,10 +425,17 @@ func executeProjection(
 	}
 
 	projections := p.GetProjections()
+	hasParams := len(evalCtx.params) > 0
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		projected := make(map[string]any, len(projections))
+		var rowCtx any = qr.Datum
+		if hasParams {
+			if m, ok := qr.Datum.(map[string]any); ok {
+				rowCtx = evalCtx.RowContext(m)
+			}
+		}
 		for _, proj := range projections {
-			projected[projectionColumnName(proj)] = proj.Evaluate(qr.Datum)
+			projected[projectionColumnName(proj)] = proj.Evaluate(rowCtx)
 		}
 		return QueryResult{
 			Datum:      projected,
@@ -611,7 +618,7 @@ func executeNestedLoopJoin(
 		matched := false
 		for _, innerRow := range innerRows {
 			combined := mergeRows(outerRow, innerRow)
-			if passesJoinPredicates(combined, preds) {
+			if passesJoinPredicates(combined, preds, evalCtx) {
 				results = append(results, combined)
 				matched = true
 			}
@@ -642,12 +649,18 @@ func mergeRows(outer, inner QueryResult) QueryResult {
 	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
 }
 
-func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate) bool {
+func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) bool {
 	if len(preds) == 0 {
 		return true
 	}
+	var rowCtx any = combined.Datum
+	if len(evalCtx.params) > 0 {
+		if m, ok := combined.Datum.(map[string]any); ok {
+			rowCtx = evalCtx.RowContext(m)
+		}
+	}
 	for _, pred := range preds {
-		if pred.Eval(combined.Datum) != predicates.TriTrue {
+		if pred.Eval(rowCtx) != predicates.TriTrue {
 			return false
 		}
 	}
@@ -928,7 +941,13 @@ func executeUpdate(
 			if fd == nil {
 				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
 			}
-			newVal := t.NewValue.Evaluate(qr.Datum)
+			var rowCtx any = qr.Datum
+			if len(evalCtx.params) > 0 {
+				if m, ok := qr.Datum.(map[string]any); ok {
+					rowCtx = evalCtx.RowContext(m)
+				}
+			}
+			newVal := t.NewValue.Evaluate(rowCtx)
 			if newVal == nil {
 				refl.Clear(fd)
 			} else {
