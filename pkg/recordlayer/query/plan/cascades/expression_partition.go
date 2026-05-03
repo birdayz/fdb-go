@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -163,22 +165,17 @@ func RollUpPlanPartitions(partitions []*PlanPartition, interestingProps ...*prop
 		return []*PlanPartition{merged}
 	}
 
-	type rollupKey struct {
-		vals [4]any
-	}
-	makeKey := func(p *PlanPartition) rollupKey {
-		var k rollupKey
-		for i, prop := range interestingProps {
-			if i >= len(k.vals) {
-				break
-			}
-			k.vals[i] = p.partitionProps[prop]
+	makeKey := func(p *PlanPartition) string {
+		var b []byte
+		for _, prop := range interestingProps {
+			v := p.partitionProps[prop]
+			b = append(b, fmt.Sprintf("%v|", v)...)
 		}
-		return k
+		return string(b)
 	}
 
-	groups := make(map[rollupKey]*PlanPartition)
-	order := make([]rollupKey, 0)
+	groups := make(map[string]*PlanPartition)
+	order := make([]string, 0)
 	for _, p := range partitions {
 		key := makeKey(p)
 		existing, ok := groups[key]
