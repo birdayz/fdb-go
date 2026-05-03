@@ -112,6 +112,57 @@ func TestConvert_FilterTextAND(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextBetween(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "age BETWEEN 18 AND 65")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	// BETWEEN expands to an AND predicate which the filter splits into conjuncts
+	// BUT since parseSingleComparison returns a single AndPredicate for BETWEEN,
+	// the filter layer sees it as 1 predicate.
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1 (BETWEEN as single AndPredicate)", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextIsNull(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "deleted_at IS NULL")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+}
+
+func TestConvert_FilterTextIsNotNull(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "email IS NOT NULL")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	if len(f.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(f.GetPredicates()))
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered

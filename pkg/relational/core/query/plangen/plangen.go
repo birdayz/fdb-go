@@ -119,13 +119,17 @@ func convertFilter(f *logical.LogicalFilter) (expressions.RelationalExpression, 
 	if f.Predicate != nil {
 		preds = []predicates.QueryPredicate{f.Predicate}
 	} else if f.PredicateText != "" {
-		parts := splitOnAND(f.PredicateText)
-		for _, part := range parts {
-			p, ok := parseSingleComparison(part)
-			if !ok {
-				return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, f.PredicateText)
+		if p, ok := parseSingleComparison(f.PredicateText); ok {
+			preds = []predicates.QueryPredicate{p}
+		} else {
+			parts := splitOnAND(f.PredicateText)
+			for _, part := range parts {
+				p, ok := parseSingleComparison(part)
+				if !ok {
+					return nil, fmt.Errorf("%w: LogicalFilter predicate %q cannot be lowered", ErrUnsupported, f.PredicateText)
+				}
+				preds = append(preds, p)
 			}
-			preds = append(preds, p)
 		}
 	} else {
 		return nil, fmt.Errorf("%w: LogicalFilter without predicate", ErrUnsupported)
@@ -588,6 +592,12 @@ func tryParseSimpleComparison(s string) (predicates.QueryPredicate, bool) {
 
 func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	s = strings.TrimSpace(s)
+	if p, ok := tryParseIsNull(s); ok {
+		return p, true
+	}
+	if p, ok := tryParseBetween(s); ok {
+		return p, true
+	}
 	lhs, op, rhs, ok := splitComparison(s)
 	if !ok {
 		return nil, false
@@ -644,6 +654,61 @@ func splitComparison(s string) (string, string, string, bool) {
 		return lhs, op, rhs, true
 	}
 	return "", "", "", false
+}
+
+// tryParseBetween handles "col BETWEEN low AND high" → col >= low AND col <= high.
+func tryParseBetween(s string) (predicates.QueryPredicate, bool) {
+	upper := strings.ToUpper(s)
+	betIdx := strings.Index(upper, " BETWEEN ")
+	if betIdx < 0 {
+		return nil, false
+	}
+	col := strings.TrimSpace(s[:betIdx])
+	rest := s[betIdx+len(" BETWEEN "):]
+	restUpper := strings.ToUpper(rest)
+	andIdx := strings.Index(restUpper, " AND ")
+	if andIdx < 0 {
+		return nil, false
+	}
+	low := strings.TrimSpace(rest[:andIdx])
+	high := strings.TrimSpace(rest[andIdx+5:])
+
+	colVal, colOk := lowerSimpleScalarText(col)
+	lowVal, lowOk := lowerSimpleScalarText(low)
+	highVal, highOk := lowerSimpleScalarText(high)
+	if !colOk || !lowOk || !highOk {
+		return nil, false
+	}
+
+	geq := predicates.NewComparisonPredicate(colVal, predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: lowVal})
+	leq := predicates.NewComparisonPredicate(colVal, predicates.Comparison{Type: predicates.ComparisonLessThanOrEq, Operand: highVal})
+	return predicates.NewAnd(geq, leq), true
+}
+
+// tryParseIsNull handles "col IS NULL" and "col IS NOT NULL" patterns.
+func tryParseIsNull(s string) (predicates.QueryPredicate, bool) {
+	upper := strings.ToUpper(s)
+	if strings.HasSuffix(upper, " IS NOT NULL") {
+		col := strings.TrimSpace(s[:len(s)-len(" IS NOT NULL")])
+		v, ok := lowerSimpleScalarText(col)
+		if !ok {
+			return nil, false
+		}
+		return predicates.NewComparisonPredicate(
+			v, predicates.Comparison{Type: predicates.ComparisonIsNotNull},
+		), true
+	}
+	if strings.HasSuffix(upper, " IS NULL") {
+		col := strings.TrimSpace(s[:len(s)-len(" IS NULL")])
+		v, ok := lowerSimpleScalarText(col)
+		if !ok {
+			return nil, false
+		}
+		return predicates.NewComparisonPredicate(
+			v, predicates.Comparison{Type: predicates.ComparisonIsNull},
+		), true
+	}
+	return nil, false
 }
 
 func textToCompOp(op string) predicates.ComparisonType {
