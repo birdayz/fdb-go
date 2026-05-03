@@ -499,3 +499,7 @@ func (c *indexTestPlanContext) GetPlannerConfiguration() PlannerConfiguration {
 func (c *indexTestPlanContext) GetMatchCandidates() []MatchCandidate {
 	return c.candidates
 }
+
+func (c *indexTestPlanContext) GetPrimaryKeyColumns(string) []string {
+	return nil
+}
