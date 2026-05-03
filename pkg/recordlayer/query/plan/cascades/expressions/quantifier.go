@@ -135,9 +135,10 @@ func NewPhysicalQuantifier(rangesOver *Reference) Quantifier {
 // References. Mirrors Java's Quantifier.toBuilder().build(reference).
 func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
 	return Quantifier{
-		kind:       q.kind,
-		alias:      q.alias,
-		rangesOver: newRef,
+		kind:        q.kind,
+		alias:       q.alias,
+		nullOnEmpty: q.nullOnEmpty,
+		rangesOver:  newRef,
 	}
 }
 
