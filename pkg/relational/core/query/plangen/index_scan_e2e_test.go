@@ -2128,3 +2128,31 @@ func TestEndToEnd_LimitMergeEndToEnd(t *testing.T) {
 	explain := cascades.ExplainPhysicalPlan(plan)
 	t.Logf("Explain: %s", explain)
 }
+
+func TestEndToEnd_LimitOverUnionPushesDown(t *testing.T) {
+	t.Parallel()
+
+	// LIMIT 5 over UNION ALL of two scans
+	a := logical.NewScan("A", "")
+	b := logical.NewScan("B", "")
+	union := logical.NewUnion([]logical.LogicalOperator{a, b}, false)
+	lim := logical.NewLimit(union, 5, 0)
+
+	expr, err := plangen.Convert(lim)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Limit") {
+		t.Fatalf("expected Limit in plan, got: %s", explain)
+	}
+}

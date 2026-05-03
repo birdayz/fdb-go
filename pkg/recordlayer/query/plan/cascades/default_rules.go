@@ -78,6 +78,7 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewIndexIntersectionRule(),
 		NewLimitMergeRule(),
 		NewPushLimitThroughProjectionRule(),
+		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
 		NewZeroLimitRule(),
 	}
