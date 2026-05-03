@@ -49,6 +49,7 @@ go_test(
         "cte_plans_test.go",
         "explode_test.go",
         "plan_test.go",
+        "plans_new_structural_test.go",
         "plans_structural_test.go",
         "table_function_test.go",
         "unordered_union_test.go",

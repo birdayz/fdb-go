@@ -4,6 +4,7 @@ go_library(
     name = "cascades",
     srcs = [
         "aggregate_index_candidate.go",
+        "cross_product.go",
         "default_rules.go",
         "expression_matcher.go",
         "expression_partition.go",
@@ -12,6 +13,7 @@ go_library(
         "implementation_rule.go",
         "match_candidate_index.go",
         "memo.go",
+        "ordering_part.go",
         "physical_explode_wrapper.go",
         "physical_hash_agg_wrapper.go",
         "physical_limit_wrapper.go",
@@ -128,6 +130,7 @@ go_test(
         "benchmark_test.go",
         "comparison_simplify_test.go",
         "cost_fuzz_test.go",
+        "cross_product_test.go",
         "default_rules_test.go",
         "expression_matcher_test.go",
         "expression_partition_test.go",
