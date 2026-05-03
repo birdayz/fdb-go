@@ -64,6 +64,8 @@ func ExecutePlan(
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryHashAggregationPlan:
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
+	case *plans.RecordQueryExplodePlan:
+		return executeExplode(p, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
 	default:
@@ -79,7 +81,7 @@ func executeScan(
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties: props.ClearSkipAndLimit(),
+		ExecuteProperties: props,
 		Reverse:           p.IsReverse(),
 	}
 
@@ -91,8 +93,7 @@ func executeScan(
 		inner = store.ScanRecords(continuation, scanProps)
 	}
 
-	cursor := recordlayer.MapCursor(inner, FromStoredRecord)
-	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	return recordlayer.MapCursor(inner, FromStoredRecord), nil
 }
 
 func executeIndexScan(
@@ -117,7 +118,7 @@ func executeIndexScan(
 	}
 
 	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties: props.ClearSkipAndLimit(),
+		ExecuteProperties: props,
 		Reverse:           p.IsReverse(),
 	}
 
@@ -128,7 +129,7 @@ func executeIndexScan(
 		store: store,
 	}
 
-	return applySkipLimit(resultCursor, props.Skip, props.ReturnedRowLimit), nil
+	return resultCursor, nil
 }
 
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange) (recordlayer.TupleRange, error) {
@@ -790,6 +791,32 @@ func aggResultName(agg expressions.AggregateSpec) string {
 	default:
 		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
 	}
+}
+
+func executeExplode(
+	p *plans.RecordQueryExplodePlan,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	cv := p.GetCollectionValue()
+	if cv == nil {
+		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
+	}
+	result := cv.Evaluate(nil)
+	if result == nil {
+		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
+	}
+	list, ok := result.([]any)
+	if !ok {
+		return applySkipLimit(
+			recordlayer.FromList([]QueryResult{{Datum: result}}),
+			props.Skip, props.ReturnedRowLimit,
+		), nil
+	}
+	items := make([]QueryResult, len(list))
+	for i, elem := range list {
+		items[i] = QueryResult{Datum: elem}
+	}
+	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeValues(p *plans.RecordQueryValuesPlan) (recordlayer.RecordCursor[QueryResult], error) {

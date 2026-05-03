@@ -333,7 +333,7 @@ func TestExecuteUnsupportedPlan_ReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryExplodePlan(nil)
+	plan := plans.NewRecordQueryInsertPlan(nil, "SomeType", nil)
 	_, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err == nil {
 		t.Fatal("expected error for unsupported plan type")
@@ -881,6 +881,53 @@ func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
 	row := results[0].Datum.(map[string]any)
 	if row["COUNT(CONSTANT)"] != int64(0) {
 		t.Errorf("COUNT(empty) = %v, want 0", row["COUNT(CONSTANT)"])
+	}
+}
+
+func TestExecuteExplode_List(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	plan := plans.NewRecordQueryExplodePlan(
+		&values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.UnknownType},
+	)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	for i, want := range []int64{1, 2, 3} {
+		if results[i].Datum != want {
+			t.Errorf("results[%d].Datum = %v, want %d", i, results[i].Datum, want)
+		}
+	}
+}
+
+func TestExecuteExplode_Nil(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	plan := plans.NewRecordQueryExplodePlan(values.LiteralValue(nil))
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0 (nil collection)", len(results))
 	}
 }
 
