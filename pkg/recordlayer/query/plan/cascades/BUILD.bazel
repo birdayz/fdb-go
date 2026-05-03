@@ -34,6 +34,7 @@ go_library(
         "plan_context_builder.go",
         "plan_properties.go",
         "planner.go",
+        "planner_constraint.go",
         "planner_phase.go",
         "requested_ordering.go",
         "rich_ordering.go",

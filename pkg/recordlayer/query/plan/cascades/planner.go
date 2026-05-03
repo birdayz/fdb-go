@@ -216,10 +216,11 @@ func (e plannerErr) Error() string { return string(e) }
 // Each rule produces final members via InsertFinal.
 func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
 	visited := make(map[*expressions.Reference]bool)
-	p.planningVisit(rootRef, visited)
+	cm := NewConstraintMap()
+	p.planningVisit(rootRef, visited, cm)
 }
 
-func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
 	if ref == nil || visited[ref] {
 		return
 	}
@@ -228,13 +229,13 @@ func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*express
 	for _, m := range ref.Members() {
 		for _, q := range m.GetQuantifiers() {
 			if childRef := q.GetRangesOver(); childRef != nil {
-				p.planningVisit(childRef, visited)
+				p.planningVisit(childRef, visited, cm)
 			}
 		}
 	}
 
 	for _, rule := range p.implementationRules {
-		FireImplementationRule(rule, ref)
+		FireImplementationRule(rule, ref, cm)
 	}
 
 	computeRefPlanProperties(ref)

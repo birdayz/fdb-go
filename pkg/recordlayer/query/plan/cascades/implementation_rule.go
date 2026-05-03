@@ -24,9 +24,10 @@ type ImplementationRule interface {
 //
 // Ports Java's ImplementationCascadesRuleCall.
 type ImplementationRuleCall struct {
-	Bindings  *matching.PlannerBindings
-	Reference *expressions.Reference
-	yielded   []expressions.RelationalExpression
+	Bindings    *matching.PlannerBindings
+	Reference   *expressions.Reference
+	Constraints *ConstraintMap
+	yielded     []expressions.RelationalExpression
 }
 
 // Yield records a final expression to be inserted into the
@@ -39,6 +40,25 @@ func (c *ImplementationRuleCall) Yield(expr expressions.RelationalExpression) {
 // FinalYields.yieldFinalExpression naming.
 func (c *ImplementationRuleCall) YieldFinalExpression(expr expressions.RelationalExpression) {
 	c.Yield(expr)
+}
+
+// GetRequestedOrderings returns the requested orderings for this
+// Reference, if set by a parent rule. Returns nil if no ordering
+// constraint is set.
+func (c *ImplementationRuleCall) GetRequestedOrderings() []*RequestedOrdering {
+	orderings, ok := Get(c.Constraints, c.Reference, RequestedOrderingConstraintKey)
+	if !ok {
+		return nil
+	}
+	return orderings
+}
+
+// PushConstraint pushes a constraint value to a child Reference.
+func (c *ImplementationRuleCall) PushConstraint(
+	childRef *expressions.Reference,
+	orderings []*RequestedOrdering,
+) {
+	Set(c.Constraints, childRef, RequestedOrderingConstraintKey, orderings)
 }
 
 // MemoizeFinalExpressionsFromOther creates a new Reference containing
@@ -66,14 +86,21 @@ func (c *ImplementationRuleCall) MemoizeFinalExpression(
 // matching each member and collecting yielded final expressions.
 // Returns the yielded expressions (which were also inserted into
 // ref.FinalMembers).
-func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference) []expressions.RelationalExpression {
+// FireImplementationRule runs an ImplementationRule against a Reference.
+// The constraints parameter carries ordering constraints from parent rules.
+func FireImplementationRule(rule ImplementationRule, ref *expressions.Reference, constraints ...*ConstraintMap) []expressions.RelationalExpression {
+	var cm *ConstraintMap
+	if len(constraints) > 0 {
+		cm = constraints[0]
+	}
 	var allYielded []expressions.RelationalExpression
 	for _, member := range ref.AllMembers() {
 		bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
 		for _, b := range bindings {
 			call := &ImplementationRuleCall{
-				Bindings:  b,
-				Reference: ref,
+				Bindings:    b,
+				Reference:   ref,
+				Constraints: cm,
 			}
 			rule.OnMatch(call)
 			for _, y := range call.yielded {
