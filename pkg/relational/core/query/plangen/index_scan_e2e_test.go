@@ -1662,6 +1662,95 @@ func TestEndToEnd_AggregateIndexDirectAccess(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_NestedLoopJoinBasic verifies the planner produces a
+// nested-loop join for a SelectExpression with 2 quantifiers.
+func TestEndToEnd_NestedLoopJoinBasic(t *testing.T) {
+	t.Parallel()
+
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanARef := expressions.InitialOf(scanA)
+	scanAQ := expressions.ForEachQuantifier(scanARef)
+
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"Products"}, values.UnknownType)
+	scanBRef := expressions.InitialOf(scanB)
+	scanBQ := expressions.ForEachQuantifier(scanBRef)
+
+	joinPred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "product_id", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, "id"),
+	)
+
+	sel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		[]expressions.Quantifier{scanAQ, scanBQ},
+		[]predicates.QueryPredicate{joinPred},
+	)
+	ref := expressions.InitialOf(sel)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	if !cascades.IsPhysicalNestedLoopJoin(plan) {
+		t.Fatalf("expected NLJ plan, got %T", plan)
+	}
+
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if !strings.Contains(explain, "NestedLoopJoin") {
+		t.Fatalf("Explain should contain NestedLoopJoin, got: %s", explain)
+	}
+}
+
+// TestEndToEnd_JoinWithFilterOnOneSide verifies the planner handles a
+// join where one side has a pre-filter (equivalent to a WHERE clause on
+// one table in a multi-table query).
+func TestEndToEnd_JoinWithFilterOnOneSide(t *testing.T) {
+	t.Parallel()
+
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanARef := expressions.InitialOf(scanA)
+	scanAQ := expressions.ForEachQuantifier(scanARef)
+
+	// Right side has a filter.
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"Products"}, values.UnknownType)
+	scanBRef := expressions.InitialOf(scanB)
+	scanBQ := expressions.ForEachQuantifier(scanBRef)
+	filterB := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "category", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "Electronics"),
+			),
+		}, scanBQ)
+	filterBRef := expressions.InitialOf(filterB)
+	filterBQ := expressions.ForEachQuantifier(filterBRef)
+
+	sel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		[]expressions.Quantifier{scanAQ, filterBQ},
+		nil,
+	)
+	ref := expressions.InitialOf(sel)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+	if !cascades.IsPhysicalNestedLoopJoin(plan) {
+		t.Fatalf("expected NLJ plan, got %T", plan)
+	}
+}
+
 // TestEndToEnd_DistinctOverGroupByEliminated verifies that DISTINCT over
 // GROUP BY is eliminated by the planner (GROUP BY already deduplicates).
 func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
