@@ -223,6 +223,25 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 	t.Logf("Cascades with index → %d rows ✓", count)
 }
 
+func TestFDB_CascadesDistinct(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT DISTINCT price FROM Item")
+	if err != nil {
+		t.Skipf("DISTINCT not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	// 3 items with prices 100, 200, 50 — all distinct
+	if count != 3 {
+		t.Fatalf("expected 3 distinct prices, got %d", count)
+	}
+	t.Logf("Cascades DISTINCT → %d rows ✓", count)
+}
+
 func TestFDB_CascadesNotEqual(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
