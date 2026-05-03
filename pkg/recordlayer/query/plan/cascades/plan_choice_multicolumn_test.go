@@ -136,6 +136,55 @@ func TestPlanChoice_NoIndexForNonMatchingColumn(t *testing.T) {
 	t.Logf("✓ Optimizer correctly chose full scan + filter (no matching index): %T", physicalPlan)
 }
 
+func TestPlanChoice_UniqueIndexPointLookup(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"User"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	// WHERE email = 'user@example.com' on UNIQUE index
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "EMAIL", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, "user@example.com"),
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "idx_email_unique",
+			columns:     []string{"EMAIL"},
+			recordTypes: []string{"User"},
+			unique:      true,
+		},
+	})
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	bestExpr, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		t.Fatalf("expected planExtractor, got %T", bestExpr)
+	}
+
+	physicalPlan := ph.GetRecordQueryPlan()
+	if _, ok := physicalPlan.(*plans.RecordQueryIndexPlan); !ok {
+		t.Fatalf("unique index point lookup should choose IndexScan, got %T", physicalPlan)
+	}
+	t.Logf("✓ Unique index point lookup → IndexScan")
+}
+
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 	t.Parallel()
 
