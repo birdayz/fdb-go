@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -2502,5 +2503,510 @@ func TestCollectAll_MultipleItems(t *testing.T) {
 		if r.Datum != int64(i+1) {
 			t.Errorf("item %d: got %v, want %d", i, r.Datum, i+1)
 		}
+	}
+}
+
+// =============================================================================
+// scalarProtoToGo — exhaustive coverage of every protoreflect.Kind
+// =============================================================================
+
+func TestScalarProtoToGo_Bool(t *testing.T) {
+	t.Parallel()
+	got := scalarProtoToGo(protoreflect.BoolKind, protoreflect.ValueOfBool(true))
+	if got != true {
+		t.Errorf("got %v, want true", got)
+	}
+	got = scalarProtoToGo(protoreflect.BoolKind, protoreflect.ValueOfBool(false))
+	if got != false {
+		t.Errorf("got %v, want false", got)
+	}
+}
+
+func TestScalarProtoToGo_Int32Kinds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []protoreflect.Kind{
+		protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			got := scalarProtoToGo(kind, protoreflect.ValueOfInt32(42))
+			if got != int64(42) {
+				t.Errorf("got %v (%T), want int64(42)", got, got)
+			}
+			got = scalarProtoToGo(kind, protoreflect.ValueOfInt32(-1))
+			if got != int64(-1) {
+				t.Errorf("got %v, want int64(-1)", got)
+			}
+		})
+	}
+}
+
+func TestScalarProtoToGo_Int64Kinds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []protoreflect.Kind{
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			got := scalarProtoToGo(kind, protoreflect.ValueOfInt64(math.MaxInt64))
+			if got != int64(math.MaxInt64) {
+				t.Errorf("got %v, want MaxInt64", got)
+			}
+		})
+	}
+}
+
+func TestScalarProtoToGo_Uint32Kinds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []protoreflect.Kind{
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			got := scalarProtoToGo(kind, protoreflect.ValueOfUint32(math.MaxUint32))
+			if got != int64(math.MaxUint32) {
+				t.Errorf("got %v (%T), want int64(%d)", got, got, uint32(math.MaxUint32))
+			}
+		})
+	}
+}
+
+func TestScalarProtoToGo_Uint64Kinds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []protoreflect.Kind{
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind,
+	} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			got := scalarProtoToGo(kind, protoreflect.ValueOfUint64(12345))
+			if got != int64(12345) {
+				t.Errorf("got %v (%T), want int64(12345)", got, got)
+			}
+		})
+	}
+}
+
+func TestScalarProtoToGo_Float(t *testing.T) {
+	t.Parallel()
+	got := scalarProtoToGo(protoreflect.FloatKind, protoreflect.ValueOfFloat32(3.14))
+	f, ok := got.(float64)
+	if !ok {
+		t.Fatalf("got type %T, want float64", got)
+	}
+	if f < 3.13 || f > 3.15 {
+		t.Errorf("got %f, want ~3.14", f)
+	}
+}
+
+func TestScalarProtoToGo_Double(t *testing.T) {
+	t.Parallel()
+	got := scalarProtoToGo(protoreflect.DoubleKind, protoreflect.ValueOfFloat64(2.71828))
+	if got != float64(2.71828) {
+		t.Errorf("got %v, want 2.71828", got)
+	}
+}
+
+func TestScalarProtoToGo_String(t *testing.T) {
+	t.Parallel()
+	got := scalarProtoToGo(protoreflect.StringKind, protoreflect.ValueOfString("hello"))
+	if got != "hello" {
+		t.Errorf("got %v, want hello", got)
+	}
+	got = scalarProtoToGo(protoreflect.StringKind, protoreflect.ValueOfString(""))
+	if got != "" {
+		t.Errorf("got %v, want empty string", got)
+	}
+}
+
+func TestScalarProtoToGo_Bytes(t *testing.T) {
+	t.Parallel()
+	data := []byte{0xDE, 0xAD}
+	got := scalarProtoToGo(protoreflect.BytesKind, protoreflect.ValueOfBytes(data))
+	b, ok := got.([]byte)
+	if !ok {
+		t.Fatalf("got type %T, want []byte", got)
+	}
+	if len(b) != 2 || b[0] != 0xDE || b[1] != 0xAD {
+		t.Errorf("got %x, want DEAD", b)
+	}
+}
+
+func TestScalarProtoToGo_Enum(t *testing.T) {
+	t.Parallel()
+	got := scalarProtoToGo(protoreflect.EnumKind, protoreflect.ValueOfEnum(2))
+	if got != int64(2) {
+		t.Errorf("got %v (%T), want int64(2)", got, got)
+	}
+}
+
+// =============================================================================
+// protoFieldToGo — list, scalar, and message fields
+// =============================================================================
+
+func TestProtoFieldToGo_ScalarField(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{Price: proto.Int32(42)}
+	refl := order.ProtoReflect()
+	fd := refl.Descriptor().Fields().ByName("price")
+	got := protoFieldToGo(fd, refl.Get(fd))
+	if got != int64(42) {
+		t.Errorf("got %v (%T), want int64(42)", got, got)
+	}
+}
+
+func TestProtoFieldToGo_RepeatedStringField(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{Tags: []string{"a", "b", "c"}}
+	refl := order.ProtoReflect()
+	fd := refl.Descriptor().Fields().ByName("tags")
+	got := protoFieldToGo(fd, refl.Get(fd))
+	arr, ok := got.([]any)
+	if !ok {
+		t.Fatalf("got type %T, want []any", got)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("got len %d, want 3", len(arr))
+	}
+	if arr[0] != "a" || arr[1] != "b" || arr[2] != "c" {
+		t.Errorf("got %v, want [a b c]", arr)
+	}
+}
+
+func TestProtoFieldToGo_EmptyRepeated(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{Tags: []string{}}
+	refl := order.ProtoReflect()
+	fd := refl.Descriptor().Fields().ByName("tags")
+	if refl.Has(fd) {
+		got := protoFieldToGo(fd, refl.Get(fd))
+		arr := got.([]any)
+		if len(arr) != 0 {
+			t.Errorf("expected empty slice, got %v", arr)
+		}
+	}
+}
+
+func TestProtoFieldToGo_MessageField(t *testing.T) {
+	t.Parallel()
+	flower := &gen.Flower{Type: proto.String("rose")}
+	order := &gen.Order{Flower: flower}
+	refl := order.ProtoReflect()
+	fd := refl.Descriptor().Fields().ByName("flower")
+	got := protoFieldToGo(fd, refl.Get(fd))
+	msg, ok := got.(*gen.Flower)
+	if !ok {
+		t.Fatalf("got type %T, want *gen.Flower", got)
+	}
+	if msg.GetType() != "rose" {
+		t.Errorf("got %q, want rose", msg.GetType())
+	}
+}
+
+// =============================================================================
+// protoToMap — comprehensive field-type coverage
+// =============================================================================
+
+func TestProtoToMap_TypedRecord_AllKinds(t *testing.T) {
+	t.Parallel()
+	rec := &gen.TypedRecord{
+		Id:          proto.Int64(1),
+		ValInt32:    proto.Int32(32),
+		ValInt64:    proto.Int64(64),
+		ValSint32:   proto.Int32(-32),
+		ValSint64:   proto.Int64(-64),
+		ValSfixed32: proto.Int32(320),
+		ValSfixed64: proto.Int64(640),
+		ValFloat:    proto.Float32(1.5),
+		ValDouble:   proto.Float64(2.5),
+		ValBool:     proto.Bool(true),
+		ValString:   proto.String("test"),
+		ValBytes:    []byte{0x01},
+	}
+	m := protoToMap(rec)
+
+	checks := map[string]any{
+		"ID":           int64(1),
+		"VAL_INT32":    int64(32),
+		"VAL_INT64":    int64(64),
+		"VAL_SINT32":   int64(-32),
+		"VAL_SINT64":   int64(-64),
+		"VAL_SFIXED32": int64(320),
+		"VAL_SFIXED64": int64(640),
+		"VAL_BOOL":     true,
+		"VAL_STRING":   "test",
+	}
+	for key, want := range checks {
+		got, ok := m[key]
+		if !ok {
+			t.Errorf("missing key %q", key)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: got %v (%T), want %v (%T)", key, got, got, want, want)
+		}
+	}
+
+	if b, ok := m["VAL_BYTES"].([]byte); !ok || len(b) != 1 || b[0] != 0x01 {
+		t.Errorf("VAL_BYTES: got %v, want [01]", m["VAL_BYTES"])
+	}
+
+	// Float fields widen to float64.
+	fv, ok := m["VAL_FLOAT"].(float64)
+	if !ok {
+		t.Fatalf("VAL_FLOAT type %T, want float64", m["VAL_FLOAT"])
+	}
+	if fv < 1.4 || fv > 1.6 {
+		t.Errorf("VAL_FLOAT: got %f, want ~1.5", fv)
+	}
+	dv := m["VAL_DOUBLE"].(float64)
+	if dv != 2.5 {
+		t.Errorf("VAL_DOUBLE: got %f, want 2.5", dv)
+	}
+}
+
+func TestProtoToMap_RepeatedField(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{
+		OrderId: proto.Int64(1),
+		Tags:    []string{"x", "y"},
+	}
+	m := protoToMap(order)
+	tags, ok := m["TAGS"].([]any)
+	if !ok {
+		t.Fatalf("TAGS type %T, want []any", m["TAGS"])
+	}
+	if len(tags) != 2 || tags[0] != "x" || tags[1] != "y" {
+		t.Errorf("TAGS = %v, want [x y]", tags)
+	}
+}
+
+func TestProtoToMap_MessageField(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{
+		OrderId: proto.Int64(1),
+		Flower:  &gen.Flower{Type: proto.String("tulip")},
+	}
+	m := protoToMap(order)
+	flower, ok := m["FLOWER"].(*gen.Flower)
+	if !ok {
+		t.Fatalf("FLOWER type %T, want *gen.Flower", m["FLOWER"])
+	}
+	if flower.GetType() != "tulip" {
+		t.Errorf("got %q, want tulip", flower.GetType())
+	}
+}
+
+func TestProtoToMap_EnumField(t *testing.T) {
+	t.Parallel()
+	blue := gen.Color_BLUE
+	rec := &gen.TypedRecord{
+		Id:      proto.Int64(1),
+		ValEnum: &blue,
+	}
+	m := protoToMap(rec)
+	got, ok := m["VAL_ENUM"]
+	if !ok {
+		t.Fatal("missing VAL_ENUM")
+	}
+	if got != int64(gen.Color_BLUE) {
+		t.Errorf("VAL_ENUM = %v, want %d", got, gen.Color_BLUE)
+	}
+}
+
+func TestProtoToMap_BytesField(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{
+		OrderId:    proto.Int64(1),
+		VectorData: []byte{0xCA, 0xFE},
+	}
+	m := protoToMap(order)
+	b, ok := m["VECTOR_DATA"].([]byte)
+	if !ok {
+		t.Fatalf("VECTOR_DATA type %T, want []byte", m["VECTOR_DATA"])
+	}
+	if len(b) != 2 || b[0] != 0xCA || b[1] != 0xFE {
+		t.Errorf("VECTOR_DATA = %x, want CAFE", b)
+	}
+}
+
+func TestProtoToMap_UpperCaseKeys(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(99)}
+	m := protoToMap(order)
+	for key := range m {
+		if key != strings.ToUpper(key) {
+			t.Errorf("key %q is not upper-case", key)
+		}
+	}
+}
+
+// =============================================================================
+// goToProtoValue — gap coverage: uint32, uint64, int→int64
+// =============================================================================
+
+func TestGoToProtoValue_Int32FromInt(t *testing.T) {
+	t.Parallel()
+	fd := (&gen.Order{}).ProtoReflect().Descriptor().Fields().ByName("price")
+	v, err := goToProtoValue(fd, int(77))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int32(v.Int()) != 77 {
+		t.Errorf("got %d, want 77", v.Int())
+	}
+}
+
+func TestGoToProtoValue_Int64FromInt(t *testing.T) {
+	t.Parallel()
+	fd := (&gen.Order{}).ProtoReflect().Descriptor().Fields().ByName("order_id")
+	v, err := goToProtoValue(fd, int(999))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Int() != 999 {
+		t.Errorf("got %d, want 999", v.Int())
+	}
+}
+
+func TestGoToProtoValue_TypeErrors(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	tests := []struct {
+		name  string
+		field string
+		val   any
+	}{
+		{"bool_from_string", "val_bool", "true"},
+		{"int32_from_bool", "val_int32", true},
+		{"int64_from_string", "val_int64", "42"},
+		{"float_from_string", "val_float", "3.14"},
+		{"double_from_bool", "val_double", false},
+		{"string_from_int", "val_string", 42},
+		{"bytes_from_int", "val_bytes", 42},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fd := typed.Fields().ByName(protoreflect.Name(tc.field))
+			_, err := goToProtoValue(fd, tc.val)
+			if err == nil {
+				t.Errorf("expected error for %T → %s", tc.val, tc.field)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// protoToMap + goToProtoValue round-trip: read → map → write → read
+// =============================================================================
+
+func TestProtoRoundTrip_AllScalarKinds(t *testing.T) {
+	t.Parallel()
+	rec := &gen.TypedRecord{
+		Id:          proto.Int64(7),
+		ValInt32:    proto.Int32(-42),
+		ValInt64:    proto.Int64(math.MaxInt64),
+		ValSint32:   proto.Int32(math.MinInt32),
+		ValSint64:   proto.Int64(math.MinInt64),
+		ValSfixed32: proto.Int32(12345),
+		ValSfixed64: proto.Int64(-99999),
+		ValFloat:    proto.Float32(1.5),
+		ValDouble:   proto.Float64(math.Pi),
+		ValBool:     proto.Bool(true),
+		ValString:   proto.String("round-trip"),
+		ValBytes:    []byte{0xAB, 0xCD},
+	}
+
+	m := protoToMap(rec)
+
+	dst := &gen.TypedRecord{}
+	refl := dst.ProtoReflect()
+	desc := refl.Descriptor()
+
+	fieldMap := map[string]any{
+		"id":           m["ID"],
+		"val_int32":    m["VAL_INT32"],
+		"val_int64":    m["VAL_INT64"],
+		"val_sint32":   m["VAL_SINT32"],
+		"val_sint64":   m["VAL_SINT64"],
+		"val_sfixed32": m["VAL_SFIXED32"],
+		"val_sfixed64": m["VAL_SFIXED64"],
+		"val_float":    m["VAL_FLOAT"],
+		"val_double":   m["VAL_DOUBLE"],
+		"val_bool":     m["VAL_BOOL"],
+		"val_string":   m["VAL_STRING"],
+		"val_bytes":    m["VAL_BYTES"],
+	}
+
+	for name, val := range fieldMap {
+		fd := desc.Fields().ByName(protoreflect.Name(name))
+		if fd == nil {
+			t.Fatalf("no field %q", name)
+		}
+		pv, err := goToProtoValue(fd, val)
+		if err != nil {
+			t.Fatalf("goToProtoValue(%s, %v): %v", name, val, err)
+		}
+		refl.Set(fd, pv)
+	}
+
+	if dst.GetId() != 7 {
+		t.Errorf("Id: got %d, want 7", dst.GetId())
+	}
+	if dst.GetValInt32() != -42 {
+		t.Errorf("ValInt32: got %d, want -42", dst.GetValInt32())
+	}
+	if dst.GetValInt64() != math.MaxInt64 {
+		t.Errorf("ValInt64: got %d, want MaxInt64", dst.GetValInt64())
+	}
+	if dst.GetValSint32() != math.MinInt32 {
+		t.Errorf("ValSint32: got %d, want MinInt32", dst.GetValSint32())
+	}
+	if dst.GetValSint64() != math.MinInt64 {
+		t.Errorf("ValSint64: got %d, want MinInt64", dst.GetValSint64())
+	}
+	if dst.GetValBool() != true {
+		t.Error("ValBool: got false, want true")
+	}
+	if dst.GetValString() != "round-trip" {
+		t.Errorf("ValString: got %q, want round-trip", dst.GetValString())
+	}
+	if dst.GetValDouble() != math.Pi {
+		t.Errorf("ValDouble: got %f, want Pi", dst.GetValDouble())
+	}
+}
+
+// =============================================================================
+// FromStoredRecord — integration of protoToMap into QueryResult construction
+// =============================================================================
+
+func TestFromStoredRecord(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{
+		OrderId:  proto.Int64(42),
+		Price:    proto.Int32(199),
+		Quantity: proto.Int32(3),
+	}
+	rec := &recordlayer.FDBStoredRecord[proto.Message]{
+		Record:     order,
+		PrimaryKey: tuple.Tuple{int64(42)},
+	}
+	qr := FromStoredRecord(rec)
+
+	m, ok := qr.Datum.(map[string]any)
+	if !ok {
+		t.Fatalf("Datum type %T, want map[string]any", qr.Datum)
+	}
+	if m["ORDER_ID"] != int64(42) {
+		t.Errorf("ORDER_ID = %v, want 42", m["ORDER_ID"])
+	}
+	if m["PRICE"] != int64(199) {
+		t.Errorf("PRICE = %v, want 199", m["PRICE"])
+	}
+	if qr.PrimaryKey[0] != int64(42) {
+		t.Errorf("PrimaryKey = %v, want [42]", qr.PrimaryKey)
+	}
+	if qr.Record != rec {
+		t.Error("Record pointer mismatch")
 	}
 }
