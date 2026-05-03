@@ -439,6 +439,127 @@ func TestMergeOrderings_DisjointKeys(t *testing.T) {
 	}
 }
 
+func TestEnumerateCompatibleRequestedOrderings_Basic(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+
+	results := o.EnumerateCompatibleRequestedOrderings(req)
+	if len(results) == 0 {
+		t.Fatal("expected at least one compatible ordering")
+	}
+	if len(results[0]) != 2 {
+		t.Fatalf("expected full-length ordering (2 keys), got %d", len(results[0]))
+	}
+	if results[0][0].SortOrder != RequestedSortOrderAscending {
+		t.Fatal("first part should be ascending")
+	}
+	if results[0][1].SortOrder != RequestedSortOrderDescending {
+		t.Fatal("second part should be descending")
+	}
+}
+
+func TestEnumerateCompatibleRequestedOrderings_IncompatibleDirection(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderDescending},
+	}, DistinctnessNotDistinct, false)
+
+	results := o.EnumerateCompatibleRequestedOrderings(req)
+	if results != nil {
+		t.Fatal("should return nil for incompatible direction")
+	}
+}
+
+func TestSatisfiesGroupingValues_Basic(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+
+	gv := map[string]struct{}{
+		values.ExplainValue(a): {},
+		values.ExplainValue(b): {},
+	}
+	if !o.SatisfiesGroupingValues(gv) {
+		t.Fatal("a,b should be a valid prefix")
+	}
+}
+
+func TestSatisfiesGroupingValues_Empty(t *testing.T) {
+	t.Parallel()
+	o := EmptyOrdering()
+	if !o.SatisfiesGroupingValues(map[string]struct{}{}) {
+		t.Fatal("empty grouping values should always satisfy")
+	}
+}
+
+func TestSatisfiesGroupingValues_MissingValue(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	gv := map[string]struct{}{
+		values.ExplainValue(fieldVal("z")): {},
+	}
+	if o.SatisfiesGroupingValues(gv) {
+		t.Fatal("should not satisfy with missing value")
+	}
+}
+
+func TestSatisfiesGroupingValues_FixedKeysSkippable(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding("eq")},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	gv := map[string]struct{}{
+		values.ExplainValue(b): {},
+	}
+	if !o.SatisfiesGroupingValues(gv) {
+		t.Fatal("should satisfy: fixed 'a' is independent, 'b' forms valid prefix")
+	}
+}
+
 func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")
