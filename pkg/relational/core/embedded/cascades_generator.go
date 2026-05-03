@@ -93,16 +93,42 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 
 // cascadesPlan wraps a Cascades-planned SELECT query.
 type cascadesPlan struct {
-	ref     *expressions.Reference
-	conn    *EmbeddedConnection
-	md      *recordlayer.RecordMetaData
-	naive   query.Plan
-	explain string
+	ref             *expressions.Reference
+	conn            *EmbeddedConnection
+	md              *recordlayer.RecordMetaData
+	naive           query.Plan
+	explain         string
+	physicalExplain string // set after Execute — the physical plan's Explain string
 }
 
 func (p *cascadesPlan) IsUpdate() bool { return false }
 
-func (p *cascadesPlan) Explain() string { return p.explain }
+func (p *cascadesPlan) Explain() string {
+	if p.physicalExplain != "" {
+		return p.physicalExplain
+	}
+	// Run the planner to get the physical plan without executing.
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	planCtx := buildCascadesPlanContext(p.md)
+	planner := cascades.NewPlanner(rules, planCtx).
+		WithImplementationRules(cascades.DefaultImplementationRules())
+	bestExpr, _, err := planner.Plan(p.ref)
+	if err != nil || bestExpr == nil {
+		return p.explain
+	}
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		return p.explain
+	}
+	physPlan := ph.GetRecordQueryPlan()
+	if physPlan == nil {
+		return p.explain
+	}
+	return physPlan.Explain()
+}
 
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
@@ -128,6 +154,9 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	if physicalPlan == nil {
 		return p.fallback(ctx)
 	}
+
+	// Store the physical plan's Explain for introspection by tests.
+	p.physicalExplain = physicalPlan.Explain()
 
 	c := p.conn
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
@@ -188,7 +217,43 @@ func (c *metadataPlanContext) GetPlannerConfiguration() cascades.PlannerConfigur
 }
 
 func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
-	return nil
+	if c.md == nil {
+		return nil
+	}
+	allIndexes := c.md.GetAllIndexes()
+	if len(allIndexes) == 0 {
+		return nil
+	}
+	defs := make([]cascades.IndexDef, 0, len(allIndexes))
+	for _, idx := range allIndexes {
+		if idx.RootExpression == nil {
+			continue
+		}
+		defs = append(defs, &metadataIndexDef{idx: idx, md: c.md})
+	}
+	if len(defs) == 0 {
+		return nil
+	}
+	ctx := cascades.NewPlanContextFromIndexDefs(defs)
+	return ctx.GetMatchCandidates()
+}
+
+type metadataIndexDef struct {
+	idx *recordlayer.Index
+	md  *recordlayer.RecordMetaData
+}
+
+func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
+func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
+func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.Type == "value" && false }
+
+func (d *metadataIndexDef) IndexRecordTypes() []string {
+	rts := d.md.RecordTypesForIndex(d.idx)
+	names := make([]string, len(rts))
+	for i, rt := range rts {
+		names[i] = rt.Name
+	}
+	return names
 }
 
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {

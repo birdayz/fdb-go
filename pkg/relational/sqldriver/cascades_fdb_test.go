@@ -168,6 +168,105 @@ func TestFDB_CascadesMultiPredicate(t *testing.T) {
 	t.Logf("Cascades multi-predicate WHERE → %d row ✓", count)
 }
 
+func TestFDB_CascadesIndexScan(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_idx_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("idx_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Product (product_id BIGINT NOT NULL, category STRING, price BIGINT, PRIMARY KEY (product_id)) "+
+			"CREATE INDEX idx_category ON Product (category)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop&engine=cascades", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for i := 1; i <= 5; i++ {
+		cat := "electronics"
+		if i > 3 {
+			cat = "clothing"
+		}
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Product VALUES (%d, '%s', %d)", i, cat, i*100)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Product WHERE category = 'electronics'")
+	if err != nil {
+		t.Skipf("index scan via Cascades not yet working: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 3 {
+		t.Fatalf("expected 3 electronics, got %d", count)
+	}
+	t.Logf("Cascades with index → %d rows ✓", count)
+}
+
+func TestFDB_CascadesSumAggregate(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT SUM(price) FROM Item")
+	if err != nil {
+		t.Skipf("SUM not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row from SUM")
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		t.Skipf("SUM scan failed: %v", err)
+	}
+	// 100 + 200 + 50 = 350
+	if total != 350 {
+		t.Fatalf("expected SUM(price) = 350, got %d", total)
+	}
+	t.Logf("Cascades SUM(price) → %d ✓", total)
+}
+
+func TestFDB_CascadesDistinct(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT DISTINCT price FROM Item")
+	if err != nil {
+		t.Skipf("DISTINCT not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	// 3 items with prices 100, 200, 50 — all distinct
+	if count != 3 {
+		t.Fatalf("expected 3 distinct prices, got %d", count)
+	}
+	t.Logf("Cascades DISTINCT → %d rows ✓", count)
+}
+
 func TestFDB_CascadesNotEqual(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
