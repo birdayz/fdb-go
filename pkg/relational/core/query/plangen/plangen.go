@@ -716,6 +716,9 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 	if p, ok := tryParseLike(s); ok {
 		return p, true
 	}
+	if p, ok := tryParseStartsWith(s); ok {
+		return p, true
+	}
 	lhs, op, rhs, ok := splitComparison(s)
 	if !ok {
 		return nil, false
@@ -961,6 +964,36 @@ func tryParseLike(s string) (predicates.QueryPredicate, bool) {
 		return predicates.NewNot(pred), true
 	}
 	return pred, true
+}
+
+// tryParseStartsWith handles "STARTS_WITH(col, 'prefix')" function-call syntax.
+func tryParseStartsWith(s string) (predicates.QueryPredicate, bool) {
+	if len(s) < len("STARTS_WITH(") {
+		return nil, false
+	}
+	if !eqAsciiFold(s[:len("STARTS_WITH(")], "STARTS_WITH(") {
+		return nil, false
+	}
+	if s[len(s)-1] != ')' {
+		return nil, false
+	}
+	inner := s[len("STARTS_WITH(") : len(s)-1]
+	parts := splitInList(inner)
+	if len(parts) != 2 {
+		return nil, false
+	}
+	colVal, ok := lowerSimpleScalarText(parts[0])
+	if !ok {
+		return nil, false
+	}
+	prefixVal, ok := lowerSimpleScalarText(parts[1])
+	if !ok {
+		return nil, false
+	}
+	return predicates.NewComparisonPredicate(colVal, predicates.Comparison{
+		Type:    predicates.ComparisonStartsWith,
+		Operand: prefixVal,
+	}), true
 }
 
 func textToCompOp(op string) predicates.ComparisonType {

@@ -2069,6 +2069,37 @@ func TestEndToEnd_TextBasedInListToPlan(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_StartsWithIndexScan(t *testing.T) {
+	t.Parallel()
+
+	// STARTS_WITH(name, 'abc') should produce an index scan on a name index
+	src := logical.NewFilter(logical.NewScan("Users", ""), "STARTS_WITH(name, 'abc')")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Users$name",
+			columns:     []string{"name"},
+			recordTypes: []string{"Users"},
+		},
+	})
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "IndexScan") {
+		t.Fatalf("expected IndexScan for STARTS_WITH prefix lookup, got: %s", explain)
+	}
+}
+
 func TestEndToEnd_LimitMergeEndToEnd(t *testing.T) {
 	t.Parallel()
 

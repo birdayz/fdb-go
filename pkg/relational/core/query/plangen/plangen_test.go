@@ -379,6 +379,37 @@ func TestConvert_FilterTextLikeWithEscape(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextStartsWith(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "STARTS_WITH(name, 'abc')")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	if cp.Comparison.Type != predicates.ComparisonStartsWith {
+		t.Fatalf("type = %v, want ComparisonStartsWith", cp.Comparison.Type)
+	}
+	lhs, ok := cp.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("LHS is %T, want *FieldValue", cp.Operand)
+	}
+	if lhs.Field != "name" {
+		t.Fatalf("LHS = %q, want %q", lhs.Field, "name")
+	}
+	rhs := cp.Comparison.Operand.(*values.ConstantValue)
+	if rhs.Value != "abc" {
+		t.Fatalf("RHS = %v, want %q", rhs.Value, "abc")
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered
