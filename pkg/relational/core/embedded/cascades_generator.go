@@ -93,16 +93,26 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 
 // cascadesPlan wraps a Cascades-planned SELECT query.
 type cascadesPlan struct {
-	ref     *expressions.Reference
-	conn    *EmbeddedConnection
-	md      *recordlayer.RecordMetaData
-	naive   query.Plan
-	explain string
+	ref             *expressions.Reference
+	conn            *EmbeddedConnection
+	md              *recordlayer.RecordMetaData
+	naive           query.Plan
+	explain         string
+	physicalExplain string // set after Execute — the physical plan's Explain string
 }
 
 func (p *cascadesPlan) IsUpdate() bool { return false }
 
-func (p *cascadesPlan) Explain() string { return p.explain }
+func (p *cascadesPlan) Explain() string {
+	if p.physicalExplain != "" {
+		return p.physicalExplain
+	}
+	return p.explain
+}
+
+// PhysicalPlanExplain returns the Explain string of the physical plan
+// chosen by the optimizer. Empty until Execute is called.
+func (p *cascadesPlan) PhysicalPlanExplain() string { return p.physicalExplain }
 
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
@@ -128,6 +138,9 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	if physicalPlan == nil {
 		return p.fallback(ctx)
 	}
+
+	// Store the physical plan's Explain for introspection by tests.
+	p.physicalExplain = physicalPlan.Explain()
 
 	c := p.conn
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
