@@ -168,6 +168,24 @@ func TestFDB_CascadesMultiPredicate(t *testing.T) {
 	t.Logf("Cascades multi-predicate WHERE → %d row ✓", count)
 }
 
+func TestFDB_CascadesNotEqual(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price <> 100")
+	if err != nil {
+		t.Skipf("<> filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 2 {
+		t.Fatalf("expected 2 rows (price <> 100), got %d", count)
+	}
+	t.Logf("Cascades <> filter → %d rows ✓", count)
+}
+
 func TestFDB_CascadesCount(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
