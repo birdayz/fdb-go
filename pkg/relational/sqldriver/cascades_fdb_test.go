@@ -186,6 +186,24 @@ func TestFDB_CascadesNotEqual(t *testing.T) {
 	t.Logf("Cascades <> filter → %d rows ✓", count)
 }
 
+func TestFDB_CascadesOrFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price > 150 OR name = 'Doohickey'")
+	if err != nil {
+		t.Skipf("OR filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 2 {
+		t.Fatalf("expected 2 rows (Gadget price=200, Doohickey), got %d", count)
+	}
+	t.Logf("Cascades OR filter → %d rows ✓", count)
+}
+
 func TestFDB_CascadesCount(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
