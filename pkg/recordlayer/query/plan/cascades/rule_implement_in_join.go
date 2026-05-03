@@ -13,10 +13,12 @@ import (
 // chain of RecordQueryInJoinPlans.
 //
 // Ports Java's ImplementInJoinRule. The rule examines the inner plan's
-// ordering to match explode aliases to equality-bound ordering keys
-// (via Comparison.GetCorrelatedTo). When ordering info is available,
-// IN-sources are ordered to exploit the inner plan's sort order.
-// When no ordering info is available, falls back to quantifier order.
+// RichOrdering to match explode aliases to equality-bound ordering keys.
+// For each FixedBinding in the ordering, the comparison's
+// GetCorrelatedTo() identifies the explode alias. Matched explodes
+// become sorted IN-sources placed outermost in the InJoin chain,
+// exploiting the inner plan's index ordering. Unmatched explodes use
+// default (unsorted) quantifier order.
 type ImplementInJoinRule struct {
 	matcher matching.BindingMatcher
 }
@@ -164,11 +166,29 @@ func (r *ImplementInJoinRule) orderSourcesByInnerOrdering(
 			if !ok {
 				continue
 			}
-			_ = cr
-
-			// TODO: extract correlation from ComparisonRange's comparison
-			// to match explode aliases. Currently ComparisonRange doesn't
-			// carry full Comparison objects with correlation tracking.
+			eqComp := cr.GetEqualityComparison()
+			if eqComp == nil {
+				continue
+			}
+			correlated := eqComp.GetCorrelatedTo()
+			if len(correlated) != 1 {
+				continue
+			}
+			for alias := range correlated {
+				if _, isExplode := explodeAliases[alias]; !isExplode {
+					continue
+				}
+				if _, alreadyUsed := used[alias]; alreadyUsed {
+					continue
+				}
+				eq := explodeAliasMap[alias]
+				ordered = append(ordered, inJoinSource{
+					bindingName: alias.String(),
+					sorted:      true,
+					quantifier:  eq,
+				})
+				used[alias] = struct{}{}
+			}
 		}
 	}
 
