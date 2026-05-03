@@ -850,3 +850,145 @@ func buildFuzzOp(seed uint64, name1, name2 string, shape uint8) logical.LogicalO
 	}
 	return build(0, seed)
 }
+
+func TestConvert_Aggregate_Basic(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("Orders", ""),
+		[]string{"customer_id"},
+		[]string{"COUNT(id)", "SUM(amount)"},
+		[]string{"cnt", "total"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	gb, ok := got.(*expressions.GroupByExpression)
+	if !ok {
+		t.Fatalf("got %T, want *GroupByExpression", got)
+	}
+	if len(gb.GetGroupingKeys()) != 1 {
+		t.Fatalf("grouping keys = %d, want 1", len(gb.GetGroupingKeys()))
+	}
+	if values.ExplainValue(gb.GetGroupingKeys()[0]) != "customer_id" {
+		t.Fatalf("grouping key = %q, want customer_id", values.ExplainValue(gb.GetGroupingKeys()[0]))
+	}
+	aggs := gb.GetAggregates()
+	if len(aggs) != 2 {
+		t.Fatalf("aggregates = %d, want 2", len(aggs))
+	}
+	if aggs[0].Function != expressions.AggCount {
+		t.Fatalf("agg[0].Function = %d, want AggCount", aggs[0].Function)
+	}
+	if values.ExplainValue(aggs[0].Operand) != "id" {
+		t.Fatalf("agg[0].Operand = %q, want id", values.ExplainValue(aggs[0].Operand))
+	}
+	if aggs[1].Function != expressions.AggSum {
+		t.Fatalf("agg[1].Function = %d, want AggSum", aggs[1].Function)
+	}
+}
+
+func TestConvert_Aggregate_CountStar(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		nil, // no grouping keys = global aggregate
+		[]string{"COUNT(*)"},
+		[]string{"total"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	gb := got.(*expressions.GroupByExpression)
+	if len(gb.GetGroupingKeys()) != 0 {
+		t.Fatalf("grouping keys = %d, want 0", len(gb.GetGroupingKeys()))
+	}
+	if len(gb.GetAggregates()) != 1 {
+		t.Fatalf("aggregates = %d, want 1", len(gb.GetAggregates()))
+	}
+	if gb.GetAggregates()[0].Function != expressions.AggCount {
+		t.Fatal("expected COUNT function")
+	}
+	if values.ExplainValue(gb.GetAggregates()[0].Operand) != "*" {
+		t.Fatalf("expected * operand, got %q", values.ExplainValue(gb.GetAggregates()[0].Operand))
+	}
+}
+
+func TestConvert_Aggregate_AllFunctions(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		[]string{"g"},
+		[]string{"COUNT(a)", "SUM(b)", "MIN(c)", "MAX(d)", "AVG(e)"},
+		nil,
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	gb := got.(*expressions.GroupByExpression)
+	aggs := gb.GetAggregates()
+	if len(aggs) != 5 {
+		t.Fatalf("aggregates = %d, want 5", len(aggs))
+	}
+	expected := []expressions.AggregateFunction{
+		expressions.AggCount, expressions.AggSum,
+		expressions.AggMin, expressions.AggMax, expressions.AggAvg,
+	}
+	for i, exp := range expected {
+		if aggs[i].Function != exp {
+			t.Fatalf("aggs[%d].Function = %d, want %d", i, aggs[i].Function, exp)
+		}
+	}
+}
+
+func TestConvert_Aggregate_UnsupportedFunction(t *testing.T) {
+	t.Parallel()
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		nil,
+		[]string{"MEDIAN(x)"},
+		nil,
+		"",
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+func TestConvert_Aggregate_ComplexOperand(t *testing.T) {
+	t.Parallel()
+	// SUM(a + b) is too complex for the simple text parser.
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		nil,
+		[]string{"SUM(a + b)"},
+		nil,
+		"",
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported for complex operand, got %v", err)
+	}
+}
+
+func TestConvert_Aggregate_ComplexGroupKey(t *testing.T) {
+	t.Parallel()
+	// GROUP BY (a + b) is too complex for the simple text lowering.
+	src := logical.NewAggregate(
+		logical.NewScan("T", ""),
+		[]string{"a + b"},
+		[]string{"COUNT(x)"},
+		nil,
+		"",
+	)
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported for complex group key, got %v", err)
+	}
+}

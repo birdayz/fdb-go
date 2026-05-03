@@ -29,6 +29,8 @@
 //     LogicalProject for each sort-key Expr.
 //   - LogicalUpdate → UpdateExpression; same lowering rules for
 //     each SET right-hand side.
+//   - LogicalAggregate → GroupByExpression; parses GROUP BY keys +
+//     aggregate-function text (COUNT/SUM/MIN/MAX/AVG on bare columns)
 //
 // Currently unsupported (returns ErrUnsupported):
 //   - LogicalProject / LogicalSort / LogicalUpdate with arithmetic,
@@ -36,7 +38,6 @@
 //     numeric literals (`1.5E10`), or escaped string literals
 //     (`'it”s'`) — all gated on text→Value parsing
 //   - LogicalLimit — no RelationalExpression equivalent yet
-//   - LogicalAggregate — needs GroupByExpression port
 //   - LogicalJoin — maps to SelectExpression with multiple
 //     Quantifiers; needs predicate placement work
 //   - LogicalInsert without Source (VALUES literal) — needs a
@@ -48,6 +49,7 @@ package plangen
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -88,6 +90,8 @@ func Convert(op logical.LogicalOperator) (expressions.RelationalExpression, erro
 		return convertSort(o)
 	case *logical.LogicalUpdate:
 		return convertUpdate(o)
+	case *logical.LogicalAggregate:
+		return convertAggregate(o)
 	default:
 		return nil, fmt.Errorf("%w: %T", ErrUnsupported, op)
 	}
@@ -471,4 +475,85 @@ func isBareColumn(s string) bool {
 		}
 	}
 	return true
+}
+
+// convertAggregate builds a GroupByExpression from a LogicalAggregate.
+// GroupKeys are lowered via lowerSimpleScalarText (bare column names).
+// Aggregates are parsed from the "FUNC(col)" text form — only the
+// basic forms COUNT(*), COUNT(col), SUM(col), MIN(col), MAX(col),
+// AVG(col) are supported.
+func convertAggregate(a *logical.LogicalAggregate) (expressions.RelationalExpression, error) {
+	inner, err := Convert(a.Input)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate input: %w", err)
+	}
+	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+
+	groupingKeys := make([]values.Value, 0, len(a.GroupKeys))
+	for _, gk := range a.GroupKeys {
+		v, ok := lowerSimpleScalarText(gk)
+		if !ok {
+			return nil, fmt.Errorf("%w: LogicalAggregate grouping key %q cannot be lowered", ErrUnsupported, gk)
+		}
+		groupingKeys = append(groupingKeys, v)
+	}
+
+	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Aggregates))
+	for _, aggText := range a.Aggregates {
+		spec, err := parseAggregateText(aggText)
+		if err != nil {
+			return nil, err
+		}
+		aggSpecs = append(aggSpecs, spec)
+	}
+
+	return expressions.NewGroupByExpression(groupingKeys, aggSpecs, q), nil
+}
+
+// parseAggregateText parses "FUNC(operand)" aggregate text into an
+// AggregateSpec. Supported forms: COUNT(*), COUNT(col), SUM(col),
+// MIN(col), MAX(col), AVG(col).
+func parseAggregateText(s string) (expressions.AggregateSpec, error) {
+	lparen := strings.IndexByte(s, '(')
+	rparen := strings.LastIndexByte(s, ')')
+	if lparen < 1 || rparen <= lparen {
+		return expressions.AggregateSpec{}, fmt.Errorf("%w: cannot parse aggregate %q", ErrUnsupported, s)
+	}
+	funcName := strings.TrimSpace(s[:lparen])
+	operandText := strings.TrimSpace(s[lparen+1 : rparen])
+
+	fn, ok := lookupAggFunc(funcName)
+	if !ok {
+		return expressions.AggregateSpec{}, fmt.Errorf("%w: unknown aggregate function %q", ErrUnsupported, funcName)
+	}
+
+	var operand values.Value
+	if operandText == "*" {
+		operand = &values.FieldValue{Field: "*", Typ: values.UnknownType}
+	} else {
+		v, ok := lowerSimpleScalarText(operandText)
+		if !ok {
+			return expressions.AggregateSpec{}, fmt.Errorf("%w: cannot lower aggregate operand %q", ErrUnsupported, operandText)
+		}
+		operand = v
+	}
+
+	return expressions.AggregateSpec{Function: fn, Operand: operand}, nil
+}
+
+func lookupAggFunc(name string) (expressions.AggregateFunction, bool) {
+	switch strings.ToUpper(name) {
+	case "COUNT":
+		return expressions.AggCount, true
+	case "SUM":
+		return expressions.AggSum, true
+	case "MIN":
+		return expressions.AggMin, true
+	case "MAX":
+		return expressions.AggMax, true
+	case "AVG":
+		return expressions.AggAvg, true
+	default:
+		return 0, false
+	}
 }
