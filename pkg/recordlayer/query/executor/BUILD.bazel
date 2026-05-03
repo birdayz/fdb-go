@@ -23,14 +23,22 @@ go_library(
 
 go_test(
     name = "executor_test",
-    srcs = ["executor_test.go"],
+    srcs = [
+        "executor_integration_test.go",
+        "executor_test.go",
+    ],
     embed = [":executor"],
     deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/testcontainers/foundationdb",
+        "@org_golang_google_protobuf//proto",
     ],
 )
