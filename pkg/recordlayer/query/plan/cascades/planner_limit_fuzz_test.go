@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -61,6 +62,69 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 		p := NewPlanner(rules, EmptyPlanContext())
 		plan, _, err := p.Plan(ref)
 		// We don't care about the specific result — just that it doesn't panic.
+		_ = plan
+		_ = err
+	})
+}
+
+// FuzzPlanner_ProjectionPipeline_NoPanic exercises random projection
+// topologies (with optional filter, sort, limit) through the full
+// planner including physical implementation rules.
+func FuzzPlanner_ProjectionPipeline_NoPanic(f *testing.F) {
+	f.Add(uint8(3), true, true, true, int64(10))
+	f.Add(uint8(1), false, false, false, int64(0))
+	f.Add(uint8(5), true, false, true, int64(-1))
+	f.Add(uint8(0), false, true, false, int64(100))
+
+	f.Fuzz(func(t *testing.T, numCols uint8, addFilter, addSort, addLimit bool, limitVal int64) {
+		cols := int(numCols%5) + 1
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		scanQ := expressions.ForEachQuantifier(scanRef)
+
+		var current expressions.RelationalExpression
+
+		if addFilter {
+			current = expressions.NewLogicalFilterExpression(
+				[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+				scanQ,
+			)
+		} else {
+			projVals := make([]values.Value, cols)
+			for i := range projVals {
+				projVals[i] = &values.FieldValue{Field: "c", Typ: values.UnknownType}
+			}
+			current = expressions.NewLogicalProjectionExpression(projVals, scanQ)
+		}
+
+		ref := expressions.InitialOf(current)
+		q := expressions.ForEachQuantifier(ref)
+
+		if addSort {
+			sortExpr := expressions.NewLogicalSortExpression(
+				[]expressions.SortKey{{Value: &values.FieldValue{Field: "c", Typ: values.UnknownType}, Reverse: false}},
+				q,
+			)
+			ref = expressions.InitialOf(sortExpr)
+			q = expressions.ForEachQuantifier(ref)
+		}
+
+		if addLimit && limitVal >= 0 {
+			limExpr := expressions.NewLogicalLimitExpression(limitVal, 0, q)
+			ref = expressions.InitialOf(limExpr)
+		} else {
+			// Need a top-level ref
+			projVals := make([]values.Value, cols)
+			for i := range projVals {
+				projVals[i] = &values.FieldValue{Field: "c", Typ: values.UnknownType}
+			}
+			topProj := expressions.NewLogicalProjectionExpression(projVals, q)
+			ref = expressions.InitialOf(topProj)
+		}
+
+		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+		p := NewPlanner(rules, EmptyPlanContext())
+		plan, _, err := p.Plan(ref)
 		_ = plan
 		_ = err
 	})
