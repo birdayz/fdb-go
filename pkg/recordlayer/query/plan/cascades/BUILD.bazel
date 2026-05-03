@@ -127,6 +127,7 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/matching",
         "//pkg/recordlayer/query/plan/cascades/predicates",

@@ -1,31 +1,42 @@
 package cascades
 
 import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/combinatorics"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // RichOrdering captures a provided ordering as a binding map
-// (Value → []OrderingBinding) plus a linear sequence of ordering keys
-// and a distinctness flag.
+// (Value → []OrderingBinding) plus a partially ordered set of value
+// keys and a distinctness flag.
 //
-// This enriches the simple properties.Ordering type with the binding
-// information Java's Ordering class carries. Values can be bound in
-// multiple ways (e.g., both equality-bound via a scan comparison AND
-// sorted via index order), and the union/intersection of orderings
-// requires reasoning over binding compatibility.
+// The ordering set is a PartiallyOrderedSet[string] keyed by
+// ExplainValue(v). A reverse map resolves keys back to values.
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.Ordering.
 type RichOrdering struct {
-	bindingMap map[values.Value][]OrderingBinding
-	keys       []values.Value
-	distinct   bool
+	bindingMap  map[values.Value][]OrderingBinding
+	keys        []values.Value
+	orderingSet *combinatorics.PartiallyOrderedSet[string]
+	keyLookup   map[string]values.Value
+	distinct    bool
 }
 
 // NewRichOrdering creates a new ordering from bindings, key sequence,
-// and distinctness.
+// and distinctness. The ordering set is a total order matching the key sequence.
 func NewRichOrdering(
 	bindingMap map[values.Value][]OrderingBinding,
 	keys []values.Value,
+	distinct bool,
+) *RichOrdering {
+	return NewRichOrderingWithDeps(bindingMap, keys, combinatorics.NewSetMultimap[string](), distinct)
+}
+
+// NewRichOrderingWithDeps creates an ordering with explicit dependency edges
+// in the ordering set.
+func NewRichOrderingWithDeps(
+	bindingMap map[values.Value][]OrderingBinding,
+	keys []values.Value,
+	deps combinatorics.SetMultimap[string],
 	distinct bool,
 ) *RichOrdering {
 	bm := make(map[values.Value][]OrderingBinding, len(bindingMap))
@@ -34,19 +45,53 @@ func NewRichOrdering(
 		copy(copied, v)
 		bm[k] = copied
 	}
+
 	keysCopy := make([]values.Value, len(keys))
 	copy(keysCopy, keys)
+
+	keyStrings := make([]string, len(keys))
+	lookup := make(map[string]values.Value, len(keys))
+	for i, k := range keys {
+		s := values.ExplainValue(k)
+		keyStrings[i] = s
+		lookup[s] = k
+	}
+
+	var oset *combinatorics.PartiallyOrderedSet[string]
+	if deps.Size() > 0 {
+		oset = combinatorics.NewPartiallyOrderedSet(keyStrings, deps)
+	} else {
+		bd := combinatorics.NewBuilder[string]()
+		bd.AddAll(keyStrings)
+		var lastSorted string
+		for _, ks := range keyStrings {
+			v := lookup[ks]
+			bindings := bm[v]
+			if !AreAllBindingsFixed(bindings) {
+				if lastSorted != "" {
+					bd.AddDependency(ks, lastSorted)
+				}
+				lastSorted = ks
+			}
+		}
+		oset = bd.Build()
+	}
+
 	return &RichOrdering{
-		bindingMap: bm,
-		keys:       keysCopy,
-		distinct:   distinct,
+		bindingMap:  bm,
+		keys:        keysCopy,
+		orderingSet: oset,
+		keyLookup:   lookup,
+		distinct:    distinct,
 	}
 }
 
 // EmptyOrdering returns an ordering with no keys.
 func EmptyOrdering() *RichOrdering {
 	return &RichOrdering{
-		bindingMap: map[values.Value][]OrderingBinding{},
+		bindingMap:  map[values.Value][]OrderingBinding{},
+		orderingSet: combinatorics.EmptyPartiallyOrderedSet[string](),
+		keyLookup:   map[string]values.Value{},
 	}
 }
 
@@ -58,6 +103,16 @@ func (o *RichOrdering) GetBindingMap() map[values.Value][]OrderingBinding {
 // GetKeys returns the ordering keys in sequence.
 func (o *RichOrdering) GetKeys() []values.Value {
 	return o.keys
+}
+
+// OrderingSet returns the partially ordered set of value keys.
+func (o *RichOrdering) OrderingSet() *combinatorics.PartiallyOrderedSet[string] {
+	return o.orderingSet
+}
+
+// ValueForKey resolves a string key back to its Value.
+func (o *RichOrdering) ValueForKey(key string) values.Value {
+	return o.keyLookup[key]
 }
 
 // IsDistinct returns whether the ordering guarantees distinct output.
@@ -134,9 +189,8 @@ func (o *RichOrdering) IsSingularNonFixedValue(v values.Value) bool {
 }
 
 // Satisfies checks whether this provided ordering satisfies the given
-// requested ordering. A provided ordering satisfies a request when the
-// provided keys form a prefix that covers all requested parts, with
-// compatible sort directions.
+// requested ordering. Uses the partial order to enumerate valid
+// permutations that match the request prefix.
 func (o *RichOrdering) Satisfies(requested *RequestedOrdering) bool {
 	if requested.IsPreserve() {
 		return true
@@ -146,42 +200,36 @@ func (o *RichOrdering) Satisfies(requested *RequestedOrdering) bool {
 		return true
 	}
 
-	keyIdx := 0
 	for _, part := range parts {
-		found := false
-		for keyIdx < len(o.keys) {
-			key := o.keys[keyIdx]
-			bindings := o.bindingMap[key]
-
-			if AreAllBindingsFixed(bindings) {
-				keyIdx++
-				continue
-			}
-
-			if !valuesEqual(key, part.Value) {
-				return false
-			}
-
-			if part.SortOrder.IsDirectional() {
-				sortOrder := SortOrderOf(bindings)
-				if sortOrder.IsDirectional() {
-					isAsc := !sortOrder.IsAnyDescending()
-					wantAsc := part.SortOrder == RequestedSortOrderAscending
-					if isAsc != wantAsc {
-						return false
-					}
-				}
-			}
-
-			keyIdx++
-			found = true
-			break
+		bindings := o.bindingMapForExplain(values.ExplainValue(part.Value))
+		if bindings == nil {
+			return false
 		}
-		if !found {
+		sortOrder := SortOrderOf(bindings)
+		if !sortOrder.IsCompatibleWithRequestedSortOrder(part.SortOrder) {
 			return false
 		}
 	}
-	return true
+
+	requestedValues := make(map[string]struct{}, len(parts))
+	requestedKeys := make([]string, len(parts))
+	for i, part := range parts {
+		k := values.ExplainValue(part.Value)
+		requestedValues[k] = struct{}{}
+		requestedKeys[i] = k
+	}
+
+	filtered := o.orderingSet.FilterElements(func(s string) bool {
+		_, ok := requestedValues[s]
+		return ok
+	})
+
+	iter := combinatorics.SatisfyingPermutations(
+		filtered,
+		requestedKeys,
+		func(_ []string) int { return len(parts) },
+	)
+	return iter.Next() != nil
 }
 
 func valuesEqual(a, b values.Value) bool {
@@ -191,11 +239,35 @@ func valuesEqual(a, b values.Value) bool {
 	return values.ExplainValue(a) == values.ExplainValue(b)
 }
 
+func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
+	v, ok := o.keyLookup[explain]
+	if !ok {
+		return nil
+	}
+	return o.bindingMap[v]
+}
+
+// IsCompatibleWithRequestedSortOrder checks if a provided sort order
+// is compatible with a requested sort order.
+func (p ProvidedSortOrder) IsCompatibleWithRequestedSortOrder(req RequestedSortOrder) bool {
+	if req == RequestedSortOrderAny {
+		return true
+	}
+	if p == ProvidedSortOrderFixed {
+		return true
+	}
+	if req.IsDirectional() && p.IsDirectional() {
+		reqAsc := req == RequestedSortOrderAscending
+		provAsc := !p.IsAnyDescending()
+		return reqAsc == provAsc
+	}
+	return true
+}
+
 // EnumerateSatisfyingComparisonKeyValues enumerates the comparison key
 // sequences from this ordering that satisfy the requested ordering.
-// Returns a list of key-value lists; each list is one valid comparison
-// key sequence. Simplified version of Java's full PartiallyOrderedSet
-// enumeration — uses the linear key sequence directly.
+// Uses TopologicalSort.satisfyingPermutations on the partial order to
+// find all valid orderings.
 func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
 	requested *RequestedOrdering,
 ) [][]values.Value {
@@ -204,50 +276,41 @@ func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
 	}
 
 	reqParts := requested.GetParts()
-	var result []values.Value
+	requestedKeys := make([]string, len(reqParts))
+	for i, part := range reqParts {
+		bindings := o.bindingMapForExplain(values.ExplainValue(part.Value))
+		if bindings == nil {
+			return nil
+		}
+		sortOrder := SortOrderOf(bindings)
+		if !sortOrder.IsCompatibleWithRequestedSortOrder(part.SortOrder) {
+			return nil
+		}
+		requestedKeys[i] = values.ExplainValue(part.Value)
+	}
 
-	keyIdx := 0
-	for _, part := range reqParts {
-		for keyIdx < len(o.keys) {
-			key := o.keys[keyIdx]
-			bindings := o.bindingMap[key]
+	iter := combinatorics.SatisfyingPermutations(
+		o.orderingSet,
+		requestedKeys,
+		func(_ []string) int { return len(reqParts) },
+	)
 
-			if AreAllBindingsFixed(bindings) {
-				result = append(result, key)
-				keyIdx++
-				continue
-			}
-
-			if !valuesEqual(key, part.Value) {
-				return nil
-			}
-
-			if part.SortOrder.IsDirectional() {
-				sortOrder := SortOrderOf(bindings)
-				if sortOrder.IsDirectional() {
-					isAsc := !sortOrder.IsAnyDescending()
-					wantAsc := part.SortOrder == RequestedSortOrderAscending
-					if isAsc != wantAsc {
-						return nil
-					}
-				}
-			}
-
-			result = append(result, key)
-			keyIdx++
+	var results [][]values.Value
+	for {
+		perm := iter.Next()
+		if perm == nil {
 			break
 		}
+		keyValues := make([]values.Value, len(perm))
+		for i, k := range perm {
+			keyValues[i] = o.keyLookup[k]
+		}
+		results = append(results, keyValues)
 	}
-
-	for keyIdx < len(o.keys) {
-		result = append(result, o.keys[keyIdx])
-		keyIdx++
-	}
-
-	if len(result) == 0 {
+	if len(results) == 0 {
 		return nil
 	}
-	return [][]values.Value{result}
+	return results
 }
 
 // DirectionalOrderingParts creates ProvidedOrderingParts from a key
@@ -321,11 +384,7 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 		}
 	}
 
-	return &RichOrdering{
-		bindingMap: bm,
-		keys:       keys,
-		distinct:   outer.distinct || inner.distinct,
-	}
+	return NewRichOrdering(bm, keys, outer.distinct || inner.distinct)
 }
 
 // CreateUnionOrdering creates a RichOrdering from a single provided
@@ -338,11 +397,7 @@ func CreateUnionOrdering(o *RichOrdering) *RichOrdering {
 	}
 	keys := make([]values.Value, len(o.keys))
 	copy(keys, o.keys)
-	return &RichOrdering{
-		bindingMap: bm,
-		keys:       keys,
-		distinct:   o.distinct,
-	}
+	return NewRichOrdering(bm, keys, o.distinct)
 }
 
 // MergeOrderings merges two orderings for union planning. The merged
@@ -380,9 +435,5 @@ func MergeOrderings(a, b *RichOrdering) *RichOrdering {
 		}
 	}
 
-	return &RichOrdering{
-		bindingMap: bm,
-		keys:       keys,
-		distinct:   a.distinct && b.distinct,
-	}
+	return NewRichOrdering(bm, keys, a.distinct && b.distinct)
 }
