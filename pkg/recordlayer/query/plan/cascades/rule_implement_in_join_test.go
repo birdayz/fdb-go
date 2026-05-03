@@ -203,3 +203,52 @@ func TestImplementInJoinRule_MultipleExplodes(t *testing.T) {
 		t.Fatal("should fire with multiple explodes + inner quantifier")
 	}
 }
+
+func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
+	t.Parallel()
+	eqRange := predicates.EmptyComparisonRange()
+	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, 1)
+	eqRange.Merge(&eqComp)
+	indexPlan := plans.NewRecordQueryIndexPlan(
+		"idx_a", []*predicates.ComparisonRange{eqRange},
+		[]string{"T"}, values.UnknownType, false)
+	iw := &physicalIndexScanWrapper{
+		plan:        indexPlan,
+		columnNames: []string{"a"},
+		unique:      false,
+	}
+	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{iw})
+	pm := NewPlanPropertiesMap()
+	pm.Add(iw)
+	innerRef.SetPlanProperties(pm)
+
+	innerQ := expressions.ForEachQuantifier(innerRef)
+
+	explodeRef := expressions.InitialOf(
+		expressions.NewExplodeExpression(&values.ConstantValue{Value: []any{1, 2, 3}}),
+	)
+	explodeQ := expressions.ForEachQuantifier(explodeRef)
+
+	sel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(innerQ.GetAlias()),
+		[]expressions.Quantifier{explodeQ, innerQ},
+		nil,
+	)
+
+	outerRef := expressions.InitialOf(sel)
+	results := FireImplementationRule(NewImplementInJoinRule(), outerRef)
+	if len(results) == 0 {
+		t.Fatal("should fire with index scan inner")
+	}
+
+	found := false
+	for _, r := range results {
+		if _, ok := r.(*physicalInJoinWrapper); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("should yield physicalInJoinWrapper with index scan inner")
+	}
+}
