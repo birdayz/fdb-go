@@ -96,6 +96,37 @@ func TestConvert_FilterTextSimple(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextDottedRef(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "t.id = o.customer_id")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	cp, ok := f.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("predicate is %T, want *ComparisonPredicate", f.GetPredicates()[0])
+	}
+	lhs, ok := cp.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("LHS is %T, want *FieldValue", cp.Operand)
+	}
+	if lhs.Field != "t.id" {
+		t.Fatalf("LHS field = %q, want %q", lhs.Field, "t.id")
+	}
+	rhs, ok := cp.Comparison.Operand.(*values.FieldValue)
+	if !ok {
+		t.Fatalf("RHS is %T, want *FieldValue", cp.Comparison.Operand)
+	}
+	if rhs.Field != "o.customer_id" {
+		t.Fatalf("RHS field = %q, want %q", rhs.Field, "o.customer_id")
+	}
+}
+
 func TestConvert_FilterTextAND(t *testing.T) {
 	t.Parallel()
 	src := logical.NewFilter(logical.NewScan("Order", ""), "status = 'active' AND amount > 100")
@@ -636,17 +667,30 @@ func TestConvert_Project_FloatExponentUnsupported(t *testing.T) {
 	}
 }
 
-func TestConvert_Project_QualifiedUnsupported(t *testing.T) {
+func TestConvert_Project_QualifiedRef(t *testing.T) {
 	t.Parallel()
-	// "Order.id" has a dot → unsupported (qualified-column needs scope).
 	src := logical.NewProject(
 		logical.NewScan("Order", ""),
 		[]string{"Order.id"},
 		[]string{""},
 	)
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("got %v, want ErrUnsupported (qualified-column not yet wired)", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	proj, ok := got.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalProjectionExpression", got)
+	}
+	if len(proj.GetProjectedValues()) != 1 {
+		t.Fatalf("projection count = %d, want 1", len(proj.GetProjectedValues()))
+	}
+	fv, ok := proj.GetProjectedValues()[0].(*values.FieldValue)
+	if !ok {
+		t.Fatalf("projection[0] is %T, want *FieldValue", proj.GetProjectedValues()[0])
+	}
+	if fv.Field != "Order.id" {
+		t.Fatalf("field = %q, want %q", fv.Field, "Order.id")
 	}
 }
 
@@ -1386,12 +1430,18 @@ func TestConvert_Join_LeftJoinNoStructuredPred_Unsupported(t *testing.T) {
 	}
 }
 
-func TestConvert_Join_ComplexTextPredicate_Unsupported(t *testing.T) {
+func TestConvert_Join_DottedRefTextPredicate(t *testing.T) {
 	t.Parallel()
-	// Dotted reference in ON clause is too complex for the simple parser
 	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "a.id = b.aid")
-	_, err := plangen.Convert(src)
-	if !errors.Is(err, plangen.ErrUnsupported) {
-		t.Fatalf("expected ErrUnsupported for dotted ref, got %v", err)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := got.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("got %T, want *SelectExpression", got)
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("predicate count = %d, want 1", len(sel.GetPredicates()))
 	}
 }

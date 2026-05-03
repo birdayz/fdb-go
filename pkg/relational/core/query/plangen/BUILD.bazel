@@ -23,6 +23,7 @@ go_test(
         "plangen_fuzz_test.go",
         "plangen_test.go",
     ],
+    data = glob(["testdata/**"]),
     deps = [
         ":plangen",
         "//pkg/recordlayer/query/plan/cascades",

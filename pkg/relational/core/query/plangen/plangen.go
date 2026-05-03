@@ -318,6 +318,9 @@ func lowerSimpleScalarText(s string) (values.Value, bool) {
 	if isBareColumn(s) {
 		return &values.FieldValue{Field: s, Typ: values.UnknownType}, true
 	}
+	if isDottedRef(s) {
+		return &values.FieldValue{Field: s, Typ: values.UnknownType}, true
+	}
 	// Single-quoted string literal: 'hello'
 	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
 		body := s[1 : len(s)-1]
@@ -527,6 +530,21 @@ func isBareColumn(s string) bool {
 			return false
 		}
 		if !isLetter && !isDigit {
+			return false
+		}
+	}
+	return true
+}
+
+// isDottedRef matches "ident.ident" or "ident.ident.ident" — qualified
+// column references like table.column or schema.table.column.
+func isDottedRef(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	for _, p := range parts {
+		if !isBareColumn(p) {
 			return false
 		}
 	}
