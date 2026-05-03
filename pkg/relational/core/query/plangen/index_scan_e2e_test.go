@@ -1344,3 +1344,150 @@ func TestEndToEnd_MultipleAggregates(t *testing.T) {
 		t.Fatalf("expected hash agg for multi-agg GROUP BY without ordering, got %T", plan)
 	}
 }
+
+// TestEndToEnd_SortOverStreamingAggEliminated verifies that an outer
+// ORDER BY on grouping keys is eliminated when the GroupBy is implemented
+// as streaming aggregation (which preserves grouping-key order).
+//
+// Tree: Sort(region) → GroupBy(region, COUNT(id), Sort(region) → Scan)
+// with index on (region) → streaming agg provides order → outer sort gone.
+func TestEndToEnd_SortOverStreamingAggEliminated(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Sales"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	innerSort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		}, scanQ)
+	innerSortRef := expressions.InitialOf(innerSort)
+	innerSortQ := expressions.ForEachQuantifier(innerSortRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		innerSortQ,
+	)
+	gbRef := expressions.InitialOf(gb)
+	gbQ := expressions.ForEachQuantifier(gbRef)
+
+	outerSort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{
+			{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		}, gbQ)
+	ref := expressions.InitialOf(outerSort)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Sales$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Sales"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// Best plan should be a streaming agg — the outer sort is eliminated
+	// because streaming agg's HintOrdering covers the sort keys.
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		explain := cascades.ExplainPhysicalPlan(plan)
+		t.Fatalf("expected streaming agg (sort eliminated), got %T — explain: %s", plan, explain)
+	}
+}
+
+// TestEndToEnd_GroupByWithHavingClause verifies the interaction of
+// filter-after-GroupBy (HAVING) with the planner. The non-pushable
+// predicate (on aggregate result) stays above, while any key-based
+// predicates get pushed below.
+func TestEndToEnd_GroupByWithHavingClause(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "status", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	gbRef := expressions.InitialOf(gb)
+	gbQ := expressions.ForEachQuantifier(gbRef)
+
+	// HAVING cnt > 10 — predicate on non-key field, not pushable.
+	havingFilter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "cnt", Typ: values.UnknownType},
+				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(10)),
+			),
+		}, gbQ)
+	ref := expressions.InitialOf(havingFilter)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// The plan should be a filter (physical) wrapping a hash agg.
+	if !cascades.IsPhysicalFilter(plan) {
+		t.Fatalf("expected physical filter (HAVING) at top, got %T", plan)
+	}
+}
+
+// TestEndToEnd_DistinctOverGroupByEliminated verifies that DISTINCT over
+// GROUP BY is eliminated by the planner (GROUP BY already deduplicates).
+func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	gbRef := expressions.InitialOf(gb)
+	gbQ := expressions.ForEachQuantifier(gbRef)
+
+	distinct := expressions.NewLogicalDistinctExpression(gbQ)
+	ref := expressions.InitialOf(distinct)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// After elimination, the best plan should be a hash agg (no distinct wrapper).
+	if !cascades.IsPhysicalHashAgg(plan) {
+		t.Fatalf("expected hash agg (distinct eliminated), got %T", plan)
+	}
+}
