@@ -74,12 +74,19 @@ func TestInJoinRule_OrderingAware_DefaultSources(t *testing.T) {
 	rule := &ImplementInJoinRule{}
 	q1 := expressions.ForEachQuantifier(nil)
 	q2 := expressions.ForEachQuantifier(nil)
-	sources := rule.defaultSources([]expressions.Quantifier{q1, q2})
-	if len(sources) != 2 {
-		t.Fatalf("expected 2 sources, got %d", len(sources))
+	orderings := rule.enumerateDefaultSources([]expressions.Quantifier{q1, q2})
+	if len(orderings) != 2 {
+		t.Fatalf("expected 2 permutations of 2 sources, got %d", len(orderings))
 	}
-	if sources[0].sorted || sources[1].sorted {
-		t.Fatal("default sources should not be sorted")
+	for _, sources := range orderings {
+		if len(sources) != 2 {
+			t.Fatalf("expected 2 sources per ordering, got %d", len(sources))
+		}
+		for _, s := range sources {
+			if s.sorted {
+				t.Fatal("default sources should not be sorted")
+			}
+		}
 	}
 }
 

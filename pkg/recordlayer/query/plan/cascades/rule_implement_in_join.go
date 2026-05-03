@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/combinatorics"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
@@ -99,24 +100,26 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 
 		innerExprs := partition.GetExpressions()
 
-		orderedSources := r.orderSourcesByInnerOrdering(
+		allOrderings := r.enumerateSourceOrderings(
 			innerExprs, explodeQuantifiers, explodeAliases, explodeAliasMap)
 
-		currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-		currentPlan := plans.RecordQueryPlan(innerPlans[0])
+		for _, orderedSources := range allOrderings {
+			currentRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
+			currentPlan := plans.RecordQueryPlan(innerPlans[0])
 
-		for i := len(orderedSources) - 1; i >= 0; i-- {
-			source := orderedSources[i]
-			inJoinPlan := plans.NewRecordQueryInJoinPlan(
-				currentPlan, source.bindingName, source.sorted, source.reverse)
-			wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
-				expressions.NewPhysicalQuantifier(currentRef))
-			currentRef = call.MemoizeFinalExpression(wrapper)
-			currentPlan = inJoinPlan
-		}
+			for i := len(orderedSources) - 1; i >= 0; i-- {
+				source := orderedSources[i]
+				inJoinPlan := plans.NewRecordQueryInJoinPlan(
+					currentPlan, source.bindingName, source.sorted, source.reverse)
+				wrapper := NewPhysicalInJoinWrapper(inJoinPlan,
+					expressions.NewPhysicalQuantifier(currentRef))
+				currentRef = call.MemoizeFinalExpression(wrapper)
+				currentPlan = inJoinPlan
+			}
 
-		for _, m := range currentRef.FinalMembers() {
-			call.YieldFinalExpression(m)
+			for _, m := range currentRef.FinalMembers() {
+				call.YieldFinalExpression(m)
+			}
 		}
 	}
 }
@@ -128,16 +131,15 @@ type inJoinSource struct {
 	quantifier  expressions.Quantifier
 }
 
-// orderSourcesByInnerOrdering examines the inner expressions' ordering
-// to determine optimal IN-source nesting. If the ordering's fixed
-// bindings correlate to explode aliases, those explodes are placed
-// first (outermost) in the InJoin chain.
-func (r *ImplementInJoinRule) orderSourcesByInnerOrdering(
+// enumerateSourceOrderings returns all valid source orderings.
+// The prefix (ordering-correlated sources) is fixed; the remaining
+// sources are permuted using TopologicalSort.Permutations.
+func (r *ImplementInJoinRule) enumerateSourceOrderings(
 	innerExprs []expressions.RelationalExpression,
 	explodeQuantifiers []expressions.Quantifier,
 	explodeAliases map[values.CorrelationIdentifier]struct{},
 	explodeAliasMap map[values.CorrelationIdentifier]expressions.Quantifier,
-) []inJoinSource {
+) [][]inJoinSource {
 	var richOrdering *RichOrdering
 	for _, expr := range innerExprs {
 		if ph, ok := expr.(physicalPlanExpression); ok {
@@ -147,10 +149,10 @@ func (r *ImplementInJoinRule) orderSourcesByInnerOrdering(
 	}
 
 	if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
-		return r.defaultSources(explodeQuantifiers)
+		return r.enumerateDefaultSources(explodeQuantifiers)
 	}
 
-	var ordered []inJoinSource
+	var prefix []inJoinSource
 	used := make(map[values.CorrelationIdentifier]struct{})
 
 	for _, key := range richOrdering.GetKeys() {
@@ -184,7 +186,7 @@ func (r *ImplementInJoinRule) orderSourcesByInnerOrdering(
 					continue
 				}
 				eq := explodeAliasMap[alias]
-				ordered = append(ordered, inJoinSource{
+				prefix = append(prefix, inJoinSource{
 					bindingName: alias.String(),
 					sorted:      true,
 					quantifier:  eq,
@@ -194,28 +196,85 @@ func (r *ImplementInJoinRule) orderSourcesByInnerOrdering(
 		}
 	}
 
+	var remaining []inJoinSource
 	for _, eq := range explodeQuantifiers {
 		alias := eq.GetAlias()
 		if _, ok := used[alias]; !ok {
-			ordered = append(ordered, inJoinSource{
+			remaining = append(remaining, inJoinSource{
 				bindingName: alias.String(),
 				quantifier:  eq,
 			})
 		}
 	}
 
-	return ordered
+	if len(remaining) <= 1 {
+		result := make([]inJoinSource, 0, len(prefix)+len(remaining))
+		result = append(result, prefix...)
+		result = append(result, remaining...)
+		return [][]inJoinSource{result}
+	}
+
+	remainingNames := make([]string, len(remaining))
+	nameToSource := make(map[string]inJoinSource, len(remaining))
+	for i, s := range remaining {
+		remainingNames[i] = s.bindingName
+		nameToSource[s.bindingName] = s
+	}
+
+	iter := combinatorics.Permutations(remainingNames)
+	var results [][]inJoinSource
+	for {
+		perm := iter.Next()
+		if perm == nil {
+			break
+		}
+		result := make([]inJoinSource, 0, len(prefix)+len(perm))
+		result = append(result, prefix...)
+		for _, name := range perm {
+			result = append(result, nameToSource[name])
+		}
+		results = append(results, result)
+	}
+	return results
 }
 
-func (r *ImplementInJoinRule) defaultSources(explodeQuantifiers []expressions.Quantifier) []inJoinSource {
-	sources := make([]inJoinSource, len(explodeQuantifiers))
+func (r *ImplementInJoinRule) enumerateDefaultSources(explodeQuantifiers []expressions.Quantifier) [][]inJoinSource {
+	if len(explodeQuantifiers) <= 1 {
+		sources := make([]inJoinSource, len(explodeQuantifiers))
+		for i, eq := range explodeQuantifiers {
+			sources[i] = inJoinSource{
+				bindingName: eq.GetAlias().String(),
+				quantifier:  eq,
+			}
+		}
+		return [][]inJoinSource{sources}
+	}
+
+	names := make([]string, len(explodeQuantifiers))
+	nameToSource := make(map[string]inJoinSource, len(explodeQuantifiers))
 	for i, eq := range explodeQuantifiers {
-		sources[i] = inJoinSource{
-			bindingName: eq.GetAlias().String(),
+		name := eq.GetAlias().String()
+		names[i] = name
+		nameToSource[name] = inJoinSource{
+			bindingName: name,
 			quantifier:  eq,
 		}
 	}
-	return sources
+
+	iter := combinatorics.Permutations(names)
+	var results [][]inJoinSource
+	for {
+		perm := iter.Next()
+		if perm == nil {
+			break
+		}
+		result := make([]inJoinSource, len(perm))
+		for i, name := range perm {
+			result[i] = nameToSource[name]
+		}
+		results = append(results, result)
+	}
+	return results
 }
 
 func isExplodeExpression(ref *expressions.Reference) bool {
