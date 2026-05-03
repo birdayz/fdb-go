@@ -17,6 +17,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
@@ -776,6 +777,282 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 		p2 := results[1].Datum.(map[string]any)["PRICE"].(int64)
 		if p1 != 500 || p2 != 400 {
 			t.Errorf("prices = [%d, %d], want [500, 400]", p1, p2)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ---------- ResultSet integration tests ----------
+
+// TestIntegration_ResultSet_TypedAccess executes a scan plan against real FDB,
+// wraps the cursor in RecordLayerResultSet, and verifies typed column access.
+func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(2001), Price: proto.Int32(77)},
+		&gen.Order{OrderId: proto.Int64(2002), Price: proto.Int32(88)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+
+		cols := []ColumnDef{
+			{Name: "ORDER_ID", TypeName: "BIGINT", Nullable: api.ColumnNoNulls},
+			{Name: "PRICE", TypeName: "BIGINT", Nullable: api.ColumnNullable},
+		}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+
+		md := rs.MetaData()
+		if md.ColumnCount() != 2 {
+			t.Fatalf("ColumnCount = %d, want 2", md.ColumnCount())
+		}
+		name, _ := md.ColumnName(1)
+		if name != "ORDER_ID" {
+			t.Errorf("ColumnName(1) = %q, want ORDER_ID", name)
+		}
+
+		var ids []int64
+		for rs.Next() {
+			id, err := rs.Long(1)
+			if err != nil {
+				t.Fatalf("Long(1): %v", err)
+			}
+			if rs.WasNull() {
+				t.Error("ORDER_ID should not be null")
+			}
+
+			price, err := rs.Long(2)
+			if err != nil {
+				t.Fatalf("Long(2): %v", err)
+			}
+			if rs.WasNull() {
+				t.Error("PRICE should not be null for inserted orders")
+			}
+			_ = price
+			ids = append(ids, id)
+		}
+		if rs.Err() != nil {
+			t.Fatalf("Err: %v", rs.Err())
+		}
+		if len(ids) < 2 {
+			t.Fatalf("got %d rows, want >= 2", len(ids))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ResultSet_StringCoercion verifies String() works on
+// int64 values from real FDB records.
+func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(3001), Price: proto.Int32(42)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+
+		cols := []ColumnDef{
+			{Name: "PRICE", TypeName: "BIGINT"},
+		}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+
+		if !rs.Next() {
+			t.Fatal("expected a row")
+		}
+
+		s2, err := rs.String(1)
+		if err != nil {
+			t.Fatalf("String(1): %v", err)
+		}
+		if s2 != "42" {
+			t.Errorf("String(1) = %q, want '42'", s2)
+		}
+
+		d, err := rs.Double(1)
+		if err != nil {
+			t.Fatalf("Double(1): %v", err)
+		}
+		if d != 42.0 {
+			t.Errorf("Double(1) = %v, want 42.0", d)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ResultSet_FilterPipeline tests the full executor→ResultSet
+// pipeline with a filter + sort + limit plan.
+func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(4001), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(4002), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(4003), Price: proto.Int32(90)},
+		&gen.Order{OrderId: proto.Int64(4004), Price: proto.Int32(30)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "PRICE"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonGreaterThanEq,
+						Operand: values.LiteralValue(int64(30)),
+					},
+				),
+			},
+			scan,
+		)
+		sorted := plans.NewRecordQuerySortPlan(
+			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			filter,
+		)
+
+		cursor, err := ExecutePlan(ctx, sorted, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+
+		cols := []ColumnDef{
+			{Name: "PRICE", TypeName: "BIGINT"},
+			{Name: "ORDER_ID", TypeName: "BIGINT"},
+		}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+
+		var prices []int64
+		for rs.Next() {
+			p, err := rs.Long(1)
+			if err != nil {
+				t.Fatalf("Long(1): %v", err)
+			}
+			prices = append(prices, p)
+		}
+		if rs.Err() != nil {
+			t.Fatalf("Err: %v", rs.Err())
+		}
+		if len(prices) != 3 {
+			t.Fatalf("got %d rows, want 3 (prices >= 30)", len(prices))
+		}
+		for i := 1; i < len(prices); i++ {
+			if prices[i] < prices[i-1] {
+				t.Errorf("prices not ascending: %v", prices)
+				break
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ResultSet_ByName verifies column-by-name access with
+// real FDB data.
+func TestIntegration_ResultSet_ByName(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(5001), Price: proto.Int32(99)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		cursor, err := ExecutePlan(ctx, scan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+
+		cols := []ColumnDef{
+			{Name: "ORDER_ID", TypeName: "BIGINT"},
+			{Name: "PRICE", TypeName: "BIGINT"},
+		}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+
+		if !rs.Next() {
+			t.Fatal("expected a row")
+		}
+
+		id, err := rs.LongByName("ORDER_ID")
+		if err != nil {
+			t.Fatalf("LongByName ORDER_ID: %v", err)
+		}
+		if id != 5001 {
+			t.Errorf("ORDER_ID = %d, want 5001", id)
+		}
+
+		price, err := rs.LongByName("PRICE")
+		if err != nil {
+			t.Fatalf("LongByName PRICE: %v", err)
+		}
+		if price != 99 {
+			t.Errorf("PRICE = %d, want 99", price)
+		}
+
+		_, err = rs.LongByName("NONEXISTENT")
+		if err == nil {
+			t.Fatal("expected error for nonexistent column")
 		}
 		return nil, nil
 	})
