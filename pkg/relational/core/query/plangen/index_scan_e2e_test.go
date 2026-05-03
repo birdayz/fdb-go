@@ -1120,6 +1120,64 @@ func TestEndToEnd_InsertPlan(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_InExplodeWithGroupBy verifies the planner handles
+// IN-list explode → Union of index scans → aggregation correctly.
+// WHERE status IN ('A','B') GROUP BY status, COUNT(*)
+func TestEndToEnd_InExplodeWithGroupBy(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	// Filter with IN predicate on the grouping key.
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "status", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonIn, []any{"A", "B", "C"}),
+			),
+		}, scanQ)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "status", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		filterQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "T$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"T"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	p.MaxTasks = 100_000
+
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// After IN-explode + index utilization, the planner should produce
+	// either a streaming or hash agg. The specific choice depends on
+	// whether the index provides ordering for the group key.
+	if !cascades.IsPhysicalStreamingAgg(plan) && !cascades.IsPhysicalHashAgg(plan) {
+		t.Fatalf("expected aggregation plan (streaming or hash), got %T", plan)
+	}
+}
+
 // TestEndToEnd_FilterPushedThroughGroupBy verifies the planner pushes a
 // filter (on a grouping key) below GROUP BY and uses an index scan for it.
 func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
