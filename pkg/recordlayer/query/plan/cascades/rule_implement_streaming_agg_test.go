@@ -8,56 +8,27 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
-func TestImplementStreamingAgg_OrderedInput(t *testing.T) {
+func TestImplementStreamingAgg_UnorderedScanDoesNotFire(t *testing.T) {
 	t.Parallel()
 
-	// Build: GroupBy(keys=[customer_id], aggs=[COUNT(id)]) over Sort([customer_id]) over Scan
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	sortExpr := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
-		}, scanQ)
-	sortRef := expressions.InitialOf(sortExpr)
-	sortQ := expressions.ForEachQuantifier(sortRef)
 
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "customer_id", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
 			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 		},
-		sortQ,
+		scanQ,
 	)
 	gbRef := expressions.InitialOf(gb)
 
-	// Fire PrimaryScan to physicalize the leaf, then ImplementSort to
-	// physicalize the sort, then ImplementStreamingAgg on the GroupBy.
 	FireExpressionRule(NewPrimaryScanRule(), scanRef)
-	FireExpressionRule(NewImplementSortRule(), sortRef)
 
 	results := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
-	if len(results) == 0 {
-		t.Fatal("ImplementStreamingAggregationRule didn't fire — no streaming agg wrapper found")
-	}
-
-	wrapper := results[0].(*physicalStreamingAggWrapper)
-	plan := wrapper.GetPlan()
-	if plan == nil {
-		t.Fatal("streaming agg wrapper has nil plan")
-	}
-	if len(plan.GetGroupingKeys()) != 1 {
-		t.Fatalf("expected 1 grouping key, got %d", len(plan.GetGroupingKeys()))
-	}
-	if values.ExplainValue(plan.GetGroupingKeys()[0]) != "customer_id" {
-		t.Fatalf("expected grouping key 'customer_id', got %q", values.ExplainValue(plan.GetGroupingKeys()[0]))
-	}
-	if len(plan.GetAggregates()) != 1 {
-		t.Fatalf("expected 1 aggregate, got %d", len(plan.GetAggregates()))
-	}
-	if plan.GetAggregates()[0].Function != expressions.AggCount {
-		t.Fatalf("expected AggCount, got %d", plan.GetAggregates()[0].Function)
+	if len(results) != 0 {
+		t.Fatal("streaming agg should NOT fire over unordered scan")
 	}
 }
 

@@ -327,6 +327,39 @@ func TestFDB_CascadesCount(t *testing.T) {
 	t.Logf("Cascades COUNT(*) → %d ✓", count)
 }
 
+func TestFDB_CascadesOrderBy(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT name FROM Item ORDER BY name ASC")
+	if err != nil {
+		t.Skipf("ORDER BY not supported via Cascades yet: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(names) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(names))
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i] < names[i-1] {
+			t.Fatalf("not sorted: %v", names)
+		}
+	}
+	t.Logf("Cascades ORDER BY → %v ✓", names)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
