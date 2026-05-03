@@ -115,6 +115,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewStreamingAggFromIndexRule(),
 		NewAggregateDataAccessRule(),
 		NewImplementNestedLoopJoinRule(),
+		NewImplementLimitRule(),
 	}
 }
 

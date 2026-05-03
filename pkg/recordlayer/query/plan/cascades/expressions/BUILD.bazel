@@ -13,6 +13,7 @@ go_library(
         "logical_distinct.go",
         "logical_filter.go",
         "logical_intersection.go",
+        "logical_limit.go",
         "logical_projection.go",
         "logical_sort.go",
         "logical_type_filter.go",

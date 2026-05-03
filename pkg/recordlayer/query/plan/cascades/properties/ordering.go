@@ -97,6 +97,8 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		// rationale as Distinct. The PK comparison drops duplicates
 		// without reordering surviving rows.
 		return inheritFromInner(v.GetInner())
+	case *expressions.LogicalLimitExpression:
+		return inheritFromInner(v.GetInner())
 	case *expressions.GroupByExpression:
 		// GroupBy does not preserve input ordering — output is one row
 		// per group, in implementation-defined order.
