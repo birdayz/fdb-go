@@ -167,11 +167,69 @@ func TestExecuteDistinct_DedupsValues(t *testing.T) {
 	}
 }
 
+func TestExecuteProjection_FieldExtraction(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(100), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	projPlan := plans.NewRecordQueryProjectionPlan(
+		[]values.Value{
+			&values.ConstantValue{Value: "projected", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
+		},
+		inner,
+	)
+
+	cursor, err := ExecutePlan(ctx, projPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+
+	row := results[0].Datum.(map[string]any)
+	if row["constant"] != "projected" {
+		t.Errorf("projection result = %v, want 'projected'", row["constant"])
+	}
+}
+
+func TestExecuteSort_OverValues(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	sortPlan := plans.NewRecordQuerySortPlan(nil, inner)
+
+	cursor, err := ExecutePlan(ctx, sortPlan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+}
+
 func TestExecuteUnsupportedPlan_ReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQuerySortPlan(nil, nil)
+	plan := plans.NewRecordQueryExplodePlan(nil)
 	_, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err == nil {
 		t.Fatal("expected error for unsupported plan type")
@@ -277,6 +335,50 @@ func TestSortByKeys(t *testing.T) {
 	}
 	if names[0] != "alice" || names[1] != "bob" || names[2] != "charlie" {
 		t.Fatalf("sort by name = %v, want [alice bob charlie]", names)
+	}
+}
+
+func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(99), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+
+	filtered := plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		inner,
+	)
+
+	sorted := plans.NewRecordQuerySortPlan(nil, filtered)
+
+	limited := plans.NewRecordQueryLimitPlan(sorted, 10, 0)
+
+	projected := plans.NewRecordQueryProjectionPlan(
+		[]values.Value{
+			&values.ConstantValue{Value: "result", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
+		},
+		limited,
+	)
+
+	cursor, err := ExecutePlan(ctx, projected, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+
+	row := results[0].Datum.(map[string]any)
+	if row["constant"] != "result" {
+		t.Errorf("composite pipeline result = %v, want 'result'", row["constant"])
 	}
 }
 

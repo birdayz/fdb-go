@@ -19,6 +19,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
@@ -44,6 +45,10 @@ func ExecutePlan(
 		return executeLimit(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryDistinctPlan:
 		return executeDistinct(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryProjectionPlan:
+		return executeProjection(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQuerySortPlan:
+		return executeSort(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
 	default:
@@ -188,6 +193,68 @@ func distinctKey(qr QueryResult) string {
 		return string(qr.PrimaryKey.Pack())
 	}
 	return fmt.Sprintf("%v", qr.Datum)
+}
+
+func executeProjection(
+	ctx context.Context,
+	p *plans.RecordQueryProjectionPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	projections := p.GetProjections()
+	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
+		projected := make(map[string]any, len(projections))
+		for _, proj := range projections {
+			projected[proj.Name()] = proj.Evaluate(qr.Datum)
+		}
+		return QueryResult{
+			Datum:      projected,
+			Record:     qr.Record,
+			PrimaryKey: qr.PrimaryKey,
+		}
+	})
+	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
+}
+
+func executeSort(
+	ctx context.Context,
+	p *plans.RecordQuerySortPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	items, err := CollectAll(ctx, innerCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := p.GetSortKeys()
+	keyNames := make([]string, len(keys))
+	directions := make([]bool, len(keys))
+	for i, k := range keys {
+		keyNames[i] = k.Value.Name()
+		if fv, ok := k.Value.(*values.FieldValue); ok {
+			keyNames[i] = fv.Field
+		}
+		directions[i] = k.Reverse
+	}
+	sortByKeys(items, keyNames, directions)
+
+	cursor := newSortResultCursor(items)
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 func executeValues(p *plans.RecordQueryValuesPlan) (recordlayer.RecordCursor[QueryResult], error) {
