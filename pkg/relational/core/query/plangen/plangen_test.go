@@ -1510,3 +1510,19 @@ func TestConvert_Join_DottedRefTextPredicate(t *testing.T) {
 		t.Fatalf("predicate count = %d, want 1", len(sel.GetPredicates()))
 	}
 }
+
+func TestConvert_Join_MultiPredicateText(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "a.id = b.aid AND a.status = 'active'")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := got.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("got %T, want *SelectExpression", got)
+	}
+	if len(sel.GetPredicates()) != 2 {
+		t.Fatalf("predicate count = %d, want 2", len(sel.GetPredicates()))
+	}
+}

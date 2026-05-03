@@ -624,11 +624,11 @@ func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, erro
 		}
 		preds = []predicates.QueryPredicate{p}
 	} else if j.OnText != "" {
-		p, ok := tryParseSimpleComparison(j.OnText)
-		if !ok {
-			return nil, fmt.Errorf("%w: LogicalJoin ON text %q cannot be lowered to a predicate", ErrUnsupported, j.OnText)
+		parsed, err := parsePredicateText(j.OnText)
+		if err != nil {
+			return nil, fmt.Errorf("join ON: %w", err)
 		}
-		preds = []predicates.QueryPredicate{p}
+		preds = parsed
 	}
 
 	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
