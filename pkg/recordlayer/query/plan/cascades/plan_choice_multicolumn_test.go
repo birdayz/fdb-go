@@ -304,6 +304,73 @@ func TestPlanChoice_InequalityRangeScan(t *testing.T) {
 	}
 }
 
+func TestPlanChoice_EqualityPlusInequality(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	// WHERE customer_id = 42 AND amount > 100
+	pred1 := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "CUSTOMER_ID", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)),
+	)
+	pred2 := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred1, pred2},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	// Index on (customer_id, amount) — equality on prefix + inequality on suffix
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "idx_customer_amount",
+			columns:     []string{"CUSTOMER_ID", "AMOUNT"},
+			recordTypes: []string{"Order"},
+			unique:      false,
+		},
+	})
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	bestExpr, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		t.Fatalf("expected planExtractor, got %T", bestExpr)
+	}
+
+	physicalPlan := ph.GetRecordQueryPlan()
+	switch pp := physicalPlan.(type) {
+	case *plans.RecordQueryIndexPlan:
+		comps := pp.GetScanComparisons()
+		if len(comps) < 2 {
+			t.Fatalf("expected 2 comparison ranges, got %d", len(comps))
+		}
+		if !comps[0].IsEquality() {
+			t.Fatal("first column should be equality-bound")
+		}
+		if !comps[1].IsInequality() {
+			t.Fatalf("second column should be inequality-bound, got range type %d", comps[1].GetRangeType())
+		}
+		t.Logf("✓ Equality + inequality on compound index: %s", pp.Explain())
+	default:
+		t.Fatalf("expected IndexScan for equality+inequality prefix, got %T: %s",
+			physicalPlan, physicalPlan.Explain())
+	}
+}
+
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 	t.Parallel()
 
