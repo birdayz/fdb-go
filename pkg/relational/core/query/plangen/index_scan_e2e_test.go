@@ -1972,6 +1972,71 @@ func TestEndToEnd_LimitSortFilterWithIndex(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_TextBasedFilterSortLimit(t *testing.T) {
+	t.Parallel()
+
+	// Pure text-based pipeline: no structured predicates
+	// SELECT * FROM Orders WHERE status = 'active' ORDER BY created_at LIMIT 5
+	src := logical.NewLimit(
+		logical.NewSort(
+			logical.NewFilter(logical.NewScan("Orders", ""), "status = 'active'"),
+			[]logical.SortKey{{Expr: "created_at", Dir: logical.SortAsc}},
+		),
+		5, 0,
+	)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalLimit(plan) {
+		t.Fatalf("expected physical limit at top, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Limit") {
+		t.Fatalf("expected Limit in explain, got: %s", explain)
+	}
+}
+
+func TestEndToEnd_TextBasedJoinToPlan(t *testing.T) {
+	t.Parallel()
+
+	// SELECT * FROM A JOIN B ON id = bid
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "id = bid")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalNestedLoopJoin(plan) {
+		t.Fatalf("expected NLJ, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+}
+
 func TestEndToEnd_LimitMergeEndToEnd(t *testing.T) {
 	t.Parallel()
 
