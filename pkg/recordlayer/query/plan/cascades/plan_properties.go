@@ -238,6 +238,18 @@ func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 	return properties.Ordering{}
 }
 
+func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
+	o := computeWrapperOrdering(w)
+	if !o.IsKnown || len(o.Keys) == 0 {
+		return EmptyOrdering()
+	}
+	bm := make(map[values.Value][]OrderingBinding, len(o.Keys))
+	for _, k := range o.Keys {
+		bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+	}
+	return NewRichOrdering(bm, o.Keys, false)
+}
+
 // computeRefPlanProperties computes and stores plan properties for all
 // final-member physical plans in the given Reference. Called during the
 // PLANNING phase after ImplementationRules have fired on ref.
