@@ -2156,3 +2156,25 @@ func TestEndToEnd_LimitOverUnionPushesDown(t *testing.T) {
 		t.Fatalf("expected Limit in plan, got: %s", explain)
 	}
 }
+
+func TestEndToEnd_ValuesToPlan(t *testing.T) {
+	t.Parallel()
+	src := logical.NewValues([]string{"42", "'hello'", "TRUE"}, nil)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Values") {
+		t.Fatalf("expected Values in plan, got: %s", explain)
+	}
+}

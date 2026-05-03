@@ -1193,3 +1193,61 @@ func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost) properti
 }
 
 var _ expressions.RelationalExpression = (*physicalIntersectionWrapper)(nil)
+
+// --- Values wrapper ---------------------------------------------------
+
+type physicalValuesWrapper struct {
+	plan *plans.RecordQueryValuesPlan
+}
+
+func NewPhysicalValuesWrapper(plan *plans.RecordQueryValuesPlan) *physicalValuesWrapper {
+	return &physicalValuesWrapper{plan: plan}
+}
+
+func (w *physicalValuesWrapper) GetPlan() *plans.RecordQueryValuesPlan { return w.plan }
+
+func (w *physicalValuesWrapper) GetRecordQueryPlan() plans.RecordQueryPlan { return w.plan }
+
+func (w *physicalValuesWrapper) GetResultValue() values.Value {
+	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+}
+
+func (w *physicalValuesWrapper) GetQuantifiers() []expressions.Quantifier { return nil }
+
+func (w *physicalValuesWrapper) CanCorrelate() bool { return false }
+
+func (w *physicalValuesWrapper) ChildrenAsSet() bool { return false }
+
+func (w *physicalValuesWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return map[values.CorrelationIdentifier]struct{}{}
+}
+
+func (w *physicalValuesWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
+	o, ok := other.(*physicalValuesWrapper)
+	if !ok {
+		return false
+	}
+	return plans.Equals(w.plan, o.plan)
+}
+
+func (w *physicalValuesWrapper) HashCodeWithoutChildren() uint64 {
+	h := fnv.New64a()
+	h.Write([]byte("physvalueswrap|"))
+	if w.plan != nil {
+		writeHash64(h, w.plan.HashCodeWithoutChildren())
+	}
+	return h.Sum64()
+}
+
+func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if len(qs) != 0 {
+		return nil, fmt.Errorf("physicalValuesWrapper.WithChildren: expected 0 children, got %d", len(qs))
+	}
+	return w, nil
+}
+
+func (w *physicalValuesWrapper) HintCost(_ []properties.Cost) properties.Cost {
+	return properties.Cost{Cardinality: 1, CPU: 0}
+}
+
+var _ expressions.RelationalExpression = (*physicalValuesWrapper)(nil)

@@ -106,6 +106,7 @@ func DefaultExpressionRules() []ExpressionRule {
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
+		NewImplementValuesRule(),
 		NewImplementFilterRule(),
 		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
