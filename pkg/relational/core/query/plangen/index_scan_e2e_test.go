@@ -1915,3 +1915,88 @@ func TestEndToEnd_LimitFromLogicalOperator(t *testing.T) {
 	}
 	t.Logf("Explain: %s", explain)
 }
+
+func TestEndToEnd_LimitSortFilterWithIndex(t *testing.T) {
+	t.Parallel()
+
+	// SELECT * FROM Orders WHERE status='active' ORDER BY created_at LIMIT 10
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "status", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
+			),
+		}, scanQ)
+	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "created_at", Typ: values.UnknownType}}},
+		filterQ,
+	)
+	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
+
+	lim := expressions.NewLogicalLimitExpression(10, 0, sortQ)
+	ref := expressions.InitialOf(lim)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$created_at",
+			columns:     []string{"created_at"},
+			recordTypes: []string{"Orders"},
+		},
+		e2eIndexDef{
+			name:        "Orders$status",
+			columns:     []string{"status"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalLimit(plan) {
+		t.Fatalf("expected physical limit at top, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Limit") {
+		t.Fatalf("expected Limit in explain, got: %s", explain)
+	}
+}
+
+func TestEndToEnd_LimitMergeEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	// Nested limits: LIMIT 100 OFFSET 0 → LIMIT 10 OFFSET 5
+	// Should merge to LIMIT 10 OFFSET 5 (or the merged equivalent)
+	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	inner := expressions.NewLogicalLimitExpression(100, 0, scanQ)
+	innerRef := expressions.InitialOf(inner)
+	innerQ := expressions.ForEachQuantifier(innerRef)
+
+	outer := expressions.NewLogicalLimitExpression(10, 5, innerQ)
+	ref := expressions.InitialOf(outer)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalLimit(plan) {
+		t.Fatalf("expected physical limit, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+}
