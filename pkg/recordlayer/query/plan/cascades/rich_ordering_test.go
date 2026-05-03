@@ -305,6 +305,92 @@ func TestMergeOrderings_IncompatibleDirections(t *testing.T) {
 	}
 }
 
+func TestEnumerateSatisfyingKeys_SimpleMatch(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+
+	result := o.EnumerateSatisfyingComparisonKeyValues(req)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+	if len(result[0]) != 2 {
+		t.Fatalf("expected 2 keys in result, got %d", len(result[0]))
+	}
+}
+
+func TestEnumerateSatisfyingKeys_DirectionMismatch(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderDescending},
+	}, DistinctnessNotDistinct, false)
+
+	result := o.EnumerateSatisfyingComparisonKeyValues(req)
+	if result != nil {
+		t.Fatal("should return nil on direction mismatch")
+	}
+}
+
+func TestEnumerateSatisfyingKeys_PreserveReturnsAllKeys(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	result := o.EnumerateSatisfyingComparisonKeyValues(PreserveOrdering())
+	if len(result) != 1 || len(result[0]) != 1 {
+		t.Fatal("preserve should return all keys")
+	}
+}
+
+func TestDirectionalOrderingParts_Basic(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {FixedBinding("eq")},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	req := NewRequestedOrdering(nil, DistinctnessNotDistinct, false)
+	parts := o.DirectionalOrderingParts([]values.Value{a, b}, req, ProvidedSortOrderFixed)
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	if parts[0].SortOrder != ProvidedSortOrderAscending {
+		t.Fatal("first part should be ascending (from binding)")
+	}
+	if parts[1].SortOrder != ProvidedSortOrderFixed {
+		t.Fatal("second part should be fixed (from default)")
+	}
+}
+
 func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")

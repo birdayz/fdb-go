@@ -191,6 +191,99 @@ func valuesEqual(a, b values.Value) bool {
 	return values.ExplainValue(a) == values.ExplainValue(b)
 }
 
+// EnumerateSatisfyingComparisonKeyValues enumerates the comparison key
+// sequences from this ordering that satisfy the requested ordering.
+// Returns a list of key-value lists; each list is one valid comparison
+// key sequence. Simplified version of Java's full PartiallyOrderedSet
+// enumeration — uses the linear key sequence directly.
+func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
+	requested *RequestedOrdering,
+) [][]values.Value {
+	if requested.IsPreserve() || requested.Size() == 0 {
+		return [][]values.Value{o.keys}
+	}
+
+	reqParts := requested.GetParts()
+	var result []values.Value
+
+	keyIdx := 0
+	for _, part := range reqParts {
+		for keyIdx < len(o.keys) {
+			key := o.keys[keyIdx]
+			bindings := o.bindingMap[key]
+
+			if AreAllBindingsFixed(bindings) {
+				result = append(result, key)
+				keyIdx++
+				continue
+			}
+
+			if !valuesEqual(key, part.Value) {
+				return nil
+			}
+
+			if part.SortOrder.IsDirectional() {
+				sortOrder := SortOrderOf(bindings)
+				if sortOrder.IsDirectional() {
+					isAsc := !sortOrder.IsAnyDescending()
+					wantAsc := part.SortOrder == RequestedSortOrderAscending
+					if isAsc != wantAsc {
+						return nil
+					}
+				}
+			}
+
+			result = append(result, key)
+			keyIdx++
+			break
+		}
+	}
+
+	for keyIdx < len(o.keys) {
+		result = append(result, o.keys[keyIdx])
+		keyIdx++
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return [][]values.Value{result}
+}
+
+// DirectionalOrderingParts creates ProvidedOrderingParts from a key
+// sequence with sort directions from the binding map. Fixed keys get
+// the provided fixedOrder direction.
+func (o *RichOrdering) DirectionalOrderingParts(
+	keyValues []values.Value,
+	requested *RequestedOrdering,
+	fixedOrder ProvidedSortOrder,
+) []ProvidedOrderingPart {
+	reqMap := requested.GetValueRequestedSortOrderMap()
+	parts := make([]ProvidedOrderingPart, 0, len(keyValues))
+	for _, key := range keyValues {
+		bindings := o.bindingMap[key]
+		sortOrder := SortOrderOf(bindings)
+
+		if !sortOrder.IsDirectional() {
+			if reqSort, ok := reqMap[key]; ok && reqSort.IsDirectional() {
+				if reqSort == RequestedSortOrderAscending {
+					sortOrder = ProvidedSortOrderAscending
+				} else {
+					sortOrder = ProvidedSortOrderDescending
+				}
+			} else {
+				sortOrder = fixedOrder
+			}
+		}
+
+		parts = append(parts, ProvidedOrderingPart{
+			Value:     key,
+			SortOrder: sortOrder,
+		})
+	}
+	return parts
+}
+
 // OrderingMergeKind determines the semantics of merging two orderings.
 type OrderingMergeKind int
 
