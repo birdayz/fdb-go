@@ -91,7 +91,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 - [ ] **#28** Date-part Go-only cleanup (deferred from Phase 1) — keep / remove decision now that Java alignment is feasible. Gate: #27. (~0.5 shift)
 - [ ] **#29** D1 DDL action types — `CreateTableAction` / `CreateIndexAction` / `DropTableAction` / `DropIndexAction` / `SetStoreStateAction`. Gate: #27. (~2 shifts)
 - [ ] **#30** D3 Online indexer integration via DDL — CREATE INDEX triggers background build. Gate: #29. (~1 shift)
-- [ ] **#31** B8 plan-cache-key diff — RFC-024 Go-internal cache key. Gate: #11, #21. Gates #32. (~1-2 shifts)
+- [ ] **#31** B8 plan-cache-key diff — RFC-024 Go-internal cache key. Gate: #11, #21. Gates #32. (~1-2 shifts) — **swingshift-70 progress:** PlanHash function (FNV-64a, depth-first, deterministic). Remaining: integrate with query parser to compute hash from SQL text + plan tree, cache lookup/store API.
 - [ ] **#32** D4 Plan cache (Phase 7) — `RelationalPlanCache` 3-tier + TTL + async eviction. Gate: #31. (~3 shifts)
 - [ ] **#33** D5 driver adapter gaps — `Stmt` / `Rows` column-type / `Tx` / custom scanner-valuer (Struct / Array / Versionstamp / Continuation). Gate: #22. (~2 shifts)
 
