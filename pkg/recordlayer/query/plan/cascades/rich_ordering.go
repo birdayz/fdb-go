@@ -198,3 +198,98 @@ const (
 	OrderingMergeUnion OrderingMergeKind = iota
 	OrderingMergeIntersection
 )
+
+// ConcatOrderings concatenates two orderings: the result contains
+// all keys from `outer` followed by all keys from `inner` that are
+// not already in `outer`. Binding maps are merged. Used by
+// ImplementInJoinRule to combine the IN-source ordering with the
+// inner plan's ordering.
+func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
+	bm := make(map[values.Value][]OrderingBinding, len(outer.bindingMap)+len(inner.bindingMap))
+	for k, v := range outer.bindingMap {
+		bm[k] = append([]OrderingBinding{}, v...)
+	}
+	for k, v := range inner.bindingMap {
+		if _, exists := bm[k]; !exists {
+			bm[k] = append([]OrderingBinding{}, v...)
+		}
+	}
+
+	outerKeySet := make(map[string]struct{}, len(outer.keys))
+	for _, k := range outer.keys {
+		outerKeySet[values.ExplainValue(k)] = struct{}{}
+	}
+
+	keys := make([]values.Value, len(outer.keys))
+	copy(keys, outer.keys)
+	for _, k := range inner.keys {
+		if _, exists := outerKeySet[values.ExplainValue(k)]; !exists {
+			keys = append(keys, k)
+		}
+	}
+
+	return &RichOrdering{
+		bindingMap: bm,
+		keys:       keys,
+		distinct:   outer.distinct || inner.distinct,
+	}
+}
+
+// CreateUnionOrdering creates a RichOrdering from a single provided
+// ordering, treating all sorted bindings as union-compatible.
+// Used as the starting point for union-merge in ImplementDistinctUnionRule.
+func CreateUnionOrdering(o *RichOrdering) *RichOrdering {
+	bm := make(map[values.Value][]OrderingBinding, len(o.bindingMap))
+	for k, v := range o.bindingMap {
+		bm[k] = append([]OrderingBinding{}, v...)
+	}
+	keys := make([]values.Value, len(o.keys))
+	copy(keys, o.keys)
+	return &RichOrdering{
+		bindingMap: bm,
+		keys:       keys,
+		distinct:   o.distinct,
+	}
+}
+
+// MergeOrderings merges two orderings for union planning. The merged
+// ordering contains only keys that appear in both orderings with
+// compatible sort directions. Fixed keys are retained if they appear
+// in both. This is a simplified version of Java's Ordering.merge.
+func MergeOrderings(a, b *RichOrdering) *RichOrdering {
+	bm := make(map[values.Value][]OrderingBinding)
+	var keys []values.Value
+
+	aKeySet := make(map[string]values.Value, len(a.keys))
+	for _, k := range a.keys {
+		aKeySet[values.ExplainValue(k)] = k
+	}
+
+	for _, bKey := range b.keys {
+		explain := values.ExplainValue(bKey)
+		aKey, inA := aKeySet[explain]
+		if !inA {
+			continue
+		}
+
+		aBindings := a.bindingMap[aKey]
+		bBindings := b.bindingMap[bKey]
+
+		aSorted := SortOrderOf(aBindings)
+		bSorted := SortOrderOf(bBindings)
+
+		if aSorted.IsDirectional() && bSorted.IsDirectional() && aSorted == bSorted {
+			bm[aKey] = []OrderingBinding{SortedBinding(aSorted)}
+			keys = append(keys, aKey)
+		} else if AreAllBindingsFixed(aBindings) && AreAllBindingsFixed(bBindings) {
+			bm[aKey] = []OrderingBinding{FixedBinding(nil)}
+			keys = append(keys, aKey)
+		}
+	}
+
+	return &RichOrdering{
+		bindingMap: bm,
+		keys:       keys,
+		distinct:   a.distinct && b.distinct,
+	}
+}

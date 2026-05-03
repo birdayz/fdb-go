@@ -200,3 +200,128 @@ func TestRichOrdering_IsSingularNonFixedValue(t *testing.T) {
 		t.Fatal("b is fixed, should not be singular non-fixed")
 	}
 }
+
+func TestConcatOrderings_Basic(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+
+	outer := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	inner := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			b: {SortedBinding(ProvidedSortOrderDescending)},
+			c: {FixedBinding("eq")},
+		},
+		[]values.Value{b, c},
+		false,
+	)
+
+	result := ConcatOrderings(outer, inner)
+	if len(result.GetKeys()) != 3 {
+		t.Fatalf("expected 3 keys, got %d", len(result.GetKeys()))
+	}
+	if !valuesEqual(result.GetKeys()[0], a) {
+		t.Fatal("first key should be 'a'")
+	}
+	if !valuesEqual(result.GetKeys()[1], b) {
+		t.Fatal("second key should be 'b'")
+	}
+}
+
+func TestConcatOrderings_SkipsDuplicates(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+
+	outer := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{a},
+		false,
+	)
+	inner := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderDescending)}},
+		[]values.Value{a},
+		false,
+	)
+
+	result := ConcatOrderings(outer, inner)
+	if len(result.GetKeys()) != 1 {
+		t.Fatalf("expected 1 key (no duplicate), got %d", len(result.GetKeys()))
+	}
+}
+
+func TestMergeOrderings_CompatibleDirections(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+
+	o1 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	o2 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+
+	merged := MergeOrderings(o1, o2)
+	if len(merged.GetKeys()) != 2 {
+		t.Fatalf("expected 2 keys in merged, got %d", len(merged.GetKeys()))
+	}
+}
+
+func TestMergeOrderings_IncompatibleDirections(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+
+	o1 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
+		[]values.Value{a},
+		false,
+	)
+	o2 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderDescending)}},
+		[]values.Value{a},
+		false,
+	)
+
+	merged := MergeOrderings(o1, o2)
+	if len(merged.GetKeys()) != 0 {
+		t.Fatalf("expected 0 keys in merged (directions incompatible), got %d", len(merged.GetKeys()))
+	}
+}
+
+func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+
+	o1 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {FixedBinding("eq-5")}},
+		[]values.Value{a},
+		false,
+	)
+	o2 := NewRichOrdering(
+		map[values.Value][]OrderingBinding{a: {FixedBinding("eq-5")}},
+		[]values.Value{a},
+		false,
+	)
+
+	merged := MergeOrderings(o1, o2)
+	if len(merged.GetKeys()) != 1 {
+		t.Fatalf("expected 1 key in merged (both fixed), got %d", len(merged.GetKeys()))
+	}
+}
