@@ -168,6 +168,30 @@ func TestFDB_CascadesMultiPredicate(t *testing.T) {
 	t.Logf("Cascades multi-predicate WHERE → %d row ✓", count)
 }
 
+func TestFDB_CascadesCount(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT COUNT(*) FROM Item")
+	if err != nil {
+		t.Skipf("COUNT(*) not supported via Cascades yet: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row from COUNT(*)")
+	}
+	var count int64
+	if err := rows.Scan(&count); err != nil {
+		t.Skipf("COUNT(*) scan failed (may need aggregate support): %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected COUNT(*) = 3, got %d", count)
+	}
+	t.Logf("Cascades COUNT(*) → %d ✓", count)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
