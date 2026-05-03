@@ -1659,3 +1659,316 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestIntegration_UnionPlan tests UNION ALL of two scans against real FDB.
+func TestIntegration_UnionPlan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(10001), Price: proto.Int32(100)},
+	)
+	insertCustomers(t, store,
+		&gen.Customer{CustomerId: proto.Int64(20001), Name: proto.String("Gina")},
+		&gen.Customer{CustomerId: proto.Int64(20002), Name: proto.String("Hank")},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		orderScan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		customerScan := plans.NewRecordQueryScanPlan([]string{"Customer"}, nil, false)
+		union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{orderScan, customerScan})
+
+		cursor, err := ExecutePlan(ctx, union, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("union returned %d results, want 3 (1 order + 2 customers)", len(results))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_IntersectionPlan tests N-way intersection using PK overlap.
+func TestIntegration_IntersectionPlan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(11001), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(11002), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(11003), Price: proto.Int32(90)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		intersection := plans.NewRecordQueryIntersectionPlan(
+			[]plans.RecordQueryPlan{scan1, scan2},
+			nil,
+		)
+
+		cursor, err := ExecutePlan(ctx, intersection, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("intersection returned %d results, want 3 (same scan twice → all 3 overlap)", len(results))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_HashAggregation_CountAndSum tests hash aggregation with
+// COUNT and SUM against real FDB data.
+func TestIntegration_HashAggregation_CountAndSum(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(12001), Price: proto.Int32(100), Quantity: proto.Int32(2)},
+		&gen.Order{OrderId: proto.Int64(12002), Price: proto.Int32(100), Quantity: proto.Int32(3)},
+		&gen.Order{OrderId: proto.Int64(12003), Price: proto.Int32(200), Quantity: proto.Int32(1)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		agg := plans.NewRecordQueryHashAggregationPlan(
+			scan,
+			[]values.Value{&values.FieldValue{Field: "PRICE"}},
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
+				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "QUANTITY"}},
+			},
+		)
+
+		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("aggregation returned %d groups, want 2 (price=100, price=200)", len(results))
+		}
+
+		for _, r := range results {
+			datum := r.Datum.(map[string]any)
+			price := datum["PRICE"].(int64)
+			count := datum["COUNT(ORDER_ID)"].(int64)
+			sumQty := datum["SUM(QUANTITY)"].(float64)
+
+			switch price {
+			case 100:
+				if count != 2 {
+					t.Errorf("price=100 count=%d, want 2", count)
+				}
+				if sumQty != 5 {
+					t.Errorf("price=100 sum(qty)=%v, want 5", sumQty)
+				}
+			case 200:
+				if count != 1 {
+					t.Errorf("price=200 count=%d, want 1", count)
+				}
+				if sumQty != 1 {
+					t.Errorf("price=200 sum(qty)=%v, want 1", sumQty)
+				}
+			default:
+				t.Errorf("unexpected price group: %d", price)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_Aggregation_NoGroupBy tests COUNT without GROUP BY.
+func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(13001), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(13002), Price: proto.Int32(20)},
+		&gen.Order{OrderId: proto.Int64(13003), Price: proto.Int32(30)},
+		&gen.Order{OrderId: proto.Int64(13004), Price: proto.Int32(40)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		agg := plans.NewRecordQueryHashAggregationPlan(
+			scan,
+			nil,
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
+				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE"}},
+			},
+		)
+
+		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("no-group agg returned %d results, want 1", len(results))
+		}
+
+		datum := results[0].Datum.(map[string]any)
+		if datum["COUNT(ORDER_ID)"] != int64(4) {
+			t.Errorf("COUNT = %v, want 4", datum["COUNT(ORDER_ID)"])
+		}
+		if datum["MIN(PRICE)"] != int64(10) {
+			t.Errorf("MIN = %v, want 10", datum["MIN(PRICE)"])
+		}
+		if datum["MAX(PRICE)"] != int64(40) {
+			t.Errorf("MAX = %v, want 40", datum["MAX(PRICE)"])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_FilterSortProjection_Pipeline tests the full pipeline:
+// scan → filter → sort → project → limit (all plan types chained).
+func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(14001), Price: proto.Int32(500), Quantity: proto.Int32(5)},
+		&gen.Order{OrderId: proto.Int64(14002), Price: proto.Int32(300), Quantity: proto.Int32(3)},
+		&gen.Order{OrderId: proto.Int64(14003), Price: proto.Int32(100), Quantity: proto.Int32(1)},
+		&gen.Order{OrderId: proto.Int64(14004), Price: proto.Int32(400), Quantity: proto.Int32(4)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "PRICE"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonGreaterThan,
+						Operand: values.LiteralValue(int64(200)),
+					},
+				),
+			},
+			scan,
+		)
+		sorted := plans.NewRecordQuerySortPlan(
+			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			filter,
+		)
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{
+				&values.FieldValue{Field: "PRICE"},
+				&values.FieldValue{Field: "QUANTITY"},
+			},
+			sorted,
+		)
+		limited := plans.NewRecordQueryLimitPlan(proj, 2, 0)
+
+		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("pipeline returned %d results, want 2", len(results))
+		}
+
+		d0 := results[0].Datum.(map[string]any)
+		d1 := results[1].Datum.(map[string]any)
+		if d0["PRICE"] != int64(300) || d0["QUANTITY"] != int64(3) {
+			t.Errorf("first row = %v, want PRICE=300/QUANTITY=3", d0)
+		}
+		if d1["PRICE"] != int64(400) || d1["QUANTITY"] != int64(4) {
+			t.Errorf("second row = %v, want PRICE=400/QUANTITY=4", d1)
+		}
+		if _, exists := d0["ORDER_ID"]; exists {
+			t.Error("ORDER_ID should be excluded by projection")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
