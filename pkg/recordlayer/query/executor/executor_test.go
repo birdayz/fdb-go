@@ -333,7 +333,7 @@ func TestExecuteUnsupportedPlan_ReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	plan := plans.NewRecordQueryInsertPlan(nil, "SomeType", nil)
+	plan := plans.NewRecordQueryTempTableScanPlan(values.NamedCorrelationIdentifier("tmp"))
 	_, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err == nil {
 		t.Fatal("expected error for unsupported plan type")

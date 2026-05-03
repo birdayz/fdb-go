@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -66,6 +67,12 @@ func ExecutePlan(
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryExplodePlan:
 		return executeExplode(p, props)
+	case *plans.RecordQueryDeletePlan:
+		return executeDelete(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryInsertPlan:
+		return executeInsert(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryUpdatePlan:
+		return executeUpdate(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
 	default:
@@ -791,6 +798,205 @@ func aggResultName(agg expressions.AggregateSpec) string {
 	default:
 		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
 	}
+}
+
+func executeDelete(
+	ctx context.Context,
+	p *plans.RecordQueryDeletePlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	var results []QueryResult
+	for {
+		result, err := innerCursor.OnNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !result.HasNext() {
+			break
+		}
+		qr := result.GetValue()
+		if qr.PrimaryKey == nil {
+			continue
+		}
+		deleted, err := store.DeleteRecord(qr.PrimaryKey)
+		if err != nil {
+			return nil, fmt.Errorf("executor: deleting record pk=%v: %w", qr.PrimaryKey, err)
+		}
+		if deleted {
+			results = append(results, qr)
+		}
+	}
+	return recordlayer.FromList(results), nil
+}
+
+func executeInsert(
+	ctx context.Context,
+	p *plans.RecordQueryInsertPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	var results []QueryResult
+	for {
+		result, err := innerCursor.OnNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !result.HasNext() {
+			break
+		}
+		qr := result.GetValue()
+		if qr.Record == nil || qr.Record.Record == nil {
+			continue
+		}
+		stored, err := store.SaveRecordWithOptions(qr.Record.Record, recordlayer.RecordExistenceCheckErrorIfExists)
+		if err != nil {
+			return nil, fmt.Errorf("executor: inserting record: %w", err)
+		}
+		results = append(results, FromStoredRecord(stored))
+	}
+	return recordlayer.FromList(results), nil
+}
+
+func executeUpdate(
+	ctx context.Context,
+	p *plans.RecordQueryUpdatePlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	transforms := p.GetTransforms()
+
+	var results []QueryResult
+	for {
+		result, err := innerCursor.OnNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !result.HasNext() {
+			break
+		}
+		qr := result.GetValue()
+		if qr.Record == nil || qr.Record.Record == nil {
+			continue
+		}
+
+		msg := proto.Clone(qr.Record.Record)
+		refl := msg.ProtoReflect()
+		desc := refl.Descriptor()
+
+		for _, t := range transforms {
+			fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(t.FieldPath)))
+			if fd == nil {
+				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
+			}
+			newVal := t.NewValue.Evaluate(qr.Datum)
+			if newVal == nil {
+				refl.Clear(fd)
+			} else {
+				pv, err := goToProtoValue(fd, newVal)
+				if err != nil {
+					return nil, fmt.Errorf("executor: converting update value for %q: %w", t.FieldPath, err)
+				}
+				refl.Set(fd, pv)
+			}
+		}
+
+		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+		if err != nil {
+			return nil, fmt.Errorf("executor: updating record: %w", err)
+		}
+		results = append(results, FromStoredRecord(stored))
+	}
+	return recordlayer.FromList(results), nil
+}
+
+func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		switch b := v.(type) {
+		case bool:
+			return protoreflect.ValueOfBool(b), nil
+		}
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		switch n := v.(type) {
+		case int64:
+			return protoreflect.ValueOfInt32(int32(n)), nil
+		case int32:
+			return protoreflect.ValueOfInt32(n), nil
+		case int:
+			return protoreflect.ValueOfInt32(int32(n)), nil
+		}
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		switch n := v.(type) {
+		case int64:
+			return protoreflect.ValueOfInt64(n), nil
+		case int:
+			return protoreflect.ValueOfInt64(int64(n)), nil
+		}
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		switch n := v.(type) {
+		case int64:
+			return protoreflect.ValueOfUint32(uint32(n)), nil
+		case uint32:
+			return protoreflect.ValueOfUint32(n), nil
+		}
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		switch n := v.(type) {
+		case int64:
+			return protoreflect.ValueOfUint64(uint64(n)), nil
+		case uint64:
+			return protoreflect.ValueOfUint64(n), nil
+		}
+	case protoreflect.FloatKind:
+		switch n := v.(type) {
+		case float64:
+			return protoreflect.ValueOfFloat32(float32(n)), nil
+		case float32:
+			return protoreflect.ValueOfFloat32(n), nil
+		}
+	case protoreflect.DoubleKind:
+		switch n := v.(type) {
+		case float64:
+			return protoreflect.ValueOfFloat64(n), nil
+		}
+	case protoreflect.StringKind:
+		switch s := v.(type) {
+		case string:
+			return protoreflect.ValueOfString(s), nil
+		}
+	case protoreflect.BytesKind:
+		switch b := v.(type) {
+		case []byte:
+			return protoreflect.ValueOfBytes(b), nil
+		}
+	case protoreflect.EnumKind:
+		switch n := v.(type) {
+		case int64:
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		}
+	}
+	return protoreflect.Value{}, fmt.Errorf("cannot convert %T to proto field kind %v", v, fd.Kind())
 }
 
 func executeExplode(
