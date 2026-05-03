@@ -1259,6 +1259,20 @@ func (w *physicalProjectionWrapper) HintCost(child []properties.Cost) properties
 	}
 }
 
+func (w *physicalProjectionWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.Members() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 var _ expressions.RelationalExpression = (*physicalProjectionWrapper)(nil)
 
 // --- Values wrapper ---------------------------------------------------
