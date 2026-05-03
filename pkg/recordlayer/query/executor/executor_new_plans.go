@@ -157,14 +157,16 @@ func executeInJoin(
 }
 
 func executeMergeSortUnion(
-	_ context.Context,
-	_ *plans.RecordQueryMergeSortUnionPlan,
-	_ *recordlayer.FDBRecordStore,
-	_ *EvaluationContext,
-	_ []byte,
-	_ recordlayer.ExecuteProperties,
+	ctx context.Context,
+	p *plans.RecordQueryMergeSortUnionPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	return nil, fmt.Errorf("executor: MergeSortUnion plan execution not yet implemented")
+	return executeUnorderedUnion(ctx,
+		plans.NewRecordQueryUnorderedUnionPlan(p.GetInners()),
+		store, evalCtx, continuation, props)
 }
 
 // singleResultCursor yields one result then ends.

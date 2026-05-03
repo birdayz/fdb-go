@@ -99,6 +99,8 @@ func ExecutePlan(
 		return executeInJoin(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryMergeSortUnionPlan:
 		return executeMergeSortUnion(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryInUnionPlan:
+		return executeInJoin(ctx, plans.NewRecordQueryInJoinPlan(p.GetInner(), "", false, false), store, evalCtx, continuation, props)
 	default:
 		return nil, fmt.Errorf("executor: unsupported plan type %T", plan)
 	}
