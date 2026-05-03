@@ -509,6 +509,44 @@ func TestConvert_FilterTextParenProtectsAND(t *testing.T) {
 	}
 }
 
+func TestConvert_FilterTextNOTExpression(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "NOT (x = 1 OR y = 2)")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	_, ok = f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *NotPredicate", f.GetPredicates()[0])
+	}
+}
+
+func TestConvert_FilterTextNOTSimple(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("T", ""), "NOT x = 1")
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	f, ok := got.(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("got %T, want *LogicalFilterExpression", got)
+	}
+	np, ok := f.GetPredicates()[0].(*predicates.NotPredicate)
+	if !ok {
+		t.Fatalf("pred is %T, want *NotPredicate", f.GetPredicates()[0])
+	}
+	_, ok = np.Child.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("inner is %T, want *ComparisonPredicate", np.Child)
+	}
+}
+
 func TestConvert_FilterTextComplex_Unsupported(t *testing.T) {
 	t.Parallel()
 	// Complex expression with function call can't be lowered

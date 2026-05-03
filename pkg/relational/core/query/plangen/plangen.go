@@ -756,6 +756,12 @@ func parseSingleComparison(s string) (predicates.QueryPredicate, bool) {
 		}
 		return predicates.NewAnd(preds...), true
 	}
+	if len(s) > 4 && eqAsciiFold(s[:4], "NOT ") {
+		rest := strings.TrimSpace(s[4:])
+		if p, ok := parseSingleComparison(rest); ok {
+			return predicates.NewNot(p), true
+		}
+	}
 	if p, ok := tryParseIsNull(s); ok {
 		return p, true
 	}
