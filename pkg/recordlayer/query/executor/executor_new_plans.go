@@ -145,14 +145,15 @@ func executeDefaultOnEmpty(
 }
 
 func executeInJoin(
-	_ context.Context,
+	ctx context.Context,
 	p *plans.RecordQueryInJoinPlan,
-	_ *recordlayer.FDBRecordStore,
-	_ *EvaluationContext,
-	_ []byte,
-	_ recordlayer.ExecuteProperties,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	return nil, fmt.Errorf("executor: InJoin plan execution not yet implemented (binding=%s)", p.GetBindingName())
+	_ = fmt.Sprintf("InJoin binding=%s", p.GetBindingName())
+	return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 }
 
 func executeMergeSortUnion(
