@@ -173,7 +173,30 @@ func buildCascadesPlanContext(md *recordlayer.RecordMetaData) cascades.PlanConte
 	if md == nil {
 		return cascades.EmptyPlanContext()
 	}
-	return cascades.EmptyPlanContext()
+	return &metadataPlanContext{md: md}
+}
+
+type metadataPlanContext struct {
+	md *recordlayer.RecordMetaData
+}
+
+func (c *metadataPlanContext) GetPlannerConfiguration() cascades.PlannerConfiguration {
+	return cascades.DefaultPlannerConfiguration()
+}
+
+func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
+	return nil
+}
+
+func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
+	if c.md == nil {
+		return nil
+	}
+	rt := c.md.GetRecordType(recordType)
+	if rt == nil || rt.PrimaryKey == nil {
+		return nil
+	}
+	return rt.PrimaryKey.FieldNames()
 }
 
 // cascadesRows wraps a RecordLayerResultSet as driver.Rows.
