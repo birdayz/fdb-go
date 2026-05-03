@@ -92,44 +92,54 @@ func TestPlanPartition_IsStoredRecord(t *testing.T) {
 
 func TestPlanPartition_HasPrimaryKey(t *testing.T) {
 	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	sw := &physicalScanWrapper{plan: scan}
 	pp := NewPlanPartition(
-		properties.PropertyMap{properties.PropPrimaryKey: "pk-value"},
-		nil,
+		properties.PropertyMap{},
+		map[expressions.RelationalExpression]properties.PropertyMap{
+			sw: {properties.PropPrimaryKey: "pk-value"},
+		},
 	)
 	if !pp.HasPrimaryKey() {
-		t.Fatal("HasPrimaryKey() should be true when PrimaryKey is non-nil")
+		t.Fatal("HasPrimaryKey() should be true when expression has PK")
 	}
 
 	pp2 := NewPlanPartition(
-		properties.PropertyMap{properties.PropPrimaryKey: nil},
-		nil,
+		properties.PropertyMap{},
+		map[expressions.RelationalExpression]properties.PropertyMap{
+			sw: {properties.PropPrimaryKey: nil},
+		},
 	)
 	if pp2.HasPrimaryKey() {
-		t.Fatal("HasPrimaryKey() should be false when PrimaryKey is nil")
+		t.Fatal("HasPrimaryKey() should be false when PK is nil")
 	}
 
 	pp3 := NewPlanPartition(properties.PropertyMap{}, nil)
 	if pp3.HasPrimaryKey() {
-		t.Fatal("HasPrimaryKey() should be false when PrimaryKey is absent")
+		t.Fatal("HasPrimaryKey() should be false when no expressions")
 	}
 }
 
 func TestPlanPartition_GetOrdering(t *testing.T) {
 	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	sw := &physicalScanWrapper{plan: scan}
 	want := properties.Ordering{IsKnown: true}
 	pp := NewPlanPartition(
-		properties.PropertyMap{properties.PropOrdering: want},
-		nil,
+		properties.PropertyMap{},
+		map[expressions.RelationalExpression]properties.PropertyMap{
+			sw: {properties.PropOrdering: want},
+		},
 	)
 	got := pp.GetOrdering()
 	if !got.IsKnown {
-		t.Fatal("GetOrdering() should return the stored ordering")
+		t.Fatal("GetOrdering() should return expression's ordering")
 	}
 
 	pp2 := NewPlanPartition(properties.PropertyMap{}, nil)
 	got2 := pp2.GetOrdering()
 	if got2.IsKnown {
-		t.Fatal("GetOrdering() should return zero ordering when absent")
+		t.Fatal("GetOrdering() should return zero ordering when no expressions")
 	}
 }
 

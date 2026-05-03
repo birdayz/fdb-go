@@ -21,10 +21,14 @@ func NewPlanPartition(
 	partitionProps properties.PropertyMap,
 	exprProps map[expressions.RelationalExpression]properties.PropertyMap,
 ) *PlanPartition {
-	return &PlanPartition{
+	p := &PlanPartition{
 		partitionProps: partitionProps,
 		exprProps:      exprProps,
 	}
+	for e := range exprProps {
+		p.orderedExprs = append(p.orderedExprs, e)
+	}
+	return p
 }
 
 // GetExpressions returns the wrapper expressions in this partition.
@@ -57,9 +61,21 @@ func (p *PlanPartition) addExpression(e expressions.RelationalExpression, props 
 	p.orderedExprs = append(p.orderedExprs, e)
 }
 
-// GetPartitionPropertyValue returns the partitioning property value.
+// GetPartitionPropertyValue returns the partitioning property value
+// for partitioning properties (DistinctRecords, StoredRecord). For
+// non-partitioning properties (Ordering, PrimaryKey), returns the
+// value from the first expression.
 func (p *PlanPartition) GetPartitionPropertyValue(prop *properties.ExpressionProperty) any {
-	return p.partitionProps[prop]
+	if v, ok := p.partitionProps[prop]; ok {
+		return v
+	}
+	exprs := p.GetExpressions()
+	if len(exprs) > 0 {
+		if props, ok := p.exprProps[exprs[0]]; ok {
+			return props[prop]
+		}
+	}
+	return nil
 }
 
 // GetPartitionPropertiesMap returns the full partitioning property map.
@@ -77,15 +93,43 @@ func (p *PlanPartition) IsStoredRecord() bool {
 	return p.partitionProps.GetBool(properties.PropStoredRecord)
 }
 
-// HasPrimaryKey returns true if the partition's PrimaryKey is non-nil.
+// HasPrimaryKey returns true if ANY expression in this partition has
+// a non-nil PrimaryKey property. Per-expression property — not a
+// partitioning dimension.
 func (p *PlanPartition) HasPrimaryKey() bool {
-	v, ok := p.partitionProps[properties.PropPrimaryKey]
-	return ok && v != nil
+	if v, ok := p.partitionProps[properties.PropPrimaryKey]; ok && v != nil {
+		return true
+	}
+	for _, props := range p.exprProps {
+		if v, ok := props[properties.PropPrimaryKey]; ok && v != nil {
+			return true
+		}
+	}
+	return false
 }
 
-// GetOrdering returns the partition's Ordering property.
+// GetOrdering returns the Ordering from the first expression in this
+// partition. Per-expression property — not a partitioning dimension.
+// For precise ordering, use GetExpressionPropertyValue on individual
+// expressions.
 func (p *PlanPartition) GetOrdering() properties.Ordering {
-	return p.partitionProps.GetOrdering()
+	for _, e := range p.GetExpressions() {
+		if props, ok := p.exprProps[e]; ok {
+			return props.GetOrdering()
+		}
+	}
+	return properties.Ordering{}
+}
+
+// GetExpressionPropertyValue returns a per-expression property value.
+func (p *PlanPartition) GetExpressionPropertyValue(
+	expr expressions.RelationalExpression,
+	prop *properties.ExpressionProperty,
+) any {
+	if props, ok := p.exprProps[expr]; ok {
+		return props[prop]
+	}
+	return nil
 }
 
 // ToPlanPartitions computes plan partitions for a Reference by reading
