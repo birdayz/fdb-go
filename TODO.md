@@ -112,7 +112,7 @@ Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
 
 ### CRITICAL — correctness/completeness gaps
 
-- [ ] **#66** InJoinRule missing `enumerateInSourcesForRequestedOrdering` (Java 170 LOC). Go version ignores requested ordering when selecting IN-source nesting order. Cannot match inner plan ordering to requested orderings. Needs TopologicalSort permutations + ordering satisfaction check. Gate: #67.
+- [x] **#66** InJoinRule `enumerateInSourcesForRequestedOrdering` — **landed nightshift-71**. Walks requested ordering parts (not provided), matches against inner fixed bindings, honors sort direction, reads planner constraints. Gate: #67.
 - [x] **#67** Ordering: PartiallyOrderedSet infrastructure — **landed nightshift-71**. `combinatorics/` sub-package: PartiallyOrderedSet[T], TopologicalSort (Backtrack+Kahn with skip), TransitiveClosure, EligibleSet, MapAll, FilterElements, Builder. RichOrdering upgraded to store PartiallyOrderedSet[string] internally; Satisfies() and EnumerateSatisfyingComparisonKeyValues() now use TopologicalSort.satisfyingPermutations. 30 tests + 2 fuzz targets.
 - [x] **#68** Ordering: full merge algorithm — **landed nightshift-71**. EligibleSet-based lock-step merge with union/intersection binding combiners. mergeOrderings() walks both partial orders via EligibleSet, intersects eligible elements, combines bindings, preserves dependency edges.
 
