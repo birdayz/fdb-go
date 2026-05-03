@@ -2184,6 +2184,50 @@ func TestEndToEnd_InsertValuesToPlan(t *testing.T) {
 	}
 }
 
+func TestEndToEnd_FunctionCallInFilterToPlan(t *testing.T) {
+	t.Parallel()
+	src := logical.NewFilter(logical.NewScan("Users", ""), "UPPER(name) = 'ALICE'")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	t.Logf("Explain: %s", explain)
+	if !strings.Contains(explain, "Filter") {
+		t.Fatalf("expected Filter in plan, got: %s", explain)
+	}
+	if !strings.Contains(explain, "Scan") {
+		t.Fatalf("expected Scan in plan, got: %s", explain)
+	}
+}
+
+func TestEndToEnd_ArithmeticInProjectNoPanic(t *testing.T) {
+	t.Parallel()
+	src := logical.NewProject(
+		logical.NewScan("T", ""),
+		[]string{"x + 1", "y * 2"},
+		[]string{"", ""},
+	)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, _ := p.Plan(ref)
+	_ = plan
+}
+
 func TestEndToEnd_ValuesToPlan(t *testing.T) {
 	t.Parallel()
 	src := logical.NewValues([]string{"42", "'hello'", "TRUE"}, nil)
