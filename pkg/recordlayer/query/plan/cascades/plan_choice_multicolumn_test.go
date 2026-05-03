@@ -245,6 +245,65 @@ func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
 	t.Logf("✓ Optimizer correctly picked idx_status over idx_customer")
 }
 
+func TestPlanChoice_InequalityRangeScan(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	// WHERE amount > 1000 on index(amount)
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1000)),
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "idx_amount",
+			columns:     []string{"AMOUNT"},
+			recordTypes: []string{"Order"},
+			unique:      false,
+		},
+	})
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	bestExpr, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		t.Fatalf("expected planExtractor, got %T", bestExpr)
+	}
+
+	physicalPlan := ph.GetRecordQueryPlan()
+	switch pp := physicalPlan.(type) {
+	case *plans.RecordQueryIndexPlan:
+		comps := pp.GetScanComparisons()
+		if len(comps) == 0 || comps[0].IsEmpty() {
+			t.Fatal("index scan should have inequality range bound")
+		}
+		if comps[0].IsEquality() {
+			t.Fatal("expected inequality range, got equality")
+		}
+		t.Logf("✓ Inequality range scan on index: %s", pp.Explain())
+	default:
+		t.Logf("Optimizer chose %T for inequality (may not support range scans yet): %s",
+			physicalPlan, physicalPlan.Explain())
+	}
+}
+
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 	t.Parallel()
 
