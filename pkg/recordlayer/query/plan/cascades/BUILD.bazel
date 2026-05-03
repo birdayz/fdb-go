@@ -164,6 +164,7 @@ go_test(
         "planner_agg_fuzz_test.go",
         "planner_all_impl_rules_test.go",
         "planner_batch_a_fuzz_test.go",
+        "planner_constraint_e2e_test.go",
         "planner_constraint_test.go",
         "planner_e2e_fuzz_test.go",
         "planner_e2e_test.go",
