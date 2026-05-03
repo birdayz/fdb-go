@@ -6,6 +6,7 @@ go_library(
         "evaluation_context.go",
         "executor.go",
         "query_result.go",
+        "resultset.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor",
     visibility = ["//visibility:public"],
@@ -16,6 +17,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
@@ -26,6 +28,7 @@ go_test(
     srcs = [
         "executor_integration_test.go",
         "executor_test.go",
+        "resultset_test.go",
     ],
     embed = [":executor"],
     deps = [
@@ -38,6 +41,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
     ],
