@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "functions",
@@ -19,4 +19,11 @@ go_library(
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
+)
+
+go_test(
+    name = "functions_test",
+    srcs = ["functions_test.go"],
+    embed = [":functions"],
+    deps = ["@org_golang_google_protobuf//reflect/protoreflect"],
 )
