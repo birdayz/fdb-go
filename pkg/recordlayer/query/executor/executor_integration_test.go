@@ -1895,6 +1895,424 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 
 // TestIntegration_FilterSortProjection_Pipeline tests the full pipeline:
 // scan → filter → sort → project → limit (all plan types chained).
+// TestIntegration_IndexScan_Reverse tests reverse-order index scan.
+func TestIntegration_IndexScan_Reverse(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(15001), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(15002), Price: proto.Int32(200)},
+		&gen.Order{OrderId: proto.Int64(15003), Price: proto.Int32(300)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		indexPlan := plans.NewRecordQueryIndexPlan(
+			"order_price_idx",
+			nil,
+			[]string{"Order"},
+			nil,
+			true, // reverse
+		)
+
+		cursor, err := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("reverse index scan returned %d results, want 3", len(results))
+		}
+
+		prices := make([]int64, len(results))
+		for i, r := range results {
+			prices[i] = r.Datum.(map[string]any)["PRICE"].(int64)
+		}
+		if prices[0] != 300 || prices[1] != 200 || prices[2] != 100 {
+			t.Errorf("reverse scan prices = %v, want [300 200 100]", prices)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_LimitWithOffset tests LIMIT with OFFSET > 0.
+func TestIntegration_LimitWithOffset(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(15101), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(15102), Price: proto.Int32(20)},
+		&gen.Order{OrderId: proto.Int64(15103), Price: proto.Int32(30)},
+		&gen.Order{OrderId: proto.Int64(15104), Price: proto.Int32(40)},
+		&gen.Order{OrderId: proto.Int64(15105), Price: proto.Int32(50)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		sorted := plans.NewRecordQuerySortPlan(
+			[]expressions.SortKey{{Value: &values.FieldValue{Field: "PRICE"}, Reverse: false}},
+			scan,
+		)
+		// OFFSET 2, LIMIT 2 — skip first 2 (price=10,20), take next 2 (price=30,40)
+		limited := plans.NewRecordQueryLimitPlan(sorted, 2, 2)
+
+		cursor, err := ExecutePlan(ctx, limited, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("limit+offset returned %d results, want 2", len(results))
+		}
+
+		d0 := results[0].Datum.(map[string]any)
+		d1 := results[1].Datum.(map[string]any)
+		if d0["PRICE"] != int64(30) {
+			t.Errorf("first result price = %v, want 30", d0["PRICE"])
+		}
+		if d1["PRICE"] != int64(40) {
+			t.Errorf("second result price = %v, want 40", d1["PRICE"])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_Aggregation_MinMaxAvg tests MIN, MAX, and AVG aggregate functions.
+func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(15201), Price: proto.Int32(100), Quantity: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(15202), Price: proto.Int32(200), Quantity: proto.Int32(20)},
+		&gen.Order{OrderId: proto.Int64(15203), Price: proto.Int32(300), Quantity: proto.Int32(30)},
+		&gen.Order{OrderId: proto.Int64(15204), Price: proto.Int32(400), Quantity: proto.Int32(40)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		agg := plans.NewRecordQueryHashAggregationPlan(
+			scan,
+			nil, // no grouping keys — aggregate over all
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "PRICE"}},
+				{Function: expressions.AggAvg, Operand: &values.FieldValue{Field: "PRICE"}},
+			},
+		)
+
+		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("aggregation returned %d groups, want 1", len(results))
+		}
+
+		d := results[0].Datum.(map[string]any)
+		if d["MIN(PRICE)"] != int64(100) {
+			t.Errorf("MIN(PRICE) = %v, want 100", d["MIN(PRICE)"])
+		}
+		if d["MAX(PRICE)"] != int64(400) {
+			t.Errorf("MAX(PRICE) = %v, want 400", d["MAX(PRICE)"])
+		}
+		avg, ok := d["AVG(PRICE)"].(float64)
+		if !ok || avg != 250.0 {
+			t.Errorf("AVG(PRICE) = %v, want 250.0", d["AVG(PRICE)"])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_DeletePlan_WithFilter tests DELETE with a filter predicate.
+func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(15301), Price: proto.Int32(50)},
+		&gen.Order{OrderId: proto.Int64(15302), Price: proto.Int32(100)},
+		&gen.Order{OrderId: proto.Int64(15303), Price: proto.Int32(150)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "PRICE"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonGreaterThan,
+						Operand: values.LiteralValue(int64(75)),
+					},
+				),
+			},
+			scan,
+		)
+		del := plans.NewRecordQueryDeletePlan(filter, "Order")
+
+		cursor, err := ExecutePlan(ctx, del, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		deleted, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(deleted) != 2 {
+			t.Fatalf("delete returned %d results, want 2 (price > 75)", len(deleted))
+		}
+
+		// Verify only the low-price order remains.
+		scanAll := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		cursor2, err := ExecutePlan(ctx, scanAll, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("verify scan: %v", err)
+		}
+		defer cursor2.Close()
+		remaining, err := CollectAll(ctx, cursor2)
+		if err != nil {
+			t.Fatalf("verify CollectAll: %v", err)
+		}
+		if len(remaining) != 1 {
+			t.Fatalf("remaining = %d, want 1", len(remaining))
+		}
+		price := remaining[0].Datum.(map[string]any)["PRICE"].(int64)
+		if price != 50 {
+			t.Errorf("remaining order price = %d, want 50", price)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_ParameterBinding_Delete tests DELETE WHERE with a parameterized predicate.
+func TestIntegration_ParameterBinding_Delete(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(15401), Price: proto.Int32(10)},
+		&gen.Order{OrderId: proto.Int64(15402), Price: proto.Int32(20)},
+		&gen.Order{OrderId: proto.Int64(15403), Price: proto.Int32(30)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(
+					&values.FieldValue{Field: "ORDER_ID"},
+					predicates.Comparison{
+						Type:    predicates.ComparisonEquals,
+						Operand: &values.ParameterValue{Ordinal: 1},
+					},
+				),
+			},
+			scan,
+		)
+		del := plans.NewRecordQueryDeletePlan(filter, "Order")
+
+		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(15402)})
+		cursor, err := ExecutePlan(ctx, del, s, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		deleted, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(deleted) != 1 {
+			t.Fatalf("delete returned %d results, want 1", len(deleted))
+		}
+
+		// Verify 2 orders remain.
+		scanAll := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		cursor2, err := ExecutePlan(ctx, scanAll, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("verify scan: %v", err)
+		}
+		defer cursor2.Close()
+		remaining, err := CollectAll(ctx, cursor2)
+		if err != nil {
+			t.Fatalf("verify CollectAll: %v", err)
+		}
+		if len(remaining) != 2 {
+			t.Fatalf("remaining = %d, want 2", len(remaining))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestIntegration_Aggregation_GroupBy_MultiFunc tests grouped aggregation with multiple functions.
+func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupStore(t)
+
+	insertOrders(t, store,
+		&gen.Order{OrderId: proto.Int64(15501), Price: proto.Int32(100), Quantity: proto.Int32(1)},
+		&gen.Order{OrderId: proto.Int64(15502), Price: proto.Int32(100), Quantity: proto.Int32(2)},
+		&gen.Order{OrderId: proto.Int64(15503), Price: proto.Int32(200), Quantity: proto.Int32(3)},
+		&gen.Order{OrderId: proto.Int64(15504), Price: proto.Int32(200), Quantity: proto.Int32(7)},
+	)
+
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).
+			SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+
+		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+		agg := plans.NewRecordQueryHashAggregationPlan(
+			scan,
+			[]values.Value{&values.FieldValue{Field: "PRICE"}},
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "ORDER_ID"}},
+				{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "QUANTITY"}},
+				{Function: expressions.AggMin, Operand: &values.FieldValue{Field: "QUANTITY"}},
+				{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "QUANTITY"}},
+			},
+		)
+
+		cursor, err := ExecutePlan(ctx, agg, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		defer cursor.Close()
+
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll: %v", err)
+		}
+		if len(results) != 2 {
+			t.Fatalf("grouped agg returned %d groups, want 2", len(results))
+		}
+
+		byPrice := make(map[int64]map[string]any)
+		for _, r := range results {
+			d := r.Datum.(map[string]any)
+			p := d["PRICE"].(int64)
+			byPrice[p] = d
+		}
+
+		g100 := byPrice[100]
+		if g100 == nil {
+			t.Fatal("no group for PRICE=100")
+		}
+		if g100["COUNT(ORDER_ID)"] != int64(2) {
+			t.Errorf("COUNT(ORDER_ID) for price=100: %v, want 2", g100["COUNT(ORDER_ID)"])
+		}
+		if g100["SUM(QUANTITY)"] != float64(3) {
+			t.Errorf("SUM(QUANTITY) for price=100: %v, want 3", g100["SUM(QUANTITY)"])
+		}
+		if g100["MIN(QUANTITY)"] != int64(1) {
+			t.Errorf("MIN(QUANTITY) for price=100: %v, want 1", g100["MIN(QUANTITY)"])
+		}
+		if g100["MAX(QUANTITY)"] != int64(2) {
+			t.Errorf("MAX(QUANTITY) for price=100: %v, want 2", g100["MAX(QUANTITY)"])
+		}
+
+		g200 := byPrice[200]
+		if g200 == nil {
+			t.Fatal("no group for PRICE=200")
+		}
+		if g200["COUNT(ORDER_ID)"] != int64(2) {
+			t.Errorf("COUNT(ORDER_ID) for price=200: %v, want 2", g200["COUNT(ORDER_ID)"])
+		}
+		if g200["SUM(QUANTITY)"] != float64(10) {
+			t.Errorf("SUM(QUANTITY) for price=200: %v, want 10", g200["SUM(QUANTITY)"])
+		}
+		if g200["MIN(QUANTITY)"] != int64(3) {
+			t.Errorf("MIN(QUANTITY) for price=200: %v, want 3", g200["MIN(QUANTITY)"])
+		}
+		if g200["MAX(QUANTITY)"] != int64(7) {
+			t.Errorf("MAX(QUANTITY) for price=200: %v, want 7", g200["MAX(QUANTITY)"])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
