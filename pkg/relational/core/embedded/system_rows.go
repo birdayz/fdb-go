@@ -3,6 +3,7 @@ package embedded
 import (
 	"database/sql/driver"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -59,6 +60,47 @@ func (r *staticRows) ColumnTypeDatabaseTypeName(index int) string {
 		return ""
 	}
 	return r.colTypes[index]
+}
+
+// ColumnTypeScanType implements driver.RowsColumnTypeScanType.
+// Maps the JDBC-style type name to the Go reflect.Type that
+// database/sql should use when scanning values.
+func (r *staticRows) ColumnTypeScanType(index int) reflect.Type {
+	if index < 0 || index >= len(r.colTypes) {
+		return reflect.TypeFor[any]()
+	}
+	return dbTypeToScanType(r.colTypes[index])
+}
+
+// ColumnTypeNullable implements driver.RowsColumnTypeNullable.
+// Proto fields are optional (nullable); we report nullable=true
+// with ok=true for all known column types.
+func (r *staticRows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	if index < 0 || index >= len(r.colTypes) {
+		return true, false
+	}
+	return true, true
+}
+
+func dbTypeToScanType(typeName string) reflect.Type {
+	switch strings.ToUpper(typeName) {
+	case "BIGINT":
+		return reflect.TypeFor[int64]()
+	case "INTEGER", "INT":
+		return reflect.TypeFor[int32]()
+	case "STRING":
+		return reflect.TypeFor[string]()
+	case "BOOLEAN":
+		return reflect.TypeFor[bool]()
+	case "DOUBLE":
+		return reflect.TypeFor[float64]()
+	case "FLOAT":
+		return reflect.TypeFor[float32]()
+	case "BYTES":
+		return reflect.TypeFor[[]byte]()
+	default:
+		return reflect.TypeFor[any]()
+	}
 }
 
 func (r *staticRows) Next(dest []driver.Value) error {

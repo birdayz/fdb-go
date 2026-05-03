@@ -7186,3 +7186,59 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (3, -2147483649)`)
 	g.Expect(err).To(gomega.HaveOccurred(), "INT32 underflow must error")
 }
+
+func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	setup := openTestDB(t, "/testdb_col_types")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_col_types")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE col_types_tmpl "+
+			"CREATE TABLE T (id BIGINT NOT NULL, name STRING, flag BOOLEAN, score DOUBLE, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_col_types/main WITH TEMPLATE col_types_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_col_types?cluster_file=%s&schema=main", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, flag, score) VALUES (1, 'hello', TRUE, 3.14)`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx, "SELECT id, name, flag, score FROM T")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	colTypes, err := rows.ColumnTypes()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(colTypes).To(gomega.HaveLen(4))
+
+	g.Expect(colTypes[0].DatabaseTypeName()).To(gomega.Equal("BIGINT"))
+	g.Expect(colTypes[0].ScanType().Kind().String()).To(gomega.Equal("int64"))
+
+	g.Expect(colTypes[1].DatabaseTypeName()).To(gomega.Equal("STRING"))
+	g.Expect(colTypes[1].ScanType().Kind().String()).To(gomega.Equal("string"))
+
+	g.Expect(colTypes[2].DatabaseTypeName()).To(gomega.Equal("BOOLEAN"))
+	g.Expect(colTypes[2].ScanType().Kind().String()).To(gomega.Equal("bool"))
+
+	g.Expect(colTypes[3].DatabaseTypeName()).To(gomega.Equal("DOUBLE"))
+	g.Expect(colTypes[3].ScanType().Kind().String()).To(gomega.Equal("float64"))
+
+	for i, ct := range colTypes {
+		nullable, ok := ct.Nullable()
+		g.Expect(ok).To(gomega.BeTrue(), "column %d (%s): Nullable should report ok=true", i, ct.Name())
+		g.Expect(nullable).To(gomega.BeTrue(), "column %d (%s): proto fields are nullable", i, ct.Name())
+	}
+
+	g.Expect(rows.Next()).To(gomega.BeTrue())
+	rows.Close()
+}
