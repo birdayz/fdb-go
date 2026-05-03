@@ -65,3 +65,34 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 		_ = err
 	})
 }
+
+// FuzzPlanner_LimitOverUnion_NoPanic exercises LIMIT over UNION ALL
+// topologies to validate the PushLimitThroughUnion rule doesn't diverge.
+func FuzzPlanner_LimitOverUnion_NoPanic(f *testing.F) {
+	f.Add(int64(10), int64(0), uint8(2))
+	f.Add(int64(5), int64(3), uint8(3))
+	f.Add(int64(0), int64(0), uint8(2))
+	f.Add(int64(-1), int64(0), uint8(4))
+	f.Add(int64(1), int64(100), uint8(2))
+
+	f.Fuzz(func(t *testing.T, limit, offset int64, branches uint8) {
+		numBranches := int(branches%4) + 2
+		qs := make([]expressions.Quantifier, numBranches)
+		for i := range qs {
+			scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+			qs[i] = expressions.ForEachQuantifier(expressions.InitialOf(scan))
+		}
+		union := expressions.NewLogicalUnionExpression(qs)
+		unionRef := expressions.InitialOf(union)
+		unionQ := expressions.ForEachQuantifier(unionRef)
+
+		lim := expressions.NewLogicalLimitExpression(limit, offset, unionQ)
+		ref := expressions.InitialOf(lim)
+
+		rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+		p := NewPlanner(rules, EmptyPlanContext())
+		plan, _, err := p.Plan(ref)
+		_ = plan
+		_ = err
+	})
+}
