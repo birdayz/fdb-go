@@ -4,6 +4,7 @@ go_library(
     name = "embedded",
     srcs = [
         "aggregate.go",
+        "cascades_generator.go",
         "connection.go",
         "covering_index.go",
         "cte_scan.go",
@@ -47,6 +48,9 @@ go_library(
     deps = [
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
