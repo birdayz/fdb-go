@@ -49,9 +49,10 @@ const (
 // shares the same fields (alias + ranges-over). Subclass-only state
 // (Java's `ForEach.isNullOnEmpty`) is added when a kind needs it.
 type Quantifier struct {
-	kind       QuantifierKind
-	alias      values.CorrelationIdentifier
-	rangesOver *Reference
+	kind        QuantifierKind
+	alias       values.CorrelationIdentifier
+	rangesOver  *Reference
+	nullOnEmpty bool
 }
 
 // ForEachQuantifier builds a ForEach quantifier ranging over the given
@@ -62,6 +63,18 @@ func ForEachQuantifier(rangesOver *Reference) Quantifier {
 		kind:       QuantifierForEach,
 		alias:      values.UniqueCorrelationIdentifier(),
 		rangesOver: rangesOver,
+	}
+}
+
+// ForEachNullOnEmptyQuantifier builds a ForEach quantifier with
+// nullOnEmpty=true. Used for LEFT JOIN semantics where the inner
+// side should produce a NULL row when empty.
+func ForEachNullOnEmptyQuantifier(rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:        QuantifierForEach,
+		alias:       values.UniqueCorrelationIdentifier(),
+		rangesOver:  rangesOver,
+		nullOnEmpty: true,
 	}
 }
 
@@ -137,6 +150,10 @@ func (q Quantifier) GetAlias() values.CorrelationIdentifier { return q.alias }
 
 // GetRangesOver returns the Reference holding the inner expression.
 func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver }
+
+// IsNullOnEmpty returns true for ForEach quantifiers that should
+// produce a NULL row when the inner is empty (LEFT JOIN semantics).
+func (q Quantifier) IsNullOnEmpty() bool { return q.nullOnEmpty }
 
 // GetFlowedObjectValue returns a Value representing "the row currently
 // flowing along this Quantifier". Predicates / projections in the

@@ -198,3 +198,38 @@ func TestImplementSimpleSelectRule_ExistentialQuantifier(t *testing.T) {
 		t.Fatal("Existential quantifier should produce FirstOrDefault wrapper")
 	}
 }
+
+func TestImplementSimpleSelectRule_NullOnEmptyQuantifier(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	sw := &physicalScanWrapper{plan: scan}
+
+	innerRef := expressions.NewFinalReference([]expressions.RelationalExpression{sw})
+	pm := NewPlanPropertiesMap()
+	pm.Add(sw)
+	innerRef.SetPlanProperties(pm)
+
+	q := expressions.ForEachNullOnEmptyQuantifier(innerRef)
+	sel := expressions.NewSelectExpression(
+		values.NewQuantifiedObjectValue(q.GetAlias()),
+		[]expressions.Quantifier{q},
+		nil,
+	)
+
+	outerRef := expressions.InitialOf(sel)
+	results := FireImplementationRule(NewImplementSimpleSelectRule(), outerRef)
+	if len(results) == 0 {
+		t.Fatal("should yield for nullOnEmpty quantifier")
+	}
+
+	found := false
+	for _, r := range results {
+		if _, ok := r.(*physicalDefaultOnEmptyWrapper); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("nullOnEmpty ForEach should produce DefaultOnEmpty wrapper")
+	}
+}
