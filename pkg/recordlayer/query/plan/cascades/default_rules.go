@@ -151,6 +151,18 @@ func DMLImplementationRules() []ExpressionRule {
 	}
 }
 
+// DefaultImplementationRules returns the ImplementationRules for the
+// PLANNING phase. FinalizeExpressionsRule is the catch-all; the
+// specific rules fire before it for expressions they recognize.
+func DefaultImplementationRules() []ImplementationRule {
+	return []ImplementationRule{
+		// NewImplementSimpleSelectRule(), // WIP: temporarily disabled, missing predicates.IsTautology
+		NewImplementUniqueRule(),
+		NewImplementUnorderedUnionRule(),
+		NewFinalizeExpressionsRule(),
+	}
+}
+
 // init registers the default rules in the rule registry under their
 // concrete-type names ("FilterMergeRule", etc.) — discoverable via
 // LookupRule / RegisteredRuleNames for diagnostic output.

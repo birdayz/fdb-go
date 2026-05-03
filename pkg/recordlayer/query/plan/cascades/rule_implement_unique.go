@@ -32,12 +32,17 @@ func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	partitions := ToPlanPartitions(innerRef)
-	rolled := RollUpPlanPartitions(partitions)
+
+	var filtered []*PlanPartition
+	for _, p := range partitions {
+		if p.IsDistinct() {
+			filtered = append(filtered, p)
+		}
+	}
+
+	rolled := RollUpPlanPartitions(filtered)
 
 	for _, partition := range rolled {
-		if !partition.IsDistinct() {
-			continue
-		}
 		for _, wrapperExpr := range partition.GetExpressions() {
 			call.YieldFinalExpression(wrapperExpr)
 		}

@@ -63,19 +63,25 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		}
 		return false
 	case *plans.RecordQueryFilterPlan,
+		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQuerySortPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,
 		*plans.RecordQueryUpdatePlan,
 		*plans.RecordQueryTempTableInsertPlan:
 		return distinctRecordsFromChildRef(w)
+	case *plans.RecordQueryFirstOrDefaultPlan:
+		return true
 	case *plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnionPlan,
 		*plans.RecordQueryIntersectionPlan:
 		return true
+	case *plans.RecordQueryUnorderedUnionPlan:
+		return false
 	default:
 		return false
 	}
@@ -113,13 +119,18 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryUpdatePlan:
 		return true
 	case *plans.RecordQueryFilterPlan,
+		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQuerySortPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryProjectionPlan:
+		*plans.RecordQueryProjectionPlan,
+		*plans.RecordQueryMapPlan:
 		return storedRecordFromChildren(plan.GetChildren())
+	case *plans.RecordQueryFirstOrDefaultPlan:
+		return false
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
+		*plans.RecordQueryUnorderedUnionPlan,
 		*plans.RecordQueryRecursiveDfsJoinPlan,
 		*plans.RecordQueryRecursiveLevelUnionPlan:
 		return storedRecordAllChildren(plan.GetChildren())

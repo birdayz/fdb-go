@@ -26,6 +26,7 @@ go_test(
         "extract_test.go",
         "ordering_fuzz_test.go",
         "ordering_test.go",
+        "plan_property_test.go",
         "properties_bench_test.go",
     ],
     embed = [":properties"],
