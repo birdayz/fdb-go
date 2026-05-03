@@ -12,6 +12,7 @@ import (
 // EvaluationContext.
 type EvaluationContext struct {
 	bindings map[values.CorrelationIdentifier]any
+	params   []any
 }
 
 // EmptyEvaluationContext returns a context with no bindings.
@@ -19,6 +20,32 @@ func EmptyEvaluationContext() *EvaluationContext {
 	return &EvaluationContext{
 		bindings: make(map[values.CorrelationIdentifier]any),
 	}
+}
+
+// WithParams returns a copy with prepared-statement parameter bindings.
+// Params is 0-indexed; ParameterValue ordinals are 1-based.
+func (ec *EvaluationContext) WithParams(params []any) *EvaluationContext {
+	newBindings := make(map[values.CorrelationIdentifier]any, len(ec.bindings))
+	for k, v := range ec.bindings {
+		newBindings[k] = v
+	}
+	return &EvaluationContext{bindings: newBindings, params: params}
+}
+
+// BindParameter implements values.ParameterBinder. Ordinal is 1-based;
+// named parameters are not yet supported.
+func (ec *EvaluationContext) BindParameter(ordinal int, name string) (any, bool) {
+	if ordinal >= 1 && ordinal <= len(ec.params) {
+		return ec.params[ordinal-1], true
+	}
+	return nil, false
+}
+
+// RowContext returns a RowEvalContext combining a datum map with this
+// context's parameter bindings. Used when evaluating expressions that
+// mix field references and prepared-statement parameters.
+func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalContext {
+	return &values.RowEvalContext{Datum: datum, Binder: ec}
 }
 
 // WithBinding returns a shallow copy with an additional binding.

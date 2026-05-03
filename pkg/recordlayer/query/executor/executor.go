@@ -42,7 +42,7 @@ func ExecutePlan(
 	case *plans.RecordQueryScanPlan:
 		return executeScan(ctx, p, store, continuation, props)
 	case *plans.RecordQueryIndexPlan:
-		return executeIndexScan(ctx, p, store, continuation, props)
+		return executeIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTypeFilterPlan:
 		return executeTypeFilter(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryFilterPlan:
@@ -66,7 +66,7 @@ func ExecutePlan(
 	case *plans.RecordQueryHashAggregationPlan:
 		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryExplodePlan:
-		return executeExplode(p, props)
+		return executeExplode(p, evalCtx, props)
 	case *plans.RecordQueryDeletePlan:
 		return executeDelete(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryInsertPlan:
@@ -78,9 +78,9 @@ func ExecutePlan(
 	case *plans.RecordQueryTempTableInsertPlan:
 		return executeTempTableInsert(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTableFunctionPlan:
-		return executeTableFunction(p, props)
+		return executeTableFunction(p, evalCtx, props)
 	case *plans.RecordQueryValuesPlan:
-		return executeValues(p)
+		return executeValues(p, evalCtx)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
@@ -117,6 +117,7 @@ func executeIndexScan(
 	ctx context.Context,
 	p *plans.RecordQueryIndexPlan,
 	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
@@ -129,7 +130,7 @@ func executeIndexScan(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	scanRange, err := scanComparisonsToTupleRange(p.GetScanComparisons())
+	scanRange, err := scanComparisonsToTupleRange(p.GetScanComparisons(), evalCtx)
 	if err != nil {
 		return nil, fmt.Errorf("executor: building scan range for %q: %w", p.GetIndexName(), err)
 	}
@@ -149,7 +150,7 @@ func executeIndexScan(
 	return resultCursor, nil
 }
 
-func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange) (recordlayer.TupleRange, error) {
+func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
 	if len(comparisons) == 0 {
 		return recordlayer.TupleRangeAllOf(nil), nil
 	}
@@ -160,7 +161,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange) (rec
 			break
 		}
 		comp := cr.GetEqualityComparison()
-		val := comp.Operand.Evaluate(nil)
+		val := comp.Operand.Evaluate(binder)
 		prefix = append(prefix, val)
 	}
 
@@ -192,7 +193,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange) (rec
 	}
 
 	for _, ineq := range nextRange.GetInequalityComparisons() {
-		comparand := ineq.Operand.Evaluate(nil)
+		comparand := ineq.Operand.Evaluate(binder)
 		switch ineq.Type {
 		case predicates.ComparisonGreaterThan:
 			lowItem = comparand
@@ -332,11 +333,18 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
+	hasParams := len(evalCtx.params) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) bool {
+			var rowCtx any = qr.Datum
+			if hasParams {
+				if m, ok := qr.Datum.(map[string]any); ok {
+					rowCtx = evalCtx.RowContext(m)
+				}
+			}
 			for _, pred := range preds {
-				if pred.Eval(qr.Datum) != predicates.TriTrue {
+				if pred.Eval(rowCtx) != predicates.TriTrue {
 					return false
 				}
 			}
@@ -1043,13 +1051,14 @@ func executeTempTableInsert(
 
 func executeTableFunction(
 	p *plans.RecordQueryTableFunctionPlan,
+	evalCtx *EvaluationContext,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	sv := p.GetStreamValue()
 	if sv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	result := sv.Evaluate(nil)
+	result := sv.Evaluate(evalCtx)
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -1069,13 +1078,14 @@ func executeTableFunction(
 
 func executeExplode(
 	p *plans.RecordQueryExplodePlan,
+	evalCtx *EvaluationContext,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	cv := p.GetCollectionValue()
 	if cv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	result := cv.Evaluate(nil)
+	result := cv.Evaluate(evalCtx)
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -1093,11 +1103,11 @@ func executeExplode(
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
 
-func executeValues(p *plans.RecordQueryValuesPlan) (recordlayer.RecordCursor[QueryResult], error) {
+func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (recordlayer.RecordCursor[QueryResult], error) {
 	cols := p.GetColumns()
 	row := make(map[string]any, len(cols))
 	for _, col := range cols {
-		row[col.Name()] = col.Evaluate(nil)
+		row[col.Name()] = col.Evaluate(evalCtx)
 	}
 	return recordlayer.FromList([]QueryResult{{Datum: row}}), nil
 }

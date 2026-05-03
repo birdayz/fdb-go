@@ -498,7 +498,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 
 func TestScanComparisonsToTupleRange_Empty(t *testing.T) {
 	t.Parallel()
-	r, err := scanComparisonsToTupleRange(nil)
+	r, err := scanComparisonsToTupleRange(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestScanComparisonsToTupleRange_EqualityOnly(t *testing.T) {
 		t.Fatal("merge2 failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res2.Range})
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res2.Range}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestScanComparisonsToTupleRange_EqualityPlusInequality(t *testing.T) {
 		t.Fatal("merge lt failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res3.Range})
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, res3.Range}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -590,7 +590,7 @@ func TestScanComparisonsToTupleRange_InequalityOnly(t *testing.T) {
 		t.Fatal("merge gte failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range})
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +620,7 @@ func TestScanComparisonsToTupleRange_EmptyRangeStops(t *testing.T) {
 
 	empty := predicates.EmptyComparisonRange()
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, empty})
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range, empty}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 		t.Fatal("merge lte failed")
 	}
 
-	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range})
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,6 +660,105 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 	}
 	if r.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("highEndpoint=%v, want RangeInclusive (<=)", r.HighEndpoint)
+	}
+}
+
+func TestParameterBinding_ScanComparison(t *testing.T) {
+	t.Parallel()
+
+	param1 := values.NewParameterValue(1)
+	cr := predicates.EmptyComparisonRange()
+	res := cr.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: param1})
+	if !res.Ok {
+		t.Fatal("merge failed")
+	}
+
+	binder := EmptyEvaluationContext().WithParams([]any{int64(42)})
+	r, err := scanComparisonsToTupleRange([]*predicates.ComparisonRange{res.Range}, binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Low) != 1 || r.Low[0] != int64(42) {
+		t.Fatalf("low=%v, want [42] (param resolved via binder)", r.Low)
+	}
+	if len(r.High) != 1 || r.High[0] != int64(42) {
+		t.Fatalf("high=%v, want [42] (param resolved via binder)", r.High)
+	}
+}
+
+func TestParameterBinding_Filter(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{
+			map[string]any{"X": int64(10)},
+			map[string]any{"X": int64(20)},
+			map[string]any{"X": int64(30)},
+		},
+		Typ: values.UnknownType,
+	})
+
+	param1 := values.NewParameterValue(1)
+	filter := plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "X"},
+				predicates.Comparison{
+					Type:    predicates.ComparisonGreaterThan,
+					Operand: param1,
+				},
+			),
+		},
+		inner,
+	)
+
+	evalCtx := EmptyEvaluationContext().WithParams([]any{int64(15)})
+	cursor, err := ExecutePlan(ctx, filter, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (20 and 30 > 15)", len(results))
+	}
+	v0 := results[0].Datum.(map[string]any)["X"].(int64)
+	v1 := results[1].Datum.(map[string]any)["X"].(int64)
+	if v0 != 20 || v1 != 30 {
+		t.Errorf("values = [%d, %d], want [20, 30]", v0, v1)
+	}
+}
+
+func TestParameterBinding_Values(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	param1 := values.NewParameterValue(1)
+	vplan := plans.NewRecordQueryValuesPlan([]values.Value{param1})
+
+	evalCtx := EmptyEvaluationContext().WithParams([]any{int64(99)})
+	cursor, err := ExecutePlan(ctx, vplan, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	datum := results[0].Datum.(map[string]any)
+	if datum["param"] != int64(99) {
+		t.Errorf("param = %v, want 99", datum["param"])
 	}
 }
 
