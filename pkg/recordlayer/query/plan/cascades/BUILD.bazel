@@ -163,6 +163,7 @@ go_test(
         "planner_all_impl_rules_test.go",
         "planner_batch_a_fuzz_test.go",
         "planner_constraint_test.go",
+        "planner_e2e_test.go",
         "planner_fuzz_test.go",
         "planner_limit_fuzz_test.go",
         "planner_planning_phase_test.go",
