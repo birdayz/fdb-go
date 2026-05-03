@@ -1788,3 +1788,95 @@ func TestEndToEnd_DistinctOverGroupByEliminated(t *testing.T) {
 		t.Fatalf("expected hash agg (distinct eliminated), got %T", plan)
 	}
 }
+
+func TestEndToEnd_LimitOverScan(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	lim := expressions.NewLogicalLimitExpression(10, 0, scanQ)
+	ref := expressions.InitialOf(lim)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalLimit(plan) {
+		t.Fatalf("expected physical limit, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if !strings.Contains(explain, "Limit") {
+		t.Fatalf("explain should contain 'Limit', got: %s", explain)
+	}
+	t.Logf("Explain: %s", explain)
+}
+
+func TestEndToEnd_LimitOverSortUsesOrderedIndex(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	sort := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: &values.FieldValue{Field: "created_at", Typ: values.UnknownType}}},
+		scanQ,
+	)
+	sortRef := expressions.InitialOf(sort)
+	sortQ := expressions.ForEachQuantifier(sortRef)
+
+	lim := expressions.NewLogicalLimitExpression(5, 0, sortQ)
+	ref := expressions.InitialOf(lim)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$created_at",
+			columns:     []string{"created_at"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalLimit(plan) {
+		t.Fatalf("expected physical limit at top, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if !strings.Contains(explain, "IndexScan") {
+		t.Fatalf("expected index scan beneath limit, got: %s", explain)
+	}
+	t.Logf("Explain: %s", explain)
+}
+
+func TestEndToEnd_LimitFromLogicalOperator(t *testing.T) {
+	t.Parallel()
+
+	src := logical.NewLimit(logical.NewScan("Orders", ""), 20, 5)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(expr)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if !cascades.IsPhysicalLimit(plan) {
+		t.Fatalf("expected physical limit, got %T", plan)
+	}
+	explain := cascades.ExplainPhysicalPlan(plan)
+	if !strings.Contains(explain, "offset=5") {
+		t.Fatalf("explain should mention offset=5, got: %s", explain)
+	}
+	t.Logf("Explain: %s", explain)
+}
