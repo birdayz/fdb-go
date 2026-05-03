@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
@@ -1386,5 +1389,178 @@ func TestRecursiveDfsJoin_Postorder(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1 (leaf node with no children)", len(results))
+	}
+}
+
+func TestProtoToMap_AllSetFields(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{
+		OrderId:  proto.Int64(42),
+		Price:    proto.Int32(199),
+		Quantity: proto.Int32(5),
+	}
+	m := protoToMap(order)
+
+	if m["ORDER_ID"] != int64(42) {
+		t.Errorf("ORDER_ID = %v, want 42", m["ORDER_ID"])
+	}
+	if m["PRICE"] != int64(199) {
+		t.Errorf("PRICE = %v, want 199", m["PRICE"])
+	}
+	if m["QUANTITY"] != int64(5) {
+		t.Errorf("QUANTITY = %v, want 5", m["QUANTITY"])
+	}
+}
+
+func TestProtoToMap_UnsetFieldsOmitted(t *testing.T) {
+	t.Parallel()
+	order := &gen.Order{
+		OrderId: proto.Int64(1),
+	}
+	m := protoToMap(order)
+
+	if m["ORDER_ID"] != int64(1) {
+		t.Errorf("ORDER_ID = %v, want 1", m["ORDER_ID"])
+	}
+	if _, exists := m["PRICE"]; exists {
+		t.Errorf("PRICE should not be present for unset field, got %v", m["PRICE"])
+	}
+	if _, exists := m["QUANTITY"]; exists {
+		t.Errorf("QUANTITY should not be present for unset field, got %v", m["QUANTITY"])
+	}
+}
+
+func TestProtoToMap_NilMessage(t *testing.T) {
+	t.Parallel()
+	m := protoToMap(nil)
+	if m != nil {
+		t.Errorf("protoToMap(nil) = %v, want nil", m)
+	}
+}
+
+func TestGoToProtoValue_Int32(t *testing.T) {
+	t.Parallel()
+	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	fd := order.Fields().ByName("price") // int32 field
+
+	v, err := goToProtoValue(fd, int64(42))
+	if err != nil {
+		t.Fatalf("goToProtoValue int64→int32: %v", err)
+	}
+	if got := int32(v.Int()); got != 42 {
+		t.Errorf("got %d, want 42", got)
+	}
+
+	v, err = goToProtoValue(fd, int32(99))
+	if err != nil {
+		t.Fatalf("goToProtoValue int32→int32: %v", err)
+	}
+	if got := int32(v.Int()); got != 99 {
+		t.Errorf("got %d, want 99", got)
+	}
+}
+
+func TestGoToProtoValue_Int64(t *testing.T) {
+	t.Parallel()
+	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	fd := order.Fields().ByName("order_id") // int64 field
+
+	v, err := goToProtoValue(fd, int64(123))
+	if err != nil {
+		t.Fatalf("goToProtoValue: %v", err)
+	}
+	if got := v.Int(); got != 123 {
+		t.Errorf("got %d, want 123", got)
+	}
+}
+
+func TestGoToProtoValue_String(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	fd := typed.Fields().ByName("val_string")
+
+	v, err := goToProtoValue(fd, "hello")
+	if err != nil {
+		t.Fatalf("goToProtoValue: %v", err)
+	}
+	if got := v.String(); got != "hello" {
+		t.Errorf("got %q, want %q", got, "hello")
+	}
+}
+
+func TestGoToProtoValue_Bool(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	fd := typed.Fields().ByName("val_bool")
+
+	v, err := goToProtoValue(fd, true)
+	if err != nil {
+		t.Fatalf("goToProtoValue: %v", err)
+	}
+	if !v.Bool() {
+		t.Error("expected true")
+	}
+}
+
+func TestGoToProtoValue_Double(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	fd := typed.Fields().ByName("val_double")
+
+	v, err := goToProtoValue(fd, 3.14)
+	if err != nil {
+		t.Fatalf("goToProtoValue: %v", err)
+	}
+	if got := v.Float(); got != 3.14 {
+		t.Errorf("got %f, want 3.14", got)
+	}
+}
+
+func TestGoToProtoValue_TypeError(t *testing.T) {
+	t.Parallel()
+	order := (&gen.Order{}).ProtoReflect().Descriptor()
+	fd := order.Fields().ByName("price")
+
+	_, err := goToProtoValue(fd, "not_a_number")
+	if err == nil {
+		t.Fatal("expected error for string→int32, got nil")
+	}
+}
+
+func TestGoToProtoValue_Float(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	fd := typed.Fields().ByName("val_float")
+
+	v, err := goToProtoValue(fd, float64(2.5))
+	if err != nil {
+		t.Fatalf("goToProtoValue float64→float32: %v", err)
+	}
+	if got := float32(v.Float()); got != 2.5 {
+		t.Errorf("got %f, want 2.5", got)
+	}
+
+	v, err = goToProtoValue(fd, float32(1.5))
+	if err != nil {
+		t.Fatalf("goToProtoValue float32→float32: %v", err)
+	}
+	if got := float32(v.Float()); got != 1.5 {
+		t.Errorf("got %f, want 1.5", got)
+	}
+}
+
+func TestGoToProtoValue_Bytes(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	fd := typed.Fields().ByName("val_bytes")
+
+	data := []byte{0x01, 0x02, 0x03}
+	v, err := goToProtoValue(fd, data)
+	if err != nil {
+		t.Fatalf("goToProtoValue: %v", err)
+	}
+	got := v.Bytes()
+	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Errorf("got %v, want [1 2 3]", got)
 	}
 }
