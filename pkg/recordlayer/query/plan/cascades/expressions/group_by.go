@@ -74,7 +74,7 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 		return false
 	}
 	for i, k := range e.groupingKeys {
-		if k.Name() != o.groupingKeys[i].Name() {
+		if values.ExplainValue(k) != values.ExplainValue(o.groupingKeys[i]) {
 			return false
 		}
 	}
@@ -82,7 +82,7 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 		if a.Function != o.aggregates[i].Function {
 			return false
 		}
-		if a.Operand.Name() != o.aggregates[i].Operand.Name() {
+		if values.ExplainValue(a.Operand) != values.ExplainValue(o.aggregates[i].Operand) {
 			return false
 		}
 	}
@@ -92,9 +92,12 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, _ 
 func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 	h := uint64(0x6770_6279) // "gpby"
 	for _, k := range e.groupingKeys {
-		h ^= uint64(len(k.Name())) * 31
+		h ^= uint64(len(values.ExplainValue(k))) * 31
 	}
-	h += uint64(len(e.aggregates)) * 17
+	for _, a := range e.aggregates {
+		h ^= uint64(a.Function) * 37
+		h ^= uint64(len(values.ExplainValue(a.Operand))) * 41
+	}
 	return h
 }
 

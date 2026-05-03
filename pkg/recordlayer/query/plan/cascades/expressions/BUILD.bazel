@@ -45,6 +45,7 @@ go_test(
         "expression_test.go",
         "full_unordered_scan_test.go",
         "fuzz_test.go",
+        "group_by_test.go",
         "logical_distinct_test.go",
         "logical_filter_test.go",
         "logical_intersection_test.go",
