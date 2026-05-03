@@ -49,7 +49,7 @@ func computeWrapperProperties(w physicalPlanExpression) properties.PropertyMap {
 		properties.PropDistinctRecords: computeDistinctRecords(w, plan),
 		properties.PropStoredRecord:    computeStoredRecord(plan),
 		properties.PropPrimaryKey:      computePrimaryKey(plan),
-		properties.PropOrdering:        computePlanOrdering(plan),
+		properties.PropOrdering:        computeWrapperOrdering(w),
 	}
 }
 
@@ -76,6 +76,8 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnionPlan,
 		*plans.RecordQueryIntersectionPlan:
@@ -126,7 +128,8 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan:
 		return storedRecordFromChildren(plan.GetChildren())
-	case *plans.RecordQueryFirstOrDefaultPlan:
+	case *plans.RecordQueryFirstOrDefaultPlan,
+		*plans.RecordQueryDefaultOnEmptyPlan:
 		return false
 	case *plans.RecordQueryUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
@@ -159,7 +162,10 @@ func computePrimaryKey(_ plans.RecordQueryPlan) any {
 	return nil
 }
 
-func computePlanOrdering(_ plans.RecordQueryPlan) properties.Ordering {
+func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
+	if hinter, ok := w.(properties.OrderingHinter); ok {
+		return hinter.HintOrdering()
+	}
 	return properties.Ordering{}
 }
 
