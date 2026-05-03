@@ -70,6 +70,10 @@ func (w *physicalExplodeWrapper) WithChildren(qs []expressions.Quantifier) (expr
 	return w, nil
 }
 
+func (w *physicalExplodeWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalExplodeWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalExplodeWrapper)(nil)

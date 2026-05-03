@@ -70,6 +70,10 @@ func (w *physicalTableFunctionWrapper) WithChildren(qs []expressions.Quantifier)
 	return w, nil
 }
 
+func (w *physicalTableFunctionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalTableFunctionWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalTableFunctionWrapper)(nil)

@@ -56,4 +56,10 @@ func (e *LogicalDistinctExpression) EqualsWithoutChildren(other RelationalExpres
 // Java's `return 31`.
 func (e *LogicalDistinctExpression) HashCodeWithoutChildren() uint64 { return 31 }
 
+func (e *LogicalDistinctExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalDistinctExpression{
+		inner: quantifiers[0],
+	}
+}
+
 var _ RelationalExpression = (*LogicalDistinctExpression)(nil)

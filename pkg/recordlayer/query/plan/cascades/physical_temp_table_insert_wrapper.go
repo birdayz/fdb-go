@@ -77,6 +77,10 @@ func (w *physicalTempTableInsertWrapper) WithChildren(qs []expressions.Quantifie
 	return &physicalTempTableInsertWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
+func (w *physicalTempTableInsertWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalTempTableInsertWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalTempTableInsertWrapper)(nil)

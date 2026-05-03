@@ -104,6 +104,10 @@ func (w *physicalRecursiveLevelUnionWrapper) WithChildren(qs []expressions.Quant
 	return &physicalRecursiveLevelUnionWrapper{plan: w.plan, initialQuant: qs[0], recursiveQuant: qs[1]}, nil
 }
 
+func (w *physicalRecursiveLevelUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalRecursiveLevelUnionWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalRecursiveLevelUnionWrapper)(nil)

@@ -100,6 +100,10 @@ func (w *physicalLimitWrapper) WithChildren(qs []expressions.Quantifier) (expres
 	return &physicalLimitWrapper{plan: w.plan, innerQuant: qs[0]}, nil
 }
 
+func (w *physicalLimitWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalLimitWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalLimitWrapper)(nil)

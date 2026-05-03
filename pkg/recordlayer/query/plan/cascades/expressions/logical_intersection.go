@@ -105,4 +105,13 @@ func (e *LogicalIntersectionExpression) HashCodeWithoutChildren() uint64 {
 	return h
 }
 
+func (e *LogicalIntersectionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	copied := make([]Quantifier, len(quantifiers))
+	copy(copied, quantifiers)
+	return &LogicalIntersectionExpression{
+		quantifiers:         copied,
+		comparisonKeyValues: e.comparisonKeyValues,
+	}
+}
+
 var _ RelationalExpression = (*LogicalIntersectionExpression)(nil)

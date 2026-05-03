@@ -67,6 +67,10 @@ func (w *physicalTempTableScanWrapper) WithChildren(qs []expressions.Quantifier)
 	return w, nil
 }
 
+func (w *physicalTempTableScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalTempTableScanWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalTempTableScanWrapper)(nil)

@@ -75,4 +75,12 @@ func (e *TempTableInsertExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *TempTableInsertExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &TempTableInsertExpression{
+		inner:          quantifiers[0],
+		tempTableAlias: e.tempTableAlias,
+		owning:         e.owning,
+	}
+}
+
 var _ RelationalExpression = (*TempTableInsertExpression)(nil)

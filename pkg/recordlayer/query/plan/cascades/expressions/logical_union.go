@@ -71,4 +71,12 @@ func (e *LogicalUnionExpression) EqualsWithoutChildren(other RelationalExpressio
 // HashCodeWithoutChildren is a class-discriminating constant.
 func (e *LogicalUnionExpression) HashCodeWithoutChildren() uint64 { return 37 }
 
+func (e *LogicalUnionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	copied := make([]Quantifier, len(quantifiers))
+	copy(copied, quantifiers)
+	return &LogicalUnionExpression{
+		quantifiers: copied,
+	}
+}
+
 var _ RelationalExpression = (*LogicalUnionExpression)(nil)

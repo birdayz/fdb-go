@@ -88,6 +88,10 @@ func (w *physicalHashAggWrapper) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: false}
 }
 
+func (w *physicalHashAggWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalHashAggWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalHashAggWrapper)(nil)

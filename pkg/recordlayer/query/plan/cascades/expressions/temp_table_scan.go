@@ -49,4 +49,8 @@ func (e *TempTableScanExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *TempTableScanExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
+	return e
+}
+
 var _ RelationalExpression = (*TempTableScanExpression)(nil)

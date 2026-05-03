@@ -34,6 +34,8 @@ func (l *leafScan) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap
 	return ok && o.name == l.name
 }
 
+func (l *leafScan) WithQuantifiers(_ []Quantifier) RelationalExpression { return l }
+
 func TestSemanticEquals_NilHandling(t *testing.T) {
 	t.Parallel()
 	if !SemanticEquals(nil, nil, EmptyAliasMap()) {

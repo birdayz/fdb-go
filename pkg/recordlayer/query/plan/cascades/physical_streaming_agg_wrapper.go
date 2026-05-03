@@ -100,6 +100,10 @@ func (w *physicalStreamingAggWrapper) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: keys}
 }
 
+func (w *physicalStreamingAggWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalStreamingAggWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalStreamingAggWrapper)(nil)

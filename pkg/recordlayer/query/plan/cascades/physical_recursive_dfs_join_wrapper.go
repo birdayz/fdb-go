@@ -101,6 +101,10 @@ func (w *physicalRecursiveDfsJoinWrapper) WithChildren(qs []expressions.Quantifi
 	return &physicalRecursiveDfsJoinWrapper{plan: w.plan, rootQuant: qs[0], childQuant: qs[1]}, nil
 }
 
+func (w *physicalRecursiveDfsJoinWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalRecursiveDfsJoinWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalRecursiveDfsJoinWrapper)(nil)

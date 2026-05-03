@@ -107,4 +107,11 @@ func (e *LogicalTypeFilterExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *LogicalTypeFilterExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalTypeFilterExpression{
+		inner:       quantifiers[0],
+		recordTypes: e.recordTypes,
+	}
+}
+
 var _ RelationalExpression = (*LogicalTypeFilterExpression)(nil)

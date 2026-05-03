@@ -106,4 +106,8 @@ func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *FullUnorderedScanExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
+	return e
+}
+
 var _ RelationalExpression = (*FullUnorderedScanExpression)(nil)

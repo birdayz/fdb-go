@@ -73,4 +73,11 @@ func (e *DeleteExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *DeleteExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &DeleteExpression{
+		inner:            quantifiers[0],
+		targetRecordType: e.targetRecordType,
+	}
+}
+
 var _ RelationalExpression = (*DeleteExpression)(nil)

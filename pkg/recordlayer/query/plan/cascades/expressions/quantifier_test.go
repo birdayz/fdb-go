@@ -22,6 +22,8 @@ func (s *stubExpr) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap
 	return ok && o.name == s.name
 }
 
+func (s *stubExpr) WithQuantifiers(_ []Quantifier) RelationalExpression { return s }
+
 func TestForEachQuantifier_FreshAlias(t *testing.T) {
 	t.Parallel()
 	ref := InitialOf(&stubExpr{name: "T"})

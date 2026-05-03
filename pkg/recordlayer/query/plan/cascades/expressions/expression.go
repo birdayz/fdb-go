@@ -117,6 +117,16 @@ type RelationalExpression interface {
 	// / SelectExpression — the operators whose children are SQL
 	// set-bag-shaped or whose Java code marks them as ChildrenAsSet.
 	ChildrenAsSet() bool
+
+	// WithQuantifiers returns a copy of this expression with the
+	// given quantifiers replacing the original children. The new
+	// quantifiers must be in the same positional order as
+	// GetQuantifiers(). Leaf expressions (no quantifiers) return
+	// themselves. Used by FinalizeExpressionsRule to rebuild an
+	// expression over disentangled child References.
+	//
+	// Ports Java's RelationalExpression.withQuantifiers.
+	WithQuantifiers(quantifiers []Quantifier) RelationalExpression
 }
 
 // SemanticEquals walks two expression trees and reports whether they

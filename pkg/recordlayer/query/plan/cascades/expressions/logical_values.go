@@ -61,4 +61,8 @@ func (e *LogicalValuesExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *LogicalValuesExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
+	return e
+}
+
 var _ RelationalExpression = (*LogicalValuesExpression)(nil)

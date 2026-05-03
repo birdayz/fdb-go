@@ -126,4 +126,11 @@ func (e *LogicalSortExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *LogicalSortExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalSortExpression{
+		inner:    quantifiers[0],
+		sortKeys: e.sortKeys,
+	}
+}
+
 var _ RelationalExpression = (*LogicalSortExpression)(nil)
