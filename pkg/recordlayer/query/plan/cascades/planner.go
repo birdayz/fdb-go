@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 )
 
@@ -215,11 +216,49 @@ func (e plannerErr) Error() string { return string(e) }
 // Reference in the Memo. Leaf References first, then parents.
 // Each rule produces final members via InsertFinal.
 func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
-	visited := make(map[*expressions.Reference]bool)
-	p.planningVisit(rootRef, visited)
+	cm := NewConstraintMap()
+
+	// Pass 1: top-down constraint propagation. Rules that push
+	// ordering constraints (e.g., DistinctUnionRule) fire here so
+	// child References receive constraints before implementation.
+	p.propagateConstraints(rootRef, make(map[*expressions.Reference]bool), cm)
+
+	// Pass 2: bottom-up implementation. Children are implemented
+	// first (with constraints from Pass 1 available), then parents.
+	p.implementBottomUp(rootRef, make(map[*expressions.Reference]bool), cm)
 }
 
-func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+func (p *Planner) propagateConstraints(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+
+	for _, rule := range p.implementationRules {
+		for _, member := range ref.AllMembers() {
+			bindings := rule.Matcher().BindMatches(matching.NewBindings(), member)
+			for _, b := range bindings {
+				call := &ImplementationRuleCall{
+					Bindings:       b,
+					Reference:      ref,
+					Constraints:    cm,
+					constraintOnly: true,
+				}
+				rule.OnMatch(call)
+			}
+		}
+	}
+
+	for _, m := range ref.Members() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.propagateConstraints(childRef, visited, cm)
+			}
+		}
+	}
+}
+
+func (p *Planner) implementBottomUp(ref *expressions.Reference, visited map[*expressions.Reference]bool, cm *ConstraintMap) {
 	if ref == nil || visited[ref] {
 		return
 	}
@@ -228,14 +267,16 @@ func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*express
 	for _, m := range ref.Members() {
 		for _, q := range m.GetQuantifiers() {
 			if childRef := q.GetRangesOver(); childRef != nil {
-				p.planningVisit(childRef, visited)
+				p.implementBottomUp(childRef, visited, cm)
 			}
 		}
 	}
 
 	for _, rule := range p.implementationRules {
-		FireImplementationRule(rule, ref)
+		FireImplementationRule(rule, ref, cm)
 	}
+
+	computeRefPlanProperties(ref)
 }
 
 // Explore drives the task-stack until convergence (no rule yields a

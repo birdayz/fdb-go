@@ -56,9 +56,11 @@ const (
 	TypeCodeRecord
 	TypeCodeArray
 	TypeCodeRelation
-	TypeCodeAny
 	TypeCodeNone
+	TypeCodeAny
 	TypeCodeUuid
+	TypeCodeDate
+	TypeCodeTimestamp
 )
 
 // String renders the code as the SQL-ish type name ("INT", "STRING",
@@ -98,6 +100,10 @@ func (tc TypeCode) String() string {
 		return "NONE"
 	case TypeCodeUuid:
 		return "UUID"
+	case TypeCodeDate:
+		return "DATE"
+	case TypeCodeTimestamp:
+		return "TIMESTAMP"
 	}
 	return "UNKNOWN"
 }
@@ -111,7 +117,7 @@ func (tc TypeCode) IsPrimitive() bool {
 	case TypeCodeBoolean, TypeCodeInt, TypeCodeLong,
 		TypeCodeFloat, TypeCodeDouble,
 		TypeCodeString, TypeCodeBytes, TypeCodeVersion,
-		TypeCodeUuid:
+		TypeCodeUuid, TypeCodeDate, TypeCodeTimestamp:
 		return true
 	}
 	return false
@@ -256,6 +262,16 @@ var (
 	NullableVersion Type = &PrimitiveType{TypeCode: TypeCodeVersion, Nullable: true}
 	// NotNullVersion is VERSION NOT NULL.
 	NotNullVersion Type = &PrimitiveType{TypeCode: TypeCodeVersion, Nullable: false}
+
+	// NullableDate is DATE NULL.
+	NullableDate Type = &PrimitiveType{TypeCode: TypeCodeDate, Nullable: true}
+	// NotNullDate is DATE NOT NULL.
+	NotNullDate Type = &PrimitiveType{TypeCode: TypeCodeDate, Nullable: false}
+
+	// NullableTimestamp is TIMESTAMP NULL.
+	NullableTimestamp Type = &PrimitiveType{TypeCode: TypeCodeTimestamp, Nullable: true}
+	// NotNullTimestamp is TIMESTAMP NOT NULL.
+	NotNullTimestamp Type = &PrimitiveType{TypeCode: TypeCodeTimestamp, Nullable: false}
 
 	// NullType is the type of the NULL literal — always nullable
 	// (a NULL is by definition not a value of a specific type, but
@@ -833,26 +849,31 @@ type promotionEdge struct {
 // Identity (T → T) is NOT in the map — IsPromotable handles that
 // trivially before consulting the map.
 var promotionMap = map[promotionEdge]struct{}{
-	{TypeCodeInt, TypeCodeLong}:     {},
-	{TypeCodeInt, TypeCodeFloat}:    {},
-	{TypeCodeInt, TypeCodeDouble}:   {},
-	{TypeCodeLong, TypeCodeFloat}:   {},
-	{TypeCodeLong, TypeCodeDouble}:  {},
-	{TypeCodeFloat, TypeCodeDouble}: {},
-	{TypeCodeNull, TypeCodeInt}:     {},
-	{TypeCodeNull, TypeCodeLong}:    {},
-	{TypeCodeNull, TypeCodeFloat}:   {},
-	{TypeCodeNull, TypeCodeDouble}:  {},
-	{TypeCodeNull, TypeCodeBoolean}: {},
-	{TypeCodeNull, TypeCodeString}:  {},
-	{TypeCodeNull, TypeCodeBytes}:   {},
-	{TypeCodeNull, TypeCodeArray}:   {},
-	{TypeCodeNull, TypeCodeRecord}:  {},
-	{TypeCodeNull, TypeCodeEnum}:    {},
-	{TypeCodeNull, TypeCodeVersion}: {},
-	{TypeCodeNone, TypeCodeArray}:   {},
-	{TypeCodeString, TypeCodeEnum}:  {},
-	{TypeCodeString, TypeCodeUuid}:  {},
+	{TypeCodeInt, TypeCodeLong}:         {},
+	{TypeCodeInt, TypeCodeFloat}:        {},
+	{TypeCodeInt, TypeCodeDouble}:       {},
+	{TypeCodeLong, TypeCodeFloat}:       {},
+	{TypeCodeLong, TypeCodeDouble}:      {},
+	{TypeCodeFloat, TypeCodeDouble}:     {},
+	{TypeCodeNull, TypeCodeInt}:         {},
+	{TypeCodeNull, TypeCodeLong}:        {},
+	{TypeCodeNull, TypeCodeFloat}:       {},
+	{TypeCodeNull, TypeCodeDouble}:      {},
+	{TypeCodeNull, TypeCodeBoolean}:     {},
+	{TypeCodeNull, TypeCodeString}:      {},
+	{TypeCodeNull, TypeCodeBytes}:       {},
+	{TypeCodeNull, TypeCodeArray}:       {},
+	{TypeCodeNull, TypeCodeRecord}:      {},
+	{TypeCodeNull, TypeCodeEnum}:        {},
+	{TypeCodeNull, TypeCodeVersion}:     {},
+	{TypeCodeNone, TypeCodeArray}:       {},
+	{TypeCodeString, TypeCodeEnum}:      {},
+	{TypeCodeString, TypeCodeUuid}:      {},
+	{TypeCodeNull, TypeCodeDate}:        {},
+	{TypeCodeNull, TypeCodeTimestamp}:   {},
+	{TypeCodeDate, TypeCodeTimestamp}:   {},
+	{TypeCodeDate, TypeCodeString}:      {},
+	{TypeCodeTimestamp, TypeCodeString}: {},
 }
 
 // IsPromotable reports whether `from` can be implicitly promoted

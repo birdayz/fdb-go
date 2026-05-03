@@ -19,7 +19,7 @@ func containsPhysical(ref *expressions.Reference, predicate func(expressions.Rel
 			return false
 		}
 		visited[r] = true
-		for _, m := range r.Members() {
+		for _, m := range r.AllMembers() {
 			if predicate(m) {
 				return true
 			}

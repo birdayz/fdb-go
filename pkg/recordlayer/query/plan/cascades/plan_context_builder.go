@@ -65,3 +65,5 @@ func (c *builtPlanContext) GetPlannerConfiguration() PlannerConfiguration {
 func (c *builtPlanContext) GetMatchCandidates() []MatchCandidate {
 	return c.candidates
 }
+
+func (c *builtPlanContext) GetPrimaryKeyColumns(string) []string { return nil }

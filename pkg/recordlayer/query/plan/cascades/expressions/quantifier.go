@@ -49,9 +49,10 @@ const (
 // shares the same fields (alias + ranges-over). Subclass-only state
 // (Java's `ForEach.isNullOnEmpty`) is added when a kind needs it.
 type Quantifier struct {
-	kind       QuantifierKind
-	alias      values.CorrelationIdentifier
-	rangesOver *Reference
+	kind        QuantifierKind
+	alias       values.CorrelationIdentifier
+	rangesOver  *Reference
+	nullOnEmpty bool
 }
 
 // ForEachQuantifier builds a ForEach quantifier ranging over the given
@@ -62,6 +63,18 @@ func ForEachQuantifier(rangesOver *Reference) Quantifier {
 		kind:       QuantifierForEach,
 		alias:      values.UniqueCorrelationIdentifier(),
 		rangesOver: rangesOver,
+	}
+}
+
+// ForEachNullOnEmptyQuantifier builds a ForEach quantifier with
+// nullOnEmpty=true. Used for LEFT JOIN semantics where the inner
+// side should produce a NULL row when empty.
+func ForEachNullOnEmptyQuantifier(rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:        QuantifierForEach,
+		alias:       values.UniqueCorrelationIdentifier(),
+		rangesOver:  rangesOver,
+		nullOnEmpty: true,
 	}
 }
 
@@ -105,15 +118,38 @@ func NamedExistentialQuantifier(alias values.CorrelationIdentifier, rangesOver *
 	}
 }
 
+// NewPhysicalQuantifier builds a Physical quantifier ranging over the
+// given Reference, with a freshly-allocated unique alias. Used in the
+// PLANNING phase when ImplementationRules create physical plan wrappers.
+func NewPhysicalQuantifier(rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:       QuantifierPhysical,
+		alias:      values.UniqueCorrelationIdentifier(),
+		rangesOver: rangesOver,
+	}
+}
+
+// NamedPhysicalQuantifier builds a Physical quantifier with a specific
+// alias. Used when the alias must match the inner quantifier's alias
+// so predicates/projections continue to resolve correctly.
+func NamedPhysicalQuantifier(alias values.CorrelationIdentifier, rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:       QuantifierPhysical,
+		alias:      alias,
+		rangesOver: rangesOver,
+	}
+}
+
 // RebuildQuantifier creates a new Quantifier with the same kind and
 // alias but ranging over a different Reference. Used by
 // FinalizeExpressionsRule to point quantifiers at disentangled child
 // References. Mirrors Java's Quantifier.toBuilder().build(reference).
 func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
 	return Quantifier{
-		kind:       q.kind,
-		alias:      q.alias,
-		rangesOver: newRef,
+		kind:        q.kind,
+		alias:       q.alias,
+		nullOnEmpty: q.nullOnEmpty,
+		rangesOver:  newRef,
 	}
 }
 
@@ -126,6 +162,10 @@ func (q Quantifier) GetAlias() values.CorrelationIdentifier { return q.alias }
 
 // GetRangesOver returns the Reference holding the inner expression.
 func (q Quantifier) GetRangesOver() *Reference { return q.rangesOver }
+
+// IsNullOnEmpty returns true for ForEach quantifiers that should
+// produce a NULL row when the inner is empty (LEFT JOIN semantics).
+func (q Quantifier) IsNullOnEmpty() bool { return q.nullOnEmpty }
 
 // GetFlowedObjectValue returns a Value representing "the row currently
 // flowing along this Quantifier". Predicates / projections in the

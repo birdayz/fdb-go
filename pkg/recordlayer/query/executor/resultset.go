@@ -22,11 +22,12 @@ type RecordLayerResultSet struct {
 	columns  []ColumnDef
 	colIndex map[string]int // upper-case name → 0-based index
 
-	current QueryResult
-	hasRow  bool
-	wasNull bool
-	err     error
-	closed  bool
+	current          QueryResult
+	lastContinuation recordlayer.RecordCursorContinuation
+	hasRow           bool
+	wasNull          bool
+	err              error
+	closed           bool
 }
 
 // ColumnDef describes one column in the result set.
@@ -65,6 +66,7 @@ func (rs *RecordLayerResultSet) Next() bool {
 		rs.hasRow = false
 		return false
 	}
+	rs.lastContinuation = result.GetContinuation()
 	if !result.HasNext() {
 		rs.hasRow = false
 		return false
@@ -225,8 +227,30 @@ func (rs *RecordLayerResultSet) ObjectByName(name string) (any, error) {
 }
 
 func (rs *RecordLayerResultSet) Continuation() (api.Continuation, error) {
-	return &exhaustedContinuation{}, nil
+	if rs.lastContinuation == nil {
+		return &exhaustedContinuation{}, nil
+	}
+	bytes, err := rs.lastContinuation.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+	if rs.lastContinuation.IsEnd() {
+		return &exhaustedContinuation{}, nil
+	}
+	return &liveContinuation{
+		state:  bytes,
+		reason: api.ContinuationUserRequested,
+	}, nil
 }
+
+type liveContinuation struct {
+	state  []byte
+	reason api.ContinuationReason
+}
+
+func (c *liveContinuation) Serialize() []byte              { return c.state }
+func (c *liveContinuation) ExecutionState() []byte         { return c.state }
+func (c *liveContinuation) Reason() api.ContinuationReason { return c.reason }
 
 func toLong(v any) (int64, error) {
 	if v == nil {

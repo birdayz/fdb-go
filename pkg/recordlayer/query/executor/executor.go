@@ -85,6 +85,22 @@ func ExecutePlan(
 		return executeRecursiveLevelUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryRecursiveDfsJoinPlan:
 		return executeRecursiveDfsJoin(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryUnorderedUnionPlan:
+		return executeUnorderedUnion(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryPredicatesFilterPlan:
+		return executePredicatesFilter(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryMapPlan:
+		return executeMap(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryFirstOrDefaultPlan:
+		return executeFirstOrDefault(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		return executeDefaultOnEmpty(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryInJoinPlan:
+		return executeInJoin(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryMergeSortUnionPlan:
+		return executeMergeSortUnion(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryInUnionPlan:
+		return executeInJoin(ctx, plans.NewRecordQueryInJoinPlan(p.GetInner(), "", false, false), store, evalCtx, continuation, props)
 	default:
 		return nil, fmt.Errorf("executor: unsupported plan type %T", plan)
 	}

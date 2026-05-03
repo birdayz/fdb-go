@@ -30,6 +30,11 @@ type PlanContext interface {
 	// that consult candidates need to wait for the IndexAccessHint /
 	// MatchCandidate ports (B5 Batch A).
 	GetMatchCandidates() []MatchCandidate
+
+	// GetPrimaryKeyColumns returns the primary key column names for
+	// a given record type. Returns nil if the record type has no
+	// explicit PK (defaults to synthetic PK).
+	GetPrimaryKeyColumns(recordType string) []string
 }
 
 // PlannerConfiguration is the seed planner-config struct. Mirrors the
@@ -106,6 +111,7 @@ type MatchCandidate interface {
 // by tests.
 type emptyPlanContext struct{}
 
+func (emptyPlanContext) GetPrimaryKeyColumns(string) []string { return nil }
 func (emptyPlanContext) GetPlannerConfiguration() PlannerConfiguration {
 	return DefaultPlannerConfiguration()
 }

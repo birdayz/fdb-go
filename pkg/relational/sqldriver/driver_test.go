@@ -48,6 +48,20 @@ func TestParseDSN_EmbeddedWithOptions(t *testing.T) {
 	}
 }
 
+func TestParseDSN_EngineOption(t *testing.T) {
+	t.Parallel()
+	dsn, err := ParseDSN("fdbsql:///mydb?schema=myschema&engine=cascades")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if dsn.Options["engine"] != "cascades" {
+		t.Errorf("engine option = %q, want cascades", dsn.Options["engine"])
+	}
+	if dsn.Schema != "myschema" {
+		t.Errorf("Schema = %q, want myschema", dsn.Schema)
+	}
+}
+
 func TestParseDSN_Remote(t *testing.T) {
 	t.Parallel()
 	dsn, err := ParseDSN("fdbsql://sqlserver.example.com:50051/mydb")

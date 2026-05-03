@@ -62,6 +62,61 @@ func IsPhysicalUpdate(expr expressions.RelationalExpression) bool {
 	return ok
 }
 
+// IsPhysicalPredicatesFilter reports whether the given expression is
+// a physicalPredicatesFilterWrapper.
+func IsPhysicalPredicatesFilter(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalPredicatesFilterWrapper)
+	return ok
+}
+
+// IsPhysicalMap reports whether the given expression is a physicalMapWrapper.
+func IsPhysicalMap(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalMapWrapper)
+	return ok
+}
+
+// IsPhysicalFirstOrDefault reports whether the given expression is
+// a physicalFirstOrDefaultWrapper.
+func IsPhysicalFirstOrDefault(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalFirstOrDefaultWrapper)
+	return ok
+}
+
+// IsPhysicalDefaultOnEmpty reports whether the given expression is
+// a physicalDefaultOnEmptyWrapper.
+func IsPhysicalDefaultOnEmpty(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalDefaultOnEmptyWrapper)
+	return ok
+}
+
+// IsPhysicalUnorderedUnion reports whether the given expression is
+// a physicalUnorderedUnionWrapper.
+func IsPhysicalUnorderedUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalUnorderedUnionWrapper)
+	return ok
+}
+
+// IsPhysicalMergeSortUnion reports whether the given expression is
+// a physicalMergeSortUnionWrapper.
+func IsPhysicalMergeSortUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalMergeSortUnionWrapper)
+	return ok
+}
+
+// IsPhysicalInJoin reports whether the given expression is
+// a physicalInJoinWrapper.
+func IsPhysicalInJoin(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInJoinWrapper)
+	return ok
+}
+
+// IsPhysicalInUnion reports whether the given expression is
+// a physicalInUnionWrapper.
+func IsPhysicalInUnion(expr expressions.RelationalExpression) bool {
+	_, ok := expr.(*physicalInUnionWrapper)
+	return ok
+}
+
 // ExplainPhysicalPlan returns the Explain() string for a physical-plan
 // expression, or empty string if the expression is not a physical plan.
 func ExplainPhysicalPlan(expr expressions.RelationalExpression) string {
@@ -237,6 +292,19 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	return properties.Cost{Cardinality: total * physicalWrapperCostMultiplier, CPU: 0}
 }
 
+// HintOrdering: a scan produces rows in PK order when the scan
+// carries PK values (from WithPrimaryKey). Otherwise unknown.
+func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
+	if w.plan == nil {
+		return properties.Ordering{}
+	}
+	pk := w.plan.GetPrimaryKeyValues()
+	if len(pk) == 0 {
+		return properties.Ordering{}
+	}
+	return properties.Ordering{IsKnown: true, Keys: pk}
+}
+
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }
@@ -315,6 +383,30 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 		keys = append(keys, &values.FieldValue{Field: w.columnNames[i], Typ: values.UnknownType})
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys}
+}
+
+// HintRichOrdering returns the full ordering with bindings: equality-bound
+// prefix columns become FixedBinding entries (with comparison reference),
+// non-equality suffix columns become SortedBinding entries. This enables
+// ordering-aware InJoin source matching.
+func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
+	if w.plan == nil || len(w.columnNames) == 0 {
+		return EmptyOrdering()
+	}
+	comps := w.plan.GetScanComparisons()
+	bm := make(map[values.Value][]OrderingBinding)
+	keys := make([]values.Value, 0, len(w.columnNames))
+
+	for i, col := range w.columnNames {
+		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keys = append(keys, key)
+		if i < len(comps) && comps[i].IsEquality() {
+			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+		} else {
+			bm[key] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+		}
+	}
+	return NewRichOrdering(bm, keys, w.unique)
 }
 
 // HintCost: index scans are cheaper than full table scans because
