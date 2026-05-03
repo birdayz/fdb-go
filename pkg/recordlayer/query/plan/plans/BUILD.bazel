@@ -17,6 +17,7 @@ go_library(
         "intersection.go",
         "limit.go",
         "map.go",
+        "merge_sort_union.go",
         "nested_loop_join.go",
         "plan.go",
         "predicates_filter.go",
