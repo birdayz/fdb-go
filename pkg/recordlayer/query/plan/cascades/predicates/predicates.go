@@ -208,6 +208,24 @@ type QueryPredicate interface {
 	Explain() string
 }
 
+// IsTautology reports whether the predicate always evaluates to TRUE.
+// Only ConstantPredicate(TRUE) is a tautology; all other predicates
+// return false. Mirrors Java's QueryPredicate.isTautology().
+func IsTautology(p QueryPredicate) bool {
+	if cp, ok := p.(*ConstantPredicate); ok {
+		return cp.Value == TriTrue
+	}
+	return false
+}
+
+// IsContradiction reports whether the predicate always evaluates to FALSE.
+func IsContradiction(p QueryPredicate) bool {
+	if cp, ok := p.(*ConstantPredicate); ok {
+		return cp.Value == TriFalse
+	}
+	return false
+}
+
 // --- ConstantPredicate ---------------------------------------------
 
 // ConstantPredicate is a literal truth value (true / false /

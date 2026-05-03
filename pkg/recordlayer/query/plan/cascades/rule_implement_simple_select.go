@@ -3,6 +3,7 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
@@ -46,8 +47,14 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	resultValue := selectExpr.GetResultValue()
-	queryPredicates := selectExpr.GetPredicates()
 	isSimpleResult := isQuantifiedObjectValueFor(resultValue, innerQuantifier)
+
+	var queryPredicates []predicates.QueryPredicate
+	for _, p := range selectExpr.GetPredicates() {
+		if !predicates.IsTautology(p) {
+			queryPredicates = append(queryPredicates, p)
+		}
+	}
 
 	for _, partition := range partitions {
 		innerExprs := partition.GetExpressions()
