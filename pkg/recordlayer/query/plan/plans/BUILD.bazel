@@ -10,6 +10,7 @@ go_library(
         "filter.go",
         "first_or_default.go",
         "hash_aggregation.go",
+        "in_join.go",
         "index_scan.go",
         "insert.go",
         "intersection.go",
