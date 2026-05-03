@@ -223,6 +223,81 @@ func TestTransitiveClosureCircular(t *testing.T) {
 	p.TransitiveClosure()
 }
 
+func TestTransitiveClosureChained(t *testing.T) {
+	t.Parallel()
+	deps := NewSetMultimap[string]()
+	deps.Put("b", "a")
+	deps.Put("c", "b")
+	deps.Put("d", "c")
+	deps.Put("e", "d")
+	p := NewPartiallyOrderedSet([]string{"a", "b", "c", "d", "e"}, deps)
+
+	tc := p.TransitiveClosure()
+	if !tc.Contains("b", "a") {
+		t.Fatal("b→a")
+	}
+	if !tc.Contains("c", "a") || !tc.Contains("c", "b") {
+		t.Fatal("c should depend on a and b")
+	}
+	if !tc.Contains("d", "a") || !tc.Contains("d", "b") || !tc.Contains("d", "c") {
+		t.Fatal("d should depend on a, b, c")
+	}
+	if !tc.Contains("e", "a") || !tc.Contains("e", "b") || !tc.Contains("e", "c") || !tc.Contains("e", "d") {
+		t.Fatal("e should depend on a, b, c, d")
+	}
+}
+
+func TestTransitiveClosureNoDeps(t *testing.T) {
+	t.Parallel()
+	p := NewPartiallyOrderedSet([]string{"a", "b", "c"}, NewSetMultimap[string]())
+	tc := p.TransitiveClosure()
+	if tc.Size() != 0 {
+		t.Fatalf("expected empty closure for no deps, got size %d", tc.Size())
+	}
+}
+
+func TestTransitiveClosureBranching(t *testing.T) {
+	t.Parallel()
+	deps := NewSetMultimap[string]()
+	deps.Put("b", "a")
+	deps.Put("c", "b")
+	deps.Put("d", "b")
+	deps.Put("e", "a")
+	p := NewPartiallyOrderedSet([]string{"a", "b", "c", "d", "e"}, deps)
+
+	tc := p.TransitiveClosure()
+	if !tc.Contains("c", "a") || !tc.Contains("c", "b") {
+		t.Fatal("c should depend on a and b")
+	}
+	if !tc.Contains("d", "a") || !tc.Contains("d", "b") {
+		t.Fatal("d should depend on a and b")
+	}
+	if !tc.Contains("e", "a") {
+		t.Fatal("e should depend on a")
+	}
+	if tc.Contains("e", "b") {
+		t.Fatal("e should NOT depend on b")
+	}
+}
+
+func TestTransitiveClosureDoublyUsed(t *testing.T) {
+	t.Parallel()
+	deps := NewSetMultimap[string]()
+	deps.Put("c11", "c88")
+	deps.Put("c11", "c53")
+	deps.Put("c88", "c69")
+	deps.Put("c88", "c53")
+	p := NewPartiallyOrderedSet([]string{"c11", "c53", "c69", "c88"}, deps)
+
+	tc := p.TransitiveClosure()
+	if !tc.Contains("c88", "c69") || !tc.Contains("c88", "c53") {
+		t.Fatal("c88 should depend on c69 and c53")
+	}
+	if !tc.Contains("c11", "c69") || !tc.Contains("c11", "c53") || !tc.Contains("c11", "c88") {
+		t.Fatal("c11 should depend on c69, c53, c88")
+	}
+}
+
 func TestDualOrder(t *testing.T) {
 	t.Parallel()
 	deps := NewSetMultimap[string]()
