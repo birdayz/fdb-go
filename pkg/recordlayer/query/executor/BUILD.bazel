@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "evaluation_context.go",
         "executor.go",
+        "executor_new_plans.go",
         "query_result.go",
         "resultset.go",
     ],
