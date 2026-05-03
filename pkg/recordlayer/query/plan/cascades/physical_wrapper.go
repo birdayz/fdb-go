@@ -93,7 +93,7 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if ph, ok := m.(physicalPlanExpression); ok {
 			return ph.GetRecordQueryPlan()
 		}
@@ -110,7 +110,7 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 	if ref == nil {
 		return nil
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
 			return m
 		}
@@ -452,7 +452,7 @@ func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
@@ -655,7 +655,7 @@ func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
@@ -750,7 +750,7 @@ func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
@@ -1264,7 +1264,7 @@ func (w *physicalProjectionWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o

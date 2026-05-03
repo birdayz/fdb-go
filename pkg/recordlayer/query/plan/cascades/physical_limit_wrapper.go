@@ -84,7 +84,7 @@ func (w *physicalLimitWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o

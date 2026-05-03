@@ -1,31 +1,18 @@
 package expressions
 
 // Reference is the planner's handle on an equivalence class of
-// RelationalExpressions — Cascades' "memo group". Once the Memo lands
-// (Track B3) a Reference will hold a SET of equivalent expressions; for
-// the seed it holds exactly one.
+// RelationalExpressions — Cascades' "memo group".
 //
-// References are passed around by pointer (Java passes `Reference`
-// objects, which are reference types under the hood). Two Quantifiers
-// that range over the same Reference share the same equivalence class —
-// this is how the planner avoids re-optimising the same subtree twice.
-//
-// Ports the relevant subset of Java's
-// `com.apple.foundationdb.record.query.plan.cascades.Reference`. The
-// Java class is 1068 lines; we expose:
-//   - InitialOf: build a Reference holding a single expression
-//   - Get: read the (currently single) member
-//   - Members: read the full member list (always size 1 in the seed)
-//   - Insert: append a member (no-op if EqualsWithoutChildren matches)
-//
-// Insert's dedup uses a two-tier check: pointer-identity on child
-// References (fast path) plus SemanticEquals fallback (catches
-// fresh-Reference wrapping). See Insert's doc comment for the full
-// contract. This matches Java's ExpressionPartition behaviour with
-// the addition of structural-equivalence dedup needed by rules that
-// introduce wrapping operators around fresh sub-trees.
+// Java's Reference distinguishes exploratoryMembers (rewriting phase)
+// from finalMembers (planning phase). We mirror this: `members` holds
+// exploratory expressions, `finalMembers` holds implementation-phase
+// results. During the REWRITING phase, rules Insert into members.
+// During the PLANNING phase, ImplementationCascadesRules InsertFinal
+// into finalMembers. AllMembers() returns the union for code that
+// doesn't care about the distinction (matcher, cost extraction).
 type Reference struct {
-	members []RelationalExpression
+	members      []RelationalExpression
+	finalMembers []RelationalExpression
 }
 
 // InitialOf returns a Reference holding the single expression e as its
@@ -45,10 +32,56 @@ func (r *Reference) Get() RelationalExpression {
 	return r.members[0]
 }
 
-// Members returns the equivalence-class members. The slice is read-only;
-// callers must not mutate it.
+// Members returns the exploratory members. The slice is read-only.
 func (r *Reference) Members() []RelationalExpression {
 	return r.members
+}
+
+// FinalMembers returns the final (implementation-phase) members.
+func (r *Reference) FinalMembers() []RelationalExpression {
+	return r.finalMembers
+}
+
+// AllMembers returns the union of exploratory and final members.
+func (r *Reference) AllMembers() []RelationalExpression {
+	if len(r.finalMembers) == 0 {
+		return r.members
+	}
+	if len(r.members) == 0 {
+		return r.finalMembers
+	}
+	all := make([]RelationalExpression, 0, len(r.members)+len(r.finalMembers))
+	all = append(all, r.members...)
+	all = append(all, r.finalMembers...)
+	return all
+}
+
+// InsertFinal adds e to the final members if no existing final member
+// matches. Used by ImplementationCascadesRules during the PLANNING phase.
+func (r *Reference) InsertFinal(e RelationalExpression) bool {
+	if e == nil {
+		panic("Reference.InsertFinal: nil expression")
+	}
+	eHash := e.HashCodeWithoutChildren()
+	for _, m := range r.finalMembers {
+		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
+			return false
+		}
+		if m.HashCodeWithoutChildren() == eHash && SemanticEquals(m, e, EmptyAliasMap()) {
+			return false
+		}
+	}
+	r.finalMembers = append(r.finalMembers, e)
+	return true
+}
+
+// NewFinalReference creates a new Reference containing only the given
+// final expressions. Used by FinalMemoizer to create disentangled
+// references during the PLANNING phase.
+func NewFinalReference(exprs []RelationalExpression) *Reference {
+	final := make([]RelationalExpression, len(exprs))
+	copy(final, exprs)
+	return &Reference{finalMembers: final}
 }
 
 // GetBest returns the cheapest member of this Reference under the
@@ -63,11 +96,12 @@ func (r *Reference) Members() []RelationalExpression {
 //
 // `less` must NOT be nil.
 func (r *Reference) GetBest(less func(a, b RelationalExpression) bool) RelationalExpression {
-	if len(r.members) == 0 {
+	all := r.AllMembers()
+	if len(all) == 0 {
 		return nil
 	}
-	best := r.members[0]
-	for _, m := range r.members[1:] {
+	best := all[0]
+	for _, m := range all[1:] {
 		if less(m, best) {
 			best = m
 		}
