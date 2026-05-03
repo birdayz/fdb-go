@@ -940,6 +940,67 @@ func TestEndToEnd_GlobalAggregate(t *testing.T) {
 	}
 }
 
+// TestEndToEnd_StreamingAggDirectFromOrderedIndex verifies the optimal
+// path: GroupBy(region) over Sort(region) over Scan, with index on region,
+// produces StreamingAgg over ordered index scan — sort eliminated entirely.
+func TestEndToEnd_StreamingAggDirectFromOrderedIndex(t *testing.T) {
+	t.Parallel()
+
+	src := logical.NewAggregate(
+		logical.NewSort(
+			logical.NewScan("Orders", ""),
+			[]logical.SortKey{{Expr: "region", Dir: logical.SortAsc}},
+		),
+		[]string{"region"},
+		[]string{"COUNT(id)"},
+		[]string{"cnt"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(got)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// Must be streaming agg (cheapest when ordering exists).
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg, got %T", plan)
+	}
+
+	// The inner of the streaming agg should be an ordered index scan
+	// (sort eliminated by SortOverOrderedElimRule).
+	inner := plan.GetQuantifiers()
+	if len(inner) != 1 {
+		t.Fatalf("expected 1 child quantifier, got %d", len(inner))
+	}
+	innerRef := inner[0].GetRangesOver()
+	if innerRef == nil {
+		t.Fatal("inner ref is nil")
+	}
+	innerExpr := innerRef.Get()
+	if !cascades.IsPhysicalIndexScan(innerExpr) {
+		t.Fatalf("expected ordered index scan as streaming agg child, got %T", innerExpr)
+	}
+}
+
 // TestEndToEnd_FilterPushedThroughGroupBy verifies the planner pushes a
 // filter (on a grouping key) below GROUP BY and uses an index scan for it.
 func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
