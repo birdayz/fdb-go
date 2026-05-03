@@ -904,3 +904,145 @@ func TestEndToEnd_PlanPicksHashAggWhenNoOrdering(t *testing.T) {
 		t.Fatalf("expected hash agg as best plan (no ordered access path), got %T", plan)
 	}
 }
+
+// TestEndToEnd_GlobalAggregate verifies Plan() produces a streaming
+// aggregation for a global aggregate (no grouping keys): SELECT COUNT(*) FROM T.
+func TestEndToEnd_GlobalAggregate(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		nil, // no grouping keys → global aggregate
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "*", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	ref := expressions.InitialOf(gb)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// Global aggregates use streaming agg (no grouping keys → fires
+	// unconditionally, cheaper than hash).
+	if !cascades.IsPhysicalStreamingAgg(plan) {
+		t.Fatalf("expected streaming agg for global aggregate, got %T", plan)
+	}
+}
+
+// TestEndToEnd_FilterPushedThroughGroupBy verifies the planner pushes a
+// filter (on a grouping key) below GROUP BY and uses an index scan for it.
+func TestEndToEnd_FilterPushedThroughGroupBy(t *testing.T) {
+	t.Parallel()
+
+	// Filter(region='US') over GroupBy(region, COUNT(id)) over Scan.
+	// PushFilterThroughGroupBy pushes the filter below GroupBy.
+	// ImplementIndexScan uses the index on region.
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
+
+	gb := expressions.NewGroupByExpression(
+		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+		[]expressions.AggregateSpec{
+			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		},
+		scanQ,
+	)
+	gbRef := expressions.InitialOf(gb)
+	gbQ := expressions.ForEachQuantifier(gbRef)
+
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "region", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "US"),
+			),
+		}, gbQ)
+	ref := expressions.InitialOf(filter)
+
+	ctx := cascades.NewPlanContextFromIndexDefs([]cascades.IndexDef{
+		e2eIndexDef{
+			name:        "Orders$region",
+			columns:     []string{"region"},
+			recordTypes: []string{"Orders"},
+		},
+	})
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, ctx)
+	if _, conv := p.Explore(ref); !conv {
+		t.Fatal("planner did not converge")
+	}
+
+	// After pushdown + index utilization, we expect an index scan
+	// somewhere in the explored DAG.
+	foundIndexScan := false
+	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
+	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
+		if r == nil || visited[r] {
+			return
+		}
+		visited[r] = true
+		for _, m := range r.Members() {
+			if cascades.IsPhysicalIndexScan(m) {
+				foundIndexScan = true
+				return
+			}
+			for _, qq := range m.GetQuantifiers() {
+				walk(qq.GetRangesOver(), visited)
+				if foundIndexScan {
+					return
+				}
+			}
+		}
+	}
+	walk(ref, map[*expressions.Reference]bool{})
+	if !foundIndexScan {
+		t.Fatal("expected index scan on Orders$region after filter pushdown through GroupBy")
+	}
+}
+
+// TestEndToEnd_MultipleAggregates verifies the pipeline handles multiple
+// aggregate functions in a single GROUP BY.
+func TestEndToEnd_MultipleAggregates(t *testing.T) {
+	t.Parallel()
+
+	src := logical.NewAggregate(
+		logical.NewScan("Sales", ""),
+		[]string{"region"},
+		[]string{"COUNT(id)", "SUM(amount)", "AVG(amount)"},
+		[]string{"cnt", "total", "avg_amt"},
+		"",
+	)
+	got, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	ref := expressions.InitialOf(got)
+
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+	plan, _, err := p.Plan(ref)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("Plan returned nil")
+	}
+
+	// No ordering → hash agg.
+	if !cascades.IsPhysicalHashAgg(plan) {
+		t.Fatalf("expected hash agg for multi-agg GROUP BY without ordering, got %T", plan)
+	}
+}
