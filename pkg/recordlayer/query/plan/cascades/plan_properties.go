@@ -238,7 +238,17 @@ func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 	return properties.Ordering{}
 }
 
+// RichOrderingHinter is the optional interface a wrapper implements
+// to provide full ordering info with bindings. Falls back to
+// converting from HintOrdering if not implemented.
+type RichOrderingHinter interface {
+	HintRichOrdering() *RichOrdering
+}
+
 func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
+	if rh, ok := w.(RichOrderingHinter); ok {
+		return rh.HintRichOrdering()
+	}
 	o := computeWrapperOrdering(w)
 	if !o.IsKnown || len(o.Keys) == 0 {
 		return EmptyOrdering()

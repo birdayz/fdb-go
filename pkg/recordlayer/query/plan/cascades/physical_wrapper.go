@@ -330,6 +330,30 @@ func (w *physicalIndexScanWrapper) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: keys}
 }
 
+// HintRichOrdering returns the full ordering with bindings: equality-bound
+// prefix columns become FixedBinding entries (with comparison reference),
+// non-equality suffix columns become SortedBinding entries. This enables
+// ordering-aware InJoin source matching.
+func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
+	if w.plan == nil || len(w.columnNames) == 0 {
+		return EmptyOrdering()
+	}
+	comps := w.plan.GetScanComparisons()
+	bm := make(map[values.Value][]OrderingBinding)
+	keys := make([]values.Value, 0, len(w.columnNames))
+
+	for i, col := range w.columnNames {
+		key := &values.FieldValue{Field: col, Typ: values.UnknownType}
+		keys = append(keys, key)
+		if i < len(comps) && comps[i].IsEquality() {
+			bm[key] = []OrderingBinding{FixedBinding(comps[i])}
+		} else {
+			bm[key] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+		}
+	}
+	return NewRichOrdering(bm, keys, w.unique)
+}
+
 // HintCost: index scans are cheaper than full table scans because
 // they read a subset of records. Apply a selectivity multiplier on
 // top of the physical-wrapper discount. Unique indexes with all
