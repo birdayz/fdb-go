@@ -12,6 +12,7 @@ go_library(
         "plan.go",
         "scan.go",
         "sort.go",
+        "streaming_aggregation.go",
         "typefilter.go",
         "union.go",
         "update.go",

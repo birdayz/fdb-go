@@ -108,6 +108,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),
 		NewSortOverOrderedElimRule(),
+		NewImplementStreamingAggregationRule(),
 	}
 }
 
