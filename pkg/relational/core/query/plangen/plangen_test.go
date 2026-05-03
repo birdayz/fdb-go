@@ -1093,11 +1093,37 @@ func TestConvert_Join_InnerWithPredicate(t *testing.T) {
 	}
 }
 
-func TestConvert_Join_LeftJoinTextOnly_Unsupported(t *testing.T) {
+func TestConvert_Join_InnerWithTextPredicate(t *testing.T) {
+	t.Parallel()
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "id = aid")
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	sel, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected *SelectExpression, got %T", expr)
+	}
+	if len(sel.GetPredicates()) != 1 {
+		t.Fatalf("expected 1 predicate, got %d", len(sel.GetPredicates()))
+	}
+}
+
+func TestConvert_Join_LeftJoinNoStructuredPred_Unsupported(t *testing.T) {
 	t.Parallel()
 	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinLeft, "a.id = b.aid")
 	_, err := plangen.Convert(src)
 	if !errors.Is(err, plangen.ErrUnsupported) {
 		t.Fatalf("expected ErrUnsupported, got %v", err)
+	}
+}
+
+func TestConvert_Join_ComplexTextPredicate_Unsupported(t *testing.T) {
+	t.Parallel()
+	// Dotted reference in ON clause is too complex for the simple parser
+	src := logical.NewJoin(logical.NewScan("A", ""), logical.NewScan("B", ""), logical.JoinInner, "a.id = b.aid")
+	_, err := plangen.Convert(src)
+	if !errors.Is(err, plangen.ErrUnsupported) {
+		t.Fatalf("expected ErrUnsupported for dotted ref, got %v", err)
 	}
 }

@@ -528,13 +528,11 @@ func convertLimit(l *logical.LogicalLimit) (expressions.RelationalExpression, er
 
 // convertJoin builds a SelectExpression from a LogicalJoin.
 // Supports: CROSS JOIN (no predicate), INNER JOIN with structured
-// OnPredicate. LEFT/RIGHT joins and text-only ON are unsupported.
+// OnPredicate or simple text ON (col = literal, col = col).
+// LEFT/RIGHT joins with text-only ON are unsupported.
 func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, error) {
-	if j.Kind != logical.JoinInner && j.OnPredicate == nil && j.OnText == "" {
-		return nil, fmt.Errorf("%w: LogicalJoin kind %v without structured predicate", ErrUnsupported, j.Kind)
-	}
 	if j.Kind != logical.JoinInner && j.OnPredicate == nil {
-		return nil, fmt.Errorf("%w: LogicalJoin kind %v with text-only ON", ErrUnsupported, j.Kind)
+		return nil, fmt.Errorf("%w: LogicalJoin kind %v without structured predicate", ErrUnsupported, j.Kind)
 	}
 
 	left, err := Convert(j.Left)
@@ -556,10 +554,77 @@ func convertJoin(j *logical.LogicalJoin) (expressions.RelationalExpression, erro
 			return nil, fmt.Errorf("%w: LogicalJoin OnPredicate is not a QueryPredicate (%T)", ErrUnsupported, j.OnPredicate)
 		}
 		preds = []predicates.QueryPredicate{p}
+	} else if j.OnText != "" {
+		p, ok := tryParseSimpleComparison(j.OnText)
+		if !ok {
+			return nil, fmt.Errorf("%w: LogicalJoin ON text %q cannot be lowered to a predicate", ErrUnsupported, j.OnText)
+		}
+		preds = []predicates.QueryPredicate{p}
 	}
 
 	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
 	return expressions.NewSelectExpression(rv, []expressions.Quantifier{qL, qR}, preds), nil
+}
+
+// tryParseSimpleComparison parses "lhs op rhs" into a ComparisonPredicate.
+// Supports: = != <> < > <= >= with bare column or simple literal operands.
+func tryParseSimpleComparison(s string) (predicates.QueryPredicate, bool) {
+	s = strings.TrimSpace(s)
+	lhs, op, rhs, ok := splitComparison(s)
+	if !ok {
+		return nil, false
+	}
+	lhsVal, lhsOk := lowerSimpleScalarText(lhs)
+	rhsVal, rhsOk := lowerSimpleScalarText(rhs)
+	if !lhsOk || !rhsOk {
+		return nil, false
+	}
+	compOp := textToCompOp(op)
+	if compOp < 0 {
+		return nil, false
+	}
+	return predicates.NewComparisonPredicate(
+		lhsVal,
+		predicates.Comparison{Type: compOp, Operand: rhsVal},
+	), true
+}
+
+// splitComparison splits "lhs op rhs" into parts. Returns the
+// trimmed LHS, the operator string, the trimmed RHS, and ok.
+func splitComparison(s string) (string, string, string, bool) {
+	ops := []string{"!=", "<>", "<=", ">=", "=", "<", ">"}
+	for _, op := range ops {
+		idx := strings.Index(s, op)
+		if idx < 0 {
+			continue
+		}
+		lhs := strings.TrimSpace(s[:idx])
+		rhs := strings.TrimSpace(s[idx+len(op):])
+		if lhs == "" || rhs == "" {
+			continue
+		}
+		return lhs, op, rhs, true
+	}
+	return "", "", "", false
+}
+
+func textToCompOp(op string) predicates.ComparisonType {
+	switch op {
+	case "=":
+		return predicates.ComparisonEquals
+	case "!=", "<>":
+		return predicates.ComparisonNotEquals
+	case "<":
+		return predicates.ComparisonLessThan
+	case "<=":
+		return predicates.ComparisonLessThanOrEq
+	case ">":
+		return predicates.ComparisonGreaterThan
+	case ">=":
+		return predicates.ComparisonGreaterThanEq
+	default:
+		return -1
+	}
 }
 
 // parseAggregateText parses "FUNC(operand)" aggregate text into an
