@@ -3,6 +3,7 @@ package embedded
 import (
 	"database/sql/driver"
 	"io"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -82,6 +83,29 @@ func (r *staticRows) ColumnTypeNullable(index int) (nullable, ok bool) {
 	return true, true
 }
 
+// ColumnTypeLength implements driver.RowsColumnTypeLength.
+// Variable-length types (STRING, BYTES) return (math.MaxInt64, true);
+// fixed-width types return (0, false).
+func (r *staticRows) ColumnTypeLength(index int) (int64, bool) {
+	if index < 0 || index >= len(r.colTypes) {
+		return 0, false
+	}
+	switch strings.ToUpper(r.colTypes[index]) {
+	case "STRING":
+		return math.MaxInt64, true
+	case "BYTES":
+		return math.MaxInt64, true
+	default:
+		return 0, false
+	}
+}
+
+// ColumnTypePrecisionScale implements driver.RowsColumnTypePrecisionScale.
+// fdb-relational has no decimal type; all numeric types are fixed-precision.
+func (r *staticRows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	return 0, 0, false
+}
+
 func dbTypeToScanType(typeName string) reflect.Type {
 	switch strings.ToUpper(typeName) {
 	case "BIGINT":
@@ -102,6 +126,15 @@ func dbTypeToScanType(typeName string) reflect.Type {
 		return reflect.TypeFor[any]()
 	}
 }
+
+var (
+	_ driver.Rows                           = (*staticRows)(nil)
+	_ driver.RowsColumnTypeDatabaseTypeName = (*staticRows)(nil)
+	_ driver.RowsColumnTypeScanType         = (*staticRows)(nil)
+	_ driver.RowsColumnTypeNullable         = (*staticRows)(nil)
+	_ driver.RowsColumnTypeLength           = (*staticRows)(nil)
+	_ driver.RowsColumnTypePrecisionScale   = (*staticRows)(nil)
+)
 
 func (r *staticRows) Next(dest []driver.Value) error {
 	if r.current >= len(r.rows) {

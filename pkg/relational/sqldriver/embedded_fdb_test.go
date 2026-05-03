@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -7238,6 +7239,21 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 		g.Expect(ok).To(gomega.BeTrue(), "column %d (%s): Nullable should report ok=true", i, ct.Name())
 		g.Expect(nullable).To(gomega.BeTrue(), "column %d (%s): proto fields are nullable", i, ct.Name())
 	}
+
+	// ColumnTypeLength: STRING columns are variable-length.
+	length, hasLength := colTypes[1].Length()
+	g.Expect(hasLength).To(gomega.BeTrue(), "STRING column should report variable length")
+	g.Expect(length).To(gomega.Equal(int64(math.MaxInt64)), "STRING length should be MaxInt64")
+
+	// BIGINT is not variable-length.
+	_, hasLength = colTypes[0].Length()
+	g.Expect(hasLength).To(gomega.BeFalse(), "BIGINT column should not report variable length")
+
+	// ColumnTypePrecisionScale: no decimal types in fdb-relational.
+	_, _, hasPrecision := colTypes[0].DecimalSize()
+	g.Expect(hasPrecision).To(gomega.BeFalse(), "BIGINT should not report decimal precision")
+	_, _, hasPrecision = colTypes[3].DecimalSize()
+	g.Expect(hasPrecision).To(gomega.BeFalse(), "DOUBLE should not report decimal precision")
 
 	g.Expect(rows.Next()).To(gomega.BeTrue())
 	rows.Close()
