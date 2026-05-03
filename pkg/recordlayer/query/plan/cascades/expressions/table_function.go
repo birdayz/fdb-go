@@ -113,4 +113,8 @@ func (e *TableFunctionExpression) HashCodeWithoutChildren() uint64 {
 	return h
 }
 
+func (e *TableFunctionExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
+	return e
+}
+
 var _ RelationalExpression = (*TableFunctionExpression)(nil)

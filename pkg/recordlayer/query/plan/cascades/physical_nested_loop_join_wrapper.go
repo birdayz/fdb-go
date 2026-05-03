@@ -108,6 +108,10 @@ func (w *physicalNestedLoopJoinWrapper) WithChildren(qs []expressions.Quantifier
 	return &physicalNestedLoopJoinWrapper{plan: w.plan, outerQuant: qs[0], innerQuant: qs[1]}, nil
 }
 
+func (w *physicalNestedLoopJoinWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var (
 	_ expressions.RelationalExpression = (*physicalNestedLoopJoinWrapper)(nil)
 	_ physicalPlanExpression           = (*physicalNestedLoopJoinWrapper)(nil)

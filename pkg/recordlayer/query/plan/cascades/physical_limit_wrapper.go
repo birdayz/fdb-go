@@ -84,7 +84,7 @@ func (w *physicalLimitWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
@@ -98,6 +98,10 @@ func (w *physicalLimitWrapper) WithChildren(qs []expressions.Quantifier) (expres
 		return nil, fmt.Errorf("physicalLimitWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
 	return &physicalLimitWrapper{plan: w.plan, innerQuant: qs[0]}, nil
+}
+
+func (w *physicalLimitWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var (

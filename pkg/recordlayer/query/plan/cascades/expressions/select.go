@@ -137,4 +137,14 @@ func (e *SelectExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	copied := make([]Quantifier, len(quantifiers))
+	copy(copied, quantifiers)
+	return &SelectExpression{
+		resultValue:     e.resultValue,
+		quantifiers:     copied,
+		queryPredicates: e.queryPredicates,
+	}
+}
+
 var _ RelationalExpression = (*SelectExpression)(nil)

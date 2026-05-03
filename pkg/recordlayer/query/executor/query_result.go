@@ -1,0 +1,104 @@
+package executor
+
+import (
+	"strings"
+
+	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+)
+
+// QueryResult is the row type flowing through plan execution cursors.
+// Wraps a datum (the computed/flowed row), an optional stored record
+// (when the row originated from a scan), and an optional primary key.
+// Mirrors Java's QueryResult.
+type QueryResult struct {
+	Datum      any
+	Record     *recordlayer.FDBStoredRecord[proto.Message]
+	PrimaryKey tuple.Tuple
+}
+
+// FromStoredRecord builds a QueryResult from a stored record. The
+// datum is set to a map[string]any extracted from the proto message's
+// fields, keyed by UPPER-case field name (matching the identifier
+// folding convention).
+func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
+	datum := protoToMap(rec.Record)
+	return QueryResult{
+		Datum:      datum,
+		Record:     rec,
+		PrimaryKey: rec.PrimaryKey,
+	}
+}
+
+// protoToMap converts a proto.Message to map[string]any with
+// UPPER-case keys. Only set fields are included; unset fields are
+// omitted (NULL semantics — FieldValue.Evaluate returns nil for
+// missing keys).
+func protoToMap(msg proto.Message) map[string]any {
+	if msg == nil {
+		return nil
+	}
+	refl := msg.ProtoReflect()
+	desc := refl.Descriptor()
+	fields := desc.Fields()
+	m := make(map[string]any, fields.Len())
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if !refl.Has(fd) {
+			continue
+		}
+		key := strings.ToUpper(string(fd.Name()))
+		m[key] = protoFieldToGo(fd, refl.Get(fd))
+	}
+	return m
+}
+
+// protoFieldToGo converts a protoreflect.Value to a native Go value
+// suitable for Value.Evaluate consumption.
+func protoFieldToGo(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
+	if fd.IsList() {
+		list := v.List()
+		out := make([]any, list.Len())
+		for i := 0; i < list.Len(); i++ {
+			out[i] = scalarProtoToGo(fd.Kind(), list.Get(i))
+		}
+		return out
+	}
+	if fd.IsMap() {
+		return v.Interface()
+	}
+	return scalarProtoToGo(fd.Kind(), v)
+}
+
+func scalarProtoToGo(kind protoreflect.Kind, v protoreflect.Value) any {
+	switch kind {
+	case protoreflect.BoolKind:
+		return v.Bool()
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return int64(v.Int())
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return v.Int()
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return int64(v.Uint())
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return int64(v.Uint())
+	case protoreflect.FloatKind:
+		return v.Float()
+	case protoreflect.DoubleKind:
+		return v.Float()
+	case protoreflect.StringKind:
+		return v.String()
+	case protoreflect.BytesKind:
+		return v.Bytes()
+	case protoreflect.EnumKind:
+		return int64(v.Enum())
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		return v.Message().Interface()
+	default:
+		return v.Interface()
+	}
+}

@@ -44,6 +44,11 @@ type Planner struct {
 	ctx   PlanContext
 	memo  *Memo
 
+	// implementationRules run during PhasePlanning after the
+	// REWRITING phase converges. They yield final expressions into
+	// Reference.finalMembers via InsertFinal.
+	implementationRules []ImplementationRule
+
 	// exploreCount[ref] = member count at last saturation check on
 	// `ref`. SaturationCheckTask short-circuits when count hasn't grown.
 	exploreCount map[*expressions.Reference]int
@@ -140,6 +145,13 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 	return ok
 }
 
+// WithImplementationRules adds rules for PhasePlanning. These run
+// after the REWRITING phase converges. Returns p for chaining.
+func (p *Planner) WithImplementationRules(rules []ImplementationRule) *Planner {
+	p.implementationRules = rules
+	return p
+}
+
 // SetEvents installs an event handler. Pass nil to disable events.
 // Returns p for chaining.
 func (p *Planner) SetEvents(h PlannerEventHandler) *Planner {
@@ -174,6 +186,13 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	if !conv {
 		return nil, tasks, ErrPlannerCapHit
 	}
+
+	// PLANNING phase: fire implementation rules bottom-up to finalize
+	// exploratory expressions into final members.
+	if len(p.implementationRules) > 0 {
+		p.runPlanningPhase(rootRef)
+	}
+
 	// Use the selector path so extraction reuses the OPTIMIZE-stamped
 	// best member per Reference (avoids re-computing CostLess that
 	// the OPTIMIZE phase already did).
@@ -191,6 +210,33 @@ type plannerErr string
 
 // Error returns the message.
 func (e plannerErr) Error() string { return string(e) }
+
+// runPlanningPhase fires implementation rules bottom-up on every
+// Reference in the Memo. Leaf References first, then parents.
+// Each rule produces final members via InsertFinal.
+func (p *Planner) runPlanningPhase(rootRef *expressions.Reference) {
+	visited := make(map[*expressions.Reference]bool)
+	p.planningVisit(rootRef, visited)
+}
+
+func (p *Planner) planningVisit(ref *expressions.Reference, visited map[*expressions.Reference]bool) {
+	if ref == nil || visited[ref] {
+		return
+	}
+	visited[ref] = true
+
+	for _, m := range ref.Members() {
+		for _, q := range m.GetQuantifiers() {
+			if childRef := q.GetRangesOver(); childRef != nil {
+				p.planningVisit(childRef, visited)
+			}
+		}
+	}
+
+	for _, rule := range p.implementationRules {
+		FireImplementationRule(rule, ref)
+	}
+}
 
 // Explore drives the task-stack until convergence (no rule yields a
 // new member anywhere in the DAG) or the MaxTasks cap is hit.

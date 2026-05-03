@@ -36,6 +36,7 @@ go_test(
         "fdb_test.go",
         "key_test.go",
         "range_iterator_test.go",
+        "range_test.go",
         "ryw_test.go",
         "tenant_test.go",
         "testmain_test.go",

@@ -123,6 +123,13 @@ func (e *LogicalFilterExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *LogicalFilterExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalFilterExpression{
+		inner:           quantifiers[0],
+		queryPredicates: e.queryPredicates,
+	}
+}
+
 // Compile-time check that LogicalFilterExpression implements
 // RelationalExpression.
 var _ RelationalExpression = (*LogicalFilterExpression)(nil)

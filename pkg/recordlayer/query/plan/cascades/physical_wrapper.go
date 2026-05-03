@@ -93,7 +93,7 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 	if ref == nil {
 		return nil
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if ph, ok := m.(physicalPlanExpression); ok {
 			return ph.GetRecordQueryPlan()
 		}
@@ -110,7 +110,7 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 	if ref == nil {
 		return nil
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(physicalPlanExpression); ok {
 			return m
 		}
@@ -237,6 +237,10 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	return properties.Cost{Cardinality: total * physicalWrapperCostMultiplier, CPU: 0}
 }
 
+func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var _ expressions.RelationalExpression = (*physicalScanWrapper)(nil)
 
 // physicalIndexScanWrapper adapts a `*plans.RecordQueryIndexPlan` to
@@ -341,6 +345,10 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost) properties.Cost
 		base *= sel
 	}
 	return properties.Cost{Cardinality: base, CPU: 0}
+}
+
+func (w *physicalIndexScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalIndexScanWrapper)(nil)
@@ -452,13 +460,17 @@ func (w *physicalFilterWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
 		}
 	}
 	return properties.Ordering{}
+}
+
+func (w *physicalFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalFilterWrapper)(nil)
@@ -569,6 +581,10 @@ func (w *physicalSortWrapper) HintOrdering() properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: keys}
 }
 
+func (w *physicalSortWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var _ expressions.RelationalExpression = (*physicalSortWrapper)(nil)
 
 // physicalDistinctWrapper adapts a `*plans.RecordQueryDistinctPlan` to
@@ -655,13 +671,17 @@ func (w *physicalDistinctWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
 		}
 	}
 	return properties.Ordering{}
+}
+
+func (w *physicalDistinctWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalDistinctWrapper)(nil)
@@ -750,13 +770,17 @@ func (w *physicalTypeFilterWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
 		}
 	}
 	return properties.Ordering{}
+}
+
+func (w *physicalTypeFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalTypeFilterWrapper)(nil)
@@ -842,6 +866,10 @@ func (w *physicalInsertWrapper) HintCost(child []properties.Cost) properties.Cos
 	}
 }
 
+func (w *physicalInsertWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var _ expressions.RelationalExpression = (*physicalInsertWrapper)(nil)
 
 // physicalDeleteWrapper adapts `*plans.RecordQueryDeletePlan` to
@@ -922,6 +950,10 @@ func (w *physicalDeleteWrapper) HintCost(child []properties.Cost) properties.Cos
 	}
 }
 
+func (w *physicalDeleteWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var _ expressions.RelationalExpression = (*physicalDeleteWrapper)(nil)
 
 // physicalUpdateWrapper adapts `*plans.RecordQueryUpdatePlan` to
@@ -1000,6 +1032,10 @@ func (w *physicalUpdateWrapper) HintCost(child []properties.Cost) properties.Cos
 		Cardinality: in * physicalWrapperCostMultiplier,
 		CPU:         (child[0].CPU + in*properties.WriteCPU) * physicalWrapperCostMultiplier,
 	}
+}
+
+func (w *physicalUpdateWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalUpdateWrapper)(nil)
@@ -1088,6 +1124,10 @@ func (w *physicalUnionWrapper) HintCost(child []properties.Cost) properties.Cost
 		Cardinality: sumCard * physicalWrapperCostMultiplier,
 		CPU:         (sumCPU + sumCard*properties.UnionCPU) * physicalWrapperCostMultiplier,
 	}
+}
+
+func (w *physicalUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalUnionWrapper)(nil)
@@ -1192,6 +1232,10 @@ func (w *physicalIntersectionWrapper) HintCost(child []properties.Cost) properti
 	}
 }
 
+func (w *physicalIntersectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
+}
+
 var _ expressions.RelationalExpression = (*physicalIntersectionWrapper)(nil)
 
 // --- Projection wrapper -----------------------------------------------
@@ -1264,13 +1308,17 @@ func (w *physicalProjectionWrapper) HintOrdering() properties.Ordering {
 	if ref == nil {
 		return properties.Ordering{}
 	}
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		o := properties.EstimateOrdering(m)
 		if o.IsKnown {
 			return o
 		}
 	}
 	return properties.Ordering{}
+}
+
+func (w *physicalProjectionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalProjectionWrapper)(nil)
@@ -1329,6 +1377,10 @@ func (w *physicalValuesWrapper) WithChildren(qs []expressions.Quantifier) (expre
 
 func (w *physicalValuesWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	return properties.Cost{Cardinality: 1, CPU: 0}
+}
+
+func (w *physicalValuesWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
+	return w
 }
 
 var _ expressions.RelationalExpression = (*physicalValuesWrapper)(nil)

@@ -90,6 +90,14 @@ func (e *InsertExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *InsertExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &InsertExpression{
+		inner:            quantifiers[0],
+		targetRecordType: e.targetRecordType,
+		targetType:       e.targetType,
+	}
+}
+
 var _ RelationalExpression = (*InsertExpression)(nil)
 
 // typeEquals is a pragma-shim for Type equality. Each Type subtype in

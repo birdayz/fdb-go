@@ -105,6 +105,18 @@ func NamedExistentialQuantifier(alias values.CorrelationIdentifier, rangesOver *
 	}
 }
 
+// RebuildQuantifier creates a new Quantifier with the same kind and
+// alias but ranging over a different Reference. Used by
+// FinalizeExpressionsRule to point quantifiers at disentangled child
+// References. Mirrors Java's Quantifier.toBuilder().build(reference).
+func RebuildQuantifier(q Quantifier, newRef *Reference) Quantifier {
+	return Quantifier{
+		kind:       q.kind,
+		alias:      q.alias,
+		rangesOver: newRef,
+	}
+}
+
 // Kind returns the Quantifier's flavour.
 func (q Quantifier) Kind() QuantifierKind { return q.kind }
 

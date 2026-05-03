@@ -102,4 +102,11 @@ func (e *LogicalProjectionExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *LogicalProjectionExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalProjectionExpression{
+		inner:           quantifiers[0],
+		projectedValues: e.projectedValues,
+	}
+}
+
 var _ RelationalExpression = (*LogicalProjectionExpression)(nil)

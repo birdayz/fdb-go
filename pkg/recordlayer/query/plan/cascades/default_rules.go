@@ -123,6 +123,12 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewAggregateDataAccessRule(),
 		NewImplementNestedLoopJoinRule(),
 		NewImplementLimitRule(),
+		NewImplementTempTableScanRule(),
+		NewImplementTempTableInsertRule(),
+		NewImplementRecursiveDfsJoinRule(),
+		NewImplementRecursiveLevelUnionRule(),
+		NewImplementExplodeRule(),
+		NewImplementTableFunctionRule(),
 	}
 }
 

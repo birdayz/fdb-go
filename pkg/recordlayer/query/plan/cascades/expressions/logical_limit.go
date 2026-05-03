@@ -67,4 +67,12 @@ func writeInt64(h interface{ Write([]byte) (int, error) }, v int64) {
 	h.Write(b[:])
 }
 
+func (e *LogicalLimitExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalLimitExpression{
+		inner:  quantifiers[0],
+		limit:  e.limit,
+		offset: e.offset,
+	}
+}
+
 var _ RelationalExpression = (*LogicalLimitExpression)(nil)

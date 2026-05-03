@@ -109,4 +109,12 @@ func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
+func (e *GroupByExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &GroupByExpression{
+		inner:        quantifiers[0],
+		groupingKeys: e.groupingKeys,
+		aggregates:   e.aggregates,
+	}
+}
+
 var _ RelationalExpression = (*GroupByExpression)(nil)

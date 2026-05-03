@@ -72,4 +72,10 @@ func (e *LogicalUniqueExpression) EqualsWithoutChildren(other RelationalExpressi
 // Mirrors Java's `return 251`.
 func (e *LogicalUniqueExpression) HashCodeWithoutChildren() uint64 { return 251 }
 
+func (e *LogicalUniqueExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+	return &LogicalUniqueExpression{
+		inner: quantifiers[0],
+	}
+}
+
 var _ RelationalExpression = (*LogicalUniqueExpression)(nil)

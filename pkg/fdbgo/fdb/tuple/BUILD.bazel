@@ -10,7 +10,10 @@ go_library(
 
 go_test(
     name = "tuple_test",
-    srcs = ["tuple_test.go"],
+    srcs = [
+        "tuple_roundtrip_test.go",
+        "tuple_test.go",
+    ],
     embed = [":tuple"],
     deps = ["@com_github_onsi_gomega//:gomega"],
 )

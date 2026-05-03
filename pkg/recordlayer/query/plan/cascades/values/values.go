@@ -183,11 +183,13 @@ func (f *FieldValue) Evaluate(evalCtx any) any {
 	if evalCtx == nil {
 		return nil
 	}
-	row, ok := evalCtx.(map[string]any)
-	if !ok {
-		return nil
+	if row, ok := evalCtx.(map[string]any); ok {
+		return row[f.Field]
 	}
-	return row[f.Field]
+	if rc, ok := evalCtx.(*RowEvalContext); ok && rc.Datum != nil {
+		return rc.Datum[f.Field]
+	}
+	return nil
 }
 
 // WalkValue applies visit to every node in v's subtree, pre-order.
@@ -565,6 +567,22 @@ func NewNamedParameterValue(name string) *ParameterValue {
 // default for plan-time evaluation where no bindings exist.
 type ParameterBinder interface {
 	BindParameter(ordinal int, name string) (any, bool)
+}
+
+// RowEvalContext is a composite evaluation context for Value.Evaluate
+// that satisfies both FieldValue (datum map) and ParameterValue
+// (ParameterBinder). Pass this when evaluating expressions that mix
+// field references and prepared-statement parameters.
+type RowEvalContext struct {
+	Datum  map[string]any
+	Binder ParameterBinder
+}
+
+func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
+	if r.Binder == nil {
+		return nil, false
+	}
+	return r.Binder.BindParameter(ordinal, name)
 }
 
 func (*ParameterValue) Children() []Value { return []Value{} }
