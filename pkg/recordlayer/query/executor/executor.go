@@ -49,6 +49,10 @@ func ExecutePlan(
 		return executeProjection(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQuerySortPlan:
 		return executeSort(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryUnionPlan:
+		return executeUnion(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryIntersectionPlan:
+		return executeIntersection(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
 	default:
@@ -255,6 +259,108 @@ func executeSort(
 
 	cursor := newSortResultCursor(items)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+}
+
+func executeUnion(
+	ctx context.Context,
+	p *plans.RecordQueryUnionPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	inners := p.GetInners()
+	if len(inners) == 0 {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
+	var all []QueryResult
+	for _, inner := range inners {
+		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+		items, err := CollectAll(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+	}
+	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func executeIntersection(
+	ctx context.Context,
+	p *plans.RecordQueryIntersectionPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	inners := p.GetInners()
+	if len(inners) == 0 {
+		return recordlayer.Empty[QueryResult](), nil
+	}
+
+	keyVals := p.GetComparisonKeyValues()
+
+	firstCursor, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+	firstItems, err := CollectAll(ctx, firstCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	otherSets := make([]map[string]struct{}, len(inners)-1)
+	for i := 1; i < len(inners); i++ {
+		cursor, err := ExecutePlan(ctx, inners[i], store, evalCtx, continuation, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+		items, err := CollectAll(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		set := make(map[string]struct{}, len(items))
+		for _, item := range items {
+			set[intersectionKey(item, keyVals)] = struct{}{}
+		}
+		otherSets[i-1] = set
+	}
+
+	var results []QueryResult
+	for _, item := range firstItems {
+		key := intersectionKey(item, keyVals)
+		inAll := true
+		for _, set := range otherSets {
+			if _, ok := set[key]; !ok {
+				inAll = false
+				break
+			}
+		}
+		if inAll {
+			results = append(results, item)
+		}
+	}
+
+	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func intersectionKey(qr QueryResult, keyVals []values.Value) string {
+	if len(keyVals) == 0 {
+		if qr.PrimaryKey != nil {
+			return string(qr.PrimaryKey.Pack())
+		}
+		return fmt.Sprintf("%v", qr.Datum)
+	}
+	var b strings.Builder
+	for _, kv := range keyVals {
+		v := kv.Evaluate(qr.Datum)
+		fmt.Fprintf(&b, "%v|", v)
+	}
+	return b.String()
 }
 
 func executeValues(p *plans.RecordQueryValuesPlan) (recordlayer.RecordCursor[QueryResult], error) {

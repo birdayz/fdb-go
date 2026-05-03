@@ -225,6 +225,108 @@ func TestExecuteSort_OverValues(t *testing.T) {
 	}
 }
 
+func TestExecuteUnion_ConcatenatesInners(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	a := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	b := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{a, b})
+
+	cursor, err := ExecutePlan(ctx, union, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (one from each inner)", len(results))
+	}
+}
+
+func TestExecuteUnion_Empty(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	union := plans.NewRecordQueryUnionPlan(nil)
+
+	cursor, err := ExecutePlan(ctx, union, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0", len(results))
+	}
+}
+
+func TestExecuteIntersection_CommonRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	a := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	b := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	intersection := plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{a, b}, nil)
+
+	cursor, err := ExecutePlan(ctx, intersection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (common row)", len(results))
+	}
+}
+
+func TestExecuteIntersection_NoCommonRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	a := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	b := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	intersection := plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{a, b}, nil)
+
+	cursor, err := ExecutePlan(ctx, intersection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0 (no common rows)", len(results))
+	}
+}
+
 func TestExecuteUnsupportedPlan_ReturnsError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
