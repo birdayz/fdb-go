@@ -203,6 +203,35 @@ func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
 // expression the rule engine non-terminates on. (Caught the
 // DistinctOverUnionDedupRule termination bug post-revert; would have
 // caught it at-introduction if FuzzConvert seed had Union shapes.)
+// FuzzConvertAndPlan exercises the full pipeline: Convert → Planner
+// (all logical + physical rules). Verifies the planner never panics on
+// any random LogicalOperator shape.
+func FuzzConvertAndPlan(f *testing.F) {
+	f.Add(uint64(0), "Order", "", uint8(0))
+	f.Add(uint64(1), "T", "x", uint8(1))
+	f.Add(uint64(2), "A", "B", uint8(2))
+	f.Add(uint64(3), "x", "y", uint8(3))
+	f.Add(uint64(0xff), "", "", uint8(255))
+	f.Add(uint64(42), "42", "'hello'", uint8(10))
+	f.Add(uint64(7), "UPPER(x)", "1 + 2", uint8(4))
+	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
+	rules = append(rules, cascades.DMLImplementationRules()...)
+	f.Fuzz(func(t *testing.T, seed uint64, name1, name2 string, shape uint8) {
+		op := buildFuzzOp(seed, name1, name2, shape)
+		if op == nil {
+			return
+		}
+		got, err := plangen.Convert(op)
+		if err != nil {
+			return
+		}
+		ref := expressions.InitialOf(got)
+		p := cascades.NewPlanner(rules, cascades.EmptyPlanContext())
+		plan, _, _ := p.Plan(ref)
+		_ = plan
+	})
+}
+
 func FuzzConvertAndOptimise(f *testing.F) {
 	f.Add(uint64(0), "Order", "", uint8(0))
 	f.Add(uint64(1), "T", "x", uint8(1))
