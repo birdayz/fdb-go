@@ -266,7 +266,6 @@ func TestGetRefPlanPropertiesMap_NoProperties(t *testing.T) {
 
 func TestComputeRefPlanProperties_SkipsLogicalExpressions(t *testing.T) {
 	t.Parallel()
-	// Reference with only logical members — no physical wrappers.
 	logicalExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
 	ref := expressions.InitialOf(logicalExpr)
 
@@ -278,5 +277,138 @@ func TestComputeRefPlanProperties_SkipsLogicalExpressions(t *testing.T) {
 	}
 	if len(pm.All()) != 0 {
 		t.Fatalf("expected empty map for logical-only ref, got %d entries", len(pm.All()))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// New plan type property tests
+// ---------------------------------------------------------------------------
+
+func TestComputeDistinctRecords_MergeSortUnionIsTrue(t *testing.T) {
+	t.Parallel()
+	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	msu := plans.NewRecordQueryMergeSortUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true)
+	w := NewPhysicalMergeSortUnionWrapper(msu, nil)
+	if !computeDistinctRecords(w, msu) {
+		t.Fatal("MergeSortUnion should be distinct")
+	}
+}
+
+func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	iup := plans.NewRecordQueryInUnionPlan(scan, []string{"b"}, nil, false)
+	w := NewPhysicalInUnionWrapper(iup, expressions.ForEachQuantifier(nil))
+	if !computeDistinctRecords(w, iup) {
+		t.Fatal("InUnion should be distinct")
+	}
+}
+
+func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	fod := plans.NewRecordQueryFirstOrDefaultPlan(scan, nil)
+	w := &physicalScanWrapper{plan: scan}
+	if !computeDistinctRecords(w, fod) {
+		t.Fatal("FirstOrDefault should be distinct")
+	}
+}
+
+func TestComputeStoredRecord_FirstOrDefaultIsFalse(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	fod := plans.NewRecordQueryFirstOrDefaultPlan(scan, nil)
+	if computeStoredRecord(fod) {
+		t.Fatal("FirstOrDefault should NOT produce stored records")
+	}
+}
+
+func TestComputeStoredRecord_DefaultOnEmptyIsFalse(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	doe := plans.NewRecordQueryDefaultOnEmptyPlan(scan, nil)
+	if computeStoredRecord(doe) {
+		t.Fatal("DefaultOnEmpty should NOT produce stored records")
+	}
+}
+
+func TestComputeStoredRecord_InJoinInheritsFromScan(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	ijp := plans.NewRecordQueryInJoinPlan(scan, "b", false, false)
+	if !computeStoredRecord(ijp) {
+		t.Fatal("InJoin over scan should produce stored records")
+	}
+}
+
+func TestComputeStoredRecord_MergeSortUnionAllStored(t *testing.T) {
+	t.Parallel()
+	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	msu := plans.NewRecordQueryMergeSortUnionPlan(
+		[]plans.RecordQueryPlan{scanA, scanB}, nil, false, true)
+	if !computeStoredRecord(msu) {
+		t.Fatal("MergeSortUnion of scans should produce stored records")
+	}
+}
+
+func TestComputePrimaryKey_ScanWithPK(t *testing.T) {
+	t.Parallel()
+	pk := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pk)
+	result := computePrimaryKey(scan)
+	if result == nil {
+		t.Fatal("scan with PK should return non-nil PK")
+	}
+	pkResult := result.([]values.Value)
+	if len(pkResult) != 1 {
+		t.Fatalf("expected 1 PK value, got %d", len(pkResult))
+	}
+}
+
+func TestComputePrimaryKey_ScanWithoutPK(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	result := computePrimaryKey(scan)
+	if result != nil {
+		t.Fatal("scan without PK should return nil")
+	}
+}
+
+func TestComputePrimaryKey_FilterInheritsFromScan(t *testing.T) {
+	t.Parallel()
+	pk := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).WithPrimaryKey(pk)
+	filter := plans.NewRecordQueryFilterPlan(nil, scan)
+	result := computePrimaryKey(filter)
+	if result == nil {
+		t.Fatal("filter should inherit PK from child scan")
+	}
+}
+
+func TestComputePrimaryKey_UnionCommonPK(t *testing.T) {
+	t.Parallel()
+	pk := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
+	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false).WithPrimaryKey(pk)
+	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).WithPrimaryKey(pk)
+	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
+	result := computePrimaryKey(union)
+	if result == nil {
+		t.Fatal("union with common PK should return non-nil")
+	}
+}
+
+func TestComputePrimaryKey_UnionDifferentPK(t *testing.T) {
+	t.Parallel()
+	pkA := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
+	pkB := []values.Value{&values.FieldValue{Field: "name", Typ: values.UnknownType}}
+	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false).WithPrimaryKey(pkA)
+	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).WithPrimaryKey(pkB)
+	union := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scanA, scanB})
+	result := computePrimaryKey(union)
+	if result != nil {
+		t.Fatal("union with different PKs should return nil")
 	}
 }
