@@ -597,6 +597,79 @@ func TestRecursiveUnion_GetResultValue(t *testing.T) {
 	}
 }
 
+func TestTempTableScan_ChildrenAsSet_False(t *testing.T) {
+	t.Parallel()
+	e := NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"))
+	if e.ChildrenAsSet() {
+		t.Fatal("TempTableScan.ChildrenAsSet should be false")
+	}
+}
+
+func TestTempTableInsert_ChildrenAsSet_False(t *testing.T) {
+	t.Parallel()
+	leaf := NewLogicalValuesExpression(nil)
+	e := NewTempTableInsertExpression(ForEachQuantifier(InitialOf(leaf)), values.NamedCorrelationIdentifier("tt"), true)
+	if e.ChildrenAsSet() {
+		t.Fatal("TempTableInsert.ChildrenAsSet should be false")
+	}
+}
+
+func TestRecursiveUnion_ChildrenAsSet_False(t *testing.T) {
+	t.Parallel()
+	leaf := NewLogicalValuesExpression(nil)
+	e := NewRecursiveUnionExpression(
+		ForEachQuantifier(InitialOf(leaf)),
+		ForEachQuantifier(InitialOf(leaf)),
+		values.NamedCorrelationIdentifier("scan"),
+		values.NamedCorrelationIdentifier("insert"),
+		TraversalAny,
+	)
+	if e.ChildrenAsSet() {
+		t.Fatal("RecursiveUnion.ChildrenAsSet should be false")
+	}
+}
+
+func TestRecursiveUnion_HashCodeDistinctAcrossStrategies(t *testing.T) {
+	t.Parallel()
+	scan := values.NamedCorrelationIdentifier("s")
+	ins := values.NamedCorrelationIdentifier("i")
+	leaf := NewLogicalValuesExpression(nil)
+	hashes := make(map[uint64]TraversalStrategy)
+	for _, s := range []TraversalStrategy{TraversalAny, TraversalPreorder, TraversalLevel, TraversalPostorder} {
+		e := NewRecursiveUnionExpression(
+			ForEachQuantifier(InitialOf(leaf)),
+			ForEachQuantifier(InitialOf(leaf)),
+			scan, ins, s,
+		)
+		h := e.HashCodeWithoutChildren()
+		if prev, ok := hashes[h]; ok {
+			t.Errorf("hash collision: %v and %v both produce %d", prev, s, h)
+		}
+		hashes[h] = s
+	}
+}
+
+func BenchmarkRecursiveUnion_HashCodeWithoutChildren(b *testing.B) {
+	leaf := NewLogicalValuesExpression(nil)
+	e := NewRecursiveUnionExpression(
+		ForEachQuantifier(InitialOf(leaf)),
+		ForEachQuantifier(InitialOf(leaf)),
+		values.NamedCorrelationIdentifier("scan"),
+		values.NamedCorrelationIdentifier("insert"),
+		TraversalLevel,
+	)
+	for b.Loop() {
+		e.HashCodeWithoutChildren()
+	}
+}
+
+func BenchmarkTempTableScan_HashCodeWithoutChildren(b *testing.B) {
+	e := NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"))
+	for b.Loop() {
+		e.HashCodeWithoutChildren()
+	}
+}
+
 func TestTraversalStrategy_String(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
