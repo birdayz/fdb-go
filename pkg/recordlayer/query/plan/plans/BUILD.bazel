@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "delete.go",
         "distinct.go",
+        "explode.go",
         "filter.go",
         "hash_aggregation.go",
         "index_scan.go",
@@ -15,9 +16,11 @@ go_library(
         "plan.go",
         "projection.go",
         "recursive_dfs_join.go",
+        "recursive_level_union.go",
         "scan.go",
         "sort.go",
         "streaming_aggregation.go",
+        "table_function.go",
         "temp_table_insert.go",
         "temp_table_scan.go",
         "typefilter.go",
@@ -39,7 +42,9 @@ go_test(
     srcs = [
         "coverage_test.go",
         "cte_plans_test.go",
+        "explode_test.go",
         "plan_test.go",
+        "table_function_test.go",
     ],
     embed = [":plans"],
     deps = [

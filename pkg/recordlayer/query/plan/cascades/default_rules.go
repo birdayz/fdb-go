@@ -128,6 +128,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementRecursiveDfsJoinRule(),
 		NewImplementRecursiveLevelUnionRule(),
 		NewImplementExplodeRule(),
+		NewImplementTableFunctionRule(),
 	}
 }
 
