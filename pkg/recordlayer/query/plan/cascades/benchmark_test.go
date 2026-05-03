@@ -600,3 +600,35 @@ func BenchmarkPlanner_PlanAggregation(b *testing.B) {
 		p.Plan(ref)
 	}
 }
+
+func BenchmarkPlanner_PlanAggregationFromIndex(b *testing.B) {
+	a1 := values.UniqueCorrelationIdentifier()
+	cand := NewValueIndexScanMatchCandidate(
+		"T$region",
+		[]string{"T"},
+		[]string{"region"},
+		[]values.CorrelationIdentifier{a1},
+		values.UnknownType,
+		false,
+	)
+	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scanRef := expressions.InitialOf(scan)
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		gb := expressions.NewGroupByExpression(
+			[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
+			[]expressions.AggregateSpec{
+				{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			},
+			scanQ,
+		)
+		ref := expressions.InitialOf(gb)
+
+		p := NewPlanner(rules, ctx)
+		p.Plan(ref)
+	}
+}
