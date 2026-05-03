@@ -158,6 +158,8 @@ func DefaultImplementationRules() []ImplementationRule {
 	return []ImplementationRule{
 		NewImplementSimpleSelectRule(),
 		NewImplementDistinctUnionRule(),
+		NewImplementInJoinRule(),
+		NewImplementInUnionRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
 		NewFinalizeExpressionsRule(),
