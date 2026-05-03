@@ -185,6 +185,66 @@ func TestPlanChoice_UniqueIndexPointLookup(t *testing.T) {
 	t.Logf("✓ Unique index point lookup → IndexScan")
 }
 
+func TestPlanChoice_PicksBestIndexAmongMultiple(t *testing.T) {
+	t.Parallel()
+
+	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanRef := expressions.InitialOf(scan)
+
+	// WHERE status = 'shipped' — matches idx_status (1 col) not idx_customer (different col)
+	pred := predicates.NewComparisonPredicate(
+		&values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, "shipped"),
+	)
+	filter := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred},
+		expressions.ForEachQuantifier(scanRef),
+	)
+	rootRef := expressions.InitialOf(filter)
+
+	// Two indexes: one on CUSTOMER_ID, one on STATUS
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		&planChoiceIndexDef{
+			name:        "idx_customer",
+			columns:     []string{"CUSTOMER_ID"},
+			recordTypes: []string{"Order"},
+			unique:      false,
+		},
+		&planChoiceIndexDef{
+			name:        "idx_status",
+			columns:     []string{"STATUS"},
+			recordTypes: []string{"Order"},
+			unique:      false,
+		},
+	})
+
+	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
+	p := NewPlanner(rules, ctx).
+		WithImplementationRules(DefaultImplementationRules())
+	bestExpr, _, err := p.Plan(rootRef)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	type planExtractor interface {
+		GetRecordQueryPlan() plans.RecordQueryPlan
+	}
+	ph, ok := bestExpr.(planExtractor)
+	if !ok {
+		t.Fatalf("expected planExtractor, got %T", bestExpr)
+	}
+
+	physicalPlan := ph.GetRecordQueryPlan()
+	idxPlan, ok := physicalPlan.(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatalf("expected IndexScan, got %T: %s", physicalPlan, physicalPlan.Explain())
+	}
+	if idxPlan.GetIndexName() != "idx_status" {
+		t.Fatalf("expected optimizer to pick idx_status, picked %s", idxPlan.GetIndexName())
+	}
+	t.Logf("✓ Optimizer correctly picked idx_status over idx_customer")
+}
+
 func TestPlanChoice_PartialPrefixMatch(t *testing.T) {
 	t.Parallel()
 
