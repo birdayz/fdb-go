@@ -68,8 +68,8 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
 ## Phase 3 — Cascades rule batches B+C
 
-- [ ] **#14** B5 Batch B1 — data-access rules: `AbstractDataAccessRule`, `AggregateDataAccessRule`. Gate: #12. (~2 shifts) — **In progress, nightshift-68.** Practical effects of AbstractDataAccessRule landed: N-way intersection (up to 4-way), OrderedIndexScanRule (pure ORDER BY → index), SortOverOrderedElimRule (sort elimination via index ordering), ordering propagation through all physical wrappers, unique index point-lookup cost model (cardinality=1), Plan() cost-driven index selection verified e2e. AggregateDataAccessRule landed (single-agg matching, AggregateIndexMatchCandidate type). StreamingAggFromIndexRule (GroupBy→index without explicit Sort). GroupByExpression equality bug fixed (ExplainValue vs Name). DistinctOverGroupByElimRule. PushFilterThroughGroupByRule with partial pushdown. Remaining: PartialMatch/Compensation infrastructure (multi-shift effort, deferred to #15+).
-- [ ] **#15** B5 Batch B2 — implementation rules: `ImplementNestedLoopJoinRule`, `ImplementRecursiveDfsJoinRule`, `ImplementStreamingAggregationRule`. Unblocks JOIN + aggregate + CTE. Gate: #14. (~2 shifts)
+- [x] **#14** B5 Batch B1 — data-access rules: `AbstractDataAccessRule`, `AggregateDataAccessRule`. Gate: #12. (~2 shifts) — **Done, nightshift-68.** Practical effects of AbstractDataAccessRule landed: N-way intersection (up to 4-way), OrderedIndexScanRule, SortOverOrderedElimRule, ordering propagation, unique index point-lookup cost, Plan() cost-driven extraction. AggregateDataAccessRule (single-agg matching, AggregateIndexMatchCandidate). StreamingAggFromIndexRule. GroupByExpression equality fix. DistinctOverGroupByElimRule. PushFilterThroughGroupByRule. ImplementLimitRule + 4 LIMIT logical rewrites (Merge, PushThroughProjection, NoOpElim, ZeroLimit). ImplementNestedLoopJoinRule (2-quantifier Select → NLJ). plangen: LogicalLimit, LogicalJoin (CROSS + INNER with text/structured ON), text-based filter predicates, AND-chaining. Remaining: PartialMatch/Compensation (multi-shift, deferred).
+- [ ] **#15** B5 Batch B2 — implementation rules: `ImplementRecursiveDfsJoinRule` (needs CTE infrastructure). Gate: #14. (~2 shifts) — ImplementNestedLoopJoinRule and ImplementStreamingAggregationRule already landed in #14.
 - [ ] **#16** B5 Batch B3 — decomposition + optimization: `DecorrelateValuesRule`, `PushPredicateThroughDistinctRule`, `MergeFetchIntoTypeFilterRule` family. Gate: #15. (~2 shifts)
 - [ ] **#17** B5 Batch C — finalization: `FinalizeExpressionsRule` + remaining ~30 rules. Gate: #16. (~2 shifts)
 - [ ] **#18** B7 correctness tests for Phase 3 rules. Interleave with #14-17. (~2 shifts)
@@ -77,7 +77,7 @@ Bugs surfaced by #8 corpus probing in nightshift-65. **Pick the highest-tier unc
 
 ## Phase 4 — Query Executor (integration phase, sequential)
 
-- [ ] **#20** C1 PlanGenerator complete — full text→Value parser threading (arithmetic, function calls, qualified refs, exponent, escapes), LogicalLimit / LogicalAggregate / LogicalJoin / LogicalValues equivalents. (~1 shift)
+- [ ] **#20** C1 PlanGenerator complete — full text→Value parser threading (arithmetic, function calls, qualified refs, exponent, escapes), LogicalValues equivalent. (~1 shift) — LogicalLimit, LogicalAggregate, LogicalJoin landed in nightshift-68. Text-based simple predicates (col op value, AND-chaining) also landed. Remaining: arithmetic/function-call/dotted-ref text→Value parsing, LogicalValues operator.
 - [ ] **#21** **C2 QueryExecutor — execute `RecordQueryPlan` against `FDBRecordStore`, return `RecordCursor`. Eliminates today's ad-hoc executor. SINGLE HIGHEST-LEVERAGE SHIFT.** Gate: #11, #12, #20. (~2 shifts; prototype 1-shift spike first)
 - [ ] **#22** C3 RecordLayerResultSet — wraps cursor, implements `api.ResultSet`. Gate: #21. (~1 shift)
 - [ ] **#23** C4 Continuation support — match Java encoding. Gate: #22. (~1 shift)
