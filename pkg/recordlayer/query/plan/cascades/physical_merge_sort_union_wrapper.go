@@ -80,6 +80,10 @@ func (w *physicalMergeSortUnionWrapper) HintCost(child []properties.Cost) proper
 	}
 }
 
+func (w *physicalMergeSortUnionWrapper) HintOrdering() properties.Ordering {
+	return properties.Ordering{IsKnown: true, Keys: w.plan.GetComparisonKeys()}
+}
+
 func (w *physicalMergeSortUnionWrapper) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
 	if len(qs) != len(w.innerQuants) {
 		panic(fmt.Sprintf("physicalMergeSortUnionWrapper.WithQuantifiers: expected %d, got %d", len(w.innerQuants), len(qs)))

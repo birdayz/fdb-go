@@ -76,6 +76,20 @@ func (w *physicalMapWrapper) HintCost(child []properties.Cost) properties.Cost {
 	}
 }
 
+func (w *physicalMapWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.AllMembers() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 func (w *physicalMapWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }

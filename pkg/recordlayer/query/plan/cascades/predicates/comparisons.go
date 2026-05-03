@@ -156,6 +156,16 @@ type Comparison struct {
 	Escape  rune
 }
 
+// GetCorrelatedTo returns the set of correlation identifiers referenced
+// by this comparison's RHS operand. Used by ordering-aware rules to
+// match comparison bindings to explode aliases.
+func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
+	if c.Operand == nil {
+		return nil
+	}
+	return values.GetCorrelatedToOfValue(c.Operand)
+}
+
 // NewLiteralComparison is the common-case constructor for a binary
 // Comparison whose RHS is a plan-time literal. Wraps lit in the
 // appropriate Value subtype (NullValue for nil, BooleanValue for

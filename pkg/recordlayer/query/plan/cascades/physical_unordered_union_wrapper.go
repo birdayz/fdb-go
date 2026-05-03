@@ -78,6 +78,10 @@ func (w *physicalUnorderedUnionWrapper) HintCost(child []properties.Cost) proper
 	}
 }
 
+func (w *physicalUnorderedUnionWrapper) HintOrdering() properties.Ordering {
+	return properties.Ordering{}
+}
+
 func (w *physicalUnorderedUnionWrapper) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
 	if len(qs) != len(w.innerQuants) {
 		panic(fmt.Sprintf("physicalUnorderedUnionWrapper.WithQuantifiers: expected %d, got %d", len(w.innerQuants), len(qs)))

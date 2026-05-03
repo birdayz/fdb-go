@@ -74,6 +74,20 @@ func (w *physicalInJoinWrapper) HintCost(child []properties.Cost) properties.Cos
 	}
 }
 
+func (w *physicalInJoinWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.AllMembers() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 func (w *physicalInJoinWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }

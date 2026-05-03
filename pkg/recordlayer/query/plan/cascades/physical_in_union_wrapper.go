@@ -74,6 +74,10 @@ func (w *physicalInUnionWrapper) HintCost(child []properties.Cost) properties.Co
 	}
 }
 
+func (w *physicalInUnionWrapper) HintOrdering() properties.Ordering {
+	return properties.Ordering{IsKnown: true, Keys: w.plan.GetComparisonKeys()}
+}
+
 func (w *physicalInUnionWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }

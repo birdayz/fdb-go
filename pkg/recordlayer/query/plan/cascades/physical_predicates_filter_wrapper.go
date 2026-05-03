@@ -82,6 +82,20 @@ func (w *physicalPredicatesFilterWrapper) HintCost(child []properties.Cost) prop
 	}
 }
 
+func (w *physicalPredicatesFilterWrapper) HintOrdering() properties.Ordering {
+	ref := w.innerQuant.GetRangesOver()
+	if ref == nil {
+		return properties.Ordering{}
+	}
+	for _, m := range ref.AllMembers() {
+		o := properties.EstimateOrdering(m)
+		if o.IsKnown {
+			return o
+		}
+	}
+	return properties.Ordering{}
+}
+
 func (w *physicalPredicatesFilterWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }
