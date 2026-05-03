@@ -495,40 +495,172 @@ func CreateUnionOrdering(o *RichOrdering) *RichOrdering {
 	return NewRichOrdering(bm, keys, o.distinct)
 }
 
-// MergeOrderings merges two orderings for union planning. The merged
-// ordering contains only keys that appear in both orderings with
-// compatible sort directions. Fixed keys are retained if they appear
-// in both. This is a simplified version of Java's Ordering.merge.
+// MergeOrderingsForUnion merges two orderings with union semantics.
+// Uses the full EligibleSet-based merge algorithm from Java.
+func MergeOrderingsForUnion(a, b *RichOrdering) *RichOrdering {
+	return mergeOrderings(a, b, combineBindingsForUnion, a.distinct && b.distinct)
+}
+
+// MergeOrderingsForIntersection merges two orderings with intersection semantics.
+func MergeOrderingsForIntersection(a, b *RichOrdering) *RichOrdering {
+	return mergeOrderings(a, b, combineBindingsForIntersection, a.distinct && b.distinct)
+}
+
+// MergeOrderings merges two orderings (union semantics, backward-compat alias).
 func MergeOrderings(a, b *RichOrdering) *RichOrdering {
+	return MergeOrderingsForUnion(a, b)
+}
+
+type bindingCombiner func(left, right []OrderingBinding) []OrderingBinding
+
+func mergeOrderings(a, b *RichOrdering, combine bindingCombiner, distinct bool) *RichOrdering {
+	leftES := a.orderingSet.EligibleSet()
+	rightES := b.orderingSet.EligibleSet()
+
+	var elements []string
+	deps := combinatorics.NewSetMultimap[string]()
 	bm := make(map[values.Value][]OrderingBinding)
-	var keys []values.Value
+	lookup := make(map[string]values.Value)
 
-	aKeySet := make(map[string]values.Value, len(a.keys))
-	for _, k := range a.keys {
-		aKeySet[values.ExplainValue(k)] = k
-	}
+	var lastElements []string
 
-	for _, bKey := range b.keys {
-		explain := values.ExplainValue(bKey)
-		aKey, inA := aKeySet[explain]
-		if !inA {
-			continue
+	for !leftES.IsEmpty() && !rightES.IsEmpty() {
+		leftElems := leftES.EligibleElements()
+		rightElems := rightES.EligibleElements()
+
+		var intersected []string
+		for le := range leftElems {
+			for re := range rightElems {
+				if le == re {
+					lv := a.keyLookup[le]
+					rv := b.keyLookup[re]
+					combined := combine(a.bindingMap[lv], b.bindingMap[rv])
+					if len(combined) > 0 {
+						intersected = append(intersected, le)
+						elements = append(elements, le)
+						if lv != nil {
+							lookup[le] = lv
+							bm[lv] = combined
+						} else if rv != nil {
+							lookup[le] = rv
+							bm[rv] = combined
+						}
+					}
+				}
+			}
 		}
 
-		aBindings := a.bindingMap[aKey]
-		bBindings := b.bindingMap[bKey]
+		for le := range leftElems {
+			if _, inRight := rightElems[le]; !inRight {
+				lv := a.keyLookup[le]
+				combined := combine(a.bindingMap[lv], nil)
+				if len(combined) > 0 {
+					elements = append(elements, le)
+					lookup[le] = lv
+					bm[lv] = combined
+				}
+			}
+		}
+		for re := range rightElems {
+			if _, inLeft := leftElems[re]; !inLeft {
+				rv := b.keyLookup[re]
+				combined := combine(nil, b.bindingMap[rv])
+				if len(combined) > 0 {
+					elements = append(elements, re)
+					lookup[re] = rv
+					bm[rv] = combined
+				}
+			}
+		}
 
-		aSorted := SortOrderOf(aBindings)
-		bSorted := SortOrderOf(bBindings)
+		if len(intersected) == 0 {
+			break
+		}
 
-		if aSorted.IsDirectional() && bSorted.IsDirectional() && aSorted == bSorted {
-			bm[aKey] = []OrderingBinding{SortedBinding(aSorted)}
-			keys = append(keys, aKey)
-		} else if AreAllBindingsFixed(aBindings) && AreAllBindingsFixed(bBindings) {
-			bm[aKey] = []OrderingBinding{FixedBinding(nil)}
-			keys = append(keys, aKey)
+		for _, ie := range intersected {
+			for _, le := range lastElements {
+				if a.orderingSet.DependencyMap().Contains(ie, le) ||
+					b.orderingSet.DependencyMap().Contains(ie, le) {
+					deps.Put(ie, le)
+				}
+			}
+		}
+
+		removeSet := make(map[string]struct{}, len(intersected))
+		for _, ie := range intersected {
+			removeSet[ie] = struct{}{}
+		}
+		leftES = leftES.RemoveEligibleElements(removeSet)
+		rightES = rightES.RemoveEligibleElements(removeSet)
+
+		lastElements = intersected
+	}
+
+	vals := make([]values.Value, 0, len(elements))
+	for _, e := range elements {
+		if v, ok := lookup[e]; ok {
+			vals = append(vals, v)
 		}
 	}
 
-	return NewRichOrdering(bm, keys, a.distinct && b.distinct)
+	return NewRichOrderingWithDeps(bm, vals, deps, distinct)
+}
+
+func combineBindingsForUnion(left, right []OrderingBinding) []OrderingBinding {
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+	leftSort := SortOrderOf(left)
+	rightSort := SortOrderOf(right)
+
+	if leftSort.IsDirectional() && rightSort.IsDirectional() {
+		if leftSort != rightSort {
+			return nil
+		}
+		return []OrderingBinding{SortedBinding(leftSort)}
+	}
+	if leftSort.IsDirectional() && rightSort == ProvidedSortOrderFixed {
+		return []OrderingBinding{SortedBinding(leftSort)}
+	}
+	if leftSort == ProvidedSortOrderFixed && rightSort.IsDirectional() {
+		return []OrderingBinding{SortedBinding(rightSort)}
+	}
+	result := make([]OrderingBinding, 0, len(left)+len(right))
+	result = append(result, left...)
+	result = append(result, right...)
+	return result
+}
+
+func combineBindingsForIntersection(left, right []OrderingBinding) []OrderingBinding {
+	if len(left) == 0 && len(right) == 0 {
+		return nil
+	}
+	if len(right) == 0 && AreAllBindingsFixed(left) {
+		return append([]OrderingBinding{}, left...)
+	}
+	if len(left) == 0 && AreAllBindingsFixed(right) {
+		return append([]OrderingBinding{}, right...)
+	}
+	if len(left) == 0 || len(right) == 0 {
+		return nil
+	}
+	leftSort := SortOrderOf(left)
+	rightSort := SortOrderOf(right)
+
+	if leftSort.IsDirectional() && rightSort.IsDirectional() {
+		if leftSort != rightSort {
+			return nil
+		}
+		return []OrderingBinding{SortedBinding(leftSort)}
+	}
+	if leftSort.IsDirectional() && rightSort == ProvidedSortOrderFixed {
+		return append([]OrderingBinding{}, right...)
+	}
+	if leftSort == ProvidedSortOrderFixed && rightSort.IsDirectional() {
+		return append([]OrderingBinding{}, left...)
+	}
+	result := make([]OrderingBinding, 0, len(left)+len(right))
+	result = append(result, left...)
+	result = append(result, right...)
+	return result
 }
