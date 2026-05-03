@@ -12,6 +12,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -56,6 +58,12 @@ func ExecutePlan(
 		return executeUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIntersectionPlan:
 		return executeIntersection(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryNestedLoopJoinPlan:
+		return executeNestedLoopJoin(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryStreamingAggregationPlan:
+		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
+	case *plans.RecordQueryHashAggregationPlan:
+		return executeAggregation(ctx, p.GetInner(), p.GetGroupingKeys(), p.GetAggregates(), store, evalCtx, continuation, props)
 	case *plans.RecordQueryValuesPlan:
 		return executeValues(p)
 	default:
@@ -539,6 +547,249 @@ func intersectionKey(qr QueryResult, keyVals []values.Value) string {
 		fmt.Fprintf(&b, "%v|", v)
 	}
 	return b.String()
+}
+
+func executeNestedLoopJoin(
+	ctx context.Context,
+	p *plans.RecordQueryNestedLoopJoinPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	outerCursor, err := ExecutePlan(ctx, p.GetOuter(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	outerRows, err := CollectAll(ctx, outerCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	preds := p.GetPredicates()
+	joinType := p.GetJoinType()
+	var results []QueryResult
+
+	for _, outerRow := range outerRows {
+		innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, nil, props.ClearSkipAndLimit())
+		if err != nil {
+			return nil, err
+		}
+
+		innerRows, err := CollectAll(ctx, innerCursor)
+		if err != nil {
+			return nil, err
+		}
+
+		matched := false
+		for _, innerRow := range innerRows {
+			combined := mergeRows(outerRow, innerRow)
+			if passesJoinPredicates(combined, preds) {
+				results = append(results, combined)
+				matched = true
+			}
+		}
+
+		if !matched && joinType == plans.JoinLeftOuter {
+			results = append(results, outerRow)
+		}
+	}
+
+	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func mergeRows(outer, inner QueryResult) QueryResult {
+	outerMap, ok1 := outer.Datum.(map[string]any)
+	innerMap, ok2 := inner.Datum.(map[string]any)
+	if !ok1 || !ok2 {
+		return QueryResult{Datum: outer.Datum, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+	}
+
+	merged := make(map[string]any, len(outerMap)+len(innerMap))
+	for k, v := range outerMap {
+		merged[k] = v
+	}
+	for k, v := range innerMap {
+		merged[k] = v
+	}
+	return QueryResult{Datum: merged, Record: outer.Record, PrimaryKey: outer.PrimaryKey}
+}
+
+func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate) bool {
+	if len(preds) == 0 {
+		return true
+	}
+	for _, pred := range preds {
+		if pred.Eval(combined.Datum) != predicates.TriTrue {
+			return false
+		}
+	}
+	return true
+}
+
+func executeAggregation(
+	ctx context.Context,
+	inner plans.RecordQueryPlan,
+	groupingKeys []values.Value,
+	aggregates []expressions.AggregateSpec,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	innerCursor, err := ExecutePlan(ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := CollectAll(ctx, innerCursor)
+	if err != nil {
+		return nil, err
+	}
+
+	type groupState struct {
+		keyVals []any
+		count   int64
+		sums    []float64
+		mins    []any
+		maxs    []any
+	}
+
+	groups := make(map[string]*groupState)
+	var groupOrder []string
+
+	for _, row := range rows {
+		keyParts := make([]any, len(groupingKeys))
+		var keyStr strings.Builder
+		for i, k := range groupingKeys {
+			v := k.Evaluate(row.Datum)
+			keyParts[i] = v
+			fmt.Fprintf(&keyStr, "%v|", v)
+		}
+		gk := keyStr.String()
+
+		gs, exists := groups[gk]
+		if !exists {
+			gs = &groupState{
+				keyVals: keyParts,
+				sums:    make([]float64, len(aggregates)),
+				mins:    make([]any, len(aggregates)),
+				maxs:    make([]any, len(aggregates)),
+			}
+			groups[gk] = gs
+			groupOrder = append(groupOrder, gk)
+		}
+		gs.count++
+
+		for i, agg := range aggregates {
+			val := agg.Operand.Evaluate(row.Datum)
+			if val == nil {
+				continue
+			}
+			num := toFloat64(val)
+			gs.sums[i] += num
+
+			if gs.mins[i] == nil || compareAny(val, gs.mins[i]) < 0 {
+				gs.mins[i] = val
+			}
+			if gs.maxs[i] == nil || compareAny(val, gs.maxs[i]) > 0 {
+				gs.maxs[i] = val
+			}
+		}
+	}
+
+	if len(groups) == 0 && len(groupingKeys) == 0 {
+		result := make(map[string]any)
+		for _, agg := range aggregates {
+			name := aggResultName(agg)
+			switch agg.Function {
+			case expressions.AggCount:
+				result[name] = int64(0)
+			default:
+				result[name] = nil
+			}
+		}
+		return recordlayer.FromList([]QueryResult{{Datum: result}}), nil
+	}
+
+	var results []QueryResult
+	for _, gk := range groupOrder {
+		gs := groups[gk]
+		result := make(map[string]any)
+		for i, k := range groupingKeys {
+			result[aggKeyName(k)] = gs.keyVals[i]
+		}
+		for i, agg := range aggregates {
+			name := aggResultName(agg)
+			switch agg.Function {
+			case expressions.AggCount:
+				result[name] = gs.count
+			case expressions.AggSum:
+				result[name] = gs.sums[i]
+			case expressions.AggMin:
+				result[name] = gs.mins[i]
+			case expressions.AggMax:
+				result[name] = gs.maxs[i]
+			case expressions.AggAvg:
+				if gs.count > 0 {
+					result[name] = gs.sums[i] / float64(gs.count)
+				} else {
+					result[name] = nil
+				}
+			}
+		}
+		results = append(results, QueryResult{Datum: result})
+	}
+
+	return applySkipLimit(recordlayer.FromList(results), props.Skip, props.ReturnedRowLimit), nil
+}
+
+func toFloat64(v any) float64 {
+	switch n := v.(type) {
+	case int64:
+		return float64(n)
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int32:
+		return float64(n)
+	default:
+		return math.NaN()
+	}
+}
+
+func aggKeyName(k values.Value) string {
+	if fv, ok := k.(*values.FieldValue); ok {
+		return strings.ToUpper(fv.Field)
+	}
+	return strings.ToUpper(k.Name())
+}
+
+func aggResultName(agg expressions.AggregateSpec) string {
+	opName := "?"
+	if agg.Operand != nil {
+		if fv, ok := agg.Operand.(*values.FieldValue); ok {
+			opName = fv.Field
+		} else {
+			opName = agg.Operand.Name()
+		}
+	}
+	switch agg.Function {
+	case expressions.AggCount:
+		return strings.ToUpper(fmt.Sprintf("COUNT(%s)", opName))
+	case expressions.AggSum:
+		return strings.ToUpper(fmt.Sprintf("SUM(%s)", opName))
+	case expressions.AggMin:
+		return strings.ToUpper(fmt.Sprintf("MIN(%s)", opName))
+	case expressions.AggMax:
+		return strings.ToUpper(fmt.Sprintf("MAX(%s)", opName))
+	case expressions.AggAvg:
+		return strings.ToUpper(fmt.Sprintf("AVG(%s)", opName))
+	default:
+		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
+	}
 }
 
 func executeValues(p *plans.RecordQueryValuesPlan) (recordlayer.RecordCursor[QueryResult], error) {

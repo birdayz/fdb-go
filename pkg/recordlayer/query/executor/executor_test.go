@@ -6,6 +6,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
@@ -649,6 +650,237 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 	}
 	if r.HighEndpoint != recordlayer.EndpointTypeRangeInclusive {
 		t.Fatalf("highEndpoint=%v, want RangeInclusive (<=)", r.HighEndpoint)
+	}
+}
+
+func TestExecuteNestedLoopJoin_CrossJoin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	left := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	right := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: "hello", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
+	})
+
+	join := plans.NewRecordQueryNestedLoopJoinPlan(left, right, nil, plans.JoinCross)
+	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (1×1 cross)", len(results))
+	}
+	row := results[0].Datum.(map[string]any)
+	if row["constant"] != "hello" {
+		t.Errorf("constant = %v, want 'hello' (inner overwrites)", row["constant"])
+	}
+}
+
+func TestExecuteNestedLoopJoin_InnerJoin_WithPredicate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	left := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(5), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	right := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(5), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+
+	join := plans.NewRecordQueryNestedLoopJoinPlan(
+		left, right,
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		plans.JoinInner,
+	)
+	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+}
+
+func TestExecuteNestedLoopJoin_InnerJoin_PredicateRejects(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	left := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	right := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+
+	join := plans.NewRecordQueryNestedLoopJoinPlan(
+		left, right,
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
+		plans.JoinInner,
+	)
+	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0 (predicate rejects all)", len(results))
+	}
+}
+
+func TestExecuteNestedLoopJoin_LeftOuter_NoInnerMatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	left := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+	right := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(2), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+
+	join := plans.NewRecordQueryNestedLoopJoinPlan(
+		left, right,
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
+		plans.JoinLeftOuter,
+	)
+	cursor, err := ExecutePlan(ctx, join, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (left outer preserves unmatched)", len(results))
+	}
+}
+
+func TestExecuteHashAggregation_CountGroupBy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+
+	groupKeys := []values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	}
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
+	}
+
+	plan := plans.NewRecordQueryHashAggregationPlan(inner, groupKeys, aggs)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 group", len(results))
+	}
+	row := results[0].Datum.(map[string]any)
+	if row["COUNT(CONSTANT)"] != int64(1) {
+		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
+	}
+}
+
+func TestExecuteStreamingAggregation_NoGroups_Count(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(10), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+	})
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
+		{Function: expressions.AggSum, Operand: &values.ConstantValue{Value: int64(10), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
+	}
+
+	plan := plans.NewRecordQueryStreamingAggregationPlan(inner, nil, aggs)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	row := results[0].Datum.(map[string]any)
+	if row["COUNT(CONSTANT)"] != int64(1) {
+		t.Errorf("COUNT = %v, want 1", row["COUNT(CONSTANT)"])
+	}
+	sumVal, ok := row["SUM(CONSTANT)"].(float64)
+	if !ok || sumVal != 10 {
+		t.Errorf("SUM = %v, want 10.0", row["SUM(CONSTANT)"])
+	}
+}
+
+func TestExecuteAggregation_EmptyInput_NoGroupKeys(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	inner := plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
+		plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
+		}),
+	)
+
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)}},
+	}
+
+	plan := plans.NewRecordQueryHashAggregationPlan(inner, nil, aggs)
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	defer cursor.Close()
+
+	results, err := CollectAll(ctx, cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1 (COUNT over empty = 0)", len(results))
+	}
+	row := results[0].Datum.(map[string]any)
+	if row["COUNT(CONSTANT)"] != int64(0) {
+		t.Errorf("COUNT(empty) = %v, want 0", row["COUNT(CONSTANT)"])
 	}
 }
 
