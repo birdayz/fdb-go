@@ -13,8 +13,15 @@ import (
 // LogicalUnionExpression, finds compatible orderings across all union
 // legs, and creates a RecordQueryMergeSortUnionPlan with deduplication.
 //
-// Ports Java's ImplementDistinctUnionRule (simplified — no cross-product
-// skip optimization, no RequestedOrdering constraint propagation).
+// Ports Java's ImplementDistinctUnionRule. The full algorithm:
+//  1. Get requested orderings from planner constraints
+//  2. For each cross-product combo of per-leg plan partitions:
+//     a. Verify common primary key across all legs
+//     b. Extract ordering from each leg's partition
+//     c. Incrementally merge orderings (bail on incompatibility)
+//     d. Verify PK values are covered by merged ordering
+//     e. Enumerate comparison keys satisfying the requested ordering
+//     f. Create MergeSortUnionPlan with comparison keys
 type ImplementDistinctUnionRule struct {
 	matcher matching.BindingMatcher
 }
@@ -55,6 +62,11 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
+	requestedOrderings := call.GetRequestedOrderings()
+	if len(requestedOrderings) == 0 {
+		requestedOrderings = []*RequestedOrdering{PreserveOrdering()}
+	}
+
 	legPartitions := make([][]*PlanPartition, len(unionQs))
 	for i, q := range unionQs {
 		ref := q.GetRangesOver()
@@ -77,42 +89,107 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	combos := CrossProduct(legPartitions)
-	for _, combo := range combos {
-		pkValues := getCommonPK(combo)
-		if pkValues == nil {
-			continue
-		}
 
-		var childPlans []plans.RecordQueryPlan
-		var newQuantifiers []expressions.Quantifier
-		for i, partition := range combo {
-			planExprs := partition.GetExpressions()
-			if len(planExprs) == 0 {
-				break
+	for _, requestedOrdering := range requestedOrderings {
+		for _, combo := range combos {
+			r.tryYieldPlan(call, unionQs, combo, requestedOrdering)
+		}
+	}
+}
+
+func (r *ImplementDistinctUnionRule) tryYieldPlan(
+	call *ImplementationRuleCall,
+	unionQs []expressions.Quantifier,
+	combo []*PlanPartition,
+	requestedOrdering *RequestedOrdering,
+) {
+	pkValues := getCommonPK(combo)
+	if pkValues == nil {
+		return
+	}
+
+	orderings := make([]*RichOrdering, len(combo))
+	for i, partition := range combo {
+		o := partition.GetOrdering()
+		bm := make(map[values.Value][]OrderingBinding)
+		for _, k := range o.Keys {
+			bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+		}
+		orderings[i] = NewRichOrdering(bm, o.Keys, false)
+	}
+
+	var mergedOrdering *RichOrdering
+	for i, o := range orderings {
+		if i == 0 {
+			mergedOrdering = CreateUnionOrdering(o)
+		} else {
+			merged := MergeOrderings(mergedOrdering, o)
+			if !isPrimaryKeyCompatibleWithOrdering(pkValues, merged) {
+				return
 			}
-			newRef := call.MemoizeFinalExpressionsFromOther(
-				unionQs[i].GetRangesOver(), planExprs)
-			newQuantifiers = append(newQuantifiers,
-				expressions.NewPhysicalQuantifier(newRef))
-			for _, pe := range planExprs {
-				if ph, ok := pe.(physicalPlanExpression); ok {
-					childPlans = append(childPlans, ph.GetRecordQueryPlan())
-				}
+			mergedOrdering = merged
+		}
+	}
+
+	if mergedOrdering == nil {
+		return
+	}
+
+	var childPlans []plans.RecordQueryPlan
+	var newQuantifiers []expressions.Quantifier
+	for i, partition := range combo {
+		planExprs := partition.GetExpressions()
+		if len(planExprs) == 0 {
+			return
+		}
+		newRef := call.MemoizeFinalExpressionsFromOther(
+			unionQs[i].GetRangesOver(), planExprs)
+		newQuantifiers = append(newQuantifiers,
+			expressions.NewPhysicalQuantifier(newRef))
+		for _, pe := range planExprs {
+			if ph, ok := pe.(physicalPlanExpression); ok {
+				childPlans = append(childPlans, ph.GetRecordQueryPlan())
 			}
 		}
+	}
 
-		if len(childPlans) < 2 {
-			continue
+	if len(childPlans) < 2 {
+		return
+	}
+
+	satisfyingKeys := mergedOrdering.EnumerateSatisfyingComparisonKeyValues(requestedOrdering)
+	for _, comparisonKeyValues := range satisfyingKeys {
+		comparisonParts := mergedOrdering.DirectionalOrderingParts(
+			comparisonKeyValues, requestedOrdering, ProvidedSortOrderFixed)
+		isReverse := ResolveComparisonDirection(comparisonParts)
+		comparisonParts = AdjustFixedBindings(comparisonParts, isReverse)
+
+		comparisonKeys := make([]values.Value, len(comparisonParts))
+		for i, p := range comparisonParts {
+			comparisonKeys[i] = p.Value
 		}
-
-		comparisonKeys := make([]values.Value, len(pkValues))
-		copy(comparisonKeys, pkValues)
 
 		unionPlan := plans.NewRecordQueryMergeSortUnionPlan(
-			childPlans, comparisonKeys, false, true)
+			childPlans, comparisonKeys, isReverse, true)
 		wrapper := NewPhysicalMergeSortUnionWrapper(unionPlan, newQuantifiers)
 		call.YieldFinalExpression(wrapper)
 	}
+}
+
+func isPrimaryKeyCompatibleWithOrdering(pkValues []values.Value, ordering *RichOrdering) bool {
+	if ordering == nil || len(ordering.GetKeys()) == 0 {
+		return len(pkValues) == 0
+	}
+	orderingKeySet := make(map[string]struct{}, len(ordering.GetKeys()))
+	for _, k := range ordering.GetKeys() {
+		orderingKeySet[values.ExplainValue(k)] = struct{}{}
+	}
+	for _, pkVal := range pkValues {
+		if _, ok := orderingKeySet[values.ExplainValue(pkVal)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func getCommonPK(partitions []*PlanPartition) []values.Value {

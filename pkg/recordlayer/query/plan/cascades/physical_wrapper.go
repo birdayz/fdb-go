@@ -237,6 +237,19 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost) properties.Cost {
 	return properties.Cost{Cardinality: total * physicalWrapperCostMultiplier, CPU: 0}
 }
 
+// HintOrdering: a scan produces rows in PK order when the scan
+// carries PK values (from WithPrimaryKey). Otherwise unknown.
+func (w *physicalScanWrapper) HintOrdering() properties.Ordering {
+	if w.plan == nil {
+		return properties.Ordering{}
+	}
+	pk := w.plan.GetPrimaryKeyValues()
+	if len(pk) == 0 {
+		return properties.Ordering{}
+	}
+	return properties.Ordering{IsKnown: true, Keys: pk}
+}
+
 func (w *physicalScanWrapper) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
 	return w
 }
