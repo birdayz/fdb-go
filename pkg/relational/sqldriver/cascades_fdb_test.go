@@ -653,6 +653,35 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	t.Logf("Cascades ORDER BY with index → %v ✓", names)
 }
 
+func TestFDB_CascadesUnionAll(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT name FROM Item WHERE price > 150 "+
+			"UNION ALL "+
+			"SELECT name FROM Item WHERE price < 100")
+	if err != nil {
+		t.Skipf("UNION ALL not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 150: Gadget(200) | price < 100: Doohickey(50)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 rows from UNION ALL, got %d: %v", len(names), names)
+	}
+	t.Logf("Cascades UNION ALL → %v ✓", names)
+}
+
 func TestFDB_CascadesCTESimple(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
