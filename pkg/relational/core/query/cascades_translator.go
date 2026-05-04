@@ -180,6 +180,9 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 }
 
 func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) expressions.RelationalExpression {
+	if a.Having != "" {
+		return nil
+	}
 	innerRef := t.translateRef(a.Input)
 	if innerRef == nil {
 		return nil
