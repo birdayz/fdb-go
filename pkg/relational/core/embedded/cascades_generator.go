@@ -243,6 +243,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 		return deriveColumnsFromJoin(nlj, md)
 	}
+	if u := findUnionPlan(plan); u != nil {
+		return deriveColumnsFromPlan(u[0], md)
+	}
 	scan := findScanPlan(plan)
 	if scan == nil || len(scan.GetRecordTypes()) == 0 {
 		return nil
@@ -334,6 +337,27 @@ func deriveColumnsFromHashAggregation(agg *plans.RecordQueryHashAggregationPlan,
 		}
 	}
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
+}
+
+type multiInnerPlan interface {
+	GetInners() []plans.RecordQueryPlan
+}
+
+func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
+	for {
+		if mi, ok := p.(multiInnerPlan); ok {
+			inners := mi.GetInners()
+			if len(inners) > 0 {
+				return inners
+			}
+			return nil
+		}
+		if ip, ok := p.(innerPlan); ok {
+			p = ip.GetInner()
+		} else {
+			return nil
+		}
+	}
 }
 
 func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
