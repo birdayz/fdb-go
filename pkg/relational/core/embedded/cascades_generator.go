@@ -12,6 +12,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
@@ -83,7 +84,8 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 
 	bestExpr, _, planErr := planner.Plan(ref)
 	if planErr != nil || bestExpr == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 
 	type planExtractor interface {
