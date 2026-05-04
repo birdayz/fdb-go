@@ -367,6 +367,37 @@ func TestTranslateAggregateWithHavingReturnsNil(t *testing.T) {
 	}
 }
 
+func BenchmarkTranslateCTEInline(b *testing.B) {
+	body := logical.NewFilter(
+		logical.NewScan("Product", ""),
+		"price > 100",
+	)
+	main := logical.NewProject(
+		logical.NewScan("expensive", ""),
+		[]string{"name"}, []string{""},
+	)
+	cte := logical.NewCTE("expensive", body, main, false)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := TranslateToCascades(cte)
+		if ref == nil {
+			b.Fatal("unexpected nil")
+		}
+	}
+}
+
+func BenchmarkTranslateSimpleScan(b *testing.B) {
+	scan := logical.NewScan("Product", "")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ref := TranslateToCascades(scan)
+		if ref == nil {
+			b.Fatal("unexpected nil")
+		}
+	}
+}
+
 func TestTranslateRecursiveCTEReturnsNil(t *testing.T) {
 	t.Parallel()
 	body := logical.NewScan("Product", "")
