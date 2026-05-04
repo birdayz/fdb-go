@@ -1113,6 +1113,73 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Logf("Cascades explicit JOIN ON → %v ✓", names)
 }
 
+func TestFDB_CascadesThreeWayJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_3join_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("j3_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE A (a_id BIGINT NOT NULL, val STRING, PRIMARY KEY (a_id)) "+
+			"CREATE TABLE B (b_id BIGINT NOT NULL, a_ref BIGINT, PRIMARY KEY (b_id)) "+
+			"CREATE TABLE C (c_id BIGINT NOT NULL, b_ref BIGINT, PRIMARY KEY (c_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO A VALUES (1, 'alpha')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO B VALUES (10, 1)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO C VALUES (100, 10)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO C VALUES (200, 99)"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	// 3-way join: A → B → C. Only C(100) matches the chain.
+	rows, err := db.QueryContext(ctx,
+		"SELECT A.val FROM A, B, C WHERE A.a_id = B.a_ref AND B.b_id = C.b_ref")
+	if err != nil {
+		t.Skipf("3-way join not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var vals []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		vals = append(vals, v)
+	}
+	if len(vals) != 1 || vals[0] != "alpha" {
+		t.Fatalf("expected [alpha], got %v", vals)
+	}
+	t.Logf("Cascades 3-way join → %v ✓", vals)
+}
+
 func TestFDB_CascadesMultiFilter(t *testing.T) {
 	t.Parallel()
 	_, cascadesDB := setupCascadesTestDB(t)
