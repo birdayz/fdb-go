@@ -90,8 +90,6 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 		legPartitions[i] = rolled
 	}
 
-	combos := CrossProduct(legPartitions)
-
 	for _, requestedOrdering := range requestedOrderings {
 		for _, q := range unionQs {
 			if ref := q.GetRangesOver(); ref != nil {
@@ -99,63 +97,85 @@ func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 
-		for _, combo := range combos {
-			r.tryYieldPlan(call, unionQs, combo, requestedOrdering)
+		iter := NewCrossProductIterator(legPartitions)
+		type mergeEntry struct {
+			merged  *RichOrdering
+			current *RichOrdering
+		}
+		var merge []mergeEntry
+
+		for iter.HasNext() {
+			combo := iter.Next()
+
+			pkValues := getCommonPK(combo)
+			if pkValues == nil {
+				continue
+			}
+
+			orderings := make([]*RichOrdering, len(combo))
+			for i, partition := range combo {
+				exprs := partition.GetExpressions()
+				var ro *RichOrdering
+				for _, expr := range exprs {
+					if ph, ok := expr.(physicalPlanExpression); ok {
+						ro = computeWrapperRichOrdering(ph)
+						break
+					}
+				}
+				if ro == nil {
+					o := partition.GetOrdering()
+					bm := make(map[values.Value][]OrderingBinding)
+					for _, k := range o.Keys {
+						bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
+					}
+					ro = NewRichOrdering(bm, o.Keys, false)
+				}
+				orderings[i] = ro
+			}
+			orderings = removeCommonEqualityBoundParts(orderings)
+
+			for i := 0; i < len(merge); i++ {
+				if !richOrderingEquals(orderings[i], merge[i].current) {
+					merge = merge[:i]
+					break
+				}
+			}
+
+			for len(merge) < len(orderings) {
+				if len(merge) == 0 {
+					merge = append(merge, mergeEntry{
+						merged:  CreateUnionOrdering(orderings[0]),
+						current: orderings[0],
+					})
+				} else {
+					lastMerged := merge[len(merge)-1].merged
+					merged := MergeOrderings(lastMerged, orderings[len(merge)])
+					if !isPrimaryKeyCompatibleWithOrdering(pkValues, merged) {
+						iter.Skip(len(merge))
+						break
+					}
+					merge = append(merge, mergeEntry{
+						merged:  merged,
+						current: orderings[len(merge)],
+					})
+				}
+			}
+
+			if len(merge) == len(orderings) {
+				mergedOrdering := merge[len(merge)-1].merged
+				r.yieldFromMergedOrdering(call, unionQs, combo, mergedOrdering, requestedOrdering)
+			}
 		}
 	}
 }
 
-func (r *ImplementDistinctUnionRule) tryYieldPlan(
+func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 	call *ImplementationRuleCall,
 	unionQs []expressions.Quantifier,
 	combo []*PlanPartition,
+	mergedOrdering *RichOrdering,
 	requestedOrdering *RequestedOrdering,
 ) {
-	pkValues := getCommonPK(combo)
-	if pkValues == nil {
-		return
-	}
-
-	orderings := make([]*RichOrdering, len(combo))
-	for i, partition := range combo {
-		exprs := partition.GetExpressions()
-		var ro *RichOrdering
-		for _, expr := range exprs {
-			if ph, ok := expr.(physicalPlanExpression); ok {
-				ro = computeWrapperRichOrdering(ph)
-				break
-			}
-		}
-		if ro == nil {
-			o := partition.GetOrdering()
-			bm := make(map[values.Value][]OrderingBinding)
-			for _, k := range o.Keys {
-				bm[k] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
-			}
-			ro = NewRichOrdering(bm, o.Keys, false)
-		}
-		orderings[i] = ro
-	}
-
-	orderings = removeCommonEqualityBoundParts(orderings)
-
-	var mergedOrdering *RichOrdering
-	for i, o := range orderings {
-		if i == 0 {
-			mergedOrdering = CreateUnionOrdering(o)
-		} else {
-			merged := MergeOrderings(mergedOrdering, o)
-			if !isPrimaryKeyCompatibleWithOrdering(pkValues, merged) {
-				return
-			}
-			mergedOrdering = merged
-		}
-	}
-
-	if mergedOrdering == nil {
-		return
-	}
-
 	var childPlans []plans.RecordQueryPlan
 	var newQuantifiers []expressions.Quantifier
 	for i, partition := range combo {
@@ -195,6 +215,26 @@ func (r *ImplementDistinctUnionRule) tryYieldPlan(
 		wrapper := NewPhysicalMergeSortUnionWrapper(unionPlan, newQuantifiers)
 		call.YieldFinalExpression(wrapper)
 	}
+}
+
+func richOrderingEquals(a, b *RichOrdering) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	aKeys := a.GetKeys()
+	bKeys := b.GetKeys()
+	if len(aKeys) != len(bKeys) {
+		return false
+	}
+	for i := range aKeys {
+		if values.ExplainValue(aKeys[i]) != values.ExplainValue(bKeys[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func removeCommonEqualityBoundParts(orderings []*RichOrdering) []*RichOrdering {
