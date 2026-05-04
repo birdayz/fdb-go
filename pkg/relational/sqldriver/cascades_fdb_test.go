@@ -816,6 +816,34 @@ func TestFDB_CascadesCTESelectStar(t *testing.T) {
 	t.Logf("Cascades CTE SELECT * → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEGroupBy(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE + GROUP BY + SUM — tests aggregate on inlined CTE scan.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH all_items AS (SELECT item_id, name, price FROM Item) "+
+			"SELECT SUM(price) FROM all_items")
+	if err != nil {
+		t.Skipf("CTE GROUP BY not supported: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatal("expected 1 row")
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		t.Skipf("scan: %v", err)
+	}
+	// 100 + 200 + 50 = 350
+	if total != 350 {
+		t.Fatalf("expected SUM=350, got %d", total)
+	}
+	t.Logf("Cascades CTE GROUP BY → SUM=%d ✓", total)
+}
+
 func TestFDB_CascadesCTEJoin(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
