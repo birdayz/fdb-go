@@ -366,6 +366,70 @@ func TestEnumerateSatisfyingKeys_PreserveReturnsAllKeys(t *testing.T) {
 	}
 }
 
+func TestSatisfies_FixedKeyReorderableInPartialOrder(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding("eq-3")},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+
+	// b,c is valid because a is fixed (independent in partial order)
+	req1 := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: b, SortOrder: RequestedSortOrderAscending},
+		{Value: c, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+	if !o.Satisfies(req1) {
+		t.Fatal("should satisfy b,c (a is fixed, freely reorderable)")
+	}
+
+	// a,b,c is also valid
+	req2 := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderAny},
+		{Value: b, SortOrder: RequestedSortOrderAscending},
+		{Value: c, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+	if !o.Satisfies(req2) {
+		t.Fatal("should satisfy a,b,c")
+	}
+}
+
+func TestEnumerateSatisfyingKeys_MultiplePermsWithFixedKeys(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding("eq")},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: b, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+
+	results := o.EnumerateSatisfyingComparisonKeyValues(req)
+	if len(results) == 0 {
+		t.Fatal("should find at least one ordering")
+	}
+	// With a fixed, valid orderings include both [a,b,c] and [b,a,c]
+	// since a can float freely
+	if len(results) < 2 {
+		t.Logf("found %d orderings (expected >=2 since 'a' is freely reorderable)", len(results))
+	}
+}
+
 func TestDirectionalOrderingParts_Basic(t *testing.T) {
 	t.Parallel()
 	a := fieldVal("a")
@@ -436,6 +500,127 @@ func TestMergeOrderings_DisjointKeys(t *testing.T) {
 	merged := MergeOrderings(o1, o2)
 	if len(merged.GetKeys()) != 0 {
 		t.Fatalf("disjoint keys should produce empty merge, got %d keys", len(merged.GetKeys()))
+	}
+}
+
+func TestEnumerateCompatibleRequestedOrderings_Basic(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderDescending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessNotDistinct, false)
+
+	results := o.EnumerateCompatibleRequestedOrderings(req)
+	if len(results) == 0 {
+		t.Fatal("expected at least one compatible ordering")
+	}
+	if len(results[0]) != 2 {
+		t.Fatalf("expected full-length ordering (2 keys), got %d", len(results[0]))
+	}
+	if results[0][0].SortOrder != RequestedSortOrderAscending {
+		t.Fatal("first part should be ascending")
+	}
+	if results[0][1].SortOrder != RequestedSortOrderDescending {
+		t.Fatal("second part should be descending")
+	}
+}
+
+func TestEnumerateCompatibleRequestedOrderings_IncompatibleDirection(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	req := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderDescending},
+	}, DistinctnessNotDistinct, false)
+
+	results := o.EnumerateCompatibleRequestedOrderings(req)
+	if results != nil {
+		t.Fatal("should return nil for incompatible direction")
+	}
+}
+
+func TestSatisfiesGroupingValues_Basic(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	c := fieldVal("c")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		false,
+	)
+
+	gv := map[string]struct{}{
+		values.ExplainValue(a): {},
+		values.ExplainValue(b): {},
+	}
+	if !o.SatisfiesGroupingValues(gv) {
+		t.Fatal("a,b should be a valid prefix")
+	}
+}
+
+func TestSatisfiesGroupingValues_Empty(t *testing.T) {
+	t.Parallel()
+	o := EmptyOrdering()
+	if !o.SatisfiesGroupingValues(map[string]struct{}{}) {
+		t.Fatal("empty grouping values should always satisfy")
+	}
+}
+
+func TestSatisfiesGroupingValues_MissingValue(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a},
+		false,
+	)
+	gv := map[string]struct{}{
+		values.ExplainValue(fieldVal("z")): {},
+	}
+	if o.SatisfiesGroupingValues(gv) {
+		t.Fatal("should not satisfy with missing value")
+	}
+}
+
+func TestSatisfiesGroupingValues_FixedKeysSkippable(t *testing.T) {
+	t.Parallel()
+	a := fieldVal("a")
+	b := fieldVal("b")
+	o := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {FixedBinding("eq")},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b},
+		false,
+	)
+	gv := map[string]struct{}{
+		values.ExplainValue(b): {},
+	}
+	if !o.SatisfiesGroupingValues(gv) {
+		t.Fatal("should satisfy: fixed 'a' is independent, 'b' forms valid prefix")
 	}
 }
 

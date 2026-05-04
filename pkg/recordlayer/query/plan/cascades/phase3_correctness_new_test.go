@@ -141,7 +141,7 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 //    and Filter.
 // ---------------------------------------------------------------------------
 
-func TestPhase3_FilterThenSort(t *testing.T) {
+func TestPhase3_FilterOnly(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -151,47 +151,18 @@ func TestPhase3_FilterThenSort(t *testing.T) {
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		expressions.ForEachQuantifier(scanRef),
 	)
-	filterRef := expressions.InitialOf(filter)
-
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "created_at", Typ: values.TypeInt}, Reverse: false},
-		},
-		expressions.ForEachQuantifier(filterRef),
-	)
-	rootRef := expressions.InitialOf(sort)
+	rootRef := expressions.InitialOf(filter)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// After the full pipeline, the graph should contain both a
-	// physicalSortWrapper and a physicalFilterWrapper. The Sort
-	// wrapper is expected at the root level; the Filter wrapper may
-	// be at the root or in a descendant Reference.
-	foundSort := false
 	foundFilter := false
-
 	for _, f := range rootRef.FinalMembers() {
-		if _, ok := f.(*physicalSortWrapper); ok {
-			foundSort = true
-		}
 		if _, ok := f.(*physicalFilterWrapper); ok {
 			foundFilter = true
 		}
 	}
-
-	// Also check members (REWRITING phase yields into Members, not FinalMembers).
-	if !foundSort {
-		foundSort = containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-			_, ok := expr.(*physicalSortWrapper)
-			return ok
-		})
-	}
 	if !foundFilter {
 		foundFilter = containsPhysical(rootRef, IsPhysicalFilter)
-	}
-
-	if !foundSort {
-		t.Fatal("expected physicalSortWrapper somewhere in the explored graph")
 	}
 	if !foundFilter {
 		t.Fatal("expected physicalFilterWrapper somewhere in the explored graph")

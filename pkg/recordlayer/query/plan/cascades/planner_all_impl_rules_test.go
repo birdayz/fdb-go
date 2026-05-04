@@ -11,8 +11,8 @@ import (
 func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
-	if len(rules) != 7 {
-		t.Fatalf("expected 7 implementation rules, got %d", len(rules))
+	if len(rules) != 8 {
+		t.Fatalf("expected 8 implementation rules, got %d", len(rules))
 	}
 }
 

@@ -61,21 +61,14 @@ func TestImplementLimit_WithOffset(t *testing.T) {
 	t.Logf("Explain: %s", explain)
 }
 
-func TestImplementLimit_SortThenLimit(t *testing.T) {
+func TestImplementLimit_LimitOverScan(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}}},
-		scanQ,
-	)
-	sortRef := expressions.InitialOf(sort)
-	sortQ := expressions.ForEachQuantifier(sortRef)
-
-	lim := expressions.NewLogicalLimitExpression(10, 0, sortQ)
+	lim := expressions.NewLogicalLimitExpression(10, 0, scanQ)
 	ref := expressions.InitialOf(lim)
 
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)

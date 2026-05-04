@@ -303,9 +303,11 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 	}
 }
 
-// TestPlanner_SortOverScanProducesPhysicalSort verifies that a
-// LogicalSortExpression over a scan produces a physicalSortWrapper.
-func TestPlanner_SortOverScanProducesPhysicalSort(t *testing.T) {
+// TestPlanner_SortOverScanStaysLogical verifies that a
+// LogicalSortExpression over an unordered scan stays logical
+// during exploration (sort is handled during PLANNING phase
+// per Java's RemoveSortRule pattern, not during exploration).
+func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
@@ -323,12 +325,15 @@ func TestPlanner_SortOverScanProducesPhysicalSort(t *testing.T) {
 	rules := append(DefaultExpressionRules(), BatchAExpressionRules()...)
 	exploreAndVerify(t, ref, rules, nil)
 
-	isPhysicalSort := func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*physicalSortWrapper)
-		return ok
+	hasLogicalSort := false
+	for _, m := range ref.Members() {
+		if _, ok := m.(*expressions.LogicalSortExpression); ok {
+			hasLogicalSort = true
+			break
+		}
 	}
-	if !containsPhysical(ref, isPhysicalSort) {
-		t.Fatal("expected physicalSortWrapper in explored members")
+	if !hasLogicalSort {
+		t.Fatal("sort should remain logical during exploration (no matching index)")
 	}
 }
 

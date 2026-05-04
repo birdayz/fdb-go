@@ -114,45 +114,38 @@ func TestBatchA_CostExtraction_PicksPhysicalOverLogical(t *testing.T) {
 	}
 }
 
-// TestImplementFilterRule_FiresOnFilterOverSort pins that Filter
-// over Sort can be physical-implemented WITHOUT push rules first.
-// Reviewer flagged this as an asymmetry: ImplementFilterRule
-// previously only handled scan/filter wrappers; now it handles
-// scan/filter/sort/distinct/typefilter so the no-push-rules path
-// also works.
-func TestImplementFilterRule_FiresOnFilterOverSort(t *testing.T) {
+// TestImplementFilterRule_FiresOnFilterOverDistinct pins that Filter
+// over Distinct can be physical-implemented WITHOUT push rules first.
+func TestImplementFilterRule_FiresOnFilterOverDistinct(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 
-	// Build Filter(Sort(Scan)) — no push rules will run.
-	sortInner := expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
-	sortInnerRef := expressions.InitialOf(sortInner)
+	distinctInner := expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+	)
+	distinctRef := expressions.InitialOf(distinctInner)
 	filter := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(sortInnerRef),
+		expressions.ForEachQuantifier(distinctRef),
 	)
 	topRef := expressions.InitialOf(filter)
 
-	// Implement leaves up: scan first (so its inner Reference has a
-	// physical wrapper), then sort, then filter.
-	scanRef := sortInner.GetInner().GetRangesOver()
+	scanRef := distinctInner.GetQuantifiers()[0].GetRangesOver()
 	FireExpressionRule(NewPrimaryScanRule(), scanRef)
-	FireExpressionRule(NewImplementSortRule(), sortInnerRef)
+	FireExpressionRule(NewImplementDistinctRule(), distinctRef)
 
-	// Now ImplementFilterRule should fire — sortInnerRef has a
-	// physicalSortWrapper, which is now a recognized inner case.
 	yielded := FireExpressionRule(NewImplementFilterRule(), topRef)
 	if len(yielded) != 1 {
-		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Sort)", len(yielded))
+		t.Fatalf("ImplementFilterRule yielded %d, want 1 (Filter over physical Distinct)", len(yielded))
 	}
 	wrap, ok := yielded[0].(*physicalFilterWrapper)
 	if !ok {
 		t.Fatalf("yield = %T, want *physicalFilterWrapper", yielded[0])
 	}
 	innerPlan := wrap.GetPlan().GetInner()
-	if _, ok := innerPlan.(*plans.RecordQuerySortPlan); !ok {
-		t.Fatalf("filter inner plan = %T, want *RecordQuerySortPlan", innerPlan)
+	if _, ok := innerPlan.(*plans.RecordQueryDistinctPlan); !ok {
+		t.Fatalf("filter inner plan = %T, want *RecordQueryDistinctPlan", innerPlan)
 	}
 }
 

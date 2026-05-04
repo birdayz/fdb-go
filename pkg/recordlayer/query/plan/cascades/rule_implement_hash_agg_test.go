@@ -41,42 +41,31 @@ func TestImplementHashAgg_UnorderedInput(t *testing.T) {
 	}
 }
 
-func TestImplementHashAgg_CostHigherThanStreaming(t *testing.T) {
+func TestImplementHashAgg_NoOutputOrdering(t *testing.T) {
 	t.Parallel()
 
-	// With ordered input, both streaming and hash agg fire.
-	// Streaming agg should be cheaper (lower per-row CPU).
+	// Hash agg over an unordered scan — verify the wrapper reports
+	// no output ordering (IsKnown=false).
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	sortExpr := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		}, scanQ)
-	sortRef := expressions.InitialOf(sortExpr)
-	sortQ := expressions.ForEachQuantifier(sortRef)
 
 	gb := expressions.NewGroupByExpression(
 		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
 		[]expressions.AggregateSpec{
 			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
 		},
-		sortQ,
+		scanQ,
 	)
 	gbRef := expressions.InitialOf(gb)
 
 	FireExpressionRule(NewPrimaryScanRule(), scanRef)
-	FireExpressionRule(NewImplementSortRule(), sortRef)
 
-	streamResults := FireExpressionRule(NewImplementStreamingAggregationRule(), gbRef)
 	hashResults := FireExpressionRule(NewImplementHashAggregationRule(), gbRef)
-
-	if len(streamResults) == 0 || len(hashResults) == 0 {
-		t.Fatal("both rules should fire")
+	if len(hashResults) == 0 {
+		t.Fatal("ImplementHashAggregationRule didn't fire")
 	}
 
-	// Verify the hash agg wrapper reports no ordering.
 	hashWrapper := hashResults[0].(*physicalHashAggWrapper)
 	o := hashWrapper.HintOrdering()
 	if o.IsKnown {

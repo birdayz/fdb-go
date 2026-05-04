@@ -3,57 +3,117 @@ package cascades
 import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
-// ImplementSortRule implements a logical LogicalSortExpression as a
-// physical RecordQuerySortPlan, gated on the inner Reference having
-// at least one physical-plan member. Same shape as ImplementFilterRule.
+// ImplementSortRule removes a logical LogicalSortExpression when the
+// inner plan already satisfies the requested ordering. This is Java's
+// RemoveSortRule pattern: sort is a constraint, not a physical operator.
 //
-//	Sort([k1, k2], inner-with-physical-member)
-//	  →  SortPlan([k1, k2], inner-physical)
+// During PLANNING's top-down pass, the sort expression's requested
+// ordering is pushed as a constraint to the inner reference (via
+// GetRequestedOrderings). During the bottom-up pass, this rule checks
+// if the inner partition's ordering satisfies the request, and if so,
+// yields the inner plans directly (removing the sort).
 //
-// Java's `ImplementSortRule` is more sophisticated: it consults
-// the planner's RequestedOrdering property and decides whether to
-// emit a sort plan at all (the inner might already satisfy the
-// ordering — see `OrderingProperty`). The seed always emits the
-// sort; ordering-elimination lives in B5 follow-on rules.
+// Ports Java's RemoveSortRule (ImplementationCascadesRule).
 type ImplementSortRule struct {
 	matcher matching.BindingMatcher
 }
 
-// NewImplementSortRule constructs the rule.
 func NewImplementSortRule() *ImplementSortRule {
 	return &ImplementSortRule{
-		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("logical_sort"),
+		matcher: &logicalSortMatcher{},
 	}
 }
 
-// Matcher returns the pattern.
 func (r *ImplementSortRule) Matcher() matching.BindingMatcher { return r.matcher }
 
-// OnMatch fires on every LogicalSortExpression. Walks the inner
-// Reference for a physical-plan member; if found, yields a
-// SortPlan wrapper.
-func (r *ImplementSortRule) OnMatch(call *ExpressionRuleCall) {
-	s := matching.Get[*expressions.LogicalSortExpression](call.Bindings, r.matcher)
+func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
+	s := call.Bindings.Get(r.matcher).(*expressions.LogicalSortExpression)
+
+	requestedOrdering := sortExpressionToRequestedOrdering(s)
+
 	innerRef := s.GetInner().GetRangesOver()
 	if innerRef == nil {
 		return
 	}
-	innerPlan := findPhysicalPlan(innerRef)
-	if innerPlan == nil {
+
+	if requestedOrdering.IsPreserve() {
+		for _, m := range innerRef.FinalMembers() {
+			call.YieldFinalExpression(m)
+		}
 		return
 	}
 
-	sortPlan := plans.NewRecordQuerySortPlan(s.GetSortKeys(), innerPlan)
+	partitions := ToPlanPartitions(innerRef)
+	for _, partition := range partitions {
+		ordering := computePartitionOrdering(partition)
+		if ordering == nil {
+			continue
+		}
 
-	innerExpr := findPhysicalExpr(innerRef)
-	if innerExpr == nil {
-		return
+		preserveDistinctReq := NewRequestedOrdering(
+			requestedOrdering.GetParts(),
+			DistinctnessPreserveDistinctness,
+			requestedOrdering.IsExhaustive(),
+		)
+		if !ordering.Satisfies(preserveDistinctReq) {
+			continue
+		}
+
+		for _, expr := range partition.GetExpressions() {
+			call.YieldFinalExpression(expr)
+		}
 	}
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(NewPhysicalSortWrapper(sortPlan, innerQ))
 }
 
-var _ ExpressionRule = (*ImplementSortRule)(nil)
+func (r *ImplementSortRule) GetRequestedOrderings(
+	expr expressions.RelationalExpression,
+) []*RequestedOrdering {
+	s, ok := expr.(*expressions.LogicalSortExpression)
+	if !ok {
+		return nil
+	}
+	return []*RequestedOrdering{sortExpressionToRequestedOrdering(s)}
+}
+
+func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *RequestedOrdering {
+	keys := s.GetSortKeys()
+	if len(keys) == 0 {
+		return PreserveOrdering()
+	}
+	parts := make([]RequestedOrderingPart, len(keys))
+	for i, k := range keys {
+		sortOrder := RequestedSortOrderAscending
+		if k.Reverse {
+			sortOrder = RequestedSortOrderDescending
+		}
+		parts[i] = RequestedOrderingPart{
+			Value:     k.Value,
+			SortOrder: sortOrder,
+		}
+	}
+	return NewRequestedOrdering(parts, DistinctnessNotDistinct, false)
+}
+
+func computePartitionOrdering(partition *PlanPartition) *RichOrdering {
+	for _, expr := range partition.GetExpressions() {
+		if ph, ok := expr.(physicalPlanExpression); ok {
+			return computeWrapperRichOrdering(ph)
+		}
+	}
+	return nil
+}
+
+type logicalSortMatcher struct{}
+
+func (m *logicalSortMatcher) RootType() string { return "LogicalSortExpression" }
+
+func (m *logicalSortMatcher) BindMatches(outer *matching.PlannerBindings, in any) []*matching.PlannerBindings {
+	if _, ok := in.(*expressions.LogicalSortExpression); !ok {
+		return nil
+	}
+	return []*matching.PlannerBindings{outer.Bind(m, in)}
+}
+
+var _ ImplementationRule = (*ImplementSortRule)(nil)

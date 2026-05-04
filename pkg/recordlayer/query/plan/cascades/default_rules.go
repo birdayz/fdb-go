@@ -97,9 +97,10 @@ func DefaultExpressionRules() []ExpressionRule {
 // Compose with: append(DefaultExpressionRules(), BatchAExpressionRules()...)
 //
 // Currently 7 read-side implement rules ported (PrimaryScanRule,
-// ImplementFilterRule, ImplementSortRule, ImplementDistinctRule,
+// ImplementFilterRule, ImplementDistinctRule,
 // ImplementTypeFilterRule, ImplementUnionRule,
-// ImplementIntersectionRule). Remaining: covering-index +
+// ImplementIntersectionRule). ImplementSortRule moved to
+// DefaultImplementationRules (PLANNING phase) per Java's RemoveSortRule. Remaining: covering-index +
 // MergeFetchIntoCoveringIndexRule + index-equality / range rules —
 // all gated on MatchCandidate / IndexAccessHint infrastructure
 // (per RFC-022).
@@ -111,7 +112,7 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewImplementFilterRule(),
 		NewImplementIndexScanRule(),
 		NewOrderedIndexScanRule(),
-		NewImplementSortRule(),
+		NewPhysicalizeSortRule(),
 		NewImplementDistinctRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementUnionRule(),
@@ -160,6 +161,7 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementDistinctUnionRule(),
 		NewImplementInJoinRule(),
 		NewImplementInUnionRule(),
+		NewImplementSortRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
 		NewFinalizeExpressionsRule(),
