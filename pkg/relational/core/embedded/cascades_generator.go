@@ -15,7 +15,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -36,7 +35,7 @@ func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
 func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, err
 	}
 
 	stmts := root.Statements()
@@ -47,33 +46,34 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	stmt := stmts.AllStatement()[0]
 	sel := stmt.SelectStatement()
 	if sel == nil {
+		// SHOW / other non-SELECT read statements stay on naive.
 		return g.naive.Plan(ctx, sql)
 	}
 
 	q := sel.Query()
 	if q == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "malformed SELECT statement")
 	}
 
+	if err := g.c.ensureMetaData(ctx); err != nil {
+		return nil, err
+	}
 	md := g.c.cachedMetaData()
-	var logicalOp logical.LogicalOperator
-	if md != nil {
-		logicalOp = buildLogicalPlanForQueryWithCatalog(q, md)
-	} else {
-		logicalOp = buildLogicalPlanForQuery(q)
+	if md == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"no schema metadata available")
 	}
 
+	logicalOp := buildLogicalPlanForQueryWithCatalog(q, md)
 	if logicalOp == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 
 	ref := query.TranslateToCascades(logicalOp)
 	if ref == nil {
-		return g.naive.Plan(ctx, sql)
-	}
-
-	if md == nil {
-		return g.naive.Plan(ctx, sql)
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"Cascades planner could not plan query")
 	}
 
 	rules := append(cascades.DefaultExpressionRules(), cascades.BatchAExpressionRules()...)
@@ -405,7 +405,7 @@ func buildAggColumns(
 }
 
 func aggregateSpecName(a expressions.AggregateSpec) string {
-	operand := values.ExplainValue(a.Operand)
+	operand := aggOperandName(a)
 	switch a.Function {
 	case expressions.AggCount:
 		return "COUNT(" + operand + ")"
@@ -420,6 +420,13 @@ func aggregateSpecName(a expressions.AggregateSpec) string {
 	default:
 		return "AGG(" + operand + ")"
 	}
+}
+
+func aggOperandName(a expressions.AggregateSpec) string {
+	if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+		return "*"
+	}
+	return values.ExplainValue(a.Operand)
 }
 
 func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageDescriptor) string {

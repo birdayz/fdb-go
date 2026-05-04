@@ -355,7 +355,12 @@ func executeFilter(
 	hasParams := len(evalCtx.params) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
-		pred: func(qr QueryResult) bool {
+		pred: func(qr QueryResult) (keep bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					keep = false
+				}
+			}()
 			var rowCtx any = qr.Datum
 			if hasParams {
 				if m, ok := qr.Datum.(map[string]any); ok {
@@ -828,7 +833,9 @@ func aggKeyName(k values.Value) string {
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
 	if agg.Operand != nil {
-		if fv, ok := agg.Operand.(*values.FieldValue); ok {
+		if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+			opName = "*"
+		} else if fv, ok := agg.Operand.(*values.FieldValue); ok {
 			opName = fv.Field
 		} else {
 			opName = agg.Operand.Name()

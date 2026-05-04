@@ -62,9 +62,9 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Test all targets.
+# Test all targets (excludes Java conformance server tests which need manual setup).
 test:
-    bazelisk test //...
+    bazelisk test //... --test_tag_filters=-conformance_java
 
 # Run conformance server
 run-conformance-server:
