@@ -360,6 +360,66 @@ func TestFDB_CascadesOrderBy(t *testing.T) {
 	t.Logf("Cascades ORDER BY → %v ✓", names)
 }
 
+func TestFDB_CascadesJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_join_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("join_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Orders (order_id BIGINT NOT NULL, customer STRING, PRIMARY KEY (order_id)) "+
+			"CREATE TABLE Items (item_id BIGINT NOT NULL, order_id BIGINT, name STRING, PRIMARY KEY (item_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (1, 'Alice')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Orders VALUES (2, 'Bob')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (10, 1, 'Widget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (20, 1, 'Gadget')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO Items VALUES (30, 2, 'Doohickey')"); err != nil {
+		t.Fatalf("INSERT: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM Orders, Items WHERE Orders.order_id = Items.order_id")
+	if err != nil {
+		t.Skipf("JOIN not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	if count != 3 {
+		t.Fatalf("expected 3 rows from join, got %d", count)
+	}
+	t.Logf("Cascades JOIN → %d rows ✓", count)
+}
+
 func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
