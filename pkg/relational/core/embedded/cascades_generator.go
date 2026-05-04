@@ -240,6 +240,9 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if agg, ok := plan.(*plans.RecordQueryHashAggregationPlan); ok {
 		return deriveColumnsFromHashAggregation(agg, md)
 	}
+	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+		return deriveColumnsFromJoin(nlj, md)
+	}
 	scan := findScanPlan(plan)
 	if scan == nil || len(scan.GetRecordTypes()) == 0 {
 		return nil
@@ -331,6 +334,18 @@ func deriveColumnsFromHashAggregation(agg *plans.RecordQueryHashAggregationPlan,
 		}
 	}
 	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
+}
+
+func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	outerCols := deriveColumnsFromPlan(nlj.GetOuter(), md)
+	innerCols := deriveColumnsFromPlan(nlj.GetInner(), md)
+	if outerCols == nil && innerCols == nil {
+		return nil
+	}
+	cols := make([]executor.ColumnDef, 0, len(outerCols)+len(innerCols))
+	cols = append(cols, outerCols...)
+	cols = append(cols, innerCols...)
+	return cols
 }
 
 func buildAggColumns(
