@@ -50,6 +50,7 @@ go_library(
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",

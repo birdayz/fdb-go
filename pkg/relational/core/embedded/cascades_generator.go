@@ -9,6 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
 	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
@@ -233,6 +234,12 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 	if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
 		return deriveColumnsFromProjection(proj, md)
 	}
+	if agg, ok := plan.(*plans.RecordQueryStreamingAggregationPlan); ok {
+		return deriveColumnsFromAggregation(agg, md)
+	}
+	if agg, ok := plan.(*plans.RecordQueryHashAggregationPlan); ok {
+		return deriveColumnsFromHashAggregation(agg, md)
+	}
 	scan := findScanPlan(plan)
 	if scan == nil || len(scan.GetRecordTypes()) == 0 {
 		return nil
@@ -272,12 +279,12 @@ func findScanPlan(p plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
 
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	scan := findScanPlan(proj.GetInner())
-	if scan == nil || len(scan.GetRecordTypes()) == 0 {
-		return nil
-	}
-	rt := md.GetRecordType(scan.GetRecordTypes()[0])
-	if rt == nil || rt.Descriptor == nil {
-		return nil
+	var desc protoreflect.MessageDescriptor
+	if scan != nil && len(scan.GetRecordTypes()) > 0 {
+		rt := md.GetRecordType(scan.GetRecordTypes()[0])
+		if rt != nil && rt.Descriptor != nil {
+			desc = rt.Descriptor
+		}
 	}
 	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
 	for i, v := range proj.GetProjections() {
@@ -287,12 +294,130 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		} else {
 			name = v.Name()
 		}
+		typeName := aggregateTypeName(name, desc)
+		if typeName == "" && desc != nil {
+			typeName = protoFieldTypeName(desc, name)
+		}
+		if typeName == "" {
+			typeName = "UNKNOWN"
+		}
 		cols[i] = executor.ColumnDef{
 			Name:     strings.ToUpper(name),
-			TypeName: protoFieldTypeName(rt.Descriptor, name),
+			TypeName: typeName,
 		}
 	}
 	return cols
+}
+
+func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	scan := findScanPlan(agg.GetInner())
+	var desc protoreflect.MessageDescriptor
+	if scan != nil && len(scan.GetRecordTypes()) > 0 {
+		rt := md.GetRecordType(scan.GetRecordTypes()[0])
+		if rt != nil {
+			desc = rt.Descriptor
+		}
+	}
+	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
+}
+
+func deriveColumnsFromHashAggregation(agg *plans.RecordQueryHashAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	scan := findScanPlan(agg.GetInner())
+	var desc protoreflect.MessageDescriptor
+	if scan != nil && len(scan.GetRecordTypes()) > 0 {
+		rt := md.GetRecordType(scan.GetRecordTypes()[0])
+		if rt != nil {
+			desc = rt.Descriptor
+		}
+	}
+	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), desc)
+}
+
+func buildAggColumns(
+	groupKeys []values.Value,
+	aggregates []expressions.AggregateSpec,
+	desc protoreflect.MessageDescriptor,
+) []executor.ColumnDef {
+	cols := make([]executor.ColumnDef, 0, len(groupKeys)+len(aggregates))
+	for _, k := range groupKeys {
+		name := values.ExplainValue(k)
+		typeName := "UNKNOWN"
+		if desc != nil {
+			typeName = protoFieldTypeName(desc, name)
+		}
+		cols = append(cols, executor.ColumnDef{
+			Name:     strings.ToUpper(name),
+			TypeName: typeName,
+		})
+	}
+	for _, a := range aggregates {
+		name := aggregateSpecName(a)
+		typeName := aggregateResultType(a, desc)
+		cols = append(cols, executor.ColumnDef{
+			Name:     strings.ToUpper(name),
+			TypeName: typeName,
+		})
+	}
+	return cols
+}
+
+func aggregateSpecName(a expressions.AggregateSpec) string {
+	operand := values.ExplainValue(a.Operand)
+	switch a.Function {
+	case expressions.AggCount:
+		return "COUNT(" + operand + ")"
+	case expressions.AggSum:
+		return "SUM(" + operand + ")"
+	case expressions.AggAvg:
+		return "AVG(" + operand + ")"
+	case expressions.AggMin:
+		return "MIN(" + operand + ")"
+	case expressions.AggMax:
+		return "MAX(" + operand + ")"
+	default:
+		return "AGG(" + operand + ")"
+	}
+}
+
+func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageDescriptor) string {
+	switch a.Function {
+	case expressions.AggCount:
+		return "BIGINT"
+	case expressions.AggAvg:
+		return "DOUBLE"
+	case expressions.AggSum, expressions.AggMin, expressions.AggMax:
+		if desc != nil {
+			operandName := values.ExplainValue(a.Operand)
+			if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
+				return t
+			}
+		}
+		return "BIGINT"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func aggregateTypeName(name string, desc protoreflect.MessageDescriptor) string {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	if strings.HasPrefix(upper, "COUNT(") {
+		return "BIGINT"
+	}
+	if strings.HasPrefix(upper, "AVG(") {
+		return "DOUBLE"
+	}
+	if strings.HasPrefix(upper, "SUM(") || strings.HasPrefix(upper, "MIN(") || strings.HasPrefix(upper, "MAX(") {
+		lparen := strings.Index(upper, "(")
+		rparen := strings.LastIndex(upper, ")")
+		if lparen >= 0 && rparen > lparen && desc != nil {
+			operand := strings.TrimSpace(upper[lparen+1 : rparen])
+			if t := protoFieldTypeName(desc, operand); t != "UNKNOWN" {
+				return t
+			}
+		}
+		return "BIGINT"
+	}
+	return ""
 }
 
 func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
