@@ -1355,7 +1355,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 
 func TestFDB_SelectOrderByDesc(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #81: DESC ordering needs reverse index scan support")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -3759,7 +3759,7 @@ func TestFDB_RightJoin(t *testing.T) {
 
 func TestFDB_CountDistinct(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: COUNT(DISTINCT) not handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6596,7 +6596,7 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 // insert from expression evaluation.
 func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: COUNT(DISTINCT) not handled")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6640,7 +6640,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 // the same "N|" sentinel).
 func TestFDB_GroupByNullVsNilString(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: NULL vs empty string in GROUP BY key")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6903,7 +6903,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 // collapses at the filter boundary (UNKNOWN filters out, same as FALSE).
 func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: NOT of NULL semantics — Cascades plan succeeds when it should error")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -7264,7 +7264,7 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 
 func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: column type metadata not correct in Cascades")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
