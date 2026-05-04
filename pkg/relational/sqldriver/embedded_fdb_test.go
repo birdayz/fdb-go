@@ -2604,7 +2604,7 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 // arithmetic in `ApplyMathOp` yields the integer-divided result.
 func TestFDB_SumIntegerDivision(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: computed expressions in projection")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2661,7 +2661,7 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 // is a separate, intentional gap.
 func TestFDB_BareBoolProjection(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: boolean expression in projection")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -2862,7 +2862,7 @@ func TestFDB_LimitOffsetRejected(t *testing.T) {
 
 func TestFDB_CaseWhen(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: CASE expression evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -4174,7 +4174,7 @@ func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 // the constant slots).
 func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: constant expression evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6049,7 +6049,7 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 
 func TestFDB_SimpleCaseWorks(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: CASE expression evaluation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6414,7 +6414,7 @@ func TestFDB_JoinWithNullKey(t *testing.T) {
 // coverage (other dedicated tests go deeper on each dimension).
 func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: NULL column derivation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -6485,7 +6485,7 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 // stayed zero/unset — SUM(DISTINCT) returned 0 on non-empty groups.
 func TestFDB_DistinctAggregates(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #83: DISTINCT aggregation")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
@@ -7015,7 +7015,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 // (CTE / aggregate) so the two evaluators stay consistent.
 func TestFDB_AggregateNullSemantics(t *testing.T) {
 	t.Parallel()
-	t.Skip("TODO #65: Cascades-only path")
+	t.Skip("TODO #78: aggregate on wrong column type")
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
