@@ -192,3 +192,34 @@ func TestCrossProductIterator_EmptyList(t *testing.T) {
 		t.Fatal("empty inner list should produce no elements")
 	}
 }
+
+func FuzzCrossProductIterator_SkipNeverPanics(f *testing.F) {
+	f.Add(uint8(3), uint8(2), uint8(1))
+	f.Add(uint8(1), uint8(1), uint8(0))
+	f.Add(uint8(5), uint8(3), uint8(2))
+	f.Fuzz(func(t *testing.T, nLists, listSize, skipAt uint8) {
+		n := int(nLists%5) + 1
+		sz := int(listSize%4) + 1
+		lists := make([][]int, n)
+		for i := range lists {
+			lists[i] = make([]int, sz)
+			for j := range lists[i] {
+				lists[i][j] = i*10 + j
+			}
+		}
+		iter := NewCrossProductIterator(lists)
+		count := 0
+		skipAfter := int(skipAt) % (n*sz + 1)
+		for iter.HasNext() {
+			iter.Next()
+			count++
+			if count == skipAfter && n > 0 {
+				depth := (count % n) + 1
+				iter.Skip(depth)
+			}
+			if count > 10000 {
+				t.Fatal("too many iterations — likely infinite loop")
+			}
+		}
+	})
+}
