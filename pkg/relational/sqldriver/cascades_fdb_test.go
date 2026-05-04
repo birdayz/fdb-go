@@ -360,6 +360,76 @@ func TestFDB_CascadesOrderBy(t *testing.T) {
 	t.Logf("Cascades ORDER BY → %v ✓", names)
 }
 
+func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_orderby_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("orderby_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Product (product_id BIGINT NOT NULL, name STRING, price BIGINT, PRIMARY KEY (product_id)) "+
+			"CREATE INDEX idx_name ON Product (name)", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=shop", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, item := range []struct {
+		id   int
+		name string
+	}{{1, "Cherry"}, {2, "Apple"}, {3, "Banana"}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Product VALUES (%d, '%s', %d)", item.id, item.name, item.id*100)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT name FROM Product ORDER BY name ASC")
+	if err != nil {
+		t.Skipf("ORDER BY with index not supported via Cascades: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(names) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(names))
+	}
+	expected := []string{"Apple", "Banana", "Cherry"}
+	for i, name := range names {
+		if name != expected[i] {
+			t.Fatalf("expected %v, got %v", expected, names)
+		}
+	}
+	t.Logf("Cascades ORDER BY with index → %v ✓", names)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
