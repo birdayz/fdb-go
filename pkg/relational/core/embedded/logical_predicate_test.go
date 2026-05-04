@@ -443,6 +443,53 @@ func TestBuildLogicalPlanWithCatalog_CTEChainedSchemaDerivation(t *testing.T) {
 	}
 }
 
+func TestBuildLogicalPlanWithCatalog_CTESelectStarSchemaDerivation(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH c AS (SELECT * FROM Order) SELECT order_id FROM c WHERE price > 10")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	cte, ok := op.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("expected LogicalCTE, got %T", op)
+	}
+	var mainFilter *logical.LogicalFilter
+	for cur := cte.Main; cur != nil; {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			mainFilter = f
+			break
+		}
+		ch := cur.Children()
+		if len(ch) != 1 {
+			break
+		}
+		cur = ch[0]
+	}
+	if mainFilter == nil {
+		t.Fatalf("main query missing Filter:\n%s", cte.Main.Explain(""))
+	}
+	if mainFilter.Predicate == nil {
+		t.Fatal("outer WHERE on CTE SELECT * should have a real Predicate")
+	}
+}
+
+func TestBuildLogicalPlanWithCatalog_CTENoPredNeeded(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"WITH c AS (SELECT order_id FROM Order) SELECT order_id FROM c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op := buildLogicalPlanForQueryWithCatalog(root, md)
+	if op == nil {
+		t.Fatal("expected non-nil plan for CTE without WHERE")
+	}
+}
+
 // INSERT … SELECT routes the inner SELECT's WHERE through the
 // catalog-aware path. INSERT VALUES (no nested SELECT) is identical
 // to the text builder's output.
