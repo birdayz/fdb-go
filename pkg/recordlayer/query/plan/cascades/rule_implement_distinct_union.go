@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
@@ -135,6 +137,8 @@ func (r *ImplementDistinctUnionRule) tryYieldPlan(
 		orderings[i] = ro
 	}
 
+	orderings = removeCommonEqualityBoundParts(orderings)
+
 	var mergedOrdering *RichOrdering
 	for i, o := range orderings {
 		if i == 0 {
@@ -191,6 +195,79 @@ func (r *ImplementDistinctUnionRule) tryYieldPlan(
 		wrapper := NewPhysicalMergeSortUnionWrapper(unionPlan, newQuantifiers)
 		call.YieldFinalExpression(wrapper)
 	}
+}
+
+func removeCommonEqualityBoundParts(orderings []*RichOrdering) []*RichOrdering {
+	if len(orderings) <= 1 {
+		return orderings
+	}
+
+	type fixedEntry struct {
+		key     string
+		binding string
+	}
+
+	var commonEntries map[fixedEntry]struct{}
+	for i, o := range orderings {
+		entries := make(map[fixedEntry]struct{})
+		bm := o.GetBindingMap()
+		for _, key := range o.GetKeys() {
+			keyStr := values.ExplainValue(key)
+			bindings := bm[key]
+			for _, b := range bindings {
+				if b.IsFixed() {
+					entries[fixedEntry{keyStr, explainBinding(b)}] = struct{}{}
+				}
+			}
+		}
+		if i == 0 {
+			commonEntries = entries
+		} else {
+			for e := range commonEntries {
+				if _, ok := entries[e]; !ok {
+					delete(commonEntries, e)
+				}
+			}
+		}
+	}
+
+	if len(commonEntries) == 0 {
+		return orderings
+	}
+
+	keysToRemove := make(map[string]struct{})
+	for e := range commonEntries {
+		keysToRemove[e.key] = struct{}{}
+	}
+
+	result := make([]*RichOrdering, len(orderings))
+	for i, o := range orderings {
+		var filteredKeys []values.Value
+		filteredBindings := make(map[values.Value][]OrderingBinding)
+		for _, key := range o.GetKeys() {
+			keyStr := values.ExplainValue(key)
+			if _, remove := keysToRemove[keyStr]; remove {
+				continue
+			}
+			filteredKeys = append(filteredKeys, key)
+			if bs, ok := o.GetBindingMap()[key]; ok {
+				filteredBindings[key] = bs
+			}
+		}
+		result[i] = NewRichOrdering(filteredBindings, filteredKeys, o.IsDistinct())
+	}
+	return result
+}
+
+func explainBinding(b OrderingBinding) string {
+	comp := b.GetComparison()
+	if comp == nil {
+		return "fixed"
+	}
+	if s, ok := comp.(fmt.Stringer); ok {
+		return s.String()
+	}
+	return "fixed"
 }
 
 func isPrimaryKeyCompatibleWithOrdering(pkValues []values.Value, ordering *RichOrdering) bool {

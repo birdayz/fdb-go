@@ -127,6 +127,6 @@ Concrete Go-Java divergences surfaced by subagent audit. Ordered by impact.
 - [ ] **#72** Ordering: missing `pullUp`/`pushDown`/`translateCorrelations`. Java translates orderings through value hierarchies and correlation rebasing. Required for proper constraint propagation through complex plan trees.
 - [ ] **#73** Ordering: missing `SetOperationsOrdering` subclass. Java has specialized semantics for UNION/INTERSECTION orderings (multiple fixed bindings interpreted as OR/AND).
 - [ ] **#74** DistinctUnionRule: missing `removeCommonEqualityBoundParts` filtering before constraint push. Reduces redundant exploration.
-- [ ] **#75** InJoinRule: missing `isSupportedExplodeValue()` validation. Go could attempt invalid IN-sources.
+- [x] **#75** InJoinRule: `isSupportedExplodeValue()` validation — **landed dayshift-72**. Validates explode collection values are ConstantValue, QuantifiedObjectValue, or constant-evaluable. Applied to both InJoinRule and InUnionRule.
 - [ ] **#76** Executor: InJoin/InUnion don't iterate IN-values (delegate to inner). MergeSortUnion delegates to concat (no merge-sort cursor).
 - [ ] **#77** InUnionRule: missing `attemptFailedInJoinAsUnionMaxSize` planner configuration parameter.
