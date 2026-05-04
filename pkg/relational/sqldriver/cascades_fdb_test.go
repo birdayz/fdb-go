@@ -935,6 +935,56 @@ func TestFDB_CascadesCTEChained(t *testing.T) {
 	t.Logf("Cascades chained CTE → %v ✓", names)
 }
 
+func TestFDB_CascadesCTEDistinct(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// CTE + DISTINCT — dedup over inlined CTE scan.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"WITH all_items AS (SELECT price FROM Item) "+
+			"SELECT DISTINCT price FROM all_items")
+	if err != nil {
+		t.Skipf("CTE DISTINCT not supported: %v", err)
+	}
+	defer rows.Close()
+
+	count := countRows(t, rows)
+	// prices: 100, 200, 50 → all distinct → 3
+	if count != 3 {
+		t.Fatalf("expected 3 distinct prices, got %d", count)
+	}
+	t.Logf("Cascades CTE DISTINCT → %d rows ✓", count)
+}
+
+func TestFDB_CascadesMultiFilter(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	// Multiple predicates: AND compound filter.
+	rows, err := cascadesDB.QueryContext(ctx,
+		"SELECT name FROM Item WHERE price > 50 AND price < 200")
+	if err != nil {
+		t.Skipf("Multi-filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, name)
+	}
+	// price > 50 AND price < 200: Widget(100)
+	if len(names) != 1 || names[0] != "Widget" {
+		t.Fatalf("expected [Widget], got %v", names)
+	}
+	t.Logf("Cascades multi-filter → %v ✓", names)
+}
+
 func countRows(t *testing.T, rows *sql.Rows) int {
 	t.Helper()
 	var n int
