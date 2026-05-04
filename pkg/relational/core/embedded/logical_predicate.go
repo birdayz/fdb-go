@@ -380,6 +380,60 @@ func buildCTEColumnSource(
 	}, true
 }
 
+// buildWherePredicateForJoinsWithCTEScopes is like
+// buildWherePredicateForJoins but resolves CTE table references
+// using pre-derived column schemas when metadata lookup fails.
+func buildWherePredicateForJoinsWithCTEScopes(
+	md *recordlayer.RecordMetaData,
+	sq *selectQuery,
+	whereExpr antlrgen.IWhereExprContext,
+	cteScopes map[string]semantic.ScopeSource,
+) (predicates.QueryPredicate, bool) {
+	if md == nil || sq == nil || sq.tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
+		return nil, false
+	}
+	cat := rlcatalog.Wrap(md)
+	analyzer := semantic.NewAnalyzer(cat, false)
+	scope := semantic.NewScope(nil)
+
+	addSource := func(tableName, alias string) bool {
+		aliasID := semantic.NewUnquoted(alias)
+		if alias == "" {
+			aliasID = semantic.NewUnquoted(tableName)
+		}
+		// Try metadata first, then CTE scopes.
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		if err == nil {
+			return scope.AddSource(semantic.ScopeSource{
+				Table:           tbl,
+				Alias:           aliasID,
+				CorrelationName: aliasID.Name(),
+			}) == nil
+		}
+		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
+			src.Alias = aliasID
+			src.CorrelationName = aliasID.Name()
+			return scope.AddSource(src) == nil
+		}
+		return false
+	}
+	if !addSource(sq.tableName, sq.tableAlias) {
+		return nil, false
+	}
+	for _, j := range sq.joins {
+		if !addSource(j.tableName, j.alias) {
+			return nil, false
+		}
+	}
+	resolver := expr.New(analyzer, scope)
+	pred, err := resolver.WalkPredicate(whereExpr.Expression())
+	if err != nil {
+		return nil, false
+	}
+	pred = predicates.SimplifyPredicateValues(pred)
+	return pred, true
+}
+
 // buildWherePredicateForJoins handles the JOIN case: builds a scope
 // with one source per (primary table, joined tables) entry, then
 // runs the walker. Bare columns ambiguous across sources fail at
@@ -460,10 +514,13 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	}
 	var pred predicates.QueryPredicate
 	var ok bool
-	if cteScopes != nil {
+	if cteScopes != nil && len(sq.joins) == 0 {
 		if src, found := cteScopes[strings.ToUpper(sq.tableName)]; found {
 			pred, ok = buildWherePredicateFromCTEScope(src, sq.tableAlias, sq.whereExpr, md)
 		}
+	}
+	if !ok && cteScopes != nil && len(sq.joins) > 0 {
+		pred, ok = buildWherePredicateForJoinsWithCTEScopes(md, sq, sq.whereExpr, cteScopes)
 	}
 	if !ok {
 		pred, ok = buildWherePredicate(md, sq, sq.whereExpr)
