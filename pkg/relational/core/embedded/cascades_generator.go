@@ -17,15 +17,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// QueryEngine is retained for binary compatibility. Cascades is now the
-// only query engine; the enum value is ignored.
-type QueryEngine int
-
-const (
-	QueryEngineNaive QueryEngine = iota
-	QueryEngineCascades
-)
-
 // cascadesGenerator routes SELECT queries through the Cascades planner
 // and executor. DML and DDL statements fall back to the naive generator.
 type cascadesGenerator struct {

@@ -106,17 +106,6 @@ type EmbeddedConnection struct {
 	// descriptor name. nil outside a proto scan — outerScopeFromMsg
 	// falls back to msg's descriptor name.
 	currentSourceAliases map[string]bool
-
-	// queryEngine selects which query engine to use for SELECT queries.
-	// Default (zero value) is QueryEngineNaive. Set to QueryEngineCascades
-	// to route through the Cascades planner. Temporary until Cascades
-	// fully replaces the naive executor.
-	queryEngine QueryEngine
-}
-
-// SetQueryEngine selects the query engine for SELECT queries.
-func (c *EmbeddedConnection) SetQueryEngine(engine QueryEngine) {
-	c.queryEngine = engine
 }
 
 // embeddedTx is the driver.Tx returned by BeginTx. It holds the open FDB
