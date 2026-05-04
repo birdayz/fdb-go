@@ -420,6 +420,74 @@ func TestFDB_CascadesJoin(t *testing.T) {
 	t.Logf("Cascades JOIN → %d rows ✓", count)
 }
 
+func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	dbPath := fmt.Sprintf("/casc_grpby_%s", t.Name())
+	setup := openTestDB(t, dbPath)
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	tmpl := fmt.Sprintf("grpby_tmpl_%s", t.Name())
+	if _, err := setup.ExecContext(ctx, fmt.Sprintf(
+		"CREATE SCHEMA TEMPLATE %s "+
+			"CREATE TABLE Sales (sale_id BIGINT NOT NULL, category STRING, amount BIGINT, PRIMARY KEY (sale_id))", tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	if _, err := setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=store", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	for _, sale := range []struct {
+		id  int
+		cat string
+		amt int
+	}{{1, "A", 100}, {2, "A", 200}, {3, "B", 150}, {4, "B", 50}, {5, "C", 300}} {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(
+			"INSERT INTO Sales VALUES (%d, '%s', %d)", sale.id, sale.cat, sale.amt)); err != nil {
+			t.Fatalf("INSERT: %v", err)
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT category, SUM(amount) FROM Sales GROUP BY category")
+	if err != nil {
+		t.Skipf("GROUP BY not supported: %v", err)
+	}
+	defer rows.Close()
+
+	type result struct {
+		cat string
+		sum int64
+	}
+	var results []result
+	for rows.Next() {
+		var r result
+		if err := rows.Scan(&r.cat, &r.sum); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 groups, got %d: %v", len(results), results)
+	}
+	t.Logf("Cascades GROUP BY → %v ✓", results)
+}
+
 func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
