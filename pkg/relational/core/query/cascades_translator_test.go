@@ -204,6 +204,19 @@ func TestParseAggregateText(t *testing.T) {
 	}
 }
 
+func TestTranslateDistinct(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("orders", "")
+	dist := logical.NewDistinct(scan)
+	ref := TranslateToCascades(dist)
+	if ref == nil {
+		t.Fatal("expected non-nil reference for DISTINCT")
+	}
+	if _, ok := ref.Members()[0].(*expressions.LogicalDistinctExpression); !ok {
+		t.Fatalf("expected LogicalDistinctExpression, got %T", ref.Members()[0])
+	}
+}
+
 func TestTranslateNestedSortFilterScan(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("orders", "")
