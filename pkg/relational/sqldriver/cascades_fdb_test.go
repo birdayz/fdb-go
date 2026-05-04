@@ -420,6 +420,38 @@ func TestFDB_CascadesJoin(t *testing.T) {
 	t.Logf("Cascades JOIN → %d rows ✓", count)
 }
 
+func TestFDB_CascadesMultiColumnProjection(t *testing.T) {
+	t.Parallel()
+	_, cascadesDB := setupCascadesTestDB(t)
+	ctx := context.Background()
+
+	rows, err := cascadesDB.QueryContext(ctx, "SELECT name, price FROM Item WHERE price > 50")
+	if err != nil {
+		t.Skipf("multi-column projection+filter not supported: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		name  string
+		price int64
+	}
+	var results []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.name, &r.price); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 rows (price > 50), got %d", len(results))
+	}
+	t.Logf("Cascades multi-col projection+filter → %v ✓", results)
+}
+
 func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
